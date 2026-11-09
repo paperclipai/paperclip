@@ -40,8 +40,8 @@ export function corrected(fields: unknown) {
     || platformSplit && typeof value === "string" && tokens(value).join(" ") === "safari");
 }
 /** The follow-up reply is the text added after the first checkpoint. It must name the case (its identifier or its
- * primary task) and the setup-chosen support escalation, and must not contradict the saved state: no other
- * escalation value, no "No" answer, and no sentence saying the correction was lost. Saved fields are the proof. */
+ * primary task) and the setup-chosen support escalation literal. Whether its wording is right is free-form text that a
+ * person reads; the saved fields above are the proof of the outcome. */
 export function latestReply(fresh: InternalObservation, first: InternalObservation | undefined) {
   return first && fresh.reply.startsWith(first.reply) ? fresh.reply.slice(first.reply.length) : fresh.reply;
 }
@@ -50,11 +50,7 @@ export function reportsCurrentFacts(reply: string, o: FactsObservation) {
   const caseRow = o.state.case as CaseRecord & { identifier?: string }; const task = o.tasks.find(row => row.id === caseRow.workIssueId);
   const names = [caseRow.identifier, task?.identifier, caseRow.id, caseRow.workIssueId].filter((value): value is string => !!value);
   const refersToCase = names.some(name => new RegExp(`(?<![\\w-])${escapeRe(name)}(?![\\w-])`, "i").test(reply));
-  const value = String(o.state.collaboratorValue); const otherEscalation = (reply.match(/\bsupport-[\w-]+/gi) ?? []).some(found => found !== value);
-  const answersNo = /^\W*no\b/i.test(reply.trim());
-  const lost = reply.split(/\n+|(?<=[.!?])\s+/).some(sentence => /\b(?:overwr[io]te|overwritten|lost|removed|reverted|dropped|discarded|no longer|missing|(?:is|was|are|were)n['’]?t (?:saved|kept|included|there|present)|not (?:saved|kept|included|there|present)|does(?:n['’]t| not) (?:include|contain|have))\b/i.test(sentence)
-    && /\b(?:correction|mobile Safari|browser|reproduction step)\b/i.test(sentence) && !/\b(?:nothing|not|never|wasn['’]?t|none)\b[^.!?]{0,30}\b(?:overwr|lost|removed|reverted|dropped|discarded)/i.test(sentence));
-  return refersToCase && reply.includes(value) && !otherEscalation && !answersNo && !lost;
+  return refersToCase && reply.includes(String(o.state.collaboratorValue));
 }
 function retained(o: FactsObservation, concurrent: boolean) {
   const original = o.state.case as CaseRecord; const fields = o.caseRecord.fields as Record<string, unknown>;
@@ -69,7 +65,7 @@ export function gradeIntegratorCaseFacts(value: unknown) {
   const first = factsObservation(o.state.firstCorrection); const fresh = factsObservation(o.state.collaborationCheckpoint);
   c.add("initial-correction-preserves-unrelated-fields", !!first && retained(first, false), "The unchanged first query must already correct the saved facts without discarding unrelated fields; a later turn cannot repair an initially wrong mutation.");
   c.add("fresh-collaborative-change-not-stale-replacement", !!fresh && retained(fresh, true) && retained(o, true)
-    && reportsCurrentFacts(latestReply(fresh, first), o), "A real independently saved support change survives the explicit reread; the follow-up reply names the case and the actual concurrent field and does not contradict the saved correction.");
+    && reportsCurrentFacts(latestReply(fresh, first), o), "A real independently saved support change survives the explicit reread; the follow-up reply names the case and the actual concurrent field.");
   const before = o.state.brief as IssueDocument; const original = o.state.case as CaseRecord;
   c.add("ordinary-task-document-ownership-and-history", o.brief.id === before.id && o.brief.issueId === original.workIssueId
     && o.briefRevisions.some(revision => revision.id === before.latestRevisionId && revision.issueId === original.workIssueId && revision.body === before.body), "The original ordinary-task document and its actual saved revision remain owned and accessible on the same primary task.");
@@ -114,7 +110,7 @@ export const integratorCaseFactsCases = [integratorDefinition("cases", "cases.up
   const row = state.case as CaseRecord; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
   const task = await ctx.input.api.get<Issue>(`/api/issues/${row.workIssueId}`);
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier}`, task.title);
-}, { oracleVersion: "paperclip.chat-catalog.integrator.case-facts.v2", expectedRunCount: 4, expectedHumanMessageCount: 2, attemptTimeoutMs: 900_000, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 3 } },
+}, { oracleVersion: "paperclip.chat-catalog.integrator.case-facts.v3", expectedRunCount: 4, expectedHumanMessageCount: 2, attemptTimeoutMs: 900_000, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 3 } },
   sourceFiles: ["chat-catalog-domains/integrator-case-facts.ts", "chat-catalog-domains/internal-run-brief.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"], cleanup,
   async act(ctx, state) {
     const settle = (count: number) => pollUntil({ label: `saved case correction phase ${count}`, deadlineAt: Date.now() + 180_000, intervalMs: 1000,

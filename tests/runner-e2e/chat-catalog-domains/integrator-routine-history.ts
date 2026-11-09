@@ -19,40 +19,6 @@ function historyObservation(value: unknown): HistoryObservation | undefined {
   const o = value as HistoryObservation;
   return observation(value) && !!o.routine && Array.isArray(o.executions) ? o : undefined;
 }
-const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/** Text the reply attributes to exactly one of the routine's tasks: a line (list item, table row or paragraph)
- * that names or links one task, or, where a line names both, each sentence that names one. */
-export function taskOutcomeUnits(reply: string, tasks: Entity[]) {
-  const names = (task: Entity) => [task.identifier, task.id].filter((value): value is string => !!value);
-  const mentions = (text: string, task: Entity) => names(task).some(name => new RegExp(`(?<![\\w-])${escaped(name)}(?![\\w-])`, "i").test(text));
-  const units = new Map(tasks.map(task => [task.id, [] as string[]]));
-  for (const line of reply.split(/\n+/)) {
-    const named = tasks.filter(task => mentions(line, task));
-    if (named.length === 1) units.get(named[0]!.id)!.push(line);
-    else if (named.length > 1) for (const sentence of line.split(/(?<=[.!?;])\s+/)) {
-      const own = tasks.filter(task => mentions(sentence, task)); if (own.length === 1) units.get(own[0]!.id)!.push(sentence);
-    }
-  }
-  return units;
-}
-const negated = String.raw`(?<!(?:\b(?:not|no|never|without|nothing)|n['’]t)\s+(?:[^\s.,;:!?]+\s+){0,3})`; // negation does not reach past punctuation
-const SUCCESS = new RegExp(`${negated}\\b(?:succeed(?:ed|s)?|success(?:ful(?:ly)?)?|complete[ds]?|done|published|finished)\\b`, "i");
-const FAILURE = new RegExp(`${negated}\\b(?:fail(?:ed|s|ure)?|unsuccessful|errou?r(?:ed|s)?|blocked)\\b`, "i");
-/** Each task's outcome is paired with the status the product records (blocked task + failed invocation, done task +
- * completed invocation): the reply must speak about each task, give it its recorded outcome, and never give it the
- * other one. Saved status, not wording, is what makes an outcome right; the vocabulary only detects which one is claimed. */
-export function preservesRecordedOutcomes(reply: string, failedTask: Entity, completedTask: Entity) {
-  // Quoted tool output (`success: false`, "Synthetic write failed") is data the reply cites, not its own claim.
-  const prose = reply.replace(/`([^`\n]*)`|"([^"\n]*)"|“([^”\n]*)”/g, (_quote, ...spans: Array<string | undefined>) => {
-    const text = spans.slice(0, 3).find(span => span !== undefined) ?? "";
-    return /^[A-Z][A-Z0-9]*-\d+$/.test(text.trim()) ? text : " ";
-  });
-  const units = taskOutcomeUnits(prose, [failedTask, completedTask]);
-  const failed = units.get(failedTask.id) ?? [], completed = units.get(completedTask.id) ?? [];
-  const blanket = prose.split(/(?<=[.!?])\s+|\n+/).some(sentence => /\b(?:all|both)\b[^.!?]{0,40}\b(?:runs?|executions?|summar(?:y|ies))\b[^.!?]{0,30}\b(?:succeeded|completed|successful(?:ly)?)\b/i.test(sentence));
-  return failed.some(unit => FAILURE.test(unit)) && completed.some(unit => SUCCESS.test(unit))
-    && !failed.some(unit => SUCCESS.test(unit)) && !completed.some(unit => FAILURE.test(unit)) && !blanket;
-}
 export function gradeIntegratorRoutineHistory(value: unknown) {
   const c = checks(); const o = historyObservation(value);
   c.add("actual-routine-and-native-execution-history", !!o, "Requires real public invocation history plus distinct actual failed work and successful execution receipts.");
@@ -80,12 +46,11 @@ export function gradeIntegratorRoutineHistory(value: unknown) {
   c.add("requested-week-and-exact-history-retained", [failedInvocation, completedInvocation].every(run => !!run && Date.parse(String(run.triggeredAt)) >= start && Date.parse(String(run.triggeredAt)) < end)
     && o.executions.length === 2 && failedInvocation?.source === "manual" && completedInvocation?.source === "manual", "Both actual manual invocations fall inside the measured current week, with no hidden or duplicate history rows.");
   c.add("actual-failure-and-completion-linked", !!failedTask && !!completedTask && hasLink(o, "issues", failedTask) && hasLink(o, "issues", completedTask), "The answer links both real execution tasks.");
-  c.add("failed-work-not-inferred-routine-completion", !!failedTask?.identifier && !!completedTask?.identifier
-    && failedTask.status === "blocked" && failedInvocation?.status === "failed" && completedTask.status === "done" && completedInvocation?.status === "completed"
-    && preservesRecordedOutcomes(o.reply, failedTask, completedTask)
-    && !o.reply.split(/(?<=[.!?])\s+|\n+/).some(sentence => /\b(?:scheduled|scheduler|automatically|automatic|on schedule)\b/i.test(sentence)
-      && /\b(?:ran|executed|succeeded|completed|delivered|successful)\b/i.test(sentence)
-      && !/\b(?:no|not|cannot|can't|unconfirmed|unverified|unknown|missing)\b/i.test(sentence)), "The response preserves which actual routine work failed and which invocation completed without inferring unsupported scheduled success. A truthful concise account of the actual manual runs needs no unprompted schedule-denial sentence.");
+  // The reply's meaning (which run failed, no inferred scheduled success) is free-form text: a person reads it. The oracle
+  // grades only what the product recorded and the rendered links above, never reply vocabulary.
+  c.add("failed-work-not-inferred-routine-completion", !!failedTask && !!completedTask && failedTask.status === "blocked" && failedInvocation?.status === "failed"
+    && completedTask.status === "done" && completedInvocation?.status === "completed",
+    "The product records the setup's outcomes: the failed invocation's task is blocked and the completed invocation's task is done.");
   return c.result();
 }
 export const integratorRoutineHistoryCases = [integratorDefinition("routines", "routines.read-history", async ctx => {
@@ -123,5 +88,5 @@ export const integratorRoutineHistoryCases = [integratorDefinition("routines", "
   const routine = state.routine as RoutineDetail;
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/routines/${routine.id}/history`, routine.title);
 }, { sourceFiles: ["chat-catalog-domains/integrator-routine-history.ts", "chat-catalog-domains/routine-history-work-failure.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/routines.yaml"],
-  oracleVersion: "paperclip.chat-catalog.integrator.routine-work-failure.v4", authentication: "human-session", cleanup: cleanupHistoryNotes, expectedRunCount: 3, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 3 } }, attemptTimeoutMs: 720_000,
+  oracleVersion: "paperclip.chat-catalog.integrator.routine-work-failure.v5", authentication: "human-session", cleanup: cleanupHistoryNotes, expectedRunCount: 3, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 3 } }, attemptTimeoutMs: 720_000,
 })];

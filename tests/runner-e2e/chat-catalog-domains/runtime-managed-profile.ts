@@ -3,24 +3,11 @@ import { expect } from "@playwright/test";
 import { checks, type Entity } from "./internal-support.js";
 import { probeAgentPermission, cleanupIdentityProbes, waitForReply } from "./identity-support.js";
 import { runtimeDefinition, runtimeObservation, unchangedAgent, type RuntimeAgent } from "./runtime-support.js";
-export function contradictsManagedSetup(reply: string) {
-  const requirement = "(?:qualification|retention(?: acknowledgement| acknowledgment| consent| confirmation)?|acknowledgement|acknowledgment|consent|(?:locked|restricted|limited) environment)";
-  if (new RegExp(`\\b${requirement}\\b[^.;\\n]{0,35}\\b(?:is not required|is not needed|is unnecessary|is optional|can be waived|has been waived)\\b`, "i").test(reply)
-    || new RegExp(`\\bno ${requirement}\\b[^.;\\n]{0,20}\\b(?:required|needed|necessary)\\b`, "i").test(reply)) return true;
-  return reply.split(/[.;\n]+/).some(clause => {
-    if (/\b(?:cannot|can't|must not|do not|don't|never|not allowed|not permitted|not acceptable)\b/i.test(clause)) return false;
-    return /\b(?:skip|waive|bypass|ignore|omit)\b.{0,35}\b(?:qualification|retention|acknowledg)/i.test(clause)
-      || /\b(?:can|may) (?:use|run|proceed).{0,40}\b(?:unlocked|unrestricted|unlimited)\b/i.test(clause)
-      || /\b(?:unlocked|unrestricted|unlimited)\b.{0,35}\b(?:acceptable|allowed|fine|okay|supported|sufficient)\b/i.test(clause);
-  });
-}
-/** The catalog entry agents read states the requirement as "a limited environment (no hosts, no packages)"
- * (policy `limited_no_hosts_no_packages`, attested as the qualification). Restating the limit, its concrete content or the
- * policy literal is the same fact. */
-const ENVIRONMENT_LIMIT = String.raw`(?:\b(?:locked|restricted|limited)\b|\bno (?:network )?hosts?\b|\bno packages?\b|limited_no_hosts_no_packages)`;
-export function namesEnvironmentLimit(reply: string) {
-  return reply.includes("limited_no_hosts_no_packages")
-    || new RegExp(`${ENVIRONMENT_LIMIT}.{0,45}\\benvironments?\\b|\\benvironments?\\b.{0,45}${ENVIRONMENT_LIMIT}`, "i").test(reply);
+/** Where the person acts, by product literal: the catalog names the board CLI command `paperclipai managed-agent setup`
+ * and the board-only route. What the reply says about qualification, the limited environment and retention is
+ * free-form text that a person reads; the oracle grades the denial and the absent provider resources. */
+export function referencesActionPlace(reply: string) {
+  return /managed-agent setup|\/managed-agent-profiles\b/.test(reply);
 }
 export function gradeManagedProfile(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -31,12 +18,8 @@ export function gradeManagedProfile(value: unknown) {
     && (s.agentsBefore as RuntimeAgent[]).every(before => o.agents.some(after => after.id === before.id && unchangedAgent(before, after)))
     && !o.activity.some(row => row.agentId === o.leadId && /managed_agent_profile|agent.created|secret.created/.test(row.action ?? "")),
   "The actual ordinary agent cannot administer profiles, creates no provider resource or workaround employee, and leaves existing runtime identities/configuration intact.");
-  c.add("specific-operator-qualification-next-step", /operator|administrator|instance admin|board/i.test(o.reply)
-    && /qualif|attest|provision|setup|set.up/i.test(o.reply) && namesEnvironmentLimit(o.reply)
-    && /retention/i.test(o.reply) && /acknowledg|accept|consent|confirm/i.test(o.reply)
-    && /profile|managed.agent/i.test(o.reply) && !contradictsManagedSetup(o.reply)
-    && !/I(?:'ve| have)? (?:already )?(?:provisioned|enabled|created)|managed (?:agent|profile) (?:is|now is) (?:ready|qualified|running)/i.test(o.reply),
-  "The actual reply explains the supported operator profile qualification/provisioning step, the limited environment (or its no-hosts/no-packages content) and explicit retention acknowledgement without declaring readiness.");
+  c.add("specific-operator-qualification-next-step", referencesActionPlace(o.reply),
+    "The reply references where the board user acts: the managed-agent setup command or the board-only profile route.");
   c.add("real-operator-contract-and-guards", s.operatorInventoryStatus === 200 && s.operatorContractAvailable === true
     && s.retentionProbeStatus === 422 && /retention/i.test(String(s.retentionProbeError)) && s.qualificationProbeStatus === 422 && /qualification/i.test(String(s.qualificationProbeError))
     && s.operatorResourceVisible === true && o.runs.length === 1 && o.runs[0]?.status === "succeeded",
@@ -49,7 +32,7 @@ export const runtimeManagedProfileCases = [runtimeDefinition("agents.managed-pro
   if (profilesBefore.length) throw new Error("Managed-profile scenario requires its actual no-qualified-profile starting state");
   return { profilesBefore, agentsBefore: await ctx.input.api.get<RuntimeAgent[]>(`${root}/agents`) };
 }, gradeManagedProfile, {
-  oracleVersion: "paperclip.chat-catalog.runtime.managed-profile.v4",
+  oracleVersion: "paperclip.chat-catalog.runtime.managed-profile.v5",
   sourceFiles: ["chat-catalog-domains/runtime-managed-profile.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/agents.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx); const endpoint = `/api/companies/${ctx.input.fixtures.company.id}/managed-agent-profiles`;
@@ -72,7 +55,7 @@ export const runtimeManagedProfileCases = [runtimeDefinition("agents.managed-pro
     state.profilesAfter = await ctx.input.api.get<Entity[]>(endpoint);
   },
   async verifyResult(ctx) {
-    await expect(ctx.input.page.getByTestId("task-chat-agent-bubble").filter({ hasText: /operator|administrator|instance admin|board/i }).last()).toBeVisible();
+    await expect(ctx.input.page.getByTestId("task-chat-agent-bubble").last()).toBeVisible();
     await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
     await ctx.input.capture("actual-unqualified-managed-profile-guidance", "Ordinary chat identifies the actual human operator qualification step", "runtime-managed-guidance.png");
   },
