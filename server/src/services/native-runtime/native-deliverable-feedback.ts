@@ -108,16 +108,20 @@ function deliverableLabelNamesFile(objective: string): boolean {
   const repositoryChange = /\b(?:[Rr]epo(?:sitory)?|[Pp]ull [Rr]equest|PR|[Cc]ommit|[Bb]ranch)\b/u;
   const inputReference = /\b(?:of|about|from|using|reading|comparing|between|no|without)\s+(?:(?:the|a|an|this|that)\s+)?[`'"*]*(?:[^\s,;]+[`'"*]*(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or|vs\.?|versus)\s+)(?:(?:the|a|an|this|that)\s+)?[`'"*]*)*$/iu;
   const inlineDestination = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block))\b/iu;
-  const noFiles = /\b(?:(?:do not|don['’]t|never)\s+(?:create|make|write|save|produce|attach|upload)\b|(?:no|without(?:\s+(?:any|creating(?:\s+any)?))?)\s+(?:new\s+)?files?\b)/iu;
+  const noFiles = /\b(?:(?:do not|don['’]t|never)\s+(?:create|make|write|save|produce)\s+(?:any\s+)?(?:new\s+)?files?|(?:no|without(?:\s+(?:any|creating(?:\s+any)?))?)\s+(?:new\s+)?files?)\b/iu;
+  const editedFile = /\b(?:update|edit|modify|fix|change|refactor|patch)\s+(?:(?:the|existing|current)\s+)*[`'"*]*$/iu;
+  const separator = /[,;]|\s(?:and|plus|then|with|alongside)\s/giu;
   const namesFile = (text: string) => {
     const matches = [...text.matchAll(named)];
     if (matches.length === 0 || noFiles.test(text) || repositoryChange.test(text.replace(named, " "))) return false;
     return matches.some(match => {
       const start = match.index! + match[0].indexOf(match[1]!);
-      if (inputReference.test(text.slice(0, start))) return false;
-      const clauseStart = Math.max(text.lastIndexOf(",", start), text.lastIndexOf(";", start)) + 1;
-      const clauseEnd = text.slice(start).search(/[,;]/u);
-      return !inlineDestination.test(text.slice(clauseStart, clauseEnd < 0 ? undefined : start + clauseEnd));
+      if (inputReference.test(text.slice(0, start)) || editedFile.test(text.slice(0, start))) return false;
+      const end = start + match[1]!.length;
+      const separators = [...text.matchAll(separator)];
+      const clauseStart = separators.filter(item => item.index! + item[0].length <= start).at(-1);
+      const clauseEnd = separators.find(item => item.index! >= end);
+      return !inlineDestination.test(text.slice(clauseStart ? clauseStart.index! + clauseStart[0].length : 0, clauseEnd?.index));
     });
   };
   for (let index = 0; index < lines.length; index += 1) {

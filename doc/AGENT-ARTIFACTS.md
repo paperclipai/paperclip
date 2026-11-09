@@ -40,8 +40,10 @@ allowed), is a requested file. This includes relative paths such as
 `dist/index.html` and web page files such as `index.html` and `styles.css`.
 Items that describe a repository change, pull request, commit, or branch do
 not count, nor do files named as inputs (`a comparison of input.csv and
-baseline.csv`), files to be written inline in the reply, or items that say no
-files are created.
+baseline.csv`), files to be edited in place (`update styles.css`), files to be
+written inline in the reply, or items that say no files are created. An inline
+or no-upload instruction about another output in the same item does not cancel
+a named file (`index.html and a short summary in the reply`).
 
 The completion gate permits a narrow sentence-bound exception for one requested
 file when the following sentence explicitly qualifies it, for example:

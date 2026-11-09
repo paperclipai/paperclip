@@ -195,6 +195,11 @@ describe("deliverable labels that name files", () => {
     "Deliverable: commit-history.csv covering the last release",
     "Deliverable: a comparison of input.csv and baseline.csv, saved as comparison.csv",
     "Deliverable: report.pdf, with a short summary in the reply",
+    "Deliverable: index.html and a short summary in the reply",
+    "Deliverable: index.html plus a summary inline in chat",
+    "Deliverable: index.html; do not upload it externally",
+    "Deliverable: an updated report.pdf",
+    "Deliverables:\n- report.pdf, do not attach it to an email",
   ])("requires publication for a labelled file output: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(true);
   });
@@ -216,6 +221,10 @@ describe("deliverable labels that name files", () => {
     "Deliverable: a pull request on the feature branch that updates dist/index.html",
     "Deliverables:\n\n- A summary in chat\n\nNotes:\n- index.html is the current page",
     "Deliverable: a review of https://example.com/index.html",
+    "Deliverable: summary.md in the reply; do not create any new files",
+    "Deliverable: notes.txt without creating any files",
+    "Deliverable: update styles.css so the header is blue",
+    "Deliverables:\n- Edit the existing `index.html` to add a footer",
   ])("does not treat this as a labelled file output: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(false);
   });
