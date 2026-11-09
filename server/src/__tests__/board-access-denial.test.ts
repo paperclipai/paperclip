@@ -49,6 +49,7 @@ describe("board-only denial", () => {
     expect(res.body.code).toBe(BOARD_ACCESS_REQUIRED_CODE);
     expect(res.body.remediation).toContain("this denial is final");
     expect(res.body.remediation).toContain("do not search for one");
+    expect(res.body.remediation).toContain("reply now");
     expect(res.body.remediation).toContain(link);
   });
 
