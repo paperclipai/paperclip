@@ -969,7 +969,7 @@
       "../../server/src/services/tool-approval-execution.ts",
       "chat-scenarios/app-permissions.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.app-test.v3",
+    "oracleVersion": "paperclip.chat-catalog.app-test.v4",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
