@@ -14641,6 +14641,19 @@ export function issueRoutes(
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
+
+      applyIssueExecutionStageReassignment({
+        issue: existing,
+        policy: normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
+        actor: {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        isBoardActor: req.actor.type === "board",
+        toParticipant: req.body.toParticipant,
+        comment: req.body.comment,
+      });
+
       const interruptedRunId = await stopOutgoingRunBeforeReassignment({
         existing,
         assigneeWillChange,

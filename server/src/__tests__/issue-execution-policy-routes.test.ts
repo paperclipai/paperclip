@@ -1574,6 +1574,29 @@ describe("issue execution policy routes", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
+    it("does not stop the active reviewer's run when a non-participant attempts to reassign", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: otherAgentId,
+        companyId: "company-1",
+        runId: "77777777-7777-4777-8777-777777777777",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Trying to stop the active reviewer's run without being the active participant",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockHeartbeatService.getActiveRunForAgent).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
     it("allows a board actor to reassign on behalf of a stuck stage", async () => {
       const issue = pendingIssue();
       mockIssueService.getById.mockResolvedValue(issue);
