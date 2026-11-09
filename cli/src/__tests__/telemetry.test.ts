@@ -74,6 +74,9 @@ describe("cli telemetry", () => {
     for (const key of CI_ENV_VARS) {
       delete process.env[key];
     }
+    // Tests choose the opt-in/out state explicitly; never inherit the host's
+    // telemetry switch. All delivery stays behind the fetch stub below.
+    delete process.env.PAPERCLIP_TELEMETRY_DISABLED;
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true })));
   });
 
@@ -93,6 +96,18 @@ describe("cli telemetry", () => {
     const client = initTelemetryFromConfigFile(configPath);
 
     expect(client).toBeNull();
+    expect(fs.existsSync(path.join(root, "home", "instances", "telemetry-test", "telemetry", "state.json"))).toBe(false);
+  });
+
+  it("honors the environment opt-out even when the config enables telemetry", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-telemetry-"));
+    process.env.PAPERCLIP_HOME = path.join(root, "home");
+    process.env.PAPERCLIP_INSTANCE_ID = "telemetry-test";
+    process.env.PAPERCLIP_TELEMETRY_DISABLED = "1";
+    const { initTelemetry, flushTelemetry } = await import("../telemetry.js");
+    expect(initTelemetry({ enabled: true })).toBeNull();
+    await flushTelemetry();
+    expect(fetch).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(root, "home", "instances", "telemetry-test", "telemetry", "state.json"))).toBe(false);
   });
 

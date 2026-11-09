@@ -37,7 +37,7 @@ export async function exerciseWorkspaceIsolation({ base, compose }) {
   const owner = await signup("owner");
   await api(owner, "/bootstrap/claim", { method: "POST", body: {} });
   const catalog = JSON.parse(compose("exec", "-T", "--user", "node", "app", "node", "--input-type=module", "-e",
-    "import { MARKETING_AGENT_TEMPLATES, createMarketingAgentProfile } from '@paperclipai/shared'; process.stdout.write(JSON.stringify(MARKETING_AGENT_TEMPLATES.map(t=>({id:t.id,role:t.role,profile:createMarketingAgentProfile(t.id)}))));"));
+    "import { MARKETING_AGENT_TEMPLATES, createMarketingAgentProfile } from './packages/shared/dist/marketing-agents.js'; process.stdout.write(JSON.stringify(MARKETING_AGENT_TEMPLATES.map(t=>({id:t.id,role:t.role,profile:createMarketingAgentProfile(t.id)}))));"));
   assert.equal(catalog.length, 12);
   assert.equal(new Set(catalog.map(type => type.id)).size, 12);
 
