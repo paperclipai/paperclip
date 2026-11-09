@@ -214,9 +214,17 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       const [company] = await db.select({ prefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
       if (!company) throw notFound("Company not found");
       const destination = new URL(input.redirectUri);
-      destination.pathname = `/${encodeURIComponent(company.prefix)}/apps/${connection.credentialSource === "vercel_connect" ? "vercel-connect" : "connect"}`;
-      destination.search = new URLSearchParams({ [connection.status === "draft" ? "resume" : "reconnect"]: connection.id,
-        ...(sourceTemplateKey ? { source: sourceTemplateKey } : {}), ...(intentLink ? { intent: intentLink.id } : {}) }).toString();
+      // The connect wizard only opens for a known app source. A custom server
+      // has none, so send its user to the connection's own page, where they
+      // sign in as themselves.
+      const customServer = !sourceTemplateKey && connection.credentialSource !== "vercel_connect";
+      destination.pathname = customServer
+        ? `/${encodeURIComponent(company.prefix)}/apps/${encodeURIComponent(connection.id)}/permissions`
+        : `/${encodeURIComponent(company.prefix)}/apps/${connection.credentialSource === "vercel_connect" ? "vercel-connect" : "connect"}`;
+      destination.search = new URLSearchParams(customServer
+        ? { ...(intentLink ? { intent: intentLink.id } : {}) }
+        : { [connection.status === "draft" ? "resume" : "reconnect"]: connection.id,
+          ...(sourceTemplateKey ? { source: sourceTemplateKey } : {}), ...(intentLink ? { intent: intentLink.id } : {}) }).toString();
       destination.hash = "";
       return { connectionId: connection.id, provider: sourceTemplateKey ?? "oauth",
         authorizationUrl: destination.toString(), expiresAt: null };

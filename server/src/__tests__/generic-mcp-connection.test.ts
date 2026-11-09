@@ -1445,6 +1445,101 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     ]);
   });
 
+  it("keeps a personal OAuth URL draft that needs its user's sign-in instead of deleting it", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
+
+    // Declaring OAuth up front means the draft has no user grant yet, so its
+    // first probe answers "needs the current user's authorization".
+    const response = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: MCP_URL,
+        name: "Fixture personal declared OAuth",
+        authMode: "oauth",
+        grantKind: "user",
+      });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const connected = response.body;
+    expect(connected.auth).toMatchObject({ kind: "oauth", issuer: ISSUER, startUrl: expect.any(String) });
+
+    const [draft] = await db.select().from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    expect(draft).toMatchObject({ status: "draft", credentialPolicy: "per_user", createdByUserId: "board-user" });
+    await request(app).get(`/api/tool-connections/${connected.connectionId}`).expect(200);
+
+    const authorizationUrl = new URL(connected.auth.startUrl);
+    const code = fixture.issueAuthorizationCode(connected.auth.startUrl);
+    await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Accept", "text/html")
+      .query({ state: authorizationUrl.searchParams.get("state")!, code, iss: ISSUER })
+      .expect(303);
+    await expect(
+      db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId)),
+    ).resolves.toEqual([expect.objectContaining({ kind: "user", subjectUserId: "board-user", status: "active" })]);
+  });
+
+  it("does not return a sign-in link to a personal draft that setup removed", async () => {
+    // No OAuth metadata anywhere, so sign-in cannot start and setup is undone.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+      JSON.stringify({ error: "not_found" }),
+      { status: 404, headers: { "content-type": "application/json" } },
+    ));
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+
+    const response = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ link: MCP_URL, name: "Fixture personal OAuth without metadata", authMode: "oauth", grantKind: "user" });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.details).toMatchObject({ code: "user_authorization_required", connectionRemoved: true });
+    expect(response.body.details).not.toHaveProperty("setupUrl");
+    expect(response.body.details).not.toHaveProperty("reconnectUrl");
+    await expect(
+      db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id)),
+    ).resolves.toHaveLength(0);
+  });
+
+  it("hands an agent's custom-server sign-in to the draft's own page", async () => {
+    installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Setup helper", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
+    const agentActor = {
+      actorType: "agent" as const,
+      actorId: agent!.id,
+      managementContext: {
+        actor: { type: "agent", agentId: agent!.id, companyId: company.id, source: "agent_key" },
+        responsibleUserId: "board-user",
+        reauthorize: async () => undefined,
+      },
+    } as unknown as Parameters<typeof service.startOAuth>[2]["actor"];
+
+    const connected = await service.connectGalleryApp(company.id, {
+      link: MCP_URL,
+      name: "Fixture agent-started personal OAuth",
+      authMode: "oauth",
+      grantKind: "user",
+    }, agentActor);
+    expect(connected.auth).toMatchObject({ kind: "oauth" });
+
+    const handoff = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: REDIRECT_URI,
+      actor: agentActor,
+      subjectUserId: "board-user",
+    });
+    const destination = new URL(handoff.authorizationUrl);
+    // The connect wizard turns a link with no app source back to the Apps
+    // list; the connection page lets the user sign in as themselves.
+    expect(destination.pathname).toBe(`/${company.issuePrefix}/apps/${connected.connectionId}/permissions`);
+    const [draft] = await db.select().from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    expect(draft).toMatchObject({ status: "draft", createdByUserId: "board-user" });
+  });
+
   it("creates a separate fresh personal URL connection and keeps explicit reconnect owner-bound", async () => {
     const fixture = installMcpOAuthFixture({ auth: "oauth" });
     const company = await createCompany(db);
