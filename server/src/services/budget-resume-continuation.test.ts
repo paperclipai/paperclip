@@ -271,6 +271,43 @@ describe.skipIf(!support.supported)("resuming after a budget hard stop", () => {
     expect(await claimOf(task.run.id)).toBeUndefined();
   });
 
+  it("claims a queued run admission stamped, then follows how it was cancelled", async () => {
+    // Admission saved its stamp, and the resume ran before its cancel landed.
+    const reason = "Company cannot start work because its budget hard-stop is still exceeded.";
+    for (const [label, cancelledFor, expected] of [
+      ["admission-pending", reason, "delivered"],
+      ["admission-pending-other", "Cancelled because the agent no longer exists", "abandoned"],
+    ] as const) {
+      const scope = await seedScope(label);
+      const task = await seedTask(scope, { budgetStop: false, runStatus: "queued" });
+      await db.update(heartbeatRuns).set({ resultJson: {
+        budgetAdmissionStop: { scopeType: "company", scopeId: scope.company.id, reason } } }).where(eq(heartbeatRuns.id, task.run.id));
+      await resume(scope);
+      expect(await claimOf(task.run.id)).toMatchObject({ state: "pending" });
+      await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: {
+        budgetAdmissionStop: { scopeType: "company", scopeId: scope.company.id, reason },
+        cancellation: { reason: cancelledFor, source: "control_plane", expected: true, initiator: { type: "system" } } } })
+        .where(eq(heartbeatRuns.id, task.run.id));
+      await deliverBudgetResumeContinuations(db);
+      expect(await claimOf(task.run.id)).toMatchObject({ state: expected,
+        ...(expected === "abandoned" ? { reason: "cancelled_for_another_reason" } : {}) });
+    }
+  });
+
+  it("releases a stale claim while its agent is paused, so no pass is scheduled for it", async () => {
+    const scope = await seedScope("stale-paused");
+    const task = await seedTask(scope);
+    await resume(scope);
+    await db.update(budgetResumeClaims).set({ claimedAt: new Date(Date.now() - 120_000) })
+      .where(eq(budgetResumeClaims.runId, task.run.id));
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, scope.agent.id));
+    await deliverBudgetResumeContinuations(db);
+    expect(await claimOf(task.run.id)).toMatchObject({ state: "pending", claimedAt: null });
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, scope.agent.id));
+    await deliverBudgetResumeContinuations(db);
+    expect(await claimOf(task.run.id)).toMatchObject({ state: "delivered" });
+  });
+
   it("waits for a paused agent to resume before filing its Retry", async () => {
     // A connected chat refuses a Retry while the resume is still lifting the
     // agent's hold; that refusal must not abandon the continuation.

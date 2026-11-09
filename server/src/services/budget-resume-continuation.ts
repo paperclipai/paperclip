@@ -108,6 +108,12 @@ export async function markBudgetCancelledWorkForResume(db: Db, input: {
       sql`${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'scopeId' = ${input.scopeId}`,
       sql`${heartbeatRuns.resultJson}->'cancellation'->>'reason' = ${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'reason'`)!;
     const stoppedByThisScope = or(budgetCancellationScopePredicate(input), lifecycleStop, admissionStop)!;
+    // A queued run admission stamped for this budget but has not cancelled
+    // yet. Delivery waits for its Stop, and abandons the claim if the run was
+    // cancelled for another reason.
+    const pendingAdmissionStop = and(
+      sql`${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'scopeType' = ${input.scopeType}`,
+      sql`${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'scopeId' = ${input.scopeId}`)!;
     // A person's Stop stays stopped, even if budget enforcement also fenced
     // the run while that Stop was being delivered.
     const stoppedByPerson = sql`(coalesce(${heartbeatRuns.resultJson}->'cancellation'->'initiator'->>'type', '') = 'user'
@@ -141,7 +147,7 @@ export async function markBudgetCancelledWorkForResume(db: Db, input: {
     // Active runs are being stopped now: fenced by this budget's enforcement,
     // or on an agent whose budget pause has not delivered its Stop yet.
     const active = await claim(and(inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]),
-      or(stoppedSinceIncident, pendingPauseStop)) as ReturnType<typeof eq>);
+      or(stoppedSinceIncident, pendingPauseStop, pendingAdmissionStop)) as ReturnType<typeof eq>);
     return [...finished, ...active].map(row => row.id);
   });
 }
@@ -191,7 +197,7 @@ export async function nextBudgetResumeClaimExpiryAt(db: Db): Promise<number | nu
 
 type PendingRow = {
   id: string; companyId: string; agentId: string; agentStatus: string; status: string; createdAt: Date;
-  issueId: string | null; stoppedByPerson: boolean; claim: BudgetResumeClaim | null;
+  issueId: string | null; stoppedByPerson: boolean; otherCancellation: boolean; claim: BudgetResumeClaim | null;
 };
 
 /**
@@ -210,6 +216,12 @@ export async function deliverBudgetResumeContinuations(db: Db, delivery: BudgetR
       stoppedByPerson: sql<boolean>`(coalesce(${heartbeatRuns.resultJson}->'cancellation'->'initiator'->>'type', '') = 'user'
         or coalesce(${heartbeatRuns.resultJson}->'cancellation'->>'source', '') = 'operator'
         or coalesce(${heartbeatRuns.resultJson}->>'cancelledByActorType', '') in ('user', 'board'))`,
+      // Claimed only for its admission stamp, but cancelled for another reason.
+      otherCancellation: sql<boolean>`(${heartbeatRuns.resultJson} ? 'budgetAdmissionStop'
+        and coalesce(${heartbeatRuns.resultJson}->'cancellation'->>'reason', '')
+          <> coalesce(${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'reason', '')
+        and not coalesce(${heartbeatRuns.resultJson}->'startupCancellation' ? 'budgetEnforcement', false)
+        and not ${heartbeatRuns.resultJson} ? 'pauseStop')`,
     }).from(budgetResumeClaims).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, budgetResumeClaims.runId))
       .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
       .where(and(eq(budgetResumeClaims.state, "pending"), after ? gt(budgetResumeClaims.runId, after) : undefined))
@@ -267,10 +279,15 @@ async function deliverOne(db: Db, delivery: BudgetResumeDelivery, now: Date, run
   if (run.status !== "cancelled") { await settle(db, run, claimedAt, { state: "abandoned", reason: "run_not_cancelled" }); return; }
   // A person stopped the run after the resume claimed it: their Stop wins.
   if (run.stoppedByPerson) { await settle(db, run, claimedAt, { state: "abandoned", reason: "stopped_by_person" }); return; }
+  if (run.otherCancellation) { await settle(db, run, claimedAt, { state: "abandoned", reason: "cancelled_for_another_reason" }); return; }
   // The resume is still lifting the agent's hold (a connected chat refuses a
   // Retry for a paused agent). Wait without claiming; the agent's status
   // change wakes delivery.
-  if ((WAITING_AGENT_STATUSES as readonly string[]).includes(run.agentStatus)) return;
+  // A stale claim is released first, so its expiry no longer schedules passes.
+  if ((WAITING_AGENT_STATUSES as readonly string[]).includes(run.agentStatus)) {
+    if (claimedAt) await setClaim(db, { runId: run.id, expectedClaimedAt: claimedAt, next: { claimedAt: null } });
+    return;
+  }
   const nextClaim = new Date(now.getTime());
   if (!await setClaim(db, { runId: run.id, expectedClaimedAt: claimedAt, next: { claimedAt: nextClaim } })) return;
   // The board member's own Retry: the path that clears a stopped task's
