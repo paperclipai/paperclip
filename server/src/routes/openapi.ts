@@ -1581,7 +1581,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-identity-links/request-access",
   "POST /api/chat-endpoints/{endpointId}/publications/{publicationId}/resolve",
   "POST /api/chat-endpoints/{endpointId}/actions/{actionId}/resolve",
-  // Task-tree pause, cancel and resume controls are board-only (assertBoard in routes/issue-tree-control.ts).
   "GET /api/issues/{id}/tree-control/state",
   "POST /api/issues/{id}/tree-control/preview",
   "GET /api/issues/{id}/tree-holds",
