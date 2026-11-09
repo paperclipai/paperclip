@@ -1580,6 +1580,24 @@ and any run saved by an older release without these facts, keeps verified
 reattachment. A reattachment that loses its runner still requests the user's
 Retry as described above.
 
+A local runnerd that dies (for example SIGKILL during a tool call) cannot
+suspend, and its provider and tool processes are re-parented, so they cannot be
+found from the controller's process records. Durable runnerd therefore journals
+each provider's process lineage to `<runner state>/process-lineage/` from the
+moment the provider is spawned: the provider, every descendant, and every
+process group or session a descendant leads, each named by PID and start time.
+When close finds that runnerd exited without suspending and without a signal
+from close, it runs `paperclip-runnerd reap-lineage` from the same executable.
+The reaper refuses while runnerd is alive or when runnerd never journalled. It
+signals only processes whose PID and start time still match the journal, and it
+reports `verified` only when none remain. The journal also records how far the
+process table was read. A same-user orphan that started after that point cannot
+be attributed, so the reaper refuses without signalling it. A failed journal write removes the writer marker, so a
+record that may be missing a member never verifies. A verified report ends the session as
+a crash stop with its durable record intact, and recovery continues within the
+normal attempt budget. Any other report keeps the cleanup quarantine below.
+Launcher-owned (remote) and adopted runners are not reaped this way.
+
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
 That owner must belong to the same company, task, agent, workspace, native session,
