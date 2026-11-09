@@ -733,6 +733,12 @@ describe("inbox-search.show-my-work person scope", () => {
     expect(gradeInternal(o).passed).toBe(true);
     expect(failed(inbox(`${items}\nCOM-50 is unrelated.`, ["/COM/issues/COM-1", "/COM/issues/COM-2"]))).toEqual([]);
   });
+  it("accepts a Mine list link without counting it as a link to every task", () => {
+    const links = ["/COM/issues?view=mine", "/COM/issues/COM-2", "/COM/issues/COM-1", "/COM/issues/COM-3"];
+    expect(failed(inbox(`Two tasks in your [Mine](/COM/issues?view=mine) inbox need attention:\n${items}\nCOM-3 is done.`, links))).toEqual([]);
+    expect(failed(inbox("Open your [Mine](/COM/issues?view=mine) list to see what needs you.", ["/COM/issues?view=mine"])))
+      .toEqual(["responsible-user-scope-or-honest-limitation"]);
+  });
 });
 it("rejects a limitation-only reply when the responsible-user records are actually readable", () => {
   const o = valid("inbox-search.show-my-work"); Object.assign(o, { responsibleUserProbe: { status: 200, body: [o.tasks[0]] } });
