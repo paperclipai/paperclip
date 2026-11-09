@@ -1,5 +1,5 @@
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "../chat-catalog-contract.js";
-import { expect } from "@playwright/test";
+import { expect, type Download } from "@playwright/test";
 import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { pollUntil } from "../api.js";
@@ -89,12 +89,28 @@ export const runtimeRecoveryCases = [runtimeDefinition("recovery.controller-rest
 
     // HTML attachments use the production download policy. Verify the actual
     // human result control and download, not merely an API registration row.
-    const downloadPromise = ctx.input.page.waitForEvent("download");
-    if (href) await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).last().click();
-    else await ctx.input.page.goto(new URL(`/api/attachments/${artifact.attachmentId}/content?download=1`, o.origin).href).catch(error => {
-      if (!/Download is starting|net::ERR_ABORTED/i.test(String(error))) throw error;
-    });
-    const download = await downloadPromise;
+    // Attachment links open the in-app preview panel; its visible download control must then
+    // deliver the same file. A direct download also counts.
+    const page = ctx.input.page; const name = String(state.filename);
+    let download: Download | null = null;
+    if (href) {
+      const direct = page.waitForEvent("download", { timeout: 30_000 }).then(row => ({ download: row })).catch(() => null);
+      await page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).last().click();
+      const control = page.locator("header").filter({ has: page.getByRole("heading", { name, exact: true }) })
+        .getByRole("link", { name: `Download ${name}`, exact: true }).last();
+      const opened = await Promise.race([direct, control.waitFor({ state: "visible", timeout: 30_000 }).then(() => ({ download: null }))]);
+      download = opened?.download ?? null;
+      if (!download) {
+        await expect(control).toHaveAttribute("href", new RegExp(`/api/attachments/${artifact.attachmentId}/content\\?download=1$`));
+        [download] = await Promise.all([page.waitForEvent("download"), control.click()]);
+      }
+    } else {
+      const downloadPromise = page.waitForEvent("download");
+      await page.goto(new URL(`/api/attachments/${artifact.attachmentId}/content?download=1`, o.origin).href).catch(error => {
+        if (!/Download is starting|net::ERR_ABORTED/i.test(String(error))) throw error;
+      });
+      download = await downloadPromise;
+    }
     if (download.suggestedFilename() !== state.filename) throw new Error("The visible result downloaded a different file");
     await ctx.input.evidence("runtime-controller-final-download.json", { attachmentId: artifact.attachmentId, filename: download.suggestedFilename(), sha256: artifact.sha256 });
   },

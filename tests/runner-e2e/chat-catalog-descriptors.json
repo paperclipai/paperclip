@@ -5600,7 +5600,7 @@
     ],
     "oracleVersion": "paperclip.chat-catalog.tree-pause.v3",
     "coverageGaps": [],
-    "expectedRunCount": 3,
+    "expectedRunCount": 5,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 900000,
     "authentication": "human-session",
@@ -5618,7 +5618,7 @@
       "kind": "terminal-counts",
       "terminalStatusCounts": {
         "succeeded": 1,
-        "cancelled": 2
+        "cancelled": 4
       }
     },
     "modulePath": "./chat-catalog-domains/runtime-tree.js",
@@ -5695,7 +5695,7 @@
     ],
     "oracleVersion": "paperclip.chat-catalog.tree-pause.v3",
     "coverageGaps": [],
-    "expectedRunCount": 3,
+    "expectedRunCount": 5,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 900000,
     "authentication": "human-session",
@@ -5713,7 +5713,7 @@
       "kind": "terminal-counts",
       "terminalStatusCounts": {
         "succeeded": 1,
-        "cancelled": 2
+        "cancelled": 4
       }
     },
     "modulePath": "./chat-catalog-domains/runtime-tree.js",
