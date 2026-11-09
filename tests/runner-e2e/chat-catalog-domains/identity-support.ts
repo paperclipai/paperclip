@@ -95,12 +95,12 @@ export async function probeAgentPermission(ctx: ChatCatalogContext, path: string
     return (await probeAgentPermissionResponse(ctx, path, method, body)).status;
 }
 /** Same probe, also returning the server's error text so a fixture can tell which gate denied it. */
-export async function probeAgentPermissionResponse(ctx: ChatCatalogContext, path: string, method: string, body?: unknown): Promise<{ status: number; error?: string }> {
+export async function probeAgentPermissionResponse(ctx: ChatCatalogContext, path: string, method: string, body?: unknown, extraHeaders: Record<string, string> = {}): Promise<{ status: number; error?: string }> {
     const target = new URL(path, ctx.input.api.baseURL);
     if (target.origin !== ctx.input.api.baseURL || !target.pathname.startsWith("/api/")) throw new Error("Agent permission probe escaped fixture API");
     const key = await identityProbeKey(ctx);
     const response = await fetch(target, { method, redirect: "error", signal: AbortSignal.timeout(15_000),
-      headers: { Authorization: `Bearer ${key.token}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      headers: { ...extraHeaders, Authorization: `Bearer ${key.token}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (response.ok) { await response.body?.cancel(); return { status: response.status }; }
     const error = await response.json().then(value => (value as { error?: unknown }).error, () => undefined);
     return { status: response.status, ...(typeof error === "string" ? { error } : {}) };
