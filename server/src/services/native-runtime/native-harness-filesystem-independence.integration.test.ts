@@ -388,6 +388,125 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(false);
   });
 
+  async function staleWebFixture() {
+    const f = await webFixture(), first = await preserveNativeHarnessFilesystemIndependence(db, f.input);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const previous = run!.runnerProfileJson!.nativeHarnessFilesystemIndependence as Record<string, unknown>;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run!.runnerProfileJson, retainedWarning: "later preservation metadata" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(false);
+    return { ...f, first, previous };
+  }
+
+  it("refreshes stale WEB facts with the same verified source and archive while auditing the prior receipt", async () => {
+    const f = await staleWebFixture();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.input.companyId));
+    const leases = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId));
+    const finalizers = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, f.input.companyId));
+    const backups = await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.companyId, f.input.companyId));
+    const put = vi.spyOn(f.storage, "putFile");
+    const get = vi.spyOn(f.storage, "getObject");
+    const now = Date.now(), source = await verifyOriginalHarnessVolumeSource({ ...f.witness,
+      observedAt: new Date(now).toISOString(), expiresAt: new Date(now + 120_000).toISOString() });
+    expect(source.fingerprint).not.toBe(f.input.source.fingerprint);
+    const result = await preserveNativeHarnessFilesystemIndependence(db, { ...f.input, source });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const receipt = run!.runnerProfileJson!.nativeHarnessFilesystemIndependence as Record<string, unknown>;
+    expect(receipt).toEqual({ ...f.previous, sourceCapabilityFingerprint: source.fingerprint,
+      factsDigest: expect.any(String), observedAt: expect.any(String) });
+    expect(receipt.factsDigest).not.toBe(f.previous.factsDigest);
+    expect(result.receiptDigest).not.toBe(f.first.receiptDigest);
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+    expect(put).not.toHaveBeenCalled(); expect(get).toHaveBeenCalled();
+    expect(await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.companyId, f.input.companyId))).toEqual(backups);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId))).toEqual(leases);
+    expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, f.input.companyId))).toEqual(finalizers);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.input.companyId)))
+      .toEqual(runs.map(row => ({ ...row, runnerProfileJson: { ...row.runnerProfileJson, nativeHarnessFilesystemIndependence: receipt } })));
+    const audits = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+      eq(activityLog.action, "native_harness_filesystem_independence_verified")));
+    expect(audits).toHaveLength(2);
+    expect(audits.find(row => row.details?.previousReceiptDigest === f.first.receiptDigest)?.details)
+      .toMatchObject({ previousReceiptDigest: f.first.receiptDigest, previousReceipt: f.previous, factsDigest: receipt.factsDigest });
+    expect((await preserveNativeHarnessFilesystemIndependence(db, f.input)).receiptDigest).toBe(result.receiptDigest);
+    expect(put).not.toHaveBeenCalled();
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+      eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(2);
+  });
+
+  it.each(["wrong-key", "unreadable-archive", "active-source"])("reverifies valid WEB coverage before idempotent preservation: %s", async control => {
+    const f = await webFixture(); await preserveNativeHarnessFilesystemIndependence(db, f.input);
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+    if (control === "wrong-key") vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "62".repeat(32));
+    if (control === "unreadable-archive") vi.spyOn(f.storage, "getObject").mockRejectedValue(new Error("archive unavailable"));
+    if (control === "active-source") {
+      const get = f.storage.getObject.bind(f.storage); let changed = false;
+      vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+        if (!changed) { changed = true; await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
+          .where(eq(heartbeatRuns.id, f.runId)); }
+        return get(...args);
+      });
+    }
+    const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow();
+    const after = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(after[0]!.runnerProfileJson).toEqual(before[0]!.runnerProfileJson);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+      eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(1);
+  });
+
+  it.each(["active-source", "changed-source", "wrong-key", "unreadable-archive", "aborted", "replaced-volume"])(
+    "retains a stale WEB receipt when fresh proof fails: %s", async control => {
+      const f = await staleWebFixture();
+      if (control === "active-source") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
+        .where(eq(heartbeatRuns.id, f.runId));
+      if (control === "changed-source") await writeFile(f.supervisorPath, `${f.supervisor} `);
+      if (control === "wrong-key") vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "62".repeat(32));
+      if (control === "unreadable-archive") vi.spyOn(f.storage, "getObject").mockRejectedValue(new Error("archive unavailable"));
+      if (control === "replaced-volume") vi.stubEnv("RAILWAY_VOLUME_ID", randomUUID());
+      const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const backups = await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.companyId, f.input.companyId));
+      const put = vi.spyOn(f.storage, "putFile");
+      await expect(preserveNativeHarnessFilesystemIndependence(db, { ...f.input,
+        ...(control === "aborted" ? { signal: AbortSignal.abort() } : {}) })).rejects.toThrow();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId))).toEqual(before);
+      expect(await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.companyId, f.input.companyId))).toEqual(backups);
+      expect(put).not.toHaveBeenCalled();
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+        eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(1);
+    });
+
+  it.each(["matching-winner", "changed-receipt", "active-source", "changed-byte"])(
+    "guards stale WEB refresh publication after concurrent %s", async control => {
+      const f = await staleWebFixture();
+      let release!: () => void, entered!: () => void, delay = true;
+      const blocked = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+      const get = f.storage.getObject.bind(f.storage);
+      vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+        if (delay) { delay = false; entered(); await blocked; } return get(...args);
+      });
+      const late = preserveNativeHarnessFilesystemIndependence(db, f.input);
+      try {
+        await ready;
+        const winner = control === "matching-winner" ? await preserveNativeHarnessFilesystemIndependence(db, f.input) : null;
+        if (control === "changed-receipt") {
+          const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+          await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run!.runnerProfileJson,
+            nativeHarnessFilesystemIndependence: { ...f.previous, observedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, f.runId));
+        }
+        if (control === "active-source") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
+          .where(eq(heartbeatRuns.id, f.runId));
+        if (control === "changed-byte") await writeFile(f.supervisorPath, `${f.supervisor} `);
+        const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+        release();
+        if (winner) expect((await late).receiptDigest).toBe(winner.receiptDigest);
+        else await expect(late).rejects.toThrow();
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId))).toEqual(before);
+        expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+          eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(winner ? 2 : 1);
+      } finally { release(); await late.catch(() => undefined); }
+    });
+
   it.each(["active-web", "owned-finalizer", "physical-writer", "foreign-supervisor", "missing-manifest", "symlink", "foreign-controller"])(
     "refuses WEB evidence with %s and retains the original recovery state", async control => {
       const f = await webFixture(), where = eq(heartbeatRuns.id, f.runId);

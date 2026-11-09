@@ -122,6 +122,15 @@ original-volume anchor or filesystem read. These validations add bounded
 per-retained-scope database reads during startup. They do not add a worker or a
 poll. Missing or invalid byte evidence remains an enrollment blocker.
 
+The original-volume owner can refresh a WEB receipt whose database facts digest
+has become stale only when fresh source inspection, current-key checkpoint
+validation and ciphertext hash/size readback prove every other binding unchanged.
+It reuses the same archive and takes the existing finalizer, task and run fences before
+comparing the prior receipt digest and replacing it. The company activity log
+retains the full prior receipt and its digest. Changed evidence, concurrent
+invalid receipts and active sources remain blocked; remote recovery obligations
+are unchanged.
+
 Receipt validation adds bounded per-scope database reads to startup eligibility.
 It does not add a recurring scan or network work. Qualification must measure the
 selected cohort's startup latency on the serving revision before enrollment.
