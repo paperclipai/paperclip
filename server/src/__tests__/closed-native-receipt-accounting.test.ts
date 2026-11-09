@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, environmentLeases, environments,
+  agentWakeupRequests, agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, environmentLeases, environments,
   heartbeatRunEvents, heartbeatRuns, issues,
   activityLog, completionContracts, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
@@ -608,22 +608,6 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(run.usageJson).not.toHaveProperty("accountingClosureTimedOut");
   });
 
-  // G1 wave s9802 run 0b4b404f: a Retry failed with
-  // native_session_cleanup_quarantined before it started any process. It
-  // carried the previous run's warm runner pid, so the never-started rule did
-  // not apply: it waited 10 minutes, then settled an unknown-billing charge
-  // that hard-stopped the company and cancelled the board's Retry.
-  it("settles a quarantined Retry that inherited a warm runner's pid at once", async () => {
-    const f = await neverStartedFixture("never_launched");
-    await db.update(heartbeatRuns).set({ errorCode: "native_session_cleanup_quarantined",
-      processPid: 11356, processGroupId: 11356, processStartedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
-    await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" })
-      .where(eq(nativeRunFinalizations.runId, f.run.id));
-    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
-    expect((await f.readRun()).costAccountingPending).toBe(false);
-    expect(await f.charges()).toHaveLength(0);
-  });
-
   it("records a timed-out closure with an empty fence map without blocking", async () => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
@@ -847,10 +831,19 @@ const support = await getEmbeddedPostgresTestSupport();
   it("records a timed-out closure with no restart evidence without holding the company", async () => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    // The board's accepted Retry, saved while the run's accounting was open.
+    const [retry] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", reason: "task_retry", status: "deferred_issue_execution", requestedByActorType: "user",
+      updatedAt: new Date(), payload: { issueId: f.issue.id, taskRetry: { sourceRunId: f.run.id },
+        executionWait: { reason: "execution_settling", message: "Retry is waiting for the previous execution to stop." } } }).returning();
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);
     expect((await f.readRun()).usageJson).toMatchObject({ accountingClosureTimedOut: true });
     expect(await f.block()).toBeNull();
+    // The cleared hold re-dispatches it: still saved, never cancelled, and due now.
+    const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.id));
+    expect(promoted.status).toBe("deferred_issue_execution");
+    expect(promoted.updatedAt.getTime()).toBeLessThanOrEqual(Date.now() - 29_000);
     expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { issueId: null, projectId: null })).toBeNull();
     const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
     expect(company).toMatchObject({ status: "active", pauseReason: null });

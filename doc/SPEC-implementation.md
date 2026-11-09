@@ -1998,9 +1998,7 @@ interrupted run alike, so a restart-cancelled run settles at once. A lost
 receipt that already carries a provider-reported cost settles at that cost as
 an estimate marked as a lower bound, not as unpriced. A failed native run that
 never started provider work (no usage receipt, no replaced receipt source, and a
-local process that never launched or was verified stopped) settles at once,
-also when it carries the pid of a warm runner it attached to without starting
-a process of its own,
+local process that never launched or was verified stopped) settles at once
 with no charge and never holds admission; the empty receipt-source fence map
 that every usage recorder binds is not evidence that provider work began. A native
 turn that the restored Runner reports as lost on restore can never report its

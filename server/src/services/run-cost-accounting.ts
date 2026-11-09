@@ -105,9 +105,7 @@ const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
  * launched or was verified stopped. Settle it at once, like a pre-provider
  * failure, instead of holding company work. A usage recorder binds every run
  * with an empty fence map; only a replaced receipt source (a non-empty map)
- * shows that provider work began. A run that never requested a process of its
- * own can carry the pid of the warm runner it attached to; that pid is not its
- * provider, and with no receipt journaled no turn of this run started. */
+ * shows that provider work began. */
 const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
   and ${settledNativeCoordinator}
@@ -115,10 +113,7 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
   and coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSourceFences', '{}'::jsonb) = '{}'::jsonb
   and not exists (select 1 from ${runUsageReceipts} journaled_receipt
     where journaled_receipt.company_id = ${heartbeatRuns.companyId} and journaled_receipt.run_id = ${heartbeatRuns.id})
-  and ((${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null)
-    or not exists (select 1 from ${heartbeatRunEvents} own_process
-      where own_process.company_id = ${heartbeatRuns.companyId} and own_process.run_id = ${heartbeatRuns.id}
-        and own_process.source_event_id is null and own_process.event_type = 'native.process_start_requested'))
+  and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
   and coalesce((select process_event.event_type from ${heartbeatRunEvents} process_event
       where process_event.company_id = ${heartbeatRuns.companyId} and process_event.run_id = ${heartbeatRuns.id}
         and process_event.source_event_id is null
