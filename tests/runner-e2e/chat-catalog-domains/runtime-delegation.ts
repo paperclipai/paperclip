@@ -1,4 +1,4 @@
-import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "../chat-catalog-contract.js";
+import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget, chatCatalogOriginalPhaseDeadline } from "../chat-catalog-contract.js";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { expect } from "@playwright/test";
@@ -15,6 +15,22 @@ import { prepareRuntimeWorkerGate, releaseRuntimeWorker } from "./runtime-busy-w
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
 const keys = new WeakMap<ChatCatalogContext, { id: string; token: string; workerId: string }>();
 const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
+/**
+ * User-facing promptness of "report back here": once Morgan's task is Done, the source conversation
+ * gets the result in one ordinary CEO turn. Measured in the 2026-11-09 cell (run 42612964001): wake
+ * claimed 0.3 s after completion, provider boot ~9 s, first token ~18 s, whole CEO turns 68-74 s.
+ * A deferred or lost wake, or extra turns before delivery, exceed this. Morgan's own build time is an
+ * execution allowance bounded by the case's original attempt clock, not by this requirement.
+ */
+export const RETURN_DELIVERY_LATENCY_MS = 90_000;
+/** True when any link target (Markdown or rendered href) opens the given task in this instance. */
+export function linksOpenTask(targets: readonly string[], baseURL: string, task: { id?: string; identifier?: string | null }) {
+  return targets.some(target => {
+    try { const url = new URL(target, baseURL), parts = url.pathname.split("/").map(decodeURIComponent), i = parts.indexOf("issues");
+      return url.origin === new URL(baseURL).origin && i >= 0 && [task.id, task.identifier].filter(Boolean).includes(parts[i + 1]); }
+    catch { return false; }
+  });
+}
 export function launchBriefBrowserOrigin(apiBaseURL: string, browserURL: string, target: string, companyId: string, issueId: string) {
   const api = new URL(apiBaseURL), browser = new URL(browserURL), upload = new URL(target, api);
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -52,19 +68,32 @@ export function gradeDelegation(value: unknown) {
   "The real Launch task remains owned by the CEO and its human comment retains the exact uploaded design brief.");
   c.add("one-authorized-child-with-durable-context", !!task && (task.parentId === parent.id || s.linkedToLaunch === true) && task.companyId === o.companyId && task.assigneeAgentId === (s.worker as Entity).id
     && s.createdFromSource === true && o.tasks.length === 2 && s.childHasBrief === true && availableBrief && s.workerTaskReadStatus === 200
-    && o.activity.some(row => row.action === "issue.created" && row.entityId === task.id && row.agentId === o.leadId)
-    && /report|return|complete|finish|deliver|notify.{0,60}(?:CEO|here|conversation|ready)|let (?:me|us|the CEO) know.{0,60}(?:done|ready|page|result)/i.test(task.description ?? ""),
-  "The canonical request creates one real Morgan child linked to Launch, with accessible durable brief bytes and an explicit completion request.");
+    && o.activity.some(row => row.action === "issue.created" && row.entityId === task.id && row.agentId === o.leadId),
+  "The canonical request creates one real Morgan child linked to Launch, with accessible durable brief bytes. The completion request is the product's created-from-source return path, proven by the correlated delivery below; the description's wording is left to semantic review.");
   const delivery = s.delivery as ReturnType<typeof completionDelivery> | undefined;
   c.add("actual-morgan-result-incorporated-back-here", s.workerWasReallyWaiting === true && task.status === "done" && s.actualWebsiteArtifact === true
-    && !!delivery && delivery.checks.every(row => row.passed) && /done|complete|finish|ready|delivered/i.test(delivery.response?.body ?? "")
-    && !/I (?:ran|executed|built|implemented).{0,40}(?:Launch|parent)|built (?:it|the site) myself/i.test(delivery.response?.body ?? ""),
-  "Morgan produces the actual brief-based page and the same source receives its correlated accessible result, without pretending the parent executed another agent's work.");
+    && !!delivery && delivery.checks.every(row => row.passed),
+  "Morgan produces the actual brief-based page and the same source receives a reply run given Morgan's Done result, linking or quoting it. Whether the wording credits Morgan is semantic review; parent execution is checked structurally below.");
+  c.add("prompt-return-delivery", typeof s.returnDeliveryLatencyMs === "number" && s.returnDeliveryLatencyMs >= 0 && s.returnDeliveryLatencyMs <= RETURN_DELIVERY_LATENCY_MS,
+    `Once Morgan's task is Done, the result reaches this conversation within ${RETURN_DELIVERY_LATENCY_MS / 1000} s (one ordinary turn, no deferred wake or extra turns).`);
   c.add("separate-native-ownership-and-no-duplicate-work", o.runs.length === 4 && o.runs.every(row => row.status === "succeeded")
     && o.runs.filter(row => row.agentId === (s.worker as Entity).id).length === 1
     && !o.runs.some(row => row.contextSnapshot?.issueId === parent.id || (row as typeof row & { nativeIssueId?: string }).nativeIssueId === parent.id),
   "The declared setup acknowledgement, canonical CEO turn, single Morgan child execution and one correlated completion are the entire native ledger; Launch has no masquerading execution.");
   return c.result();
+}
+async function renderedDescriptionLinks(ctx: ChatCatalogContext, task: Entity): Promise<string[]> {
+  const page = ctx.input.page, source = page.url();
+  try {
+    await page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
+    const bubble = page.getByTestId("task-chat-description-bubble").first();
+    await expect(bubble).toBeVisible();
+    let links: string[] = [];
+    // Issue references link once the company's prefixes load; give the render a moment, then read it.
+    await expect.poll(async () => (links = await bubble.locator("a[href]").evaluateAll(nodes => nodes.map(node => node.getAttribute("href")!))).length, { timeout: 15_000 })
+      .toBeGreaterThan(0).catch(() => {});
+    return links;
+  } finally { await page.goto(source, { waitUntil: "domcontentloaded" }); }
 }
 export const runtimeDelegationCases = [runtimeDefinition("task-coordination.delegate-with-context", async ctx => {
   const prepared = await prepareRuntimeWorkerGate(ctx), root = `/api/companies/${ctx.input.fixtures.company.id}`, marker = `Launch brief ${ctx.input.nonce}`;
@@ -95,6 +124,7 @@ export const runtimeDelegationCases = [runtimeDefinition("task-coordination.dele
     humanId: session.user.id, briefCommentId: briefComment.id, briefAttachment: attachment, briefHash: hash(Buffer.from(brief)),
     briefDownloadedHash: hash(await ctx.input.api.getAttachmentContent(attachment.id)), sourceId: ctx.issue()!.id };
 }, gradeDelegation, {
+  oracleVersion: "paperclip.chat-catalog.runtime-delegation.v3",
   authentication: "human-session", setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 4, attemptTimeoutMs: 900_000,
   sourceFiles: ["chat-catalog-domains/runtime-delegation.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "completion-update-flow.ts", "completion-updates.ts", "registered-artifact.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
@@ -112,11 +142,10 @@ export const runtimeDelegationCases = [runtimeDefinition("task-coordination.dele
     const documents = await ctx.input.api.get<Entity[]>(`/api/issues/${task.id}/documents`), bodies: Entity[] = [];
     for (const doc of documents) bodies.push(await ctx.input.api.get<Entity>(`/api/issues/${task.id}/documents/${encodeURIComponent(doc.key!)}`));
     const context = `${task.description ?? ""}\n${bodies.map(doc => doc.body).join("\n")}`;
-    state.linkedToLaunch = [...context.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)].some(match => {
-      try { const url = new URL(match[1]!, ctx.input.api.baseURL), parts = url.pathname.split("/").map(decodeURIComponent), i = parts.indexOf("issues");
-        return url.origin === ctx.input.api.baseURL && i >= 0 && [(state.parent as Entity).id, (state.parent as Entity).identifier].includes(parts[i + 1]); }
-      catch { return false; }
-    });
+    // The task page renders bare identifiers (COM-1) as task links, so read what a person sees there too.
+    const renderedLinks = await renderedDescriptionLinks(ctx, task);
+    state.renderedDescriptionLinks = renderedLinks;
+    state.linkedToLaunch = linksOpenTask([...[...context.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)].map(match => match[1]!), ...renderedLinks], ctx.input.api.baseURL, state.parent as Entity);
     const copied = attachments.find(row => row.sha256 === state.briefHash);
     let path = copied?.contentPath ?? (context.includes(original.contentPath) ? original.contentPath : undefined);
     state.parentLinkInspectable = task.parentId === (state.parent as Entity).id || state.linkedToLaunch === true;
@@ -156,9 +185,13 @@ export const runtimeDelegationCases = [runtimeDefinition("task-coordination.dele
       else await response.body?.cancel();
     }
     await writeFile((state.gate as { gate: string }).gate, "The human has authorized this delegated page implementation. Read the actual task-bound approved design brief, implement its headline and signup design as website.html, retain its exact reference in the delivery document, and complete this same work task. Do not publish or create further tasks.", "utf8");
+    // Morgan builds a whole page here, so its execution runs on the case's original attempt clock (as
+    // runtime-handoffs does); promptness of the return to this conversation is graded separately.
     const delivered = await observeCompletionUpdate({ page: ctx.input.page, api: ctx.input.api, sourceId: String(state.sourceId), workerId: task.id,
-      marker: String(state.marker), fixtureRequest: ctx.scenario.query, allRuns: () => ctx.allRuns(), evidence: ctx.input.evidence, capture: ctx.input.capture });
-    state.delivery = completionDelivery(delivered);
+      marker: String(state.marker), fixtureRequest: ctx.scenario.query, originalObservationDeadlineAt: chatCatalogOriginalPhaseDeadline(ctx),
+      allRuns: () => ctx.allRuns(), evidence: ctx.input.evidence, capture: ctx.input.capture });
+    const delivery = completionDelivery(delivered); state.delivery = delivery;
+    state.returnDeliveryLatencyMs = Date.parse(String(delivery.response?.createdAt)) - Date.parse(String(delivered.worker.completedAt));
   },
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state), parent = await ctx.input.api.get<Entity>(`/api/issues/${(state.parent as Entity).id}`);

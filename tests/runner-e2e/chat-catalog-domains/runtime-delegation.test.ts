@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeDelegation, hasLaunchHeadline, completeLaunchBrief, launchPageReflectsBrief } from "./runtime-delegation.js";
+import { gradeDelegation, hasLaunchHeadline, completeLaunchBrief, launchPageReflectsBrief, linksOpenTask, RETURN_DELIVERY_LATENCY_MS } from "./runtime-delegation.js";
 function valid() {
   const task = { id: "website", parentId: "launch", companyId: "company", assigneeAgentId: "morgan", status: "done", description: "Implement the approved design brief and report the completed result back." };
   return { scenarioId: "task-coordination.delegate-with-context", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "",
@@ -9,7 +9,7 @@ function valid() {
     state: { parent: { id: "launch" }, task, worker: { id: "morgan" }, humanId: "human", briefCommentId: "human-brief", briefHash: "original-hash", briefDownloadedHash: "original-hash",
       briefAttachment: { id: "brief", issueId: "launch", companyId: "company", createdByAgentId: null, createdByUserId: "human", issueCommentId: "human-brief", sha256: "original-hash" },
       parentOwnedByCeo: true, parentContextRetained: true, createdFromSource: true, childHasBrief: true, linkedToLaunch: false, workerBriefReadStatus: 200, workerBriefHash: "original-hash", briefContextKind: "direct-attachment-reference", workerTaskReadStatus: 200, workerParentReadStatus: 200, parentLinkInspectable: true, durableBriefComplete: false,
-      workerWasReallyWaiting: true, actualWebsiteArtifact: true,
+      workerWasReallyWaiting: true, actualWebsiteArtifact: true, returnDeliveryLatencyMs: 40_000 as number,
       delivery: { checks: [{ id: "correlated", passed: true }], response: { body: "Morgan completed Website; the actual saved page is available on the child task." } } } };
 }
 it("accepts one genuinely contextual child and correlated actual result", () => expect(gradeDelegation(valid()).passed).toBe(true));
@@ -24,7 +24,13 @@ it("rejects a worker unable to fetch the actual brief", () => { const o = valid(
 it("rejects copying a similarly named brief with different bytes", () => { const o = valid(); o.state.workerBriefHash = "wrong"; expect(gradeDelegation(o).passed).toBe(false); });
 it("rejects completion with no real delivered page", () => { const o = valid(); o.state.actualWebsiteArtifact = false; expect(gradeDelegation(o).passed).toBe(false); });
 it("rejects a result reported on an uncorrelated source", () => { const o = valid(); o.state.delivery.checks[0]!.passed = false; expect(gradeDelegation(o).passed).toBe(false); });
-it("rejects saying the parent executed Morgan's work", () => { const o = valid(); o.state.delivery.response.body = "I ran the parent Launch task and built the site myself. It is complete."; expect(gradeDelegation(o).passed).toBe(false); });
+it("does not grade the reply's wording: a terse correct correlated delivery passes", () => { const o = valid(); o.state.delivery.response.body = "Here it is: COM-3."; expect(gradeDelegation(o).passed).toBe(true); });
+it("does not grade the child description's wording: the created-from-source return path is the completion request", () => { const o = valid(); o.state.task.description = "Build the landing page from the attached brief."; expect(gradeDelegation(o).passed).toBe(true); });
+it("accepts delivery within one ordinary turn of Morgan finishing", () => { const o = valid(); o.state.returnDeliveryLatencyMs = RETURN_DELIVERY_LATENCY_MS; expect(gradeDelegation(o).passed).toBe(true); });
+it.each([RETURN_DELIVERY_LATENCY_MS + 1, 300_000, Number.NaN, -1])("rejects a late, missing or pre-completion return delivery (%s ms)", latency => { const o = valid(); o.state.returnDeliveryLatencyMs = latency; expect(gradeDelegation(o).passed).toBe(false); });
+it("accepts a bare Launch identifier the task page renders as a link", () => expect(linksOpenTask(["/COM/issues/COM-1"], "http://127.0.0.1:3100", { id: "launch-uuid", identifier: "COM-1" })).toBe(true));
+it("accepts a Launch UUID link", () => expect(linksOpenTask(["[Launch](/COM/issues/launch-uuid)".slice(9, -1)], "http://127.0.0.1:3100", { id: "launch-uuid", identifier: "COM-1" })).toBe(true));
+it.each([["/COM/issues/COM-2"], ["https://elsewhere.invalid/COM/issues/COM-1"], ["/COM/agents/COM-1"], []])("rejects links that do not open Launch here: %s", (...targets) => expect(linksOpenTask(targets.flat(), "http://127.0.0.1:3100", { id: "launch-uuid", identifier: "COM-1" })).toBe(false));
 it("rejects a hidden actual parent execution", () => { const o = valid(); o.runs[2]!.contextSnapshot.issueId = "launch"; expect(gradeDelegation(o).passed).toBe(false); });
 it("rejects duplicate work tasks", () => { const o = valid(); o.tasks.push({ id: "duplicate" }); expect(gradeDelegation(o).passed).toBe(false); });
 
