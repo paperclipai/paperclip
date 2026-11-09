@@ -1,0 +1,79 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: activity
+status: planned
+scenarios:
+  - id: activity.company-overview
+    capabilities:
+      - activity/overview
+    context: >-
+      The caller can read a dashboard with active, blocked and completed work plus idle agents.
+    query: >-
+      Give me a quick picture of what the company is doing right now.
+    expected_outcome: >-
+      The answer summarizes actual visible work and relevant blockers with links and an
+      observation time. It distinguishes idle agents from broken ones and active tasks from
+      scheduled future work. Counts reflect the caller's scope rather than hidden company
+      resources.
+  - id: activity.audit-change
+    capabilities:
+      - activity/activity
+    context: >-
+      A task's priority changed twice this week; the agent has company activity-read access.
+    query: >-
+      Who changed the priority of the website task?
+    expected_outcome: >-
+      The agent reads attributed activity for the exact task and reports the relevant actors,
+      times and changes. It pages as needed and does not infer the editor from the current
+      assignee. Restricted audit exports or raw event creation are not used as substitutes for
+      ordinary read access.
+  - id: activity.find-runs
+    capabilities:
+      - activity/runs
+    context: >-
+      The task had an interrupted attempt and a later continuation, both visible to the caller.
+    query: >-
+      Show me the runs behind this website task.
+    expected_outcome: >-
+      The answer links each relevant execution to its actual task and agent and summarizes
+      current or terminal state. It preserves failed and interrupted attempts instead of
+      presenting only the successful continuation. Read access to a task alone is not treated as
+      authority to expose every run detail.
+  - id: activity.routine-audit
+    capabilities:
+      - activity/routine-audit
+      - routines/history
+    context: >-
+      The daily routine was edited yesterday but did not successfully execute this morning.
+    query: >-
+      Did the daily launch routine actually do anything this morning?
+    expected_outcome: >-
+      The agent inspects execution activity and resulting tasks, separate from definition-edit
+      history. It reports missing, failed or completed work using evidence and links. A routine
+      update event or enabled schedule does not count as proof of a successful run.
+  - id: activity.work-timeline
+    capabilities:
+      - activity/timeline
+    context: >-
+      Several visible launch tasks have timestamped changes and handoffs.
+    query: >-
+      Walk me through how the launch work progressed this week.
+    expected_outcome: >-
+      The agent builds an ordered account from saved timeline and task events, including pauses
+      and failed attempts. It uses the requested timezone and distinguishes recorded facts from
+      interpretation. Links let the person inspect the major milestones without exposing hidden
+      tasks.
+  - id: activity.agent-feedback
+    capabilities:
+      - activity/agent-commentary
+    context: >-
+      Agents have submitted synthetic suggestions and complaints; browsing them requires a human
+      with commentary access.
+    query: >-
+      What have our agents been complaining about lately?
+    expected_outcome: >-
+      The agent directs the person to the authorized commentary view instead of claiming it can
+      browse board-only feedback. The human journey shows attributed visible entries and source
+      context without exposing restricted task bodies. Submission authority does not imply
+      permission to read every other agent's feedback.

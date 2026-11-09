@@ -38,7 +38,7 @@ vi.mock("../services/live-events.js", () => ({
 }));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -213,12 +213,18 @@ describe("ensureLocalPluginBuilt", () => {
     expect(execStub).not.toHaveBeenCalled();
   });
 
-  it("bootstraps standalone bundled plugins before building them", async () => {
+  it.each([
+    undefined,
+    "allowBuilds:\n  protobufjs: false\n",
+    "packages:\n  - ../untrusted\ndangerouslyAllowAllBuilds: true\n",
+  ])("bootstraps standalone plugins without trusting workspace policy: %s", async (localPolicy) => {
     const fixture = await createBundledPluginFixture("standalone", { rootDir: standaloneRepoPluginRoot });
     cleanupPaths.add(fixture.packageRoot);
 
+    if (localPolicy) await writeFile(path.join(fixture.packageRoot, "pnpm-workspace.yaml"), localPolicy);
+    const installArgs = ["install", "--ignore-workspace", ...(localPolicy ? ["--ignore-scripts"] : []), "--no-lockfile"];
     const execStub = vi.fn(async (_file: string, args: readonly string[]) => {
-      if (args.join(" ") === "install --ignore-workspace --no-lockfile") {
+      if (args.join(" ") === installArgs.join(" ")) {
         await mkdir(path.join(fixture.packageRoot, "node_modules", "@paperclipai", "plugin-sdk"), { recursive: true });
       }
       if (args.join(" ") === "build") {
@@ -239,7 +245,7 @@ describe("ensureLocalPluginBuilt", () => {
     expect(execStub).toHaveBeenNthCalledWith(
       1,
       "pnpm",
-      ["install", "--ignore-workspace", "--no-lockfile"],
+      installArgs,
       { cwd: fixture.packageRoot, timeout: 120_000 },
     );
     expect(execStub).toHaveBeenNthCalledWith(
@@ -299,7 +305,7 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 30_000);
 
   it("auto-builds bundled local plugins during POST /api/plugins/install when dist is missing", async () => {
     const fixture = await createBundledPluginFixture("success");

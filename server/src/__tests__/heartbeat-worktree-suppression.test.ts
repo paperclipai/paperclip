@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
+  costEvents,
   activityLog,
   agents,
+  authUsers,
   agentWakeupRequests,
   agentRuntimeState,
   companySkills,
   companies,
+  companyMemberships,
   createDb,
   documentRevisions,
   documents,
@@ -22,6 +25,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { heartbeatService, resolveHeartbeatSchedulingSuppression } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 
@@ -51,6 +55,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       await db.delete(heartbeatRunEvents);
       await db.delete(activityLog);
       try {
+        await db.delete(costEvents);
         await db.delete(heartbeatRuns);
         return;
       } catch (error) {
@@ -63,9 +68,19 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-worktree-suppression-");
     db = createDb(tempDb.connectionString);
+    await db.insert(authUsers).values(["responsible-user", "operator"].map(id => ({ id, name: `Worktree fixture ${id}`,
+      email: `worktree-${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
   }, 20_000);
 
   afterEach(async () => {
+    // Await every in-flight background heartbeat run to quiescence before the
+    // deletes below. A live wakeup claims a run and dispatches its execution
+    // fire-and-forget, so a run or wakeup can still write heartbeat_runs and
+    // issues rows when teardown starts and would race the deletes. The heartbeat
+    // service tracks in-flight run and wakeup promises in module state shared
+    // across service instances, so a fresh instance here drains the runs the
+    // per-test instances dispatched.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -77,13 +92,14 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
     await db.delete(instanceSettings);
   });
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 60_000);
 
   async function insertAgentAndIssue() {
     const companyId = randomUUID();
@@ -98,6 +114,8 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(companyMemberships).values(["responsible-user", "operator"].map(principalId => ({ companyId,
+      principalType: "user", principalId, membershipRole: "operator", status: "active" })));
 
     await db.insert(agents).values({
       id: agentId,
@@ -285,7 +303,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
     const userRun = await heartbeat.wakeup(agentId, {
       source: "on_demand",
-      triggerDetail: "user",
+      triggerDetail: "manual",
       payload: { issueId },
       contextSnapshot: { issueId, skipIssueComment: true },
       requestedByActorType: "user",
@@ -319,11 +337,14 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     await heartbeat.waitForRunExecutionDrain(run!.id);
     expect(terminalStatus).toBe("succeeded");
 
-    const runCount = await db
-      .select({ count: sql<number>`count(*)::int` })
+    const runs = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns)
-      .then((rows) => rows[0]?.count ?? 0);
-    expect(runCount).toBe(1);
+      .orderBy(heartbeatRuns.createdAt);
+    expect(runs.map((entry) => entry.contextSnapshot?.wakeReason)).toEqual([
+      "issue_assigned",
+      "issue_review_path_lost",
+    ]);
   }, 10_000);
 
   it("recognizes explicit restore-in-progress suppression", () => {

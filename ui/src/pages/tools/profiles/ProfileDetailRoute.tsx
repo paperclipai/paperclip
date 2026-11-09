@@ -22,7 +22,7 @@ export function ProfileDetailRoute() {
   }, [setBreadcrumbs, selectedCompany?.name]);
 
   if (!selectedCompanyId || !params.profileId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company and profile.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">Select an organization and profile.</div>;
   }
 
   return (

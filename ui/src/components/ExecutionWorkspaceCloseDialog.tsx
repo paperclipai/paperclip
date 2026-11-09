@@ -3,10 +3,12 @@ import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Loader2 } from "lucide-react";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { describeError } from "../api/errors";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime, issueUrl } from "../lib/utils";
 import { Button } from "./ui/button";
+import { QueryErrorState, useQueryView } from "./QueryView";
 import {
   Dialog,
   DialogContent,
@@ -52,6 +54,10 @@ export function ExecutionWorkspaceCloseDialog({
     queryFn: () => executionWorkspacesApi.getCloseReadiness(workspaceId),
     enabled: open,
   });
+  // Read close readiness through the shared view: cached readiness stays
+  // usable during a transient refetch failure,and a no-data failure shows
+  // readable copy with Retry.
+  const readinessView = useQueryView(readinessQuery);
 
   const closeWorkspace = useMutation({
     mutationFn: () => executionWorkspacesApi.update(workspaceId, { status: "archived" }),
@@ -69,7 +75,7 @@ export function ExecutionWorkspaceCloseDialog({
     onError: (error) => {
       pushToast({
         title: "Failed to close workspace",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -98,15 +104,18 @@ export function ExecutionWorkspaceCloseDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {readinessQuery.isLoading ? (
+        {(readinessView.kind === "loading" || readinessView.kind === "reconnecting") ? (
           <div className="flex items-center gap-2 rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             Checking whether this workspace is safe to close...
           </div>
-        ) : readinessQuery.error ? (
-          <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-            {readinessQuery.error instanceof Error ? readinessQuery.error.message : "Failed to inspect workspace close readiness."}
-          </div>
+        ) : readinessView.kind === "error" ? (
+          <QueryErrorState
+            error={readinessView.error}
+            action="inspect workspace close readiness"
+            onRetry={readinessView.retry}
+            retrying={readinessView.isFetching}
+          />
         ) : readiness ? (
           <div className="space-y-4">
             <div className={`rounded-xl border px-4 py-3 text-sm ${readinessTone(readiness.state)}`}>
@@ -236,8 +245,14 @@ export function ExecutionWorkspaceCloseDialog({
                         <span className="font-medium">{service.serviceName}</span>
                         <span className="text-xs text-muted-foreground">{service.status} · {service.lifecycle}</span>
                       </div>
+                      {/*
+                        The last fallback used to print the service working
+                        directory, a path on the execution host. The dialog has
+                        no instance-policy context of its own, so it drops the
+                        path outright and falls back to a neutral line.
+                      */}
                       <div className="mt-1 break-words text-xs text-muted-foreground">
-                        {service.url ?? service.command ?? service.cwd ?? "No additional details"}
+                        {service.url ?? service.command ?? "No additional details"}
                       </div>
                     </div>
                   ))}
@@ -287,7 +302,7 @@ export function ExecutionWorkspaceCloseDialog({
             ) : null}
 
             <div className="text-xs text-muted-foreground">
-              Last checked {formatDateTime(new Date())}
+              Last checked {formatDateTime(new Date(readinessQuery.dataUpdatedAt))}
             </div>
           </div>
         ) : null}

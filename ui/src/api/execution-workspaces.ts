@@ -4,6 +4,7 @@ import type {
   ExecutionWorkspaceStatus,
   ExecutionWorkspaceCloseReadiness,
   WorkspaceOverviewResponse,
+  WorkspaceLoginHandoffTicketResponse,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
@@ -58,6 +59,7 @@ export const executionWorkspacesApi = {
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      selectableForTask?: boolean;
     },
   ) => {
     const params = new URLSearchParams();
@@ -66,6 +68,7 @@ export const executionWorkspacesApi = {
     if (filters?.issueId) params.set("issueId", filters.issueId);
     if (filters?.status) params.set("status", filters.status);
     if (filters?.reuseEligible) params.set("reuseEligible", "true");
+    if (filters?.selectableForTask) params.set("selectableForTask", "true");
     params.set("summary", "true");
     const qs = params.toString();
     return api.get<ExecutionWorkspaceSummary[]>(
@@ -113,6 +116,23 @@ export const executionWorkspacesApi = {
     api.post<{ workspace: ExecutionWorkspace; operation: WorkspaceOperation }>(
       `/execution-workspaces/${id}/runtime-commands/${action}`,
       sanitizeWorkspaceRuntimeControlTarget(target),
+    ),
+  repair: (id: string) =>
+    api.post<{ workspace: ExecutionWorkspace; operation: WorkspaceOperation }>(
+      `/execution-workspaces/${id}/runtime-commands/repair`,
+      {},
+    ),
+  /**
+   * Mint a single-use workspace login handoff (PAP-17572).
+   *
+   * The returned URL carries a short-lived ticket, so the caller must navigate to
+   * it rather than store or share it. The server answers the navigation with an
+   * HTTP redirect, which is what keeps the ticket out of browser history.
+   */
+  requestLoginHandoff: (id: string, next?: string) =>
+    api.post<WorkspaceLoginHandoffTicketResponse>(
+      `/execution-workspaces/${id}/login-handoff`,
+      next ? { next } : {},
     ),
   update: (id: string, data: Record<string, unknown>) => api.patch<ExecutionWorkspace>(`/execution-workspaces/${id}`, data),
   /**

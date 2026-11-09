@@ -1,6 +1,5 @@
 import {
   asString,
-  asNumber,
   parseObject,
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -28,65 +27,108 @@ export type CodexAuthRefreshFailureClass =
   | "refresh_token_invalidated";
 
 export function parseCodexJsonl(stdout: string) {
+  return createCodexJsonlParser()(stdout);
+}
+
+/** Consume complete JSONL records once, retaining protocol accounting state. */
+export function createCodexJsonlParser() {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
+  let sawProtocolEvent = false;
+  let sawProtocolTerminalEvent = false;
+  let usageReported = false;
+  let usageComplete = false;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
   };
 
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
+  return (stdout: string) => {
+    for (const rawLine of stdout.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
 
-    const event = parseJson(line);
-    if (!event) continue;
+      const event = parseJson(line);
+      if (!event) continue;
 
-    const type = asString(event.type, "");
-    if (type === "thread.started") {
-      sessionId = asString(event.thread_id, sessionId ?? "") || sessionId;
-      continue;
-    }
-
-    if (type === "error") {
-      const msg = asString(event.message, "").trim();
-      if (msg) errorMessage = msg;
-      continue;
-    }
-
-    if (type === "item.completed") {
-      const item = parseObject(event.item);
-      if (asString(item.type, "") === "agent_message") {
-        const text = asString(item.text, "");
-        if (text) finalMessage = text;
+      const type = asString(event.type, "");
+      if (type) sawProtocolEvent = true;
+      if (type === "error" || type === "turn.completed" || type === "turn.failed") {
+        sawProtocolTerminalEvent = true;
+        const reported = parseObject(event.usage);
+        const validCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+        const cached = reported.cached_input_tokens ?? 0;
+        usageComplete = validCount(reported.input_tokens) && validCount(reported.output_tokens)
+          && validCount(cached) && cached <= reported.input_tokens;
+        if (usageComplete) {
+          usage.inputTokens = reported.input_tokens as number;
+          usage.cachedInputTokens = cached as number;
+          usage.outputTokens = reported.output_tokens as number;
+          usageReported = true;
+        }
       }
-      continue;
+      if (type === "turn.started") usageComplete = false;
+      if (type === "thread.started") {
+        sessionId = asString(event.thread_id, sessionId ?? "") || sessionId;
+        continue;
+      }
+
+      if (type === "error") {
+        const msg = asString(event.message, "").trim();
+        if (msg) errorMessage = msg;
+        continue;
+      }
+
+      if (type === "item.completed") {
+        const item = parseObject(event.item);
+        if (asString(item.type, "") === "agent_message") {
+          const text = asString(item.text, "");
+          if (text) finalMessage = text;
+        }
+        continue;
+      }
+
+      if (type === "turn.failed") {
+        const err = parseObject(event.error);
+        const msg = asString(err.message, "").trim();
+        if (msg) errorMessage = msg;
+      }
     }
 
-    if (type === "turn.completed") {
-      const usageObj = parseObject(event.usage);
-      usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
-      usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
-      usage.outputTokens = asNumber(usageObj.output_tokens, usage.outputTokens);
-      continue;
-    }
-
-    if (type === "turn.failed") {
-      const err = parseObject(event.error);
-      const msg = asString(err.message, "").trim();
-      if (msg) errorMessage = msg;
-    }
-  }
-
-  return {
-    sessionId,
-    summary: finalMessage?.trim() ?? "",
-    usage,
-    usageBasis: "per_run" as const,
-    errorMessage,
+    return {
+      sessionId,
+      summary: finalMessage?.trim() ?? "",
+      // Codex includes cache hits in input_tokens; Paperclip stores them separately.
+      usage: { ...usage, inputTokens: Math.max(0, usage.inputTokens - usage.cachedInputTokens) },
+      usageBasis: "per_run" as const,
+      errorMessage,
+      sawProtocolEvent,
+      sawProtocolTerminalEvent,
+      usageReported,
+      usageComplete,
+    };
   };
+}
+
+/**
+ * Structural crash detection: the codex CLI can only report an agent-level
+ * failure through the JSONL protocol (an `error` event, `turn.failed`, or a
+ * finished `turn.completed` followed by a nonzero exit). A nonzero exit after
+ * the protocol stream started but before any terminal event means the process
+ * died out from under the agent (MCP transport crash, worker panic, killed
+ * tool server) — retriable infrastructure, not agent behavior. This
+ * deliberately does not match error text: transport failure strings vary, and
+ * stdout/stderr can quote agent output that merely discusses network errors.
+ */
+export function isCodexHarnessCrash(input: {
+  exitCode: number | null;
+  sawProtocolEvent: boolean;
+  sawProtocolTerminalEvent: boolean;
+}): boolean {
+  if ((input.exitCode ?? 0) === 0) return false;
+  return input.sawProtocolEvent && !input.sawProtocolTerminalEvent;
 }
 
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {

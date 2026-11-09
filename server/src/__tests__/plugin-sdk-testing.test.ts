@@ -1,6 +1,45 @@
 import { describe, expect, it } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { Issue, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+
+function seededIssue(input: Partial<Issue> & Pick<Issue, "id" | "companyId" | "title">): Issue {
+  const now = new Date();
+  return {
+    workMode: "standard",
+    reviewPolicy: null,
+    responsibleUserId: null,
+    projectId: null,
+    projectWorkspaceId: null,
+    goalId: null,
+    parentId: null,
+    description: null,
+    status: "todo",
+    priority: "medium",
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    checkoutRunId: null,
+    executionRunId: null,
+    executionAgentNameKey: null,
+    executionLockedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    issueNumber: null,
+    identifier: null,
+    requestDepth: 0,
+    billingCode: null,
+    assigneeAdapterOverrides: null,
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
+    executionWorkspaceSettings: null,
+    startedAt: null,
+    completedAt: null,
+    cancelledAt: null,
+    hiddenAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...input,
+  };
+}
 
 describe("plugin SDK test harness", () => {
   it("returns scoped execution workspace metadata with the read capability", async () => {
@@ -122,13 +161,13 @@ describe("plugin SDK test harness", () => {
     };
     const harness = createTestHarness({ manifest });
     harness.seed({
-      issues: [{
+      issues: [seededIssue({
         id: "issue-1",
         companyId: "company-1",
         title: "Comment redaction",
         status: "todo",
         priority: "medium",
-      }],
+      })],
       issueComments: [{
         id: "comment-1",
         companyId: "company-1",
@@ -137,7 +176,7 @@ describe("plugin SDK test harness", () => {
         authorAgentId: null,
         authorUserId: "user-1",
         body: "secret plugin-visible body",
-        presentation: { kind: "system_notice", tone: "warning" },
+        presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
         metadata: { version: 1, sections: [{ rows: [{ type: "text", text: "secret plugin metadata" }] }] },
         deletedAt: new Date("2026-06-03T12:00:00.000Z"),
         deletedByType: "user",
@@ -159,5 +198,139 @@ describe("plugin SDK test harness", () => {
     });
     expect(JSON.stringify(comments)).not.toContain("secret plugin-visible body");
     expect(JSON.stringify(comments)).not.toContain("secret plugin metadata");
+  });
+
+  it("rejects a human-attributed comment when the actorUserId is not an active member", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-human-attributed-comment-unverified",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Human-Attributed Comment (unverified)",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["issue.comments.create", "issue.comments.create_human_attributed"],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [seededIssue({
+        id: "issue-1",
+        companyId: "company-1",
+        title: "Human attribution",
+        status: "todo",
+        priority: "medium",
+      })],
+      // A suspended member must not satisfy the active-human-member check —
+      // the harness mirrors the host's `requireActiveHumanMember` guard so a
+      // plugin test cannot pass an attribution production would reject.
+      accessMembers: [{
+        id: "member-suspended",
+        companyId: "company-1",
+        principalType: "user",
+        principalId: "user-1",
+        status: "suspended",
+        membershipRole: "member",
+        grants: [],
+        createdAt: new Date("2026-06-03T11:00:00.000Z"),
+        updatedAt: new Date("2026-06-03T11:00:00.000Z"),
+      }],
+    });
+
+    await expect(
+      harness.ctx.issues.createComment("issue-1", "relayed reply", "company-1", { actorUserId: "user-1" }),
+    ).rejects.toThrow('actorUserId "user-1" is not an active human member of this company');
+  });
+
+  it("rejects a human-attributed comment when the actorUserId is a viewer-role (read-only) member", async () => {
+    // LOOA-648: the harness mirrors the host's viewer write-bar so a plugin's
+    // own test suite cannot pass an attribution production rejects. A viewer is
+    // an active member but read-only in the web app.
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-human-attributed-comment-viewer",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Human-Attributed Comment (viewer)",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["issue.comments.create", "issue.comments.create_human_attributed"],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [seededIssue({
+        id: "issue-1",
+        companyId: "company-1",
+        title: "Human attribution",
+        status: "todo",
+        priority: "medium",
+      })],
+      accessMembers: [{
+        id: "member-viewer",
+        companyId: "company-1",
+        principalType: "user",
+        principalId: "user-1",
+        status: "active",
+        membershipRole: "viewer",
+        grants: [],
+        createdAt: new Date("2026-06-03T11:00:00.000Z"),
+        updatedAt: new Date("2026-06-03T11:00:00.000Z"),
+      }],
+    });
+
+    await expect(
+      harness.ctx.issues.createComment("issue-1", "relayed reply", "company-1", { actorUserId: "user-1" }),
+    ).rejects.toThrow("viewer (read-only) access");
+  });
+
+  it("attributes a comment to an active human member for a verified actorUserId", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-human-attributed-comment-verified",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Human-Attributed Comment (verified)",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["issue.comments.create", "issue.comments.create_human_attributed"],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [seededIssue({
+        id: "issue-1",
+        companyId: "company-1",
+        title: "Human attribution",
+        status: "todo",
+        priority: "medium",
+      })],
+      accessMembers: [{
+        id: "member-active",
+        companyId: "company-1",
+        principalType: "user",
+        principalId: "user-1",
+        status: "active",
+        membershipRole: "member",
+        grants: [],
+        createdAt: new Date("2026-06-03T11:00:00.000Z"),
+        updatedAt: new Date("2026-06-03T11:00:00.000Z"),
+      }],
+    });
+
+    const comment = await harness.ctx.issues.createComment(
+      "issue-1",
+      "relayed reply",
+      "company-1",
+      { actorUserId: "user-1" },
+    );
+
+    expect(comment).toMatchObject({
+      issueId: "issue-1",
+      authorType: "user",
+      authorUserId: "user-1",
+      authorAgentId: null,
+      body: "relayed reply",
+    });
   });
 });

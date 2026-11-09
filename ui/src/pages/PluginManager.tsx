@@ -13,6 +13,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -99,22 +100,24 @@ export function PluginManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Plugins" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
-  const { data: plugins, isLoading, error } = useQuery({
+  const pluginsQuery = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
+  const { data: plugins, isLoading, error } = pluginsQuery;
+  const pluginsView = useQueryView(pluginsQuery);
 
   const bundledQuery = useQuery({
     queryKey: queryKeys.plugins.examples,
     queryFn: () => pluginsApi.listBundled(),
   });
+  const bundledView = useQueryView(bundledQuery);
 
   const invalidatePluginQueries = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
@@ -186,11 +189,23 @@ export function PluginManager() {
     [installedPlugins]
   );
 
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">Loading plugins...</div>;
-  if (error) return <div className="p-4 text-sm text-destructive">Failed to load plugins.</div>;
+  if (isLoading || pluginsView.kind === "reconnecting") {
+    return <div className="p-4 text-sm text-muted-foreground">Loading plugins...</div>;
+  }
+  if (pluginsView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={error}
+        action="load plugins"
+        onRetry={pluginsView.retry}
+        retrying={pluginsView.isFetching}
+      />
+    );
+  }
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="max-w-6xl space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
@@ -260,10 +275,15 @@ export function PluginManager() {
           </div>
         )}
 
-        {bundledQuery.isLoading ? (
+        {bundledQuery.isLoading || bundledView.kind === "reconnecting" ? (
           <div className="text-sm text-muted-foreground">Loading bundled plugins...</div>
-        ) : bundledQuery.error ? (
-          <div className="text-sm text-destructive">Failed to load bundled plugins.</div>
+        ) : bundledView.kind === "error" ? (
+          <QueryErrorState
+            error={bundledQuery.error}
+            action="load bundled plugins"
+            onRetry={bundledView.retry}
+            retrying={bundledView.isFetching}
+          />
         ) : bundledPlugins.length === 0 ? (
           <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
             No bundled plugins were found in this checkout.

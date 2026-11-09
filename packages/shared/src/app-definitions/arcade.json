@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "slug": "arcade",
+  "name": "Arcade",
+  "description": "Use the tools exposed by your Arcade MCP connection.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "/brands/apps/arcade.png"
+  },
+  "urlPatterns": [
+    "https://api.arcade.dev/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "dcr",
+        "customer"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {},
+      "guidanceMd": "Paste your Arcade MCP URL. Sign in if required, or add a token or headers under Advanced authentication.",
+      "riskTier": "S3",
+      "label": "Connect MCP server",
+      "consoleLinks": {
+        "docs": "https://docs.arcade.dev/en/operate/governance/mcp-gateways"
+      }
+    }
+  ],
+  "docsUrl": "https://docs.arcade.dev/en/operate/governance/mcp-gateways"
+}

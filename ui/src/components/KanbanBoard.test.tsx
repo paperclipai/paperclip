@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getKanbanColumnTone, KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+import { applyOptimisticIssueFieldUpdate } from "../lib/optimistic-issue-comments";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -43,6 +44,7 @@ function createIssue(index: number, status: IssueStatus): Issue {
     status,
     workMode: "standard",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: index === 1 ? "agent-1" : null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -231,4 +233,18 @@ describe("KanbanBoard", () => {
     expect(resolveKanbanTargetStatus("issue-blocked-2", issues)).toBe("blocked");
     expect(resolveKanbanTargetStatus("missing", issues)).toBeNull();
   });
+
+  it("moves a cached card into its new column before the server responds", () => {
+    const issue = { ...createIssue(1, "todo"), displayStatus: "todo" as const };
+    const { container, render } = renderBoard({ issues: [issue] });
+    const column = () => container.querySelector('a[href="/issues/PAP-1"]')?.closest('[data-issue-row-details]')?.parentElement?.parentElement;
+    expect(column()?.textContent).toContain("Todo");
+    render({ issues: [applyOptimisticIssueFieldUpdate(issue, { status: "done" })!] });
+    expect(column()?.textContent).toContain("Done");
+  });
+});
+
+
+it("keeps Monitoring derived rather than allowing a drag to manufacture it", () => {
+  expect(resolveKanbanTargetStatus("monitoring", [])).toBeNull();
 });

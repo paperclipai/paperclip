@@ -2,14 +2,22 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AdapterExecutionContext, AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
+import type {
+  AdapterExecutionContext,
+  AdapterEnvironmentCheck,
+  AdapterRuntimeMcpServer,
+} from "@paperclipai/adapter-utils";
 import {
+  adapterExecutionTargetUsesManagedHome,
+  maybeRunSandboxInstallCommand,
+  prepareAdapterExecutionTargetRuntime,
   runAdapterExecutionTargetShellCommand,
   type AdapterExecutionTarget,
   type AdapterExecutionTargetShellOptions,
 } from "@paperclipai/adapter-utils/execution-target";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { classifyThrownErrorClass, logSandboxProbeDiagnostic } from "./probe-diagnostics.js";
 
 const SEEDED_SHARED_FILES = ["settings.json", "CLAUDE.md"] as const;
 
@@ -33,20 +41,25 @@ function isAlreadyExistsError(error: unknown): boolean {
   return code === "EEXIST" || code === "ENOTEMPTY";
 }
 
-function sanitizeRemoteClaudeSettings(raw: string): string {
+export type RemoteClaudePermissionDefaultMode = "default" | "bypassPermissions";
+
+function sanitizeRemoteClaudeSettings(
+  raw: string | null,
+  defaultMode: RemoteClaudePermissionDefaultMode,
+): string {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = raw === null ? null : JSON.parse(raw);
   } catch {
-    return JSON.stringify({ permissions: { defaultMode: "default" } });
+    return JSON.stringify({ permissions: { defaultMode } });
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return JSON.stringify({ permissions: { defaultMode: "default" } });
+    return JSON.stringify({ permissions: { defaultMode } });
   }
 
   const settings = { ...(parsed as Record<string, unknown>) };
-  settings.permissions = { defaultMode: "default" };
+  settings.permissions = { defaultMode };
   delete settings.hooks;
   delete settings.mcpServers;
   delete settings.permissionMode;
@@ -54,16 +67,22 @@ function sanitizeRemoteClaudeSettings(raw: string): string {
   return JSON.stringify(settings);
 }
 
-async function collectSeedFiles(sourceDir: string): Promise<SeedFile[]> {
+async function collectSeedFiles(
+  sourceDir: string,
+  defaultMode: RemoteClaudePermissionDefaultMode,
+): Promise<SeedFile[]> {
   const files: SeedFile[] = [];
   for (const name of SEEDED_SHARED_FILES) {
     const sourcePath = path.join(sourceDir, name);
-    if (!(await pathExists(sourcePath))) continue;
-    const rawContents = await fs.readFile(sourcePath);
-    const contents = name === "settings.json"
-      ? Buffer.from(sanitizeRemoteClaudeSettings(rawContents.toString("utf8")), "utf8")
-      : rawContents;
-    files.push({ name, sourcePath, contents });
+    const exists = await pathExists(sourcePath);
+    if (name === "settings.json") {
+      if (!exists && defaultMode === "default") continue;
+      const raw = exists ? (await fs.readFile(sourcePath)).toString("utf8") : null;
+      files.push({ name, sourcePath, contents: Buffer.from(sanitizeRemoteClaudeSettings(raw, defaultMode), "utf8") });
+      continue;
+    }
+    if (!exists) continue;
+    files.push({ name, sourcePath, contents: await fs.readFile(sourcePath) });
   }
   return files;
 }
@@ -179,6 +198,7 @@ export async function prepareClaudeConfigSeed(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
+  options: { permissionDefaultMode?: RemoteClaudePermissionDefaultMode } = {},
 ): Promise<string> {
   const sourceDir = resolveSharedClaudeConfigDir(env);
   const targetRootDir = resolveManagedClaudeConfigSeedDir(env, companyId);
@@ -187,7 +207,7 @@ export async function prepareClaudeConfigSeed(
     return targetRootDir;
   }
 
-  const copiedFiles = await collectSeedFiles(sourceDir);
+  const copiedFiles = await collectSeedFiles(sourceDir, options.permissionDefaultMode ?? "default");
   const snapshotKey = await buildSeedSnapshotKey(copiedFiles);
   const targetDir = await materializeSeedSnapshot({
     rootDir: targetRootDir,
@@ -210,10 +230,37 @@ export async function prepareClaudeConfigSeed(
   return targetDir;
 }
 
+export const CLAUDE_TOOL_SHELL_PREFIX_SCRIPT = [
+  "#!/bin/sh",
+  "echo 1000 > /proc/self/oom_score_adj 2>/dev/null || :",
+  "shell=",
+  'case "${CLAUDE_CODE_SHELL:-}" in *bash*|*zsh*) [ -x "$CLAUDE_CODE_SHELL" ] && shell=$CLAUDE_CODE_SHELL ;; esac',
+  'if [ -z "$shell" ]; then',
+  '  case "${SHELL:-}" in *bash*|*zsh*) [ -x "$SHELL" ] && shell=$SHELL ;; esac',
+  "fi",
+  'if [ -z "$shell" ]; then',
+  '  case "${SHELL:-}" in *bash*) order="bash zsh" ;; *) order="zsh bash" ;; esac',
+  "  for name in $order; do",
+  '    candidate=$(command -v "$name" 2>/dev/null) && [ -x "$candidate" ] && { shell=$candidate; break; }',
+  "  done",
+  "fi",
+  'exec "${shell:-/bin/sh}" -c "$1"',
+  "",
+].join("\n");
+
+const CLAUDE_TOOL_SHELL_PREFIX_INSTALLED_MARKER = "[paperclip] Installed the Claude tool shell prefix.";
+
 export function buildRemoteClaudeConfigMaterializationCommand(input: {
   remoteClaudeConfigDir: string;
   remoteClaudeConfigSeedDir: string;
+  remoteToolShellPrefixPath?: string | null;
 }): string {
+  const prefixPath = input.remoteToolShellPrefixPath;
+  const installToolShellPrefix = prefixPath
+    ? `; { umask 077 && printf '%s' ${shellQuote(CLAUDE_TOOL_SHELL_PREFIX_SCRIPT)} > ${shellQuote(`${prefixPath}.partial`)} && ` +
+      `chmod 700 ${shellQuote(`${prefixPath}.partial`)} && mv -f ${shellQuote(`${prefixPath}.partial`)} ${shellQuote(prefixPath)} && ` +
+      `echo ${shellQuote(CLAUDE_TOOL_SHELL_PREFIX_INSTALLED_MARKER)}; }`
+    : "";
   return `mkdir -p ${shellQuote(input.remoteClaudeConfigDir)} && ` +
     `if [ -d ${shellQuote(input.remoteClaudeConfigSeedDir)} ]; then ` +
     `cp -R ${shellQuote(`${input.remoteClaudeConfigSeedDir}/.`)} ${shellQuote(input.remoteClaudeConfigDir)}/; ` +
@@ -222,7 +269,16 @@ export function buildRemoteClaudeConfigMaterializationCommand(input: {
     `if [ -n "\${HOME:-}" ] && [ -f "\${HOME}/.claude/\${file}" ] && [ ! -f ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" ]; then ` +
     `cp "\${HOME}/.claude/\${file}" ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}"; ` +
     `fi; ` +
-    `done`;
+    `done` +
+    installToolShellPrefix;
+}
+
+export function resolveRemoteClaudeToolShellPrefixPath(
+  env: Record<string, string>,
+  remoteClaudeRuntimeRoot: string,
+): string | null {
+  if (isNonEmptyString(env.CLAUDE_CODE_SHELL_PREFIX)) return null;
+  return path.posix.join(remoteClaudeRuntimeRoot, "tool-shell-prefix.sh");
 }
 
 export async function materializeRemoteClaudeConfig(input: {
@@ -230,15 +286,240 @@ export async function materializeRemoteClaudeConfig(input: {
   target: AdapterExecutionTarget | null | undefined;
   remoteClaudeConfigDir: string;
   remoteClaudeConfigSeedDir: string;
+  remoteToolShellPrefixPath?: string | null;
   options: AdapterExecutionTargetShellOptions;
-}): Promise<void> {
-  await runAdapterExecutionTargetShellCommand(
+}): Promise<{ toolShellPrefixInstalled: boolean }> {
+  const result = await runAdapterExecutionTargetShellCommand(
     input.runId,
     input.target,
     buildRemoteClaudeConfigMaterializationCommand({
       remoteClaudeConfigDir: input.remoteClaudeConfigDir,
       remoteClaudeConfigSeedDir: input.remoteClaudeConfigSeedDir,
+      remoteToolShellPrefixPath: input.remoteToolShellPrefixPath,
     }),
     input.options,
   );
+  return {
+    toolShellPrefixInstalled: Boolean(input.remoteToolShellPrefixPath) &&
+      result.exitCode === 0 &&
+      !result.timedOut &&
+      result.stdout.includes(CLAUDE_TOOL_SHELL_PREFIX_INSTALLED_MARKER),
+  };
+}
+
+type ClaudeLocalSettings = { settings: Record<string, unknown>; permissions: Record<string, unknown> };
+
+function parseClaudeLocalSettings(raw: string | null): ClaudeLocalSettings | null {
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const settings = parsed as Record<string, unknown>;
+  const permissions =
+    settings.permissions && typeof settings.permissions === "object" && !Array.isArray(settings.permissions)
+      ? (settings.permissions as Record<string, unknown>)
+      : {};
+  return { settings, permissions };
+}
+
+function withClaudeLocalDefaultMode(local: ClaudeLocalSettings, defaultMode: unknown): string {
+  const permissions = { ...local.permissions };
+  if (defaultMode === undefined) delete permissions.defaultMode;
+  else permissions.defaultMode = defaultMode;
+  return `${JSON.stringify({ ...local.settings, permissions }, null, 2)}\n`;
+}
+
+export interface RemoteClaudeLocalPermissionOverride {
+  beforeRestore: () => Promise<void>;
+  afterRestore: () => Promise<void>;
+}
+
+export async function overrideRemoteClaudeLocalPermissionMode(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  workspaceLocalDir: string;
+  workspaceRemoteDir: string;
+  defaultMode: RemoteClaudePermissionDefaultMode;
+  options: AdapterExecutionTargetShellOptions;
+}): Promise<RemoteClaudeLocalPermissionOverride | null> {
+  const localPath = path.join(input.workspaceLocalDir, ".claude", "settings.local.json");
+  const original = await fs.readFile(localPath, "utf8").catch(() => null);
+  const originalLocal = parseClaudeLocalSettings(original);
+  if (original === null || !originalLocal) return null;
+  const originalMode = originalLocal.permissions.defaultMode;
+  if (originalMode === input.defaultMode) return null;
+  const overridden = withClaudeLocalDefaultMode(originalLocal, input.defaultMode);
+  const remotePath = shellQuote(path.posix.join(input.workspaceRemoteDir, ".claude", "settings.local.json"));
+  const quietOptions: AdapterExecutionTargetShellOptions = { ...input.options, onLog: async () => {} };
+  const writeRemote = (contents: string) =>
+    runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.target,
+      `if [ -f ${remotePath} ]; then printf '%s' ${shellQuote(contents)} > ${remotePath}; fi`,
+      quietOptions,
+    );
+  const applied = await writeRemote(overridden);
+  if (applied.exitCode !== 0 || applied.timedOut) {
+    await input.options.onLog?.("stderr", "[paperclip] Could not apply the Claude permission mode to the sandbox workspace settings.\n");
+  }
+  return {
+    beforeRestore: async () => {
+      try {
+        const read = await runAdapterExecutionTargetShellCommand(
+          input.runId,
+          input.target,
+          `cat ${remotePath}`,
+          quietOptions,
+        );
+        if (read.exitCode !== 0 || read.timedOut) return;
+        if (read.stdout === overridden) {
+          await writeRemote(original);
+          return;
+        }
+        const current = parseClaudeLocalSettings(read.stdout);
+        if (current?.permissions.defaultMode === input.defaultMode) {
+          await writeRemote(withClaudeLocalDefaultMode(current, originalMode));
+        }
+      } catch {
+        await input.options.onLog?.("stderr", "[paperclip] Could not reset the Claude permission mode in the sandbox workspace settings.\n");
+      }
+    },
+    afterRestore: async () => {
+      const current = parseClaudeLocalSettings(await fs.readFile(localPath, "utf8").catch(() => null));
+      if (current?.permissions.defaultMode !== input.defaultMode) return;
+      await fs.writeFile(localPath, withClaudeLocalDefaultMode(current, originalMode)).catch(async () => {
+        await input.options.onLog?.("stderr", "[paperclip] Could not restore the host Claude workspace settings after the sandbox run.\n");
+      });
+    },
+  };
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/**
+ * Prepare the sandbox runtime that a Claude hello probe needs. The step
+ * installs the Claude CLI in the sandbox when the CLI is absent, and it
+ * materializes the Paperclip-managed Claude config directory. Both the CLI
+ * Test lane and the ACP Test lane call this helper, so the two lanes probe
+ * the same login state. The Claude CLI and the Claude ACP engine share the
+ * same stored Claude login.
+ *
+ * The function mutates `env`: it sets `CLAUDE_CONFIG_DIR` to the managed
+ * remote config directory when it materializes one. It returns the checks to
+ * add to the Test result. An operator-provided `CLAUDE_CONFIG_DIR` wins, so
+ * the function keeps it and skips the managed materialization.
+ */
+export async function prepareSandboxClaudeProbeRuntime(input: {
+  managedAiConnection?: boolean;
+  runId: string;
+  target: AdapterExecutionTarget | null;
+  cwd: string;
+  companyId?: string;
+  env: Record<string, string>;
+  installCommand: string;
+  detectCommand: string;
+  targetIsRemote: boolean;
+  targetIsSandbox: boolean;
+  helloProbeTimeoutSec: number;
+}): Promise<AdapterEnvironmentCheck[]> {
+  const checks: AdapterEnvironmentCheck[] = [];
+  const installCheck = await maybeRunSandboxInstallCommand({
+    runId: input.runId,
+    target: input.target,
+    adapterKey: "claude",
+    installCommand: input.installCommand,
+    detectCommand: input.detectCommand,
+    env: input.env,
+  });
+  if (installCheck) checks.push(installCheck);
+
+  const hasExplicitClaudeConfigDir = isNonEmptyString(input.env.CLAUDE_CONFIG_DIR);
+  if (
+    input.targetIsRemote &&
+    adapterExecutionTargetUsesManagedHome(input.target) &&
+    (!hasExplicitClaudeConfigDir || input.managedAiConnection)
+  ) {
+    let tempWorkspaceDir: string | null = null;
+    let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
+    try {
+      const seedDir = input.managedAiConnection ? input.env.CLAUDE_CONFIG_DIR : await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
+      const managedRemoteCwd =
+        input.target?.kind === "remote" ? input.target.remoteCwd : input.cwd;
+      tempWorkspaceDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "paperclip-claude-envtest-workspace-"),
+      );
+      preparedRuntime = await prepareAdapterExecutionTargetRuntime({
+        runId: input.runId,
+        target: input.target,
+        adapterKey: "claude",
+        workspaceLocalDir: tempWorkspaceDir,
+        workspaceRemoteDir: managedRemoteCwd,
+        timeoutSec: Math.max(1, input.helloProbeTimeoutSec),
+        // The probe workspace is a throwaway temp dir; never wait on copy-back retries.
+        workspaceRestoreRetryDelaysMs: [],
+        assets: [
+          {
+            key: "config-seed",
+            localDir: seedDir,
+            followSymlinks: true,
+          },
+        ],
+      });
+      const runtimeRootDir =
+        preparedRuntime.runtimeRootDir ??
+        path.posix.join(managedRemoteCwd, ".paperclip-runtime", "claude");
+      const remoteClaudeConfigSeedDir =
+        preparedRuntime.assetDirs["config-seed"] ??
+        path.posix.join(runtimeRootDir, "config-seed");
+      const remoteClaudeConfigDir = path.posix.join(runtimeRootDir, "config");
+      input.env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+      await materializeRemoteClaudeConfig({
+        runId: input.runId,
+        target: input.target,
+        remoteClaudeConfigDir,
+        remoteClaudeConfigSeedDir,
+        options: {
+          cwd: input.cwd,
+          env: input.env,
+          timeoutSec: Math.max(15, input.helloProbeTimeoutSec),
+          graceSec: 5,
+          onLog: async () => {},
+        },
+      });
+      checks.push({
+        code: "claude_managed_config_dir",
+        level: "info",
+        message: "The environment probe is using Paperclip-managed Claude config materialization.",
+        detail: remoteClaudeConfigDir,
+      });
+    } catch (err) {
+      // Keep the raw error out of the Test-result check and the server log. Log
+      // only the fixed context, the allowlisted classification, and a safe
+      // error class name.
+      logSandboxProbeDiagnostic(
+        "Could not materialize Paperclip-managed Claude config for the environment probe",
+        "spawn_error",
+        { errorClass: classifyThrownErrorClass(err) },
+      );
+      checks.push({
+        code: "claude_managed_config_dir_failed",
+        level: "error",
+        message: "Could not materialize Paperclip-managed Claude config for the environment probe.",
+        hint: "Retry the Test. If the failure repeats, check the server log for the redacted diagnostic.",
+      });
+    } finally {
+      await preparedRuntime?.restoreWorkspace().catch(() => undefined);
+      if (tempWorkspaceDir) {
+        await fs.rm(tempWorkspaceDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+  }
+
+  return checks;
 }

@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "slug": "gsc-wizard",
+  "name": "GSC Wizard",
+  "description": "Read Google Search Console, Bing Webmaster, and analytics data for connected properties.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/gsc-wizard.png"
+  },
+  "urlPatterns": [
+    "https://mcp.gscwizard.com/*"
+  ],
+  "docsUrl": "https://www.gscwizard.com/claude-search-console-mcp.html",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with GSC Wizard",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use remote OAuth authorization for the GSC Wizard MCP.",
+      "defaults": {
+        "serverUrl": "https://mcp.gscwizard.com/mcp",
+        "scopesHint": [
+          "mcp:read",
+          "mcp:write"
+        ]
+      },
+      "guidanceMd": "Connect the GSC Wizard account and its authorized properties. Check site identity and date bounds before querying; review any URL submission or property-changing action separately.",
+      "riskTier": "S3",
+      "warnings": [
+        "Some tools may submit URLs or otherwise change external indexing state; review action details before use.",
+        "GSC Wizard connects multiple search and analytics providers; confirm the authorized property and action policy for each tool."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "label": "Use a GSC Wizard MCP key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a customer-created GSC Wizard MCP key in a Bearer header.",
+      "defaults": {
+        "serverUrl": "https://mcp.gscwizard.com/mcp"
+      },
+      "guidanceMd": "Create a key for the intended account and select the appropriate read or write permission during key creation. Verify each connected property before querying; review URL submission actions separately.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Use a GSC Wizard MCP key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter provider credential",
+          "secret": true,
+          "helperMd": "At key creation, choose read-only or read/write according to the approved task. Read/write keys can reach URL-submission and related provider actions; Paperclip cannot increase an existing key’s permissions."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://www.gscwizard.com/claude-search-console-mcp.html",
+        "docs": "https://www.gscwizard.com/claude-search-console-mcp.html"
+      }
+    }
+  ]
+}

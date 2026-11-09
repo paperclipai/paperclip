@@ -1,0 +1,90 @@
+/*
+  3 · Tactile — object sizes.
+
+  A paper object is authored once at "design" size (a 15rem-wide page) and
+  scaled by --tac-k; the type on it is retuned per size so a page shows fewer,
+  larger words when it is small. Prints are not scaled: they take
+  --tac-print-w / --tac-print-h (the long side, landscape / portrait).
+
+    xs  thread row            sm  thread attachments          (here)
+    pn  panel, in a slot      pw  panel, across the desk       (tokens-panel.css)
+    fd  folder contents       gl  opened stack, stack of one   (tokens-gallery.css)
+
+  --tac-fit (default 1) shrinks a whole size where its container is narrow; it
+  is only ever set inside a container query, on the object itself.
+*/
+[data-direction="d3-tactile"] [data-tac-size="xs"] {
+  --tac-k: 0.258; /* page: 62 × 80px — tall enough to stand 10px proud of a 72px tray with its foot behind the lip */
+  --tac-ear: 2.5rem;
+  --tac-page-pad: 1.5rem;
+  --tac-page-r: 0.5625rem;
+  --tac-type-title: 1.8125rem;
+  --tac-type-body: 1rem;
+  --tac-type-tab: 2.25rem;
+  --tac-print-w: 5rem;
+  --tac-print-h: 3.875rem;
+  --tac-print-edge: 0.21875rem;
+  --tac-play: 1.25rem;
+  --tac-shadow-near: 0 0.5px 0.75px;
+  --tac-shadow-far: 1px 2px 3px;
+}
+/* The landscape shapes come to the print's width, not the page's scale. */
+[data-direction="d3-tactile"] [data-tac-size="xs"][data-tac-box="slide"] {
+  --tac-k: 0.25;
+  --tac-type-title: 2rem;
+  --tac-type-tab: 2.25rem;
+}
+[data-direction="d3-tactile"] [data-tac-size="xs"][data-tac-box="ledger"] {
+  --tac-k: 0.27;
+  --tac-type-tab: 2.125rem;
+}
+[data-direction="d3-tactile"] [data-tac-size="xs"][data-tac-box="box"] {
+  --tac-k: 0.25;
+  --tac-type-tab: 2.25rem;
+}
+[data-direction="d3-tactile"] [data-tac-size="xs"][data-tac-box="card"] {
+  --tac-k: 0.25;
+}
+[data-direction="d3-tactile"] [data-tac-size="sm"] {
+  --tac-k: 0.27;
+  --tac-ear: 2.75rem;
+  --tac-page-pad: 1.5rem;
+  --tac-page-r: 0.5625rem;
+  --tac-type-title: 1.4375rem;
+  --tac-type-body: 0.8125rem;
+  --tac-type-tab: 2.125rem;
+  --tac-print-w: 6.75rem;
+  --tac-print-h: 5.25rem;
+  --tac-print-edge: 0.25rem;
+  --tac-play: 1.5rem;
+  --tac-shadow-near: 0 1px 1px;
+  --tac-shadow-far: 1px 4px 6px;
+}
+/* Derived on the same element as --tac-k, so each object resolves its own. */
+[data-direction="d3-tactile"] [data-tac-size] {
+  --tac-ks: calc(var(--tac-k) * var(--tac-fit, 1));
+  --tac-page-w: calc(15rem * var(--tac-ks));
+  --tac-page-h: calc(19.375rem * var(--tac-ks));
+  --tac-slide-w: calc(20rem * var(--tac-ks));
+  --tac-slide-h: calc(11.25rem * var(--tac-ks));
+  --tac-ledger-w: calc(17.5rem * var(--tac-ks));
+  --tac-ledger-h: calc(14rem * var(--tac-ks));
+  --tac-box-w: calc(18.75rem * var(--tac-ks));
+  --tac-box-h: calc(15.5rem * var(--tac-ks));
+  --tac-card-w: calc(20rem * var(--tac-ks));
+  --tac-card-h: calc(11rem * var(--tac-ks));
+  --tac-print-ws: calc(var(--tac-print-w) * var(--tac-fit, 1));
+  --tac-print-hs: calc(var(--tac-print-h) * var(--tac-fit, 1));
+
+  --tac-clip-ear: polygon(0 0, calc(100% - var(--tac-ear)) 0, 100% var(--tac-ear), 100% 100%, 0 100%);
+  --tac-clip-fold: polygon(0 0, 100% 100%, 0 100%);
+  --tac-ear-clear: calc(var(--tac-ear) - var(--tac-page-pad) + 0.25rem);
+  --tac-film-w: calc(var(--tac-print-edge) * 2.6);
+  --tac-card-r: calc(var(--tac-page-r) * 2.4); /* an address card's corners are rounder than paper's */
+  --tac-stamp-rise: var(--tac-tab-rise); /* a stamp sits level with a file's extension tab, unless a size says otherwise */
+
+  --tac-filter-rest: drop-shadow(0 0 0.5px var(--tac-shadow-hairline)) drop-shadow(var(--tac-shadow-near) var(--tac-shadow-contact))
+    drop-shadow(var(--tac-shadow-far) var(--tac-shadow-ambient));
+  --tac-filter-lift: drop-shadow(0 0 0.5px var(--tac-shadow-hairline)) drop-shadow(var(--tac-shadow-near) var(--tac-shadow-contact))
+    drop-shadow(var(--tac-shadow-far) var(--tac-shadow-ambient)) drop-shadow(var(--tac-shadow-far) var(--tac-shadow-ambient));
+}

@@ -1,0 +1,190 @@
+# Issue-detail performance baseline
+
+Run the repeatable baseline from the repository root:
+
+```sh
+pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts
+```
+
+The rig starts an isolated seeded Paperclip instance, runs five samples for each scenario/profile, and writes median-ready raw data plus a Markdown table to `test-results/issue-detail-perf/`.
+
+Scenarios:
+
+- S1 warm in-app navigation: loads the Issues list, clears the waterfall, and clicks the seeded issue.
+- S2 cold open: creates a fresh browser context and deep-links to the seeded issue.
+
+Profiles:
+
+- Unthrottled.
+- Fast 4G network with 4x CPU slowdown.
+
+Override the sample count (minimum five) or port when needed:
+
+```sh
+PAPERCLIP_ISSUE_PERF_RUNS=7 PAPERCLIP_ISSUE_PERF_PORT=3210 pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts
+```
+
+Outputs include `baseline.md`, `baseline.json`, and a Chrome trace for the first run of each scenario/profile. Open `*.trace.json` in Chrome DevTools Performance to inspect the `issue-detail:*` user-timing marks.
+
+Set `PAPERCLIP_ISSUE_PERF_PROFILE=1` to capture actual Chrome CPU samples and
+conversation-readiness transitions in one diagnostic sample per scenario/profile.
+Import the resulting `*.cpuprofile` in DevTools and inspect `*.readiness.json` for
+the task, comments, metadata, activity, runs, runtime, plan and transcript gates.
+Each gate records changes with `detail.ready`; use its last transition before
+content paint when a gate becomes pending after mount. These diagnostic runs
+include profiler overhead. Run without the flag for before/after latency claims.
+Readiness marks stay in the local browser and contain only fixed gate names and
+booleans; the harness enables them before navigation.
+
+For bundle comparisons, build the UI and serve the production assets from an
+isolated local instance with `PAPERCLIP_UI_DEV_MIDDLEWARE=false`. The default
+managed server above uses development middleware, which does not reproduce
+production chunk loading. Keep the server, database, browser profile and sample
+count the same for both builds, and avoid concurrent builds or test suites while
+measuring latency.
+
+Copy the first run's output outside `test-results/issue-detail-perf`, then reuse
+its persisted task with `PAPERCLIP_ISSUE_PERF_SEED_FILE=/path/to/before/baseline.json`
+and `PAPERCLIP_ISSUE_PERF_BASE_URL` pointing to that disposable instance. The
+harness validates the task identity before measuring. Network spans in the trace
+use recorded request start/end timestamps relative to task navigation; they
+include completed requests observed during the sample, even after content paint.
+
+## Real-instance click harness
+
+Local fixtures cannot reproduce staging's network round trips, server contention
+or object-store latency. `staging-click-harness.js` measures the same journey on
+any running instance, including staging, from the signed-in browser:
+
+1. Open an Issues list, for example `/<company>/issues?view=mine`.
+2. Paste the file into the DevTools console (or evaluate it through a browser
+   automation tool).
+3. Run `await __taskOpenHarness.series(["ABC-1", "ABC-2", "ABC-3"])`.
+
+Each sample reports the time from the row click to a visible composer and to the
+latest message in the viewport, the requests started before that point, the
+requests that finished last before it (`releasedBy`), the slowest and repeated
+requests, layout shifts, and any movement of the latest message after it first
+appeared. `serverMs` comes from the `paperclip_api` Server-Timing entry that every
+API response carries, so a long `duration` with a short `serverMs` points to the
+network or browser queueing rather than the handler. A fetch that is still
+running when the sample ends is listed with `pending: true`. Run samples
+serially and record whether each task's data was already cached (a revisit) or
+not.
+
+The summary labels each sample (`sample 1`, ...) instead of the task reference.
+It replaces query values and every path segment that contains a digit with a
+placeholder. Other path segments can stay, so review the output before you
+share it outside the instance.
+
+## Task layout stability
+
+The normal browser CI suite also runs `tests/e2e/task-loading-frame.spec.ts`.
+It seeds a smaller API-only task and checks desktop/mobile frame and composer
+geometry, title typography, the initial reading position, Classic preference
+loading and typography, mobile shell handoff, and a stalled font request. It does not require a separate database URL.
+The rich 200-message fixture below remains an additional local stress journey.
+
+`loading-layout.spec.ts` uses a retained synthetic task with a wrapping title,
+200 saved messages, document and PR cards, a monitor, and a pending confirmation.
+It records every animation frame during direct and list-based entry on desktop
+and mobile, including delayed web fonts and workspace preferences. It rejects real headers shown before
+the initial conversation is ready, loading-frame movement, different header
+typography, composer displacement, and movement of the initial reading position.
+The fixture requires the disposable PostgreSQL URL described below. Its agent
+has interval and on-demand wakes disabled, including when the retained fixture
+is reused. The suite does not start provider work.
+Videos, screenshots, and `frames.json` are retained with each result.
+
+`compact-startup.spec.ts` keeps a synthetic local reproduction with 24 messages,
+a plan, three documents and three saved PR cards. It holds the enriched task
+response, records each visible frame's card count and geometry, and rejects
+cards inserted after the conversation becomes readable. It also checks document,
+older-comment and unknown anchors without full comments/activity/run reads.
+Run it with the same loopback-only URL override below. The fixture URL is saved
+in `test-results/compact-startup-fixture.json` for manual inspection and reuse.
+It also checks a delayed Coordinator preference with Classic enabled, index-based
+Coordinator list navigation, and the responder identity through reassignment,
+comment acknowledgement and legacy runtime discovery. The last case uses a
+deterministic local process, records identity continuity on each frame, and saves
+startup/running screenshots. It does not call a model provider.
+Each send fixture uses a unique task title so repeated runs cannot reuse a
+previous task and its cancelled run through ordinary task deduplication.
+
+`layout-stability.spec.ts` exercises the real task route, including Inbox
+navigation, with 160 Markdown comments and a resolved interaction. It delays
+initial comments, tests failures and retry, tracks a reading anchor across
+media growth, composer resizing, properties toggles, older-page loading and
+Back navigation, and covers mobile reduced motion and explicit comment links.
+The eight scenarios also exercise same-task hash navigation without remounting
+on desktop and mobile, and stalled native/log reads that expose Retry after
+the 15-second request deadline.
+`plan-startup.spec.ts` opens tasks directly and from the task list, with and
+without a saved plan, while holding separate plan reads. The core projection
+must reveal the saved conversation and plan before those reads finish. Separate
+plan reads are recorded as diagnostics. The hook tests cover fallback reads for
+list-only snapshots and responses without a plan projection.
+Videos and per-frame `layout.json` measurements are written under each test's
+output directory. The two-pixel assertion measures a logical row's viewport
+offset; total scroll offset legitimately changes when history is prepended.
+
+Ordinary task opens defer the concealed history and composer until their initial
+data is ready. The skeleton and scroll/composer containers retain their geometry.
+Compact tasks reuse saved replies from completed runs. Their transcript reads
+start when the reader opens older history through **More messages** or **More run
+output**. Saved Plans from completed runs stay visible while their output is deferred or pending.
+Live runs, failures, yielded runs, explicit anchors, and runs without a
+saved reply still load their output. A transcript already shown during this visit
+stays mounted when the run completes.
+Comment-link navigation prepares content eagerly so the target can be positioned
+before reveal. Revealed content stays mounted during refresh. The draft scenario
+holds a background task read, checks the same editor remains mounted, reloads the
+saved draft, sends one reply, and independently checks its persisted comment.
+
+To run against an existing **disposable local test-drive instance**:
+
+```sh
+PAPERCLIP_ISSUE_PERF_BASE_URL=http://127.0.0.1:3102 \
+  pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts layout-stability.spec.ts
+```
+
+The suite creates its own company and fixtures. The URL override accepts only
+loopback origins and rejects remote hosts. Use a disposable local instance,
+not a shared or production instance. Without the override, the harness starts its own
+isolated instance as before. Live provider walkthroughs additionally require a
+configured native Paperclip runner and Codex authentication; deterministic
+browser fixtures do not substitute for watching an actual provider run.
+
+`saved-reply-startup.spec.ts` adds a PostgreSQL fixture with 200 long saved agent
+replies, 200 completed native runs, and a Plan linked to the latest run. It holds
+transcript requests, checks both task presentations on desktop and mobile, and measures
+reply positions on each frame. Opening older history must start the transcript
+reads and preserve the editor and draft. This case is skipped unless
+`PAPERCLIP_ISSUE_PERF_DATABASE_URL` points to a disposable loopback PostgreSQL
+database whose name ends in `_test`. Use the same database as the local server:
+
+```sh
+PAPERCLIP_ISSUE_PERF_BASE_URL=http://127.0.0.1:3102 \
+PAPERCLIP_ISSUE_PERF_DATABASE_URL=postgres://paperclip:paperclip@127.0.0.1:5432/task_loading_test \
+  pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts saved-reply-startup.spec.ts
+```
+
+For the live walkthrough, first assign a disposable task to a native Paperclip
+runner configured with the Codex provider. Its scratch project should contain
+a small `sum.mjs` fixture. The script sends a paced job, scrolls up, disconnects
+and reconnects, steers a follow-up, and records through completion:
+
+```sh
+PAPERCLIP_LAYOUT_LIVE_URL=http://127.0.0.1:3102/LAY/issues/LAY-8 \
+  node tests/perf/issue-detail/live-feed.walkthrough.mjs
+```
+
+Inspect `test-results/task-layout/live-acceptance/` for the video, screenshots,
+per-frame positions, layout shifts, browser timing counters, and reading-anchor
+measurement. The live script rejects non-local URLs and uses real provider
+capacity. Review the video as well as the assertions: layout-shift scores alone
+do not capture programmatic scrolling or replacement flashes.
+
+## Long-running agent chats
+
+The separate [agent-chat performance rig](../agent-chat/README.md) covers recent-only startup and scrolling history with long-lived conversations. It is opt-in and does not run in this task-detail rig.

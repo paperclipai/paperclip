@@ -48,6 +48,7 @@ afterEach(() => {
 
 async function writeHelpWithoutEffortClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 const argv = process.argv.slice(2);
 if (argv.includes("--help")) {
   process.stdout.write("Usage: claude [options]\\n  --print\\n  --model <id>\\n");
@@ -125,7 +126,7 @@ describe("claude_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.level === "error")).toBe(false);
   });
 
-  it("returns a warning (not an error) when ANTHROPIC_API_KEY is set in adapter env", async () => {
+  it("reports an explicitly configured API key as normal authentication", async () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
@@ -143,12 +144,12 @@ describe("claude_local environment diagnostics", () => {
       },
     });
 
-    expect(result.status).toBe("warn");
+    expect(result.status).toBe("pass");
     expect(
       result.checks.some(
         (check) =>
           check.code === "claude_anthropic_api_key_overrides_subscription" &&
-          check.level === "warn",
+          check.level === "info",
       ),
     ).toBe(true);
     expect(result.checks.some((check) => check.level === "error")).toBe(false);
@@ -298,14 +299,15 @@ describe("claude_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.code === "claude_cwd_invalid")).toBe(false);
   });
 
-  it("uses --allowedTools instead of --dangerously-skip-permissions for sandbox hello probes", async () => {
-    const executeCalls: Array<{ command: string; args?: string[] }> = [];
+  it("uses full permission bypass for sandbox hello probes", async () => {
+    const executeCalls: Array<{ command: string; args?: string[]; env?: Record<string, string> }> = [];
 
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
         engine: "cli",
+        model: "claude-opus-5",
         command: "claude",
       },
       executionTarget: {
@@ -315,7 +317,7 @@ describe("claude_local environment diagnostics", () => {
         remoteCwd: "/workspace/paperclip",
         runner: {
           execute: async (input) => {
-            executeCalls.push({ command: input.command, args: input.args });
+            executeCalls.push({ command: input.command, args: input.args, env: input.env });
             if (input.command === "claude") {
               return {
                 exitCode: 0,
@@ -351,12 +353,10 @@ describe("claude_local environment diagnostics", () => {
 
     expect(result.checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(true);
     const probeCall = executeCalls.find((call) => call.command === "claude");
-    expect(probeCall?.args).not.toContain("--dangerously-skip-permissions");
+    expect(probeCall?.args).toContain("--dangerously-skip-permissions");
     expect(probeCall?.args).not.toContain("--permission-mode");
-    // Sandbox probes pass `--allowedTools` so any tool invocation triggered
-    // by the probe prompt cannot stall waiting for an interactive permission
-    // approval that no human is present to answer.
-    expect(probeCall?.args).toContain("--allowedTools");
+    expect(probeCall?.args).not.toContain("--allowedTools");
+    expect(probeCall?.env?.IS_SANDBOX).toBe("1");
   });
 
   it("uses the managed Claude config seed for sandbox hello probes", async () => {
@@ -381,6 +381,7 @@ describe("claude_local environment diagnostics", () => {
     await fs.writeFile(path.join(sourceConfigDir, "credentials.json"), JSON.stringify({ token: "local" }), "utf8");
     await fs.writeFile(path.join(remoteHome, ".claude", ".credentials.json"), JSON.stringify({ token: "remote" }), "utf8");
     await fs.writeFile(commandPath, `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 const fs = require("fs");
 const path = require("path");
 const configDir = process.env.CLAUDE_CONFIG_DIR || "";

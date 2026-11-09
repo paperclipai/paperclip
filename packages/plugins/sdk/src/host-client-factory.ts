@@ -139,6 +139,8 @@ export interface HostServices {
 
   /** Provides `events.emit` and `events.subscribe`. */
   events: {
+    listLifecycle(params: WorkerToHostMethods["events.listLifecycle"][0]): Promise<WorkerToHostMethods["events.listLifecycle"][1]>;
+    acknowledgeLifecycle(params: WorkerToHostMethods["events.acknowledgeLifecycle"][0]): Promise<void>;
     emit(params: WorkerToHostMethods["events.emit"][0]): Promise<void>;
     subscribe(params: WorkerToHostMethods["events.subscribe"][0]): Promise<void>;
   };
@@ -182,6 +184,14 @@ export interface HostServices {
     log(params: WorkerToHostMethods["log"][0]): Promise<void>;
   };
 
+  /** Provides `span.record`. The context carries the host-minted `traceparent`. */
+  tracer: {
+    record(
+      params: WorkerToHostMethods["span.record"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<void>;
+  };
+
   /** Provides `companies.list`, `companies.get`. */
   companies: {
     list(params: WorkerToHostMethods["companies.list"][0]): Promise<WorkerToHostMethods["companies.list"][1]>;
@@ -192,6 +202,8 @@ export interface HostServices {
   projects: {
     list(params: WorkerToHostMethods["projects.list"][0]): Promise<WorkerToHostMethods["projects.list"][1]>;
     get(params: WorkerToHostMethods["projects.get"][0]): Promise<WorkerToHostMethods["projects.get"][1]>;
+    resolveGitCredential(params: WorkerToHostMethods["projects.resolveGitCredential"][0], context: WorkerHostCallContext): Promise<string | null>;
+    getInstanceSecrets(params: WorkerToHostMethods["projects.getInstanceSecrets"][0]): Promise<WorkerToHostMethods["projects.getInstanceSecrets"][1]>;
     listWorkspaces(params: WorkerToHostMethods["projects.listWorkspaces"][0]): Promise<WorkerToHostMethods["projects.listWorkspaces"][1]>;
     getPrimaryWorkspace(params: WorkerToHostMethods["projects.getPrimaryWorkspace"][0]): Promise<WorkerToHostMethods["projects.getPrimaryWorkspace"][1]>;
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
@@ -239,6 +251,17 @@ export interface HostServices {
     listComments(params: WorkerToHostMethods["issues.listComments"][0]): Promise<WorkerToHostMethods["issues.listComments"][1]>;
     createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
     createInteraction(params: WorkerToHostMethods["issues.createInteraction"][0]): Promise<WorkerToHostMethods["issues.createInteraction"][1]>;
+    listInteractions(params: WorkerToHostMethods["issues.listInteractions"][0]): Promise<WorkerToHostMethods["issues.listInteractions"][1]>;
+    respondInteraction(params: WorkerToHostMethods["issues.respondInteraction"][0]): Promise<WorkerToHostMethods["issues.respondInteraction"][1]>;
+    listAttachments(params: WorkerToHostMethods["issues.listAttachments"][0]): Promise<WorkerToHostMethods["issues.listAttachments"][1]>;
+    getAttachmentContent(params: WorkerToHostMethods["issues.getAttachmentContent"][0]): Promise<WorkerToHostMethods["issues.getAttachmentContent"][1]>;
+  };
+
+  /** Provides `approvals.list`, `approvals.get`, `approvals.decide`. */
+  approvals: {
+    list(params: WorkerToHostMethods["approvals.list"][0]): Promise<WorkerToHostMethods["approvals.list"][1]>;
+    get(params: WorkerToHostMethods["approvals.get"][0]): Promise<WorkerToHostMethods["approvals.get"][1]>;
+    decide(params: WorkerToHostMethods["approvals.decide"][0]): Promise<WorkerToHostMethods["approvals.decide"][1]>;
   };
 
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
@@ -252,6 +275,8 @@ export interface HostServices {
   /** Provides `agents.list`, `agents.get`, `agents.pause`, `agents.resume`, `agents.invoke`. */
   agents: {
     list(params: WorkerToHostMethods["agents.list"][0]): Promise<WorkerToHostMethods["agents.list"][1]>;
+    getRuntimeIdentity?(params: WorkerToHostMethods["agents.getRuntimeIdentity"][0]): Promise<WorkerToHostMethods["agents.getRuntimeIdentity"][1]>;
+    getRuntime?(params: WorkerToHostMethods["agents.getRuntime"][0]): Promise<WorkerToHostMethods["agents.getRuntime"][1]>;
     get(params: WorkerToHostMethods["agents.get"][0]): Promise<WorkerToHostMethods["agents.get"][1]>;
     pause(params: WorkerToHostMethods["agents.pause"][0]): Promise<WorkerToHostMethods["agents.pause"][1]>;
     resume(params: WorkerToHostMethods["agents.resume"][0]): Promise<WorkerToHostMethods["agents.resume"][1]>;
@@ -386,6 +411,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Events
   "events.emit": "events.emit",
   "events.subscribe": "events.subscribe",
+  "events.listLifecycle": "events.subscribe",
+  "events.acknowledgeLifecycle": "events.subscribe",
 
   // HTTP
   "http.fetch": "http.outbound",
@@ -405,6 +432,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Logger — always allowed
   "log": null,
 
+  // Timing sink for environment drivers or workspace providers. Parentage
+  // still derives solely from the current host-owned invocation.
+  "span.record": "environment.drivers.register",
+
   // Companies
   "companies.list": "companies.read",
   "companies.get": "companies.read",
@@ -412,6 +443,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Projects
   "projects.list": "projects.read",
   "projects.get": "projects.read",
+  "projects.getInstanceSecrets": "projects.instance-secrets",
+  "projects.resolveGitCredential": "projects.git-credentials",
   "projects.listWorkspaces": "project.workspaces.read",
   "projects.getPrimaryWorkspace": "project.workspaces.read",
   "projects.getWorkspaceForIssue": "project.workspaces.read",
@@ -445,6 +478,15 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
   "issues.createInteraction": "issue.interactions.create",
+  "issues.listInteractions": "issue.interactions.read",
+  "issues.respondInteraction": "issue.interactions.respond",
+  "issues.listAttachments": "issue.attachments.read",
+  "issues.getAttachmentContent": "issue.attachments.read",
+
+  // Approvals
+  "approvals.list": "approvals.read",
+  "approvals.get": "approvals.read",
+  "approvals.decide": "approvals.respond",
 
   // Issue Documents
   "issues.documents.list": "issue.documents.read",
@@ -455,6 +497,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Agents
   "agents.list": "agents.read",
   "agents.get": "agents.read",
+  "agents.getRuntime": "agents.lifecycle.manage",
+  "agents.getRuntimeIdentity": "agents.lifecycle.manage",
   "agents.pause": "agents.pause",
   "agents.resume": "agents.resume",
   "agents.invoke": "agents.invoke",
@@ -646,6 +690,7 @@ export function createHostClientHandlers(
     const required = METHOD_CAPABILITY_MAP[method];
     if (required === null) return; // No capability required
     if (capabilitySet.has(required)) return;
+    if (method === "span.record" && capabilitySet.has("workspaces.manage")) return;
     throw new CapabilityDeniedError(pluginId, method, required);
   }
 
@@ -730,6 +775,8 @@ export function createHostClientHandlers(
     }),
 
     // Events
+    "events.listLifecycle": gated("events.listLifecycle", async (params) => services.events.listLifecycle(params)),
+    "events.acknowledgeLifecycle": gated("events.acknowledgeLifecycle", async (params) => services.events.acknowledgeLifecycle(params)),
     "events.emit": gated("events.emit", async (params) => {
       return services.events.emit(params);
     }),
@@ -768,6 +815,11 @@ export function createHostClientHandlers(
       return services.logger.log(params);
     }),
 
+    // Provider span sink. The context carries the host-minted `traceparent`.
+    "span.record": gated("span.record", async (params, context) => {
+      return services.tracer.record(params, context);
+    }),
+
     // Companies
     "companies.list": gated("companies.list", async (params, context) => {
       const rows = await services.companies.list(params);
@@ -784,6 +836,18 @@ export function createHostClientHandlers(
     // Projects
     "projects.list": gated("projects.list", async (params) => {
       return services.projects.list(params);
+    }),
+    "projects.resolveGitCredential": gated("projects.resolveGitCredential", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.resolveGitCredential", params, context);
+      const scope = context?.invocationScope?.projectGit;
+      if (!scope || scope.projectId !== params.projectId || (scope.workspaceId && scope.workspaceId !== params.workspaceId)) {
+        throw new Error("Git credentials require a matching host project operation");
+      }
+      return services.projects.resolveGitCredential({ ...params, companyId }, context!);
+    }),
+    "projects.getInstanceSecrets": gated("projects.getInstanceSecrets", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.getInstanceSecrets", params, context);
+      return services.projects.getInstanceSecrets({ ...params, companyId });
     }),
     "projects.get": gated("projects.get", async (params) => {
       return services.projects.get(params);
@@ -882,10 +946,40 @@ export function createHostClientHandlers(
       return services.issues.listComments(params);
     }),
     "issues.createComment": gated("issues.createComment", async (params) => {
+      if (params.actorUserId && !capabilitySet.has("issue.comments.create_human_attributed")) {
+        throw new CapabilityDeniedError(
+          pluginId,
+          "issues.createComment",
+          "issue.comments.create_human_attributed",
+        );
+      }
       return services.issues.createComment(params);
     }),
     "issues.createInteraction": gated("issues.createInteraction", async (params) => {
       return services.issues.createInteraction(params);
+    }),
+    "issues.listInteractions": gated("issues.listInteractions", async (params) => {
+      return services.issues.listInteractions(params);
+    }),
+    "issues.respondInteraction": gated("issues.respondInteraction", async (params) => {
+      return services.issues.respondInteraction(params);
+    }),
+    "issues.listAttachments": gated("issues.listAttachments", async (params) => {
+      return services.issues.listAttachments(params);
+    }),
+    "issues.getAttachmentContent": gated("issues.getAttachmentContent", async (params) => {
+      return services.issues.getAttachmentContent(params);
+    }),
+
+    // Approvals
+    "approvals.list": gated("approvals.list", async (params) => {
+      return services.approvals.list(params);
+    }),
+    "approvals.get": gated("approvals.get", async (params) => {
+      return services.approvals.get(params);
+    }),
+    "approvals.decide": gated("approvals.decide", async (params) => {
+      return services.approvals.decide(params);
     }),
 
     // Issue Documents
@@ -905,6 +999,14 @@ export function createHostClientHandlers(
     // Agents
     "agents.list": gated("agents.list", async (params) => {
       return services.agents.list(params);
+    }),
+    "agents.getRuntimeIdentity": gated("agents.getRuntimeIdentity", async (params) => {
+      if (!services.agents.getRuntimeIdentity) throw new Error("Agent runtime identity is unavailable");
+      return services.agents.getRuntimeIdentity(params);
+    }),
+    "agents.getRuntime": gated("agents.getRuntime", async (params) => {
+      if (!services.agents.getRuntime) throw new Error("Agent runtime state is unavailable");
+      return services.agents.getRuntime(params);
     }),
     "agents.get": gated("agents.get", async (params) => {
       return services.agents.get(params);

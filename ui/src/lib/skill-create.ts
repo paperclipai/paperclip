@@ -21,6 +21,8 @@ export type SkillCreateDraft = {
   sharingScope: Exclude<CompanySkillSharingScope, "public_link">;
   forkedFromSkillId: string | null;
   forkedFromName: string | null;
+  /** Destination folder for the new skill (null = Unfiled / top level). */
+  folderId: string | null;
 };
 
 export function normalizeSkillDraftSlug(value: string) {
@@ -92,6 +94,7 @@ export function buildBlankSkillDraft(): SkillCreateDraft {
     sharingScope: "company",
     forkedFromSkillId: null,
     forkedFromName: null,
+    folderId: null,
   };
 }
 
@@ -109,6 +112,7 @@ export function buildForkSkillDraft(skill: CompanySkillDetail): SkillCreateDraft
     sharingScope: "company",
     forkedFromSkillId: skill.id,
     forkedFromName: skill.name,
+    folderId: null,
   };
 }
 
@@ -128,5 +132,6 @@ export function skillCreateDraftToPayload(draft: SkillCreateDraft): CompanySkill
     categories: draft.categories,
     sharingScope: draft.sharingScope,
     forkedFromSkillId: draft.forkedFromSkillId,
+    folderId: draft.folderId ?? undefined,
   };
 }

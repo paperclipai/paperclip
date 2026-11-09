@@ -1,0 +1,36 @@
+{
+  "schema": "paperclip.runner.sanitized-provider-fixture.v1",
+  "provider": "codex",
+  "records": [
+    {
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "id": "fixture-search",
+          "type": "webSearch",
+          "query": "sanitized protocol query",
+          "results": [
+            {
+              "ref_id": "safe-source",
+              "title": "Protocol reference",
+              "url": "https://example.com/protocol",
+              "snippet": "Sanitized fixture"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "id": "fixture-tool",
+          "type": "commandExecution",
+          "command": "node --test",
+          "status": "completed",
+          "output": "1 test passed"
+        }
+      }
+    }
+  ]
+}

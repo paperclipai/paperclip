@@ -2,7 +2,7 @@
 
 import { deflateRawSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { createZipArchive, readZipArchive } from "./zip";
+import { createZipArchive, estimateZipArchiveSize, readZipArchive } from "./zip";
 
 function readUint16(bytes: Uint8Array, offset: number) {
   return bytes[offset]! | (bytes[offset + 1]! << 8);
@@ -257,6 +257,51 @@ describe("createZipArchive", () => {
     });
   });
 
+  it("round-trips extensionless blobs/ entries as base64 octet streams", async () => {
+    const bytes = new Uint8Array([0x00, 0x01, 0x80, 0xfe, 0xff]);
+    const entry = {
+      encoding: "base64" as const,
+      data: Buffer.from(bytes).toString("base64"),
+      contentType: "application/octet-stream",
+    };
+    const archive = createZipArchive(
+      {
+        "COMPANY.md": "# Company\n",
+        "blobs/4f2d1c9a": entry,
+      },
+      "paperclip-demo",
+    );
+
+    await expect(readZipArchive(archive)).resolves.toEqual({
+      rootPath: "paperclip-demo",
+      files: {
+        "COMPANY.md": "# Company\n",
+        "blobs/4f2d1c9a": entry,
+      },
+    });
+  });
+
+  it("falls back to base64 for invalid UTF-8 bytes instead of mangling them", async () => {
+    const invalidUtf8 = new Uint8Array([0x68, 0x69, 0xff, 0xfe, 0xc0]);
+    const archive = createZipArchive(
+      {
+        "tasks/pap-1/raw-notes": {
+          encoding: "base64",
+          data: Buffer.from(invalidUtf8).toString("base64"),
+          contentType: null,
+        },
+      },
+      "paperclip-demo",
+    );
+
+    const result = await readZipArchive(archive);
+    expect(result.files["tasks/pap-1/raw-notes"]).toEqual({
+      encoding: "base64",
+      data: Buffer.from(invalidUtf8).toString("base64"),
+      contentType: "application/octet-stream",
+    });
+  });
+
   it("reads standard DEFLATE zip archives created outside Paperclip", async () => {
     const archive = createDeflatedZipArchive(
       {
@@ -285,5 +330,62 @@ describe("createZipArchive", () => {
         "agents/ceo/AGENTS.md": "# CEO\n",
       },
     });
+  });
+});
+
+describe("estimateZipArchiveSize", () => {
+  it("matches the real archive byte length for mixed text and binary entries", () => {
+    const files = {
+      "COMPANY.md": "# Company\n",
+      "agents/céo/AGENT.md": "# Héllo wörld — 日本語 🚀\n",
+      "images/logo.png": {
+        encoding: "base64" as const,
+        data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]).toString("base64"),
+        contentType: "image/png",
+      },
+      "blobs/4f2d1c9a": {
+        encoding: "base64" as const,
+        data: Buffer.from([0x00, 0x01, 0x80, 0xfe]).toString("base64"),
+        contentType: "application/octet-stream",
+      },
+      "notes/empty.txt": "",
+    };
+
+    expect(estimateZipArchiveSize(files, "paperclip-demo")).toBe(
+      createZipArchive(files, "paperclip-demo").byteLength,
+    );
+  });
+
+  it("matches the real archive byte length for every base64 padding variant", () => {
+    for (const byteCount of [1, 2, 3, 4, 5, 6]) {
+      const files = {
+        "blobs/blob": {
+          encoding: "base64" as const,
+          data: Buffer.alloc(byteCount, 0xab).toString("base64"),
+          contentType: "application/octet-stream",
+        },
+      };
+
+      expect(estimateZipArchiveSize(files, "root")).toBe(
+        createZipArchive(files, "root").byteLength,
+      );
+    }
+  });
+
+  it("mirrors the writer's path normalization for messy paths", () => {
+    const files = {
+      "agents//ceo\\AGENT.md": "# CEO\n",
+    };
+
+    expect(estimateZipArchiveSize(files, "demo/")).toBe(
+      createZipArchive(files, "demo/").byteLength,
+    );
+  });
+
+  it("returns the 22-byte end-of-central-directory record for an empty map", () => {
+    expect(estimateZipArchiveSize({}, "paperclip-demo")).toBe(22);
+    expect(estimateZipArchiveSize({}, "paperclip-demo")).toBe(
+      createZipArchive({}, "paperclip-demo").byteLength,
+    );
   });
 });

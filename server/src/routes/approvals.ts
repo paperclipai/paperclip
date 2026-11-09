@@ -21,6 +21,9 @@ import {
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { issueService } from "../services/issues.js";
+import { approvalReadSqlCondition, canActorReadApproval } from "../services/authorization.js";
+import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -29,11 +32,10 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
   };
 }
 
-function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
+function isStatusOnlyRecoveryContext(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
   const context = contextSnapshot as Record<string, unknown>;
-  return context.modelProfile === "cheap" &&
-    context.recoveryIntent === "status_only" &&
+  return context.recoveryIntent === "status_only" &&
     context.allowDeliverableWork === false &&
     context.allowDocumentUpdates === false &&
     context.resumeRequiresNormalModel === true;
@@ -44,14 +46,121 @@ export function approvalRoutes(
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
 ) {
   const router = Router();
+  router.param("id", async (req, res, next, id) => {
+    try {
+      if (!(await canActorReadApproval(db, req.actor, id))) {
+        res.status(404).json({ error: "Approval not found" });
+        return;
+      }
+      next();
+    } catch (error) { next(error); }
+  });
   const svc = approvalService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const issueApprovalsSvc = issueApprovalService(db);
+  const issuesSvc = issueService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  async function lostReviewPathIssueIds(
+    companyId: string,
+    linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>,
+  ) {
+    const attention = await issuesSvc.listReviewAttention(companyId, linkedIssues);
+    return new Set(linkedIssues
+      .filter((issue) => attention.get(issue.id)?.state === "stalled")
+      .map((issue) => issue.id));
+  }
+
+  function approvalReviewPathContext(approvalId: string) {
+    return {
+      reviewPathLost: true,
+      reviewPathConsumedRef: approvalId,
+      reviewPathInstruction: REVIEW_PATH_RECOVERY_INSTRUCTION,
+    };
+  }
+
+  async function queueAdditionalApprovalReviewPathWakes(input: {
+    approvalId: string;
+    approvalStatus: string;
+    companyId: string;
+    linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
+    lostIssueIds: Set<string>;
+    alreadyWoken?: { agentId: string; issueId: string } | null;
+    requestedByUserId: string;
+  }) {
+    for (const issue of input.linkedIssues) {
+      if (!input.lostIssueIds.has(issue.id) || !issue.assigneeAgentId) continue;
+      if (
+        input.alreadyWoken?.agentId === issue.assigneeAgentId
+        && input.alreadyWoken.issueId === issue.id
+      ) continue;
+
+      const wakeReason = `approval_${input.approvalStatus}`;
+      try {
+        const wakeRun = await heartbeat.wakeup(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: wakeReason,
+          idempotencyKey: `approval-review-path:${input.approvalId}:${issue.id}:${input.approvalStatus}`,
+          payload: {
+            approvalId: input.approvalId,
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+            ...approvalReviewPathContext(input.approvalId),
+          },
+          requestedByActorType: "user",
+          requestedByActorId: input.requestedByUserId,
+          contextSnapshot: {
+            source: `approval.${input.approvalStatus}`,
+            approvalId: input.approvalId,
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+            taskId: issue.id,
+            wakeReason,
+            ...approvalReviewPathContext(input.approvalId),
+          },
+        });
+
+        await logActivity(db, {
+          companyId: input.companyId,
+          actorType: "user",
+          actorId: input.requestedByUserId,
+          action: "approval.review_path_wakeup_queued",
+          entityType: "approval",
+          entityId: input.approvalId,
+          details: {
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            wakeRunId: wakeRun?.id ?? null,
+          },
+        });
+      } catch (err) {
+        logger.warn(
+          { err, approvalId: input.approvalId, issueId: issue.id, agentId: issue.assigneeAgentId },
+          "failed to queue review-path wake after approval resolution",
+        );
+        await logActivity(db, {
+          companyId: input.companyId,
+          actorType: "user",
+          actorId: input.requestedByUserId,
+          action: "approval.review_path_wakeup_failed",
+          entityType: "approval",
+          entityId: input.approvalId,
+          details: {
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+    }
+  }
 
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
@@ -89,14 +198,13 @@ export function approvalRoutes(
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return true;
-    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+    if (!isStatusOnlyRecoveryContext(run.contextSnapshot)) return true;
 
     res.status(403).json({
-      error: "Cheap status-only recovery runs cannot create or modify approvals",
+      error: "Status-only recovery runs cannot create or modify approvals",
       details: {
         companyId,
         runId: run.id,
-        modelProfile: "cheap",
         recoveryIntent: "status_only",
         resumeRequiresNormalModel: true,
       },
@@ -109,7 +217,7 @@ export function approvalRoutes(
     assertCompanyAccess(req, companyId);
     if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
     const status = req.query.status as string | undefined;
-    const result = await svc.list(companyId, status);
+    const result = await svc.list(companyId, status, await approvalReadSqlCondition(db, req.actor));
     res.json(result.map((approval) => redactApprovalPayload(approval)));
   });
 
@@ -199,6 +307,10 @@ export function approvalRoutes(
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
       const linkedIssueIds = linkedIssues.map((issue) => issue.id);
       const primaryIssueId = linkedIssueIds[0] ?? null;
+      const lostReviewIssueIds = await lostReviewPathIssueIds(approval.companyId, linkedIssues);
+      const primaryReviewPathContext = primaryIssueId && lostReviewIssueIds.has(primaryIssueId)
+        ? approvalReviewPathContext(approval.id)
+        : null;
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -214,6 +326,7 @@ export function approvalRoutes(
         },
       });
 
+      let primaryReviewPathWakeCovered = false;
       if (approval.requestedByAgentId) {
         try {
           const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
@@ -225,6 +338,7 @@ export function approvalRoutes(
               approvalStatus: approval.status,
               issueId: primaryIssueId,
               issueIds: linkedIssueIds,
+              ...(primaryReviewPathContext ?? {}),
             },
             requestedByActorType: "user",
             requestedByActorId: req.actor.userId ?? "board",
@@ -236,8 +350,10 @@ export function approvalRoutes(
               issueIds: linkedIssueIds,
               taskId: primaryIssueId,
               wakeReason: "approval_approved",
+              ...(primaryReviewPathContext ?? {}),
             },
           });
+          primaryReviewPathWakeCovered = Boolean(wakeRun && primaryReviewPathContext);
 
           await logActivity(db, {
             companyId: approval.companyId,
@@ -276,6 +392,18 @@ export function approvalRoutes(
           });
         }
       }
+
+      await queueAdditionalApprovalReviewPathWakes({
+        approvalId: approval.id,
+        approvalStatus: approval.status,
+        companyId: approval.companyId,
+        linkedIssues,
+        lostIssueIds: lostReviewIssueIds,
+        alreadyWoken: primaryReviewPathWakeCovered && approval.requestedByAgentId && primaryIssueId
+          ? { agentId: approval.requestedByAgentId, issueId: primaryIssueId }
+          : null,
+        requestedByUserId: req.actor.userId ?? "board",
+      });
     }
 
     res.json(redactApprovalPayload(approval));
@@ -292,6 +420,8 @@ export function approvalRoutes(
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const lostReviewIssueIds = await lostReviewPathIssueIds(approval.companyId, linkedIssues);
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -300,6 +430,14 @@ export function approvalRoutes(
         entityType: "approval",
         entityId: approval.id,
         details: { type: approval.type },
+      });
+      await queueAdditionalApprovalReviewPathWakes({
+        approvalId: approval.id,
+        approvalStatus: approval.status,
+        companyId: approval.companyId,
+        linkedIssues,
+        lostIssueIds: lostReviewIssueIds,
+        requestedByUserId: req.actor.userId ?? "board",
       });
     }
 

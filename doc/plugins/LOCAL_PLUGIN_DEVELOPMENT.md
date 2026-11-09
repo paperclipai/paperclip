@@ -11,7 +11,7 @@ pause controls, and consistent audits instead of hidden daemon behavior.
 
 ## Prerequisites
 
-- Node.js 22+ and `pnpm`.
+- Node.js 24.11+ and `pnpm`.
 - A local Paperclip checkout you can run from source. Local plugin installs read source from disk, so the running server must be able to see the path you give it.
 
 ## The five steps
@@ -180,6 +180,15 @@ You can, but you usually should not. The control-plane host is shared and may be
 ## Reload semantics, honestly
 
 Paperclip watches the on-disk plugin package after a local install. The watcher targets the runtime entrypoints declared in the package's `paperclipPlugin` field (`dist/manifest.js`, `dist/worker.js`, `dist/ui/`).
+
+When the lifecycle registers a different local package path for the same plugin,
+the watcher switches to that directory. Pending changes and late events from the
+previous directory do not restart the worker. If the new directory is unavailable
+or the plugin no longer has a local path, the old watcher stops.
+Only the latest pending path lookup can register a watcher. Manual registration,
+unwatching, and shutdown cancel earlier pending lookups.
+A watcher error stops the failed watcher while allowing a pending replacement
+path lookup to finish.
 
 What that means in practice:
 

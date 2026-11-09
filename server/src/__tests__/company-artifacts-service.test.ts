@@ -8,6 +8,7 @@ import {
   assets,
   companies,
   createDb,
+  documentMemberships,
   documents,
   heartbeatRuns,
   issueAttachments,
@@ -65,6 +66,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(documentMemberships);
     await db.delete(issueWorkProducts);
     await db.delete(issueAttachments);
     await db.delete(assets);
@@ -172,6 +174,14 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         updatedAt: new Date("2026-01-06T00:00:00.000Z"),
       },
       {
+        id: "20202020-2020-4020-8020-202020202020",
+        companyId,
+        title: "Plan",
+        latestBody: "Human-approved plan",
+        createdByUserId: "user-1",
+        updatedAt: new Date("2026-01-08T00:00:00.000Z"),
+      },
+      {
         id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
         companyId: otherCompanyId,
         title: "Other Company Plan",
@@ -198,6 +208,12 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         issueId,
         documentId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
         key: "user-notes",
+      },
+      {
+        companyId,
+        issueId: secondIssueId,
+        documentId: "20202020-2020-4020-8020-202020202020",
+        key: "plan",
       },
       {
         companyId: otherCompanyId,
@@ -333,6 +349,89 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     return { companyId, otherCompanyId, projectId, issueId, secondIssueId, otherIssueId, otherRunId };
   }
 
+  it("returns only the caller's starred documents, including plan and human-authored documents, with cursor order", async () => {
+    const { companyId } = await seedArtifacts();
+    await db.insert(documentMemberships).values([
+      {
+        companyId,
+        documentId: "20202020-2020-4020-8020-202020202020",
+        userId: "user-1",
+        starredAt: new Date("2026-02-03T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        documentId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        userId: "user-1",
+        starredAt: new Date("2026-02-02T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        documentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        userId: "other-user",
+        starredAt: new Date("2026-02-04T00:00:00.000Z"),
+      },
+    ]);
+
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: [companyId],
+        memberships: [{ companyId, membershipRole: "viewer", status: "active" }],
+      };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService()));
+    app.use(errorHandler);
+
+    const first = await request(app).get(`/api/companies/${companyId}/artifacts?starred=true&limit=1`);
+    expect(first.status).toBe(200);
+    expect(first.body.artifacts.map((artifact: { title: string }) => artifact.title)).toEqual(["Plan"]);
+    expect(first.body.nextCursor).toEqual(expect.any(String));
+
+    const second = await request(app).get(
+      `/api/companies/${companyId}/artifacts?starred=true&limit=10&cursor=${first.body.nextCursor}`,
+    );
+    expect(second.status).toBe(200);
+    expect(second.body.artifacts.map((artifact: { title: string }) => artifact.title)).toEqual(["User Upload Notes"]);
+    expect(second.body.artifacts.every((artifact: { source: string }) => artifact.source === "document")).toBe(true);
+
+    const incompatibleKind = await request(app).get(
+      `/api/companies/${companyId}/artifacts?starred=true&kind=image`,
+    );
+    expect(incompatibleKind.status).toBe(200);
+    expect(incompatibleKind.body).toEqual({ artifacts: [], nextCursor: null });
+  });
+
+  it("returns an empty starred view for agent callers", async () => {
+    const { companyId, otherRunId } = await seedArtifacts();
+    await db.insert(documentMemberships).values({
+      companyId,
+      documentId: "20202020-2020-4020-8020-202020202020",
+      userId: "user-1",
+    });
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId,
+        runId: otherRunId,
+        source: "agent_key",
+      };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService()));
+    app.use(errorHandler);
+
+    const response = await request(app).get(`/api/companies/${companyId}/artifacts?starred=true`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ artifacts: [], nextCursor: null });
+  });
+
   it("projects agent-created documents, direct attachments, and work products while excluding noisy sources", async () => {
     const { companyId } = await seedArtifacts();
     const storage = createStorageService({ "notes.txt": Buffer.from("Text file preview from an agent output.") });
@@ -399,6 +498,32 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       cursor: pageAfterPrimaryWorkProduct.nextCursor ?? undefined,
     });
     expect(afterPrimaryCursor.artifacts.map((artifact) => artifact.title)).toEqual(["notes.txt"]);
+  });
+
+  it("filters every artifact source by the agent it is attributed to", async () => {
+    const { companyId } = await seedArtifacts();
+    const writerId = "21212121-2121-4121-8121-212121212121";
+    await db.insert(agents).values({ id: writerId, companyId, name: "Writer", role: "engineer" });
+    await db.update(documents).set({ createdByAgentId: writerId })
+      .where(eq(documents.id, "cccccccc-cccc-4ccc-8ccc-cccccccccccc"));
+    const storage = createStorageService({ "notes.txt": Buffer.from("notes") });
+
+    const writer = await companyArtifactsService(db, storage).list(companyId, { agentId: writerId, limit: 20 });
+    expect(writer.artifacts.map((artifact) => artifact.title)).toEqual(["Review Notes"]);
+
+    const original = await companyArtifactsService(db, storage).list(companyId, {
+      agentId: "33333333-3333-4333-8333-333333333333",
+      limit: 20,
+    });
+    expect(original.artifacts.map((artifact) => artifact.title)).toEqual(["direct-video.mp4", "Primary Cut", "notes.txt"]);
+    expect(new Set(original.artifacts.map((artifact) => artifact.createdByAgent?.id)))
+      .toEqual(new Set(["33333333-3333-4333-8333-333333333333"]));
+
+    const foreign = await companyArtifactsService(db, storage).list(companyId, {
+      agentId: "44444444-4444-4444-8444-444444444444",
+      limit: 20,
+    });
+    expect(foreign.artifacts).toEqual([]);
   });
 
   it("deduplicates work product attachments beyond the work product fetch window", async () => {

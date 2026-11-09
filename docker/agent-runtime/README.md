@@ -4,7 +4,7 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 
 ## Image Lineup
 
-- **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 22 + git + tini + non-root user (uid 1000) + the agent shim.
+- **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 24 + git + tini + non-root user (uid 1000) + the agent shim.
 - **`agent-runtime-opencode`**: Extends base with `opencode-ai` globally installed.
 - **`agent-runtime-pi`**: Extends base with `@mariozechner/pi-coding-agent`.
 - **`agent-runtime-codex`**: Extends base with `@openai/codex`.
@@ -16,10 +16,18 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 
 **OS & Runtime:**
 - Ubuntu 22.04
-- Node.js 22 (via NodeSource APT repo)
+- Node.js 24 (via NodeSource APT repo)
 - git
 - tini (PID-1 init, ensures signal propagation)
 - Non-root user `paperclip` (uid/gid 1000)
+
+The NodeSource install puts `node` on the default `PATH`. The agent shim in this
+image runs the harness directly with that `PATH`. The shim does not source a
+login profile, and the runtime never writes a profile or an rc file. Some
+sandbox providers instead wrap each command in a login shell. That shell sources
+`/etc/profile` and the user profile files to read an owner-supplied `PATH`. No
+exec path sources `nvm`. For the full exec-path contract, see
+`packages/plugins/sandbox-providers/SANDBOX-REQUIREMENTS.md`.
 
 **Paperclip Binaries:**
 - `/usr/local/bin/paperclip-agent-shim`: Go binary compiled from `tools/agent-shim/`. Reads `/run/paperclip/runtime-command.json` and `syscall.Exec`s the harness CLI.

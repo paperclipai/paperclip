@@ -1,0 +1,115 @@
+import { createHash } from "node:crypto";
+import { HttpError } from "../../../errors.js";
+import { chatRunSourceMessageId } from "../run-origin.js";
+import { and, desc, eq, or, sql } from "drizzle-orm";
+import { chatActions, chatConversations, chatEndpointResources, chatEndpoints, chatGitHubReviews, chatMessageLinks, heartbeatRuns, toolConnections, type Db } from "@paperclipai/db";
+
+export async function hasPublishedGitHubReview(db: Db, binding: {
+  companyId: string;
+  issueId: string;
+  runId: string;
+}): Promise<boolean> {
+  const reviews = await db.select({ id: chatGitHubReviews.id, endpointId: chatGitHubReviews.endpointId })
+    .from(chatGitHubReviews)
+    .where(and(
+      eq(chatGitHubReviews.companyId, binding.companyId),
+      eq(chatGitHubReviews.issueId, binding.issueId),
+      eq(chatGitHubReviews.runId, binding.runId),
+      eq(chatGitHubReviews.state, "completed"),
+    ));
+  if (!reviews.length) return false;
+  const [publication] = await db.select({ id: chatActions.id }).from(chatActions).where(and(
+    eq(chatActions.companyId, binding.companyId),
+    or(...reviews.map(review => and(
+      eq(chatActions.endpointId, review.endpointId),
+      eq(chatActions.providerActionId, `github_publication:${binding.issueId}:assessment:${createHash("sha256").update(JSON.stringify(review.id)).digest("hex")}`),
+    ))),
+    eq(chatActions.kind, "github_review_publication"),
+    eq(chatActions.status, "processed"),
+  )).limit(1);
+  return !!publication;
+}
+
+type WaitRun = Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "responsibleUserId" | "activeIdentityContextId" | "nativeIssueId" | "issueId" | "contextSnapshot">;
+
+const inheritedReviewQueries = new WeakMap<Db, ReturnType<typeof prepareInheritedReviewQuery>>();
+
+function prepareInheritedReviewQuery(db: Db) {
+  return db.select({
+    id: chatGitHubReviews.id, endpointId: chatGitHubReviews.endpointId,
+    state: chatGitHubReviews.state, repository: chatGitHubReviews.repository,
+    repositoryId: chatGitHubReviews.repositoryId, headSha: chatGitHubReviews.headSha,
+    reviewedCommit: sql<unknown>`${chatGitHubReviews.assessment}->'reviewedCommit'`, reviewRunId: chatGitHubReviews.runId,
+    connectionEnabled: toolConnections.enabled, connectionStatus: toolConnections.status,
+    reviewAgentId: heartbeatRuns.agentId, reviewCompanyId: heartbeatRuns.companyId,
+    resourceRepository: chatEndpointResources.providerResourceId,
+    resourceRepositoryId: sql<string | null>`${chatEndpointResources.metadata}->>'providerRepositoryId'`,
+    pullNumber: chatGitHubReviews.pullNumber, thread: chatConversations.externalThreadId,
+  }).from(chatMessageLinks)
+    .innerJoin(chatConversations, and(eq(chatConversations.id, chatMessageLinks.conversationId),
+      eq(chatConversations.companyId, sql.placeholder("companyId")), eq(chatConversations.issueId, sql.placeholder("issueId"))))
+    .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatConversations.endpointId),
+      eq(chatEndpoints.companyId, sql.placeholder("companyId")), eq(chatEndpoints.provider, "github"),
+      eq(chatEndpoints.assignedAgentId, sql.placeholder("agentId"))))
+    .leftJoin(toolConnections, and(eq(toolConnections.id, chatEndpoints.connectionId),
+      eq(toolConnections.companyId, sql.placeholder("companyId"))))
+    .innerJoin(chatEndpointResources, and(eq(chatEndpointResources.id, chatConversations.resourceId),
+      eq(chatEndpointResources.companyId, sql.placeholder("companyId")), eq(chatEndpointResources.endpointId, chatEndpoints.id)))
+    .innerJoin(chatGitHubReviews, and(eq(chatGitHubReviews.endpointId, chatEndpoints.id),
+      eq(chatGitHubReviews.companyId, sql.placeholder("companyId")), eq(chatGitHubReviews.issueId, sql.placeholder("issueId"))))
+    .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, chatGitHubReviews.runId))
+    .where(and(eq(chatMessageLinks.companyId, sql.placeholder("companyId")), eq(chatMessageLinks.commentId, sql.placeholder("commentId")),
+      eq(chatMessageLinks.direction, "inbound")))
+    .orderBy(desc(chatGitHubReviews.createdAt), desc(chatGitHubReviews.id)).limit(1)
+    .prepare("inherited_github_review_wait");
+}
+
+function inheritedReviewQuery(db: Db) {
+  let query = inheritedReviewQueries.get(db);
+  if (!query) {
+    query = prepareInheritedReviewQuery(db);
+    inheritedReviewQueries.set(db, query);
+  }
+  return query;
+}
+
+/** Passive review waits inherit the same accepted requester lineage as GitHub
+ * tools. This is not a grant to publish, run a monitor, or reuse attachments. */
+export async function readInheritedGitHubReviewWait(db: Db, run: WaitRun) {
+  if (!run.activeIdentityContextId || !run.nativeIssueId) return null;
+  let commentId: string | null;
+  try {
+    commentId = await chatRunSourceMessageId(db, run, { provider: "github" });
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 403) return { kind: "revoked" as const };
+    throw error;
+  }
+  if (!commentId) return null;
+  const [review] = await inheritedReviewQuery(db).execute({
+    companyId: run.companyId, issueId: run.nativeIssueId, agentId: run.agentId, commentId,
+  });
+  // A newer unreviewed head cannot inherit the prior head's publication.
+  if (!review) return null;
+  if (!review.connectionEnabled || review.connectionStatus !== "active" || review.state !== "completed" ||
+      review.reviewCompanyId !== run.companyId || review.reviewAgentId !== run.agentId ||
+      review.reviewedCommit !== review.headSha ||
+      review.resourceRepository.toLowerCase() !== review.repository.toLowerCase() ||
+      review.resourceRepositoryId !== review.repositoryId ||
+      review.thread.toLowerCase() !== `github:${review.repository}:${review.pullNumber}`.toLowerCase()) return { kind: "revoked" as const };
+  const [publication] = await db.select({ id: chatActions.id }).from(chatActions).where(and(
+    eq(chatActions.companyId, run.companyId), eq(chatActions.endpointId, review.endpointId),
+    eq(chatActions.kind, "github_review_publication"), eq(chatActions.status, "processed"),
+    eq(chatActions.providerActionId, `github_publication:${run.nativeIssueId}:assessment:${createHash("sha256").update(JSON.stringify(review.id)).digest("hex")}`),
+  )).limit(1);
+  if (!publication) return { kind: "revoked" as const };
+  // The caller must still verify live task ownership, destination and principal
+  // policy. This normalized source is used only by the passive-wait boundary.
+  return { kind: "published" as const, endpointId: review.endpointId, reviewId: review.id, reviewRunId: review.reviewRunId,
+    headSha: review.headSha, context: {
+    source: "chat:github", paperclipHarnessCheckedOut: true,
+    wakeCommentId: commentId, wakeCommentIds: [commentId],
+    paperclipWake: { checkedOutByHarness: true, externalChatProvider: "github",
+      issue: { id: run.nativeIssueId }, commentIds: [commentId] },
+  } };
+}

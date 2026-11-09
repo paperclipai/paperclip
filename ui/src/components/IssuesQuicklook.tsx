@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
 import type { ProjectWorkspaceLinkedIssue } from "../lib/project-workspaces-tab";
-import { IssueQuicklookCard } from "./IssueLinkQuicklook";
+import { IssueQuicklookCard, QUICKLOOK_CONTENT_CLASS, quicklookAlignOffset } from "./IssueLinkQuicklook";
 
 interface IssuesQuicklookProps {
   issue: ProjectWorkspaceLinkedIssue;
@@ -22,9 +22,11 @@ export function IssuesQuicklook({ issue, children }: IssuesQuicklookProps) {
         {children}
       </PopoverTrigger>
       <PopoverContent
-        className="w-72 p-3"
+        data-quicklook
+        className={QUICKLOOK_CONTENT_CLASS}
         side="top"
         align="start"
+        alignOffset={quicklookAlignOffset("start")}
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}
         onOpenAutoFocus={(e) => e.preventDefault()}

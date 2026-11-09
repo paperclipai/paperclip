@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "slug": "zapier",
+  "name": "Zapier",
+  "description": "Reach thousands of apps through your Zapier account.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "/brands/apps/zapier.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.zapier.com/*"
+  ],
+  "methods": [
+    {
+      "key": "generated-url",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use the complete provider-generated MCP URL from Zapier.",
+      "defaults": {},
+      "guidanceMd": "Create a Zapier MCP server, then paste the complete generated connection URL. The token remains embedded in that URL.",
+      "riskTier": "S3",
+      "label": "Paste generated MCP URL"
+    }
+  ],
+  "docsUrl": "https://docs.zapier.com/mcp/quickstart"
+}

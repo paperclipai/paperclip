@@ -1,0 +1,72 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: task-coordination
+status: planned
+scenarios:
+  - id: task-coordination.delegate-with-context
+    capabilities:
+      - task-coordination/delegation
+      - tasks/create
+    context: >-
+      The CEO owns a launch task, Morgan is available and authorized, and a design brief is
+      attached.
+    query: >-
+      Have Morgan implement the page and report back here.
+    expected_outcome: >-
+      One child or linked work task goes to Morgan with the relevant brief and a clear
+      completion request. The relationship back to the original work is inspectable. The CEO
+      tracks Morgan's actual result and incorporates it without claiming another agent's work
+      was executed on the parent.
+  - id: task-coordination.block-on-design
+    capabilities:
+      - task-coordination/dependencies
+    context: >-
+      Website and design tasks exist; design is unfinished and adding this dependency would not
+      form a cycle.
+    query: >-
+      Do not start the website until the design is approved.
+    expected_outcome: >-
+      The authorized dependency is saved on the website work and the task shows the design as
+      its blocker. Normal admission resumes eligible work only after the prerequisite is
+      resolved and other gates are clear. Merely posting a comment saying wait does not satisfy
+      this scenario.
+  - id: task-coordination.reject-dependency-cycle
+    capabilities:
+      - task-coordination/dependencies
+    context: >-
+      Design already depends on Website; the requested reverse edge would create a cycle.
+    query: >-
+      Make Website wait for Design too.
+    expected_outcome: >-
+      The operation rejects the circular dependency, leaves both saved dependency sets valid and
+      explains the conflict using the actual task names. The agent proposes an actionable way to
+      choose the intended order instead of silently dropping an existing prerequisite.
+  - id: task-coordination.independent-review
+    capabilities:
+      - task-coordination/signoff
+      - tasks/completion
+    context: >-
+      Launch work requires an eligible reviewer different from its implementer. Morgan has
+      delivered a result.
+    query: >-
+      Get Riley to review Morgan's website before we call it finished.
+    expected_outcome: >-
+      The review request reaches eligible Riley with the real deliverable and acceptance
+      context. The task remains governed by the completion policy until an authorized review
+      resolves. Morgan cannot self-approve, and chat distinguishes a requested review, a
+      completed review and final task completion.
+  - id: task-coordination.pause-tree
+    capabilities:
+      - task-coordination/tree-control
+      - steering/stop-and-pause
+    context: >-
+      The Launch parent has two running descendants and a manually paused child; the current
+      agent cannot use board-only tree controls.
+    query: >-
+      Pause the whole Launch task tree.
+    expected_outcome: >-
+      The response identifies the exact parent and supported human pause action. Once the
+      authorized human acts, the tree stops admitting new work and active executions settle
+      according to the control contract. Resuming later does not erase the child's independent
+      manual pause or budget holds.

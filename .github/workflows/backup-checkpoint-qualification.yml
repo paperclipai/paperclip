@@ -1,0 +1,81 @@
+name: Backup checkpoint qualification
+on:
+  pull_request:
+    paths:
+      - 'packages/db/**'
+      - 'server/src/services/*backup*'
+      - 'server/src/lib/dedicated-test-database-url.ts'
+      - 'server/src/__tests__/*backup*'
+      - 'server/src/__tests__/fixtures/database-backup-worker.ts'
+      - 'server/src/index.ts'
+      - 'server/scripts/*backup*'
+      - 'server/scripts/lib/backup-qualification.ts'
+      - 'server/vitest.backup-qualification.config.ts'
+      - '.github/workflows/backup-checkpoint-qualification.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+  push:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  backup-checkpoint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: paperclip
+          POSTGRES_PASSWORD: backup-qualification-fixture
+          POSTGRES_DB: backup_source_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U paperclip -d backup_source_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      PAPERCLIP_BACKUP_CHECKPOINT_SOURCE_TEST_DATABASE_URL: postgres://paperclip:backup-qualification-fixture@127.0.0.1:5432/backup_source_test
+      PAPERCLIP_BACKUP_CHECKPOINT_RESTORE_TEST_DATABASE_URL: postgres://paperclip:backup-qualification-fixture@127.0.0.1:5432/backup_restore_test
+      PAPERCLIP_BACKUP_QUALIFICATION_RECEIPT: ${{ github.workspace }}/backup-checkpoint-evidence/qualification.json
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build workspace import prerequisites
+        run: |
+          pnpm --filter @paperclipai/shared build
+          pnpm --filter @paperclipai/db build
+          pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+      - name: Use the service image's matching real PostgreSQL clients
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/backup-clients" backup-checkpoint-evidence
+          for binary in pg_dump psql; do
+            printf '#!/bin/sh\nexec docker exec --interactive %s %s "$@"\n' "$PG_CONTAINER" "$binary" > "$RUNNER_TEMP/backup-clients/$binary"
+            chmod 700 "$RUNNER_TEMP/backup-clients/$binary"
+          done
+          echo "PAPERCLIP_PG_DUMP_PATH=$RUNNER_TEMP/backup-clients/pg_dump" >> "$GITHUB_ENV"
+          echo "PAPERCLIP_PSQL_PATH=$RUNNER_TEMP/backup-clients/psql" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/backup-clients/pg_dump" --version
+          "$RUNNER_TEMP/backup-clients/psql" --version
+          "$RUNNER_TEMP/backup-clients/psql" "$PAPERCLIP_BACKUP_CHECKPOINT_SOURCE_TEST_DATABASE_URL" --set=ON_ERROR_STOP=1 -c 'CREATE DATABASE backup_restore_test'
+      - name: Migrate only the owned source fixture
+        env:
+          DATABASE_URL: ${{ env.PAPERCLIP_BACKUP_CHECKPOINT_SOURCE_TEST_DATABASE_URL }}
+        run: pnpm --filter @paperclipai/db exec tsx src/migrate.ts
+      - name: Run required real checkpoint and restore proof
+        run: pnpm --filter @paperclipai/server exec vitest run --config vitest.backup-qualification.config.ts
+      - name: Attach qualification receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: backup-checkpoint-evidence
+          path: backup-checkpoint-evidence/
+          if-no-files-found: warn

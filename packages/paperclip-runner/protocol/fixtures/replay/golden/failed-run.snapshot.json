@@ -1,0 +1,143 @@
+{
+  "schema": "paperclip.prp.session-snapshot.v1",
+  "fixtureName": "Failed run",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_replay",
+    "issueId": "issue_replay_failed",
+    "runId": "run_replay_failed",
+    "environmentLeaseId": "lease_replay_failed",
+    "runnerInstanceId": "runner_replay",
+    "normalizedSessionId": "session_replay_failed",
+    "driverSessionId": "driver_replay_failed"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": {
+      "kind": "fake",
+      "version": "1.0.0"
+    },
+    "steer": true,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": true,
+    "structuredResult": true,
+    "typedEvents": true
+  },
+  "runPhase": "terminal",
+  "sessionState": "running",
+  "turnState": "failed",
+  "activeTurnId": null,
+  "items": [
+    {
+      "itemId": "item_failed_command",
+      "kind": "command",
+      "status": "failed",
+      "text": ""
+    }
+  ],
+  "requests": [],
+  "proposedResult": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "yielded",
+    "summary": "The scripted command failed and needs a retry.",
+    "completionClaim": {
+      "contractRevision": "replay-contract-v1",
+      "objectiveSatisfied": false,
+      "criteria": [],
+      "remainingWork": [
+        {
+          "description": "Retry the failed command",
+          "blocksCompletion": true
+        }
+      ]
+    },
+    "evidence": [],
+    "verification": [
+      {
+        "commandOrCheck": "fake command",
+        "status": "failed"
+      }
+    ],
+    "attentionRequests": [],
+    "artifacts": [],
+    "continuation": {
+      "kind": "retry",
+      "summary": "Retry after correcting the command",
+      "idempotencyKey": "retry_replay_failed"
+    }
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "failed",
+    "runTerminalState": "failed",
+    "reportedWorkDisposition": "yielded"
+  },
+  "timeline": [
+    {
+      "position": 1,
+      "sourceEventId": "event_failed_01",
+      "sourceSeq": 1,
+      "eventType": "session.started",
+      "emittedAt": "2026-08-07T12:10:00.020Z",
+      "summary": "session started"
+    },
+    {
+      "position": 2,
+      "sourceEventId": "event_failed_02",
+      "sourceSeq": 2,
+      "eventType": "turn.started",
+      "emittedAt": "2026-08-07T12:10:00.030Z",
+      "summary": "turn started"
+    },
+    {
+      "position": 3,
+      "sourceEventId": "event_failed_03",
+      "sourceSeq": 3,
+      "eventType": "item.failed",
+      "emittedAt": "2026-08-07T12:10:00.040Z",
+      "itemId": "item_failed_command",
+      "summary": "Command exited with code 1"
+    },
+    {
+      "position": 4,
+      "sourceEventId": "event_failed_04",
+      "sourceSeq": 4,
+      "eventType": "run.result.proposed",
+      "emittedAt": "2026-08-07T12:10:00.050Z",
+      "summary": "The scripted command failed and needs a retry."
+    },
+    {
+      "position": 5,
+      "sourceEventId": "event_failed_05",
+      "sourceSeq": 5,
+      "eventType": "turn.failed",
+      "emittedAt": "2026-08-07T12:10:00.060Z",
+      "summary": "turn failed"
+    },
+    {
+      "position": 6,
+      "sourceEventId": "event_failed_06",
+      "sourceSeq": 6,
+      "eventType": "run.terminal",
+      "emittedAt": "2026-08-07T12:10:00.070Z",
+      "summary": "Run failed"
+    }
+  ],
+  "sourceCursors": {
+    "runner:runner_replay": 6
+  },
+  "processedEventIds": [
+    "event_failed_01",
+    "event_failed_02",
+    "event_failed_03",
+    "event_failed_04",
+    "event_failed_05",
+    "event_failed_06"
+  ],
+  "duplicateEventIds": [],
+  "outOfOrderEventIds": [],
+  "gaps": [],
+  "integrity": "complete"
+}

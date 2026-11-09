@@ -3,17 +3,26 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
   agents,
+  approvals,
+  assets,
   companies,
+  companyMemberships,
   costEvents,
   createDb,
+  documents,
   executionWorkspaces,
+  heartbeatRunEvents,
   heartbeatRuns,
+  issueAttachments,
+  issueComments,
+  issueDocuments,
   issueRelations,
+  issueThreadInteractions,
   issues,
   pluginManagedResources,
   plugins,
@@ -24,6 +33,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -59,19 +70,57 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+  function isHeartbeatRunDependentFkError(error: unknown) {
+    const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
+    return (
+      message.includes("heartbeat_run_events_run_id_heartbeat_runs_id_fk")
+      || message.includes("activity_log_run_id_heartbeat_runs_id_fk")
+    );
+  }
+
+  // A real (fire-and-forget) heartbeat run may still be executing in the
+  // background when a test's own createComment-triggered wakeup completes —
+  // retry deletion so that race doesn't fail cleanup with an FK violation.
+  async function deleteHeartbeatRunsWithDependents() {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await db.delete(heartbeatRunEvents);
+      await db.delete(activityLog);
+      try {
+        await db.delete(heartbeatRuns);
+        return;
+      } catch (error) {
+        if (!isHeartbeatRunDependentFkError(error) || attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+  }
+
   afterEach(async () => {
     await Promise.all(tempRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
     tempRoots.length = 0;
-    await db.delete(activityLog);
+    // Await every in-flight background heartbeat run to quiescence before the
+    // deletes below. A createComment-triggered wakeup dispatches its run
+    // fire-and-forget (void heartbeat.wakeup(...)), so a run or wakeup can still
+    // write heartbeat_runs and issues rows when teardown starts and would race
+    // the deletes. The heartbeat service tracks in-flight run and wakeup
+    // promises in module state shared across service instances, so a fresh
+    // instance here drains the runs the per-test host services dispatched.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(costEvents);
-    await db.delete(heartbeatRuns);
+    await deleteHeartbeatRunsWithDependents();
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
+    await db.delete(issueComments);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueAttachments);
+    await db.delete(assets);
+    await db.delete(approvals);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(pluginManagedResources);
     await db.delete(projects);
     await db.delete(plugins);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -168,14 +217,6 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const blockerIssueId = randomUUID();
     const originRunId = randomUUID();
-    await db.insert(heartbeatRuns).values({
-      id: originRunId,
-      companyId,
-      agentId,
-      status: "running",
-      invocationSource: "assignment",
-      contextSnapshot: { issueId: blockerIssueId },
-    });
     await db.insert(issues).values({
       id: blockerIssueId,
       companyId,
@@ -184,6 +225,15 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       priority: "medium",
       identifier: `${issuePrefix(companyId)}-blocker`,
     });
+    await db.insert(heartbeatRuns).values({
+      id: originRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId: blockerIssueId },
+    });
+
 
     const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
     const issue = await services.issues.create({
@@ -729,6 +779,723 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       inputTokens: 30,
       cachedInputTokens: 3,
       outputTokens: 6,
+    });
+  });
+
+  it("rejects a human-attributed plugin comment when actorUserId is not an active company member", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs human input",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.createComment({
+        issueId,
+        companyId,
+        body: "Here's my answer",
+        actorUserId: randomUUID(),
+      }),
+    ).rejects.toThrow("is not an active human member of this company");
+
+    await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+  });
+
+  it("rejects a human-attributed plugin comment when actorUserId is a viewer-role (read-only) member", async () => {
+    // LOOA-648: a viewer is a real active member but is read-only in the web
+    // app (routes/authz.ts "Viewer access is read-only"). Attributing a comment
+    // to them is a write the paired user could not make interactively.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const viewerUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: viewerUserId, status: "active", membershipRole: "viewer",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Needs human input", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.createComment({ issueId, companyId, body: "Here's my answer", actorUserId: viewerUserId }),
+    ).rejects.toThrow("viewer (read-only) access");
+
+    // No comment persisted, no assignee woken.
+    await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+    const comments = await services.issues.listComments({ issueId, companyId });
+    expect(comments).toHaveLength(0);
+  });
+
+  it("creates a human-attributed plugin comment and wakes the issue's assignee", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: humanUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs human input",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    // Cap concurrency at 1 and pre-seed a running run so enqueueWakeup's
+    // queued-run bookkeeping is exercised without startNextQueuedRunForAgent
+    // going on to actually claim/execute the new run — that path spins up
+    // real environment/adapter orchestration this test has no business
+    // depending on (and which races the test's own db teardown).
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: {},
+    });
+
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.gateway",
+      createEventBusStub(),
+      undefined,
+      { heartbeatRuntimeEnv: {} },
+    );
+    const comment = await services.issues.createComment({
+      issueId,
+      companyId,
+      body: "Here's my answer",
+      actorUserId: humanUserId,
+    });
+
+    expect(comment).toMatchObject({
+      authorType: "user",
+      authorUserId: humanUserId,
+      authorAgentId: null,
+      body: "Here's my answer",
+    });
+
+    const [wakeupRequest] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(wakeupRequest).toMatchObject({
+      reason: "issue_commented",
+      requestedByActorType: "user",
+      requestedByActorId: humanUserId,
+    });
+    expect(wakeupRequest?.status).toBe("queued");
+    expect(wakeupRequest?.runId).toEqual(expect.any(String));
+
+    const [run] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, wakeupRequest!.runId!));
+    expect(run).toMatchObject({ agentId, companyId, status: "queued" });
+  });
+
+  it("skips the assignee wakeup when the issue is cancelled concurrently with the comment being written", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: humanUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs human input",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+    // Hold a row lock on the issue so createComment's own `UPDATE issues SET
+    // updated_at` (inside addComment) blocks until this transaction commits a
+    // concurrent cancellation. That deterministically reproduces "another
+    // request closes the issue while the comment is being written" — the
+    // race Greptile flagged on the pre-insert `issue` snapshot — without
+    // relying on timing luck for the outcome, only for scheduling.
+    const lockAndCancelPromise = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await tx.update(issues).set({ status: "cancelled" }).where(eq(issues.id, issueId));
+    });
+
+    const commentPromise = services.issues.createComment({
+      issueId,
+      companyId,
+      body: "Here's my answer",
+      actorUserId: humanUserId,
+    });
+
+    const [comment] = await Promise.all([commentPromise, lockAndCancelPromise]);
+
+    expect(comment).toMatchObject({
+      authorType: "user",
+      authorUserId: humanUserId,
+      body: "Here's my answer",
+    });
+    await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // LOOA-641 — interactions.respond / approvals.decide impersonation surface.
+  // The host must independently re-verify the paired user's active membership
+  // at apply time and never trust the plugin-supplied identity.
+  // ---------------------------------------------------------------------------
+
+  async function seedInteraction(
+    companyId: string,
+    issueId: string,
+    overrides: Partial<typeof issueThreadInteractions.$inferInsert> = {},
+  ) {
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Proceed?" } as never,
+      ...overrides,
+    });
+    return interactionId;
+  }
+
+  it("respondInteraction fails closed when actorUserId is omitted", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const interactionId = await seedInteraction(companyId, issueId);
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.respondInteraction({ issueId, interactionId, companyId, action: "accept" }),
+    ).rejects.toThrow("actorUserId is required");
+  });
+
+  it("respondInteraction rejects an actorUserId that is not an active company member", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const interactionId = await seedInteraction(companyId, issueId);
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.respondInteraction({
+        issueId, interactionId, companyId, action: "accept", actorUserId: randomUUID(),
+      }),
+    ).rejects.toThrow("is not an active human member of this company");
+
+    // The interaction must remain pending — no resolution was applied.
+    const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+    expect(row?.status).toBe("pending");
+  });
+
+  it("respondInteraction rejects a viewer-role active member and leaves the interaction pending", async () => {
+    // LOOA-648: viewers are read-only board members (routes/authz.ts). A plugin
+    // holding issue.interactions.respond must not resolve an interaction on
+    // their behalf — that is a write the viewer is 403'd on in the web app.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const viewerUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: viewerUserId, status: "active", membershipRole: "viewer",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const interactionId = await seedInteraction(companyId, issueId);
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.respondInteraction({
+        issueId, interactionId, companyId, action: "accept", actorUserId: viewerUserId,
+      }),
+    ).rejects.toThrow("viewer (read-only) access");
+
+    const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+    expect(row?.status).toBe("pending");
+  });
+
+  it("respondInteraction applies for a non-viewer human role (operator)", async () => {
+    // LOOA-648 regression: owner/admin/operator must still pass the write bar.
+    // Issue has no assignee so the continuation wakeup is a no-op — this
+    // isolates the membership check from run orchestration.
+    const { companyId } = await seedCompanyAndAgent();
+    const operatorUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: operatorUserId, status: "active", membershipRole: "operator",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium",
+    });
+    const interactionId = await seedInteraction(companyId, issueId);
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const result = await services.issues.respondInteraction({
+      issueId, interactionId, companyId, action: "accept", actorUserId: operatorUserId,
+    });
+    expect(result.applied).toBe(true);
+    const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+    expect(row?.status).toBe("accepted");
+  });
+
+  it.each(["accept", "reject"] as const)(
+    "respondInteraction rejects %s after the issue closes",
+    async (action) => {
+      const { companyId } = await seedCompanyAndAgent();
+      const operatorUserId = randomUUID();
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: operatorUserId,
+        status: "active",
+        membershipRole: "operator",
+      });
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Closed decision",
+        status: "done",
+        priority: "medium",
+      });
+      const interactionId = await seedInteraction(companyId, issueId);
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+      await expect(services.issues.respondInteraction({
+        issueId,
+        interactionId,
+        companyId,
+        action,
+        actorUserId: operatorUserId,
+      })).rejects.toThrow("Interaction is no longer actionable because the issue is closed");
+
+      const [row] = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId));
+      expect(row?.status).toBe("pending");
+    },
+  );
+
+  it("respondInteraction converges (applied:false) when the interaction is already resolved", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: humanUserId, status: "active", membershipRole: "owner",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const interactionId = await seedInteraction(companyId, issueId, { status: "rejected" });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const result = await services.issues.respondInteraction({
+      issueId, interactionId, companyId, action: "accept", actorUserId: humanUserId,
+    });
+    expect(result.applied).toBe(false);
+    expect(result.interaction).toMatchObject({ id: interactionId, status: "rejected" });
+  });
+
+  it("approvals.decide fails closed when actorUserId is omitted", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId, companyId, type: "request_board_approval", status: "pending", payload: { title: "Ship it" },
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.approvals.decide({ approvalId, companyId, action: "approve" }),
+    ).rejects.toThrow("actorUserId is required");
+    const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(row?.status).toBe("pending");
+  });
+
+  it("approvals.decide rejects an actorUserId that is not an active company member", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId, companyId, type: "request_board_approval", status: "pending", payload: { title: "Ship it" },
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.approvals.decide({ approvalId, companyId, action: "approve", actorUserId: randomUUID() }),
+    ).rejects.toThrow("is not an active human member of this company");
+    const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(row?.status).toBe("pending");
+  });
+
+  it("approvals.decide rejects a viewer-role active member and leaves the approval pending", async () => {
+    // LOOA-648: the exploit at the heart of the review — a plugin holding
+    // approvals.respond decides an approval for a viewer who is 403'd in the
+    // web UI. The host must reject the viewer before applying the decision.
+    const { companyId } = await seedCompanyAndAgent();
+    const viewerUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: viewerUserId, status: "active", membershipRole: "viewer",
+    });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId, companyId, type: "request_board_approval", status: "pending", payload: { title: "Ship it" },
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.approvals.decide({ approvalId, companyId, action: "approve", actorUserId: viewerUserId }),
+    ).rejects.toThrow("viewer (read-only) access");
+    const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(row?.status).toBe("pending");
+  });
+
+  it("approvals.decide applies for a non-viewer human role (admin)", async () => {
+    // LOOA-648 regression: owner/admin/operator must still pass the write bar.
+    const { companyId } = await seedCompanyAndAgent();
+    const adminUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: adminUserId, status: "active", membershipRole: "admin",
+    });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId, companyId, type: "request_board_approval", status: "pending", payload: { title: "Ship it" },
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const result = await services.approvals.decide({
+      approvalId, companyId, action: "approve", actorUserId: adminUserId,
+    });
+    expect(result.applied).toBe(true);
+    expect(result.approval).toMatchObject({ id: approvalId, status: "approved", decidedByUserId: adminUserId });
+    const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(row?.status).toBe("approved");
+  });
+
+  it("approvals.decide applies for an active member and redacts secret payload fields", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: humanUserId, status: "active", membershipRole: "owner",
+    });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Ship it", botToken: "xoxb-super-secret" },
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const result = await services.approvals.decide({
+      approvalId, companyId, action: "approve", actorUserId: humanUserId, decisionNote: "lgtm",
+    });
+    expect(result.applied).toBe(true);
+    expect(result.approval).toMatchObject({ id: approvalId, status: "approved", decidedByUserId: humanUserId });
+    // Bridge output must be redacted the same way the web app redacts approvals.
+    expect(result.approval.payload.title).toBe("Ship it");
+    expect(result.approval.payload.botToken).toBe("***REDACTED***");
+
+    // Persisted row is decided; the raw stored secret is untouched (redaction is
+    // an output transform, not a mutation).
+    const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(row?.status).toBe("approved");
+  });
+
+  it("approvals.list redacts payloads and is company-scoped", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const otherCompany = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompany, name: "Other", issuePrefix: issuePrefix(otherCompany), requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(approvals).values({
+      id: randomUUID(), companyId, type: "request_board_approval", status: "pending",
+      payload: { title: "Mine", accessToken: "sekret" },
+    });
+    await db.insert(approvals).values({
+      id: randomUUID(), companyId: otherCompany, type: "request_board_approval", status: "pending",
+      payload: { title: "Theirs" },
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const rows = await services.approvals.list({ companyId });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload.title).toBe("Mine");
+    expect(rows[0]!.payload.accessToken).toBe("***REDACTED***");
+  });
+
+  it("getAttachmentContent returns null for a cross-company attachment id", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const otherCompany = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompany, name: "Other", issuePrefix: issuePrefix(otherCompany), requireBoardApprovalForNewAgents: false,
+    });
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId, companyId: otherCompany, title: "Theirs", status: "todo", priority: "medium",
+    });
+    const assetId = randomUUID();
+    await db.insert(assets).values({
+      id: assetId, companyId: otherCompany, provider: "local_disk", objectKey: "k", contentType: "image/png",
+      byteSize: 10, sha256: "abc",
+    });
+    const attachmentId = randomUUID();
+    await db.insert(issueAttachments).values({
+      id: attachmentId, companyId: otherCompany, issueId: otherIssueId, assetId,
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    // Requested under our own company: the cross-company id must be invisible.
+    void agentId;
+    const content = await services.issues.getAttachmentContent({ attachmentId, companyId });
+    expect(content).toBeNull();
+  });
+
+  it("getAttachmentContent refuses an over-cap attachment", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Has asset", status: "todo", priority: "medium",
+    });
+    const assetId = randomUUID();
+    await db.insert(assets).values({
+      id: assetId, companyId, provider: "local_disk", objectKey: "k", contentType: "image/png",
+      byteSize: 5_000_000, sha256: "abc",
+    });
+    const attachmentId = randomUUID();
+    await db.insert(issueAttachments).values({
+      id: attachmentId, companyId, issueId, assetId,
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.getAttachmentContent({ attachmentId, companyId, maxBytes: 1_000_000 }),
+    ).rejects.toThrow("over the");
+  });
+
+  // PAP-16091 / PAP-16050: a plugin is a non-member principal. Every issue-read
+  // path the host exposes (which a Slack notifier/digest plugin would fan out
+  // to shared channels) must apply the canonical visibility predicate so private
+  // issue content and relationship metadata never reach non-members.
+  describe("non-member plugin issue-read privacy (PAP-16091)", () => {
+    let previousMode: string | undefined;
+    beforeEach(() => {
+      previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+});
+    afterEach(() => {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
+    });
+
+    async function seedOpenAndPrivate() {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const openIssueId = randomUUID();
+      const privateIssueId = randomUUID();
+      await db.insert(issues).values([
+        { id: openIssueId, companyId, title: "Public status", status: "todo", priority: "medium", visibility: "open" },
+        { id: privateIssueId, companyId, title: "Confidential HR matter", status: "todo", priority: "medium", visibility: "private" },
+      ]);
+      return { companyId, agentId, openIssueId, privateIssueId };
+    }
+
+    it("omits private issues from issues.list", async () => {
+      const { companyId, openIssueId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const listed = await services.issues.list({ companyId });
+      const ids = listed.map((issue) => issue.id);
+      expect(ids).toContain(openIssueId);
+      expect(ids).not.toContain(privateIssueId);
+    });
+
+    it("returns null from issues.get for a private issue", async () => {
+      const { companyId, openIssueId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(services.issues.get({ issueId: privateIssueId, companyId })).resolves.toBeNull();
+      // Sanity: the same path still returns readable (open) issues.
+      await expect(services.issues.get({ issueId: openIssueId, companyId })).resolves.toMatchObject({ id: openIssueId });
+    });
+
+    it("returns no comments from issues.listComments for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await db.insert(issueComments).values({
+        id: randomUUID(), companyId, issueId: privateIssueId, body: "secret decision rationale",
+      });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(services.issues.listComments({ issueId: privateIssueId, companyId })).resolves.toEqual([]);
+    });
+
+    it("returns no attachments from issues.listAttachments for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const assetId = randomUUID();
+      await db.insert(assets).values({
+        id: assetId, companyId, provider: "local_disk", objectKey: "secret", contentType: "image/png", byteSize: 10, sha256: "z",
+      });
+      await db.insert(issueAttachments).values({ id: randomUUID(), companyId, issueId: privateIssueId, assetId });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(services.issues.listAttachments({ issueId: privateIssueId, companyId })).resolves.toEqual([]);
+    });
+
+    it("returns null from issues.getAttachmentContent for a private issue's attachment", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const assetId = randomUUID();
+      await db.insert(assets).values({
+        id: assetId, companyId, provider: "local_disk", objectKey: "secret2", contentType: "text/plain", byteSize: 4, sha256: "y",
+      });
+      const attachmentId = randomUUID();
+      await db.insert(issueAttachments).values({ id: attachmentId, companyId, issueId: privateIssueId, assetId });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issues.getAttachmentContent({ attachmentId, companyId, maxBytes: 1_000_000 }),
+      ).resolves.toBeNull();
+    });
+
+    it("excludes a private descendant and redacts private blocker edges in getOrchestrationSummary", async () => {
+      const { companyId } = await seedCompanyAndAgent();
+      const rootId = randomUUID();
+      const publicChildId = randomUUID();
+      const privateChildId = randomUUID();
+      const privateBlockerId = randomUUID();
+      await db.insert(issues).values([
+        { id: rootId, companyId, title: "Root", status: "todo", priority: "medium", visibility: "open" },
+        { id: publicChildId, companyId, parentId: rootId, title: "Public child", status: "todo", priority: "medium", visibility: "open" },
+        { id: privateChildId, companyId, parentId: rootId, title: "Private child", status: "todo", priority: "medium", visibility: "private" },
+        { id: privateBlockerId, companyId, title: "Private blocker", status: "todo", priority: "medium", visibility: "private" },
+      ]);
+      // privateBlocker blocks the public root -> root.blockedBy includes it pre-redaction.
+      await db.insert(issueRelations).values({
+        companyId, issueId: privateBlockerId, relatedIssueId: rootId, type: "blocks",
+      });
+
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const summary = await services.issues.getOrchestrationSummary({ companyId, issueId: rootId, includeSubtree: true });
+
+      // Private descendant never enters the subtree.
+      expect(new Set(summary.subtreeIssueIds)).toEqual(new Set([rootId, publicChildId]));
+      // No relation edge anywhere references the private blocker or private child.
+      const edgeIds = new Set<string>();
+      for (const relation of Object.values(summary.relations)) {
+        for (const edge of [...relation.blockedBy, ...relation.blocks]) edgeIds.add(edge.id);
+      }
+      expect(edgeIds.has(privateBlockerId)).toBe(false);
+      expect(edgeIds.has(privateChildId)).toBe(false);
+    });
+
+    it("reports a private root issue as not-found from getOrchestrationSummary", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issues.getOrchestrationSummary({ companyId, issueId: privateIssueId, includeSubtree: true }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    async function seedIssueDocument(companyId: string, issueId: string, key: string, body: string) {
+      const documentId = randomUUID();
+      await db.insert(documents).values({ id: documentId, companyId, latestBody: body, format: "markdown" });
+      await db.insert(issueDocuments).values({ id: randomUUID(), companyId, issueId, documentId, key });
+      return documentId;
+    }
+
+    it("throws not-found from issues.getRelations for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issues.getRelations({ issueId: privateIssueId, companyId }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("redacts a private blocker edge from issues.getRelations on a public issue", async () => {
+      const { companyId, openIssueId, privateIssueId } = await seedOpenAndPrivate();
+      // privateIssue blocks the open issue -> open.blockedBy would name it pre-redaction.
+      await db.insert(issueRelations).values({
+        companyId, issueId: privateIssueId, relatedIssueId: openIssueId, type: "blocks",
+      });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const relations = await services.issues.getRelations({ issueId: openIssueId, companyId });
+      const edgeIds = [...relations.blockedBy, ...relations.blocks].map((edge) => edge.id);
+      expect(edgeIds).not.toContain(privateIssueId);
+    });
+
+    it("reports a private root issue as not-found from issues.getSubtree", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issues.getSubtree({ issueId: privateIssueId, companyId }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("excludes a private child and its documents from issues.getSubtree on an open root", async () => {
+      const { companyId } = await seedCompanyAndAgent();
+      const rootId = randomUUID();
+      const publicChildId = randomUUID();
+      const privateChildId = randomUUID();
+      await db.insert(issues).values([
+        { id: rootId, companyId, title: "Root", status: "todo", priority: "medium", visibility: "open" },
+        { id: publicChildId, companyId, parentId: rootId, title: "Public child", status: "todo", priority: "medium", visibility: "open" },
+        { id: privateChildId, companyId, parentId: rootId, title: "Private child", status: "todo", priority: "medium", visibility: "private" },
+      ]);
+      // A document on the private child would surface in the subtree summary pre-fix.
+      await seedIssueDocument(companyId, privateChildId, "plan", "confidential subtree plan");
+
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const subtree = await services.issues.getSubtree({
+        issueId: rootId, companyId, includeDocuments: true, includeRelations: true,
+      });
+      expect(new Set(subtree.issueIds)).toEqual(new Set([rootId, publicChildId]));
+      expect(subtree.issues.map((issue) => issue.id)).not.toContain(privateChildId);
+      expect(Object.keys(subtree.documents ?? {})).not.toContain(privateChildId);
+    });
+
+    it("returns no interactions from issues.listInteractions for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await db.insert(issueThreadInteractions).values({
+        id: randomUUID(), companyId, issueId: privateIssueId, kind: "request_confirmation",
+        payload: { version: 1, prompt: "Confirm confidential action?" } as any,
+      });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(services.issues.listInteractions({ issueId: privateIssueId, companyId })).resolves.toEqual([]);
+    });
+
+    it("throws not-found from issueDocuments.list for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await seedIssueDocument(companyId, privateIssueId, "plan", "confidential plan body");
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issueDocuments.list({ issueId: privateIssueId, companyId }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("throws not-found from issueDocuments.get for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await seedIssueDocument(companyId, privateIssueId, "plan", "confidential plan body");
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issueDocuments.get({ issueId: privateIssueId, companyId, key: "plan" }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("is pass-through when privacy mode is off (enforce flip is the single switch)", async () => {
+      process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "off";
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const ids = (await services.issues.list({ companyId })).map((issue) => issue.id);
+      expect(ids).toContain(privateIssueId);
+      await expect(services.issues.get({ issueId: privateIssueId, companyId })).resolves.toMatchObject({ id: privateIssueId });
     });
   });
 });
