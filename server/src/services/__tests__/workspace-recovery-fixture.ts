@@ -395,8 +395,18 @@ export async function stoppedWorkspaceWorker(f: { runId: string }) {
   return { proof, stopProof, owner, deploymentWorker };
 }
 
-export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof environmentLeases.$inferSelect) => Promise<void>) {
+export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof environmentLeases.$inferSelect) => Promise<void>,
+  options: { firstOwnerInSharedWorkspace?: boolean } = {}) {
   const prior = await seed("native", true, "keep_running", true), source = await run(prior.runId);
+  let executionWorkspaceId: string | null = null, taskId: string = prior.issueId;
+  if (options.firstOwnerInSharedWorkspace) {
+    const [workspace] = await db.insert(executionWorkspaces).values({ id: prior.issueId, companyId: prior.companyId,
+      mode: "isolated_workspace", strategyType: "test", name: "Shared task workspace" }).returning();
+    const [later] = await db.insert(issues).values({ companyId: prior.companyId, assigneeAgentId: source.agentId,
+      status: "blocked", title: "Later task in the same workspace" }).returning();
+    executionWorkspaceId = workspace.id; taskId = later.id;
+    await db.update(environmentLeases).set({ executionWorkspaceId }).where(eq(environmentLeases.id, prior.lease.id));
+  }
   let previousTarget = targets.get(prior.lease.id)!, previousLeaseId = prior.lease.id;
   let previousRunId: string = prior.runId;
   let lease = prior.lease, current = source;
@@ -409,12 +419,12 @@ export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof en
     await environmentService(db).releaseLease(previousLeaseId, "released", { cleanupStatus: "success" });
     const [released] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, previousLeaseId));
     [current] = await db.insert(heartbeatRuns).values({ companyId: prior.companyId, agentId: source.agentId,
-      issueId: prior.issueId, nativeIssueId: prior.issueId, runtimeMode: "native", status: "cancelled", finishedAt: new Date(),
-      contextSnapshot: { issueId: prior.issueId } }).returning();
-    await db.insert(nativeRunFinalizations).values({ companyId: prior.companyId, issueId: prior.issueId, runId: current.id, phase: "terminal_failure" });
+      issueId: taskId, nativeIssueId: taskId, runtimeMode: "native", status: "cancelled", finishedAt: new Date(),
+      contextSnapshot: { issueId: taskId } }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: prior.companyId, issueId: taskId, runId: current.id, phase: "terminal_failure" });
     const acquired = await environmentService(db).acquireLease({ companyId: prior.companyId, environmentId: prior.lease.environmentId!,
-      issueId: prior.issueId, heartbeatRunId: current.id, provider: "daytona", providerLeaseId: prior.providerLeaseId,
-      leasePolicy: "reuse_by_environment", replacesReusableLeaseId: previousLeaseId,
+      issueId: taskId, heartbeatRunId: current.id, provider: "daytona", providerLeaseId: prior.providerLeaseId,
+      executionWorkspaceId, leasePolicy: "reuse_by_environment", replacesReusableLeaseId: previousLeaseId,
       metadata: { ...released.metadata, sandboxLeaseAcquisition: { outcome: "resumed" } } });
     [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, acquired.id));
     const target = { ...previousTarget, leaseId: lease.id, sandboxLeaseAcquisition: { outcome: "resumed" as const, providerLeaseId: prior.providerLeaseId } };
@@ -434,8 +444,8 @@ export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof en
   expect(stopping).not.toBeNull();
   expect(await settleStopOnlyCleanup(db, stopping!, { attemptId: String(stopping!.metadata!.pendingCleanupAttemptId),
     receipt: { providerLeaseId: prior.providerLeaseId, state: "stopped" } })).not.toBeNull();
-  return { ...prior, priorRunId: prior.runId, priorLeaseId: prior.lease.id, leaseIds, runId: current.id, lease, actionId: action.id,
-    input: { ...prior.input, runId: current.id, actionId: action.id } };
+  return { ...prior, issueId: taskId, priorRunId: prior.runId, priorLeaseId: prior.lease.id, firstOwnerIssueId: prior.issueId,
+    leaseIds, runId: current.id, lease, actionId: action.id, input: { ...prior.input, issueId: taskId, runId: current.id, actionId: action.id } };
 }
 
 export async function makeRetryDue(actionId: string) {

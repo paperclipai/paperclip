@@ -186,6 +186,31 @@ describe("automatic retained workspace recovery", () => {
     }
   }, 30_000);
 
+  it.each([1, 2])("recovers saved work after %s warm handoffs that began with another task in the same workspace", async hops => {
+    const f = await warmHandoffSource(hops, undefined, { firstOwnerInSharedWorkspace: true });
+    const [first] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.priorLeaseId));
+    expect(first).toMatchObject({ issueId: f.firstOwnerIssueId, executionWorkspaceId: f.firstOwnerIssueId, status: "expired" });
+    expect(f.firstOwnerIssueId).not.toBe(f.issueId);
+    await recoverRetainedWorkspace(f.input);
+    const state = readSystemRecovery((await action(f.actionId)).evidence)!;
+    expect(state.failure?.code ?? null).toBeNull();
+    expect(state.state).toBe("complete");
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    expect(await readFile(path.join(f.host, "after-warm-stop.txt"), "utf8")).toBe("stopped turn work\n");
+  }, 30_000);
+
+  it.each(["lease_task", "unshared_workspace"])(
+    "keeps a cross-task predecessor fenced unless its own records prove the shared workspace: %s", async fault => {
+      const f = await warmHandoffSource(1, undefined, { firstOwnerInSharedWorkspace: true });
+      const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "Unrelated task" }).returning();
+      if (fault === "lease_task") await db.update(environmentLeases).set({ issueId: other.id }).where(eq(environmentLeases.id, f.priorLeaseId));
+      if (fault === "unshared_workspace") await db.update(environmentLeases).set({ executionWorkspaceId: null })
+        .where(eq(environmentLeases.id, f.priorLeaseId));
+      expect(await inspectWorkspaceSource(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, actionId: f.actionId }))
+        .toMatchObject({ status: "blocked", failureCode: "allocation_ownership_ambiguous" });
+      await expect(readFile(path.join(f.host, "after-warm-stop.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    }, 30_000);
+
   it.each(["active", "active_run", "active_control", "foreign_company", "environment", "workspace", "task", "agent", "unfinalized", "owner", "missing_proof", "conflicting_proof", "dangling_proof", "extra_history"])(
     "keeps ambiguous warm source history fenced: %s", async fault => {
       const f = await warmHandoffSource();

@@ -190,9 +190,8 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     const priors = predecessorRuns.length ? await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, predecessorRuns))) : [];
     const priorOwners = predecessorRuns.length ? await db.select({ runId: nativeRunFinalizations.runId,
-      phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
-        eq(nativeRunFinalizations.companyId, input.companyId), inArray(nativeRunFinalizations.runId, predecessorRuns),
-        eq(nativeRunFinalizations.issueId, input.issueId))) : [];
+      issueId: nativeRunFinalizations.issueId, phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.companyId, input.companyId), inArray(nativeRunFinalizations.runId, predecessorRuns))) : [];
     for (const predecessor of predecessors) {
       const prior = priors.find(item => item.id === predecessor.heartbeatRunId);
       const priorReference = readNativeWorkspaceSyncReference(prior?.runnerProfileJson?.nativeWorkspaceSync);
@@ -203,7 +202,10 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
         : priorRemote?.state === "saved" && Boolean(priorRemote.snapshotId) && Boolean(remoteDescriptor)
           && priorRemote.epoch < remoteDescriptor!.epoch;
       const priorOwner = priorOwners.find(item => item.runId === predecessor.heartbeatRunId);
-      if (!prior || prior.runtimeMode !== "native" || prior.agentId !== run.agentId || prior.nativeIssueId !== input.issueId ||
+      const sameTask = predecessor.issueId === input.issueId;
+      if (!prior || prior.runtimeMode !== "native" || prior.agentId !== run.agentId ||
+          (!sameTask && (!lease.executionWorkspaceId || predecessor.executionWorkspaceId !== lease.executionWorkspaceId)) ||
+          !predecessor.issueId || prior.nativeIssueId !== predecessor.issueId || priorOwner?.issueId !== predecessor.issueId ||
           !terminalWorkspaceRunStates.includes(prior.status) || adapterExecutionControls.has(prior.id) ||
           (prior.controllerLeaseExpiresAt && prior.controllerLeaseExpiresAt > new Date()) ||
           !priorOwner || priorOwner.leaseOwner || !["committed", "terminal_failure", "applied"].includes(priorOwner.phase) ||
