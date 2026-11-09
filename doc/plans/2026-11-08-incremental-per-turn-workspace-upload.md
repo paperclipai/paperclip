@@ -126,8 +126,8 @@ Findings:
 
 This is a multi-day feature, not a single PR:
 
-1. **Seed snapshot lifecycle.** Build a snapshot in the background after a full upload, keyed by repository, base commit and seed digest. A build takes about 177 s. Never block a turn on it.
-2. **Sandbox creation.** The Daytona plugin creates per-turn sandboxes from the seed snapshot. The snapshot is layered on the environment's configured runner image, so image updates still apply.
+1. **Seed snapshot lifecycle.** Build a snapshot in the background after a full upload, keyed by repository, base commit, seed digest and the resolved runner image digest. A build takes about 177 s. Never block a turn on it.
+2. **Sandbox creation.** The Daytona plugin creates per-turn sandboxes from the seed snapshot, which is layered on the environment's configured runner image. A runner image update changes the key, so it needs a new build; until that build finishes, turns use the full upload on the new image. A sandbox never starts from a snapshot of an older image.
 3. **Verification and fallback.** Check the manifest digest before using the seed. On any mismatch or missing snapshot, do today's full upload. Keep the workspace sentinel and `baselineSha256` checks as the final gate.
 4. **Expiry and cleanup.** Expire seeds by age, delete them when their environment is deleted, and handle provider snapshot quotas.
 5. **Rebuild policy.** A base-commit move needs a new 177 s build; until then the overlay grows. Rebuild when the overlay passes a threshold.
