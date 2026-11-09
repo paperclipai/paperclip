@@ -1501,7 +1501,8 @@ export interface RequestConfirmationToolActionPayload {
   previewMarkdown: string;
   argumentsSummaryJson: string;
   argumentsHash: string;
-  expiresAt: string;
+  /** Null for ordinary human reviews; explicit action deadlines still apply. */
+  expiresAt: string | null;
 }
 
 export interface RequestConfirmationSecretProposalPayload {
