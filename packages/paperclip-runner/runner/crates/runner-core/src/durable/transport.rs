@@ -1783,6 +1783,7 @@ mod tests {
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
+            turn_scoped: false,
         }
     }
 

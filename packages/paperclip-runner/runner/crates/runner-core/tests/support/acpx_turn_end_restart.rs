@@ -484,3 +484,26 @@ fn a_runner_restart_in_the_same_run_keeps_the_failed_turn_end_restart_closed() {
     harness.complete_turn("next-run");
     harness.executor.shutdown().unwrap();
 }
+
+#[test]
+fn a_per_turn_runner_skips_the_turn_end_restart_and_restarts_a_later_turn_at_its_start() {
+    let mut harness = Harness::configured(|config| config.turn_scoped = true);
+    let old_pid = harness.opened["processId"].clone();
+    harness.complete_turn("first");
+    let before = harness.fixture.journal().len();
+    // The Runner exits with its run: no generation is spawned for teardown.
+    harness.executor.prepare_next_turn().unwrap();
+    assert_eq!(harness.fixture.process_starts().len(), 1);
+    assert_eq!(
+        commands_after(&harness.fixture.journal(), before),
+        Vec::<String>::new()
+    );
+    assert_eq!(live_providers(&harness), [old_pid.clone()]);
+    // A later turn of the same run still gets a fresh generation, at its start.
+    let (events, commands, _) = start_follow_up(&mut harness, "second");
+    assert_eq!(commands[..2], ["session.suspend", "initialize"]);
+    assert_eq!(reconciled(&events)["previousProcessId"], old_pid);
+    assert_eq!(harness.fixture.process_starts().len(), 2);
+    harness.executor.shutdown().unwrap();
+    assert_eq!(live_providers(&harness), Vec::<Value>::new());
+}
