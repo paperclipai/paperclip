@@ -5,6 +5,7 @@ import { createAuthenticatedPerson, enrollAuthenticatedPerson } from "./identity
 import { checks, entity, internalResultLink } from "./internal-support.js";
 import { collectRunEvents } from "../run-observations.js";
 import { pollUntil } from "../api.js";
+import { registerProductDeliveredSecret } from "../private-diagnostics.js";
 import { requireSafeInvitationEnrollment } from "./identity-invite-prerequisite.js";
 import { identityDefinition, identityObservation, observeIdentity, readAgentResource } from "./identity-support.js";
 
@@ -166,7 +167,9 @@ export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.inv
     const invite = invites[0];
     const hrefs = o.links.map(href => new URL(href, o.origin)).filter(url => url.origin === o.origin && /^\/invite\/[^/]+$/.test(url.pathname));
     if (hrefs.length !== 1 || !ctx.input.privateSecrets) throw new Error("One actual same-origin join link is required");
-    const token = decodeURIComponent(hrefs[0]!.pathname.split("/").at(-1)!); ctx.input.privateSecrets.push(token);
+    // The product delivers this join link to the person in the saved reply, so
+    // only the embedded database may store it; everything else stays strict.
+    const token = decodeURIComponent(hrefs[0]!.pathname.split("/").at(-1)!); registerProductDeliveredSecret(ctx.input.privateSecrets, token);
     if (invite.tokenHash !== createHash("sha256").update(token).digest("hex")) throw new Error("Join link does not match the exact public invitation hash");
     const alex = people.get(ctx)![0]!;
     state.invitationCreated = structuredClone(invite);

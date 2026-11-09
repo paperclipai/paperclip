@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, chmodSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { createPrivateDiagnosticStream, diagnosticSecrets, PRIVATE_DIAGNOSTICS_ENV, readPrivateDiagnosticSecrets, stagePrivateDiagnostics, trackedPrivateSecrets } from "./private-diagnostics.js";
+import { createPrivateDiagnosticStream, diagnosticSecrets, isProductDeliveredSecret, PRIVATE_DIAGNOSTICS_ENV, readPrivateDiagnosticSecrets, readProductDeliveredSecrets, registerProductDeliveredSecret, stagePrivateDiagnostics, trackedPrivateSecrets } from "./private-diagnostics.js";
 import { buildPaperclipServerEnvironment } from "./harness-env.js";
 const roots: string[] = []; afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function registry() { const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "diagnostic-control-"))); roots.push(root); mkdirSync(path.join(root, "selected-private-inputs"), { mode: 0o700 }); return { root, file: stagePrivateDiagnostics(root, ["selected-case"], []) }; }
@@ -71,4 +71,16 @@ it("preserves independently registered overlapping roots and rejects unbound exp
   const outputs: string[] = []; const stream = createPrivateDiagnosticStream(() => [first, second], value => outputs.push(value));
   stream.write(Buffer.from(`independent credential ${secondEncoded}\n`)); stream.end();
   expect(outputs.join("")).not.toContain(secondEncoded);
+});
+
+describe("product-delivered credential registration", () => {
+  it("stays a private secret for redaction while durably recording its database-only scope", () => {
+    const { root, file } = registry(); const env = { [PRIVATE_DIAGNOSTICS_ENV]: file, PAPERCLIP_RUNNER_E2E_TEMP_ROOT: root };
+    const secrets = trackedPrivateSecrets(["ordinary-private-canary-1234"], "selected-case", env);
+    registerProductDeliveredSecret(secrets, "pcp_invite_registered-delivered-canary", env);
+    expect(readPrivateDiagnosticSecrets(file, root)).toEqual(expect.arrayContaining(["ordinary-private-canary-1234", "pcp_invite_registered-delivered-canary"]));
+    expect(readProductDeliveredSecrets(file, root)).toEqual(["pcp_invite_registered-delivered-canary"]);
+    expect(isProductDeliveredSecret("pcp_invite_registered-delivered-canary")).toBe(true);
+    expect(isProductDeliveredSecret("ordinary-private-canary-1234")).toBe(false);
+  });
 });

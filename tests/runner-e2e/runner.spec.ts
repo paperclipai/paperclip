@@ -9,7 +9,7 @@ import { SetupHealthAbort, runChatSetupHealth, captureSetupHealthProfile } from 
 import { bindInvitationEnrollmentPrerequisite } from "./chat-catalog-domains/identity-invite-prerequisite.js";
 import { verifyInvitationSourceProof } from "./chat-catalog-domains/identity-invite-source-proof.js";
 import { readChatPrivateInputs, chatPrivateSetupBlockers, chatPrivateInputRequirements } from "./chat-private-inputs.js";
-import { trackedPrivateSecrets } from "./private-diagnostics.js";
+import { isProductDeliveredSecret, trackedPrivateSecrets } from "./private-diagnostics.js";
 import { findChatCatalogCase } from "./chat-catalog-registry.js";
 import { runChatBoundaryFlow } from "./chat-boundary-flow.js";
 import { chatCatalogScenarios } from "./chat-catalog-inventory.js";
@@ -411,7 +411,10 @@ async function writeSanitizedJson(
   // Public API payloads may contain harmless provider-shaped fixtures or
   // opaque generated tokens. Reject exact campaign credentials before writing,
   // then sanitize all known shapes and assert the published JSON is clean.
-  assertSecretFree(raw, secrets, name, { includeShapes: false });
+  // A product-delivered credential (the join link the agent hands the person)
+  // is expected in product payloads. It is redacted below and the published
+  // JSON is still checked against every secret, including it.
+  assertSecretFree(raw, secrets.filter(secret => !isProductDeliveredSecret(secret)), name, { includeShapes: false });
   const safe = `${JSON.stringify(sanitizeJson(value, secrets), null, 2)}\n`;
   const leak = findSecretLeakInJsonValues(JSON.parse(safe), secrets);
   if (leak) throw new Error(`Secret leak in ${name}: ${leak}`);

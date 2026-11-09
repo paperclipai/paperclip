@@ -12,7 +12,7 @@ import { abnormalFinalizationResult } from "./abnormal-finalization.js";
 import { CHAT_ORACLE_KEY_ENV } from "./chat-private-oracle.js";
 import { stagePublishedChatInstall, ChatInstalledCleanupError } from "./chat-installed-lane.js";
 import { stageChatPrivateInputs, chatLaunchCredentialNames, CHAT_PRIVATE_INPUTS_ENV } from "./chat-private-inputs.js";
-import { createPrivateDiagnosticStream, PRIVATE_DIAGNOSTICS_ENV, readPrivateDiagnosticSecrets, stagePrivateDiagnostics } from "./private-diagnostics.js";
+import { createPrivateDiagnosticStream, PRIVATE_DIAGNOSTICS_ENV, readPrivateDiagnosticSecrets, readProductDeliveredSecrets, stagePrivateDiagnostics } from "./private-diagnostics.js";
 import { sanitizePrivateReporterArtifacts } from "./private-reporter-artifacts.js";
 import { findChatCatalogCase } from "./chat-catalog-registry.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, upgradeArtifactKey } from "./upgrade-artifacts.js";
@@ -75,7 +75,7 @@ import {
 import { assertRunnerDatabaseIsolation } from "./instance-isolation.js";
 import {
   assertSecretFree,
-  findSecretLeakInDirectory,
+  findSecretLeakInPersistedState,
   isEphemeralCodexRuntimeAuthFile,
   isEphemeralPostgresScanFile,
   normalizedSecrets,
@@ -683,6 +683,10 @@ async function runAttempt(input: {
       () => readPrivateDiagnosticSecrets(diagnosticRegistry, temporaryRoot),
     );
     credentials.splice(0, credentials.length, ...readPrivateDiagnosticSecrets(diagnosticRegistry, temporaryRoot));
+    // A case may register a credential the product itself delivers to the
+    // person (an invitation join link). It stays redacted everywhere; only the
+    // embedded database may hold it in the persisted-state scan below.
+    const productDeliveredCredentials = readProductDeliveredSecrets(diagnosticRegistry, temporaryRoot);
     processCleanupFailed = processResult.processCleanupError !== null;
     if (options.installedStartupOnly) {
       const proofDir = path.join(resultsRoot, campaignId, "installed-startup-only");
@@ -768,8 +772,9 @@ async function runAttempt(input: {
           while (true) {
             // The managed Codex home may legitimately contain upstream source-code
             // fixtures with fake `sk-*` strings. Reject exact campaign credentials.
-            const leak = await findSecretLeakInDirectory(directory, credentials, {
+            const leak = await findSecretLeakInPersistedState(directory, credentials, productDeliveredCredentials, {
               includeShapes: false,
+              ...(label === "Paperclip home" ? { productStateRoot: paperclipHome } : {}),
               sources: credentialSources,
               ...(label === "Paperclip home" ? { privateCodexRuntimeIdentityRoot: paperclipHome,
                 ...(dockerDatabase ? { privateDockerDatabaseConfig: { temporaryRoot, configPath, receiptPath: dockerDatabase.filename } } : {}),

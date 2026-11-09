@@ -3,7 +3,7 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { findSecretLeak, normalizedSecrets, redactText } from "./redaction.js";
 export const PRIVATE_DIAGNOSTICS_ENV = "PAPERCLIP_RUNNER_E2E_PRIVATE_DIAGNOSTICS";
-interface Envelope { version: 1; executionIds: string[]; secrets: string[] }
+interface Envelope { version: 1; executionIds: string[]; secrets: string[]; productDelivered?: string[] }
 function checkedPath(filename: string, temporaryRoot: string) {
   const parent = path.join(temporaryRoot, "selected-private-inputs");
   if (filename !== path.join(parent, "diagnostic-redaction.json") || realpathSync(parent) !== parent) throw new Error("Invalid private diagnostic registry path");
@@ -14,7 +14,8 @@ function checkedPath(filename: string, temporaryRoot: string) {
 function read(filename: string, temporaryRoot: string): Envelope {
   checkedPath(filename, temporaryRoot);
   const value = JSON.parse(readFileSync(filename, "utf8")) as Envelope;
-  if (value.version !== 1 || !Array.isArray(value.executionIds) || !value.executionIds.every(id => typeof id === "string") || !Array.isArray(value.secrets) || !value.secrets.every(secret => typeof secret === "string")) throw new Error("Invalid private diagnostic registry");
+  if (value.version !== 1 || !Array.isArray(value.executionIds) || !value.executionIds.every(id => typeof id === "string") || !Array.isArray(value.secrets) || !value.secrets.every(secret => typeof secret === "string")
+    || value.productDelivered !== undefined && (!Array.isArray(value.productDelivered) || !value.productDelivered.every(secret => typeof secret === "string"))) throw new Error("Invalid private diagnostic registry");
   return value;
 }
 export function stagePrivateDiagnostics(temporaryRoot: string, executionIds: string[], secrets: readonly string[]) {
@@ -23,6 +24,28 @@ export function stagePrivateDiagnostics(temporaryRoot: string, executionIds: str
   checkedPath(filename, temporaryRoot); return filename;
 }
 export function readPrivateDiagnosticSecrets(filename: string, temporaryRoot: string) { return read(filename, temporaryRoot).secrets; }
+export function readProductDeliveredSecrets(filename: string, temporaryRoot: string) { return read(filename, temporaryRoot).productDelivered ?? []; }
+const productDelivered = new Set<string>();
+/** A credential the product itself hands the person, such as the invitation
+ * join link in the agent's chat reply. It stays a private secret: every
+ * published artifact redacts it, and logs, run logs and the workspace must not
+ * hold it. Only the product's embedded database may store it, because the
+ * reply the person reads is saved there behind the app's access checks. */
+export function registerProductDeliveredSecret(secrets: string[], value: string, env: NodeJS.ProcessEnv = process.env) {
+  if (!value) throw new Error("Product-delivered secret must be a non-empty string");
+  productDelivered.add(value);
+  const filename = env[PRIVATE_DIAGNOSTICS_ENV], temporaryRoot = env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT;
+  if (filename && temporaryRoot) {
+    const current = read(filename, temporaryRoot);
+    const temporary = `${filename}.${process.pid}.delivered`;
+    writeFileSync(temporary, JSON.stringify({ ...current, productDelivered: [...new Set([...(current.productDelivered ?? []), value])] }), { mode: 0o600, flag: "wx" });
+    renameSync(temporary, filename);
+  }
+  secrets.push(value);
+}
+/** True for a value the product legitimately returns in its own API payloads;
+ * published evidence still redacts it. */
+export function isProductDeliveredSecret(value: string) { return productDelivered.has(value); }
 /** Existing case code continues to push into its private redaction sink. Each
  * registration is durable before the subsequent instrumented operation starts;
  * only the launcher/test host receives this private path, never the product. */
