@@ -6828,6 +6828,21 @@ fn receipt_limit_accepts_a_terminal_after_the_initial_interrupt_deadline() {
             .any(|event| event.event_type == "turn.interrupted"),
         "the delayed provider terminal must remain authoritative after two seconds"
     );
+    assert!(
+        emitted
+            .iter()
+            .any(|event| event.event_type == "turn.interrupted"
+                && event.payload.pointer("/error/code").and_then(Value::as_str)
+                    == Some("semantic_tool_receipt_limit_recovered")),
+        "a settled internal interrupt must allow same-conversation continuation"
+    );
+    assert!(
+        !emitted.iter().any(|event| matches!(
+            event.event_type.as_str(),
+            "run.result.proposed" | "run.terminal"
+        )),
+        "an internal capacity rotation must not request human review or close the run"
+    );
     assert!(!emitted.iter().any(|event| {
         event.event_type == "turn.interrupted"
             && event.payload["code"] == "semantic_tool_turn_receipt_limit_interrupt_deadline"

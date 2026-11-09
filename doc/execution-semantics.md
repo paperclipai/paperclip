@@ -4979,3 +4979,21 @@ with company/run identifiers to the process logger; it cannot append provider te
 to a completed run or borrow a successor run's recorder. Canonical native output
 export, source coverage, secret redaction and persistence-failure warnings retain
 their existing contracts.
+
+## Internal Codex tool-capacity interruptions
+
+A reservation for pending tool results is temporary backpressure. Reject only the
+new call with retry guidance; do not stop admitted calls. A full durable receipt
+ledger can rotate the turn only after all admitted calls have settled.
+
+After a provider-confirmed internal interruption, Runner records its internal
+cause only if no tool outcome is pending, no semantic result exists, and no goal
+owns continuation. The native runtime may then continue the same conversation
+once, with the preserved workspace and instructions to reuse completed work.
+The existing durable continuation marker covers crashes during that handoff.
+A second interruption ends the attempt; it cannot create an unbounded retry loop.
+
+Operator Stop overrides an internal interruption. Missing provider terminal
+proof, unresolved tool outcomes, governed waits and existing semantic results
+retain their existing settlement rules. An internal capacity rotation must not
+fabricate a human review request or a successful task result.

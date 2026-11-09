@@ -1,7 +1,7 @@
 import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
 import { readProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { codexProviderFailure } from "./provider-failure.js";
-import { isNativeRestartInterruption } from "../../contracts/native-session-backend.js";
+import { isNativeRestartInterruption, isNativeReceiptLimitInterruption } from "../../contracts/native-session-backend.js";
 import type { PrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import { boundedCodexPayload as boundedPayload, isRetainableCodexPayload } from "./codex-boundaries.js";
 import type { CodexSessionState } from "./codex-session-state.js";
@@ -223,7 +223,8 @@ export function mapTerminalTurn(
     }
     state.emit(eventType, payload, { turnId });
     finalize(state, status);
-    if (status === "failed" && isNativeRestartInterruption(turn.error) && state.result === null &&
+    if (((status === "failed" && isNativeRestartInterruption(turn.error)) ||
+        (status === "interrupted" && isNativeReceiptLimitInterruption(turn.error))) && state.result === null &&
         (!state.dispositionOnlyRecoveryConsumed || state.dispositionOnlyRecoveryTurnId === turnId)) {
       // Orchestration may use the paid restart attempt for one same-thread
       // continuation. Its accepted turn id uses the existing durable marker.

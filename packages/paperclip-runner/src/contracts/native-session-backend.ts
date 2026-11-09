@@ -98,6 +98,13 @@ export function isNativeRestartInterruption(error: unknown): boolean {
 
 const RESTART_CONTINUATION_DRIVER_KINDS: ReadonlySet<string> = new Set(["codex_app_server", "acpx_runtime", "opencode_server"]);
 
+/** Runner-owned proof: the interrupted turn stopped with all tool receipts settled. */
+export function isNativeReceiptLimitInterruption(error: unknown): boolean {
+  if (!error || typeof error !== "object" || Array.isArray(error)) return false;
+  const failure = error as Record<string, unknown>;
+  return failure.code === "semantic_tool_receipt_limit_recovered" && failure.recoverable === true;
+}
+
 /** The terminal fingerprint survives a crash between interruption and continuation. */
 export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSession,
   "driverKind" | "activeTurnId" | "semanticResult" | "terminalTurns" | "dispositionOnlyRecoveryConsumed" | "pendingRuntimeRequests" | "goal"
@@ -113,8 +120,9 @@ export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSes
   if (!terminal || typeof terminal.fingerprint !== "string" || !terminal.turnId) return null;
   try {
     const fingerprint = JSON.parse(terminal.fingerprint);
-    return fingerprint?.terminalState === "failed" && fingerprint.result === null &&
-      isNativeRestartInterruption(fingerprint.error) ? terminal.turnId : null;
+    return fingerprint.result === null &&
+      ((fingerprint?.terminalState === "failed" && isNativeRestartInterruption(fingerprint.error)) ||
+        (fingerprint?.terminalState === "interrupted" && isNativeReceiptLimitInterruption(fingerprint.error))) ? terminal.turnId : null;
   } catch { return null; }
 }
 

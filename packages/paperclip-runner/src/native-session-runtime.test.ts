@@ -256,6 +256,53 @@ function highestContiguous(events: PrpEvent[]): number {
 }
 
 describe("executeNativeSession recovery", () => {
+  it.each(["finish", "repeat", "operator"])("handles a proven internal receipt-limit interruption safely (%s)", async (scenario) => {
+    const transport = new FakeCodexTransport();
+    const executionInput = { ...input, workspace: { ...input.workspace, cwd: WORKSPACE } };
+    const backend = createCodexNativeSessionBackend(executionInput, {
+      runnerInstanceId: "runner-recovery", transportFactory: () => transport,
+    });
+    const starts = () => transport.calls.filter(call => call.method === "turn/start");
+    Object.defineProperty(transport, "turnStartResponse", {
+      get: () => Promise.resolve({ turn: { id: `turn-${starts().length}`, status: "inProgress", items: [] } }),
+    });
+    const completeRun = vi.fn(async () => undefined);
+    const port: ControlPlanePort = {
+      async openRun() {}, async checkpointSession() {},
+      async appendEvent(event) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; }, completeRun,
+    };
+    const abort = new AbortController();
+    const execution = executeNativeSession({ input: executionInput, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", signal: abort.signal });
+    void execution.catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(starts()).toHaveLength(1));
+      transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "interrupted",
+        error: scenario === "operator" ? null : { code: "semantic_tool_receipt_limit_recovered", recoverable: true }, items: [] } });
+      if (scenario === "operator") {
+        await expect(execution).rejects.toThrow();
+        expect(starts()).toHaveLength(1);
+        return;
+      }
+      await vi.waitFor(() => expect(starts()).toHaveLength(2));
+      expect(JSON.stringify(starts()[1]!.params)).toContain("Do not repeat completed work");
+      if (scenario === "repeat") {
+        transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "interrupted",
+          error: { code: "semantic_tool_receipt_limit_recovered", recoverable: true }, items: [] } });
+        await expect(execution).rejects.toThrow();
+        expect(starts()).toHaveLength(2);
+        expect(completeRun).not.toHaveBeenCalled();
+        return;
+      }
+      transport.push("paperclip/runResult", { threadId: "thread-1", turnId: "turn-2", result });
+      transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
+      await expect(execution).resolves.toMatchObject({ result, turnId: "turn-2" });
+      expect(completeRun).toHaveBeenCalledOnce();
+      expect(transport.calls.filter(call => call.method === "thread/start")).toHaveLength(1);
+    } finally { abort.abort(); await execution.catch(() => undefined); }
+  });
+
   it("completes Cursor Cloud semantic planning through its default-only harness without losing the pinned revision", async () => {
     await writeFile(join(WORKSPACE, "cloud-plan-instructions.md"), "Make the plan only. Do not implement it.\n");
     const prepared = preparedInput();
@@ -353,8 +400,8 @@ describe("executeNativeSession recovery", () => {
     expect(executionInput.workspace).toEqual(originalWorkspace);
   });
 
-  it("settles a restart continuation that ended without a result through one disposition turn (Codex driver)", async () => {
-    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+  it.each(["restart", "receipt-limit"])("settles an interrupted continuation through one disposition turn (Codex driver, %s)", async (cause) => {
+    const lost = { code: cause === "restart" ? "provider_turn_lost_on_restore" : "semantic_tool_receipt_limit_recovered", recoverable: true };
     const originalTransport = new FakeCodexTransport();
     const recoveredTransport = new FakeCodexTransport();
     const transports = [originalTransport, recoveredTransport];
@@ -369,7 +416,7 @@ describe("executeNativeSession recovery", () => {
     expect(checkpoint).toMatchObject({ activeTurnId: "turn-1", semanticResult: null });
     await original.close({ reason: "controller lost during the turn" });
     recoveredTransport.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
-      turns: [{ id: "turn-1", status: "failed", error: lost, items: [] }] } };
+      turns: [{ id: "turn-1", status: cause === "restart" ? "failed" : "interrupted", error: lost, items: [] }] } };
     const turnStarts = () => recoveredTransport.calls.filter(call => call.method === "turn/start");
     Object.defineProperty(recoveredTransport, "turnStartResponse", {
       get: () => Promise.resolve({ turn: { id: `turn-${turnStarts().length + 1}`, status: "inProgress", items: [] } }),

@@ -307,6 +307,16 @@ impl ProviderBridgeError {
         self.message == ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE
     }
 
+    pub(crate) fn result_backpressure() -> Self {
+        let mut error = Self::invalid("concurrent semantic tool result capacity reached");
+        error.safe_provider_message = Some("Wait for admitted tool calls to return, then retry this call in a smaller batch. Paperclip did not execute this rejected call.".to_owned());
+        error
+    }
+
+    pub fn is_result_backpressure(&self) -> bool {
+        self.message == "concurrent semantic tool result capacity reached"
+    }
+
     pub fn safe_provider_message(&self) -> Option<&str> {
         self.safe_provider_message.as_deref()
     }
@@ -776,7 +786,7 @@ impl ProviderToolBridge {
             .and_then(|total| total.checked_add(result_reserve))
             .is_none_or(|total| total > MAX_RETAINED_TOOL_VALUE_BYTES)
         {
-            return Err(ProviderBridgeError::active_turn_receipt_limit());
+            return Err(ProviderBridgeError::result_backpressure());
         }
         // Reserve the complete encoded receipt, including this exact input and
         // a maximum-sized result, before accepting work. An admitted call can
@@ -788,7 +798,7 @@ impl ProviderToolBridge {
             return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
         if self.ensure_settled_result_capacity(Some(&call)).is_err() {
-            return Err(ProviderBridgeError::active_turn_receipt_limit());
+            return Err(ProviderBridgeError::result_backpressure());
         }
         self.pending.insert(call_id, call.clone());
         Ok(call)
@@ -1894,6 +1904,64 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&bridge).unwrap()).unwrap();
         recovered.validate_recovered().unwrap();
         assert!(recovered.has_completed_call("call-0"));
+    }
+
+    #[test]
+    fn parallel_result_reservation_is_backpressure_not_turn_exhaustion() {
+        let operation = AuthorizedTool {
+            operation_id: "get_task_context".to_owned(),
+            version: 1,
+            description: "Read context".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        for index in 0..10 {
+            bridge
+                .begin_call(
+                    format!("parallel-{index}"),
+                    "get_task_context".to_owned(),
+                    json!({}),
+                )
+                .unwrap();
+        }
+        let error = bridge
+            .begin_call(
+                "overflow".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .unwrap_err();
+        assert!(
+            !error.is_active_turn_receipt_limit(),
+            "in-flight result reserves must not interrupt admitted work"
+        );
+        assert!(!bridge.durable_run_receipt_limit_reached());
+        bridge
+            .apply_result(ToolResult {
+                call_id: "parallel-0".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap();
+        bridge
+            .begin_call(
+                "overflow".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("retry after an admitted result settles");
+        assert_eq!(bridge.pending_calls().count(), 10);
     }
 
     #[test]

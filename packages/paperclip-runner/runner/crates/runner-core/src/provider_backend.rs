@@ -68,11 +68,11 @@ fn invalid_tool_call_result(
         operation_id,
         result: json!({
             "error": {
-                "code": "invalid_tool_call",
+                "code": if error.is_result_backpressure() { "semantic_tool_backpressure" } else { "invalid_tool_call" },
                 "message": error
                     .safe_provider_message()
                     .unwrap_or(GENERIC_INVALID_TOOL_CALL_MESSAGE),
-                "retryable": false,
+                "retryable": error.is_result_backpressure(),
             },
         }),
         is_error: true,
@@ -878,6 +878,16 @@ fn retain_goal_notification(
 
 fn goal_continues_after_turn(state: &CodexProviderState, goal_active: bool) -> bool {
     goal_active && !terminal_completion_rejected(state)
+}
+
+fn receipt_limit_can_continue(state: &CodexProviderState, event_type: Option<&str>) -> bool {
+    state.config.provider == "codex"
+        && event_type == Some("turn.interrupted")
+        && state.receipt_limit_interrupt_pending
+        && state.tool_bridge.pending_calls().next().is_none()
+        && state.active_provider_result_fingerprint.is_none()
+        && state.goal.is_none()
+        && !terminal_completion_rejected(state)
 }
 
 fn terminal_events(
@@ -4593,6 +4603,16 @@ impl CodexCommandExecutor {
         operation_id: String,
     ) -> Result<(), DurableRunnerError> {
         self.save_before_provider_writes(true)?;
+        if self.state.as_ref().is_some_and(|state| {
+            !state.receipt_limit_interrupt_pending
+                && state.tool_bridge.pending_calls().next().is_some()
+        }) {
+            return self.reject_tool_call(
+                call_id,
+                operation_id,
+                ProviderBridgeError::result_backpressure(),
+            );
+        }
         let deadline_unix_ms =
             receipt_limit_deadline_after(RECEIPT_LIMIT_INTERRUPT_TERMINAL_DEADLINE_MS)?;
         let state = self
@@ -5461,7 +5481,20 @@ impl CodexCommandExecutor {
                             })?;
                         }
                     }
-                    let normalized = normalize_provider_notification(state, &method, &params)?;
+                    let internal_receipt_continuation =
+                        receipt_limit_can_continue(state, terminal_event_type.as_deref());
+                    let mut normalized = normalize_provider_notification(state, &method, &params)?;
+                    if internal_receipt_continuation {
+                        for event in &mut normalized {
+                            if event.event_type == "turn.interrupted" {
+                                event.payload["error"] = json!({
+                                    "code": "semantic_tool_receipt_limit_recovered",
+                                    "recoverable": true,
+                                    "message": "The internal receipt-limit interruption settled; continue the same conversation with preserved tool results.",
+                                });
+                            }
+                        }
+                    }
                     let normalized_event_count = normalized.len();
                     let mut terminal_goal_events = Vec::new();
                     if terminal_event_type.is_some() {
@@ -5567,7 +5600,11 @@ impl CodexCommandExecutor {
                     let trace_first_event_sequence = state.next_provider_event_seq;
                     if let Some(ref event_type) = terminal_event_type {
                         let goal_status = state.goal.as_ref().map(|goal| goal.status.as_str());
-                        let outcome = terminal_events(state, event_type, goal_status);
+                        let outcome = if internal_receipt_continuation {
+                            Vec::new()
+                        } else {
+                            terminal_events(state, event_type, goal_status)
+                        };
                         terminal_goal_events.extend(normalized);
                         state.extend_terminal_events(with_terminal_outcome(
                             terminal_goal_events,
@@ -5853,13 +5890,21 @@ impl CommandExecutor for CodexCommandExecutor {
                 "session.goal.get" => self.get_goal(),
                 "session.goal.set" => self.set_goal(&command.payload),
                 "session.goal.clear" => self.clear_goal(&command.payload),
-                "turn.interrupt" | "run.cancel" => self.interrupt_turn(
-                    command
-                        .payload
-                        .get("reason")
-                        .and_then(Value::as_str)
-                        .unwrap_or(&command.command_type),
-                ),
+                "turn.interrupt" | "run.cancel" => {
+                    if let Some(state) = self.state.as_mut() {
+                        state.receipt_limit_interrupt_pending = false;
+                        state.receipt_limit_interrupt_accepted = false;
+                        state.receipt_limit_interrupt_attempts = 0;
+                        state.receipt_limit_interrupt_deadline_unix_ms = None;
+                    }
+                    self.interrupt_turn(
+                        command
+                            .payload
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .unwrap_or(&command.command_type),
+                    )
+                }
                 "turn.stop" => self.stop_turn_for_suspension(&command.command_type),
                 "request.resolve" => self.resolve_request(&command.payload),
                 "semantic_tool.result" => self.deliver_semantic_result(&command.payload),
@@ -7761,6 +7806,66 @@ done
         assert_eq!(terminal[0].payload["turnTerminalState"], "completed");
         assert_eq!(terminal[0].payload["reportedWorkDisposition"], "done");
         assert!(state.validate().is_ok());
+    }
+
+    #[test]
+    fn internal_receipt_continuation_requires_settled_tools_and_an_observed_interruption() {
+        let mut state = opencode_result_state();
+        state.config.provider = "codex".to_owned();
+        state.receipt_limit_interrupt_pending = true;
+        assert!(receipt_limit_can_continue(&state, Some("turn.interrupted")));
+        assert!(!receipt_limit_can_continue(&state, Some("turn.failed")));
+        assert!(!receipt_limit_can_continue(&state, None));
+        state.receipt_limit_interrupt_pending = false;
+        assert!(!receipt_limit_can_continue(
+            &state,
+            Some("turn.interrupted")
+        ));
+        state.receipt_limit_interrupt_pending = true;
+        let operation = crate::provider_bridge::AuthorizedTool {
+            operation_id: "get_task_context".to_owned(),
+            version: 1,
+            description: "Read context".to_owned(),
+            input_schema: json!({"type":"object"}),
+            response_schema: json!({"type":"object"}),
+        };
+        state
+            .tool_bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        state
+            .tool_bridge
+            .begin_call(
+                "pending-effect".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .unwrap();
+        assert!(!receipt_limit_can_continue(
+            &state,
+            Some("turn.interrupted")
+        ));
+        state
+            .tool_bridge
+            .apply_result(ToolResult {
+                call_id: "pending-effect".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                result: json!({"ok":true}),
+                is_error: false,
+            })
+            .unwrap();
+        assert!(receipt_limit_can_continue(&state, Some("turn.interrupted")));
+        state.active_provider_result_fingerprint = Some("held-result".to_owned());
+        assert!(!receipt_limit_can_continue(
+            &state,
+            Some("turn.interrupted")
+        ));
     }
 
     #[test]
