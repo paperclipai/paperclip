@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addressedHumanOnlyDenialMessage,
   evaluateIssueThreadInteractionResolverAudience,
   issueThreadInteractionAttentionAgentAllowed,
 } from "./issue-thread-interaction-resolution.js";
@@ -171,6 +172,33 @@ describe("issue-thread interaction resolver audience", () => {
       agentId: "agent-2",
       interaction: interaction({ effectiveResolverPolicy: "human_only" }),
     })).toBe(false);
+  });
+
+  describe("human-only card addressed to someone else", () => {
+    const card = interaction({ createdByAgentId: null, createdByUserId: "alex", addresseeUserId: "riley", effectiveResolverPolicy: "human_only" });
+
+    it("tells the agent only the addressee resolves it and not to send the asker to the card", () => {
+      const decision = evaluateIssueThreadInteractionResolverAudience({ actor: { ...agent, relayedHumanUserId: "alex" }, interaction: card });
+      expect(decision).toMatchObject({ allowed: false, status: 403, code: "interaction_human_only", details: { addresseeUserId: "riley" } });
+      const message = decision.allowed ? "" : decision.message;
+      expect(message).toContain("This issue-thread interaction is human-only and addressed to");
+      expect(message).toContain("Only the addressee can accept or decline it");
+      expect(message).toContain("do not ask the person asking to accept or decline it");
+    });
+
+    it("names the addressee once the route knows their display name", () => {
+      const message = addressedHumanOnlyDenialMessage("Riley");
+      expect(message).toContain("addressed to Riley.");
+      expect(message).toContain("Only Riley can accept or decline it");
+      expect(message).toContain("the card waits on Riley");
+      expect(message).not.toContain("addresseeUserId");
+    });
+
+    it("keeps the plain human-only denial when the card has no addressee", () => {
+      const decision = evaluateIssueThreadInteractionResolverAudience({ actor: agent,
+        interaction: interaction({ effectiveResolverPolicy: "human_only" }) });
+      expect(decision).toMatchObject({ allowed: false, code: "interaction_human_only", message: "This issue-thread interaction is human-only" });
+    });
   });
 
   describe("relayed human decision", () => {

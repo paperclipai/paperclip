@@ -184,6 +184,21 @@ function relayedHumanDecisionAllowed(
 }
 
 /**
+ * Denial for a human-only card addressed to someone other than the person the
+ * agent is answering. Agents relay this to the asker, so it names who resolves
+ * the card and tells them not to send the asker to the card's controls.
+ */
+export function addressedHumanOnlyDenialMessage(addresseeName: string | null | undefined) {
+  const name = addresseeName?.trim();
+  const who = name ? name : "its addressee (addresseeUserId)";
+  return `This issue-thread interaction is human-only and addressed to ${who}. `
+    + `Only ${name ? name : "the addressee"} can accept or decline it from the card; no other member, board user or agent can resolve it for them, `
+    + "and a chat message from someone else does not count as their decision. This denial is final. "
+    + `Tell the person asking that the card waits on ${name ? name : "the addressee"}, name ${name ? "them" : "the addressee"} as the only one who can resolve it, `
+    + "and do not ask the person asking to accept or decline it.";
+}
+
+/**
  * The single pure audience evaluator for issue-thread interaction resolution.
  * Resource access, run validation, containment, and current-target checks must
  * happen before this evaluator. Mutation routes must re-run it at use time.
@@ -284,6 +299,17 @@ export function evaluateIssueThreadInteractionResolverAudience(
   if (effectiveResolverPolicy === "human_only") {
     if (relayedHumanDecisionAllowed(input, persistedPolicy, additionalRestriction)) {
       return { allowed: true, effectiveResolverPolicy, reason: "allow_relayed_human" };
+    }
+    const addresseeUserId = input.interaction.addresseeUserId;
+    if (addresseeUserId && input.actor.type === "agent" && input.actor.relayedHumanUserId !== addresseeUserId) {
+      return {
+        allowed: false,
+        effectiveResolverPolicy,
+        status: 403,
+        code: "interaction_human_only",
+        message: addressedHumanOnlyDenialMessage(null),
+        details: { addresseeUserId },
+      };
     }
     return {
       allowed: false,
