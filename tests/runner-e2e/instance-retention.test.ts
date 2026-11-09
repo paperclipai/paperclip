@@ -32,9 +32,12 @@ describe("instance retention", () => {
     expect((await stat(kept)).mode & 0o777).toBe(0o700);
     const evidence = await instance(under, "evidence");
     await writeFile(path.join(evidence, "report.json"), "{}");
-    expect(await releaseInstance(evidence, { keep: false, stopFailed: false, owner: "smoke", retain: ["report.json"] })).toEqual({ kept: false });
+    expect(await releaseInstance(evidence, { keep: false, stopFailed: false, owner: "smoke", retain: entry => entry === "report.json" })).toEqual({ kept: false });
     expect(existsSync(path.join(evidence, "report.json"))).toBe(true);
     expect(existsSync(path.join(evidence, "home"))).toBe(false);
+    const remote = await instance(under, "remote");
+    expect(await releaseInstance(remote, { keep: false, stopFailed: false, remoteCleanupPending: true, owner: "w4" }))
+      .toEqual({ kept: true, reason: "recovery_state" });
     const stuck = await instance(under, "stuck");
     expect(await releaseInstance(stuck, { keep: false, stopFailed: true, owner: "w3" }, 1_000)).toEqual({ kept: true, reason: "stop_failed" });
   });
@@ -58,9 +61,12 @@ describe("instance retention", () => {
     await mkdir(unrelated);
     await writeFile(path.join(unrelated, KEPT_INSTANCE_MARKER), JSON.stringify({ keptAt: 0 }));
 
-    expect(await sweepExpiredKeptInstances(under, now)).toEqual([expired]);
+    const runner = await instance(under, "runner");
+    await keepInstance(runner, { owner: "w4", reason: "stop_failed" }, old);
+
+    expect(await sweepExpiredKeptInstances(under, now, KEPT_INSTANCE_MAX_AGE_MS, () => [`node ${runner}/provider-bin/runnerd`])).toEqual([expired]);
     expect(existsSync(expired)).toBe(false);
-    for (const survivor of [fresh, live, recovery, unmarked, unrelated]) expect(existsSync(survivor)).toBe(true);
+    for (const survivor of [fresh, live, recovery, unmarked, unrelated, runner]) expect(existsSync(survivor)).toBe(true);
   });
 
   it("sweeps an expired instance that holds read-only directories", async () => {

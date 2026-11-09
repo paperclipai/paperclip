@@ -199,7 +199,7 @@ try {
   await new Promise<void>(resolve => log.end(resolve));
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
   await releaseInstance(temporaryRoot, { keep: false, stopFailed: !report.cleanupConfirmed, owner: "controller-replacement-smoke",
-    retain: [path.basename(reportPath), "wrapper.log", "server.log"] }).catch(error => console.warn(`Temporary root cleanup failed at ${temporaryRoot}: ${String(error)}`));
+    retain: entry => entry === path.basename(reportPath) || entry.endsWith(".log") }).catch(error => console.warn(`Temporary root cleanup failed at ${temporaryRoot}: ${String(error)}`));
   console.info(JSON.stringify({ passed: report.passed, evidence: reportPath, cleanupConfirmed: report.cleanupConfirmed }));
 }
 if (failure) throw failure;

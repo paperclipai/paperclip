@@ -31,7 +31,9 @@ deleted when the wave ends, pass or fail, including after an interrupt. Evidence
 is already copied into `results/`. Use `--keep` to inspect the instance itself.
 A kept instance, or one whose processes could not be stopped, gets a
 `.paperclip-runner-e2e-kept.json` marker; creating the next runner E2E or chaos instance removes marked instances older
-than 6 hours whose Postgres is no longer running. Unmarked directories are never
+than 6 hours whose Postgres is no longer running and that no live process still
+references. An instance whose Daytona cleanup is still pending keeps its database
+as the owner of that cleanup and never expires. Unmarked directories are never
 removed.
 
 `--rc06-masked` keeps the company budget amount but disables its hard stop on
