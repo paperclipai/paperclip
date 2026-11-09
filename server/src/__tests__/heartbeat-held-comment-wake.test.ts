@@ -124,15 +124,12 @@ describePostgres("saved intents while another run's accounting is pending", () =
       action: "issue.updated", entityType: "issue", entityId: f.issueId,
       details: { source: "native_status_decision", fromStatus: "in_progress", toStatus: "done" } });
 
-  /** An uncertain provider action holds this task's execution. */
   const holdExecution = (f: { companyId: string; issueId: string; sourceRunId: string }) =>
     db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
       kind: "active_run_watchdog", cause: "uncertain_provider_action", ownerType: "board", status: "active",
       nextAction: "Reconcile the stopped run", fingerprint: `held-comment-blocker:${f.sourceRunId}`,
       evidence: { runId: f.sourceRunId } }).returning();
 
-  /** Each pass stamps the saved rows it revisits, and reads them oldest first.
-   * Age them so the next pass still reaches this fixture's row. */
   const ageSavedWakes = (f: { companyId: string }) =>
     db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) }).where(and(
       eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
@@ -535,8 +532,6 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(again.violations.filter(row => row.recordId === f.commentId)).toEqual([]);
   }, 180_000);
 
-  // The other half of the same pass: skipping that delivery must not cost the
-  // assignee's saved message its reopen. The release drain below still owns it.
   it("still reopens a closed task for the assignee's held message and delivers it once", async () => {
     const f = await seedHeldComment();
     await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));

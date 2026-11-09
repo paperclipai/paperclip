@@ -1914,10 +1914,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (latest.runtimeMode === "legacy") {
         const cancelledAdmission = latest.status === "cancelled" && !latest.startedAt &&
           latest.errorCode === "execution_reconciliation_required";
-        // Saved-comment delivery admits only a live task. On a terminal task its
-        // guard refuses the wake, writes an `issue_state_guard_mismatch` receipt
-        // and leaves the row deferred, so the next pass repeats it without end.
-        // The release below still reopens or settles the row.
         const terminalTask = issueStatus === "done" || issueStatus === "cancelled";
         if (!terminalTask && (latest.status !== "cancelled" || cancelledAdmission) &&
             await getExecutionBlocker(db, wake.companyId, String(wake.payload?.issueId))) {

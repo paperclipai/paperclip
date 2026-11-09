@@ -282,11 +282,6 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]?.assigneeAgentId).toBe(agentId);
   });
 
-  // Saved-comment delivery admits only a live task. Asking for it on a terminal
-  // one makes its guard refuse the wake, write an `issue_state_guard_mismatch`
-  // receipt and leave the row deferred; the held execution blocker makes the
-  // release below return before its promote drain, so nothing settles the row
-  // and the next pass repeats the request for the life of the instance.
   it.each(["done", "cancelled"] as const)("writes no delivery receipt for a message saved on a %s task", async status => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const [issue] = await db.insert(issues).values({ companyId, title: "Message saved after the task closed",
@@ -294,7 +289,6 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const [owner] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "assignment",
       runtimeMode: "legacy", status: "failed", startedAt: new Date(), finishedAt: new Date(),
       contextSnapshot: { issueId: issue.id, wakeReason: "issue_assigned" } }).returning();
-    // An uncertain provider action holds this task's execution.
     await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issue.id, kind: "active_run_watchdog",
       cause: "uncertain_provider_action", ownerType: "board", status: "active", nextAction: "Reconcile the stopped run",
       fingerprint: `saved-message-terminal:${owner.id}`, evidence: { runId: owner.id } });
@@ -312,7 +306,6 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await heartbeat.resumeQueuedRuns();
     await heartbeat.resumeQueuedRuns();
 
-    // The saved message is untouched input, and no pass left a receipt behind.
     expect(await db.select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status,
       reason: agentWakeupRequests.reason, runId: agentWakeupRequests.runId }).from(agentWakeupRequests)).toEqual([
       { id: saved.id, status: "deferred_issue_execution", reason: "issue_execution_deferred", runId: null },

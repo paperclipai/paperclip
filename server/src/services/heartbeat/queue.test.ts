@@ -748,8 +748,6 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { seeded, messages };
   }
 
-  // The delivery admits only a live task, so asking for a terminal one writes an
-  // `issue_state_guard_mismatch` receipt on every pass and settles nothing.
   it.each(["done", "cancelled"])("does not ask saved legacy delivery to run on a %s task", async status => {
     const { messages } = await strandedBehindExecutionBlocker(status);
     const deps = callbacks(db), queue = createHeartbeatQueue(db, deps);
