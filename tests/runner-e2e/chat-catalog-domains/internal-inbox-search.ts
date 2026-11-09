@@ -117,7 +117,7 @@ function inboxBoundary(scenarioId: string): ChatCatalogCase {
     } catch (error) { await cleanupInboxProbe(ctx); throw error; }
   }, gradeInbox);
   return { ...base, authentication: "human-session",
-    ...(scenarioId === "inbox-search.archive-without-grant" ? { oracleVersion: "paperclip.chat-catalog.inbox.archive-without-grant.v2" } : {}),
+    oracleVersion: scenarioId === "inbox-search.archive-without-grant" ? "paperclip.chat-catalog.inbox.archive-without-grant.v3" : "paperclip.chat-catalog.inbox.show-my-work.v2",
     async observe(ctx, state): Promise<InboxObservation> {
       const o = await observeInternal(ctx, state);
       const [personalItems, policy, personalProbe, responsibleUserProbe, unreadProbe] = await Promise.all([
@@ -137,18 +137,31 @@ function inboxBoundary(scenarioId: string): ChatCatalogCase {
         await base.verifyResult(ctx, o.state, o); return;
       }
       if (!href && o.scenarioId !== "inbox-search.archive-without-grant") throw new Error("Missing rendered Mine link");
-      const source = ctx.input.page.url();
+      const page = ctx.input.page, source = page.url();
+      // Sidebar link names can carry badges ("Inbox 2 unread"), so match the leading label.
+      const sidebarLink = (label: string) => page.locator("aside").getByRole("link", { name: new RegExp(`^${label}(?![\\w-])`) }).filter({ visible: true }).first();
       if (href) await internalResultLink(ctx, o, href).first().click();
-      // The sidebar Inbox link's accessible name carries its unread badge ("Inbox 2 unread"),
-      // so match the leading label within the sidebar rather than the exact name.
-      else await ctx.input.page.locator("aside").getByRole("link", { name: /^Inbox(?![\w-])/ }).filter({ visible: true }).first().click();
-      const mine = ctx.input.page.getByRole("button", { name: "Mine", exact: true }).or(ctx.input.page.getByRole("link", { name: "Mine", exact: true }))
-        .or(ctx.input.page.getByRole("tab", { name: "Mine", exact: true })).first();
-      await expect(mine).toBeVisible();
-      if (!href) await mine.click();
+      else {
+        await sidebarLink("Inbox").click();
+        await page.waitForURL(url => /\/(?:decisions|inbox|issues)(?:\/|$)/.test(url.pathname));
+        // In the coordinator shell, Inbox is the decisions inbox; personal work is the Tasks "Mine" view.
+        if (/\/decisions\/?$/.test(new URL(page.url()).pathname)) await sidebarLink("Tasks").click();
+      }
+      const tabMine = page.getByRole("button", { name: "Mine", exact: true }).or(page.getByRole("link", { name: "Mine", exact: true }))
+        .or(page.getByRole("tab", { name: "Mine", exact: true }));
+      const viewMenu = page.getByRole("button", { name: /^Change view\b/ }).filter({ visible: true });
+      await expect(tabMine.or(viewMenu).first()).toBeVisible();
+      let mineView: "inbox-tab" | "tasks-view";
+      if (await viewMenu.first().isVisible()) {
+        mineView = "tasks-view";
+        if (!/currently Mine$/.test(await viewMenu.first().getAttribute("aria-label") ?? "")) {
+          await viewMenu.first().click(); await page.getByRole("menuitem", { name: /^Mine\b/ }).first().click();
+        }
+        await expect(viewMenu.first()).toHaveAttribute("aria-label", /currently Mine$/);
+      } else { mineView = "inbox-tab"; if (!href) await tabMine.first().click(); }
       await expect(ctx.input.page.getByText("Blocked launch decision", { exact: true }).first()).toBeVisible();
       await ctx.input.evidence("chat-catalog-personal-mine-opened.json", { personId: o.state.personId, url: ctx.input.page.url(), visible: true,
-        navigation: href ? "returned-link" : "independent-human-sidebar-workflow", responseAccessRequest: !href });
+        navigation: href ? "returned-link" : "independent-human-sidebar-workflow", mineView, responseAccessRequest: !href });
       await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
       await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
     },
