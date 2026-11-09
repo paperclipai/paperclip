@@ -3,10 +3,35 @@ import { expect } from "@playwright/test";
 import type { Issue, IssueRecoveryAction } from "../../../packages/shared/src/types/issue.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
-import { checks, type Entity } from "./internal-support.js";
+import { collectRunEvents } from "../run-observations.js";
+import { checks, hasLink, type Entity } from "./internal-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { faultOwnedNativeProcess, NATIVE_INFRASTRUCTURE_FAULT_CODES, type NativeFaultRun } from "./runtime-native-fault.js";
-import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
+import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent, type RuntimeObservation } from "./runtime-support.js";
+export const INFRASTRUCTURE_RECOVERY_ORACLE = "paperclip.chat-catalog.runtime.infrastructure-recovery.v3";
+const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+/**
+ * The chat run read the source task's saved recovery record through a product
+ * tool: its recovery actions, its runs, or the failed run itself. Tool outputs
+ * are product data and are matched exactly; the agent's wording never is.
+ */
+export function readSourceRecoveryRecord(events: readonly Record<string, unknown>[], taskId: string, failedRunId: string) {
+  return !!taskId && !!failedRunId && events.some(row => {
+    const envelope = objectRecord(objectRecord(row.payload).prpEvent), payload = objectRecord(envelope.payload);
+    const output = typeof payload.output === "string" ? payload.output : "";
+    return row.eventType === "tool.execution.completed" && envelope.sourceKind === "runner" && payload.status === "completed"
+      && (/apiOperationId\\*"\s*:\s*\\*"GET \/api\/issues\/\{id\}\/(?:recovery-actions|runs)(?![\w/{])/.test(output) && output.includes(taskId)
+        || /apiOperationId\\*"\s*:\s*\\*"GET \/api\/heartbeat-runs\/\{runId\}(?![\w/{])/.test(output) && output.includes(failedRunId));
+  });
+}
+/** Whether one controller run read the recovery record; computed from its own retained events. */
+export async function controllerReadRecovery(ctx: ChatCatalogContext, runId: string | undefined, taskId: string, failedRunId: string) {
+  if (!runId) return false;
+  const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=1000`));
+  return readSourceRecoveryRecord(events, taskId, failedRunId);
+}
+/** The reply links the original task, where its recovery and Retry controls live. */
+export function linksSourceTask(o: RuntimeObservation, task: Entity) { return hasLink(o, "issues", task); }
 export function isExhaustedNativeRecovery(action: IssueRecoveryAction | undefined, run: NativeFaultRun, companyId: string, issueId: string, agentId: string) {
   return !!action && action.companyId === companyId && action.sourceIssueId === issueId && action.kind === "active_run_watchdog" && action.cause === "native_session_retry_exhausted"
     && action.ownerType === "board" && action.ownerAgentId == null && action.returnOwnerAgentId === agentId && action.recoveryIssueId == null
@@ -47,22 +72,18 @@ export function gradeInfrastructureRecovery(value: unknown) {
     && s.sourceRecoveryVisible === true && o.tasks.length === 1 && o.runs.length === 2
     && o.runs.find(row => row.id === run.id)?.status === "failed" && o.runs.filter(row => row.agentId === o.leadId).every(row => row.status === "succeeded"),
   "The original task retains its exact recovery action, responsible operator and failure; explanatory chat creates no duplicate repair chain or premature worker.");
-  const reply = String(s.queryReply ?? o.reply);
-  c.add("concrete-honest-operator-next-step", /website|Launch/i.test(reply) && /operator|human|board|you (?:can|need|must|should)/i.test(reply)
-    && /retry|inspect|provider trace|configuration|reconcile|recovery action|run details/i.test(reply)
-    && !/website (?:is|has been) (?:now )?(?:done|complete|finished)|successfully (?:recovered|repaired)|I (?:created|opened).{0,30}repair task/i.test(reply),
-  "The actual controller reply identifies the responsible supported next step and preserves failure instead of calling a filed repair or queued retry success.");
-  if (o.scenarioId === "recovery.explain-stall") {
-    c.add("recorded-infrastructure-cause-and-actual-attempt-count", /runner|process|native session|infrastructure/i.test(reply) && /exhaust|attempt|retr(?:y|ies)|resume/i.test(reply)
-      && /\b3\b|\bthree\b/i.test(reply) && !/(?:stopped|blocked) (?:because|due to).{0,35}(?:budget|missing (?:brief|input)|you (?:paused|stopped))/i.test(reply),
-    "Diagnosis uses the real exhausted native infrastructure evidence and three attempts, distinguishing it from invented budget, input or deliberate-stop causes.");
-  } else c.add("source-recovery-action-identified", reply.includes(before.id) || /(?:source|original|same|website).{0,60}(?:recovery|repair|retry|action)|(?:recovery|repair).{0,60}(?:source|original|same|website)/i.test(reply),
-    "The response identifies the recovery on the actual original task; no independent repair issue is invented where ordinary harness/operator recovery is sufficient.");
+  // Reply wording is not graded. The controller must have read the saved
+  // recovery record, and the reply must link the original task where the
+  // recovery lives. A person reads the reply for meaning.
+  c.add("read-actual-recovery-record", s.queryRecoveryRead === true,
+    "The controller's own run read the original task's saved recovery record or the failed run before answering.");
+  c.add("links-original-task", linksSourceTask(o, s.task as Entity),
+    "The reply links the original task that holds the recovery action, rather than a new repair task.");
   return c.result();
 }
 function infrastructureCase(id: "recovery.explain-stall" | "recovery.source-action") {
   return runtimeDefinition(id, exhaustedNativeInfrastructure, gradeInfrastructureRecovery, {
-    expectedRunCount: 2, attemptTimeoutMs: 1_200_000,
+    oracleVersion: INFRASTRUCTURE_RECOVERY_ORACLE, expectedRunCount: 2, attemptTimeoutMs: 1_200_000,
     runPolicy: { kind: "terminal-counts", terminalStatusCounts: { failed: 1, succeeded: 1 } },
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "real-native-infrastructure-exhaustion", "original-source-action-owner"] },
     async verifySetup(ctx, state) { const c = checks(), lead = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`);
@@ -76,7 +97,8 @@ function infrastructureCase(id: "recovery.explain-stall" | "recovery.source-acti
       await pollUntil({ label: "Canonical source explanation while native infrastructure remains failed", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
         load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
         accept: v => chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && v.runs.length === 2 && v.runs.some(row => row.id === state.workerRunId && row.status === "failed") && v.runs.some(row => row.agentId === ctx.input.fixtures.agent.id && row.status === "succeeded")) });
-      state.queryReply = (await observeRuntime(ctx, state)).reply;
+      const answered = await observeRuntime(ctx, state); state.queryReply = answered.reply;
+      state.queryRecoveryRead = await controllerReadRecovery(ctx, answered.runs.find(row => row.agentId === ctx.input.fixtures.agent.id)?.id, (state.task as Issue).id, String(state.workerRunId));
       const source = ctx.input.page.url(), task = state.task as Issue;
       await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
       await expect(ctx.input.page.getByRole("heading", { name: task.title, exact: true }).first()).toBeVisible();

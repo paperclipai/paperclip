@@ -4377,7 +4377,7 @@
       "../../server/src/vendor/paperclip-runner/index.ts",
       "chat-scenarios/recovery.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.infrastructure-recovery.v3",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,
@@ -4455,7 +4455,7 @@
       "../../server/src/vendor/paperclip-runner/index.ts",
       "chat-scenarios/recovery.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.retry-exhausted.v3",
     "coverageGaps": [],
     "expectedRunCount": 5,
     "expectedHumanMessageCount": 3,
@@ -4491,7 +4491,7 @@
       "../../server/src/vendor/paperclip-runner/index.ts",
       "chat-scenarios/recovery.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.infrastructure-recovery.v3",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,

@@ -7,7 +7,7 @@ import { pollUntil } from "../api.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { checks, type Entity } from "./internal-support.js";
 import { releaseRuntimeWorker } from "./runtime-busy-worker.js";
-import { exhaustedNativeInfrastructure, isExhaustedNativeRecovery, runtimeInfrastructureCases } from "./runtime-infrastructure.js";
+import { controllerReadRecovery, exhaustedNativeInfrastructure, isExhaustedNativeRecovery, linksSourceTask, runtimeInfrastructureCases } from "./runtime-infrastructure.js";
 import type { NativeFaultRun } from "./runtime-native-fault.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
 export function gradeInfrastructureRetry(value: unknown) {
@@ -16,25 +16,25 @@ export function gradeInfrastructureRetry(value: unknown) {
   const s = o.state;
   c.add("actual-original-infrastructure-exhaustion", !!s.failure && isExhaustedNativeRecovery(s.recoveryBefore as IssueRecoveryAction, s.failure as NativeFaultRun, o.companyId, (s.task as Entity).id, (s.worker as Entity).id),
     "The original task really exposes the exhausted three-attempt native infrastructure action; an unavailable-model failure is insufficient.");
-  c.add("ordinary-human-retry-guidance", /retry|try again/i.test(String(s.queryReply)) && /human|board|operator|you|button|control/i.test(String(s.queryReply))
-    && !/certify|attest|confirm.{0,30}(?:infrastructure|runner|cleanup).{0,30}(?:healthy|safe|stopped)/i.test(String(s.queryReply)) && s.retryVisible === true,
-  "The canonical reply presents ordinary human Retry, without requiring the person to certify internal infrastructure facts.");
+  // Reply wording is not graded: each declared phase is bound to its own
+  // controller run, which must have read the task's saved recovery record or
+  // runs before answering. A person reads the replies for meaning.
+  c.add("ordinary-human-retry-guidance", s.queryRecoveryRead === true && s.retryVisible === true && linksSourceTask(o, s.task as Entity),
+    "The canonical reply comes from a run that read the saved recovery record and links the original task, where the real human Retry control is visible.");
   c.add("actual-closed-gate-prevents-new-execution", s.budgetHeldBeforeRetry === true && [202, 409].includes(Number(s.heldRetryStatus))
-    && s.noAdmissionUnderBudget === true && s.failedRunVisibleWhileHeld === true && s.heldReplyAttributed === true
-    && /budget|spend|cap|limit/i.test(String(s.heldReply)) && !/successfully retried|website (?:is|has been) (?:now )?(?:done|complete)|retry (?:has )?succeeded/i.test(String(s.heldReply)),
-  "The first real Retry cannot start under the independently saved budget hold, retains failure visibly, and its own subsequent chat reply reports that actual gate.");
+    && s.noAdmissionUnderBudget === true && s.failedRunVisibleWhileHeld === true && s.heldReplyAttributed === true && s.heldRecoveryRead === true,
+  "The first real Retry cannot start under the independently saved budget hold, retains failure visibly, and its own subsequent chat run reads the task's actual runs before replying.");
   c.add("one-accepted-eligible-retry-preserves-original-failure", s.budgetRestoredByHuman === true && s.eligibleRetryStatus === 202 && s.retryBoundToOriginal === true && s.retryRunCount === 1
     && s.retryAdmissionAfterGateClear === true && s.originalFailureRetained === true && s.actualRetryResult === true
     && o.tasks.length === 1 && o.tasks[0]?.id === (s.task as Entity).id && o.tasks[0]?.status === "done"
     && o.runs.length === 5 && o.runs.filter(row => row.status === "failed").length === 1 && o.runs.filter(row => row.status === "succeeded").length === 4,
   "Once the actual human restores the gate, exactly one eligible native retry uses the server-owned failed task context, retains that original failure and saves the real Website result.");
-  c.add("own-final-phase-reports-actual-result", s.finalReplyAttributed === true && /website/i.test(String(s.finalReply)) && /done|complete|finish|ready|delivered/i.test(String(s.finalReply))
-    && !/still (?:blocked|waiting)|not yet (?:done|finished)/i.test(String(s.finalReply)),
-  "A separately declared factual follow-up receives its own native reply describing the actual completed retry result.");
+  c.add("own-final-phase-reports-actual-result", s.finalReplyAttributed === true && s.finalRecoveryRead === true,
+    "A separately declared factual follow-up receives its own native reply from a run that read the task's actual runs.");
   return c.result();
 }
 export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retry-exhausted", exhaustedNativeInfrastructure, gradeInfrastructureRetry, {
-  authentication: "human-session", expectedHumanMessageCount: 3, expectedRunCount: 5, attemptTimeoutMs: 1_800_000,
+  oracleVersion: "paperclip.chat-catalog.runtime.retry-exhausted.v3", authentication: "human-session", expectedHumanMessageCount: 3, expectedRunCount: 5, attemptTimeoutMs: 1_800_000,
   setupPolicy: runtimeInfrastructureCases[0]!.setupPolicy, verifySetup: runtimeInfrastructureCases[0]!.verifySetup,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { failed: 1, succeeded: 4 } },
   sourceFiles: ["chat-catalog-domains/runtime-infrastructure-retry.ts", "chat-catalog-domains/runtime-infrastructure.ts", "chat-catalog-domains/runtime-native-fault.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "../../server/src/services/hot-restart.ts", "../../server/src/vendor/paperclip-runner/index.ts", "chat-scenarios/recovery.yaml"],
@@ -68,6 +68,8 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     const heldRun = heldPhase.runs.find(row => !initial.runs.some(prior => prior.id === row.id) && row.agentId === ctx.input.fixtures.agent.id);
     if (!heldRun) throw new Error("Held retry response lacks an actual subsequent native turn");
     const heldReply = await phaseReply(heldQuery, heldRun.id); state.heldReply = heldReply.body; state.heldReplyAttributed = heldReply.attributed;
+    state.queryRecoveryRead = await controllerReadRecovery(ctx, initial.runs.find(row => row.agentId === ctx.input.fixtures.agent.id)?.id, task.id, String(state.workerRunId));
+    state.heldRecoveryRead = await controllerReadRecovery(ctx, heldRun.id, task.id, String(state.workerRunId));
     await ctx.input.api.post(`${root}/budgets/policies`, { scopeType: "agent", scopeId: worker.id, amount: 500, isActive: true, hardStopEnabled: true, unpricedUsagePolicy: "allow" });
     let restored = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`);
     if (restored.status === "error") { await ctx.input.api.post(`/api/agents/${worker.id}/clear-error`, {}); restored = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`); }
@@ -91,6 +93,7 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; }, accept: v => chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && v.runs.length === 5 && v.runs.filter(row => row.id !== state.workerRunId).every(row => row.status === "succeeded")) });
     const finalRun = final.runs.find(row => !completed.runs.some(prior => prior.id === row.id))!;
     const finalReply = await phaseReply(finalQuery, finalRun.id); state.finalReply = finalReply.body; state.finalReplyAttributed = finalReply.attributed;
+    state.finalRecoveryRead = await controllerReadRecovery(ctx, finalRun.id, task.id, String(state.workerRunId));
   },
   async observe(ctx, state) { const o = await observeRuntime(ctx, state);
     const before = state.failure as HeartbeatRun, retained = await ctx.input.api.get<HeartbeatRun>(`/api/heartbeat-runs/${state.workerRunId}`);
