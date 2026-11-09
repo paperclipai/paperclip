@@ -47,7 +47,7 @@ export const experimentalApiPaths: readonly [string, string, z.ZodTypeAny | unde
 export const experimentalApiDocs: Record<string, { summary: string; description: string }> = {
   "GET /api/companies/{companyId}/cases": { summary: "List company cases",
     description: "Lists the cases the caller can read, with each case's id, identifier, title, status and primary task (workIssueId)." },
-  "GET /api/issues/{issueId}/cases": { summary: "Find cases for a task",
+  "GET /api/issues/{issueId}/cases": { summary: "Find the cases for a task",
     description: "Accepts a task UUID or identifier and returns each readable case linked to that task, as { id, role, case: { id, identifier, ... } }. The top-level id is the link; pass case.id to read_case or the case audit history." },
   "GET /api/cases/{id}": { summary: "Read a case and its current facts",
     description: "Returns the case identifier, title, status, current facts (fields) and primary task." },
