@@ -4524,7 +4524,8 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     await db.insert(issues).values([
       { id: website, companyId, identifier: "COM-1", title: "Website", status: "backlog", priority: "medium" },
       { id: design, companyId, identifier: "COM-2", title: "Design", status: "backlog", priority: "medium" },
-      { id: copy, companyId, identifier: "COM-3", title: "Copy", status: "backlog", priority: "medium" },
+      // The intermediate issue's title must not appear: the caller may not be able to read it.
+      { id: copy, companyId, identifier: "COM-3", title: "Private launch copy", status: "backlog", priority: "medium" },
     ]);
     await svc.update(design, { blockedByIssueIds: [website] });
 
@@ -4534,7 +4535,7 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     expect(direct).toMatchObject({
       status: 422,
       message:
-        "Blocking relations cannot contain cycles: COM-2 (Design) waits for COM-1 (Website), so COM-1 (Website) cannot also wait for COM-2 (Design). " +
+        "Blocking relations cannot contain cycles: COM-2 waits for COM-1, so COM-1 cannot also wait for COM-2. " +
         "No dependencies were changed and the existing ones are kept. " +
         "Do not remove or reverse an existing dependency to make this fit; ask whoever requested the change which order they want and change dependencies only after they choose.",
       details: {
@@ -4542,8 +4543,8 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
         issueId: website,
         requestedBlockerIssueId: design,
         existingChain: [
-          { id: website, identifier: "COM-1", title: "Website" },
-          { id: design, identifier: "COM-2", title: "Design" },
+          { id: website, identifier: "COM-1" },
+          { id: design, identifier: "COM-2" },
         ],
       },
     });
@@ -4553,8 +4554,10 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
       .update(website, { blockedByIssueIds: [copy] })
       .catch((error: unknown) => error);
     expect((transitive as Error).message).toContain(
-      "COM-2 (Design) waits for COM-1 (Website), and COM-3 (Copy) waits for COM-2 (Design), so COM-1 (Website) cannot also wait for COM-3 (Copy).",
+      "COM-2 waits for COM-1, and COM-3 waits for COM-2, so COM-1 cannot also wait for COM-3.",
     );
+    expect(JSON.stringify({ message: (transitive as Error).message, details: (transitive as { details?: unknown }).details }))
+      .not.toMatch(/Website|Design|Private launch copy/);
 
     expect((await svc.getRelationSummaries(design)).blockedBy.map((relation) => relation.id)).toEqual([website]);
     expect((await svc.getRelationSummaries(website)).blockedBy).toEqual([]);
