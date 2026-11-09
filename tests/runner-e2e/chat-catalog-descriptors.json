@@ -4667,7 +4667,7 @@
       "../../packages/plugins/sdk/dist/index.js",
       "chat-scenarios/routines.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator-plugin-managed-routine.v2",
+    "oracleVersion": "paperclip.chat-catalog.integrator-plugin-managed-routine.v3",
     "expectedRunCount": 1,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,

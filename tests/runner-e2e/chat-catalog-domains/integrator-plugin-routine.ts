@@ -7,6 +7,7 @@ import type { Issue, IssueComment } from "../../../packages/shared/src/types/iss
 import type { PaperclipPluginManifestV1, PluginManagedRoutineResolution, PluginRecord } from "../../../packages/shared/src/types/plugin.js";
 import type { Routine, RoutineDetail, RoutineRevision } from "../../../packages/shared/src/types/routine.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
+import { expect } from "@playwright/test";
 import { pollUntil } from "../api.js";
 import { checks, observation, project, type Entity, type InternalObservation } from "./internal-support.js";
 import { fixtureWorker } from "./internal-definition.js";
@@ -24,6 +25,12 @@ async function observeManaged(ctx: ChatCatalogContext, state: Record<string, unk
     config: await ctx.input.api.get(`/api/plugins/${state.pluginId}/config?companyId=${base.companyId}`) };
 }
 function managedObservation(value: unknown): PluginRoutineObservation | undefined { const o = value as PluginRoutineObservation; return observation(value) && !!o.routine && Array.isArray(o.routines) && Array.isArray(o.routineRevisions) && Array.isArray(o.plugin?.manifestJson?.capabilities) && !!o.managed ? o : undefined; }
+/** The reply's link to the board page holding the plugin's configuration, with or
+ * without the company prefix the UI adds. */
+export function pluginSettingsHref(o: Pick<PluginRoutineObservation, "links" | "origin" | "plugin">): string | undefined {
+  const route = new RegExp(`^(?:/[A-Za-z0-9_-]+)?/company/settings/instance/plugins/${o.plugin.id.replace(/[^A-Za-z0-9-]/g, "")}/?$`);
+  return o.links.find(href => { try { const url = new URL(href, o.origin); return url.origin === new URL(o.origin).origin && route.test(url.pathname); } catch { return false; } });
+}
 export function gradeIntegratorPluginRoutine(value: unknown) {
   const c = checks(); const o = managedObservation(value); c.add("real-sdk-managed-routine", !!o, "Requires an actually installed SDK plugin, its managed resource resolution and public routine definition/history."); if (!o) return c.result();
   const original = o.state.routine as RoutineDetail;
@@ -40,10 +47,12 @@ export function gradeIntegratorPluginRoutine(value: unknown) {
     && isDeepStrictEqual(o.plugin.manifestJson.instanceConfigSchema, o.state.configSchema)
     && o.plugin.manifestJson.capabilities.includes("routines.managed") && o.plugin.manifestJson.routines?.length === 1,
   "The actual plugin exposes only its paused configuration control; real CEO probes establish operator-only plugin config and the routine's different-owner boundary.");
-  // Graded from saved state, never reply wording: the definition, revisions and
-  // config are unchanged and no detached copy exists (checked above).
-  c.add("truthful-plugin-customization-path", o.reply.trim().length > 0,
-  "Chat answered the person while the plugin's managed routine stayed unchanged and bound to the plugin.");
+  // Graded from saved state and the reply's rendered link, never its wording: the
+  // definition, revisions and config are unchanged, no detached copy exists
+  // (checked above), and the reply sends the person to where the plugin's only
+  // control lives. verifyResult clicks that link.
+  c.add("truthful-plugin-customization-path", o.reply.trim().length > 0 && !!pluginSettingsHref(o),
+  "Chat answered the person with a link to the plugin's settings page while the plugin's managed routine stayed unchanged and bound to the plugin.");
   return c.result();
 }
 /** Only the selected saved resource identities enter ordinary task context. No
@@ -126,5 +135,14 @@ export const integratorPluginRoutineCases = [integratorDefinition("routines", "r
   } catch (error) { await cleanup(ctx); throw error; }
 }, observeManaged, gradeIntegratorPluginRoutine, async (ctx, state) => {
   const routine = state.routine as RoutineDetail; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/routines/${routine.id}/history`, routine.title);
-}, { oracleVersion: "paperclip.chat-catalog.integrator-plugin-managed-routine.v2", sourceFiles: ["chat-catalog-domains/integrator-plugin-routine.ts", "chat-catalog-domains/external-plugin-fixture.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "../../cli/node_modules/tsx/dist/loader.mjs", "../../cli/src/index.ts", "../../packages/plugins/create-paperclip-plugin/src/index.ts", "../../packages/plugins/sdk/src/index.ts", "../../packages/plugins/sdk/dist/index.js", "chat-scenarios/routines.yaml"], cleanup,
+  // The person follows the reply's own settings link and lands on the plugin's page.
+  const o = await observeManaged(ctx, state); const href = pluginSettingsHref(o);
+  if (!href) throw new Error("The reply rendered no link to the plugin's settings page to follow");
+  const page = ctx.input.page; const source = page.url();
+  const link = page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).first(); await expect(link).toBeVisible(); await link.click();
+  await expect(page).toHaveURL(url => url.pathname.replace(/\/$/, "").endsWith(`/company/settings/instance/plugins/${o.plugin.id}`));
+  await expect(page.getByRole("heading", { level: 1, name: o.plugin.manifestJson.displayName, exact: true })).toBeVisible();
+  await ctx.input.evidence("chat-managed-routine-settings-view.json", { href, url: page.url(), pluginId: o.plugin.id, renderedReplyLink: true });
+  await page.goto(source); await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+}, { oracleVersion: "paperclip.chat-catalog.integrator-plugin-managed-routine.v3", sourceFiles: ["chat-catalog-domains/integrator-plugin-routine.ts", "chat-catalog-domains/external-plugin-fixture.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "../../cli/node_modules/tsx/dist/loader.mjs", "../../cli/src/index.ts", "../../packages/plugins/create-paperclip-plugin/src/index.ts", "../../packages/plugins/sdk/src/index.ts", "../../packages/plugins/sdk/dist/index.js", "chat-scenarios/routines.yaml"], cleanup,
 })];

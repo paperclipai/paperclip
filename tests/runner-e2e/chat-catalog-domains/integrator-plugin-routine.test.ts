@@ -6,7 +6,7 @@ function valid() {
   const routine = { id: "routine", title: "Maintenance", description: "Original plugin maintenance", assigneeAgentId: "morgan", status: "paused", triggers: [{ id: "daily", cronExpression: "0 3 * * *" }], managedByPlugin: binding };
   const revisions = [{ id: "original" }]; const config = { configJson: { paused: true } };
   return { scenarioId: "routines.plugin-managed-routine", origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { routine: structuredClone(routine), pluginKey: "owned.plugin", configSchema, agentConfigStatus: 403, agentRoutineStatus: 403, originalRevisions: structuredClone(revisions), originalConfig: structuredClone(config) },
-    tasks: [], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], activity: [], links: [], runs: [], routine, routines: [routine], routineRevisions: revisions, config,
+    tasks: [], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], activity: [], links: ["/COM/routines/routine", "/COM/company/settings/instance/plugins/plugin"], runs: [], routine, routines: [routine], routineRevisions: revisions, config,
     managed: { routineId: "routine", resourceKind: "routine", resourceKey: "daily-maintenance" }, plugin: { id: "plugin", manifestJson: { capabilities: ["routines.managed"], routines: [{ routineKey: "daily-maintenance" }], instanceConfigSchema: configSchema } },
     reply: "This routine is managed by the plugin. The supported operator configuration exposes pause and resume only; its maintainer must change the source package for a definition rewrite." };
 }
@@ -26,9 +26,16 @@ describe("real plugin-managed routine rather than preview job", () => {
     const config = valid(); config.config.configJson.paused = false; expect(gradeIntegratorPluginRoutine(config).passed).toBe(false);
     expect(gradeIntegratorPluginRoutine({ ...valid(), state: { ...valid().state, agentConfigStatus: 200 } }).passed).toBe(false);
   });
-  it("grades the saved routine, not the reply's words", () => {
-    // Any non-empty reply passes while the saved routine is right; a claimed rewrite
-    // with an unchanged routine is a wording issue the saved state cannot see.
+  it("requires the reply to link this plugin's settings page", () => {
+    for (const links of [["https://fixture.test/COM/company/settings/instance/plugins/plugin"], ["/company/settings/instance/plugins/plugin/"]])
+      expect(gradeIntegratorPluginRoutine({ ...valid(), links }).passed, links[0]).toBe(true);
+    for (const links of [[], ["/COM/routines/routine"], ["/COM/plugins/plugin"], ["/COM/company/settings/instance/plugins/other"],
+      ["/COM/company/settings/instance/plugins"], ["https://elsewhere.test/COM/company/settings/instance/plugins/plugin"]])
+      expect(gradeIntegratorPluginRoutine({ ...valid(), links }).passed, links.join()).toBe(false);
+  });
+  it("grades the saved routine and link, not the reply's words", () => {
+    // Any non-empty reply passes while the saved routine and link are right; a claimed
+    // rewrite with an unchanged routine is a wording issue the saved state cannot see.
     for (const reply of ["Only a board user can change that plugin's settings. The routine stays as the plugin defines it.", "I didn't change anything."])
       expect(gradeIntegratorPluginRoutine({ ...valid(), reply }).passed).toBe(true);
     const rewritten = valid(); rewritten.routineRevisions = [...rewritten.routineRevisions, { id: "agent-rewrite" }];
