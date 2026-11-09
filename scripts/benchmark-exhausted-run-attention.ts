@@ -1,5 +1,5 @@
 // Measures the attention scan for retry-exhausted runs with and without the
-// partial index from migration 0453. This is an index-only change: both sides
+// partial index from migration 0454. This is an index-only change: both sides
 // run the same SQL that the service generates.
 // Usage (from the repository root):
 //   pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-exhausted-run-attention.ts \

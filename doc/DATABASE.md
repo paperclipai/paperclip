@@ -357,7 +357,7 @@ The attention feed finds retry-exhausted runs through the partial index
 events whose message starts with `Bounded retry exhausted`, keyed by company,
 run, and newest event first. The query predicate must stay textually equal to
 the index predicate, or the scan reads every company event again. Migration
-0453 builds the index concurrently.
+0454 builds the index concurrently.
 
 A subtree pause release finds the runs that a dispatch gate refused for that pause
 through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
