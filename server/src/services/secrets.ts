@@ -970,6 +970,11 @@ function assertSelectableProviderConfig(config: {
   }
 }
 
+export type RemoveSecretOptions = {
+  /** Runs after the secret is marked deleted and before its row is removed. */
+  beforeDelete?: (secret: typeof companySecrets.$inferSelect) => Promise<void>;
+};
+
 export function secretService(db: Db | DbTransaction) {
   const authorization = authorizationService(db);
 
@@ -3399,18 +3404,18 @@ export function secretService(db: Db | DbTransaction) {
   // `removeSecretUnlocked` re-reads the secret under the lock, so a delete
   // that lost a race between the pre-check and the lock still sees current
   // state, not the pre-check's stale read.
-  async function removeSecretInternal(secretId: string) {
+  async function removeSecretInternal(secretId: string, options: RemoveSecretOptions = {}) {
     const preCheckSecret = await getById(secretId);
     if (!preCheckSecret) return null;
     return withAccountHomeSecretMutationLock(undefined, preCheckSecret.companyId, () =>
-      removeSecretUnlocked(secretId),
+      removeSecretUnlocked(secretId, options),
     );
   }
 
   // The body of `removeSecretInternal` above, unchanged. Extracted to a named
   // function so that wrapper can hold the lock across this whole delete
   // sequence without duplicating it.
-  async function removeSecretUnlocked(secretId: string) {
+  async function removeSecretUnlocked(secretId: string, options: RemoveSecretOptions = {}) {
     const secret = await getById(secretId);
     if (!secret) return null;
     const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
@@ -3428,6 +3433,9 @@ export function secretService(db: Db | DbTransaction) {
         })
         .where(eq(companySecrets.id, secretId));
     }
+    // New references now see the deleted status, so the caller can settle
+    // every reference that exists before the row and its cascades go.
+    await options.beforeDelete?.(secret);
     const providerConfig = secret.providerConfigId
       ? await getProviderConfigById(secret.providerConfigId)
       : null;
