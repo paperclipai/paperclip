@@ -10,9 +10,10 @@ export const STORAGE_UNAVAILABLE_RETRY = {
   retryReason: STORAGE_UNAVAILABLE_WAIT_RETRY_REASON, wakeReason: "storage_unavailable_retry", maxAttempts: 10, delayMs: 60_000,
 } as const;
 
-const UNAVAILABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const UNAVAILABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const UNAVAILABLE_NAMES = new Set(["ServiceUnavailable", "SlowDown", "InternalError", "RequestTimeout", "TimeoutError", "NetworkingError"]);
-const UNAVAILABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ENOTFOUND"]);
+const UNAVAILABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ENOTFOUND",
+  "ERR_STREAM_PREMATURE_CLOSE", "UND_ERR_SOCKET"]);
 
 function ownValue(value: unknown, key: string): unknown {
   if (!value || typeof value !== "object") return undefined;
@@ -24,22 +25,18 @@ function ownValue(value: unknown, key: string): unknown {
   }
 }
 
-function isStorageTimeoutAbort(error: unknown): boolean {
-  if (ownValue(error, "name") !== "AbortError") return false;
-  const cause = ownValue(error, "cause");
-  return Boolean(cause && typeof cause === "object" && (cause as { name?: unknown }).name === "TimeoutError");
+function networkFailure(error: unknown): boolean {
+  for (const candidate of [error, ownValue(error, "cause")]) {
+    const name = ownValue(candidate, "name"), code = ownValue(candidate, "code");
+    if ((typeof name === "string" && UNAVAILABLE_NAMES.has(name)) || (typeof code === "string" && UNAVAILABLE_CODES.has(code))) return true;
+  }
+  return false;
 }
 
 export function isStorageUnavailableError(error: unknown): boolean {
-  if (isStorageTimeoutAbort(error)) return true;
   const diagnostics = storageFailureDiagnosticsFor(error);
-  if (diagnostics) return diagnostics.httpStatus === null
-    ? UNAVAILABLE_CODES.has(diagnostics.errorCode) || UNAVAILABLE_NAMES.has(diagnostics.errorCode)
-    : UNAVAILABLE_STATUS.has(diagnostics.httpStatus);
-  const metadata = ownValue(error, "$metadata");
-  if (!metadata || typeof metadata !== "object") return false;
-  const status = ownValue(metadata, "httpStatusCode");
-  if (typeof status === "number") return UNAVAILABLE_STATUS.has(status);
-  const name = ownValue(error, "name"), code = ownValue(error, "code");
-  return (typeof name === "string" && UNAVAILABLE_NAMES.has(name)) || (typeof code === "string" && UNAVAILABLE_CODES.has(code));
+  if (!diagnostics) return false;
+  const status = diagnostics.httpStatus;
+  if (status !== null && (status < 200 || status >= 300)) return UNAVAILABLE_STATUS.has(status);
+  return UNAVAILABLE_NAMES.has(diagnostics.errorCode) || UNAVAILABLE_CODES.has(diagnostics.errorCode) || networkFailure(error);
 }

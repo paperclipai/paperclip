@@ -1,10 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { recordStorageFailure } from "./failure-diagnostics.js";
+import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
 import { isStorageUnavailableError } from "./storage-unavailable.js";
 
 function s3Error(name: string, status?: number, code?: string) {
   return Object.assign(new Error(name), { name, ...(code ? { code } : {}),
-    $metadata: status === undefined ? {} : { httpStatusCode: status } });
+    $metadata: status === undefined ? {} : { httpStatusCode: status, attempts: 3 } });
+}
+
+async function recorded(error: unknown, signal?: AbortSignal) {
+  return withS3FailureDiagnostics("put_object", async () => { throw error; }, signal).catch(thrown => thrown);
+}
+
+function sdkAbort() {
+  const aborted = new Error("Request aborted");
+  aborted.name = "AbortError";
+  return aborted;
 }
 
 describe("storage unavailability", () => {
@@ -13,9 +23,11 @@ describe("storage unavailability", () => {
     ["503 SlowDown", s3Error("SlowDown", 503)],
     ["429 throttling", s3Error("TooManyRequests", 429)],
     ["500 InternalError", s3Error("InternalError", 500)],
-    ["a reset without a status", s3Error("Error", undefined, "ECONNRESET")],
-  ])("treats %s from the store as unavailable", (_label, error) => {
-    expect(isStorageUnavailableError(error)).toBe(true);
+    ["408 RequestTimeout", s3Error("RequestTimeout", 408)],
+    ["a reset recorded under its error name", Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })],
+    ["a refused connection without a status", s3Error("Error", undefined, "ECONNREFUSED")],
+  ])("treats %s from the store as unavailable", async (_label, error) => {
+    expect(isStorageUnavailableError(await recorded(error))).toBe(true);
   });
 
   it.each([
@@ -23,30 +35,31 @@ describe("storage unavailability", () => {
     ["403 AccessDenied", s3Error("AccessDenied", 403)],
     ["412 PreconditionFailed", s3Error("PreconditionFailed", 412)],
     ["an ordinary error", new Error("adapter crashed")],
-  ])("does not treat %s as an outage", (_label, error) => {
-    expect(isStorageUnavailableError(error)).toBe(false);
+  ])("does not treat %s as an outage", async (_label, error) => {
+    expect(isStorageUnavailableError(await recorded(error))).toBe(false);
   });
 
-  it("treats a storage call the per-operation deadline aborted as unavailable (storage chaos ST2)", () => {
-    const aborted = Object.assign(new Error("Request aborted"), { name: "AbortError",
-      cause: new DOMException("The operation was aborted due to timeout", "TimeoutError") });
-    expect(isStorageUnavailableError(aborted)).toBe(true);
+  it("treats a download body reset after a 200 response as unavailable", () => {
+    const reset = Object.assign(new Error("aborted"), { code: "ECONNRESET" });
+    recordS3BodyFailure(reset, { $metadata: { httpStatusCode: 200, requestId: "req-1" } });
+    expect(isStorageUnavailableError(reset)).toBe(true);
   });
 
-  it("does not treat a run's own Stop abort as a storage outage", () => {
-    const stopped = Object.assign(new Error("Request aborted"), { name: "AbortError", cause: new Error("Cancelled by a board operator") });
-    expect(isStorageUnavailableError(stopped)).toBe(false);
-    expect(isStorageUnavailableError(Object.assign(new Error("Request aborted"), { name: "AbortError" }))).toBe(false);
+  it("treats a storage call its deadline aborted as unavailable (storage chaos ST2)", async () => {
+    const deadline = AbortSignal.timeout(1);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(isStorageUnavailableError(await recorded(sdkAbort(), deadline))).toBe(true);
   });
 
-  it("reads the recorded storage diagnostics first", () => {
-    const error = new Error("body reset");
-    recordStorageFailure(error, { provider: "s3", operation: "read_object_body", errorCode: "ECONNRESET",
-      httpStatus: null, requestId: null, attempts: 1 });
-    expect(isStorageUnavailableError(error)).toBe(true);
-    const denied = new Error("denied");
-    recordStorageFailure(denied, { provider: "s3", operation: "put_object", errorCode: "AccessDenied",
-      httpStatus: 403, requestId: null, attempts: 1 });
-    expect(isStorageUnavailableError(denied)).toBe(false);
+  it("does not treat a run's own Stop abort as a storage outage", async () => {
+    const stop = new AbortController();
+    stop.abort(new Error("Cancelled by a board operator"));
+    expect(isStorageUnavailableError(await recorded(sdkAbort(), stop.signal))).toBe(false);
+    expect(isStorageUnavailableError(await recorded(sdkAbort()))).toBe(false);
+  });
+
+  it("requires the failure to come from a storage call", () => {
+    expect(isStorageUnavailableError(s3Error("ServiceUnavailable", 503))).toBe(false);
+    expect(isStorageUnavailableError(Object.assign(new Error("reset"), { code: "ECONNRESET" }))).toBe(false);
   });
 });

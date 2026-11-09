@@ -34,6 +34,7 @@ import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from
 import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
+import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
@@ -787,12 +788,15 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       resultJson: { providerFailure } });
   });
 
-  it("waits a minute and suppresses rapid recovery when a run fails because storage is unavailable (storage chaos ST1)", async () => {
+  it.each(["run", "setup"] as const)("waits a minute and suppresses rapid recovery when %s fails because storage is unavailable (storage chaos ST1)", async phase => {
     const f = await fixture();
-    const outage = Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable",
-      $fault: "server", $metadata: { httpStatusCode: 503, attempts: 3 } });
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable",
+        $fault: "server", $metadata: { httpStatusCode: 503, attempts: 3 } });
+    }).catch(error => error as Error);
     f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled", run: { id: "wait" } } as never);
-    await f.completion.failRun(f.failure(outage));
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    else await f.completion.failRun(f.failure(outage));
     const failed = await read(f.run.id);
     expect(failed).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE, error: STORAGE_UNAVAILABLE_MESSAGE });
     expect(failed.error).not.toContain("Injected storage outage");

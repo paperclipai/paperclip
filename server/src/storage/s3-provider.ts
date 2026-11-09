@@ -180,7 +180,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     ])).digest("hex") : undefined,
 
     async putObjectConditional(input) {
-      const output = await client.send(new PutObjectCommand({
+      const output = await withS3FailureDiagnostics("put_object", () => client.send(new PutObjectCommand({
         Bucket: bucket,
         Key: buildKey(prefix, input.objectKey),
         Body: input.body,
@@ -188,7 +188,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
         ContentLength: input.contentLength,
         IfMatch: input.ifMatch,
         IfNoneMatch: input.ifNoneMatch,
-      }), { abortSignal: input.signal });
+      }), { abortSignal: input.signal }), input.signal);
       if (!output.ETag) throw new Error("Object storage did not return a publication ETag");
       return { etag: output.ETag };
     },
@@ -223,7 +223,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
             await withS3FailureDiagnostics("put_object", () => fileClient.send(new PutObjectCommand({
               Bucket: bucket, Key: key, Body: body, ContentType: input.contentType,
               ContentLength: input.contentLength, ContentMD5: contentMd5,
-            }), { abortSignal: input.signal }));
+            }), { abortSignal: input.signal }), input.signal);
           } finally { body.destroy(); }
         });
         return { integrity: "server_verified_md5" } as const;
@@ -241,7 +241,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           ContentLength: input.contentLength,
         }),
         { abortSignal: input.signal },
-      ));
+      ), input.signal);
     },
 
     async getObject(input): Promise<GetObjectResult> {
@@ -254,7 +254,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
             Range: input.range ? `bytes=${input.range.start}-${input.range.end}` : undefined,
           }),
           { abortSignal: input.signal },
-        ));
+        ), input.signal);
 
         const first = observeBodyFailures(await toReadableStream(output.Body), output);
         const etag = output.ETag;
@@ -264,7 +264,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           const resumed = await withS3FailureDiagnostics("get_object", () => client.send(new GetObjectCommand({
             Bucket: bucket, Key: key, IfMatch: etag,
             Range: `bytes=${start + offset}-${end ?? ""}`,
-          }), { abortSignal: resumeSignal }));
+          }), { abortSignal: resumeSignal }), resumeSignal);
           return observeBodyFailures(await toReadableStream(resumed.Body), resumed);
         };
         const stream = etag && end !== undefined
@@ -294,7 +294,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
             Key: key,
           }),
           { abortSignal: input.signal },
-        ));
+        ), input.signal);
 
         return {
           exists: true,
@@ -322,7 +322,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
               { abortSignal: input.signal });
           }
           if ((await listExactVersions(key, input.signal)).size) throw new Error("s3_object_versions_still_present");
-        });
+        }, input.signal);
         return;
       }
       await withS3FailureDiagnostics("delete_object", () => client.send(
@@ -331,7 +331,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           Key: key,
         }),
         { abortSignal: input.signal },
-      ));
+      ), input.signal);
     },
   };
 }

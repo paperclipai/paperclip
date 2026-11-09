@@ -1372,7 +1372,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // The inner catch did not fire, so we must record the failure here.
     const providerFailure = providerFailureFromError(outerErr);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    const message = redactCurrentUserText(
+    const storageUnavailable = isStorageUnavailableError(outerErr);
+    const message = storageUnavailable ? STORAGE_UNAVAILABLE_MESSAGE : redactCurrentUserText(
       identityRedactor.redact(outerErr instanceof Error
         ? outerErr.message
         : "Unknown setup failure"),
@@ -1458,6 +1459,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         : null) ??
       recordedResponsibleUserDenialCode ??
       nonRetryablePreflightCode ??
+      (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : null) ??
       "setup_failed";
     // Bounded kind and reason only: a workspace provider's own text never crosses into Core.
     const workspaceProviderFailure = findWorkspaceProviderFailure(outerErr)?.summary() ?? null;
@@ -1572,6 +1574,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       const livenessRun = await classifyAndPersistRunLiveness(
         failedRun,
       ).catch(() => failedRun);
+      let storageWaitScheduled = false;
       const setupFailureIssueId = readNonEmptyString(
         parseObject(livenessRun.contextSnapshot).issueId,
       );
@@ -1644,10 +1647,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             return null;
           });
           reviewedChatRetryScheduled = retry?.outcome === "scheduled";
+          storageWaitScheduled = livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE && retry?.outcome === "scheduled";
         }
       }
       await releaseIssueExecutionAndPromote(livenessRun, {
-        suppressImmediateRecovery:
+        suppressImmediateRecovery: storageWaitScheduled ||
           readNonEmptyString(
             parseObject(livenessRun.contextSnapshot).goalControlRequestId,
           ) !== null ||
