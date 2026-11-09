@@ -3163,7 +3163,10 @@ export function agentRoutes(
       if (selected.connection.config.ai && aiConnectionMetadataSchema.parse(selected.connection.config.ai).routing) throw unprocessable("Use the configured gateway model catalog");
       const credential = await service.runtimeCredential(selected);
       res.setHeader("Cache-Control", "no-store");
-      res.json(await fetchAccountModels(expectedProvider, selected.attribution.method as "subscription" | "api_key", credential));
+      res.json(await fetchAccountModels(expectedProvider, selected.attribution.method as "subscription" | "api_key", credential,
+        expectedProvider === "openai" && selected.attribution.method === "subscription"
+          ? { refreshCredential: (failedCredential, signal) => service.refreshQuotaCredential(selected, failedCredential, signal) }
+          : undefined));
       return;
     }
     if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "kimi") {

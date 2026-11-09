@@ -4,7 +4,9 @@ type Model = { id: string; label: string };
 type Provider = "openai" | "anthropic";
 type Method = "api_key" | "subscription";
 
-export async function fetchAccountModels(provider: Provider, method: Method, credential: string): Promise<Model[]> {
+export async function fetchAccountModels(provider: Provider, method: Method, credential: string, options?: {
+  refreshCredential: (failedCredential: string, signal: AbortSignal) => Promise<string>;
+}): Promise<Model[]> {
   let url: string;
   let headers: Record<string, string>;
   if (provider === "anthropic") {
@@ -22,7 +24,15 @@ export async function fetchAccountModels(provider: Provider, method: Method, cre
     headers = { Authorization: `Bearer ${token}`, "ChatGPT-Account-Id": account };
   }
   try {
-    const response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(10_000) });
+    let response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(10_000) });
+    if (provider === "openai" && method === "subscription" && response.status === 401 && options?.refreshCredential) {
+      await response.body?.cancel();
+      const refreshed = JSON.parse(await options.refreshCredential(credential, AbortSignal.timeout(10_000)));
+      const token = refreshed?.tokens?.access_token, account = refreshed?.tokens?.account_id;
+      if (typeof token !== "string" || !token || account !== headers["ChatGPT-Account-Id"]) throw new Error("credential identity changed");
+      headers = { ...headers, Authorization: `Bearer ${token}` };
+      response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(10_000) });
+    }
     if (!response.ok) throw new Error("provider rejected catalog request");
     const payload = await response.json() as { data?: unknown; models?: unknown; has_more?: unknown };
     const entries = method === "subscription" && provider === "openai" ? payload.models : payload.data;

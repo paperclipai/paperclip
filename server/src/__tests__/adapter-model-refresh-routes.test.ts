@@ -33,6 +33,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
 const mockListOpenCodeModels = vi.hoisted(() => vi.fn());
 const mockAiSelect = vi.hoisted(() => vi.fn());
 const mockAiCredential = vi.hoisted(() => vi.fn());
+const mockAiRefreshCredential = vi.hoisted(() => vi.fn());
 const mockAccountModels = vi.hoisted(() => vi.fn());
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
@@ -70,7 +71,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
-  vi.doMock("../services/ai-connections.js", () => ({ aiConnectionService: () => ({ select: mockAiSelect, runtimeCredential: mockAiCredential }) }));
+  vi.doMock("../services/ai-connections.js", () => ({ aiConnectionService: () => ({ select: mockAiSelect, runtimeCredential: mockAiCredential, refreshQuotaCredential: mockAiRefreshCredential }) }));
   vi.doMock("../services/account-model-catalog.js", () => ({ fetchAccountModels: mockAccountModels }));
   vi.doMock("@paperclipai/adapter-opencode-local/server", async () => {
     const actual = await vi.importActual<typeof import("@paperclipai/adapter-opencode-local/server")>("@paperclipai/adapter-opencode-local/server");
@@ -197,7 +198,12 @@ describe("adapter model refresh route", () => {
     expect(res.body).toEqual([{ id: "gpt-6.1-terra", label: "Terra" }]);
     expect(mockAiSelect).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1", binding, adapterType: "codex_local" }));
     expect(mockAiCredential).toHaveBeenCalledWith(selected);
-    expect(mockAccountModels).toHaveBeenCalledWith("openai", "subscription", "selected-credential");
+    expect(mockAccountModels).toHaveBeenCalledWith("openai", "subscription", "selected-credential", { refreshCredential: expect.any(Function) });
+    const signal = new AbortController().signal;
+    mockAiRefreshCredential.mockResolvedValue("protected-refreshed-credential");
+    const refreshCredential = mockAccountModels.mock.calls[0][3].refreshCredential;
+    await expect(refreshCredential("failed-credential", signal)).resolves.toBe("protected-refreshed-credential");
+    expect(mockAiRefreshCredential).toHaveBeenCalledExactlyOnceWith(selected, "failed-credential", signal);
     expect(res.headers["cache-control"]).toBe("no-store");
   });
 
