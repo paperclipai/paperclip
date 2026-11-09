@@ -840,6 +840,12 @@ export interface WakeupOptions {
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
+  /**
+   * Internal owner unblock delivery. Admission checks this exact blocked
+   * request under the issue lock and saves `blockedOwnerNotifiedAt` in the
+   * same transaction as the wake, or admits nothing.
+   */
+  unblockRequestGuard?: { blockedTransitionAt: string; ownerAgentId: string; action: string };
 }
 
 function sanitizeAgentSessionMessageText(value: unknown): string | null {

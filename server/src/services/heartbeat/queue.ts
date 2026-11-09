@@ -3304,6 +3304,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               assigneeUserId: issues.assigneeUserId,
               monitorNextCheckAt: issues.monitorNextCheckAt,
               monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
+              unblockDescriptor: issues.unblockDescriptor,
+              blockedTransitionAt: issues.blockedTransitionAt,
+              blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
               createdAt: issues.createdAt,
@@ -3396,6 +3399,22 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               finishedAt: new Date(),
             });
             return { kind: "skipped" as const };
+          }
+
+          const unblockGuard = opts.unblockRequestGuard;
+          if (unblockGuard) {
+            // The issue lock serializes deliveries. Only the current, unnotified
+            // request is admitted, and its stamp commits with the wake.
+            const descriptor = issue.unblockDescriptor;
+            const owner = descriptor?.owner;
+            if (issue.status !== "blocked" || issue.blockedOwnerNotifiedAt !== null ||
+                issue.blockedTransitionAt?.toISOString() !== unblockGuard.blockedTransitionAt ||
+                !owner || owner === "board" || !("agentId" in owner) || owner.agentId !== unblockGuard.ownerAgentId ||
+                owner.agentId !== agentId || descriptor.action !== unblockGuard.action) {
+              return { kind: "skipped" as const };
+            }
+            await tx.update(issues).set({ blockedOwnerNotifiedAt: new Date() })
+              .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
           }
 
           if (opts.failedRunId) {

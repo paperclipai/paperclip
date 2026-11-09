@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   companyMemberships,
@@ -40,6 +43,11 @@ import {
 } from "./helpers/embedded-postgres.js";
 import type { IssueBlockerAttention, IssueRelationIssueSummary } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.js";
+import { deliverBlockedOwnerNotification } from "../services/routable-blocked.js";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -767,6 +775,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projects);
     await db.delete(goals);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companyMemberships);
@@ -969,6 +978,262 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       .where(eq(issues.id, issue.id))
       .then((rows) => rows[0] ?? null);
     expect(persisted?.assigneeAgentId).toBe(activeAgentId);
+  });
+
+  it.each([
+    { action: "Restore registry access", checkout: true, notified: true, resolvedBlocker: false, expectedWakes: 0 },
+    { action: "Rotate the rejected registry credential", checkout: true, notified: true, resolvedBlocker: false, expectedWakes: 1 },
+    { action: "Restore registry access", checkout: false, notified: true, resolvedBlocker: false, expectedWakes: 0 },
+    { action: "Rotate the rejected registry credential", checkout: false, notified: true, resolvedBlocker: false, expectedWakes: 1 },
+    { action: "Restore registry access", checkout: true, notified: false, resolvedBlocker: false, expectedWakes: 1 },
+    { action: "Restore registry access", checkout: false, notified: false, resolvedBlocker: false, expectedWakes: 1 },
+    { action: "Restore registry access", checkout: true, notified: true, resolvedBlocker: true, expectedWakes: 0 },
+  ])("emits $expectedWakes owner wakes for $action (checkout=$checkout, notified=$notified, resolvedBlocker=$resolvedBlocker)", async ({ action, checkout, notified, resolvedBlocker, expectedWakes }) => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      ...agentRow(companyId, { id: agentId, name: "BlockedCoder" }),
+      adapterType: "process", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "blocker-owner", status: "active", membershipRole: "owner",
+    });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", startedAt: new Date() }).returning();
+    const transitionAt = new Date("2026-10-27T12:00:00.000Z");
+    const notifiedAt = new Date("2026-10-27T12:00:01.000Z");
+    const [issue] = await db.insert(issues).values({
+      companyId, title: "Wait for registry access", status: "blocked", assigneeAgentId: agentId,
+      unblockDescriptor: { owner: { agentId }, action: "Restore registry access" },
+      blockedTransitionAt: transitionAt, blockedOwnerNotifiedAt: notified ? notifiedAt : null,
+    }).returning();
+    if (resolvedBlocker) {
+      const [blocker] = await db.insert(issues).values({ companyId, title: "Registry restored", status: "done" }).returning();
+      await db.insert(issueRelations).values({ companyId, issueId: blocker!.id, relatedIssueId: issue!.id, type: "blocks" });
+      await db.insert(agentWakeupRequests).values({
+        companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_blockers_resolved",
+        status: "completed", requestedAt: notifiedAt, finishedAt: notifiedAt,
+        idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+          dependentIssueId: issue!.id, blockerIssueIds: [blocker!.id], blockedTransitionAt: transitionAt,
+        }),
+      });
+    }
+    const priorWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    if (checkout) await svc.checkout(issue!.id, agentId, ["blocked"], null);
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "agent", agentId, companyId, runId: run!.id, source: "agent_key", keyScope: { kind: "standard" } };
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as never));
+    app.use(errorHandler);
+    const reblock = () => request(app).patch(`/api/issues/${issue!.id}`).send({
+      ...(checkout ? { status: "blocked" } : {}), unblockDescriptor: { action, owner: { agentId } },
+    });
+    const response = await reblock();
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const repeated = await reblock();
+    expect(repeated.status, JSON.stringify(repeated.body)).toBe(200);
+    await heartbeatService(db).drainActiveRunExecutions();
+    const [updated] = await db.select().from(issues).where(eq(issues.id, issue!.id));
+    const allWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    const queued = allWakes.filter(wake => !priorWakes.some(prior => prior.id === wake.id));
+    expect(queued).toHaveLength(expectedWakes);
+    if (action === "Restore registry access") expect(updated!.blockedTransitionAt).toEqual(transitionAt);
+    if (expectedWakes === 0) {
+      expect(updated).toMatchObject({ blockedTransitionAt: transitionAt, blockedOwnerNotifiedAt: notifiedAt });
+    } else {
+      expect(queued[0]).toMatchObject({
+        agentId, status: "queued", reason: "issue_unblock_requested", payload: { issueId: issue!.id, action },
+      });
+      if (action !== "Restore registry access" && checkout) expect(updated!.blockedTransitionAt).not.toEqual(transitionAt);
+      if (action !== "Restore registry access" && !checkout) expect(updated!.blockedTransitionAt).toEqual(transitionAt);
+    }
+  });
+
+  async function seedUnnotifiedBlockedIssue() {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      ...agentRow(companyId, { id: agentId, name: "OverlapCoder" }),
+      adapterType: "process", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "blocker-owner", status: "active", membershipRole: "owner",
+    });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", startedAt: new Date() }).returning();
+    const descriptor = { owner: { agentId }, action: "Restore registry access" };
+    const [issue] = await db.insert(issues).values({
+      companyId, title: "Wait for registry access", status: "blocked", assigneeAgentId: agentId,
+      unblockDescriptor: descriptor, blockedTransitionAt: new Date("2026-10-27T12:00:00.000Z"),
+      blockedOwnerNotifiedAt: null,
+    }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "agent", agentId, companyId, runId: run!.id, source: "agent_key", keyScope: { kind: "standard" } };
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as never));
+    app.use(errorHandler);
+    const edit = (title: string) => request(app).patch(`/api/issues/${issue!.id}`).send({ title, unblockDescriptor: descriptor });
+    const unblockWakes = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)))
+      .filter(wake => wake.idempotencyKey?.startsWith(`issue-unblock:${issue!.id}:`));
+    return { companyId, agentId, issue: issue!, edit, unblockWakes };
+  }
+
+  it("sends one owner wake request when overlapping edits reach an unnotified blocked issue", async () => {
+    const { issue, edit, unblockWakes } = await seedUnnotifiedBlockedIssue();
+
+    const responses = await Promise.all(["First overlapping edit", "Second overlapping edit", "Third overlapping edit"].map(edit));
+    for (const response of responses) expect(response.status, JSON.stringify(response.body)).toBe(200);
+    await heartbeatService(db).drainActiveRunExecutions();
+
+    expect((await unblockWakes()).map(wake => wake.reason)).toEqual(["issue_unblock_requested"]);
+    const [updated] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(updated!.blockedOwnerNotifiedAt).not.toBeNull();
+  });
+
+  it("leaves the owner unnotified when the server stops after a failed owner wake request", async () => {
+    const { issue, edit, unblockWakes } = await seedUnnotifiedBlockedIssue();
+    await db.execute(sql.raw(`
+      create function test_fail_unblock_wake() returns trigger language plpgsql as $$
+      begin
+        if new.idempotency_key like 'issue-unblock:%' then raise exception 'injected owner wake insert failure'; end if;
+        return new;
+      end $$;
+      create trigger test_fail_unblock_wake before insert on agent_wakeup_requests
+        for each row execute function test_fail_unblock_wake();
+    `));
+    try {
+      await edit("Edit while the owner wake cannot be saved");
+    } finally {
+      await db.execute(sql.raw(`
+        drop trigger test_fail_unblock_wake on agent_wakeup_requests;
+        drop function test_fail_unblock_wake();
+      `));
+    }
+    const [afterStop] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(afterStop!.blockedOwnerNotifiedAt).toBeNull();
+
+    const response = await edit("Edit after the restart");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    await heartbeatService(db).drainActiveRunExecutions();
+
+    expect((await unblockWakes()).map(wake => wake.reason)).toEqual(["issue_unblock_requested"]);
+  });
+
+  it("saves no owner wake request when the notification stamp cannot be saved, so a later edit sends exactly one", async () => {
+    const { issue, edit, unblockWakes } = await seedUnnotifiedBlockedIssue();
+    await db.execute(sql.raw(`
+      create function test_fail_owner_stamp() returns trigger language plpgsql as $$
+      begin
+        if old.blocked_owner_notified_at is null and new.blocked_owner_notified_at is not null then
+          raise exception 'injected server stop before the owner notification stamp';
+        end if;
+        return new;
+      end $$;
+      create trigger test_fail_owner_stamp before update on issues
+        for each row execute function test_fail_owner_stamp();
+    `));
+    try {
+      await edit("Edit while the owner stamp cannot be saved");
+    } finally {
+      await db.execute(sql.raw(`
+        drop trigger test_fail_owner_stamp on issues;
+        drop function test_fail_owner_stamp();
+      `));
+    }
+    expect(await unblockWakes()).toHaveLength(0);
+
+    const response = await edit("Edit after the restart");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    await heartbeatService(db).drainActiveRunExecutions();
+
+    expect((await unblockWakes()).map(wake => wake.reason)).toEqual(["issue_unblock_requested"]);
+    const [updated] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(updated!.blockedOwnerNotifiedAt).not.toBeNull();
+  });
+
+  it("holds no database connection while the owner wake runs on a pool of one connection", async () => {
+    const { issue } = await seedUnnotifiedBlockedIssue();
+    const poolOfOne = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const wakeQueries: string[] = [];
+    try {
+      await deliverBlockedOwnerNotification(poolOfOne, {
+        issue,
+        wakeup: async (_agentId, options) => {
+          const [current] = await poolOfOne.select({ status: issues.status }).from(issues).where(eq(issues.id, issue.id));
+          wakeQueries.push(`${current!.status}:${options.unblockRequestGuard.action}`);
+        },
+      });
+    } finally {
+      await poolOfOne.$client.end({ timeout: 5 });
+    }
+    expect(wakeQueries).toEqual(["blocked:Restore registry access"]);
+  });
+
+  it("wakes the owner of the current unblock request when an older update delivers after a newer one", async () => {
+    const { companyId, agentId, issue, unblockWakes } = await seedUnnotifiedBlockedIssue();
+    const newerOwnerId = randomUUID();
+    await db.insert(agents).values({
+      ...agentRow(companyId, { id: newerOwnerId, name: "NewerOwner" }),
+      adapterType: "process", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    });
+    await db.insert(heartbeatRuns).values({ companyId, agentId: newerOwnerId, status: "running", startedAt: new Date() });
+    const newerDescriptor = { owner: { agentId: newerOwnerId }, action: "Approve the registry token" };
+    const [newer] = await db.update(issues).set({ unblockDescriptor: newerDescriptor })
+      .where(eq(issues.id, issue.id)).returning();
+    const heartbeat = heartbeatService(db);
+
+    await deliverBlockedOwnerNotification(db, { issue, wakeup: heartbeat.wakeup });
+    await deliverBlockedOwnerNotification(db, { issue: newer!, wakeup: heartbeat.wakeup });
+    await heartbeat.drainActiveRunExecutions();
+
+    const wakes = await unblockWakes();
+    expect(issue.unblockDescriptor).toEqual({ owner: { agentId }, action: "Restore registry access" });
+    expect(wakes.map(wake => ({ agentId: wake.agentId, action: wake.payload?.action })))
+      .toEqual([{ agentId: newerOwnerId, action: "Approve the registry token" }]);
+  });
+  it.each(["done", "todo"] as const)("wakes the owner when a checked-out block moves to %s and the same request blocks it again", async (leaveStatus) => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      ...agentRow(companyId, { id: agentId, name: "ReopenedCoder" }),
+      adapterType: "process", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "blocker-owner", status: "active", membershipRole: "owner",
+    });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", startedAt: new Date() }).returning();
+    const transitionAt = new Date("2026-10-27T12:00:00.000Z");
+    const descriptor = { owner: { agentId }, action: "Restore registry access" };
+    const [issue] = await db.insert(issues).values({
+      companyId, title: "Wait for registry access", status: "blocked", assigneeAgentId: agentId,
+      unblockDescriptor: descriptor, blockedTransitionAt: transitionAt,
+      blockedOwnerNotifiedAt: new Date("2026-10-27T12:00:01.000Z"),
+    }).returning();
+    await svc.checkout(issue!.id, agentId, ["blocked"], null);
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "agent", agentId, companyId, runId: run!.id, source: "agent_key", keyScope: { kind: "standard" } };
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as never));
+    app.use(errorHandler);
+    const left = await request(app).patch(`/api/issues/${issue!.id}`).send({ status: leaveStatus });
+    expect(left.status, JSON.stringify(left.body)).toBe(200);
+    const [afterLeave] = await db.select().from(issues).where(eq(issues.id, issue!.id));
+    expect(afterLeave).toMatchObject({ unblockDescriptor: null, blockedTransitionAt: null, blockedOwnerNotifiedAt: null });
+    const reblocked = await request(app).patch(`/api/issues/${issue!.id}`).send({ status: "blocked", unblockDescriptor: descriptor });
+    expect(reblocked.status, JSON.stringify(reblocked.body)).toBe(200);
+    await heartbeatService(db).drainActiveRunExecutions();
+    const [updated] = await db.select().from(issues).where(eq(issues.id, issue!.id));
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakes.filter(wake => wake.reason === "issue_unblock_requested")).toHaveLength(1);
+    expect(updated!.blockedTransitionAt).not.toEqual(transitionAt);
+    expect(updated!.blockedOwnerNotifiedAt).not.toBeNull();
   });
 
   it("rejects checkout by a terminated agent before assigning the issue", async () => {

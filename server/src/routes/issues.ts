@@ -386,7 +386,7 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
-import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
+import { deliverBlockedOwnerNotification } from "../services/routable-blocked.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
@@ -15585,26 +15585,13 @@ export function issueRoutes(
         publishActivity(publication);
       await flushIssuePostCommitActions(postCommitIssueActions);
 
-      if (enteringBlocked) {
+      if (issue.status === "blocked") {
         const blockedIssue = issue;
-        let ownerNotifiedAt: Date | null = null;
-        await deliverAgentUnblockNotification({
+        const ownerNotifiedAt = await deliverBlockedOwnerNotification(db, {
           issue: blockedIssue,
           wakeup: heartbeat.wakeup,
-          markNotified: async (blockedOwnerNotifiedAt) => {
-            ownerNotifiedAt = blockedOwnerNotifiedAt;
-          },
         });
         if (ownerNotifiedAt) {
-          await db
-            .update(issueRows)
-            .set({ blockedOwnerNotifiedAt: ownerNotifiedAt })
-            .where(
-              and(
-                eq(issueRows.id, blockedIssue.id),
-                eq(issueRows.companyId, blockedIssue.companyId),
-              ),
-            );
           issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
         }
       }
