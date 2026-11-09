@@ -30,7 +30,7 @@ function reconnect() {
     state: { task: { id: "website", identifier: "ACORN-1" }, worker: { id: "morgan" }, workerRunId: "worker",
       workerWasReallyWaiting: true, offlineObserved: true, workerStatusBeforeDisconnect: "running", workerStatusWhileOffline: "succeeded",
       taskStatusWhileOffline: "done", serverAdvancedWhileOffline: true, reconnected: true, historyRetained: true,
-      offlineCommentsRetained: true, queryReply: "The website ACORN-1 finished while you were away.",
+      offlineCommentsRetained: true, queryReply: "The website ACORN-1 finished while you were away.", canonicalRunIds: ["query"],
       remainingPhase: { attributed: true, reply: "That follow-up is still running and waiting for the brief.", taskId: "followup", runId: "remaining", offlineObserved: true, runningWhileOffline: true, reconnected: true, runStatusAtReply: "running", taskStatusAtReply: "in_progress" },
       failedReconnectPhase: { attributed: true, reply: "Riley's attempt failed with a provider model configuration error.", runId: "real-failure", taskId: "failed-task", offlineObserved: true, failedWhileOffline: true, reconnected: true } },
     agents: [], tasks: [{ id: "website", status: "done" }, { id: "followup", status: "done" }, { id: "failed-task", status: "blocked" }], documents: [{ id: "delivery", title: "Website delivery", latestRevisionId: "saved" }],
@@ -46,9 +46,11 @@ it("rejects apparent success when the persisted worker failed", () => { const o 
 it("rejects progress that happened before disconnection", () => { const o = reconnect(); o.state.workerStatusBeforeDisconnect = "succeeded"; expect(gradeBrowserReconnect(o).passed).toBe(false); });
 it("rejects a duplicate worker after reconnect", () => { const o = reconnect(); o.runs.push({ id: "duplicate", agentId: "morgan", status: "succeeded" }); expect(gradeBrowserReconnect(o).passed).toBe(false); });
 it("rejects losing messages whose live stream events were missed", () => { const o = reconnect(); o.state.offlineCommentsRetained = false; expect(gradeBrowserReconnect(o).passed).toBe(false); });
-it("rejects a status claim only present in the old phase", () => { const o = reconnect(); o.reply = o.state.queryReply; o.state.queryReply = "Hello."; expect(gradeBrowserReconnect(o).passed).toBe(false); });
-it("rejects a completion claim for genuinely remaining work", () => { const o = reconnect(); o.state.remainingPhase.reply = "It has finished."; expect(gradeBrowserReconnect(o).passed).toBe(false); });
+it("rejects a canonical answer only present in an earlier phase", () => { const o = reconnect(); o.reply = o.state.queryReply; o.state.queryReply = ""; expect(gradeBrowserReconnect(o).passed).toBe(false); });
+it("rejects a canonical answer split across more than one turn", () => { const o = reconnect(); o.state.canonicalRunIds = ["query", "extra"]; expect(gradeBrowserReconnect(o).passed).toBe(false); });
+it("rejects a remaining-work answer not bound to its own turn", () => { const o = reconnect(); o.state.remainingPhase.attributed = false; expect(gradeBrowserReconnect(o).passed).toBe(false); });
+it("rejects a remaining-work answer given after the work finished", () => { const o = reconnect(); o.state.remainingPhase.runStatusAtReply = "succeeded"; expect(gradeBrowserReconnect(o).passed).toBe(false); });
 it("rejects another disconnect without independent server activity", () => { const o = reconnect(); o.state.remainingPhase.runningWhileOffline = false; expect(gradeBrowserReconnect(o).passed).toBe(false); });
 it("rejects document title matches without actual latest-revision run provenance", () => { const o = reconnect(); o.revisions[0]!.createdByRunId = "other-run"; expect(gradeBrowserReconnect(o).passed).toBe(false); });
-it("rejects reporting a genuinely failed offline attempt as completed", () => { const o = reconnect(); o.state.failedReconnectPhase.reply = "That attempt has finished successfully."; expect(gradeBrowserReconnect(o).passed).toBe(false); });
+it("rejects a failed-attempt question that no turn answered", () => { const o = reconnect(); o.state.failedReconnectPhase.reply = ""; o.state.failedReconnectPhase.attributed = false; expect(gradeBrowserReconnect(o).passed).toBe(false); });
 it("rejects cancellation substituted for a genuine native failed phase", () => { const o = reconnect(); o.runs.find(run => run.id === "real-failure")!.status = "cancelled"; expect(gradeBrowserReconnect(o).passed).toBe(false); });
