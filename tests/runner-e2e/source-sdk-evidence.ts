@@ -6,6 +6,7 @@ import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rm, writeFile }
 import path from "node:path";
 import { diagnosticSecrets, readPrivateDiagnosticSecrets } from "./private-diagnostics.js";
 import { findSecretLeak } from "./redaction.js";
+import { isStandardEvidenceFile } from "./evidence.js";
 
 const selectedIds = new Set(["plugins.configure-plugin", "plugins.disable-plugin", "plugins.install-plugin", "plugins.use-plugin-tool", "routines.plugin-managed-routine", "secrets.least-scope-delivery"].map(id => `chat-features.runner-opencode.local.${id}`));
 export const SOURCE_SDK_DIAGNOSTICS = "diagnostics/source-plugin-sdk";
@@ -14,7 +15,14 @@ const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).dige
 const hex = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const staging = (root: string) => path.join(root, "artifacts-private", "source-sdk-build");
 interface BuiltFile { file: string; size: number; sha256: string }
-const retainedPath = (file: string) => file.replace(/\/\.paperclip-build-complete$/, "/build-completion-receipt.json");
+// Retained bytes must use a name the private result sealer admits as a
+// standard carrier: declarations (.d.ts) and source maps (.map) are retained
+// byte-for-byte under a .txt suffix instead of failing the whole attempt.
+export const retainedSourceSdkPath = (file: string) => {
+  const named = file.replace(/\/\.paperclip-build-complete$/, "/build-completion-receipt.json");
+  return isStandardEvidenceFile(`html-report/${SOURCE_SDK_DIAGNOSTICS}/${named}`) ? named : `${named}.txt`;
+};
+const retainedPath = retainedSourceSdkPath;
 interface RetainedBuild {
   schema: "paperclip.source-plugin-sdk/v1" | "paperclip.source-plugin-sdk/v2"; sourceRootSha256?: string; scanAudit?: Awaited<ReturnType<ReturnType<typeof createSdkArtifactScanner>["audit"]>>; executionId: string; sourceRevision: string; retainedAt: string;
   buildHelperSha256: string; lockSha256: string; files: Array<BuiltFile & { retainedPath: string; retainedSha256: string }>;
