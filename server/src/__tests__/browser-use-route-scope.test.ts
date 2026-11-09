@@ -64,7 +64,8 @@ describe("browser task route scope", () => {
         actorType = type;
         const response = await http(app)[method](path);
         expect(response.status).toBe(type === "board" ? 404 : 403);
-        expect(response.body).toEqual({ error: type === "board" ? "Task not found" : "Board access required" });
+        expect(response.body).toMatchObject({ error: type === "board" ? "Task not found" : "Board access required" });
+        expect(response.body.code).toBe(type === "agent" ? "board_access_required" : undefined);
       }
     }
     expect(select).not.toHaveBeenCalled();

@@ -17,6 +17,7 @@ import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerModel,
   normalizeLegacyRunnerProvider,
+  paperclipRunnerFollowsLifecycleDefault,
 } from "./paperclip-runner-permissions.js";
 import type {
   AdapterExecutionContext,
@@ -703,6 +704,22 @@ type PaperclipWakeChildIssueSummary = {
   summary: string | null;
 };
 
+/** `issue_blocker_stalled`: the child or blocker that stalled on a board-owned recovery action. */
+type PaperclipWakeBlockerStall = {
+  stalledIssueId: string | null;
+  stalledIssueIdentifier: string | null;
+  stalledIssueTitle: string | null;
+  stalledIssueStatus: string | null;
+  relation: "child" | "blocker";
+  recoveryAction: {
+    kind: string | null;
+    cause: string | null;
+    status: string | null;
+    ownerType: string | null;
+    nextAction: string | null;
+  };
+};
+
 type PaperclipWakeBlockerSummary = {
   id: string | null;
   identifier: string | null;
@@ -816,6 +833,7 @@ type PaperclipWakePayload = {
   annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
+  blockerStall: PaperclipWakeBlockerStall | null;
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
@@ -1319,6 +1337,29 @@ function normalizePaperclipWakeChildIssueSummary(
   const summary = asString(child.summary, "").trim() || null;
   if (!id && !identifier && !title && !status && !summary) return null;
   return { id, identifier, title, status, priority, summary };
+}
+
+function normalizePaperclipWakeBlockerStall(value: unknown): PaperclipWakeBlockerStall | null {
+  const stall = parseObject(value);
+  const text = (field: unknown) => asString(field, "").trim() || null;
+  const stalledIssueId = text(stall.stalledIssueId);
+  const stalledIssueIdentifier = text(stall.stalledIssueIdentifier);
+  if (!stalledIssueId && !stalledIssueIdentifier) return null;
+  const action = parseObject(stall.recoveryAction);
+  return {
+    stalledIssueId,
+    stalledIssueIdentifier,
+    stalledIssueTitle: text(stall.stalledIssueTitle),
+    stalledIssueStatus: text(stall.stalledIssueStatus),
+    relation: stall.relation === "blocker" ? "blocker" : "child",
+    recoveryAction: {
+      kind: text(action.kind),
+      cause: text(action.cause),
+      status: text(action.status),
+      ownerType: text(action.ownerType),
+      nextAction: text(action.nextAction),
+    },
+  };
 }
 
 function normalizePaperclipWakeBlockerSummary(
@@ -1894,6 +1935,7 @@ export function normalizePaperclipWakePayload(
       payload.childIssueSummaryTruncated,
       false,
     ),
+    blockerStall: normalizePaperclipWakeBlockerStall(payload.blockerStall),
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
@@ -2941,6 +2983,9 @@ function renderPaperclipWakePromptBody(
         `You are waking as the active ${executionStage.wakeRole} for this issue.`,
         "Do not execute the task itself or continue executor work.",
         "Review the issue and choose one of the allowed actions above.",
+        "Record your decision on this issue with PATCH /api/issues/{issueId} and a required decision comment: approve with {\"status\":\"done\",\"comment\":\"...\"}, or request changes with {\"status\":\"in_progress\",\"comment\":\"...\"}.",
+        "A Paperclip Runner run cannot hand the task back itself; to request changes from one, report the required changes as a blocker with paperclip_block.",
+        "A run completion report does not record the decision; record it before you report.",
         "If you request changes, the workflow routes back to the stored return assignee.",
         "",
       );
@@ -3064,6 +3109,26 @@ function renderPaperclipWakePromptBody(
     if (continuation.instruction) {
       lines.push(`- instruction: ${continuation.instruction}`);
     }
+  }
+
+  if (normalized.blockerStall) {
+    const stall = normalized.blockerStall;
+    const label = stall.stalledIssueIdentifier ?? stall.stalledIssueId ?? "unknown";
+    const action = stall.recoveryAction;
+    lines.push(
+      "",
+      "## Stalled dependency",
+      "",
+      `Your ${stall.relation === "child" ? "child issue" : "blocker"} ${label}${stall.stalledIssueTitle ? ` ${stall.stalledIssueTitle}` : ""}${stall.stalledIssueStatus ? ` (${stall.stalledIssueStatus})` : ""} cannot continue on its own: it waits on a recovery action that needs the board.`,
+      `- recovery: ${action.kind ?? "unknown"}${action.cause ? ` — ${action.cause}` : ""}${action.status ? ` (${action.status})` : ""}`,
+      ...(action.nextAction ? [`- next action for the board: ${action.nextAction}`] : []),
+      "",
+      "Choose one, then stop:",
+      `- Re-delegate: if the work can be done another way, create or reassign a task for it and stop depending on ${label}.`,
+      `- Escalate: comment on this issue with what is stuck and what the board must do on ${label} (its Retry or reassignment), so the board sees it here.`,
+      `- Block this issue with a reason that names ${label} and its recovery action, if nothing else can move until the board acts.`,
+      `Do not redo ${label}'s work yourself while it is assigned, and do not wait silently.`,
+    );
   }
 
   if (normalized.childIssueSummaries.length > 0) {
@@ -4294,7 +4359,6 @@ export function normalizePaperclipRunnerAdapterConfig(
     provider: "codex",
     codexPermissionMode:
       PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
-    lifecycleMode: "per_turn",
     ...config,
   };
   if (next.provider === "codex") {
@@ -4306,6 +4370,9 @@ export function normalizePaperclipRunnerAdapterConfig(
       next.model = resolvePaperclipRunnerModel("acpx", config.model);
     }
   }
+  // No stored lifecycle means the product default for these providers; never
+  // write the old per_turn default back on a configuration write.
+  if (next.lifecycleMode === undefined && !paperclipRunnerFollowsLifecycleDefault(next)) next.lifecycleMode = "per_turn";
   return normalizePaperclipOperationalSkillPreference(adapterType, next);
 }
 
@@ -4933,10 +5000,30 @@ export async function runChildProcess(
 
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
-          void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
+          let stdinFailureHandled = false;
+          const handleStdinFailure = (err: unknown) => {
+            if (!err || stdinFailureHandled) return;
+            stdinFailureHandled = true;
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") return;
+            onLogError(err, runId, "failed to write child process stdin");
+          };
+
+          stdin.on("error", handleStdinFailure);
+          void spawnPersistPromise.then(() => {
+            if (
+              child.exitCode !== null ||
+              child.signalCode !== null ||
+              child.killed ||
+              stdin.destroyed
+            )
+              return;
+            try {
+              stdin.write(opts.stdin as string, handleStdinFailure);
+              stdin.end();
+            } catch (err) {
+              handleStdinFailure(err);
+            }
           });
         }
 

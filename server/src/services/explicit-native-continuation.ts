@@ -16,7 +16,7 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
-import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
+import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeRunRefusedBeforeLaunch, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
@@ -34,6 +34,7 @@ import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { firstTurnDeliveredCommentIds } from "./queued-comment-delivery.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "createdAt" |
@@ -121,7 +122,9 @@ export async function undeliveredLegacyUserCommentIds(
       for (const id of context.wakeCommentIds) if (typeof id === "string") valid.delete(id);
     }
   }
-  return commentIds.filter(id => valid.has(id));
+  // An accepted first turn that took a queued message consumed it too.
+  const firstTurn = await firstTurnDeliveredCommentIds(db, { companyId, issueId, agentId, commentIds: [...valid] });
+  return commentIds.filter(id => valid.has(id) && !firstTurn.has(id));
 }
 
 /** Called under the issue lock, in the transaction that creates the new turn.
@@ -401,8 +404,31 @@ export async function admitExplicitNativeContinuation(input: {
           actionId: action.id, operationIds: recovery.preservationOperationIds });
       const repairedTerminal = completedResult && coordinator.phase === "terminal_failure"
         && await hasVerifiedWorkspaceRepair(db, run);
-      if (completedResult && !repairedTerminal && !(freshIntent && snapshotSettled))
+      if (completedResult && !repairedTerminal && !(freshIntent && snapshotSettled)) {
+        // Nothing finishes the saved result while a stopped copyback owner is
+        // unverified. The run's live retained recovery records that hold; name
+        // its board action instead of an endless finalizing wait (RC-50).
+        const live = await db.select({
+          ownerHold: sql<boolean>`${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}' = 'operator_required'
+            and ${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`,
+          recoveryState: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}'`,
+          retryClass: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}'`,
+        }).from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+          sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`));
+        if (live.some(row => row.ownerHold))
+          return blocked("workspace_owner_stop_required", "Paperclip is waiting to confirm that the previous server stopped saving files. Your Retry is saved.");
+        // A spent recovery budget finishes nothing by itself. Another Retry
+        // starts one new recovery generation (task-retry), so name that action
+        // instead of an endless finalizing wait (RC-50b, s14).
+        if (live.length && live.every(row => row.recoveryState === "exhausted"))
+          return live.some(row => row.retryClass === "service_required")
+            ? blocked("saved_work_recovery_refused", "Paperclip refused to recover the saved files because a safety check on them cannot pass. Retry runs the same check again.")
+            : blocked("saved_work_recovery_failed", "Saving the agent's files failed. Retry to try again.");
         return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
+      }
     }
     // A repaired export no longer blocks execution. Its machine receipt still
     // binds the saved user turn; finalized file state alone is insufficient.
@@ -488,6 +514,7 @@ export async function admitExplicitNativeContinuation(input: {
         if (!run.processPid && !run.processGroupId &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&
             !await hasHistoricalSuspendedNativeSession(db, run) &&
+            !await nativeRunRefusedBeforeLaunch(db, run) &&
             !(run.runtimeMode === "native" &&
               await recordUnidentifiedLocalRunnerStop(db, run, { record: !input.dryRun }))) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
         if (run.processPid && !processStopped(run.processPid)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");

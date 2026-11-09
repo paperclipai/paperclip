@@ -23,6 +23,17 @@ function fixture() {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("lifecycle readiness handoff", () => {
+  it("defers event-owned host verification without marking host or readiness complete", async () => {
+    const { store, driver, worker } = fixture();
+    driver.runHost.mockResolvedValue("waiting");
+    await worker.process(agent.id);
+    expect(store.defer).toHaveBeenCalledWith(agent, expect.any(String), null, expect.any(Date), { waitForSignal: true });
+    expect(store.completeHost).not.toHaveBeenCalled();
+    expect(store.change).not.toHaveBeenCalled();
+    expect(driver.onReady).not.toHaveBeenCalled();
+    await worker.stop();
+  });
+
   it("notifies the scheduler only after host, plugins, and readiness have committed", async () => {
     const { store, driver, worker } = fixture();
     let commit!: (ready: LifecycleAgent) => void;

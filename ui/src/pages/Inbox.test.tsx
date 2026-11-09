@@ -118,8 +118,10 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+const toastMocks = vi.hoisted(() => ({ pushToast: vi.fn() }));
+
 vi.mock("../context/ToastContext", () => ({
-  useToastActions: () => ({ pushToast: vi.fn() }),
+  useToastActions: () => ({ pushToast: toastMocks.pushToast }),
 }));
 
 vi.mock("../context/DialogContext", () => ({
@@ -1326,6 +1328,36 @@ describe("Inbox toolbar", () => {
     } finally { await act(() => root.unmount()); client.clear(); }
   });
 
+  it.each([
+    ["a replaced attempt", { accepted: false, stale: true, requestId: null }, "already replaced"],
+    ["a held scheduled retry", { accepted: true, stale: false, requestId: "retry",
+      scheduledRetry: { outcome: "gate_suppressed", message: "The company budget is paused." } }, "The company budget is paused."],
+  ])("shows why an Inbox Retry did not start work for %s and does not open the task as if it did", async (_label, result, reason) => {
+    routerMock.location.pathname = "/inbox/recent";
+    const task = createIssue({ id: "task-1", title: "Failed task" });
+    const failure = createFailedRun({ issueId: task.id, responsibleUserId: "local-board" });
+    setFailureRuns([failure]);
+    apiMocks.issuesList.mockResolvedValue([{ ...task, interruption: { intentId: "intent", responsibility: "system",
+      state: "failed", nextRetryAt: null, canRetry: true, userAction: null, sourceRunIds: [failure.id], observedRunId: failure.id } }]);
+    apiMocks.retryTask.mockResolvedValue({ ...result, presentation: null });
+    toastMocks.pushToast.mockClear();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      const retry = await vi.waitFor(() => {
+        const button = Array.from(container.querySelectorAll("button")).find(candidate => candidate.textContent === "Retry");
+        expect(button).toBeTruthy();
+        return button!;
+      });
+      await act(async () => retry.click());
+      await vi.waitFor(() => expect(toastMocks.pushToast).toHaveBeenCalledWith(expect.objectContaining({
+        tone: "error", body: expect.stringContaining(reason) })));
+      expect(apiMocks.retryTask).toHaveBeenCalledWith(task.id, expect.objectContaining({ observedRunId: failure.id }));
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
   it("upgrades cached parent metadata when the same task becomes a failure context", async () => {
     routerMock.location.pathname = "/inbox/recent";
     const parent = createIssue({ id: "parent", title: "Parent metadata", listProjection: "index" });
@@ -2058,6 +2090,22 @@ describe("FailedRunInboxRow", () => {
 
   afterEach(() => {
     container.remove();
+  });
+
+  it.each(["working", "failed"] as const)("shows saved-work shutdown guidance while %s without Retry", state => {
+    const root = createRoot(container);
+    const message = state === "working" ? "Your work is saved. Paperclip is finishing shutdown."
+      : "Paperclip couldn’t confirm shutdown. Your work is saved; continuation is paused.";
+    const issue = createIssue({ interruption: { intentId: "saved-input", responsibility: "system", state,
+      nextRetryAt: null, canRetry: false, userAction: null, sourceRunIds: ["run-1"], observedRunId: "run-1",
+      retryWait: { reason: "governed_wait_settlement", message } } });
+    act(() => root.render(<FailedRunInboxRow run={createFailedRun({ issueId: issue.id })}
+      issueById={new Map([[issue.id, issue]])} agentName="Worker" issueLinkState={null}
+      onDismiss={() => {}} onRetry={() => {}} isRetrying={false} />));
+    expect(container.textContent).toContain(message);
+    expect(container.textContent).not.toContain("Couldn’t finish this attempt");
+    expect(container.textContent).not.toContain("Retry");
+    act(() => root.unmount());
   });
 
   it("uses task presentation instead of infrastructure errors and keeps Retry in the task", () => {

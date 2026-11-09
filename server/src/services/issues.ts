@@ -191,6 +191,12 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import {
+  buildIndependentTaskWorkspaceSettings,
+  isAncestorExecutionWorkspace,
+  loadAncestorIssueIds,
+  mergeExplicitWorkspaceSettings,
+} from "./task-workspace-lineage.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
 import { readChatControlChronology } from "./chat-control-chronology.js";
 import { authorizeChatConversationForBoundRun } from "./native-runtime/chat-attachment-reuse.js";
@@ -536,59 +542,6 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
     teardownCommand: settings?.workspaceStrategy?.teardownCommand ?? null,
     workspaceRuntime: settings?.workspaceRuntime ?? null,
   };
-}
-
-// Accepted-plan children are not realized yet, so carry only unresolved
-// workspace intent and let the first child run render/persist its own branch.
-function buildPreRealizationExecutionWorkspaceSettings(
-  raw: unknown,
-): Record<string, unknown> | null {
-  const settings = parseIssueExecutionWorkspaceSettings(raw, {
-    includeEnvironmentId: true,
-  });
-  if (!settings) return null;
-  const mode =
-    settings.mode &&
-    settings.mode !== "inherit" &&
-    settings.mode !== "reuse_existing"
-      ? settings.mode
-      : null;
-  const next: Record<string, unknown> = {};
-  if (mode) next.mode = mode;
-  if (settings.environmentId !== undefined)
-    next.environmentId = settings.environmentId;
-  if (settings.workspaceRuntime)
-    next.workspaceRuntime = settings.workspaceRuntime;
-  if (settings.workspaceStrategy) {
-    next.workspaceStrategy = {
-      type: settings.workspaceStrategy.type,
-      ...(settings.workspaceStrategy.baseRef
-        ? { baseRef: settings.workspaceStrategy.baseRef }
-        : {}),
-      ...(settings.workspaceStrategy.branchTemplate
-        ? { branchTemplate: settings.workspaceStrategy.branchTemplate }
-        : {}),
-      ...(settings.workspaceStrategy.existingBranch
-        ? { existingBranch: settings.workspaceStrategy.existingBranch }
-        : {}),
-      ...(settings.workspaceStrategy.worktreeParentDir
-        ? { worktreeParentDir: settings.workspaceStrategy.worktreeParentDir }
-        : {}),
-      ...(settings.workspaceStrategy.provisionCommand
-        ? { provisionCommand: settings.workspaceStrategy.provisionCommand }
-        : {}),
-      ...(settings.workspaceStrategy.runtimeProvisionCommand
-        ? {
-            runtimeProvisionCommand:
-              settings.workspaceStrategy.runtimeProvisionCommand,
-          }
-        : {}),
-      ...(settings.workspaceStrategy.teardownCommand
-        ? { teardownCommand: settings.workspaceStrategy.teardownCommand }
-        : {}),
-    };
-  }
-  return Object.keys(next).length > 0 ? next : null;
 }
 
 function toTimestampMs(value: Date | string | null | undefined) {
@@ -7690,18 +7643,67 @@ export function issueService(db: Db) {
     }
 
     for (const blockerIssueId of blockerIssueIds) {
-      const queue = [...(adjacency.get(issueId) ?? [])];
+      // Breadth-first search from the issue being updated along existing
+      // "blocks" edges, remembering how each issue was reached so the
+      // denial can name the existing chain that the new edge would close.
+      const previous = new Map<string, string>();
+      const queue = [issueId];
       const visited = new Set<string>([issueId]);
       while (queue.length > 0) {
         const current = queue.shift()!;
-        if (current === blockerIssueId) {
-          throw unprocessable("Blocking relations cannot contain cycles");
+        for (const next of adjacency.get(current) ?? []) {
+          if (visited.has(next)) continue;
+          visited.add(next);
+          previous.set(next, current);
+          if (next === blockerIssueId) {
+            const chain = [next];
+            while (chain[0] !== issueId) chain.unshift(previous.get(chain[0])!);
+            throw await blockingCycleError(companyId, chain, dbOrTx);
+          }
+          queue.push(next);
         }
-        if (visited.has(current)) continue;
-        visited.add(current);
-        queue.push(...(adjacency.get(current) ?? []));
       }
     }
+  }
+
+  /**
+   * Builds the 422 for a dependency that would close a blocking cycle.
+   * `chain` runs from the issue being updated to the requested blocker along
+   * existing "blocks" edges. The message names the existing order, says that
+   * nothing changed, and says the existing order must not be dropped or
+   * reversed without the requester's choice: a bare "cycle" denial left
+   * agents to guess, and they swapped the existing dependency.
+   *
+   * The chain can pass through issues the caller cannot read, and this
+   * service has no request to decide read access. It therefore names issues
+   * by identifier only, the same fields a locked relation stub exposes, and
+   * never by title.
+   */
+  async function blockingCycleError(companyId: string, chain: string[], dbOrTx: DbReader) {
+    const rows = await dbOrTx
+      .select({ id: issues.id, identifier: issues.identifier })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, chain)));
+    const identifierById = new Map(rows.map((row) => [row.id, row.identifier]));
+    const label = (id: string) => identifierById.get(id) ?? id;
+    const issueLabel = label(chain[0]!);
+    const blockerLabel = label(chain[chain.length - 1]!);
+    // Each issue in the chain already waits for the one before it.
+    const existingOrder = chain
+      .slice(1)
+      .map((id, index) => `${label(id)} waits for ${label(chain[index]!)}`)
+      .join(", and ");
+    return unprocessable(
+      `Blocking relations cannot contain cycles: ${existingOrder}, so ${issueLabel} cannot also wait for ${blockerLabel}. ` +
+        "No dependencies were changed and the existing ones are kept. " +
+        "Do not remove or reverse an existing dependency to make this fit; ask whoever requested the change which order they want and change dependencies only after they choose.",
+      {
+        code: "blocking_cycle",
+        issueId: chain[0],
+        requestedBlockerIssueId: chain[chain.length - 1],
+        existingChain: chain.map((id) => ({ id, identifier: identifierById.get(id) ?? null })),
+      },
+    );
   }
 
   async function syncBlockedByIssueIds(
@@ -9760,14 +9762,14 @@ export function issueService(db: Db) {
       const {
         acceptanceCriteria,
         blockParentUntilDone,
-        executionWorkspaceInheritanceMode = "linkage",
+        // Deprecated and ignored: a child never reuses its parent's realized
+        // workspace, so every mode behaves like the old "strategy_only".
+        executionWorkspaceInheritanceMode: _deprecatedInheritanceMode,
         actorAgentId,
         actorUserId,
         ...issueData
       } = data;
 
-      const inheritStrategyOnly =
-        executionWorkspaceInheritanceMode === "strategy_only";
       // A child may target another project. Parent workspace identity is only
       // valid inside the parent's project, so do not forward it across that
       // boundary; create() then resolves the target project's own workspaces.
@@ -9778,12 +9780,23 @@ export function issueService(db: Db) {
         issueData.executionWorkspaceId !== undefined ||
         issueData.executionWorkspacePreference !== undefined ||
         issueData.executionWorkspaceSettings !== undefined;
+      // The child keeps the parent's workspace strategy, never its files. The
+      // strategy belongs to the parent's project, so it stays behind when the
+      // child targets another project.
+      // Only a parent realized from a project workspace has a strategy that
+      // applies to the project base; a parent in its own task files does not.
+      const parentStrategy = childInheritsParentProject && parent.projectWorkspaceId
+        ? buildIndependentTaskWorkspaceSettings(parent.executionWorkspaceSettings)
+        : null;
       const inheritedPreRealizationWorkspaceSettings =
-        inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
-          ? buildPreRealizationExecutionWorkspaceSettings(
-              parent.executionWorkspaceSettings,
-            )
-          : null;
+        !hasExplicitExecutionWorkspaceOverride
+          ? parentStrategy
+          : issueData.executionWorkspaceId === undefined && issueData.executionWorkspaceSettings
+            ? mergeExplicitWorkspaceSettings(
+                parentStrategy,
+                issueData.executionWorkspaceSettings as Record<string, unknown>,
+              )
+            : null;
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -9791,7 +9804,7 @@ export function issueService(db: Db) {
         projectWorkspaceId:
           issueData.projectWorkspaceId !== undefined
             ? issueData.projectWorkspaceId
-            : (inheritStrategyOnly && childInheritsParentProject
+            : (childInheritsParentProject
                 ? parent.projectWorkspaceId
                 : undefined),
         goalId: issueData.goalId ?? parent.goalId,
@@ -9814,9 +9827,7 @@ export function issueService(db: Db) {
                 inheritedPreRealizationWorkspaceSettings,
             }
           : {}),
-        ...(inheritStrategyOnly
-          ? { skipExecutionWorkspaceInheritance: true }
-          : { inheritExecutionWorkspaceFromIssueId: parent.id }),
+        skipExecutionWorkspaceInheritance: true,
       });
 
       if (blockParentUntilDone) {
@@ -10065,7 +10076,6 @@ export function issueService(db: Db) {
             tx as unknown as Db,
           ).createChild(sourceIssue.id, {
             ...nextChildInput,
-            executionWorkspaceInheritanceMode: "strategy_only",
             onDeduplicated: reason => {
               childReused = true;
               nextChildInput.onDeduplicated?.(reason);
@@ -10449,6 +10459,7 @@ export function issueService(db: Db) {
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
           issueData.executionWorkspaceSettings !== undefined;
+        let inheritedIndependentSettings: Record<string, unknown> | null = null;
         if (workspaceInheritanceIssueId) {
           const workspaceSource = await getWorkspaceInheritanceIssue(
             tx,
@@ -10476,36 +10487,34 @@ export function issueService(db: Db) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
             inheritedWorkspaceSelection = true;
           }
-          if (
-            inheritsSourceProject &&
-            !hasExplicitExecutionWorkspaceOverride &&
-            workspaceSource.executionWorkspaceId
+          // The source's realized workspace (its checkout, branch, saved
+          // snapshot and unmerged changes) is never shared. A parent and its
+          // child, or a source task and its follow-up, can run at the same
+          // time, and two writers in one folder lose each other's files. The
+          // new task keeps only the source's workspace strategy and realizes
+          // its own workspace from the project base on its first run.
+          // The source's strategy describes how to realize work from its
+          // project workspace. A source without one worked in its own task
+          // files, so the new task takes the project's defaults, exactly as a
+          // top-level task in that project would.
+          if (inheritsSourceProject && workspaceSource.projectWorkspaceId) {
+            inheritedIndependentSettings = buildIndependentTaskWorkspaceSettings(
+              workspaceSource.executionWorkspaceSettings,
+            );
+          }
+          if (!hasExplicitExecutionWorkspaceOverride && executionWorkspaceSettings == null) {
+            executionWorkspaceSettings = inheritedIndependentSettings;
+          } else if (
+            issueData.executionWorkspaceId === undefined &&
+            issueData.executionWorkspaceSettings &&
+            !(workspaceSelection !== undefined && workspaceSelectionSource === "explicit")
           ) {
-            const sourceWorkspace = await tx
-              .select({
-                id: executionWorkspaces.id,
-                mode: executionWorkspaces.mode,
-              })
-              .from(executionWorkspaces)
-              .where(
-                eq(
-                  executionWorkspaces.id,
-                  workspaceSource.executionWorkspaceId,
-                ),
-              )
-              .then((rows) => rows[0] ?? null);
-            if (sourceWorkspace) {
-              executionWorkspaceId = sourceWorkspace.id;
-              inheritedWorkspaceSelection = true;
-              executionWorkspacePreference = "reuse_existing";
-              executionWorkspaceSettings = {
-                ...((workspaceSource.executionWorkspaceSettings as
-                  Record<string, unknown> | null | undefined) ?? {}),
-                mode: issueExecutionWorkspaceModeForPersistedWorkspace(
-                  sourceWorkspace.mode,
-                ),
-              };
-            }
+            // A caller that names only a mode keeps the inherited base ref,
+            // branch template, commands and runtime for that mode.
+            executionWorkspaceSettings = mergeExplicitWorkspaceSettings(
+              inheritedIndependentSettings,
+              executionWorkspaceSettings,
+            );
           }
         }
         const workspaceActor: AuthorizationActor = workspaceSelectionActor ?? (issueData.createdByUserId
@@ -10524,6 +10533,25 @@ export function issueService(db: Db) {
           executionWorkspacePreference = projection.executionWorkspacePreference;
           executionWorkspaceSettings = projection.executionWorkspaceSettings;
           workspaceIntent = { version: 1, selection: workspaceSelection, source: workspaceSelectionSource };
+        }
+        // No route may bind a new subtask to an ancestor's workspace, including
+        // an explicit id copied from the parent (older clients and skills did
+        // this). Drop it and keep only the ancestor's strategy, so the subtask
+        // realizes its own workspace from the project base.
+        if (executionWorkspaceId && (requestedParentId || issueData.parentId)) {
+          const ancestorIssueIds = [...new Set([
+            ...(await loadAncestorIssueIds(tx, companyId, requestedParentId)),
+            ...(await loadAncestorIssueIds(tx, companyId, issueData.parentId)),
+          ])];
+          if (await isAncestorExecutionWorkspace(tx, { companyId, executionWorkspaceId, ancestorIssueIds })) {
+            executionWorkspaceId = null;
+            executionWorkspacePreference = null;
+            executionWorkspaceSettings = mergeExplicitWorkspaceSettings(
+              inheritedIndependentSettings,
+              buildIndependentTaskWorkspaceSettings(executionWorkspaceSettings),
+            );
+            if (workspaceIntent?.selection.kind === "existing") workspaceIntent = null;
+          }
         }
         if (executionWorkspaceId) {
           const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
@@ -11239,6 +11267,13 @@ export function issueService(db: Db) {
         workspaceSelectionActor?: AuthorizationActor;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
         expectedStatusVersion?: number;
+        /**
+         * The execution lock the caller checked before allowing a status change
+         * that releases it. A run holding the lock under the row lock that the
+         * caller did not check (for example a checkout that landed after the
+         * check) is rejected instead of released; a lock released meanwhile is fine.
+         */
+        expectedExecutionLock?: { executionRunId: string | null; checkoutRunId: string | null };
         /** Defaults to `flatten` for parent changes. Board-user routes pass `allow_nested`. */
         parentDepthPolicy?: IssueParentDepthPolicy;
         /**
@@ -11331,6 +11366,7 @@ export function issueService(db: Db) {
         workspaceSelectionActor,
         expectedExecutionPolicy,
         expectedStatusVersion,
+        expectedExecutionLock,
         parentDepthPolicy: _parentDepthPolicy,
         expectedParentId: _expectedParentId,
         // Creation provenance never changes after create.
@@ -11605,6 +11641,16 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        // Only a run the caller did not check is protected. A lock released in
+        // between (for example by the route's own confirmed Stop) is fine.
+        if (expectedExecutionLock && (
+          (receiptExisting.executionRunId && receiptExisting.executionRunId !== expectedExecutionLock.executionRunId) ||
+          (receiptExisting.checkoutRunId && receiptExisting.checkoutRunId !== expectedExecutionLock.checkoutRunId)
+        )) {
+          throw conflict("The task's execution changed while this status change was checked. Read the task again and retry.", {
+            code: "issue_execution_lock_changed",
+          });
+        }
         if (issueData.executionPolicy !== undefined) assertQualityReviewPolicyMutation({ previousPolicy: receiptExisting.executionPolicy, nextPolicy: issueData.executionPolicy, actorAgentId, actorUserId });
         if ((patch.status ?? receiptExisting.status) === "done" &&
             (receiptExisting.status !== "done" || issueData.executionPolicy !== undefined)) {

@@ -7,23 +7,32 @@
  *   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --replay <wave>/<task>
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi, isSocketTypeOfServiceRace } from "./api.js";
+import { BoardUi } from "./board-ui.js";
+import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
+import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
+import { startStorageFaultProxy } from "./storage-proxy.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
-import { assertControllerMatchesImage, prepareDaytonaImageArtifacts } from "./daytona-image.js";
+import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
+import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
-import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
+import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
+import { releaseInstance } from "../runner-e2e/instance-retention.js";
+import { checkPlanInvariants, summarizeViolations, type InvariantCheck } from "./invariants.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
-import { TaskObserver } from "./observer.js";
-import { StormRun, observedFaultSchedule, planWave, replayWave } from "./scheduler.js";
-import { seedChaosLab } from "./seed.js";
+import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
+import { TaskObserver, childSpeedTasksInTurn } from "./observer.js";
+import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
+import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
+import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -41,11 +50,28 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     const source = JSON.parse(await readFile(path.join(sourceDir, "plan.json"), "utf8")) as WavePlan;
     // Replay the faults that actually crossed the task, including other tasks' faults.
     const graded = await readFile(path.join(sourceDir, `${command.ref.taskId}.grade.json`), "utf8")
-      .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[] } }).catch(() => null);
+      .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[]; serverBuildAtLaunch?: "upgrade_from" | "current" } })
+      .catch(() => null);
+    // An interrupted or wedged wave has no grade files; its fault log was written after every fault.
+    const logged = await readFile(path.join(sourceDir, TASK_FAULT_LOG), "utf8").then(text => JSON.parse(text) as TaskFaultLog).catch(() => null);
+    const crossed = replayRecordFor(command.ref.taskId, graded?.record ?? null, logged);
     const faults = await readFile(path.join(sourceDir, "faults.json"), "utf8").then(text => JSON.parse(text) as FaultReceipt[]).catch(() => []);
-    const observed = graded ? observedFaultSchedule(graded.record.createdAt, graded.record.faultIds, faults, command.ref.taskId) : [];
+    const observed = crossed ? observedFaultSchedule(crossed.createdAt, crossed.faultIds, faults, command.ref.taskId) : [];
     if (!observed.length) console.warn("Replay: no recorded fault sequence for this task; using its planned fault only.");
-    return { plan: replayWave(source, command.ref, Date.now(), command.overrides, observed), keep: command.keep };
+    let plan = replayWave(source, command.ref, Date.now(), command.overrides, observed);
+    if (source.options.storage === "s3" && crossed?.createdAt) {
+      const receipts = await readFile(path.join(sourceDir, "storage-faults.json"), "utf8").then(text => JSON.parse(text) as StorageFaultReceipt[]).catch(() => []);
+      const ended = Math.max(crossed.createdAt, ...receipts.map(receipt => receipt.endedAt ?? 0));
+      plan = { ...plan, options: { ...plan.options, storageWindows: replayStorageWindows(receipts, crossed.createdAt, ended) } };
+    }
+    // K14: a task that launched after the upgrade replays on the current build.
+    const launchBuild = graded?.record.serverBuildAtLaunch ?? logged?.[command.ref.taskId]?.serverBuildAtLaunch;
+    if (plan.options.upgradeFrom && launchBuild === "current") plan = replayOnCurrentBuild(plan);
+    // H1 needs the hard stop that the RC-06 mask turns off.
+    if (plan.tasks.some(task => task.workload === "H1") && plan.options.masks?.includes("rc06")) {
+      throw new Error("An H1 replay needs the budget hard stop; do not combine it with --rc06-masked");
+    }
+    return { plan, keep: command.keep };
   }
   return { plan: planWave(waveIdFor(command.options.seed), command.options), keep: command.keep };
 }
@@ -55,13 +81,27 @@ function run(command: string, args: string[], cwd: string, label: string) {
   if (result.status !== 0) throw new Error(`${label} failed (${command} ${args.join(" ")})`);
 }
 
-/** The bundled Daytona plugin is outside the root workspace; prepare it as CI does. */
-function ensureDaytonaPlugin() {
+/**
+ * The bundled Daytona plugin is outside the root workspace; prepare it as CI
+ * does, and rebuild it whenever its sources (or the plugin SDK's) changed since
+ * the last build, so a worktree that moved to a new master tests that master's
+ * plugin rather than an older build.
+ */
+function ensureDaytonaPlugin(timeline: Timeline) {
   const root = path.join(repositoryRoot, "packages/plugins/sandbox-providers/daytona");
-  if (["dist/manifest.js", "dist/worker.js", "node_modules/@daytonaio/sdk"].every(file => existsSync(path.join(root, file)))) return;
+  // Inputs outside the plugin directory: the linked plugin SDK and the tsconfig chain both packages extend.
+  const extraInputs = [
+    ...["src", "package.json", "tsconfig.json"].map(file => path.join(repositoryRoot, "packages/plugins/sdk", file)),
+    ...["tsconfig.json", "tsconfig.base.json"].map(file => path.join(repositoryRoot, file)),
+  ];
+  const state = pluginBuildState(root, extraInputs);
+  timeline.add("daytona_plugin_build_state", { reason: state.reason, inputHash: state.inputHash });
+  if (!state.needsBuild) return;
   run("pnpm", ["install", "--ignore-workspace", "--frozen-lockfile", "--ignore-scripts"], root, "Daytona plugin install");
   run(process.execPath, [path.join(repositoryRoot, "scripts/link-plugin-dev-sdk.mjs")], repositoryRoot, "Plugin SDK link");
   run("pnpm", ["--dir", root, "build"], repositoryRoot, "Daytona plugin build");
+  writeFileSync(path.join(root, PLUGIN_BUILD_STAMP), `${state.inputHash}\n`);
+  timeline.add("daytona_plugin_built", { inputHash: state.inputHash });
 }
 
 /**
@@ -71,12 +111,12 @@ function ensureDaytonaPlugin() {
  */
 async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Record<string, string>> {
   const image = plan.options.daytonaImage!;
-  const artifacts = await prepareDaytonaImageArtifacts({ image, cacheRoot: path.join(resultsRoot, "daytona-images"),
+  const artifacts = await prepareDaytonaImageArtifacts({ image, cacheRoot: defaultDaytonaImageCacheRoot(),
     log: line => console.info(`[daytona-image] ${line}`) });
   const { localContentId } = await assertControllerMatchesImage(artifacts, repositoryRoot);
   timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
     runnerdSha256: artifacts.runnerdSha256, providerPackDigest: artifacts.providerPackDigest, platformManifestDigest: artifacts.platformManifestDigest });
-  ensureDaytonaPlugin();
+  ensureDaytonaPlugin(timeline);
   timeline.add("daytona_vcpu_plan", { cpuPerSandbox: plan.options.daytonaCpu, concurrency: plan.options.concurrency,
     taskVcpu: plan.options.concurrency * (plan.options.daytonaCpu ?? 0) });
   return { PAPERCLIP_RUNNER_REMOTE_BINARY_PATH: artifacts.runnerdPath, PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: artifacts.providerPackPath };
@@ -89,6 +129,24 @@ function preflight(plan: WavePlan) {
   const runner = process.env.PAPERCLIP_RUNNER_BINARY
     ?? path.join(repositoryRoot, "packages/paperclip-runner/runner/target/debug/paperclip-runnerd");
   if (!existsSync(runner)) throw new Error(`Runner binary missing at ${runner}. Run: pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries`);
+  // K14: the older checkout must be prepared (installed and built) before the wave, like this one.
+  const upgradeFrom = plan.options.upgradeFrom;
+  // One runner binary for both builds would not test the older runner's saved state.
+  if (upgradeFrom && process.env.PAPERCLIP_RUNNER_BINARY) {
+    throw new Error("--upgrade-from runs each build's own runner; unset PAPERCLIP_RUNNER_BINARY");
+  }
+  if (upgradeFrom) {
+    for (const required of ["tests/runner-e2e/server-entry.ts", "node_modules", "packages/paperclip-runner/runner/target/debug/paperclip-runnerd"]) {
+      if (!existsSync(path.join(upgradeFrom, required))) {
+        throw new Error(`--upgrade-from ${upgradeFrom} is not a prepared checkout (missing ${required}). `
+          + "Create it with `git worktree add <dir> <commit>`, then run `node scripts/agent-preflight.mjs` in it.");
+      }
+    }
+    if (path.resolve(upgradeFrom) === repositoryRoot) throw new Error("--upgrade-from must be a different checkout than the one running the harness");
+    const oldBuild = spawnSync(process.execPath, [path.join(upgradeFrom, "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs")],
+      { cwd: upgradeFrom, stdio: "inherit" });
+    if (oldBuild.status !== 0) throw new Error("Verified provider entrypoint build failed in the --upgrade-from checkout");
+  }
   // Same provider bundle preparation as tests/runner-e2e/verified-provider-bundles.setup.mjs.
   const build = spawnSync(process.execPath, [path.join(repositoryRoot, "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs")],
     { cwd: repositoryRoot, stdio: "inherit" });
@@ -103,22 +161,70 @@ async function main(): Promise<number> {
   const timeline = new Timeline(path.join(waveDir, "timeline.jsonl"));
   const gitSha = git(["rev-parse", "HEAD"]);
   const gitDirty = git(["status", "--porcelain"]).length > 0;
+  // Builds and branch switches must happen before the wave, never during it.
+  const guardedOutputs = guardedRunnerOutputs(repositoryRoot);
+  let startFingerprint: string | null = null;
+  let worktreeChanged = false;
+  const checkWorktree = (at: string) => {
+    if (worktreeChanged || startFingerprint === null || worktreeFingerprint(repositoryRoot, guardedOutputs) === startFingerprint) return;
+    worktreeChanged = true;
+    timeline.add("worktree_changed_mid_wave", { at, gitSha: git(["rev-parse", "HEAD"]) });
+  };
   timeline.add("wave_planned", { waveId: plan.waveId, seed: plan.seed, gitSha, gitDirty, replayOf: plan.replayOf ?? null,
     tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}${task.trigger ? `^${task.trigger}+${task.triggerDelayMs ?? 0}ms` : ""}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`),
     ...(plan.storm ? { storm: { durationMs: plan.storm.durationMs, faults: plan.storm.faults.map(fault => `${fault.kind}+${fault.gapMs}ms${fault.holdMs ? ` hold ${fault.holdMs}ms` : ""}`) } } : {}) });
   preflight(plan);
-  const serverEnvironment = plan.options.env === "daytona" ? await prepareDaytona(plan, timeline) : {};
+  const serverEnvironment: Record<string, string> = plan.options.env === "daytona" ? await prepareDaytona(plan, timeline) : {};
+  // The suite drives the API only; the Vite dev UI only slows every boot and restart.
+  if (plan.options.crashPoint && !plan.replayOf) serverEnvironment.SERVE_UI = "false";
+  // Baseline only after the harness's own build steps (preflight rewrites the runner's dist).
+  startFingerprint = worktreeFingerprint(repositoryRoot, guardedOutputs);
 
-  const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
+  const crashPoint = plan.replayOf ? null : plan.options.crashPoint ?? null;
+  const crashPoints = crashPoint ? crashPoint.split(",") : [];
+  const batchSize = crashPoints.length ? Math.max(1, Math.floor(plan.tasks.length / crashPoints.length)) : 0;
+  if (crashPoint && plan.tasks.length !== batchSize * crashPoints.length) throw new Error(`--tasks must be a multiple of the ${crashPoints.length} crash point(s)`);
+  const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline,
+    ...(plan.options.upgradeFrom ? { upgradeFrom: plan.options.upgradeFrom } : {}) });
+  // Crash-point suite: one booted server, one point at a time. Each point gets
+  // its own batch of tasks; the point is armed once the batch launched and the
+  // server kills itself at its nth hit (restarted like K1). Invariants are
+  // checked when the batch rests, as violations new since the point was armed.
+  // A replay fires the recorded faults (the crash point's K1 restart included)
+  // at their offsets; re-arming the point could miss its nth hit with fewer tasks.
+  type PointResult = { point: string; token: string; taskIds: string[]; armedAt: number; restedAt: number | null;
+    fault: FaultReceipt | null; invariants: InvariantCheck | null };
+  const pointResults: Array<PointResult & { baseline?: Set<string> }> = [];
+  let currentPoint: (PointResult & { baseline: Set<string> }) | null = null;
+  let databaseUrl: string | null = null;
+  const violationKey = (violation: { rule: string; kind: string; recordId: string }) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
+  if (crashPoint) {
+    supervisor.crashPointHoldMs = plan.options.crashPointHoldMs ?? 0;
+    supervisor.useCrashPointControl({ controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"),
+      receiptPath: path.join(waveDir, "crash-point-receipts.jsonl") });
+  }
   let sweeper: DaytonaWaveSweeper | null = null;
   let sandboxSweep: DaytonaSweepResult | null = null;
   let interrupted = false;
   const onSignal = (signal: NodeJS.Signals) => { if (!interrupted) { interrupted = true; timeline.add("harness_interrupted", { signal }); } };
   process.on("SIGINT", onSignal); process.on("SIGTERM", onSignal);
   const faults: FaultReceipt[] = [];
+  // Written after every fault, so an interrupted or wedged storm can still replay what crossed each task.
+  const taskFaultLog: TaskFaultLog = {};
+  const persistFaultLog = async () => {
+    await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+    await writeFile(path.join(waveDir, TASK_FAULT_LOG), `${JSON.stringify(taskFaultLog, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+  };
   const faultWork: Promise<void>[] = [];
   const lines: LedgerLine[] = [];
   let anyFailure = false;
+  let stopFailed = false;
+  let remoteCleanupPending = false;
+  let board: BoardUi | null = null;
+  let objectStore: ObjectStore | null = null;
+  let storageChaos: StorageChaos | null = null;
+  let storageProxy: Awaited<ReturnType<typeof startStorageFaultProxy>> | null = null;
+  let speedSection: string | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
@@ -144,19 +250,32 @@ async function main(): Promise<number> {
   let faultFailures = 0;
   let faultsQueued = 0;
   try {
+    if (plan.options.storage === "s3") {
+      const binary = minioBinary();
+      if (!binary) throw new Error(`--storage s3 needs MinIO ${MINIO_RELEASE} at ${DEFAULT_MINIO_BINARY} or RESTART_CHAOS_MINIO_BIN`);
+      objectStore = await startMinio({ binary, root: supervisor.paths.temporaryRoot });
+      storageProxy = await startStorageFaultProxy(objectStore.endpoint);
+      Object.assign(serverEnvironment, objectStoreServerEnvironment(objectStore, storageProxy.endpoint, `chaos/${plan.waveId}/`));
+      timeline.add("object_store_started", { release: MINIO_RELEASE, endpoint: objectStore.endpoint, proxy: storageProxy.endpoint, bucket: objectStore.bucket });
+    }
     await supervisor.start(serverEnvironment);
     const api = new ChaosApi(supervisor.baseUrl);
-    const lab = await seedChaosLab({ api, env: plan.options.env, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
-      adapters: [...new Set(plan.tasks.map(task => task.adapter))],
+    const lab = await seedChaosLab({ api, env: plan.options.env, waitForReadyAgents: true, cancelled: () => interrupted, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
+      daytonaReuseLease: plan.options.daytonaReuseLease,
+      adapters: [...new Set([...plan.tasks.map(task => task.adapter),
+        ...(plan.tasks.some(task => task.workload === "M1") ? plan.options.adapters : [])])],
       concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents, masks: plan.options.masks,
-      fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), waveId: plan.waveId, timeline,
+      fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), workspaceRepo: plan.options.workspaceRepo,
+      workspaceCommit: plan.options.workspaceCommit, workspaceGitUrl: plan.options.workspaceGitUrl, waveId: plan.waveId, timeline,
+      adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle),
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
       } });
     spendTarget = { api, companyId: lab.companyId };
     // The instance root holds the secrets master key and the database: oracle code may not read it.
     const protectedRoots = [os.homedir(), supervisor.paths.temporaryRoot, resultsRoot];
-    const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots));
+    board = serverEnvironment.SERVE_UI === "false" ? null : new BoardUi(supervisor.baseUrl);
+    const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots, board));
     const pending = [...observers];
     const launched: TaskObserver[] = [];
     const active: TaskObserver[] = [];
@@ -164,6 +283,13 @@ async function main(): Promise<number> {
     let lastDoneAt = Date.now();
     // K13: storm faults fire on their own clock while tasks keep launching; then the storm drains.
     const storm = plan.storm ? new StormRun(plan.storm, Date.now()) : null;
+    if (storageProxy && (plan.options.storageWindows?.length || plan.options.storageFaults?.length)) {
+      const windows = plan.options.storageWindows ?? planStorageFaults({ kinds: plan.options.storageFaults!, seed: plan.seed,
+        spanMs: plan.storm?.durationMs ?? plan.tasks.length * 4 * 60_000, ...(plan.options.storageFaultMs ? { durationMs: plan.options.storageFaultMs } : {}) });
+      storageChaos = new StorageChaos(windows, Date.now(), storageProxy, (kind, data) => timeline.add(kind, data));
+      if (!plan.options.storageWindows) storageChaos.start();
+      timeline.add("storage_faults_planned", { windows: windows.map(window => `${window.kind}@${window.startMs}ms+${window.durationMs}ms`) });
+    }
     if (storm) timeline.add("storm_started", { durationMs: storm.plan.durationMs, plannedFaults: storm.plan.faults.length });
     // Faults are serialized; each one hits every task in flight when it starts.
     const fireFault = (kind: FaultKind, holdMs: number, requestedBy: string, exposed: readonly TaskObserver[],
@@ -171,12 +297,86 @@ async function main(): Promise<number> {
       faultsQueued += 1;
       faultWork.push(supervisor.fault(kind, holdMs, requestedBy, trigger).finally(() => { faultsQueued -= 1; onSettled?.(); }).then(receipt => {
         faults.push(receipt);
-        for (const candidate of exposed) { candidate.noteFault(receipt.faultId, receipt.startedAt); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
+        checkWorktree(receipt.faultId);
+        for (const candidate of exposed) {
+          candidate.noteFault(receipt.faultId, receipt.startedAt);
+          candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt);
+          taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds],
+            ...(candidate.record.serverBuildAtLaunch ? { serverBuildAtLaunch: candidate.record.serverBuildAtLaunch } : {}) };
+        }
+        void persistFaultLog();
       }, (error: Error & { receipt?: FaultReceipt }) => {
-        if (error.receipt) faults.push(error.receipt);
+        if (error.receipt) {
+          // A failed fault still crossed the tasks in flight; replay must fire it too.
+          const receipt = error.receipt;
+          faults.push(receipt);
+          for (const candidate of exposed) {
+            candidate.noteFault(receipt.faultId, receipt.startedAt);
+            taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds],
+            ...(candidate.record.serverBuildAtLaunch ? { serverBuildAtLaunch: candidate.record.serverBuildAtLaunch } : {}) };
+          }
+          void persistFaultLog();
+        }
         faultFailures += 1;
         timeline.add("fault_error", { taskId: requestedBy, error: error.message });
       }));
+    };
+
+    supervisor.onCrashPoint = receipt => {
+      const owner = pointResults.find(result => result.token === receipt.crashPoint?.token);
+      if (owner) owner.fault = receipt;
+      faults.push(receipt);
+      if (receipt.error) { faultFailures += 1; timeline.add("fault_error", { taskId: "crash-point", error: receipt.error }); }
+      for (const candidate of active.filter(observer => !observer.done)) {
+        candidate.noteFault(receipt.faultId, receipt.startedAt);
+        candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt);
+        taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds],
+            ...(candidate.record.serverBuildAtLaunch ? { serverBuildAtLaunch: candidate.record.serverBuildAtLaunch } : {}) };
+      }
+      checkWorktree(receipt.faultId);
+      void persistFaultLog();
+    };
+
+    const invariantsNow = async () => {
+      if (!databaseUrl) {
+        const config = JSON.parse(readFileSync(supervisor.paths.configPath, "utf8")) as { database?: { connectionString?: string } };
+        databaseUrl = config.database?.connectionString ?? null;
+        if (!databaseUrl) throw new Error("Crash-point wave: the instance config has no database connection string");
+      }
+      return checkPlanInvariants({ connectionString: databaseUrl, companyId: lab.companyId,
+        paperclipHome: supervisor.paths.home, instanceId: "default" });
+    };
+    const startCrashPoint = async (batch: TaskObserver[]) => {
+      const index = pointResults.length;
+      const spec = crashPoints[index]!;
+      // Violations already present belong to earlier points, not this one.
+      const before = await invariantsNow();
+      const baseline = new Set(before.violations.map(violationKey));
+      // Stage the batch unassigned (no wake yet), arm the point, then assign:
+      // no task's work can start before the point is armed, and an early
+      // crash cannot fail a later task's creation. The previous batch has
+      // rested, so only this batch's work can hit the point.
+      for (const observer of batch) await observer.stage();
+      const result = { point: spec, token: `p${String(index + 1).padStart(2, "0")}`, taskIds: batch.map(observer => observer.plan.taskId),
+        armedAt: Date.now(), restedAt: null, fault: null, invariants: null, baseline };
+      pointResults.push(result);
+      supervisor.armCrashPoint(result.token, spec);
+      for (const observer of batch) {
+        launched.push(observer);
+        await observer.release();
+        if (!observer.done) active.push(observer);
+      }
+      return result;
+    };
+    const finishCrashPoint = async (point: PointResult & { baseline: Set<string> }) => {
+      supervisor.disarmCrashPoint();
+      point.restedAt = Date.now();
+      const check = await invariantsNow();
+      const fresh = check.violations.filter(violation => !point.baseline.has(violationKey(violation)));
+      point.invariants = { ...check, violations: fresh, byInvariant: summarizeViolations(fresh) };
+      timeline.add("crash_point_settled", { point: point.point, token: point.token, reached: point.fault?.crashPoint ?? null,
+        seconds: Math.round((point.restedAt - point.armedAt) / 1000), byInvariant: point.invariants.byInvariant,
+        errors: check.errors.map(error => redactKnownSecrets(error, knownSecretValues())) });
     };
 
     while (!interrupted && (pending.length || active.length)) {
@@ -189,12 +389,20 @@ async function main(): Promise<number> {
       // A failed fault or an unexpected exit leaves the server not ready.
       // Recover within a bound, or fail the wave instead of waiting forever.
       if (!supervisor.serverReady && !supervisor.faultInProgress) await supervisor.ensureServing();
+      if (crashPoint) {
+        // One point at a time: settle the previous batch, then launch and arm the next.
+        if (!active.length && supervisor.serverReady && !supervisor.faultInProgress) {
+          if (currentPoint) { await finishCrashPoint(currentPoint); currentPoint = null; }
+          if (pending.length) currentPoint = await startCrashPoint(pending.splice(0, batchSize));
+        }
+      }
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
-      while (active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress
+      while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress
         && (!storm || storm.mayLaunch(Date.now()))) {
         const next = pending.shift()!;
         launched.push(next);
         await next.launch();
+        if (plan.options.storageWindows && storageChaos && launched.length === 1) storageChaos.start();
         if (!next.done) active.push(next);
       }
       await Promise.all(active.filter(observer => now - (lastPoll.get(observer) ?? 0) >= plan.options.pollMs).map(async observer => {
@@ -202,16 +410,26 @@ async function main(): Promise<number> {
         await observer.poll(now);
       }));
       for (const observer of active) {
+        // A crash-point wave has no scheduled faults: the armed point is the fault.
+        if (crashPoint) break;
         if (faultsQueued || supervisor.faultInProgress || !supervisor.serverReady) break;
+        // A storm's drain gets no new fault; an unfired trigger is recorded as missed at rest.
+        if (storm && !storm.mayLaunch(Date.now())) break;
         const due = observer.faultDue(Date.now());
         if (!due) continue;
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
         if (!(await observer.confirmTrigger(due, Date.now()))) continue;
+        if (storm && !storm.mayLaunch(Date.now())) {
+          observer.markTriggerMissed(due);
+          timeline.add("fault_skipped_storm_ended", { taskId: observer.plan.taskId, fault: due.kind });
+          break;
+        }
         const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
         if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, fault: due.kind, ...trigger });
-        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger);
+        // Inside a storm a triggered fault is a restart too: the next storm gap runs from its settle.
+        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger, storm ? () => storm.settled(Date.now()) : undefined);
       }
       if (storm && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady) {
         const due = storm.due(Date.now());
@@ -231,6 +449,8 @@ async function main(): Promise<number> {
       await delay(1_000);
     }
     await Promise.all(faultWork);
+    checkWorktree("wave_end");
+    if (worktreeChanged) harnessError ??= new Error("The worktree changed during the wave (build, install or branch switch); later restarts may have run different code");
     // A storm whose task pool ran dry early did not cover its storm; it is not a passing wave.
     if (storm && !interrupted && storm.exhaustedEarly(Date.now())) {
       timeline.add("storm_pool_exhausted", { faultsFired: storm.state.fired, launched: launched.length });
@@ -239,7 +459,10 @@ async function main(): Promise<number> {
     // An injected fault that did not complete invalidates the wave, even when
     // bounded recovery brought the server back and the tasks passed.
     if (faultFailures) harnessError ??= new Error(`${faultFailures} injected fault(s) failed; see fault_error in the timeline`);
-    if (interrupted) throw new Error("Harness interrupted before the wave finished");
+    if (interrupted) {
+      harnessError ??= new Error("Harness interrupted before the wave finished");
+      for (const observer of launched) observer.markUnfinished();
+    }
 
     // R6: let finalizers settle, then sweep for anything still pending.
     const quietFor = Date.now() - lastDoneAt;
@@ -262,7 +485,7 @@ async function main(): Promise<number> {
       }
       let artifacts: OracleArtifacts | null = null;
       if (observer.record.issueId) artifacts = await observer.collectArtifacts().catch(() => null);
-      const oracle = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts)
+      const oracle = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts, observer.workloadAgents())
         : { verdict: "fail" as const, checks: [{ name: "artifacts_collected", ok: false, detail: observer.record.launchError ?? "collection failed" }] };
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, oracle);
       let evidence: string | null = null;
@@ -278,6 +501,39 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict });
     }
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
+    const speed = await (async () => {
+      const childTasks = await childSpeedTasksInTurn(launched);
+      return collectWaveSpeed(api, plan.options.env, [...launched.flatMap(observer => observer.record.issueId
+        ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), ...childTasks], faults);
+    })().catch(error => { timeline.add("wave_speed_failed", { error: String(error) }); anyFailure = true; return null; });
+    if (speed) {
+      speedSection = speedMarkdown(speed);
+      await writeFile(path.join(waveDir, "speed.json"), `${JSON.stringify(speed, null, 2)}\n`, { mode: 0o600 });
+      timeline.add("wave_speed", { breaches: speed.breaches, runBudgetExceeded: speed.runBudgetExceeded, singleRunBreaches: speed.singleRunBreaches,
+        rows: speed.rows.map(row => ({ adapter: row.adapter, metric: row.metric, start: row.start, n: row.measured.n,
+          p50: row.measured.p50, p95: row.measured.p95, breaches: row.breaches })) });
+      if (speed.breaches > 0 || speed.errors.length > 0) anyFailure = true;
+    }
+    if (crashPoint) {
+      if (currentPoint) { await finishCrashPoint(currentPoint); currentPoint = null; }
+      const byTask = new Map(lines.map(line => [line.taskId, line]));
+      for (const point of pointResults) {
+        if (point.invariants?.violations.length) anyFailure = true;
+        if (point.invariants?.errors.length) harnessError ??= new Error(`Invariant check incomplete at ${point.point}: ${point.invariants.errors.join("; ")}`);
+      }
+      // Evidence carries run and wake error text; CI uploads this file.
+      await writeFile(path.join(waveDir, "crash-point.json"), `${redactKnownSecrets(JSON.stringify({
+        schema: "paperclip.restart-chaos.crash-point/v2", gitSha, gitDirty,
+        // The server kills itself without warning, so no pre-fault workspace
+        // snapshot exists: R2 checks workspace failures, not lost files.
+        notMeasured: { R2_lost_files: "no pre-fault workspace snapshot: the crash point fires inside the server" },
+        points: pointResults.map(({ baseline: _baseline, ...point }) => ({
+          ...(point as PointResult), reached: point.fault?.crashPoint ?? null,
+          tasks: point.taskIds.flatMap(id => { const line = byTask.get(id); return line ? [{ taskId: id, adapter: line.adapter,
+            workload: line.workload, pass: line.pass, signature: line.signature, rules: line.rules, ruleDetails: line.ruleDetails, T: line.T }] : []; }),
+        })),
+      }, null, 2), knownSecretValues())}\n`, { mode: 0o600 });
+    }
     // R6 at wave level: a leak no task's runs account for (e.g. the setup probe) still fails the wave.
     if (sandboxSweep) {
       const unattributed = unattributedLeaks(sandboxSweep, attributed);
@@ -292,6 +548,7 @@ async function main(): Promise<number> {
   } finally {
     // Best effort for an interrupted or failed wave; the server may already be down.
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
+    await board?.close().catch(() => undefined);
     // A failure here (for example writing the report) must not skip stopping the controller and Postgres.
     try { if (sweeper) try {
       const owned = sweeper as DaytonaWaveSweeper;
@@ -303,29 +560,49 @@ async function main(): Promise<number> {
       console.info(`Daytona R6 sweep: ${sandboxSweep.liveSandboxes.length} live, ${sandboxSweep.archivedSandboxes.length} archived after release, `
         + `${sandboxSweep.orphanSandboxes.length} orphaned, `
         + `${sandboxSweep.heldLeases.length} held leases${sandboxSweep.error ? `, error ${sandboxSweep.error}` : ""}; `
-        + `environment deleted: ${cleanup.environmentDeleted}; still running after cleanup: ${cleanup.remainingSandboxes.join(", ") || "none"}`);
+        + `environment deleted: ${cleanup.environmentDeleted}${cleanup.environmentDeleteBlocked ? " (still blocked by a pending sandbox cleanup)" : ""}; still running after cleanup: ${cleanup.remainingSandboxes.join(", ") || "none"}`);
       // A sandbox neither archived nor destroyed after cleanup is a leak for a person to act on.
-      if (cleanup.remainingSandboxes.length) anyFailure = true;
+      if (cleanup.remainingSandboxes.length) { anyFailure = true; remoteCleanupPending = true; }
+      // A delete still blocked by pending sandbox cleanup after the settle window
+      // is a leak, not a harness error: fail the wave and keep the instance, whose
+      // database owns that cleanup work.
+      if (cleanup.environmentDeleteBlocked) {
+        anyFailure = true;
+        remoteCleanupPending = true;
+        timeline.add("daytona_environment_delete_blocked", { detail: cleanup.environmentDeleteBlocked });
+      }
+      if (cleanup.errors.length) remoteCleanupPending = true;
       if (cleanup.errors.length) harnessError ??= new Error(`Daytona cleanup incomplete: ${cleanup.errors.join("; ")}`);
-      await writeFile(path.join(waveDir, "sandbox-sweep.json"), `${JSON.stringify({ sweep: sandboxSweep, cleanup }, null, 2)}\n`, { mode: 0o600 });
+      await writeFile(path.join(waveDir, "sandbox-sweep.json"), `${JSON.stringify({ sweep: sandboxSweep, cleanup }, null, 2)}\n`, { mode: 0o600 })
+        .catch(error => timeline.add("sandbox_sweep_write_failed", { error: String(error) }));
     } catch (error) {
       harnessError ??= error;
+      remoteCleanupPending = true;
       timeline.add("daytona_cleanup_failed", { error: String(error) });
     } } finally {
       try { await supervisor.stop(); } catch (error) {
+        stopFailed = true;
         // Incomplete cleanup is a harness failure; keep the instance for inspection.
         harnessError ??= error;
         timeline.add("supervisor_stop_failed", { error: String(error) });
       }
     }
+    storageChaos?.stop();
+    if (storageProxy) {
+      if (storageChaos) await writeFile(path.join(waveDir, "storage-faults.json"), `${JSON.stringify(storageChaos.receipts, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+      await writeFile(path.join(waveDir, "storage-proxy.json"), `${JSON.stringify(storageProxy.counts(), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+      await storageProxy.close().catch(() => undefined);
+    }
+    await objectStore?.stop().catch(error => timeline.add("object_store_stop_failed", { error: String(error) }));
+    const retention = await releaseInstance(supervisor.paths.temporaryRoot, { keep, stopFailed, remoteCleanupPending, owner: plan.waveId })
+      .catch(error => { timeline.add("instance_cleanup_failed", { error: String(error) }); return null; });
+    if (retention?.kept) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot, reason: retention.reason });
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), summary, { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), speedSection ? `${summary}\n${speedSection}` : summary, { mode: 0o600 });
       console.info(`\n${summary}`);
     }
-    if (keep || anyFailure || harnessError) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot });
-    else await rm(supervisor.paths.temporaryRoot, { recursive: true, force: true }).catch(() => undefined);
   }
   console.info(`Wave ${plan.waveId}: results ${waveDir}`);
   for (const line of lines.filter(candidate => !candidate.pass)) console.info(`  FAIL ${line.taskId} ${line.signature} → ${line.evidence ?? "no evidence"}\n    replay: ${replayCommand(plan.waveId, line.taskId)}`);

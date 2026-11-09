@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
-import { PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../contracts/harness-driver.js";
+import {
+  NativeRunnerSourceReconciliationRequiredError,
+  PROVIDER_ATTACH_REFUSED,
+  PROVIDER_SIDE_EFFECT_PENDING,
+  PROVIDER_STATE_INCOMPATIBLE,
+  runnerRecoveryFailureClass,
+} from "../contracts/harness-driver.js";
 import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { NativeSessionProtocolIntegrityError, type NativeSession } from "../contracts/native-session-backend.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
@@ -344,6 +350,19 @@ describe("HarnessDriverBackend", () => {
       enumerable: false,
     });
     expect(runnerRecoveryFailureClass(unclassified)).toBeUndefined();
+    for (const classification of [PROVIDER_ATTACH_REFUSED, PROVIDER_SIDE_EFFECT_PENDING]) {
+      const refused = Object.defineProperty(new Error("PRP command run.attach failed"), "runnerCommandResult", {
+        value: { status: "failed", result: { code: "command_execution_failed", classification } },
+        enumerable: false,
+      });
+      expect(runnerRecoveryFailureClass(new Error("wrapped", { cause: refused }))).toBe(classification);
+    }
+    const pendingSource = new NativeRunnerSourceReconciliationRequiredError("semantic");
+    expect(pendingSource.message).toBe("native_runner_source_semantic_reconciliation_required");
+    expect(runnerRecoveryFailureClass(pendingSource)).toBe(PROVIDER_SIDE_EFFECT_PENDING);
+    expect(runnerRecoveryFailureClass(new Error("wrapped", { cause: new NativeRunnerSourceReconciliationRequiredError("runtime") })))
+      .toBe(PROVIDER_SIDE_EFFECT_PENDING);
+    expect(runnerRecoveryFailureClass(new Error("native_runner_source_semantic_reconciliation_required"))).toBeUndefined();
 
     const backend = new HarnessDriverBackend({
       ...driver,

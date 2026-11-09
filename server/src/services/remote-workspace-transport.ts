@@ -8,9 +8,11 @@ import type { RemoteWorkspaceSource } from "@paperclipai/shared";
 import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
+import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
 
 export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
 
@@ -203,10 +205,12 @@ export function sandboxProviderFailureLabel(error: unknown): { label: string; co
   return { label, code, status };
 }
 
+const WORKSPACE_COMMAND_TIMEOUT_MS = 300_000;
+
 async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspaceOperation,
-  args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
+  args: string[], env?: Record<string, string>, timeoutMs = WORKSPACE_COMMAND_TIMEOUT_MS) {
   const execute = () => target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
-    env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
+    env: { NODE_OPTIONS: "", NODE_PATH: "", ...env, NODE_NO_WARNINGS: "1" }, timeoutMs, bypassSession: true });
   // Copy-back and restore record why the provider refused the command.
   const result = operation === "capture" || operation === "archive_helper" || operation === "restore"
     ? await execute().catch((error: unknown) => { noteProviderRefusal(operation, error); throw error; })
@@ -244,11 +248,23 @@ const fs=require('node:fs/promises'),path=require('node:path');
   if(!s.isDirectory()||s.isSymbolicLink()||await fs.realpath(p)!==p)throw Error('unsafe_attachment');return true};
  if(!await safeDirectory(root))throw Error('missing_workspace');
  const parent=path.join(root,'.paperclip-recovered'),destination=path.join(parent,input.operationId);
- if(!await safeDirectory(parent)||!await safeDirectory(destination)){process.stdout.write('missing');return}
+ // Removal first renames a verified attachment here, so an interrupted delete
+ // never leaves a proofless attachment behind; the next removal finishes it.
+ const retiring=path.join(parent,'.retiring-'+input.operationId);
+ const unlock=async p=>{const s=await fs.lstat(p);if(!s.isDirectory()||s.isSymbolicLink())return;
+  await fs.chmod(p,0o700);for(const name of await fs.readdir(p))await unlock(path.join(p,name))};
+ const discard=async()=>{await unlock(retiring);await fs.rm(retiring,{recursive:true});
+  await fs.rmdir(parent).catch(e=>{if(e.code!=='ENOTEMPTY'&&e.code!=='EEXIST')throw e})};
+ if(!await safeDirectory(parent)){process.stdout.write('missing');return}
+ let resumed=false;
+ if(input.remove===true&&await safeDirectory(retiring)){await discard();resumed=true}
+ if(!await safeDirectory(destination)){process.stdout.write(resumed?'removed':'missing');return}
  const proof=path.join(destination,'provenance.json'),s=await inspect(proof);
  if(!s?.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>16384||await fs.readFile(proof,'utf8')!==input.provenance)
   throw Error('attachment_proof_changed');
- process.stdout.write('present');
+ if(input.remove!==true){process.stdout.write('present');return}
+ await fs.rename(destination,retiring);await discard();
+ process.stdout.write('removed');
 })().catch(()=>{process.stderr.write('remote_workspace_recovery_attachment_invalid');process.exitCode=1});`;
 
 /** Reuse a restored attachment only with its exact provenance. User edits to
@@ -260,6 +276,17 @@ export async function hasRemoteRecoveryAttachment(input: {
     input.remoteCwd, JSON.stringify({ operationId: input.operationId, provenance: input.provenance })], undefined, 30_000);
   if (output !== "present" && output !== "missing") throw new Error("remote_workspace_recovery_attachment_invalid");
   return output === "present";
+}
+
+/** Remove a retired attachment, but only while its exact provenance is still
+ * in place; anything else at that path is left alone. */
+export async function removeRemoteRecoveryAttachment(input: {
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string; provenance: string;
+}) {
+  const output = await command(input.target, "recovery_attachment", ["-e", RECOVERY_ATTACHMENT,
+    input.remoteCwd, JSON.stringify({ operationId: input.operationId, provenance: input.provenance, remove: true })]);
+  if (output !== "removed" && output !== "missing") throw new Error("remote_workspace_recovery_attachment_invalid");
+  return output === "removed";
 }
 
 const PREPARE = String.raw`
@@ -462,11 +489,13 @@ export async function captureRemoteWorkspaceArchive(input: {
   }
 }
 
-async function captureReadOnlyWorkspaceArchive(input: {
+/** Captures a sandbox directory without writing to the sandbox. The copy is
+ * verified against an inventory taken before and after the transfer. */
+export async function captureReadOnlyWorkspaceArchive(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
 }) {
   if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("remote_workspace_operation_identity_invalid");
-  const inspect = async (timeoutMs = 300_000) => {
+  const inspect = async (timeoutMs = WORKSPACE_COMMAND_TIMEOUT_MS) => {
     const value = JSON.parse(await command(input.target, "capture", ["-e", readonlyWorkspaceInventoryScript(), input.remoteCwd], undefined, timeoutMs)) as Awaited<ReturnType<typeof readWorkspaceInventory>>;
     if (!/^[a-f0-9]{64}$/.test(value.sha256) || !Number.isSafeInteger(value.byteSize) || value.byteSize < 0
       || !Number.isSafeInteger(value.entries) || value.entries < 0 || !Array.isArray(value.exclude)
@@ -495,11 +524,15 @@ async function captureReadOnlyWorkspaceArchive(input: {
     const same = (observed: typeof before) => observed.sha256 === before.sha256
       && observed.byteSize === before.byteSize && observed.entries === before.entries;
     if (!same(received) || !same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
+    const finalVerificationBudget = remaining();
     stage = "archive";
-    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude, signal: verificationSignal });
+    const captureSignal = AbortSignal.timeout(WORKSPACE_COMMAND_TIMEOUT_MS);
+    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude, signal: captureSignal });
+    captureSignal.throwIfAborted();
     stage = "verify";
-    if (!same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
-    verificationSignal.throwIfAborted();
+    const finalVerificationSignal = AbortSignal.timeout(finalVerificationBudget);
+    if (!same(await inspect(finalVerificationBudget))) throw new Error("remote_workspace_readonly_capture_changed");
+    finalVerificationSignal.throwIfAborted();
     // Only the sealed portable archive remains a candidate for durable upload.
     await removeTaskDirectoryTree(copy);
     const savedRoot = root;
@@ -574,7 +607,7 @@ async function captureSandboxWorkspaceArchive(input: {
     timing.transferMs = elapsedSince(transferStarted);
     const verifyStarted = performance.now();
     const hash = createHash("sha256"); let bytes = 0;
-    for await (const chunk of createReadStream(archivePath)) { hash.update(chunk); bytes += chunk.length; }
+    for await (const chunk of createReadStream(archivePath, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES })) { hash.update(chunk); bytes += chunk.length; }
     timing.verifyMs = elapsedSince(verifyStarted);
     if (hash.digest("hex") !== receipt.sha256 || bytes !== receipt.byteSize) throw new Error("remote_workspace_capture_transfer_mismatch");
     return { ...receipt, archivePath, cleanup: () => rm(root, { recursive: true, force: true }) };
@@ -601,9 +634,9 @@ export async function restoreRemoteWorkspaceDirectory(input: {
   // Stage outside the destination; the restore validator requires an empty target.
   const parent = path.posix.dirname(input.remoteCwd);
   const staged = await installArchiveHelper(input.target, parent, operationId);
-  await stat(input.archivePath).then(archive => transferArchive(input.target, "syncIn", [{ operationId,
+  await measureRunPhase("workspace.snapshot.sandbox_upload", () => stat(input.archivePath).then(archive => transferArchive(input.target, "syncIn", [{ operationId,
     files: [{ kind: "file", sourcePath: input.archivePath, targetPath: staged.archive }],
-  }], archive.size)).catch((error: unknown) => { noteProviderRefusal("upload", error); throw error; });
+  }], archive.size))).catch((error: unknown) => { noteProviderRefusal("upload", error); throw error; });
   // Publish the restored folder and its identity together. A lost successful
   // reply can then adopt the same files without repeating a destructive restore.
   const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process'),crypto=require('node:crypto');
@@ -770,9 +803,9 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    }finally{await fs.rm(staged,{recursive:true,force:true});}
    }finally{lock.close();}
   })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,error));process.exitCode=1});`;
-  await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
+  await measureRunPhase("workspace.snapshot.sandbox_extract", () => command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
     input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? []),
-    String(input.replaceRetiredRoot === true), input.restorationEpoch === undefined ? "" : String(input.restorationEpoch)]);
+    String(input.replaceRetiredRoot === true), input.restorationEpoch === undefined ? "" : String(input.restorationEpoch)]));
   // Publish the restored location before cleanup can fail, stall, or lose its
   // reply. The owner journals this receipt and then reclaims disposable staging.
   return { operationId, stagingRoot: parent, cleanupPending: true };

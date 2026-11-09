@@ -18,7 +18,7 @@ import { deleteDaytonaEnvironment } from "../runner-e2e/live-fixtures.js";
 import type { ChaosApi } from "./api.js";
 
 export interface DaytonaSandboxRow { id: string; name?: string; state?: string; snapshot?: string; labels?: Record<string, string> }
-export interface LeaseRow { id: string; status: string; providerLeaseId?: string | null; heartbeatRunId?: string | null; issueId?: string | null }
+export interface LeaseRow { id: string; status: string; leasePolicy?: string | null; providerLeaseId?: string | null; heartbeatRunId?: string | null; issueId?: string | null }
 
 /** Lease statuses where Paperclip still owns a provider resource. */
 const HELD_LEASE_STATUSES = new Set(["active", "retained", "pending_cleanup"]);
@@ -43,23 +43,45 @@ export interface DaytonaSweepResult {
   orphanSandboxes: SandboxLeak[];
   /** Leases still `active` or `pending_cleanup` with every task at rest. */
   heldLeases: LeaseLeak[];
-  /** Leases kept on purpose (`retained`), reported but not a leak. */
+  /** Leases kept on purpose (`retained`, a released reusable lease whose sandbox is stopped for reuse, or a released retain-on-failure restore source whose sandbox is stopped), reported but not a leak. */
   retainedLeases: LeaseLeak[];
   /** Archived sandboxes behind a released lease: expected and reported; Daytona deletes them. */
   archivedSandboxes: string[];
   error: string | null;
 }
 
+/**
+ * A stopped sandbox Paperclip keeps on purpose behind a released lease:
+ * - `reuse_by_environment`: a later run on the same workspace resumes it;
+ * - `retain_on_failure`: a failed run's workspace copy kept for file recovery
+ *   (restore recovery owns it; environment deletion destroys it).
+ * Only a stopped one counts: a running sandbox, or one with no lease (for
+ * example after its environment was deleted), is still a leak.
+ */
+function keptForReuse(lease: LeaseRow, sandbox: DaytonaSandboxRow): boolean {
+  return lease.status === "released"
+    && (lease.leasePolicy === "reuse_by_environment" || lease.leasePolicy === "retain_on_failure")
+    && String(sandbox.state ?? "").toLowerCase() === "stopped";
+}
+
 /** Pure reconciliation of one listing. */
 export function reconcileSandboxes(sandboxes: readonly DaytonaSandboxRow[], leases: readonly LeaseRow[]):
   Pick<DaytonaSweepResult, "liveSandboxes" | "orphanSandboxes" | "heldLeases" | "retainedLeases" | "archivedSandboxes"> {
   const live = sandboxes.filter(sandbox => !GONE_SANDBOX_STATES.has(String(sandbox.state ?? "").toLowerCase()));
-  const byProviderId = new Map(leases.filter(lease => lease.providerLeaseId).map(lease => [lease.providerLeaseId!, lease]));
+  const rank = (lease: LeaseRow) => HELD_LEASE_STATUSES.has(lease.status) ? 2 : lease.status === "released" ? 1 : 0;
+  const byProviderId = new Map<string, LeaseRow>();
+  for (const lease of leases) {
+    if (!lease.providerLeaseId) continue;
+    const current = byProviderId.get(lease.providerLeaseId);
+    if (!current || rank(lease) > rank(current)) byProviderId.set(lease.providerLeaseId, lease);
+  }
   const orphanSandboxes: SandboxLeak[] = [];
+  const keptReusable: LeaseRow[] = [];
   const archivedSandboxes: string[] = [];
   for (const sandbox of live) {
     const lease = byProviderId.get(sandbox.id) ?? (sandbox.name ? byProviderId.get(sandbox.name) : undefined);
     if (lease && HELD_LEASE_STATUSES.has(lease.status)) continue;
+    if (lease && keptForReuse(lease, sandbox)) { keptReusable.push(lease); continue; }
     if (lease && ARCHIVED_SANDBOX_STATES.has(String(sandbox.state ?? "").toLowerCase())) { archivedSandboxes.push(sandbox.id); continue; }
     orphanSandboxes.push({ sandboxId: sandbox.id, state: sandbox.state ?? null, runId: sandbox.labels?.["paperclip-run-id"] ?? null,
       leaseId: lease?.id ?? null, leaseStatus: lease?.status ?? null,
@@ -71,7 +93,7 @@ export function reconcileSandboxes(sandboxes: readonly DaytonaSandboxRow[], leas
     liveSandboxes: live.map(sandbox => sandbox.id),
     orphanSandboxes,
     heldLeases: leases.filter(lease => lease.status === "active" || lease.status === "pending_cleanup").map(toLeak),
-    retainedLeases: leases.filter(lease => lease.status === "retained").map(toLeak),
+    retainedLeases: [...leases.filter(lease => lease.status === "retained"), ...keptReusable].map(toLeak),
     archivedSandboxes,
   };
 }
@@ -95,6 +117,17 @@ export function unattributedLeaks(result: DaytonaSweepResult, attributed: Readon
   ].filter(leak => !attributed.has(leak));
 }
 
+
+/**
+ * Mirrors server/src/services/environment-cleanup-state.ts ENVIRONMENT_CLEANUP_RETRY_MS
+ * (a unit test keeps them equal). A pending_cleanup lease is retried after this
+ * backoff, counted from its last update, by a timed cleanup wake.
+ */
+export const PENDING_CLEANUP_RETRY_MS = 5 * 60_000;
+/** Slack for that timed sweep to run and the provider delete to land. */
+const CLEANUP_SWEEP_SLACK_MS = 90_000;
+/** R6 waits this long for leases and sandboxes to settle before calling them leaks. */
+export const R6_SETTLE_MS = Math.min(8 * 60_000, PENDING_CLEANUP_RETRY_MS + CLEANUP_SWEEP_SLACK_MS);
 
 /** The only Daytona operation the harness may perform. */
 export interface ReadOnlyDaytona { list(query: { labels: Record<string, string> }): AsyncIterable<DaytonaSandboxRow> }
@@ -152,8 +185,8 @@ export class DaytonaWaveSweeper {
     return selectWaveSandboxes(rows, wave);
   }
 
-  /** Reconcile, retrying for `settleMs` so normal per-turn teardown can finish. */
-  async sweep(settleMs = 120_000): Promise<DaytonaSweepResult> {
+  /** Reconcile, retrying for `settleMs` so normal per-turn and pending-cleanup teardown can finish. */
+  async sweep(settleMs = R6_SETTLE_MS): Promise<DaytonaSweepResult> {
     const deadline = Date.now() + settleMs;
     for (;;) {
       const result: DaytonaSweepResult = { companyId: this.input.companyId, environmentId: this.input.environmentId,
@@ -177,13 +210,21 @@ export class DaytonaWaveSweeper {
    * reusable leases). Then list, read-only, what is still not destroyed or
    * archived, for the report. No sandbox is changed by the harness itself.
    */
-  async cleanUp(settleMs = 90_000): Promise<{ environmentDeleted: boolean; remainingSandboxes: string[]; errors: string[] }> {
+  async cleanUp(settleMs = 90_000, deleteWindowMs = R6_SETTLE_MS): Promise<{ environmentDeleted: boolean; environmentDeleteBlocked: string | null;
+    remainingSandboxes: string[]; errors: string[] }> {
     const errors: string[] = [];
     let environmentDeleted = false;
+    let environmentDeleteBlocked: string | null = null;
     try {
-      await deleteDaytonaEnvironment(this.input.api, this.input.environmentId);
+      // 409 while a sandbox cleanup is pending is correct product behaviour:
+      // deleteDaytonaEnvironment keeps retrying until the window closes.
+      await deleteDaytonaEnvironment(this.input.api, this.input.environmentId, Date.now() + deleteWindowMs);
       environmentDeleted = true;
-    } catch (error) { errors.push(`environment delete: ${error instanceof Error ? error.message : String(error)}`); }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/returned 409\b/.test(message)) environmentDeleteBlocked = message;
+      else errors.push(`environment delete: ${message}`);
+    }
     let remainingSandboxes: string[] = [];
     // Provider teardown is asynchronous; give it a bounded settle before reporting.
     const deadline = Date.now() + settleMs;
@@ -200,6 +241,6 @@ export class DaytonaWaveSweeper {
       if (!remainingSandboxes.length || Date.now() >= deadline) break;
       await delay(10_000);
     }
-    return { environmentDeleted, remainingSandboxes, errors };
+    return { environmentDeleted, environmentDeleteBlocked, remainingSandboxes, errors };
   }
 }

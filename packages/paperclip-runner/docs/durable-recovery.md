@@ -83,6 +83,35 @@ a scripted harness, removes the controller's launch files, then recovers the
 same process and provider session and completes another turn. This exercises the
 real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
+## Warm Runner release
+
+Before parking a settled Runner, the controller waits for its durable drain
+receipt within the same 30-second budget used for warm admission. A Claude
+turn-end provider restart can delay that receipt beyond one second. The wait
+returns as soon as the drain is proved; it adds no fixed delay to a ready Runner.
+
+## ACPX checkpoints after a rejected turn start
+
+Recovered ACPX shutdown uses the same bounded five-second lifetime-fence proof
+as suspension. It waits for a transient listener holder to release the original
+quorum, then returns immediately when cleanup is proved. A timeout leaves
+`providerExitUnconfirmed` set and refuses reuse. Live-session shutdown and normal
+task dispatch keep their existing paths.
+
+A matching `turn.start` response with `SESSION_RESUME_REQUIRED` and
+`retryable: true` can retain the exact saved conversation. The session must have
+no active turn, pending request or buffered event. The saved identity must still
+match, with no retained work event or active goal. A pending `session.resumed`
+notification is retained for the normal drain; it does not start provider work. The Runner first reaps
+the sidecar, then confirms the provider lifetime fence. It stores this boundary
+as `prepared`, with exit confirmation, before the normal drain and suspension
+make it reusable. The scheduled recovery keeps its existing attempt limit.
+
+Unknown acceptance, malformed replies, other rejection codes, pending work and
+unconfirmed cleanup do not qualify. Error messages cannot authorize recovery.
+An arbitrary `closed` provider state stays closed. This path does not establish
+recovery for a Runner killed during an accepted turn.
+
 ## Settled ACPX sessions across a Runner upgrade
 
 Saved ACPX provider state records the digest of the launch profile that wrote
@@ -94,10 +123,23 @@ digest, so restore cannot tell which part changed.
 Restore re-binds a saved session to the current launch profile, and keeps the
 conversation, only when all of these are true:
 
-- The session is suspended. It has no active turn, pending runtime request,
-  undelivered provider event, or unconfirmed provider exit.
+- The session is in one of these two states:
+  - **Suspended.** It has no active turn, pending runtime request, undelivered
+    provider event, or unconfirmed provider exit.
+  - **An interrupted turn or open session of the same heartbeat run.** The
+    deploy restarted the runner and the same run resumes. There is no accepted
+    semantic result, no pending runtime request, no unconfirmed provider exit,
+    and no active goal. Same-build recovery then runs unchanged. It reopens an
+    open session. For an active turn it uses lost-turn recovery: the
+    conversation is restored once the original provider lifetime loses its
+    fence quorum, and otherwise the lost turn is closed. An active turn or open
+    session saved by a different run stays strict.
 - The startup has no candidate admission.
-- The saved descriptor names this startup's sidecar command and arguments.
+- The saved descriptor names the same launch as this startup: the same
+  executable and sidecar file names, and identical non-path arguments. The
+  files may be installed under a different directory, as an `npx` versioned
+  cache, a new image layout or a new checkout does. The re-bind then records
+  this startup's runner-owned paths in the saved descriptor.
 
 Every other binding stays exact. The saved descriptor must match this build's
 qualified agent profile (ACPX version, agent server package and version, and
@@ -111,6 +153,13 @@ authenticated result, not from the message. If the run allows a replacement
 after a failed resume, it opens a fresh provider session as before. Otherwise the
 run fails with `native_provider_state_incompatible` and is not retried. A board
 Retry then continues the task in a fresh provider session in the same workspace.
+
+A Codex `run.attach` that would change the durable provider profile or a
+protected launch argument fails with the closed classification
+`provider_attach_refused`. An attach blocked by a pending tool call fails with
+`provider_side_effect_pending`. Neither refusal changes the saved state. The
+controller never opens a replacement session after either class, whatever the
+checkpoint's recovery policy, and stops the run for an operator.
 
 Saved OpenCode and Cursor Cloud provider state binds the digest of its own
 qualified launch profile (command, proxy script and, for OpenCode, the

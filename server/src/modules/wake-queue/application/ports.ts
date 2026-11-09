@@ -125,7 +125,12 @@ export interface WakeQueueTransaction {
     finishingRunId: string;
     finishingRunAgentId: string;
     queuedCommentIds: string[];
-  }): Promise<{ liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean }>;
+  }): Promise<{
+    liveNonSelfCommentIds: string[];
+    containedSelfAuthoredComment: boolean;
+    /** Live comment ids a succeeded run of the wake's agent already received in its prompt. */
+    deliveredCommentIds?: string[];
+  }>;
   /** Cancels the wake with `status = 'deferred_issue_execution'` as an atomic compare-and-set guard. */
   cancelDeferredWake(input: {
     companyId: string;

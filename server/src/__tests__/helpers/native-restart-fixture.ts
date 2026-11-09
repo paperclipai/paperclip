@@ -1,9 +1,9 @@
+import { createNativeRestartRuntimeRoot } from "./native-restart-workspace.js";
 import { startRecoveryPostgres } from "./recovery-postgres-fixture.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { eq } from "drizzle-orm";
 import { agents, companies, closeRegisteredClients, createDb, heartbeatRuns, issues, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
@@ -90,7 +90,7 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
 
   beforeAll(async () => {
     temporary = await startRecoveryPostgres("native-runner-restart-recovery-", options);
-    runtimeRoot = await mkdtemp(resolve(tmpdir(), "native-restart-runtime-"));
+    runtimeRoot = await createNativeRestartRuntimeRoot();
     isolatedHome = createIsolatedTestHome();
     paperclipHome = isolatedHome.home;
     process.env.PAPERCLIP_HOME = paperclipHome;
@@ -157,8 +157,10 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
   async function seedRun(
     label: string,
     existingDb?: ReturnType<typeof createDb>,
+    seedOptions: { agentId?: string } = {},
   ) {
     const db = existingDb ?? createDb(temporary.connectionString);
+    const runAgentId = seedOptions.agentId ?? agentId;
     const issueId = randomUUID();
     const runId = randomUUID();
     await db.insert(issues).values({
@@ -169,14 +171,14 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
       status: "in_progress",
       priority: "medium",
       workMode: "standard",
-      assigneeAgentId: agentId,
+      assigneeAgentId: runAgentId,
     });
     const [run] = await db
       .insert(heartbeatRuns)
       .values({
         id: runId,
         companyId,
-        agentId,
+        agentId: runAgentId,
         status: "running",
         runtimeMode: "native",
         nativeIssueId: issueId,

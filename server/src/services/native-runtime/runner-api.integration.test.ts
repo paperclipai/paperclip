@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { agents, agentApiKeys, agentWakeupRequests, assets, authUsers, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
+import { agents, agentApiKeys, agentWakeupRequests, assets, authUsers, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants, budgetPolicies, companies } from "@paperclipai/db";
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import * as nativeSetupReadiness from "./setup-readiness.js";
@@ -489,6 +489,24 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await fixture.snapshot()).assets.filter(asset => asset.objectKey.includes("/runner-api/"))).toEqual([]);
   });
 
+  // s7504 run cb7994f9 (Codex, CHA-5): while a succeeded run's accounting held
+  // new company work, this live run's write_task_document was refused with
+  // "Company or budget authority unavailable", so it proposed a blocked result.
+  it("lets a running run write during a temporary accounting hold, but not after a hard stop", async () => {
+    const fixture = await server.fixture({ disableWakeOnDemand: true, conversation: true });
+    await server.db.insert(budgetPolicies).values({ companyId: fixture.companyId, scopeType: "company", scopeId: fixture.companyId,
+      metric: "billed_cents", windowKind: "calendar_month_utc", amount: 3000, notifyEnabled: false, unpricedUsagePolicy: "block" });
+    // Another run ended without succeeding and awaits accounting: new work waits.
+    await server.db.insert(heartbeatRuns).values({ companyId: fixture.companyId, agentId: fixture.agentId, invocationSource: "automation",
+      status: "failed", finishedAt: new Date(), costAccountingPending: true, usageJson: { accountingReceiptReady: false } });
+    const write = (key: string) => fixture.authority.execute({ tool: "write_task_document", callId: `hold-${key}`,
+      arguments: { taskId: fixture.issueId, key, title: "Brief", body: "Three bullets", baseRevisionId: null } });
+    await expect(write("brief")).resolves.toMatchObject({ ok: true });
+    await server.db.update(companies).set({ status: "paused", pauseReason: "budget", pausedAt: new Date() })
+      .where(eq(companies.id, fixture.companyId));
+    await expect(write("after-stop")).rejects.toThrow("Company or budget authority unavailable");
+  });
+
   it.each(["comment_on_task", "write_task_document", "hire_agent"])("recovers completed %s receipts without repeating the write", async tool => {
     const fixture = await server.fixture({ disableWakeOnDemand: true, conversation: true });
     if (tool === "hire_agent") {
@@ -534,6 +552,38 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     await expect(reopened.recover(call)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
     await server.db.update(agents).set({ status: "active" }).where(eq(agents.id, fixture.agentId));
     expect(await effects()).toEqual(before);
+  });
+
+  it("recovers a body-less PATCH saved before the body rule while rejecting a new one before dispatch", async () => {
+    const fixture = await server.fixture();
+    const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+      : value && typeof value === "object" ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`
+      : JSON.stringify(value) ?? "null";
+    const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+    const bodyless = { operationId: "PATCH /api/projects/{id}", pathParams: { id: fixture.projectId } };
+    const call = { tool: "call_api", callId: "saved-bodyless-patch", arguments: bodyless };
+    // An older server accepted and completed this call; seed its receipt from a real completed PATCH.
+    const result = await fixture.authority.execute({ ...call, arguments: { ...bodyless, body: { name: "Saved before upgrade" } } });
+    expect(result).toMatchObject({ ok: true, status: 200 });
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    const receipts = structuredClone((run.resultJson as Record<string, any>).apiToolReceipts);
+    receipts[sha(call.callId)].digest = sha(canonical(bodyless));
+    await server.db.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, fixture.runId));
+    const reopened = new PaperclipRunnerToolAuthority(server.db, fixture.authority.binding);
+    const network = vi.spyOn(globalThis, "fetch");
+    try {
+      expect(await reopened.recover(call)).toEqual({ result });
+      expect(await reopened.execute(call)).toEqual(result);
+      const rejected = { ...call, callId: "new-bodyless-patch" };
+      await expect(reopened.execute(rejected)).rejects.toThrow(/not sent.*requires body/);
+      await expect(reopened.execute(rejected)).rejects.toThrow(/not sent.*requires body/);
+      expect(network).not.toHaveBeenCalled();
+    } finally { network.mockRestore(); }
+    // The rejected call reserved no receipt, so its callId stays usable for the corrected call.
+    const [after] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(Object.keys((after.resultJson as Record<string, any>).apiToolReceipts)).not.toContain(sha("new-bodyless-patch"));
+    expect(await reopened.execute({ tool: "call_api", callId: "new-bodyless-patch", arguments: { ...bodyless, body: { name: "Corrected" } } }))
+      .toMatchObject({ ok: true, status: 200, data: { name: "Corrected" } });
   });
 
   it("returns and replays scoped secret values without plaintext receipts or response assets", async () => {

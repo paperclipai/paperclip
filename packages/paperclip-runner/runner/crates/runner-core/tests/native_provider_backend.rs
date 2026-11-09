@@ -152,6 +152,7 @@ fn config(state_dir: &Path) -> DurableRunnerConfig {
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(60),
+        turn_scoped: false,
     }
 }
 
@@ -604,42 +605,7 @@ fn assert_no_replayed_turn_or_request(events: &[PolledEvent]) {
 }
 
 fn shutdown_recovered_acpx_fixture(executor: &mut NativeProviderCommandExecutor, directory: &Path) {
-    // The fake sidecar advertises the same three lifetime-fence ports for all
-    // fixtures. Parallel recovered shutdowns hold a quorum through state fsync,
-    // temporarily preventing another fixture from proving cleanup. Retry only
-    // that rejection, using the real production quorum proof on every attempt.
-    // This is fixture synchronization, not a production cleanup workaround.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut blocked_attempts = 0;
-    loop {
-        match executor.shutdown() {
-            Ok(()) => break,
-            Err(error) => {
-                assert_eq!(
-                    error.to_string(),
-                    "ACPX original provider lifetime remains active; cleanup is not yet proven",
-                    "unexpected recovered fixture shutdown failure"
-                );
-                let persisted: Value = serde_json::from_slice(
-                    &fs::read(directory.join("acpx-provider-state.json")).unwrap(),
-                )
-                .unwrap();
-                assert_eq!(persisted["providerExitUnconfirmed"], true);
-                blocked_attempts += 1;
-                if blocked_attempts == 1 {
-                    eprintln!("recovered fixture cleanup waiting for the shared lifetime quorum");
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "recovered fixture cleanup never acquired the lifetime quorum"
-                );
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-    if blocked_attempts > 0 {
-        eprintln!("recovered fixture cleanup proved after {blocked_attempts} quorum rejections");
-    }
+    executor.shutdown().unwrap();
     let persisted: Value =
         serde_json::from_slice(&fs::read(directory.join("acpx-provider-state.json")).unwrap())
             .unwrap();
@@ -3094,6 +3060,141 @@ fn idle_pi_stop_cannot_publish_a_reusable_identity_while_its_lifetime_fence_is_h
         before_poll,
         "polling cannot erase the unconfirmed lifetime boundary"
     );
+    drop(fence);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+fn rejected_turn_start_fixture(directory: &Path, fault: &str) -> (DurableRunnerConfig, Value) {
+    let mut config = acpx_config(directory, "bootstrap");
+    config
+        .acpx_launch_profile
+        .as_mut()
+        .unwrap()
+        .args
+        .extend(["--reject-turn-start".to_owned(), fault.to_owned()]);
+    let mut payload = prepare_payload_with_mode(directory, "codex", "bootstrap");
+    payload["provider"]["sidecarArgs"] = json!(config.acpx_launch_profile.as_ref().unwrap().args);
+    (config, payload)
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn rejected_turn_start_retains_only_the_definite_retryable_checkpoint() {
+    for fault in [
+        "resume",
+        "permanent",
+        "unknown",
+        "lowercase",
+        "message-only",
+        "event",
+        "wrong-id",
+        "malformed",
+    ] {
+        let directory = temporary_directory(&format!("rejected-start-{fault}"));
+        let (config, payload) = rejected_turn_start_fixture(&directory, fault);
+        let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+        executor
+            .execute(&command(1, "run.prepare", payload))
+            .unwrap();
+        executor
+            .execute(&command(2, "session.open", json!({})))
+            .unwrap();
+        let path = directory.join("acpx-provider-state.json");
+        let opened: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        executor
+            .execute(&command(
+                3,
+                "turn.start",
+                json!({"turnId":"rejected-turn", "text":"Continue saved work."}),
+            ))
+            .unwrap_err();
+        let rejected: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            rejected["lifecycle"],
+            if fault == "resume" {
+                "prepared"
+            } else {
+                "closed"
+            },
+            "{fault}"
+        );
+        assert_eq!(rejected["providerExitUnconfirmed"], false, "{fault}");
+        assert_eq!(rejected["identity"], opened["identity"], "{fault}");
+        assert_eq!(rejected["activeTurnId"], Value::Null, "{fault}");
+        executor
+            .execute(&command(4, "runner.drain", json!({})))
+            .unwrap();
+        executor
+            .execute(&command(5, "runner.suspend", json!({})))
+            .unwrap();
+        let suspended: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            suspended["lifecycle"],
+            if fault == "resume" {
+                "suspended"
+            } else {
+                "closed"
+            },
+            "{fault}"
+        );
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn rejected_turn_start_cannot_publish_a_checkpoint_while_its_provider_lifetime_is_held() {
+    let directory = temporary_directory("rejected-start-held-lifetime");
+    let fence = (61_000..=u16::MAX)
+        .filter_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+        .take(3)
+        .collect::<Vec<_>>();
+    assert_eq!(fence.len(), 3);
+    let ports = fence
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().port().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let (mut config, mut payload) = rejected_turn_start_fixture(&directory, "resume");
+    config
+        .acpx_launch_profile
+        .as_mut()
+        .unwrap()
+        .args
+        .extend(["--lifetime-fence-ports".to_owned(), ports]);
+    payload["provider"]["sidecarArgs"] = json!(config.acpx_launch_profile.as_ref().unwrap().args);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(1, "run.prepare", payload))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let error = executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId":"rejected-turn", "text":"Continue saved work."}),
+        ))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("original provider lifetime remains active"),
+        "{error}"
+    );
+    let path = directory.join("acpx-provider-state.json");
+    let state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(state["lifecycle"], "prepared");
+    assert_eq!(state["providerExitUnconfirmed"], true);
+    assert!(executor
+        .execute(&command(4, "runner.suspend", json!({})))
+        .is_err());
+    assert!(executor.poll_events().unwrap().is_empty());
+    let after_poll: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(after_poll, state);
     drop(fence);
     executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();

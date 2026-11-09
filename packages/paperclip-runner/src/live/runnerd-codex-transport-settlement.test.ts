@@ -765,11 +765,13 @@ it.each([
           const failedStop = failed.commands.find((command: { type: string; status: string }) =>
             command.type === "turn.stop" && command.status === "failed");
           for (const fact of facts) {
+            // Only an intent that has not reached the spawn carries beforeSpawn.
             expect(Object.keys(fact).sort()).toEqual([
               "schema", "launchId", "phase", "trigger", "attemptedProcessGeneration",
               "origin", "command", "configurationFingerprint", "requestedThreadId",
               "authenticatedThreadId", "processId", "processGroupId", "failedStage",
               "directChildExitObserved", "exitCode", "signal", "processTreeRetired",
+              ...(fact === intent ? ["beforeSpawn"] : []),
             ].sort());
             expect(fact).toMatchObject({
               schema: "paperclip.provider_startup.v1",
@@ -795,7 +797,7 @@ it.each([
             });
           }
           expect(intent).toMatchObject({
-            phase: "intent", processId: null, processGroupId: null,
+            phase: "intent", beforeSpawn: true, processId: null, processGroupId: null,
             directChildExitObserved: false, failedStage: null, exitCode: null, signal: null,
           });
           expect(spawned!.processId).toBeGreaterThan(0);

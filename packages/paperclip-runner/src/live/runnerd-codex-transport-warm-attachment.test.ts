@@ -709,6 +709,149 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
   }
 }, 30_000);
 
+it("carries each warm run's own completion contract and keeps the provider process", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-contract-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory),
+    stateDirectory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    // The transport is created for the first run; its options name that run's contract.
+    resumeCompletionContract: { revision: "first-run-contract", criterionIds: ["objective"] },
+  });
+  bundle.transport.setServerRequestHandler(async () => ({ success: true, contentItems: [] }));
+  const savedContract = async () => JSON.parse(await readFile(
+    join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8")).runAttachTemplate?.completionContract;
+  const notifications = bundle.transport.notifications()[Symbol.asyncIterator]();
+  const completed = async () => {
+    for (;;) if ((await notifications.next()).value?.method === "turn/completed") return;
+  };
+  try {
+    await bundle.transport.request("initialize", {});
+    await bundle.transport.request("thread/start", {
+      cwd: tmpdir(), dynamicTools: [],
+      completionContract: { revision: "first-run-contract", criterionIds: ["objective"] },
+    });
+    const providerPid = bundle.evidence().codexPid;
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "first run" }] });
+    await completed();
+
+    await bundle.transport.attachRun!({
+      runId: "run-warm-contract-second", turnId: "turn-warm-contract-second", itemId: "item-warm-contract-second",
+      completionContract: { revision: "second-run-contract", criterionIds: ["objective", "follow-up"] },
+    });
+    expect(await savedContract()).toEqual({ revision: "second-run-contract", criterionIds: ["objective", "follow-up"] });
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "second run" }] });
+    await completed();
+    // A changed contract no longer forces a cold provider resume.
+    expect(bundle.evidence()).toMatchObject({ codexPid: providerPid, runnerExited: false });
+  } finally {
+    await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("keeps prior-run events on ordinary accounting when the owner moves ahead for a warm attachment", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-owner-"));
+  const first = {
+    runnerInstanceId: "runner-warm-owner",
+    environmentLeaseId: "lease-warm-owner",
+    runId: "run-warm-owner-first",
+    normalizedSessionId: "session-warm-owner",
+    turnId: "turn-warm-owner-first",
+    itemId: "item-warm-owner-first",
+  };
+  // A plugin Runner owner follows the rebound execution before the live
+  // transport attaches it, so the owner is ahead during run.attach.
+  let owner = first.runId;
+  const ordinary: PrpEvent[] = [];
+  const recovery: PrpEvent[] = [];
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory),
+    stateDirectory,
+    prpIdentity: first,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    get authorityRunId() { return owner; },
+    onAccountingEvent: async (event) => { ordinary.push(structuredClone(event)); },
+    // A live warm transport has no recovery source. The executor rejects
+    // source accounting for it, and the rejection closes the connection.
+    onRecoveryAccountingEvent: async (event) => {
+      recovery.push(structuredClone(event));
+      throw new Error("native_recovery_usage_source_unproven");
+    },
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  const within = async <T>(label: string, promise: Promise<T>) =>
+    await Promise.race([
+      promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`${label} timeout`)), 10_000),
+      ),
+    ]);
+  let passed = false;
+  try {
+    await within("initialize", bundle.transport.request("initialize", {}));
+    await within(
+      "thread start",
+      bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] }),
+    );
+    const notifications = bundle.transport
+      .notifications()
+      [Symbol.asyncIterator]();
+    const complete = async (label: string) => {
+      await within(
+        `${label} turn start`,
+        bundle.transport.request("turn/start", {
+          input: [{ type: "text", text: label }],
+        }),
+      );
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const next = await within(`${label} notification`, notifications.next());
+        if (next.value?.method === "turn/completed") return;
+      }
+      throw new Error(`${label} completion timeout`);
+    };
+    await complete("first run");
+    const runnerPid = bundle.evidence().runnerPid;
+
+    for (const runId of ["run-warm-owner-second", "run-warm-owner-third"]) {
+      const prior = owner;
+      const seen = ordinary.length;
+      owner = runId;
+      await within(
+        `attach ${runId}`,
+        bundle.transport.attachRun!({
+          runId,
+          turnId: `turn-${runId}`,
+          itemId: `item-${runId}`,
+        }),
+      );
+      // The Runner flushes the prior run's outbox before it returns the
+      // run.attach result. Those events stay ordinary accounting.
+      expect(ordinary.slice(seen).filter((event) => event.runId === prior)
+        .map((event) => event.eventType)).toContain("run.attached");
+      await complete(runId);
+    }
+
+    expect(recovery).toEqual([]);
+    expect(bundle.evidence()).toMatchObject({ runnerPid, runnerExited: false });
+    passed = true;
+  } finally {
+    // Keep the assertion failure visible when a stuck attachment also
+    // prevents a clean close.
+    const closing = bundle.transport.close();
+    await (passed ? closing : closing.catch(() => undefined));
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 60_000);
+
 it("recovers an active second warm business run after deleting its controller context assets", async () => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-warm-second-active-"));
   const firstRoot = join(root, "first-controller"), nextRoot = join(root, "next-controller");

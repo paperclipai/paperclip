@@ -80,6 +80,32 @@ it("does not adopt an accepted turn the runner no longer reports active", async 
   }
 }, 60_000);
 
+it("fails a pending turn start at once with the runner's own terminal failure", async () => {
+  // The runner can fail an accepted turn before its turn/started arrives
+  // (RC-20d: turn_binding_mismatch). That terminal is final, so the start must
+  // report it at once rather than wait out the bound under a generic message.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-failed-turn-start-"));
+  const callsPath = join(stateDirectory, "calls.log");
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--foreign-usage-before-turn-started",
+      "--turn-started-delay-ms", "20000", "--call-log", callsPath),
+    stateDirectory, turnStartTimeoutMs: 15_000,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+    const started = Date.now();
+    await expect(bundle.transport.request("turn/start", { input: [{ type: "text", text: "Fail before start." }] }))
+      .rejects.toThrow("turn_binding_mismatch");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/);
+    expect(calls.filter(call => call === "turn/start")).toHaveLength(1);
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 60_000);
+
 it("keeps a quiet active Codex turn in the same process across connection lease expiry", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-renew-active-"));
   const callsPath = join(stateDirectory, "calls.log");
