@@ -15249,6 +15249,7 @@ export function issueRoutes(
         throw unprocessable("Snapshot-guarded policy updates cannot change task status or ownership");
       }
       Object.assign(updateFields, transition.patch);
+      let deferredNativeStageApproval = false;
       if (nativeStageApproval === "defer_final_status") {
         // Only the final stage's approval is deferred. Anything else this
         // request would do (an intermediate approval that hands the task to the
@@ -15258,6 +15259,7 @@ export function issueRoutes(
           transition.patch.assigneeUserId === undefined;
         if (!finalApproval) throw nativeRunStatusReportedByFinish(req.body.status);
         delete updateFields.status;
+        deferredNativeStageApproval = true;
       }
 
       const nextStatus = updateFields.status ?? existing.status;
@@ -15685,10 +15687,13 @@ export function issueRoutes(
         const lockedPolicyChangeRequested =
           req.body.reviewPolicy !== undefined &&
           req.body.reviewPolicy !== lockedExisting.reviewPolicy;
+        // A deferred native approval is still a review verdict even though
+        // its status write is left to the run's finish report.
         const lockedReviewVerdictRequested =
           lockedExisting.status === "in_review" &&
           (updateFields.status === "done" ||
-            updateFields.status === "cancelled");
+            updateFields.status === "cancelled" ||
+            deferredNativeStageApproval);
         if (
           (lockedReviewVerdictRequested || lockedPolicyChangeRequested) &&
           lockedExisting.reviewPolicy != null &&
