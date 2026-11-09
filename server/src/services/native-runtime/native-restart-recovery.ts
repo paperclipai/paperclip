@@ -1,4 +1,6 @@
 import { readPendingNativeRunStop } from "./native-cancellation-request.js";
+import { CONTROLLER_LEASE_RENEW_MS } from "../controller-instance-lease.js";
+import { currentControllerProcessStamp, UNKNOWN_PROCESS_SPACE } from "../controller-process-identity.js";
 import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
@@ -401,6 +403,8 @@ export async function evaluateNativeControllerTakeover(input: {
      * existed: those keep the previous local proof for one release, outside
      * ephemeral mode only (see LEGACY_HOST_FALLBACK_EVENT). */
     controllerHostHash?: string | null;
+    controllerBootId?: string | null;
+    updatedAt?: Date;
   };
   now: Date;
   coordinatedPreviousController?: {
@@ -454,15 +458,19 @@ export async function evaluateNativeControllerTakeover(input: {
     pidExists: input.isProcessAlive ?? base.pidExists,
     readStartedAt: input.readProcessStartedAt ?? base.readStartedAt,
   };
+  const needsBootProof = owner.controllerHostHash != null
+    && (owner.controllerHostHash !== probe.processSpace || owner.controllerHostHash === UNKNOWN_PROCESS_SPACE);
   const proof = await proveOwnerGone({
     kind: "local", scope: "native_controller", generation: null, host: null,
     processSpace: recordsHost ? owner.controllerHostHash ?? null : probe.processSpace,
     processSpaceUnrecorded: recordsHost && owner.controllerHostHash == null,
-    bootId: null, pid: priorPid, processStartedAt: owner.controllerProcessStartedAt?.toISOString() ?? null,
+    bootId: needsBootProof ? owner.controllerBootId ?? null : null, touchedAt: owner.updatedAt?.toISOString() ?? null,
+    pid: priorPid, processStartedAt: owner.controllerProcessStartedAt?.toISOString() ?? null,
     processGroupId: null,
   }, probe);
   const fallback = proof.legacyHostFallback ? { legacyHostFallback: true as const } : {};
   if (proof.verdict === "gone") {
+    if (proof.reason === "controller_fenced" || proof.reason === "controller_stopped") return { allowed: true, reason: proof.reason };
     if (proof.reason === "pid_reused") return { allowed: true, reason: "controller_pid_recycled", ...fallback };
     return {
       allowed: true,
@@ -473,6 +481,7 @@ export async function evaluateNativeControllerTakeover(input: {
       ...fallback,
     };
   }
+  if (proof.reason === "controller_lease_held" || proof.reason === "controller_lease_grace") return { allowed: false, reason: proof.reason };
   if (proof.reason === "process_space_unrecorded") return { allowed: false, reason: "controller_host_unrecorded" };
   if (proof.reason === "different_process_space" || proof.reason === "unknown_process_space"
     || proof.reason === "different_host") {
@@ -1187,7 +1196,7 @@ export async function claimNativeRestartRecoveries(input: {
           input.coordinatedPreviousController ?? null,
       });
       await recordLegacyHostFallbackProof(tx as unknown as Db, row.run, takeover, "native_restart_recovery");
-      if (!takeover.allowed && takeover.reason === "controller_host_unrecorded") {
+      if (!takeover.allowed && ["controller_host_unrecorded", "controller_host_unprovable"].includes(takeover.reason)) {
         await requestNativeControllerStopConfirmation(tx as unknown as Db, row.coordinator);
       }
       if (!takeover.allowed) {
@@ -1217,7 +1226,8 @@ export async function claimNativeRestartRecoveries(input: {
             // Repeated scans of one ownership wait record it once, so the
             // bounded history keeps the drain record the next claim reads.
             ...(waitAlreadyRecorded ? {} : { recoveryHistory: appendBoundedRecoveryHistory(event) }),
-            updatedAt: now,
+            updatedAt: waitAlreadyRecorded && row.coordinator.recoveryState === "awaiting_evidence"
+              && row.coordinator.recoveryRequestId === (input.recoveryRequestId ?? null) ? row.coordinator.updatedAt : now,
           })
           .where(
             and(
@@ -1230,7 +1240,9 @@ export async function claimNativeRestartRecoveries(input: {
           kind: "awaiting_evidence",
           runId: row.run.id,
           reason: takeover.reason,
-          ...(durableAuthority && row.coordinator.leaseExpiresAt ? { retryAt: row.coordinator.leaseExpiresAt } : {}),
+          ...(durableAuthority && row.coordinator.leaseExpiresAt ? { retryAt: row.coordinator.leaseExpiresAt }
+            : ["controller_lease_held", "controller_lease_grace"].includes(takeover.reason)
+              ? { retryAt: new Date(now.getTime() + CONTROLLER_LEASE_RENEW_MS) } : {}),
         } as const;
       }
 
@@ -1648,6 +1660,7 @@ export async function claimNativeRestartRecoveries(input: {
       // The attempt the executor runs this resume as (see its execution claim).
       const progressAttempt = nextNativeProviderAttempt(providerAttempt, claimKind, !resumeKeepsAttempt);
       await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
+      currentControllerProcessStamp();
       const claimed = await tx
         .update(nativeRunFinalizations)
         .set({
