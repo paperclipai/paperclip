@@ -11,7 +11,7 @@ import { and, eq } from "drizzle-orm";
 import { assets, agentConfigRevisions, agentTaskSessions, agentRuntimeState, type Db } from "@paperclipai/db";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { agentRecordQueries, type UpdateAgentOptions, type AgentConfigurationPatch, type AgentConfigurationRecord, isPlainRecord, buildConfigSnapshot,
   hasConfigPatchFields, changedPendingApprovalConfigFields, diffConfigSnapshot, jsonEqual } from "../lib/agent-records.js";
 import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial, normalizeAgentPermissions } from "../lib/agent-permissions.js";
@@ -22,6 +22,9 @@ import { clearPrimaryAgent } from "./primary-agent.js";
 import { budgetServiceInTransaction } from "./budgets.js";
 
 export async function prepareAgentConfiguration(db: Db, existing: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch> {
+  if (options?.recordRevision?.createdByAgentId && data.budgetMonthlyCents !== undefined && data.budgetMonthlyCents !== existing.budgetMonthlyCents) {
+    throw forbidden("Only board operators can change agent budgets");
+  }
   await notifyAttentionRetentionWork(db, { companyId: existing.companyId });
   const id = existing.id;
   const { ensureManager, assertNoCycle, assertCompanyShortnameAvailable, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
@@ -65,6 +68,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
     }
   }
   const normalizedPatch = { ...data } as AgentConfigurationPatch;
+  if (options?.recordRevision?.createdByAgentId) delete normalizedPatch.budgetMonthlyCents;
   if (data.permissions !== undefined) {
     // Only the permissions control records a CEO hiring restriction. Keep an
     // existing one unless this write turns hiring on, and never take one from input.
