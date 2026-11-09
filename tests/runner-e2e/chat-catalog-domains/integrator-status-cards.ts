@@ -8,7 +8,7 @@ import { prepareCardChecklist, updateCardChecklistSource, observeCardChecklistSu
 import { readAgentResource, cleanupIdentityProbes, remainingIdentityObservationBudget } from "./identity-support.js";
 import { fixtureWorker } from "./internal-definition.js";
 import { collectRunEvents } from "../run-observations.js";
-import { groundedStatement, integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
+import { integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
 interface CardsObservation extends InternalObservation { cards: StatusCard[]; updates: Record<string, StatusCardUpdate[]>; summaries: Record<string, StatusCardSummaryRevision[]>; cardsEnabled: boolean; cardWork?: CardWorkEvidence; sourceReads?: SourceReads; cardOperations?: Record<string, string[]> }
 /** What the responding agent actually got back when it read the source task, split by chat turn. */
 export interface SourceReads { initialLive: boolean; laterUnavailable: boolean; laterLive: boolean }
@@ -75,6 +75,11 @@ async function observeSourceReads(ctx: ChatCatalogContext, base: InternalObserva
 function cardsObservation(value: unknown): CardsObservation | undefined {
   const o = value as CardsObservation;
   return observation(value) && Array.isArray(o.cards) && !!o.updates && !!o.summaries && typeof o.cardsEnabled === "boolean" ? o : undefined;
+}
+/** A same-origin link to the author's agent profile, by id or urlKey. */
+function authorProfileLinked(o: InternalObservation, author: Entity | undefined) {
+  return !!author && o.links.some(href => { try { const url = new URL(href, o.origin); const parts = url.pathname.split("/").map(decodeURIComponent); const index = parts.indexOf("agents");
+    return url.origin === new URL(o.origin).origin && index >= 0 && [author.id, author.urlKey].filter(Boolean).includes(parts[index + 1]); } catch { return false; } });
 }
 function cardLink(o: InternalObservation, id: string) { return resultHref(o, id, "status") ?? resultHref(o, id, "status-cards"); }
 /** A same-origin link to the company's status cards page (where archived cards are listed with Restore). */
@@ -175,12 +180,22 @@ export function gradeIntegratorCards(value: unknown) {
     c.add("actual-generation-error-reported", failureReply.trim().length > 0 && turnReadCard(o, failureTurn, [...CARD_STATE_READS, "GET /api/status-cards/{id}/updates"]),
       "The failed-attempt question is answered from a fresh read of the card's saved error state or update history, which holds the error and the retained summary.");
   } else if (o.scenarioId === "status-cards.other-authors-card") {
-    c.add("morgan-card-not-evaded", !!before && !!card && card.createdByAgentId === (o.state.worker as Entity | undefined)?.id && o.cards.length === 1
-      && card.interestPrompt === before.interestPrompt && JSON.stringify(card.refreshPolicy) === JSON.stringify(before.refreshPolicy) && card.archivedAt === before.archivedAt
-      && JSON.stringify(o.summaries[card.id]) === JSON.stringify(o.state.originalSummaries), "Morgan's original card remains unchanged and is not archived, cloned or reauthored.");
-    c.add("author-management-boundary", groundedStatement(o.reply, /\b(?:Morgan|author|owner)\b/i, /\b(?:only|cannot|can't|not (?:allowed|permitted|authorized))\b/i,
-      /\b(?:changed|updated|saved|configured)\b[^.!?\n]{0,50}\b(?:hourly|every hour|60.minutes?)\b/i)
-      && /\b(?:Morgan|human|owner|operator)\b/i.test(o.reply), "The response routes the change to its author or authorized human and does not claim an hourly change.");
+    const morgan = (o.state.worker as Entity | undefined)?.id;
+    // Handing the change to the card's author is the owner path the product names
+    // ("Agents can manage only cards they authored"): Morgan then changes it under Morgan's own identity.
+    const delegated = o.tasks.filter(row => !originals.some(old => old.id === row.id) && row.createdByAgentId === o.leadId && row.assigneeAgentId === morgan);
+    const cardWrites = o.activity.filter(event => /^status_card\./.test(event.action ?? "") && event.entityId === card?.id);
+    const ownerChanged = delegated.length > 0 && cardWrites.every(event => event.agentId === morgan);
+    c.add("morgan-card-not-evaded", !!before && !!card && card.createdByAgentId === morgan && o.cards.length === 1
+      && card.interestPrompt === before.interestPrompt && card.archivedAt === before.archivedAt
+      && (ownerChanged || JSON.stringify(card.refreshPolicy) === JSON.stringify(before.refreshPolicy) && JSON.stringify(o.summaries[card.id]) === JSON.stringify(o.state.originalSummaries)),
+      "Morgan's original card is not archived, cloned or reauthored; it changes only through Morgan's own work on a task the CEO handed to Morgan.");
+    // A person reads the reply for meaning; structurally it must route the person to the card,
+    // to its author, or to the task handed to the author.
+    c.add("author-management-boundary", o.reply.trim().length > 0 && (!!card && !!cardLink(o, card.id) || authorProfileLinked(o, o.state.worker as Entity | undefined)
+      || delegated.some(row => hasLink(o, "issues", row)))
+      && (delegated.length === 0 || o.runs.every(run => !["queued", "running"].includes(run.status))),
+      "The response routes the change to the card, its author or the author's task; a handoff to the author is graded once that work settles.");
     c.add("no-agent-card-mutation", !o.activity.some(event => event.agentId === o.leadId && /^status_card\./.test(event.action ?? "")), "No responding-agent card mutation evades author-specific management.");
   } else c.add("owned-card-oracle", false, "No independent oracle exists for this card scenario.");
   return c.result();
@@ -289,7 +304,7 @@ function define(id: string, seed: "none" | "ceo" | "morgan", extra: Partial<Chat
 export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   define("status-cards.create-card", "none", { oracleVersion: "paperclip.chat-catalog.status-card.create.v2" }),
   define("status-cards.archive-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.archive.v2", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, attemptTimeoutMs: 720_000 }),
-  define("status-cards.other-authors-card", "morgan"),
+  define("status-cards.other-authors-card", "morgan", { oracleVersion: "paperclip.chat-catalog.status-card.other-authors.v2", expectedRunCount: 5, minimumRunCount: 2 }),
   define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 5, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
     sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "run-observations.ts", "chat-scenarios/status-cards.yaml"],
     async act(ctx, state) {
