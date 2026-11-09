@@ -1,7 +1,7 @@
 import type { AskUserQuestionsInteraction } from "../../packages/shared/src/types/issue.js";
 import { assertSdkCanaryFingerprintMatches } from "./sdk-canary-prefixture.js";
 import { collectConversationLinks, type ConversationLinkInput } from "./chat-rendered-links.js";
-import { chatCatalogAgentIsReady, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "./chat-catalog-contract.js";
+import { chatCatalogAgentIsReady, chatCatalogAgentReadinessDetail, type ChatCatalogAgentReadiness, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "./chat-catalog-contract.js";
 import { chatNativeTimeoutEvidence } from "./chat-native-timeout-policy.js";
 import { completeNativeSlackFileConditional, dispatchNativeSlackIngress, prepareNativeSlackOtherThread, slackOtherThreadBoundaryMatches, slackNativeRunCheck } from "./chat-slack-ingress.js";
 import { runScopedCompanionSurface } from "./chat-companion-surface.js";
@@ -132,9 +132,10 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
     const agents = await input.api.get<Array<{ id: string }>>(`${company}/agents`);
     if (implementation.setupPolicy?.readiness !== "preserve-scenario") for (const agent of agents) await pollUntil({ label: `catalog agent readiness ${agent.id}`,
       deadlineAt: Math.min(deadlineAt, Date.now() + 45_000), intervalMs: 500,
-      load: () => input.api.get<{ lifecycleState: string; status: string; lifecycleError?: string }>(`/api/agents/${agent.id}`),
+      load: () => input.api.get<ChatCatalogAgentReadiness>(`/api/agents/${agent.id}`),
       accept: chatCatalogAgentIsReady,
       reject: value => value.lifecycleError ? "Agent setup failed; diagnostic details withheld" : undefined,
+      timeoutDetail: chatCatalogAgentReadinessDetail,
     });
     const scopes = [{ scopeType: "company", scopeId: input.fixtures.company.id },
       ...agents.map(agent => ({ scopeType: "agent", scopeId: agent.id }))];

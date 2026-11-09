@@ -5598,7 +5598,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.tree-pause.v3",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "turnTimeoutMs": 120000,
@@ -5693,7 +5693,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/task-coordination.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.tree-pause.v3",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "turnTimeoutMs": 120000,
@@ -6190,7 +6190,7 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/workspaces.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.preview-service.v3",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,

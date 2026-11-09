@@ -23,17 +23,20 @@ export async function readRuntimeTaskGate(ctx: ChatCatalogContext, gate: Runtime
   if (!root) throw new Error("Task gate requires the owned attempt root");
   const [task, view] = await Promise.all([
     ctx.input.api.get<{ id: string; companyId: string; assigneeAgentId: string | null; executionWorkspaceId: string | null }>(`/api/issues/${taskId}`),
-    ctx.input.api.get<{ workspace: { id: string; companyId: string; cwd: string } }>(`/api/issues/${taskId}/workspace`),
+    ctx.input.api.get<{ workspace: { id: string; companyId: string; cwd: string } | null }>(`/api/issues/${taskId}/workspace`),
   ]);
-  if (task.id !== taskId || task.companyId !== ctx.input.fixtures.company.id || task.assigneeAgentId !== workerId
-    || view.workspace.companyId !== task.companyId || view.workspace.id !== task.executionWorkspaceId)
-    throw new Error("Task gate does not match the actual company, assignee and workspace binding");
-  const cwd = await realpath(view.workspace.cwd), ownedRoot = await realpath(root);
+  const mismatched = [task.id !== taskId && "task", task.companyId !== ctx.input.fixtures.company.id && "company",
+    task.assigneeAgentId !== workerId && (task.assigneeAgentId ? "assignee" : "assignee-cleared"),
+    !view.workspace ? "workspace-unbound" : view.workspace.companyId !== task.companyId && "workspace-company",
+    !!view.workspace && view.workspace.id !== task.executionWorkspaceId && (task.executionWorkspaceId ? "workspace-id" : "task-workspace-field-missing")].filter(Boolean);
+  if (mismatched.length) throw new Error(`Task gate does not match the actual company, assignee and workspace binding (${mismatched.join(", ")})`);
+  const workspace = view.workspace!;
+  const cwd = await realpath(workspace.cwd), ownedRoot = await realpath(root);
   if (!cwd.startsWith(`${ownedRoot}${path.sep}`)) throw new Error("Task gate workspace escapes the owned attempt root");
   const filename = path.join(cwd, gate.gateName);
-  if (gate.boundTaskId && (gate.boundTaskId !== taskId || gate.boundWorkspaceId !== view.workspace.id || gate.gate !== filename))
+  if (gate.boundTaskId && (gate.boundTaskId !== taskId || gate.boundWorkspaceId !== workspace.id || gate.gate !== filename))
     throw new Error("Task gate binding changed after admission");
-  gate.boundTaskId = taskId; gate.boundWorkspaceId = view.workspace.id; gate.gate = filename; gate.ready = `${filename}.waiting`;
+  gate.boundTaskId = taskId; gate.boundWorkspaceId = workspace.id; gate.gate = filename; gate.ready = `${filename}.waiting`;
   try {
     const ready = await realpath(gate.ready);
     if (path.dirname(ready) !== cwd) throw new Error("Task gate readiness path escapes its binding");
