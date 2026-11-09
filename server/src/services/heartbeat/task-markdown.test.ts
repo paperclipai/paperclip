@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
 
@@ -72,6 +73,25 @@ describe("heartbeat task markdown rendering", () => {
     expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("board-chat");
     expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, conferenceRoomEnabled: true }))
       .not.toContain("board-chat");
+  });
+  it("tells a standing chat what a status card is, how to create and refresh one, and to reply now with its link, only while the experiment is enabled", () => {
+    const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
+    const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, statusCardsEnabled: true })!;
+    expect(enabled).toContain("Status Cards:");
+    expect(enabled).toContain("A status card is a saved Paperclip feature, not a document or comment");
+    expect(enabled).toContain("POST /api/companies/{companyId}/status-cards");
+    expect(enabled).toContain("POST /api/status-cards/{id}/refresh");
+    expect(enabled).toContain("Do not sleep or poll the card. Report the outcome the response gives");
+    expect(enabled).toContain("enqueued false otherwise means no run started, so say why from card.state");
+    expect(enabled).toContain("[Launch blockers](/<prefix>/status/<cardId>)");
+    // The named pages are the board's real routes.
+    const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(enabled).toContain("Status page at /<prefix>/status (");
+    expect(app).toMatch(/path="status"\s+element=\{<StatusCardsExperimentalGate>/);
+    expect(app).toMatch(/path="status\/:cardId"\s+element=\{<StatusCardsExperimentalGate>/);
+    expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("Status Cards:");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, statusCardsEnabled: true }))
+      .not.toContain("Status Cards:");
   });
   it("returns null without a task or a nonempty wake comment", () => {
     expect(buildPaperclipTaskMarkdown({ issue: null })).toBeNull();
