@@ -13,10 +13,12 @@ function fixture(){
  const skill={id:"skill",companyId:"company",name:"Website review checklist",slug:"website-review-checklist",editable:true,currentVersionId:"revision",markdown,usedByAgents:[]};
  const state:Record<string,unknown>={},o={scenarioId:"skills.author-skill",origin:"https://fixture.test",companyId:"company",leadId:"ceo",state,skills:[skill],versions:{skill:[version]},policy:{},editDecision:{allowed:true},tasks:[],projects:[],goals:[],comments:[],documents:[],revisions:[],humanQueries:["Turn our website review checklist into a reusable skill."],runs:[{id:"native",status:"succeeded",agentId:"ceo",companyId:"company"}],activity:[{action:"company.skill_created",entityId:"skill",agentId:"ceo"}],links:["/skills/studio/skill"],renderedLinkEvidence:[{threadTestId:"task-chat-thread",href:"/skills/studio/skill",source:"reply",conversationId:"conversation",anchorCommentId:"query",commentId:"reply"}],reply:"Created the reusable company skill, saved in the library and not assigned to any agent."} as unknown as InternalObservation;
  observed.base=o;
- const ui={library:true,studio:true,editable:true,body:markdown,changedAfterReload:false,wrongRoute:false,foreignRoute:false,directStudio:false,delayedHydration:false,inEdit:false,filesSelected:false};const events:string[]=[];
+ const ui={card:true,library:true,studio:true,editable:true,body:markdown,changedAfterReload:false,wrongRoute:false,foreignRoute:false,directStudio:false,delayedHydration:false,inEdit:false,filesSelected:false};const events:string[]=[];
  const editor={get visible(){return ui.studio && (ui.inEdit || ui.directStudio);},get editable(){return ui.editable;},locator:()=>({evaluateAll:async()=>ui.delayedHydration&&editorReads++===0?[]:(ui.changedAfterReload&&reloads?"Lost checklist":ui.body).split("\n")})};
  const page={url:()=>current,getByRole:(role:string,options?:{name?:string})=>{
   if(role==="textbox")return editor;
+  if(role==="article")return{getByRole:()=>({first:()=>({click:async()=>{if(options?.name!==`Skill created: ${skill.name}`||!ui.card)throw Error("No Skill created card");events.push("skill-card");}})})};
+  if(role==="button" && options?.name==="Open in Skill Studio")return{click:async()=>{if(!events.includes("skill-card"))throw Error("Skill panel is closed");events.push("open-in-studio");current="https://fixture.test/ACORN/skills/studio/skill";}};
   if(role==="tab" && options?.name==="Files")return{click:async()=>{ui.filesSelected=true;events.push("Files");}};
   if(role==="button" && options?.name==="Edit")return{click:async()=>{if(!ui.editable||!ui.filesSelected)throw Error("No Edit control outside Files");ui.inEdit=true;events.push("Edit");}};
   if(role==="link")return{first:()=>({click:async()=>{events.push(options!.name!);current=options?.name==="Skills"?"https://fixture.test/ACORN/skills":"https://fixture.test/ACORN/skills/studio";}})};
@@ -64,10 +66,16 @@ it("rejects invented inspection receipts and keeps other skill cases on their or
  expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.explicit-restriction")!.oracleVersion).toBe("paperclip.chat-catalog.integrator.v1");
  expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.author-skill")!.oracleVersion).toBe("paperclip.chat-catalog.skill-authoring.v7");
 });
-it.each(["no link","link to another skill"])("rejects a reply with %s before any UI navigation",async fault=>{
- const f=fixture(),href=fault==="no link"?null:"/skills/studio/other";
+it("opens the skill from its Skill created card when the reply has no skill link",async()=>{
+ const f=fixture();Object.assign(f.o,{links:[],renderedLinkEvidence:[]});
+ await inspectAuthoredSkill(f.ctx,f.state,f.o);
+ expect(f.events.slice(0,4)).toEqual(["skill-card","open-in-studio","My Skills","open-skill"]);
+ expect(f.state.authoredSkillInspection).toMatchObject({readbackMatched:true});
+});
+it.each(["no link","link to another skill"])("rejects %s and no Skill created card before inspection succeeds",async fault=>{
+ const f=fixture(),href=fault==="no link"?null:"/skills/studio/other";f.ui.card=false;
  Object.assign(f.o,{links:href?[href]:[],renderedLinkEvidence:href?[{threadTestId:"task-chat-thread",href,source:"reply",conversationId:"conversation",anchorCommentId:"query",commentId:"reply"}]:[]});
- await expect(inspectAuthoredSkill(f.ctx,f.state,f.o)).rejects.toThrow("did not link the saved skill");expect(f.events).toEqual([]);expect(f.state.authoredSkillInspection).toBeUndefined();
+ await expect(inspectAuthoredSkill(f.ctx,f.state,f.o)).rejects.toThrow("No Skill created card");expect(f.state.authoredSkillInspection).toBeUndefined();
 });
 it("cannot extend an exhausted original case budget to inspect a finished artifact",async()=>{
  const f=fixture();Object.assign(f.ctx,{observationDeadlineAt:Date.now()-1});

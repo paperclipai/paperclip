@@ -129,7 +129,7 @@ export function gradeIntegratorSkills(value: unknown) {
       && preservesWebsiteChecklist(markdown) && markdown === skill.markdown, "The current saved SKILL.md revision preserves keyboard-only controls, visible form labels, WCAG AA text contrast and a 375px viewport without horizontal overflow; paraphrase is permitted.");
     const inspection = o.state.authoredSkillInspection as AuthoredSkillInspection | undefined;
     c.add("inspectable-authored-skill", !!skill && inspection?.companyId === o.companyId && inspection.skillId === skill.id && inspection.versionId === skill.currentVersionId && inspection.libraryVisible === true && inspection.editorVisible === true && (inspection.editorSurface === "detail" || inspection.editorSurface === "studio") && inspection.editable === true && inspection.checklistVisible === true && inspection.reloaded === true && inspection.readbackMatched === true,
-      "The reply links the actual saved skill; following that link opens it, it is listed in My Skills, opens the actual editable skill content, and survives reload with the same saved version.");
+      "The person opens the actual saved skill from the chat (the reply's link or the Skill created card), finds it in My Skills, opens the actual editable skill content, and it survives reload with the same saved version.");
     c.add("creation-not-global-assignment", authorSkillAssignmentScoped(o, skill, version) && !claimsGlobalSkillAssignment(o.reply), "Creation leaves the skill unassigned or explicitly binds only its acting author in the same real run, with current saved-version and assignment audit evidence and truthful targeted reporting; no global policy change, other-agent assignment or false global activation claim is admitted.");
   } else if (o.scenarioId === "skills.explicit-restriction") {
     const before = o.state.skill as CompanySkillDetail; const current = o.skills.find(row => row.id === before?.id);
@@ -167,11 +167,15 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
   const skillPaths = [skillStudioRoute(skill.id), skillRoute(skill, observed.skills)];
   const studioRoute = `${companyPath}${skillPaths[0]}`;
   const detailRoute = `${companyPath}${skillPaths[1]}`;
-  // Skills is no longer a primary sidebar link, so the person opens the new skill from the
-  // link the reply rendered (unprefixed links redirect into the current company).
+  // Skills is no longer a primary sidebar link, so the person opens the new skill from the chat:
+  // the link the reply rendered (unprefixed links redirect into the current company), or else the
+  // "Skill created" card the tool shows, whose side panel opens it in Skill Studio.
   const href = o.links.find(link => { try { const path = new URL(link, source).pathname; return skillPaths.some(route => path === route || path === `${companyPath}${route}`); } catch { return false; } });
-  if (!href) throw new Error("The reply did not link the saved skill, so the person cannot open it from the chat");
-  await internalResultLink(ctx, o, href).first().click({ timeout: remaining() });
+  if (href) await internalResultLink(ctx, o, href).first().click({ timeout: remaining() });
+  else {
+    await ctx.input.page.getByRole("article", { name: `Skill created: ${skill.name}`, exact: true }).getByRole("button").first().click({ timeout: remaining() });
+    await ctx.input.page.getByRole("button", { name: "Open in Skill Studio", exact: true }).click({ timeout: remaining() });
+  }
   await expect(ctx.input.page).toHaveURL(url => url.pathname === studioRoute || url.pathname === detailRoute, { timeout: remaining() });
   // From the skill, the Skills section's own My Skills link shows it in the person's library.
   await ctx.input.page.getByRole("link", { name: "My Skills", exact: true }).first().click({ timeout: remaining() });
