@@ -798,7 +798,7 @@ jobs:
     name: verify
     if: ${{ always() }}
     needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, sandbox_provider_tests, verify_serialized_server, canary_dry_run, verify_runner_e2e_support]
-    runs-on: ${{ needs.gate.outputs.runner }}
+    runs-on: ${{ needs.gate.outputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Validate every planned suite result
@@ -1781,7 +1781,7 @@ jobs:
     name: e2e
     if: ${{ always() }}
     needs: [gate, policy, e2e_shards]
-    runs-on: ${{ needs.gate.outputs.runner }}
+    runs-on: ${{ needs.gate.outputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Validate every planned suite result

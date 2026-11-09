@@ -531,13 +531,11 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     }, signal);
   }
   async function claim(input: {
-    expectedOwner: string | null;
     assertAuthority: () => Promise<void>;
     signal?: AbortSignal;
   }) {
     const current = await head(input.signal);
-    if (current?.head.deleted || (current?.head.owner ?? null) !== input.expectedOwner)
-      throw new ObjectJournalConflictError();
+    if (current?.head.deleted) throw new ObjectJournalConflictError();
     await input.assertAuthority();
     await qualifyConditionalWrites(provider, prefix, input.signal);
     await input.assertAuthority();

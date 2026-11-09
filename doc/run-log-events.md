@@ -627,6 +627,8 @@ run phases:
 | `storage.snapshot.verify_plaintext` | Hash the decrypted archive against its sealed digest. |
 | `storage.snapshot.publish` | Copy the verified archive to its destination. |
 | `workspace.snapshot.sandbox_restore` | Upload and unpack the archive in the sandbox. |
+| `workspace.snapshot.sandbox_upload` | Inside `sandbox_restore`: copy the archive into the sandbox. |
+| `workspace.snapshot.sandbox_extract` | Inside `sandbox_restore`: verify and unpack the archive, then publish the restored folder. |
 | `storage.snapshot.prior_attempts` | Check whether an earlier upload attempt already landed. |
 | `storage.snapshot.encrypt` | Hash and encrypt the archive in one pass. |
 | `storage.snapshot.digest` | Hash the encrypted file that is uploaded. |

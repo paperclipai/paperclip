@@ -443,9 +443,19 @@ export function activityService(db: Db) {
       return limit === undefined ? query : query.limit(limit);
     },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number, selectedRunIds?: string[]) => {
+    runsForIssue: async (
+      companyId: string,
+      issueId: string,
+      viewerUserId: string | null = null,
+      limit?: number,
+      selectedRunIds?: string[],
+      // Read-only callers (the chat bootstrap) skip the background liveness
+      // backfill: it writes to runs and outlives the request's own limits.
+      // The task page's own `/runs` read still schedules it.
+      options: { skipLivenessBackfill?: boolean } = {},
+    ) => {
       if (selectedRunIds && !selectedRunIds.length) return [];
-      scheduleRunLivenessBackfill(companyId, issueId);
+      if (!options.skipLivenessBackfill) scheduleRunLivenessBackfill(companyId, issueId);
       const runsQuery = db
         .select({
           runId: heartbeatRuns.id,

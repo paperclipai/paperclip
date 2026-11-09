@@ -444,6 +444,7 @@ function connectionAuthorizationHref(interaction: RequestConfirmationInteraction
 
 type ToolActionCardState =
   | "pending"
+  | "waiting_connection"
   | "running"
   | "executed"
   | "failed"
@@ -465,6 +466,8 @@ function toolActionCardState(
   if (interaction.status === "rejected") return "declined";
   if (interaction.status === "cancelled") return "cancelled";
   if (interaction.status === "expired") return "expired";
+  if (execStatus === "approved" && interaction.result?.toolAction?.errorCode === "approved_action_connection_required")
+    return "waiting_connection";
   // Terminal execution outcomes take precedence over the coarse interaction
   // status so a self-resolving "running…" advances to its real result.
   if (execStatus === "executed") return "executed";
@@ -484,6 +487,9 @@ function toolActionStatusClasses(state: ToolActionCardState): {
   dimmed?: boolean;
 } {
   switch (state) {
+    case "waiting_connection":
+      return { shell: "border-2 border-border bg-transparent", badge: "border-border bg-muted text-muted-foreground",
+        label: "Sign-in needed", Icon: Clock };
     case "running":
       return {
         shell: "border-2 border-amber-500/70 bg-transparent",
@@ -1742,6 +1748,7 @@ function ToolActionResolution({
   }
   const labels = {
     pending: "Waiting for approval",
+    waiting_connection: "Approved · Sign-in needed",
     running: "Approved · Running…",
     executed: "Succeeded",
     failed: "Execution failed",
@@ -1753,6 +1760,15 @@ function ToolActionResolution({
   const detail = state === "failed" ? result?.errorMessage?.trim() || "The action could not complete."
     : state === "declined" ? interaction.result?.reason?.trim()
     : null;
+  if (state === "waiting_connection") {
+    const connectionId = interaction.payload.toolAction?.connectionId;
+    const appName = interaction.payload.toolAction?.appDisplayName || "app";
+    return <div role="status" className="space-y-2 text-sm text-muted-foreground">
+      <p className="font-medium text-foreground">Approved · Sign-in needed</p>
+      <p>Your approval is saved. Reconnect the app to continue. Paperclip will check the account and action again before it runs.</p>
+      {connectionId ? <Button asChild size="sm" variant="outline"><Link to={appTabHref(connectionId, "permissions")}>Reconnect {appName}</Link></Button> : null}
+    </div>;
+  }
   if (state === "failed" && result?.errorCode === "github_access_denied") {
     const connectionId = interaction.payload.toolAction?.connectionId;
     return <div role="alert" className="space-y-2 rounded-lg bg-destructive/10 p-3 text-sm text-foreground">
@@ -1889,7 +1905,7 @@ function RequestToolActionCard({
   );
 }
 
-type SecretProposalCardState = ToolActionCardState;
+type SecretProposalCardState = Exclude<ToolActionCardState, "waiting_connection">;
 
 function secretProposalCardState(
   interaction: RequestConfirmationInteraction,

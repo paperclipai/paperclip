@@ -554,6 +554,38 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(await effects()).toEqual(before);
   });
 
+  it("recovers a body-less PATCH saved before the body rule while rejecting a new one before dispatch", async () => {
+    const fixture = await server.fixture();
+    const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+      : value && typeof value === "object" ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`
+      : JSON.stringify(value) ?? "null";
+    const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+    const bodyless = { operationId: "PATCH /api/projects/{id}", pathParams: { id: fixture.projectId } };
+    const call = { tool: "call_api", callId: "saved-bodyless-patch", arguments: bodyless };
+    // An older server accepted and completed this call; seed its receipt from a real completed PATCH.
+    const result = await fixture.authority.execute({ ...call, arguments: { ...bodyless, body: { name: "Saved before upgrade" } } });
+    expect(result).toMatchObject({ ok: true, status: 200 });
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    const receipts = structuredClone((run.resultJson as Record<string, any>).apiToolReceipts);
+    receipts[sha(call.callId)].digest = sha(canonical(bodyless));
+    await server.db.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, fixture.runId));
+    const reopened = new PaperclipRunnerToolAuthority(server.db, fixture.authority.binding);
+    const network = vi.spyOn(globalThis, "fetch");
+    try {
+      expect(await reopened.recover(call)).toEqual({ result });
+      expect(await reopened.execute(call)).toEqual(result);
+      const rejected = { ...call, callId: "new-bodyless-patch" };
+      await expect(reopened.execute(rejected)).rejects.toThrow(/not sent.*requires body/);
+      await expect(reopened.execute(rejected)).rejects.toThrow(/not sent.*requires body/);
+      expect(network).not.toHaveBeenCalled();
+    } finally { network.mockRestore(); }
+    // The rejected call reserved no receipt, so its callId stays usable for the corrected call.
+    const [after] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(Object.keys((after.resultJson as Record<string, any>).apiToolReceipts)).not.toContain(sha("new-bodyless-patch"));
+    expect(await reopened.execute({ tool: "call_api", callId: "new-bodyless-patch", arguments: { ...bodyless, body: { name: "Corrected" } } }))
+      .toMatchObject({ ok: true, status: 200, data: { name: "Corrected" } });
+  });
+
   it("returns and replays scoped secret values without plaintext receipts or response assets", async () => {
     const fixture = await server.fixture();
     const value = "disposable-private-credential-".repeat(1500);

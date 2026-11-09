@@ -21,7 +21,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
-import { readControllerProcess } from "../controller-process-identity.js";
+import { currentControllerBootId, readControllerProcess } from "../controller-process-identity.js";
+import { isRemoteWorkspaceSaveInvocationLive } from "../remote-workspaces.js";
 import { idleAccountingSpoolPath, idleOrphanSpoolPath } from "../idle-local-work.js";
 import {
   NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT,
@@ -37,6 +38,7 @@ import {
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
@@ -520,6 +522,21 @@ function controllerStamp(value: unknown, scope: string): RecordOwner {
 // ----------------------------------------------------------------------------
 // workspace_operations
 
+function remoteSnapshotSaveOwner(row: OperationRow): RecordOwner {
+  const work = json(json(row.metadata).saveWork);
+  const active = Array.isArray(work.activeIds) ? work.activeIds.filter((id): id is string => typeof id === "string") : [];
+  if (!active.length) return runOwner(row.heartbeatRunId);
+  const owners = json(work.owners);
+  const stamps = active.map(id => readControllerProcess(owners[id]));
+  if (stamps.every(stamp => stamp === null) && !active.some(id => owners[id] !== undefined)) return runOwner(row.heartbeatRunId);
+  const [first] = stamps;
+  if (!first || stamps.some(stamp => !stamp || stamp.bootId !== first.bootId || stamp.pid !== first.pid)) return { kind: "none" };
+  if (first.bootId === currentControllerBootId() && first.pid === process.pid && !active.some(isRemoteWorkspaceSaveInvocationLive)) {
+    return runOwner(row.heartbeatRunId);
+  }
+  return controllerStamp(owners[active[0]!], "remote_snapshot_save");
+}
+
 type OperationRow = Pick<typeof workspaceOperations.$inferSelect, "id" | "companyId" | "heartbeatRunId" | "issueId"
   | "metadata" | "updatedAt">;
 
@@ -876,7 +893,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     row => runOwner(row.heartbeatRunId)),
   { ...operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_snapshot"), inArray(workspaceOperations.status, ["running", "pending"])),
-    row => runOwner(row.heartbeatRunId)), settle: settleAbandonedRemoteSnapshotSave },
+    remoteSnapshotSaveOwner), settle: settleAbandonedRemoteSnapshotSave },
   operationKind("remote_workspace_migration", "Remote workspace migration op", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_migration"), eq(workspaceOperations.status, "running")),
     () => ({ kind: "none" })),
@@ -914,7 +931,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_workspace_unsaved_files", title: "Remote workspace unsaved-files flag", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [1, 2],
+    storage: "database", settle: settlePreparationOnlyRemoteWorkspaceEpoch, invariantChecks: [1, 2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
         metadata: executionWorkspaces.metadata, updatedAt: executionWorkspaces.updatedAt }).from(executionWorkspaces)

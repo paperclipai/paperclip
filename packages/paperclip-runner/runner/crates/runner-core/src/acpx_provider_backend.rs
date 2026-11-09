@@ -115,16 +115,6 @@ fn try_acquire_provider_lifetime_fence(
     Ok(None)
 }
 
-fn acquire_provider_lifetime_fence(
-    candidates: [u16; 3],
-) -> Result<Vec<TcpListener>, DurableRunnerError> {
-    try_acquire_provider_lifetime_fence(candidates)?.ok_or_else(|| {
-        DurableRunnerError::invalid(
-            "ACPX original provider lifetime remains active; cleanup is not yet proven",
-        )
-    })
-}
-
 fn turn_start_request(payload: &Value) -> Result<(&str, String), DurableRunnerError> {
     let text = payload
         .get("text")
@@ -153,7 +143,7 @@ fn await_provider_lifetime_fence(
         }
         if Instant::now() >= deadline {
             return Err(DurableRunnerError::invalid(
-                "ACPX original provider lifetime remains active after suspension; provider exit is not confirmed",
+                "ACPX original provider lifetime remains active; provider exit is not confirmed",
             ));
         }
         std::thread::sleep(PROVIDER_LIFETIME_CONFIRMATION_RETRY);
@@ -3166,7 +3156,7 @@ impl CommandExecutor for AcpxCommandExecutor {
                 .and_then(|state| state.identity.as_ref())
                 .expect("provider cleanup state has a validated identity")
                 .provider_lifetime_fence_candidates;
-            Some(acquire_provider_lifetime_fence(candidates)?)
+            Some(await_provider_lifetime_fence(candidates)?)
         } else {
             None
         };
@@ -5611,8 +5601,28 @@ mod tests {
         assert!(attach_error
             .to_string()
             .contains("requires the same settled ACPX provider profile and session"));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+        let cleanup = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = executor.shutdown();
+            shutdown_tx.send((executor, result)).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(
+            matches!(
+                shutdown_rx.recv_timeout(Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "shutdown must wait while the original lifetime still holds a quorum"
+        );
         drop(original_lifetime_fence);
-        executor.shutdown().unwrap();
+        let (mut executor, result) = shutdown_rx
+            .recv_timeout(PROVIDER_LIFETIME_CONFIRMATION_TIMEOUT + Duration::from_secs(1))
+            .unwrap();
+        cleanup.join().unwrap();
+        result.unwrap();
+        assert!(executor.session.is_none());
         let recovered = executor.state.as_ref().unwrap();
         assert_eq!(recovered.lifecycle, "prepared");
         assert!(!recovered.provider_exit_unconfirmed);
@@ -5640,7 +5650,7 @@ mod tests {
             "another fixture must not impersonate a retired provider lifetime"
         );
         assert_eq!(
-            acquire_provider_lifetime_fence(original_candidates)
+            await_provider_lifetime_fence(original_candidates)
                 .expect("unrelated live fixture must not block the original cleanup proof")
                 .len(),
             2

@@ -555,6 +555,12 @@ export function runnerRecoveryFailureClass(
   return runnerRecoveryFailureClass(value.cause, depth + 1);
 }
 
+export interface CancelledTurnSettlement {
+  runId: string;
+  normalizedSessionId: string;
+  turnId: string;
+}
+
 export interface HarnessSession {
   supportsTurnReasoning?(): boolean;
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
@@ -602,6 +608,7 @@ export interface HarnessSession {
     reason?: string;
     signal?: AbortSignal;
   }): Promise<void>;
+  settleCancelledTurn?(input: { turnId: string; reason: string }): Promise<CancelledTurnSettlement | null>;
   pendingRuntimeRequests?(): HarnessRuntimeRequest[];
   resolveRuntimeRequest?(input: {
     /** Durable controller command identity, distinct from the native request identity. */

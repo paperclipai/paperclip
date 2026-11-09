@@ -223,6 +223,7 @@ describe.skipIf(!support.supported)("bounded nested workspace verification", () 
           if(input.pauseParentPut)await new Promise(()=>{});
           return local.putFile(value);
         }};
+      process.send?.({ready:true});
       try{const result=await migrateRemoteWorkspace({db,storage,companyId:input.companyId,workspaceId:input.workspaceId,
         apply:true,signal:AbortSignal.timeout(30000)});process.send?.({result});}
       catch(error){process.send?.({failed:true,message:error.message});process.exitCode=1;}
@@ -230,28 +231,34 @@ describe.skipIf(!support.supported)("bounded nested workspace verification", () 
     `;
     const launch = (pauseKey: string | null, pauseParentPut = false, masterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY) => {
       const reads: string[] = [], results: unknown[] = [], failures: string[] = [];
+      let ready = false;
       const child = spawn(process.execPath, ["--import", path.join(repoRoot, "cli/node_modules/tsx/dist/loader.mjs"),
         "--input-type=module", "--eval", body], { cwd: path.join(repoRoot, "server"), detached: true,
         env: { ...process.env, PAPERCLIP_SECRETS_MASTER_KEY: masterKey, TMPDIR: temporary, DATABASE_URL: database.connectionString, IMPORT_FIXTURE: JSON.stringify({
           companyId: f.companyId, workspaceId: f.parent.id, objects: path.join(home, "objects"), endpoint, keys, pauseKey, pauseParentPut }) },
         stdio: ["ignore", "pipe", "pipe", "ipc"] });
       let stderr = ""; child.stderr!.on("data", bytes => { stderr += bytes; });
-      child.stdout!.resume(); child.on("message", (message: { read?: string; result?: unknown; failed?: boolean; message?: string }) => {
+      child.stdout!.resume(); child.on("message", (message: { read?: string; result?: unknown; failed?: boolean; message?: string; ready?: boolean }) => {
+        if (message.ready) ready = true;
         if (message.read) reads.push(message.read); if (message.result) results.push(message.result);
         if (message.failed && message.message) failures.push(message.message);
       });
       const closed = new Promise<{ code: number | null; signal: string | null }>((resolve, reject) => {
         child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal }));
       });
-      return { child, reads, results, failures, closed, error: () => stderr };
+      return { child, reads, results, failures, closed, ready: () => ready, error: () => stderr };
     };
     const first = mode === "partial" ? launch(keys[1]) : launch(null, true);
     try {
+      const prematureExit = first.closed.then(result => { throw new Error(`import_ended_before_checkpoint:${result.code}:${first.error()}`); });
+      await Promise.race([vi.waitFor(() => {
+        expect(first.ready(), `import_startup_not_ready:${first.error()}`).toBe(true);
+      }, { timeout: 30_000, interval: 25 }), prematureExit]);
       await Promise.race([vi.waitFor(async () => {
         const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.snapshots[0].id));
         const completed = (await db.select().from(executionWorkspaceSnapshots)).filter(row => row.metadata?.nestedImportVerification);
         expect(completed).toHaveLength(mode === "partial" ? 1 : keys.length); expect(snapshot).toBeDefined();
-      }, { timeout: 15_000, interval: 25 }), first.closed.then(result => { throw new Error(`import_ended_before_checkpoint:${result.code}:${first.error()}`); })]);
+      }, { timeout: 15_000, interval: 25 }), prematureExit]);
       process.kill(-first.child.pid!, "SIGKILL");
       expect(await first.closed).toMatchObject({ signal: "SIGKILL" });
     } finally {

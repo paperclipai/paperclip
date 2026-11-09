@@ -73,6 +73,9 @@ function holdsStampedWorkSql(bootId: string) {
     or exists (select 1 from sandbox_creation_operations where state = 'pending' and metadata->'creationController'->>'bootId' = ${bootId})
     or exists (select 1 from workspace_operations where status in ('running', 'pending') and metadata->'finalizeOwner'->>'bootId' = ${bootId})
     or exists (select 1 from workspace_operations where status = 'running' and metadata->'commandOwner'->>'bootId' = ${bootId})
+    or exists (select 1 from workspace_operations, jsonb_each(case when jsonb_typeof(metadata#>'{saveWork,owners}') = 'object'
+        then metadata#>'{saveWork,owners}' else '{}'::jsonb end) as save_owner(invocation_id, stamp)
+      where status in ('running', 'pending') and phase = 'remote_workspace_snapshot' and save_owner.stamp->>'bootId' = ${bootId})
     or exists (select 1 from agents where lifecycle_operation->'leaseHolder'->>'bootId' = ${bootId})
     or exists (select 1 from native_run_finalizations where lease_owner is not null
       and lease_holder->>'token' = lease_owner and lease_holder->>'bootId' = ${bootId})

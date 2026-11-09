@@ -2092,6 +2092,22 @@ describe("FailedRunInboxRow", () => {
     container.remove();
   });
 
+  it.each(["working", "failed"] as const)("shows saved-work shutdown guidance while %s without Retry", state => {
+    const root = createRoot(container);
+    const message = state === "working" ? "Your work is saved. Paperclip is finishing shutdown."
+      : "Paperclip couldn’t confirm shutdown. Your work is saved; continuation is paused.";
+    const issue = createIssue({ interruption: { intentId: "saved-input", responsibility: "system", state,
+      nextRetryAt: null, canRetry: false, userAction: null, sourceRunIds: ["run-1"], observedRunId: "run-1",
+      retryWait: { reason: "governed_wait_settlement", message } } });
+    act(() => root.render(<FailedRunInboxRow run={createFailedRun({ issueId: issue.id })}
+      issueById={new Map([[issue.id, issue]])} agentName="Worker" issueLinkState={null}
+      onDismiss={() => {}} onRetry={() => {}} isRetrying={false} />));
+    expect(container.textContent).toContain(message);
+    expect(container.textContent).not.toContain("Couldn’t finish this attempt");
+    expect(container.textContent).not.toContain("Retry");
+    act(() => root.unmount());
+  });
+
   it("uses task presentation instead of infrastructure errors and keeps Retry in the task", () => {
     const root = createRoot(container);
     const issue = createIssue({ interruption: { intentId: "saved-input", responsibility: "system", state: "failed",

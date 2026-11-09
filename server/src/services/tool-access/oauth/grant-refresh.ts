@@ -202,13 +202,13 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
               const txSecrets = secretService(tx);
               await txSecrets.rotate(
                 accessRef.secretId,
-                { value: credentials.accessToken },
+                { value: credentials.accessToken, preserveAiSessionEpoch: true },
                 actorForSecret(credentialActor),
               );
               if (credentials.refreshToken) {
                 await txSecrets.rotate(
                   refreshRef.secretId,
-                  { value: credentials.refreshToken },
+                  { value: credentials.refreshToken, preserveAiSessionEpoch: true },
                   actorForSecret(credentialActor),
                 );
               }
@@ -457,6 +457,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
             configPath: "oauth.refresh_token",
             label: "OAuth refresh token",
             value: token.refreshToken,
+            preserveOAuthIdentity: true,
             actor: credentialActor,
             existingRefs: grant.credentialSecretRefs,
             ownerUserId:
@@ -471,6 +472,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
           configPath: "oauth.access_token",
           label: "OAuth access token",
           value: token.accessToken,
+          preserveOAuthIdentity: true,
           actor: credentialActor,
           existingRefs: grant.credentialSecretRefs,
           ownerUserId:

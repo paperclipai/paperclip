@@ -315,6 +315,39 @@ async function workspaceArchive(input: {
     return { gitDirectory, commonDirectory, stores };
   };
   const gitStatePath = async (repo: string, name: string) => (await git(repo, ["rev-parse", "--path-format=absolute", "--git-path", name])).trim();
+  // The checks of `git fsck --full --no-dangling` without its single-threaded
+  // re-hash of every packed object, which took ~20 s for a Paperclip-sized
+  // history on every save. Connectivity proves every reachable object (refs,
+  // index, saved Git state) is present; each loose object must hash to its
+  // name; index-pack --verify hashes every packed object on several threads.
+  const verifyGitObjects = async (repo: string) => {
+    await git(repo, ["fsck", "--connectivity-only", "--no-dangling"]);
+    const format = (await git(repo, ["rev-parse", "--show-object-format"])).trim();
+    if (!["sha1", "sha256"].includes(format)) fail("unsupported_git_setting");
+    const zlib = await import("node:zlib");
+    const { pipeline } = await import("node:stream/promises");
+    const objects = await gitStatePath(repo, "objects");
+    const listing = async (directory: string) => fs.readdir(directory)
+      .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return [] as string[]; throw error; });
+    const loose = new RegExp(`^[0-9a-f]{${format === "sha1" ? 38 : 62}}$`, "u");
+    for (const prefix of (await listing(objects)).filter(name => /^[0-9a-f]{2}$/u.test(name)).sort()) {
+      for (const rest of (await listing(path.join(objects, prefix))).filter(name => loose.test(name)).sort()) {
+        check();
+        const hash = crypto.createHash(format);
+        // pipeline forwards read errors and cancellation from both streams and
+        // closes them; only damaged zlib data names the entry as damaged Git.
+        await pipeline(createReadStream(path.join(objects, prefix, rest), { signal: input.signal }), zlib.createInflate(),
+          async (inflated: AsyncIterable<Buffer>) => { for await (const bytes of inflated) hash.update(bytes); },
+        ).catch((error: NodeJS.ErrnoException) => { if (/^Z_/u.test(error?.code ?? "")) fail("invalid_git_repository"); throw error; });
+        if (hash.digest("hex") !== prefix + rest) fail("invalid_git_repository");
+      }
+    }
+    const packs = path.join(objects, "pack");
+    const threads = Math.max(1, Math.min(8, os.availableParallelism?.() ?? os.cpus().length));
+    for (const name of (await listing(packs)).filter(name => name.endsWith(".pack")).sort()) {
+      await git(repo, ["index-pack", "--verify", `--threads=${threads}`, path.join(packs, name)]);
+    }
+  };
   const gitStateHash = async (repo: string, name: string) => {
     const file = await gitStatePath(repo, name);
     return readStableFile(file).then(entry => entry.sha256).catch((error: NodeJS.ErrnoException) => {
@@ -471,7 +504,7 @@ async function workspaceArchive(input: {
           // A shallow local clone uses upload-pack. It drops index-only objects
           // and asks a filtered source for promised blobs it never downloaded.
           // Preserve its existing stores and promisor boundaries without fetch.
-          await git(repo, ["fsck", "--full", "--no-dangling"]);
+          await verifyGitObjects(repo);
           const format = (await git(repo, ["rev-parse", "--show-object-format"])).trim();
           if (!["sha1", "sha256"].includes(format)) fail("unsupported_git_setting");
           await git(root, ["init", "--bare", "--template=", `--object-format=${format}`, normalized]);
@@ -522,7 +555,7 @@ async function workspaceArchive(input: {
           await git(restoredRepo, ["cat-file", "-e", `${object}^{${type}}`]);
         }
         await fs.rm(path.join(destination, "objects", "info", "alternates"), { force: true });
-        await git(restoredRepo, ["fsck", "--full", "--no-dangling"]);
+        await verifyGitObjects(restoredRepo);
         if (await signature(repo) !== gitSignatures.get(relative)) fail("changed");
       }
       const originals = new Map(before.map(entry => [entry.path, entry]));

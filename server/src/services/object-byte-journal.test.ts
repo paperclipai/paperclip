@@ -96,7 +96,6 @@ describe("object byte journal", () => {
     const controller = new AbortController();
     const a = createObjectByteJournal({ provider: s.provider, prefix: "company/a/log" });
     const first = a.claim({
-      expectedOwner: null,
       assertAuthority: authority,
       signal: controller.signal,
     });
@@ -104,7 +103,6 @@ describe("object byte journal", () => {
     await probing;
     const b = createObjectByteJournal({ provider: s.provider, prefix: "company/b/log" });
     const second = b.claim({
-      expectedOwner: null,
       assertAuthority: async () => {
         admitted();
       },
@@ -121,7 +119,7 @@ describe("object byte journal", () => {
   it("recovers committed bytes and stable ranges with no local filesystem", async () => {
     const s = storage(),
       a = createObjectByteJournal({ provider: s.provider, prefix: "company/run/log" });
-    let writer = await a.claim({ expectedOwner: null, assertAuthority: authority });
+    let writer = await a.claim({ assertAuthority: authority });
     const expected = Buffer.from("first\n再開\n".repeat(20));
     writer = await a.append(writer, expected.subarray(0, 17));
     writer = await a.append(writer, expected.subarray(17));
@@ -134,10 +132,10 @@ describe("object byte journal", () => {
   it("fences stale appends/finalization and preserves a pinned reader snapshot", async () => {
     const s = storage(),
       a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
-    let old = await a.claim({ expectedOwner: null, assertAuthority: authority });
+    let old = await a.claim({ assertAuthority: authority });
     old = await a.append(old, Buffer.from("before"));
     const snapshot = old.head;
-    let next = await a.claim({ expectedOwner: old.head.owner, assertAuthority: authority });
+    let next = await a.claim({ assertAuthority: authority });
     next = await a.append(next, Buffer.from("after"));
     await expect(a.append(old, Buffer.from("lost"))).rejects.toBeInstanceOf(
       ObjectJournalConflictError,
@@ -149,7 +147,7 @@ describe("object byte journal", () => {
   it("reconciles an uncertain manifest commit without duplicating output", async () => {
     const s = storage(),
       a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
-    let writer = await a.claim({ expectedOwner: null, assertAuthority: authority });
+    let writer = await a.claim({ assertAuthority: authority });
     s.loseResponse();
     writer = await a.append(writer, Buffer.from("once"));
     expect(writer.head.end).toBe(4);
@@ -158,7 +156,7 @@ describe("object byte journal", () => {
   it("keeps index objects bounded over multiple tree levels", async () => {
     const s = storage(),
       a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
-    let writer = await a.claim({ expectedOwner: null, assertAuthority: authority });
+    let writer = await a.claim({ assertAuthority: authority });
     for (let i = 0; i < 180; i++)
       writer = await a.append(writer, Buffer.from(String(i).padStart(4, "0")));
     expect(await a.readRange(writer.head, 252, 16)).toEqual(Buffer.from("0063006400650066"));
@@ -180,7 +178,7 @@ describe("object byte journal", () => {
   it("retries a transient head conflict without fencing its current writer", async () => {
     const s = storage(),
       journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
-    let writer = await journal.claim({ expectedOwner: null, assertAuthority: authority });
+    let writer = await journal.claim({ assertAuthority: authority });
     const original = s.provider.putObjectConditional!;
     let conflicts = 0;
     s.provider.putObjectConditional = async (input) => {
@@ -205,14 +203,14 @@ describe("object byte journal", () => {
     };
     const journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
     await expect(
-      journal.claim({ expectedOwner: null, assertAuthority: authority }),
+      journal.claim({ assertAuthority: authority }),
     ).rejects.toThrow("conflict");
     expect(s.objects.size).toBe(0);
   });
   it("retries transient segment failures and acknowledges exactly one batch", async () => {
     const s = storage(),
       journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
-    let writer = await journal.claim({ expectedOwner: null, assertAuthority: authority });
+    let writer = await journal.claim({ assertAuthority: authority });
     const original = s.provider.putObjectConditional!;
     let failures = 2;
     s.provider.putObjectConditional = async (input) => {
@@ -226,7 +224,7 @@ describe("object byte journal", () => {
   it("rejects corrupt published data and cancelled reads", async () => {
     const s = storage(),
       a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
-    let writer = await a.claim({ expectedOwner: null, assertAuthority: authority });
+    let writer = await a.claim({ assertAuthority: authority });
     writer = await a.append(writer, Buffer.from("data"));
     const data = [...s.objects].find(([, bytes]) => bytes.toString() === "data")!;
     s.objects.set(data[0], Buffer.from("oops"));
@@ -236,7 +234,7 @@ describe("object byte journal", () => {
   it("sheds only interactive reads under saturated object IO and never a writer", async () => {
     const s = storage(),
       a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/busy" });
-    let writer = await a.claim({ expectedOwner: null, assertAuthority: authority });
+    let writer = await a.claim({ assertAuthority: authority });
     writer = await a.append(writer, Buffer.from("data"));
     const get = s.provider.getObject;
     let open!: () => void;
@@ -255,7 +253,7 @@ describe("object byte journal", () => {
     const reads = Array.from({ length: 40 }, () => reader.head());
     await expect(reader.head()).rejects.toBeInstanceOf(ObjectJournalBusyError);
     const other = createObjectByteJournal({ provider: s.provider, prefix: "c/r/writer" });
-    const claimed = other.claim({ expectedOwner: null, assertAuthority: authority });
+    const claimed = other.claim({ assertAuthority: authority });
     open();
     const otherWriter = await other.append(await claimed, Buffer.from("more"));
     expect(otherWriter.head.end).toBe(4);
@@ -264,7 +262,7 @@ describe("object byte journal", () => {
   it("releases a queued read's place when its caller aborts", async () => {
     const s = storage(),
       a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/abort" });
-    let writer = await a.claim({ expectedOwner: null, assertAuthority: authority });
+    let writer = await a.claim({ assertAuthority: authority });
     writer = await a.append(writer, Buffer.from("data"));
     const get = s.provider.getObject;
     let open!: () => void;
@@ -292,14 +290,14 @@ describe("object byte journal", () => {
   it("retains a deletion tombstone and denies a subsequent claim", async () => {
     const s = storage(),
       a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
-    let writer = await a.claim({ expectedOwner: null, assertAuthority: authority });
+    let writer = await a.claim({ assertAuthority: authority });
     writer = await a.append(writer, Buffer.from("private"));
     await a.close(writer);
     await a.remove();
     expect([...s.objects.keys()]).toEqual(["c/r/log/head.json"]);
     expect((await a.head())!.head.deleted).toBe(true);
     await expect(
-      a.claim({ expectedOwner: writer.head.owner, assertAuthority: authority }),
+      a.claim({ assertAuthority: authority }),
     ).rejects.toThrow();
   });
   it("does not claim ownership when execution authority rejects", async () => {
@@ -307,7 +305,6 @@ describe("object byte journal", () => {
       a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
     await expect(
       a.claim({
-        expectedOwner: null,
         assertAuthority: async () => {
           throw new Error("revoked");
         },
@@ -326,7 +323,6 @@ describe("object byte journal", () => {
       release = resolve;
     });
     const pending = journal.claim({
-      expectedOwner: null,
       assertAuthority: async () => {
         enter();
         await blocked;
@@ -348,7 +344,7 @@ describe("object byte journal", () => {
     };
     const journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
     await expect(
-      journal.claim({ expectedOwner: null, assertAuthority: authority }),
+      journal.claim({ assertAuthority: authority }),
     ).rejects.toThrow("does not enforce conditional");
     expect(s.objects.size).toBe(0);
   });
@@ -356,7 +352,7 @@ describe("object byte journal", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const s = storage(),
       journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
-    let writer = await journal.claim({ expectedOwner: null, assertAuthority: authority });
+    let writer = await journal.claim({ assertAuthority: authority });
     writer = await journal.append(writer, Buffer.from("private"));
     await expect(journal.remove()).rejects.toThrow("cleanup_pending");
     expect((await journal.head())!.head.deleted).toBe(true);
@@ -370,7 +366,7 @@ describe("object byte journal", () => {
   it("does not publish a partial batch when a later segment fails", async () => {
     const s = storage(),
       journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
-    const writer = await journal.claim({ expectedOwner: null, assertAuthority: authority });
+    const writer = await journal.claim({ assertAuthority: authority });
     const original = s.provider.putObjectConditional!;
     const failed = Buffer.alloc(1024 * 1024, 2);
     const key = createHash("sha256").update(failed).digest("hex");

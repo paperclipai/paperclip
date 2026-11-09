@@ -57,6 +57,7 @@ import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type Nati
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider, PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { applyMcpReasoningEffort } from "../services/public-mcp/agent-config.js";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
+import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { selectDashboardRunIds } from "../services/dashboard-run-selection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -791,6 +792,7 @@ export function agentRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  const issueRunPresence = issueRunPresenceService(db, { heartbeat, getAgentById: (id) => svc.getById(id) });
   const providerTraces = providerTraceStore(db);
   const traceExpiryCleanup = providerTraces.cleanupExpired?.();
   void traceExpiryCleanup?.catch((error) => {
@@ -7848,56 +7850,7 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
-
-    const liveRuns = await db
-      .select({
-        id: heartbeatRuns.id,
-        runtimeMode: heartbeatRuns.runtimeMode,
-        wakeupRequestId: heartbeatRuns.wakeupRequestId,
-        queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`.as("queuedCommentSourceWakeIds"),
-        status: heartbeatRuns.status,
-        invocationSource: heartbeatRuns.invocationSource,
-        triggerDetail: heartbeatRuns.triggerDetail,
-        contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
-        contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
-        startedAt: heartbeatRuns.startedAt,
-        finishedAt: heartbeatRuns.finishedAt,
-        createdAt: heartbeatRuns.createdAt,
-        agentId: heartbeatRuns.agentId,
-        agentName: agentsTable.name,
-        agentAppearance: agentsTable.appearance,
-        adapterType: agentsTable.adapterType,
-        logBytes: heartbeatRuns.logBytes,
-        livenessState: heartbeatRuns.livenessState,
-        livenessReason: heartbeatRuns.livenessReason,
-        continuationAttempt: heartbeatRuns.continuationAttempt,
-        lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
-        nextAction: heartbeatRuns.nextAction,
-        lastOutputAt: heartbeatRuns.lastOutputAt,
-        lastOutputSeq: heartbeatRuns.lastOutputSeq,
-        lastOutputStream: heartbeatRuns.lastOutputStream,
-        lastOutputBytes: heartbeatRuns.lastOutputBytes,
-        processStartedAt: heartbeatRuns.processStartedAt,
-      })
-      .from(heartbeatRuns)
-      .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, issue.companyId),
-          inArray(heartbeatRuns.status, ["queued", "running"]),
-          eq(heartbeatRuns.issueId, issue.id),
-        ),
-      )
-      .orderBy(desc(heartbeatRuns.createdAt));
-
-    const projections = await executionProjectionsForRuns(db, issue.companyId, liveRuns.map(run => run.id));
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
-      ...heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id }),
-      agentAppearance: resolveAgentAppearance(run.agentAppearance, run.agentId),
-      avatarUrl: agentAvatarUrl(resolveAgentAppearance(run.agentAppearance, run.agentId), 512),
-      execution: projections.get(run.id) ?? null,
-      outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
-    }))));
+    res.json(await issueRunPresence.liveRuns(issue));
   });
 
   router.get("/issues/:issueId/execution", async (req, res) => {
@@ -7921,47 +7874,7 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
-
-    let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
-    if (
-      run &&
-      (
-        (run.status !== "queued" && run.status !== "running") ||
-        run.issueId !== issue.id
-      )
-    ) {
-      run = null;
-    }
-
-    if (!run && issue.assigneeAgentId && issue.status === "in_progress") {
-      const candidateRun = await heartbeat.getActiveRunIssueSummaryForAgent(issue.assigneeAgentId);
-      const candidateIssueId = asNonEmptyString(candidateRun?.issueId);
-      if (candidateRun && candidateIssueId === issue.id) {
-        run = candidateRun;
-      }
-    }
-    if (!run) {
-      res.json(null);
-      return;
-    }
-
-    const agent = await svc.getById(run.agentId);
-    if (!agent) {
-      res.json(null);
-      return;
-    }
-
-    const decoratedRun = heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id });
-    res.json({
-      ...decoratedRun,
-      execution: await executionProjectionForRun(db, issue.companyId, run.id),
-      agentId: agent.id,
-      agentName: agent.name,
-      agentAppearance: agent.appearance,
-      avatarUrl: agent.avatarUrl,
-      adapterType: agent.adapterType,
-      outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
-    });
+    res.json(await issueRunPresence.activeRun(issue));
   });
 
   return router;

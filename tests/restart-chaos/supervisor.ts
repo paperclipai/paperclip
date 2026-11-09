@@ -214,7 +214,9 @@ export class ChaosSupervisor {
       ...extraEnvironment,
     };
     const environment = buildPaperclipServerEnvironment(source, overrides);
-    assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath });
+    const workspaceStorage = extraEnvironment.PAPERCLIP_STORAGE_PROVIDER === "s3"
+      ? Object.fromEntries(Object.entries(extraEnvironment).filter(([key]) => key.startsWith("PAPERCLIP_STORAGE_"))) : undefined;
+    assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath, ...(workspaceStorage ? { workspaceStorage } : {}) });
     this.environment = Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined));
     await prepareSourceServerDependencies(root, this.environment, false);
   }

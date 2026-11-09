@@ -13,6 +13,10 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi, isSocketTypeOfServiceRace } from "./api.js";
+import { BoardUi } from "./board-ui.js";
+import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
+import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
+import { startStorageFaultProxy } from "./storage-proxy.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
@@ -55,6 +59,11 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     const observed = crossed ? observedFaultSchedule(crossed.createdAt, crossed.faultIds, faults, command.ref.taskId) : [];
     if (!observed.length) console.warn("Replay: no recorded fault sequence for this task; using its planned fault only.");
     let plan = replayWave(source, command.ref, Date.now(), command.overrides, observed);
+    if (source.options.storage === "s3" && crossed?.createdAt) {
+      const receipts = await readFile(path.join(sourceDir, "storage-faults.json"), "utf8").then(text => JSON.parse(text) as StorageFaultReceipt[]).catch(() => []);
+      const ended = Math.max(crossed.createdAt, ...receipts.map(receipt => receipt.endedAt ?? 0));
+      plan = { ...plan, options: { ...plan.options, storageWindows: replayStorageWindows(receipts, crossed.createdAt, ended) } };
+    }
     // K14: a task that launched after the upgrade replays on the current build.
     const launchBuild = graded?.record.serverBuildAtLaunch ?? logged?.[command.ref.taskId]?.serverBuildAtLaunch;
     if (plan.options.upgradeFrom && launchBuild === "current") plan = replayOnCurrentBuild(plan);
@@ -211,6 +220,10 @@ async function main(): Promise<number> {
   let anyFailure = false;
   let stopFailed = false;
   let remoteCleanupPending = false;
+  let board: BoardUi | null = null;
+  let objectStore: ObjectStore | null = null;
+  let storageChaos: StorageChaos | null = null;
+  let storageProxy: Awaited<ReturnType<typeof startStorageFaultProxy>> | null = null;
   let speedSection: string | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
@@ -237,6 +250,14 @@ async function main(): Promise<number> {
   let faultFailures = 0;
   let faultsQueued = 0;
   try {
+    if (plan.options.storage === "s3") {
+      const binary = minioBinary();
+      if (!binary) throw new Error(`--storage s3 needs MinIO ${MINIO_RELEASE} at ${DEFAULT_MINIO_BINARY} or RESTART_CHAOS_MINIO_BIN`);
+      objectStore = await startMinio({ binary, root: supervisor.paths.temporaryRoot });
+      storageProxy = await startStorageFaultProxy(objectStore.endpoint);
+      Object.assign(serverEnvironment, objectStoreServerEnvironment(objectStore, storageProxy.endpoint, `chaos/${plan.waveId}/`));
+      timeline.add("object_store_started", { release: MINIO_RELEASE, endpoint: objectStore.endpoint, proxy: storageProxy.endpoint, bucket: objectStore.bucket });
+    }
     await supervisor.start(serverEnvironment);
     const api = new ChaosApi(supervisor.baseUrl);
     const lab = await seedChaosLab({ api, env: plan.options.env, waitForReadyAgents: true, cancelled: () => interrupted, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
@@ -245,7 +266,7 @@ async function main(): Promise<number> {
         ...(plan.tasks.some(task => task.workload === "M1") ? plan.options.adapters : [])])],
       concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents, masks: plan.options.masks,
       fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), workspaceRepo: plan.options.workspaceRepo,
-      workspaceCommit: plan.options.workspaceCommit, waveId: plan.waveId, timeline,
+      workspaceCommit: plan.options.workspaceCommit, workspaceGitUrl: plan.options.workspaceGitUrl, waveId: plan.waveId, timeline,
       adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle),
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
@@ -253,7 +274,8 @@ async function main(): Promise<number> {
     spendTarget = { api, companyId: lab.companyId };
     // The instance root holds the secrets master key and the database: oracle code may not read it.
     const protectedRoots = [os.homedir(), supervisor.paths.temporaryRoot, resultsRoot];
-    const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots));
+    board = serverEnvironment.SERVE_UI === "false" ? null : new BoardUi(supervisor.baseUrl);
+    const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots, board));
     const pending = [...observers];
     const launched: TaskObserver[] = [];
     const active: TaskObserver[] = [];
@@ -261,6 +283,13 @@ async function main(): Promise<number> {
     let lastDoneAt = Date.now();
     // K13: storm faults fire on their own clock while tasks keep launching; then the storm drains.
     const storm = plan.storm ? new StormRun(plan.storm, Date.now()) : null;
+    if (storageProxy && (plan.options.storageWindows?.length || plan.options.storageFaults?.length)) {
+      const windows = plan.options.storageWindows ?? planStorageFaults({ kinds: plan.options.storageFaults!, seed: plan.seed,
+        spanMs: plan.storm?.durationMs ?? plan.tasks.length * 4 * 60_000, ...(plan.options.storageFaultMs ? { durationMs: plan.options.storageFaultMs } : {}) });
+      storageChaos = new StorageChaos(windows, Date.now(), storageProxy, (kind, data) => timeline.add(kind, data));
+      if (!plan.options.storageWindows) storageChaos.start();
+      timeline.add("storage_faults_planned", { windows: windows.map(window => `${window.kind}@${window.startMs}ms+${window.durationMs}ms`) });
+    }
     if (storm) timeline.add("storm_started", { durationMs: storm.plan.durationMs, plannedFaults: storm.plan.faults.length });
     // Faults are serialized; each one hits every task in flight when it starts.
     const fireFault = (kind: FaultKind, holdMs: number, requestedBy: string, exposed: readonly TaskObserver[],
@@ -373,6 +402,7 @@ async function main(): Promise<number> {
         const next = pending.shift()!;
         launched.push(next);
         await next.launch();
+        if (plan.options.storageWindows && storageChaos && launched.length === 1) storageChaos.start();
         if (!next.done) active.push(next);
       }
       await Promise.all(active.filter(observer => now - (lastPoll.get(observer) ?? 0) >= plan.options.pollMs).map(async observer => {
@@ -518,6 +548,7 @@ async function main(): Promise<number> {
   } finally {
     // Best effort for an interrupted or failed wave; the server may already be down.
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
+    await board?.close().catch(() => undefined);
     // A failure here (for example writing the report) must not skip stopping the controller and Postgres.
     try { if (sweeper) try {
       const owned = sweeper as DaytonaWaveSweeper;
@@ -556,6 +587,13 @@ async function main(): Promise<number> {
         timeline.add("supervisor_stop_failed", { error: String(error) });
       }
     }
+    storageChaos?.stop();
+    if (storageProxy) {
+      if (storageChaos) await writeFile(path.join(waveDir, "storage-faults.json"), `${JSON.stringify(storageChaos.receipts, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+      await writeFile(path.join(waveDir, "storage-proxy.json"), `${JSON.stringify(storageProxy.counts(), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+      await storageProxy.close().catch(() => undefined);
+    }
+    await objectStore?.stop().catch(error => timeline.add("object_store_stop_failed", { error: String(error) }));
     const retention = await releaseInstance(supervisor.paths.temporaryRoot, { keep, stopFailed, remoteCleanupPending, owner: plan.waveId })
       .catch(error => { timeline.add("instance_cleanup_failed", { error: String(error) }); return null; });
     if (retention?.kept) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot, reason: retention.reason });

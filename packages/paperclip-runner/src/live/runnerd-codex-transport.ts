@@ -3998,6 +3998,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #closedSignal: Promise<void>;
   #resolveClosedSignal!: () => void;
   #closePromise: Promise<void> | null = null;
+  #shutdownSettled = false;
   #probeRetirement: Promise<void> | null = null;
   readonly prepareConversationResume?: CodexAppServerTransport["prepareConversationResume"];
   #detachPromise: Promise<void> | null = null;
@@ -5242,6 +5243,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return this.#closePromise;
   }
 
+  async settleCancelledTurn(input: { turnId: string; reason: string }) {
+    const core = this.#core;
+    if (!core || this.#controllerDetachedForRestart || this.#releaseEpisode || this.#turnStartResponsePending
+      || (this.controllerAcceptedCompletedTurnId() ?? this.#turnId) !== input.turnId) return null;
+    const identity = structuredClone(core.store.state.identity);
+    await this.close(input.reason);
+    if (!this.#shutdownSettled || this.#controllerDetachedForRestart || this.#core !== core
+      || !recoveryIdentityMatches(core.store.state.identity, identity)) return null;
+    return { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, turnId: input.turnId };
+  }
+
   retireProbeResources(timeoutMs?: number): Promise<void> {
     if (this.#probeRetirement) return this.#probeRetirement;
     const operation = (async () => {
@@ -5633,6 +5645,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (!preparationConfirmed) {
       throw new Error(`Native runner ${attachmentPending ? "attachment" : "startup"} cleanup is unconfirmed; recovery state retained.`);
     }
+    this.#shutdownSettled = runnerSettled;
     if (this.#ownsRoot && !adoptedRunner) {
       rmSync(this.#root, { recursive: true, force: true });
     }
