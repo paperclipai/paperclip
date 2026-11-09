@@ -3211,7 +3211,7 @@ describe("agent issue mutation checkout ownership", () => {
       it("keeps refusing the approval when this run is not the active participant", async () => {
         const issue = reviewIssue([finalStage]);
         mockIssueService.getById.mockResolvedValue({ ...issue,
-          executionState: { ...(issue.executionState as Record<string, unknown>), currentParticipant: { type: "agent", agentId: peerAgentId } } });
+          executionState: { ...(issue.executionState as unknown as Record<string, unknown>), currentParticipant: { type: "agent", agentId: peerAgentId } } });
 
         const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
           .send({ status: "done", comment: "Approved." });
