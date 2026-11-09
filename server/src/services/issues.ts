@@ -11598,6 +11598,30 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        // Recheck the caller's run under the same transaction as the issue
+        // write. A reassignment may intentionally Stop the caller first; the
+        // exact Stop receipt authorizes only this mutation and lets the stage
+        // snapshot accept that run's lock release (and no other drift).
+        const actorRun = actorAgentId && actorRunId
+          ? await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
+              agentId: actorAgentId,
+              runId: actorRunId,
+              stopId: actorRunStopId,
+            })
+          : null;
+        const actorStoppedForThisMutation = Boolean(
+          actorRun?.status === "cancelled" &&
+          actorRunStopId &&
+          actorRun.resultJson?.issueMutationStopId === actorRunStopId,
+        );
+        const executionLockMatchesSnapshot = (
+          actual: string | null,
+          expected: string | null,
+        ) => actual === expected || Boolean(
+          actorStoppedForThisMutation &&
+          expected === actorRunId &&
+          actual === null,
+        );
         if (
           expectedExecutionDecisionSnapshot !== undefined &&
           (receiptExisting.status !== expectedExecutionDecisionSnapshot.status ||
@@ -11605,10 +11629,14 @@ export function issueService(db: Db) {
               expectedExecutionDecisionSnapshot.assigneeAgentId ||
             receiptExisting.assigneeUserId !==
               expectedExecutionDecisionSnapshot.assigneeUserId ||
-            receiptExisting.checkoutRunId !==
-              expectedExecutionDecisionSnapshot.checkoutRunId ||
-            receiptExisting.executionRunId !==
-              expectedExecutionDecisionSnapshot.executionRunId ||
+            !executionLockMatchesSnapshot(
+              receiptExisting.checkoutRunId,
+              expectedExecutionDecisionSnapshot.checkoutRunId,
+            ) ||
+            !executionLockMatchesSnapshot(
+              receiptExisting.executionRunId,
+              expectedExecutionDecisionSnapshot.executionRunId,
+            ) ||
             !isDeepStrictEqual(
               receiptExisting.executionPolicy ?? null,
               expectedExecutionDecisionSnapshot.executionPolicy,
@@ -11699,12 +11727,9 @@ export function issueService(db: Db) {
             patch.privacyRootIssueId = receiptExisting.id;
           }
         }
-        if (actorAgentId && actorRunId) {
-          // Recheck under a run lock: a request admitted before Stop must not
-          // commit a late Done after cancellation revoked its credentials.
-          const actorRun = await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
-            agentId: actorAgentId, runId: actorRunId, stopId: actorRunStopId,
-          });
+        if (actorRun) {
+          // The run was rechecked under lock above before evaluating the
+          // stage snapshot, including the exact self-Stop exception.
           assertLegacyRunTaskOwnership(actorRun, receiptExisting);
         }
         if (blockedByIssueIds !== undefined) {
@@ -12675,7 +12700,8 @@ export function issueService(db: Db) {
           candidate.assigneeAgentId === actorAgentId &&
           ((candidate.status === "in_progress" &&
             sameRunLock(candidate.checkoutRunId, actorRunId)) ||
-            (actorRunId !== null &&
+            (candidate.status !== "in_progress" &&
+              actorRunId !== null &&
               hasRunLock &&
               ownsCheckoutLock &&
               ownsExecutionLock))

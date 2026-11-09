@@ -15026,6 +15026,10 @@ export function issueRoutes(
           lastDecisionId: decisionId,
         };
       }
+      const pendingExecutionStageCancellation =
+        updateFields.status === "cancelled" &&
+        transition.patch.executionState === null &&
+        Boolean(parseIssueExecutionState(existing.executionState)?.currentStageId);
       if (expectedExecutionPolicy !== undefined && (
         (transition.patch.status !== undefined && transition.patch.status !== existing.status) ||
         (transition.patch.assigneeAgentId !== undefined && transition.patch.assigneeAgentId !== existing.assigneeAgentId) ||
@@ -15407,7 +15411,12 @@ export function issueRoutes(
         ...(expectedParentId !== undefined ? { expectedParentId } : {}),
         workspaceSelectionActor: req.actor,
         expectedExecutionPolicy,
-        expectedExecutionDecisionSnapshot: transition.decision
+        // A stage decision and a participant-authorized cancellation are both
+        // derived from the execution stage read above. Fence the complete
+        // stage snapshot for either operation so a cancellation admitted for
+        // an old participant cannot clear a stage that advanced before the
+        // row-locked write.
+        expectedExecutionDecisionSnapshot: transition.decision || pendingExecutionStageCancellation
           ? {
               status: existing.status,
               assigneeAgentId: existing.assigneeAgentId,
