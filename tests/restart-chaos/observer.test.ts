@@ -108,6 +108,36 @@ describe("TaskObserver", () => {
     expect(observer.record.finalStatus).toBe("blocked");
   });
 
+  it("clicks the board Retry on a blocked subtask, as a user would, and keeps watching the parent", async () => {
+    let childStatus = "blocked";
+    const base = fakeApi({ "parentIds=": () => [{ id: "c1", parentId: "i1", status: "done" }, { id: "c2", parentId: "i1", status: childStatus }],
+      "/documents/": () => null, "/recovery-actions": () => ({ active: { id: "a1" }, actions: [] }), "/api/issues/c2": () => ({ id: "c2", status: childStatus,
+        interruption: { canRetry: childStatus === "blocked", observedRunId: "child-run" } }) }, "blocked");
+    const childRetries: string[] = [];
+    const api = { ...base.api, get: base.api.get.bind(base.api),
+      async post(route: string, body: unknown) {
+        if (route === "/api/issues/c2/retry") { childRetries.push(route); childStatus = "in_progress"; return { accepted: true }; }
+        return (base.api as unknown as { post(route: string, body: unknown): Promise<unknown> }).post(route, body);
+      } } as unknown as ChaosApi;
+    const timeline = new Timeline(null);
+    const observer = new TaskObserver({ ...plan, workload: "M1", followUpAfterMs: null }, api, lab, timeline, ready);
+    await observer.launch();
+    let now = observer.record.createdAt! + 1_000;
+    const restWindow = async () => { await observer.poll(now); now += REST_CONFIRM_MS + 1; await observer.poll(now); now += 1_000; };
+    await restWindow();
+    expect(childRetries).toEqual(["/api/issues/c2/retry"]);
+    expect(observer.record.childRetries).toMatchObject([{ childIssueId: "c2", accepted: true, observedRunId: "child-run" }]);
+    expect(observer.record.childStalls).toEqual([{ childIssueId: "c2", recoveryActionId: "a1" }]);
+    now += CHILD_WAKE_GRACE_MS;
+    await restWindow();
+    expect(observer.done).toBe(false);
+    childStatus = "done";
+    await restWindow();
+    now += CHILD_WAKE_GRACE_MS;
+    await restWindow();
+    expect(childRetries).toHaveLength(1);
+  });
+
   it("closes an open task as unfinished at interrupt, so the wave grades it as a failure", async () => {
     const { api } = fakeApi({}, "in_progress");
     const timeline = new Timeline(null);

@@ -93,6 +93,13 @@ export function gradeR2(record: TaskRecord, oracle: OracleResult): RuleResult {
 }
 
 export function gradeR3(record: TaskRecord): RuleResult {
+  const own = gradeOwnRetry(record);
+  const childClicks = record.childRetries?.length ?? 0;
+  if (!childClicks || own.verdict === "fail") return own;
+  return { verdict: "fail", detail: `retry_needed_on_subtask_${childClicks} (${record.childRetries!.map(attempt => attempt.childIssueId).join(",")})` };
+}
+
+function gradeOwnRetry(record: TaskRecord): RuleResult {
   const last = lastReachable(record);
   if (!record.retry) {
     if (record.finalStatus !== expectedFinalStatus(record) && !record.timedOut && !record.launchError) {

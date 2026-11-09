@@ -49,6 +49,7 @@ const RESULT_TRIGGER_EVENTS = new Set(["run.result.proposed", "run.result.accept
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
 export const CHILD_WAKE_GRACE_MS = 60_000;
+export const CHILD_STALL_CHECK_MS = 10_000;
 
 export function childrenPending(children: ReadonlyArray<{ status: string | null }> | null): boolean {
   return !children || children.some(child => !["done", "cancelled", "blocked"].includes(child.status ?? ""));
@@ -167,6 +168,7 @@ export class TaskObserver {
   issue: Json | null = null;
   private restCandidateSince: number | null = null;
   private childrenSettledAt: number | null = null;
+  private childStallCheckedAt: number | null = null;
   private stallSince: number | null = null;
   /** First sample of the current stretch with the server ready (H1 holds the pause across it). */
   private readySince: number | null = null;
@@ -409,6 +411,10 @@ export class TaskObserver {
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();
     await this.governanceStep(sample, now);
+    if (await this.observeChildStalls(now)) {
+      this.restCandidateSince = null;
+      this.childrenSettledAt = null;
+    }
     if (await this.maybeFollowUp(sample, now)) {
       // The comment response is not the agent's answer: require fresh samples.
       this.restCandidateSince = null;
@@ -540,6 +546,61 @@ export class TaskObserver {
   }
 
   /** Exactly one click, with the same body ui/src/hooks/useTaskRetry.ts sends. */
+  private async observeChildStalls(now: number): Promise<boolean> {
+    if (this.plan.workload !== "M1" || !this.record.issueId) return false;
+    if (this.childStallCheckedAt !== null && now - this.childStallCheckedAt < CHILD_STALL_CHECK_MS) return false;
+    this.childStallCheckedAt = now;
+    const rows = await this.api.get<Json[]>(`/api/companies/${this.lab.companyId}/issues?view=index&parentIds=${encodeURIComponent(this.record.issueId)}&limit=20`)
+      .catch(() => null);
+    const blocked = (Array.isArray(rows) ? rows : []).filter(row => row.parentId === this.record.issueId && row.status === "blocked").map(row => String(row.id));
+    for (const childIssueId of blocked) {
+      const recovery = await this.api.get<Json>(`/api/issues/${childIssueId}/recovery-actions`).catch(() => null);
+      const actions = Array.isArray(recovery?.actions) ? recovery.actions as Json[] : [];
+      const latest = (recovery?.active as Json | null | undefined) ?? actions[0] ?? null;
+      const recoveryActionId = typeof latest?.id === "string" ? latest.id : null;
+      const stalls = this.record.childStalls ??= [];
+      if (!stalls.some(stall => stall.childIssueId === childIssueId && stall.recoveryActionId === recoveryActionId)) {
+        stalls.push({ childIssueId, recoveryActionId });
+        this.timeline.add("task_child_stalled", { taskId: this.plan.taskId, childIssueId, recoveryActionId });
+      }
+    }
+    return this.retryBlockedChildren(blocked, now);
+  }
+
+  private async retryBlockedChildren(childIds: readonly string[], now: number): Promise<boolean> {
+    let clicked = false;
+    for (const childIssueId of childIds) {
+      if ((this.record.childRetries ?? []).some(attempt => attempt.childIssueId === childIssueId && attempt.accepted)) continue;
+      const child = await this.api.get<Json>(`/api/issues/${childIssueId}`).catch(() => null);
+      const interruption = child?.interruption as Json | null | undefined;
+      if (interruption?.canRetry !== true) continue;
+      const observedRunId = typeof interruption.observedRunId === "string" ? interruption.observedRunId : null;
+      const attempt: RetryAttempt & { childIssueId: string } = { childIssueId, at: now, observedRunId, httpStatus: null, accepted: null, error: null };
+      try {
+        const result = await this.api.post<{ accepted?: boolean }>(`/api/issues/${childIssueId}/retry`, { idempotencyKey: randomUUID(), observedRunId });
+        attempt.httpStatus = 200;
+        attempt.accepted = result?.accepted === true;
+        attempt.acceptedAt = Math.max(now, Date.now());
+      } catch (error) {
+        attempt.httpStatus = error instanceof ChaosApiError ? error.status : null;
+        attempt.error = error instanceof Error ? error.message : String(error);
+      }
+      (this.record.childRetries ??= []).push(attempt);
+      this.timeline.add("task_child_retry_clicked", { taskId: this.plan.taskId, ...attempt });
+      clicked = clicked || attempt.accepted === true;
+    }
+    return clicked;
+  }
+
+  private async collectStallWakes(issueId: string): Promise<NonNullable<OracleArtifacts["stallWakes"]>> {
+    const rows = await this.api.get<Json[]>(`/api/issues/${issueId}/activity`).catch(() => []);
+    return (rows ?? []).filter(row => row.action === "issue.blocker_stalled_wake").map(row => {
+      const details = (row.details ?? {}) as Json;
+      return { stalledIssueId: typeof details.stalledIssueId === "string" ? details.stalledIssueId : null,
+        recoveryActionId: typeof details.recoveryActionId === "string" ? details.recoveryActionId : null };
+    });
+  }
+
   private async retry(sample: TaskSample, now: number): Promise<RetryAttempt> {
     const observedRunId = sample.interruption?.observedRunId ?? (this.issue?.executionBlocker?.runId as string | undefined) ?? null;
     const attempt: RetryAttempt = { at: now, observedRunId, httpStatus: null, accepted: null, error: null };
@@ -770,7 +831,8 @@ export class TaskObserver {
       agentComments: (comments ?? []).filter(comment => comment.authorAgentId).map(comment => String(comment.body ?? "")),
       files, commands, workspacePath,
       ...(this.plan.workload === "B5" ? { benchProgressObserved: this.record.benchProgressSeen?.length ?? 0 } : {}),
-      ...(definition.collect.childDocuments ? { children: await this.collectChildren(issueId) } : {}),
+      ...(definition.collect.childDocuments ? { children: await this.collectChildren(issueId),
+        childStalls: this.record.childStalls ?? [], stallWakes: await this.collectStallWakes(issueId) } : {}),
       ...(this.plan.workload === "G1" ? { approvals: await this.collectApprovals(issueId) } : {}),
       ...(this.plan.workload === "H1" ? await this.finalPauseCheck(issueId) : {}),
       ...(this.record.governance ? { governance: this.record.governance } : {}),
