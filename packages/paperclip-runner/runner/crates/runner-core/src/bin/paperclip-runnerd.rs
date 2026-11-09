@@ -519,6 +519,14 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
             std::env::set_var(key, executable);
         }
     }
+    // Journal every provider's process lineage before any provider starts, so
+    // a controller can stop and prove gone the provider and its tools if this
+    // process dies. Without the journal the controller keeps its fail-closed
+    // cleanup quarantine; the run itself is unaffected.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Err(error) = paperclip_runner_core::process_lineage::enable_journal(&state_dir) {
+        eprintln!("paperclip-runnerd: process lineage journal unavailable: {error}");
+    }
     let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
     paperclip_runner_core::durable::run_durable_runner_with_host_control(
         config,
@@ -550,6 +558,51 @@ fn apply_task_memory_cgroup(args: &[String]) -> Result<(), LocalRunnerError> {
     Ok(())
 }
 
+/// `reap-lineage --state-dir <dir> --runner-pid <pid> [--grace-ms N] [--deadline-ms N]`
+///
+/// Run by the controller after it confirmed that runnerd exited. Prints one
+/// JSON report and exits 0 only when every journalled process is proven gone.
+fn reap_lineage(args: &[String]) -> Result<(), LocalRunnerError> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let state_dir = PathBuf::from(value(args, "--state-dir")?);
+        let runner_pid = value(args, "--runner-pid")?
+            .parse::<i32>()
+            .ok()
+            .filter(|pid| *pid > 1)
+            .ok_or_else(|| LocalRunnerError::invalid("--runner-pid must be a process ID"))?;
+        let grace = Duration::from_millis(optional_u64(args, "--grace-ms")?.unwrap_or(1_000));
+        let deadline =
+            Duration::from_millis(optional_u64(args, "--deadline-ms")?.unwrap_or(10_000));
+        let report = paperclip_runner_core::process_lineage::reap_journals(
+            &state_dir,
+            runner_pid,
+            grace,
+            deadline.max(grace),
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&report)
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
+        );
+        if report.verified {
+            Ok(())
+        } else {
+            Err(LocalRunnerError::invalid(format!(
+                "process lineage not proven stopped: {}",
+                report.reason.unwrap_or("unknown")
+            )))
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = args;
+        Err(LocalRunnerError::invalid(
+            "process lineage reaping is unavailable on this platform",
+        ))
+    }
+}
+
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     #[cfg(unix)]
     if matches!(
@@ -564,6 +617,9 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     {
         return paperclip_runner_core::stdio_mcp::run_proxy(Path::new(&args[1]), args.len() == 3)
             .map_err(|e| LocalRunnerError::invalid(e.to_string()));
+    }
+    if args.first().map(String::as_str) == Some("reap-lineage") {
+        return reap_lineage(args);
     }
     if args.first().map(String::as_str) == Some("--build-metadata") {
         println!("{}", metadata_with_provider_packs(args)?);

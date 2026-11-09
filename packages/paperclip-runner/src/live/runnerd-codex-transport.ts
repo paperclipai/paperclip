@@ -26,6 +26,7 @@ import { resolveCodexCommand } from "../drivers/codex/codex-command.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
 import { readLinuxProcessStartedAt } from "./linux-process-start.js";
+import { reapExitedRunnerLineage } from "./runner-lineage-reap.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -5404,6 +5405,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let providerDrained = false;
     let cleanupProviderStopConfirmed = false;
     let suspensionRequired = false;
+    // runnerd had exited, unsuspended, before close sent it any signal: it
+    // was lost (killed or crashed), not stopped by this close.
+    let runnerLost = false;
     let lastSuspensionState: Record<string, unknown> | null = null;
     let suspensionState: {
       commandStatus: string | null;
@@ -5467,6 +5471,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         pump: () => this.#pumpEventsSafely(),
         deadline: closeDeadline,
       });
+      // Sampled before the shutdown wait below, which may kill a live runner.
+      runnerLost = !runnerSuspended && await this.#runnerHasExited();
       if (!runnerSuspended) {
         const command = [...this.#core.store.state.commands].reverse().find(
           (candidate) => candidate.type === "runner.suspend",
@@ -5590,7 +5596,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#controlPlaneCheckpoint = null;
       this.#controlPlaneRelease = null;
     }
-    if (suspensionRequired && !runnerSettled) {
+    // A lost local runnerd cannot suspend, and its provider and tools were
+    // re-parented when it died. When runnerd's own lineage journal proves
+    // every one of them stopped, nothing owns the state root any more: the
+    // session ends as a crash stop, and recovery decides from the durable
+    // record how to continue. Anything less keeps the quarantine below.
+    const runnerLossReaped = suspensionRequired && !runnerSettled && preparationConfirmed
+      && !runnerSuspended && runnerLost
+      && await this.#reapLostLocalRunnerLineage(closeDeadline);
+    if (suspensionRequired && !runnerSettled && !runnerLossReaped) {
       const settlement = {
         runnerSuspended,
         providerDrained,
@@ -8258,8 +8272,32 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
   }
 
+  /** True only when a runnerd this transport spawned on this host has exited
+   * and its journalled provider and tool processes are proven stopped. */
+  async #reapLostLocalRunnerLineage(closeDeadline: number): Promise<boolean> {
+    const handle = this.#handle;
+    const runnerPid = handle?.child.pid;
+    // A launcher-owned runnerd may run elsewhere (a remote sandbox), and an
+    // adopted runnerd is not this process's child, so its exit is not ours to
+    // confirm. Only a direct local spawn is reaped here.
+    if (!handle || runnerPid === undefined || this.options.runnerProcessLauncher
+      || this.options.adoptExistingRunner || !(await this.#runnerHasExited())) return false;
+    const report = await reapExitedRunnerLineage({
+      runnerBinaryPath: this.options.runnerBinary
+        ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary()),
+      stateDirectory: this.options.runnerStateDirectory ?? resolve(this.#root, "runner"),
+      runnerPid,
+      // A small floor keeps the proof possible when close already used its budget.
+      timeoutMs: Math.max(5_000, closeDeadline - Date.now()),
+    });
+    this.#diagnostic(`native_session_runner_loss_lineage ${JSON.stringify(report ?? { verified: false, reason: "report_unavailable" })}`);
+    return report?.verified === true;
+  }
+
   async #runnerHasExited(): Promise<boolean> {
-    if (this.#handle) return this.#handle.isExitConfirmed?.() ?? this.#handle.child.exitCode !== null;
+    // A runnerd killed by a signal reports exitCode null and its signalCode.
+    if (this.#handle) return this.#handle.isExitConfirmed?.()
+      ?? (this.#handle.child.exitCode !== null || (this.#handle.child.signalCode ?? null) !== null);
     const adoptedRunner = this.options.adoptExistingRunner;
     if (!adoptedRunner) return true;
     return !(await adoptedRunner.isAlive());
