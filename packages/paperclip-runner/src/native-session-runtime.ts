@@ -2714,9 +2714,13 @@ export async function executeNativeSession(
         requestedCollaborationMode: "executionMode" in input ? input.executionMode : "default" as const,
       };
     };
-    let restartContinuationStarted = false;
+    const recoveredContinuation = recovered && nativeRestartContinuationInFlight(recoveredSnapshot)
+      ? recoveredSnapshot
+      : recovered && persistedSession && nativeRestartContinuationInFlight(persistedSession)
+        ? persistedSession : null;
+    let restartContinuationStarted = recoveredContinuation !== null;
     let borrowedContinuationTurnId: string | null = null;
-    let restartContinuationTurnId: string | null = null;
+    let restartContinuationTurnId: string | null = recoveredContinuation?.activeTurnId ?? null;
     let settleStartupDecision: () => void = () => undefined;
     const startupDecision = new Promise<void>(resolve => { settleStartupDecision = resolve; });
     let continuationDispositionRequested = false;
