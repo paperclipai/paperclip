@@ -12957,10 +12957,10 @@ registerCurrentRoute({
   body: mcpConsentSchema.extend({ userCode: z.string().min(8).max(12) }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
-/** Agents read this in API search; without it they keep searching for an agent route that does not exist. */
 const ASSISTANT_CONNECTIONS_PERSON_ONLY = "Personal and person-only: only the signed-in person can list or revoke their own assistant connections, in their browser on "
   + "[Assistant connections](/<prefix>/apps/assistant-connection), with this conversation's company prefix as <prefix>. "
-  + "No agent credential, tool or other API route can do it, so do not search for one; link that page and tell the person which connection to revoke. "
+  + "An agent cannot do it for them: these routes accept only the person's own signed-in browser session, and the only other revocation is OAuth token revocation sent by the connected assistant itself with its own token. "
+  + "Do not search for another route; link that page and tell the person which connection to revoke. "
   + "Revoking stops that assistant's further calls; tasks it already created keep their assignees and running work.";
 registerCurrentRoute({
   method: "get", path: "/api/mcp/connections", tags: ["tool-gateway"],
