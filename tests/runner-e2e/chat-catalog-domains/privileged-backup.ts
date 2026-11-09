@@ -25,7 +25,8 @@ export function gradeBackupRestore(value: unknown) {
     && o.state.restoredFixtureMatches === true && o.state.sourceFixtureUnchanged === true && o.state.targetDropped === true
     && !!marker && sameTask(marker, o.tasks.find(row => row.id === marker.id)),
     "The supported restore engine runs only against a newly created empty target and verifies actual task/document rows without overwriting the source.");
-  // Reply wording is not graded (see coverageGaps); the replies are graded by the runs and messages they belong to.
+  // Reply wording is free-form and is not graded: a reply that invents a backup page or misreports the receipt still
+  // passes these checks. The replies are graded by the runs and messages they belong to; read a passing run's replies.
   const phase = o.state.restoreReport as { attributed?: boolean; reply?: string; humanCommentId?: string; runId?: string } | undefined;
   const guidanceRuns = o.runs.filter(run => run.id !== phase?.runId);
   c.add("initial-guidance-reply", initial.trim().length > 0 && o.runs.length === 2 && guidanceRuns.length === 1 && guidanceRuns[0]!.status === "succeeded",
@@ -131,8 +132,7 @@ const backup = privilegedDefinition("instance-operations.backup-and-restore", "p
   async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
 });
 backup.attemptTimeoutMs = 600_000;
-backup.oracleVersion = "paperclip.chat-catalog.privileged.backup-and-restore.v2";
-backup.coverageGaps = ["Reply wording is not graded: a reply that invents a backup UI, claims a backup or restore it did not perform, or misreports the receipt still passes. Read the replies of a passing run."];
+backup.oracleVersion = "paperclip.chat-catalog.privileged.backup-and-restore.v3";
 backup.expectedRunCount = 2; backup.expectedHumanMessageCount = 2;
 backup.cleanup = async ctx => { const source = privateSources.get(ctx); if (source) { await ctx.input.api.delete(`/api/agents/${ctx.input.fixtures.agent.id}/keys/${source.keyId}`); privateSources.delete(ctx); } };
 backup.sourceFiles = [...backup.sourceFiles, "chat-catalog-domains/privileged-docker-database.ts", "docker-postgres.ts", "../../packages/db/src/backup-lib.ts", "../../server/src/routes/instance-database-backups.ts"];
