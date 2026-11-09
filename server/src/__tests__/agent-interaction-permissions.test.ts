@@ -245,7 +245,7 @@ describe("individual agent interaction permissions", () => {
     files["tasks/work/TASK.md"] = '---\nname: "Unassigned imported task"\n---\nInitial instructions.';
     files["agents/new-peer/AGENTS.md"] = '---\nname: "New Peer"\nrole: engineer\n---\nInitial instructions.';
     files[".paperclip.yaml"] += 'agents:\n  new-peer:\n    adapterType: claude_local\n';
-    const created = await companyPortabilityService(db).importBundle({ ...input, runner: "legacy", adapterOverrides: { "new-peer": { adapterType: "claude_local" } }, include: { ...input.include, agents: true },
+    const created = await companyPortabilityService(db).importBundle({ ...input, adapterOverrides: { "new-peer": { adapterType: "claude_local" } }, include: { ...input.include, agents: true },
       target: { mode: "new_company", newCompanyName: "Agent imported company" } }, null, options);
     expect(created.warnings.filter(warning => warning.includes("materialize"))).toEqual([]);
     expect(await db.select().from(issues).where(eq(issues.companyId, created.company.id))).toHaveLength(1);
