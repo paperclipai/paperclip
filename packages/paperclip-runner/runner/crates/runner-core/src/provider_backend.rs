@@ -2460,7 +2460,7 @@ impl CodexCommandExecutor {
         let restorable = matches!(
             state.lifecycle.as_str(),
             "session_open" | "turn_active" | "provider_exited"
-        );
+        ) || early_start::uncontacted_early_start(state, &attempt);
         let orphaned = match attempt.phase {
             // The runner died while checking the launch, before any spawn.
             ProviderStartupPhase::Intent => attempt.before_spawn,

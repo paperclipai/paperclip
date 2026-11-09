@@ -4,13 +4,27 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::{
-    local_process_definitely_gone, CodexCommandExecutor, NormalizedProviderEvent,
-    ProviderStartupCommand, ProviderStartupTrigger,
+    local_process_definitely_gone, CodexCommandExecutor, CodexProviderState,
+    NormalizedProviderEvent, ProviderStartupAttempt, ProviderStartupCommand,
+    ProviderStartupTrigger,
 };
 use crate::codex_provider::{CodexProvider, CodexStartupHandshake};
 use crate::durable::{Command, DurableRunnerError, EventPriority};
 
 const EARLY_STARTUP_RETIREMENT_PROOF: Duration = Duration::from_secs(2);
+
+pub(super) fn uncontacted_early_start(
+    state: &CodexProviderState,
+    attempt: &ProviderStartupAttempt,
+) -> bool {
+    state.lifecycle == "prepared"
+        && state.thread_id.is_none()
+        && attempt.trigger == ProviderStartupTrigger::Ensure
+        && attempt
+            .command
+            .as_ref()
+            .is_some_and(|command| command.command_type == "run.prepare")
+}
 
 pub(super) struct EarlyCodexProvider {
     provider: CodexProvider,
@@ -100,6 +114,19 @@ impl CodexCommandExecutor {
                     })
             });
         if current && early.provider.launched_process_running() {
+            let command = self.startup_command.clone();
+            if let Some(attempt) = self
+                .state
+                .as_mut()
+                .and_then(|state| state.startup_attempt.as_mut())
+            {
+                attempt.command = command;
+            }
+            let claimed = self.save_startup_state(false);
+            if let Err(error) = claimed {
+                let _ = early.provider.retire_failed_startup();
+                return Err(error);
+            }
             return Ok(Some((early.provider, early.handshake)));
         }
         self.retire_early_startup(Some(&mut early.provider))?;

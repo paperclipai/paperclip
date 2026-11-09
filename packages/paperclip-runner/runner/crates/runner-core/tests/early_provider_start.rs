@@ -459,3 +459,28 @@ fn claude_early_sidecar_stops_when_the_runner_authority_rotates() {
     assert!(claude.fixture.sidecar_commands().is_empty());
     executor.shutdown().unwrap();
 }
+
+#[test]
+fn codex_replacement_runner_recovers_a_task_whose_runner_died_after_run_prepare() {
+    let fixture = Fixture::new("codex-lost-runner");
+    let (executor, pid) = prepared_codex(&fixture);
+    std::mem::forget(executor);
+    kill_and_wait(pid);
+    rustix::process::waitpid(
+        rustix::process::Pid::from_raw(pid as i32),
+        rustix::process::WaitOptions::empty(),
+    )
+    .unwrap();
+    let mut replacement =
+        NativeProviderCommandExecutor::with_runner_config(&fixture.0, &runner_config(&fixture.0));
+    let opened = replacement
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    assert_eq!(opened.result["status"], "started");
+    let state = fixture.codex_state();
+    assert!(state["startupAttempt"].is_null());
+    assert_eq!(state["lifecycle"], "session_open");
+    assert_eq!(retired_startups(&fixture), 1);
+    assert_eq!(fixture.codex_calls("initialize"), 1);
+    replacement.shutdown().unwrap();
+}
