@@ -56,6 +56,7 @@ function valid(scenario: string): InternalObservation {
       const product = (id: string, attachmentId: string, run: string) => ({ id, issueId: "task", title: attachmentId === "original" ? "website-v1.html" : "website-v2.html", type: "artifact", provider: "paperclip", status: "active", createdByRunId: run, metadata: { attachmentId } });
       Object.assign(o, { attachments: [file, ...(revising ? [original] : [])], products: [product("new-product", "new", "run"), ...(revising ? [product("old-product", "original", "build")] : [])], downloaded: [{ id: "new", sha256: sha(body), body }, ...(revising ? [{ id: "original", sha256: sha(prior), body: prior }] : [])] });
       o.runs.push({ id: "build", companyId: "company", agentId: "morgan", status: "succeeded" }); o.links.push("/api/attachments/new/content?download=1", ...(revising ? ["/api/attachments/original/content"] : []));
+      if (!revising) Object.assign(o, { sourceWorkspaceHash: sha(prior) });
       o.reply = "The updated shorter version is available; the original remains available."; break;
     }
     case "tasks.assignment-conflict": {
