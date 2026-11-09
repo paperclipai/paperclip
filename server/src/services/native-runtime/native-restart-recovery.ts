@@ -419,9 +419,24 @@ export async function evaluateNativeControllerTakeover(input: {
 }): Promise<NativeControllerTakeoverDecision> {
   const { owner, now } = input;
   if (input.remoteLeaseFenced) {
-    return owner.leaseExpiresAt && owner.leaseExpiresAt > now
-      ? { allowed: false, reason: "remote_controller_lease_live" }
-      : { allowed: true, reason: "remote_controller_lease_released_or_expired" };
+    if (!owner.leaseExpiresAt || owner.leaseExpiresAt <= now) {
+      return { allowed: true, reason: "remote_controller_lease_released_or_expired" };
+    }
+    // The lease fences a second live controller from driving the same remote
+    // runner. When the lease holder recorded this exact process space, the
+    // shared prover can show it is gone (a hard restart), so the takeover need
+    // not wait out the lease. A controller in another process space (another
+    // container or host) is never probed here: its lease must expire. The
+    // one-release null-host fallback is never enough for a remote runner.
+    const sameProcessSpace = Object.prototype.hasOwnProperty.call(owner, "controllerHostHash")
+      && typeof owner.controllerHostHash === "string"
+      && owner.controllerHostHash !== UNKNOWN_PROCESS_SPACE
+      && owner.controllerHostHash === currentProcessProbe().processSpace;
+    if (sameProcessSpace && owner.controllerPid) {
+      const local = await evaluateNativeControllerTakeover({ ...input, remoteLeaseFenced: false, requireStoppedController: true });
+      if (local.allowed && !local.legacyHostFallback) return { allowed: true, reason: `remote_lease_${local.reason}` };
+    }
+    return { allowed: false, reason: "remote_controller_lease_live" };
   }
   if ((!owner.leaseOwner || !owner.leaseExpiresAt) && !input.requireStoppedController) {
     return { allowed: true, reason: "unowned" };
