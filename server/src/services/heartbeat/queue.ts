@@ -941,7 +941,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           .returning({ id: budgetIncidents.id });
         if (!open.length) return false;
         await tx.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
-          || jsonb_build_object('budgetAdmissionStop', ${JSON.stringify(budgetAdmissionStop)}::jsonb)` })
+          || jsonb_build_object('budgetAdmissionStop', jsonb_build_object('scopeType', ${budgetAdmissionStop.scopeType}::text,
+            'scopeId', ${budgetAdmissionStop.scopeId}::text, 'reason', ${budgetAdmissionStop.reason}::text))` })
           .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, run.status)));
         return true;
       });
