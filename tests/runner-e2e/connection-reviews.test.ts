@@ -12,7 +12,13 @@ describe("connection review setup", () => {
 
   it("matches a label the current connector setup actually renders", async () => {
     const source = await readFile(new URL("../../ui/src/features/connections/ConnectionSetupFlow.tsx", import.meta.url), "utf8");
-    const labels = [...source.matchAll(/"(Check link|Save and continue)"/g)].map(match => match[1]!);
+    // The label can be a literal or the English text of a key the flow reads with t("...").
+    const catalog = JSON.parse(await readFile(new URL("../../ui/src/i18n/locales/en.json", import.meta.url), "utf8")) as unknown;
+    const textOf = (key: string) => key.split(".").reduce<unknown>(
+      (node, part) => (node && typeof node === "object" ? (node as Record<string, unknown>)[part] : undefined), catalog);
+    const keyed = [...source.matchAll(/\bt\(\s*["']([A-Za-z0-9_.-]+)["']/g)].map(match => textOf(match[1]!))
+      .filter((text): text is string => typeof text === "string" && /^(Check link|Save and continue)$/.test(text));
+    const labels = [...[...source.matchAll(/"(Check link|Save and continue)"/g)].map(match => match[1]!), ...keyed];
     expect(labels.length).toBeGreaterThan(0);
     expect(labels.every(label => CONNECTOR_SETUP_NEXT_STEP.test(label))).toBe(true);
   });
