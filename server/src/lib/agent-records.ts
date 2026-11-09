@@ -330,7 +330,7 @@ export function agentRecordQueries(db: Db) {
     const { lifecycleOperation, lifecycleRequiredPluginIds, harnessVerifiedDigest, harnessVerifiedAt, ...publicRow } = row;
     return withUrlKey({
       ...publicRow,
-      permissions: normalizeAgentPermissions(row.permissions),
+      permissions: normalizeAgentPermissions(row.permissions, { role: row.role }),
     });
   }
 

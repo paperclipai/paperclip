@@ -110,10 +110,23 @@ digest, so restore cannot tell which part changed.
 Restore re-binds a saved session to the current launch profile, and keeps the
 conversation, only when all of these are true:
 
-- The session is suspended. It has no active turn, pending runtime request,
-  undelivered provider event, or unconfirmed provider exit.
+- The session is in one of these two states:
+  - **Suspended.** It has no active turn, pending runtime request, undelivered
+    provider event, or unconfirmed provider exit.
+  - **An interrupted turn or open session of the same heartbeat run.** The
+    deploy restarted the runner and the same run resumes. There is no accepted
+    semantic result, no pending runtime request, no unconfirmed provider exit,
+    and no active goal. Same-build recovery then runs unchanged. It reopens an
+    open session. For an active turn it uses lost-turn recovery: the
+    conversation is restored once the original provider lifetime loses its
+    fence quorum, and otherwise the lost turn is closed. An active turn or open
+    session saved by a different run stays strict.
 - The startup has no candidate admission.
-- The saved descriptor names this startup's sidecar command and arguments.
+- The saved descriptor names the same launch as this startup: the same
+  executable and sidecar file names, and identical non-path arguments. The
+  files may be installed under a different directory, as an `npx` versioned
+  cache, a new image layout or a new checkout does. The re-bind then records
+  this startup's runner-owned paths in the saved descriptor.
 
 Every other binding stays exact. The saved descriptor must match this build's
 qualified agent profile (ACPX version, agent server package and version, and

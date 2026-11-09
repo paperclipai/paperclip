@@ -641,6 +641,11 @@ export class CodexAppServerDriver implements HarnessDriver {
       // that turn and no other turn is active; any other active turn stays
       // foreign and fails closed when its notifications arrive.
       let adoptedAcceptedTurnId: string | null = null;
+      // A turn this run's latest turn.start had the runner accept, which the
+      // restore neither adopted nor finds live (the provider lost it). Its
+      // undelivered reports, such as a turn/started the runner recorded after
+      // the previous controller detached, are earlier-generation history.
+      let lostAcceptedTurnId: string | null = null;
       if (
         !recoveringAutonomousGoal &&
         recoveredActiveTurnId === null &&
@@ -669,6 +674,14 @@ export class CodexAppServerDriver implements HarnessDriver {
         ) {
           recoveredActiveTurnId = acceptedTurnId;
           adoptedAcceptedTurnId = acceptedTurnId;
+        } else if (
+          completedTurnId.length > 0 &&
+          completedTurnId !== acceptedTurnId &&
+          !active.some((turn) => text(turn.id) === completedTurnId) &&
+          // A checkpointed terminal turn keeps the existing history behavior.
+          !(snapshot.terminalTurns ?? []).some((turn) => turn.turnId === completedTurnId)
+        ) {
+          lostAcceptedTurnId = completedTurnId;
         }
       }
       if (opened.context.liveConsole)
@@ -691,6 +704,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         dispositionOnlyRecoveryConsumed,
         dispositionOnlyRecoveryTurnId,
         adoptedAcceptedTurnId,
+        lostAcceptedTurnId,
         stalePendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
         lineage: snapshot.lineage,
         sourceSequence: snapshot.lastSourceSequence ?? 0,
@@ -1018,6 +1032,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
     adoptedAcceptedTurnId?: string | null;
+    lostAcceptedTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
     lineage?: HarnessThreadLineageEntry[];
     sourceSequence: number;

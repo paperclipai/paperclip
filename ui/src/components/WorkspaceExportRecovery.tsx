@@ -28,6 +28,19 @@ function ReportRecoveryControl({ owns, onChange }: { owns: boolean; onChange?: (
 const CONTROLLER_HOST_UNVERIFIED = "native_controller_host_unverified";
 const OWNER_UNPROVABLE = "ownership_owner_unprovable";
 
+/** What the stuck record is, by ownership kind, for the board's confirmation. */
+const OWNER_GONE_RESOURCE: Record<string, { what: string; releasing: string }> = {
+  environment_run_lease_active: { what: "A sandbox lease from this task’s earlier run", releasing: "Releasing the sandbox lease…" },
+  legacy_controller_lease: { what: "This task’s earlier run", releasing: "Recovering the run…" },
+  environment_teardown_claim: { what: "A sandbox cleanup from this task’s earlier run", releasing: "Resuming the sandbox cleanup…" },
+  sandbox_creation_intent: { what: "A sandbox this task’s earlier run was creating", releasing: "Reconciling the sandbox…" },
+  workspace_runtime_control_operation: { what: "A workspace service change from this task’s earlier run", releasing: "Releasing the workspace…" },
+  native_workspace_finalize_attempt: { what: "A workspace save from this task’s earlier run", releasing: "Releasing the workspace save…" },
+  native_finalizer_lease: { what: "The result handling of this task’s earlier run", releasing: "Resuming the result handling…" },
+  native_cleanup_lease: { what: "The cleanup of this task’s earlier run", releasing: "Resuming the cleanup…" },
+};
+const OWNER_GONE_DEFAULT = { what: "A resource from this task’s earlier run", releasing: "Releasing the resource…" };
+
 /** Causes whose one action is the board's previous-server stop confirmation;
  * the generic recovery card must not offer other resolutions for them. */
 export function isPreviousServerStopCause(cause: string | null | undefined) {
@@ -69,15 +82,20 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
   }
   // A resource held by a server recorded before Paperclip stored which server held it.
   if (action?.cause === OWNER_UNPROVABLE && issueId && companyId && isOwnerGoneRequired(action, issueId, companyId)) {
+    const resource = OWNER_GONE_RESOURCE[String(action.evidence.kind)] ?? OWNER_GONE_DEFAULT;
     return <><ReportRecoveryControl owns onChange={onRecoveryControlChange} />
-      <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.recordId)}`}
+      {/* Keyed by the record version: a request refreshed to a newer version resets an open form, so
+          the board never confirms a version it was not shown. */}
+      <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.recordId)}:${String(action.evidence.recordUpdatedAt ?? "")}`}
         action={action} issueId={issueId} companyId={companyId} className={className}
         confirmStop={stopEvidence => issuesApi.confirmOwnerGone(issueId, {
-          actionId: action.id, recordId: action.evidence.recordId as string, stopEvidence })}
-        copy={{ waiting: "A resource from this task’s earlier run was recorded before Paperclip stored which server held it, so Paperclip can’t verify that the server stopped. The resource stays reserved until then.",
+          actionId: action.id, recordId: action.evidence.recordId as string, stopEvidence,
+          // The version shown here: a request refreshed since must be confirmed again.
+          ...(typeof action.evidence.recordUpdatedAt === "string" ? { recordVersion: action.evidence.recordUpdatedAt } : {}) })}
+        copy={{ waiting: `${resource.what} was recorded before Paperclip stored which server held it, so Paperclip can’t verify that the server stopped. It stays reserved until then.`,
           question: "How did you confirm that the previous server stopped?",
           placeholder: "For example: the old server container was replaced and is no longer running.",
-          resuming: "Releasing the resource…" }} /></>;
+          resuming: resource.releasing }} /></>;
   }
   const ownerRecovery = action?.cause === "native_workspace_finalization_owner_unverified";
   // The task's interruption names this wait; the confirmation is its one action.

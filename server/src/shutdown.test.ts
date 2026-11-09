@@ -281,6 +281,19 @@ describe("closeHttpListenerForShutdown", () => {
     expect(server.closeAllConnections).not.toHaveBeenCalled();
   });
 
+  it("closes run admission before it stops accepting requests", async () => {
+    const order: string[] = [];
+    const server = fakeServer({ listening: true, closeDelayMs: 0 });
+    server.close.mockImplementation((callback?: (err?: Error) => void) => { order.push("listener"); setTimeout(() => callback?.(), 0); });
+    await closeHttpListenerForShutdown({ server, signal: "SIGTERM", timeoutMs: 1_000, log: stubLogger(),
+      closeRunAdmission: () => order.push("run_admission") });
+    expect(order).toEqual(["run_admission", "listener"]);
+    const stopped = vi.fn();
+    await expect(closeHttpListenerForShutdown({ server: fakeServer({ listening: false }), signal: "SIGTERM", log: stubLogger(),
+      closeRunAdmission: stopped })).resolves.toBe("not_listening");
+    expect(stopped).toHaveBeenCalledOnce();
+  });
+
   it("closes the remaining connections when the drain outlives the grace period", async () => {
     vi.useFakeTimers();
     try {

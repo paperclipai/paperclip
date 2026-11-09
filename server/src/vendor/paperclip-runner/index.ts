@@ -193,6 +193,7 @@ export const NativeProviderStateIncompatibleError = runner.NativeProviderStateIn
 export const NativeProviderSideEffectPendingError = runner.NativeProviderSideEffectPendingError;
 export const NativeRunnerSourceReconciliationRequiredError = runner.NativeRunnerSourceReconciliationRequiredError;
 export const nativeRestartInterruptedTurnId = runner.nativeRestartInterruptedTurnId;
+export const nativeRestartContinuationInFlight = runner.nativeRestartContinuationInFlight;
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;

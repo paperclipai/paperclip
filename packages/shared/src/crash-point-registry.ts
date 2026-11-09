@@ -64,6 +64,12 @@ export const CRASH_POINTS = {
     kinds: ["native_restart_recovery_claim"],
     invariants: ["I4", "I6"],
   },
+  "runner.semantic_tool.after_input_before_dispatch": {
+    description: "The controller received a dynamic tool call (for example write_document) from the Runner and has not dispatched it. On Daytona the Runner and Codex outlive the controller, so with --hold-ms Codex keeps the call pending through the outage (restart chaos t03); a local restart also stops the Runner.",
+    environments: ["local", "daytona"],
+    kinds: ["native_executor_claim"],
+    invariants: ["I4", "I7"],
+  },
   "native.result.after_accept_before_finalize": {
     description: "The run's result and its workspace_finalizing finalization row are committed; finalization has not started. The accepted result must be finalized exactly once.",
     environments: ["local", "daytona"],

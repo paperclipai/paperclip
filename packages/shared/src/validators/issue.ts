@@ -605,6 +605,8 @@ export const confirmOwnerGoneSchema = z.object({
   actionId: z.string().guid(),
   recordId: z.string().guid(),
   stopEvidence: z.string().trim().min(20).max(12000),
+  /** The record version the board saw (`evidence.recordUpdatedAt`); required when the request names one. */
+  recordVersion: z.string().datetime({ offset: true }).optional(),
 }).strict();
 
 export const retryWorkspaceExportSchema = z.object({

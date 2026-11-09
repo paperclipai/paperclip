@@ -1,3 +1,4 @@
+import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
@@ -1445,6 +1446,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "chat_task_completed",
   "issue_assigned",
   "issue_blockers_resolved",
+  "issue_blocker_stalled",
   "issue_commented",
   "issue_comment_mentioned",
   "issue_dependencies_blocked",
@@ -9830,7 +9832,7 @@ export function issueRoutes(
       timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
       timing.time("created_from", () => resolveVisibleIssueCreationSource(req, issue)),
     ]);
-    const [recoveryActionsByRelationIssue, revalidatedActiveRecoveryAction, mentionedProjects] = await Promise.all([
+    const [recoveryActionsByRelationIssue, revalidatedActiveRecoveryAction, mentionedProjects, stalledDependencies] = await Promise.all([
       timing.time("relation_recovery", () => relationRecoveryActionMap(recoveryActionsSvc, issue.companyId, relations)),
       timing.time("revalidate_recovery", () => revalidateActiveSourceRecoveryForRead({
         issue,
@@ -9841,6 +9843,14 @@ export function issueRoutes(
       timing.time("mentioned_projects", () => mentionedProjectIds.length > 0
         ? projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
         : Promise.resolve([])),
+      // Children and blockers stalled on the board, shown on this page so the
+      // board can act without opening each one. Unreadable issues are omitted.
+      timing.time("stalled_dependencies", async () => {
+        const stalled = await listStalledDependencies(db, { companyId: issue.companyId, issueId: issue.id });
+        if (stalled.length === 0) return stalled;
+        const readable = await readableIssueEdgeIds(req, issue.companyId, stalled.map(entry => entry.stalledIssueId));
+        return stalled.filter(entry => readable.has(entry.stalledIssueId));
+      }),
     ]);
     const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
       relations, recoveryActionsByRelationIssue,
@@ -9867,6 +9877,8 @@ export function issueRoutes(
       interruption: await taskInterruptionPresentation(db, issue),
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
+      // Always present, so a cleared stall replaces the cached list.
+      stalledDependencies,
       blockedBy: visibleRelations.blockedBy,
       blocks: visibleRelations.blocks,
       relatedWork: visibleReferenceSummary,
