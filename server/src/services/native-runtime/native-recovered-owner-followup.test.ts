@@ -337,6 +337,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(followUp.logs.join("")).not.toContain("starting a new runner for this conversation");
   }, 60_000);
 
+  it("starts an unclaimed remote follow-up from the previous owner's external marker under a bootstrap claim", async () => {
+    const fixture = await staleProjection("codex", true);
+    expect(await fixture.followUp.start("created", { kind: "bootstrap_incomplete", runId: fixture.followUp.runId,
+      leaseOwner: "successor", controllerGeneration: 1, providerAttempt: 0, restartKind: "hard", recoveryRequestId: null } as never))
+      .toBe(ADMITTED);
+    expect(JSON.parse(await readFile(fixture.path, "utf8")).identity).toEqual(fixture.latest.identity);
+    await fixture.assertBackup();
+    expect(await quarantined()).toEqual([]);
+  }, 60_000);
+
   it("rehydrates a same-source external marker before reading the suspended resumed sandbox", async () => {
     const fixture = await staleProjection("codex", true), { latest, followUp, root, path } = fixture;
     await writeFile(path, JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity: latest.identity }));
