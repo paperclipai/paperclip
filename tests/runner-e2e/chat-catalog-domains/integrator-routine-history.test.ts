@@ -126,3 +126,24 @@ describe("complete normal accounting stays mandatory", () => {
     const foreign = phase(true); foreign.identity.runId = "other"; expect(routineHistoryAccountingReady(foreign.identity, [foreign.snapshot.run!], overview())).toBe(false);
   });
 });
+// Recorded reply from run 42584001490 (prefix renamed); it failed v2 only because "published successfully and is done" missed a keyword.
+const RECORDED = "Yes \u2014 the **Morning Launch summary** routine ran twice this week, both today (Nov 9):\n\n- **Failed:** run `51e8bf51` at 08:20 UTC. [ACORN-1](/ACORN/issues/ACORN-1) was blocked because the Synthetic Launch Notes `launch_update` publish returned `Synthetic write failed; page unchanged`. It remains blocked; owner is the Synthetic Launch Notes provider, and the unblock action is restoring `launch_update`.\n- **Completed:** run `4b180bf1` at 08:21 UTC. [ACORN-2](/ACORN/issues/ACORN-2) published successfully and is done.\n\nThe routine has no scheduled triggers, so both were manual runs. The failed run is [run 51e8bf51](/ACORN/agents/59e1d949-9e46-4e57-9f36-64c57d8eb4d5/runs/51e8bf51-94dc-47ca-8f91-2116dbe02979); its agent heartbeat run exited successfully, but the routine run is recorded as failed because its task moved to blocked.";
+describe("per-task outcomes are graded against recorded status", () => {
+  const withReply = (reply: string) => { const v = valid(); v.reply = reply; return gradeIntegratorRoutineHistory(v).passed; };
+  it("accepts the recorded reply and rewordings that pair each task with its recorded outcome", () => {
+    for (const reply of [RECORDED,
+      "Yes, twice (both manual). [ACORN-1](/ACORN/issues/ACORN-1) is the one that failed: the publish returned an error and the task is blocked. [ACORN-2](/ACORN/issues/ACORN-2) went through and is done.",
+      "| Task | Outcome |\n|---|---|\n| [ACORN-1](/ACORN/issues/ACORN-1) | Blocked - publish error, nothing was published |\n| [ACORN-2](/ACORN/issues/ACORN-2) | Done, published once |",
+      "ACORN-1 didn't succeed: the publish failed. ACORN-2 finished and its update was published."])
+      expect(withReply(reply), reply).toBe(true);
+  });
+  it("rejects swapped, blanket, mixed and missing per-task outcomes", () => {
+    for (const reply of [RECORDED.replace("[ACORN-1](/ACORN/issues/ACORN-1)", "[TMP](/ACORN/issues/TMP)").replace(/ACORN-2/g, "ACORN-1").replace(/TMP/g, "ACORN-2"),
+      "The routine ran twice. ACORN-1 completed fine. ACORN-2 failed to publish.",
+      "The routine ran twice: ACORN-1 and ACORN-2. Both runs completed successfully.",
+      "ACORN-1 failed. ACORN-2 failed too, although its run completed.",
+      "ACORN-1 failed. The other run worked.",
+      "Runs this week: [ACORN-1](/ACORN/issues/ACORN-1), [ACORN-2](/ACORN/issues/ACORN-2)."])
+      expect(withReply(reply), reply).toBe(false);
+  });
+});
