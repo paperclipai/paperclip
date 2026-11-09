@@ -1,3 +1,4 @@
+import { groupImageResources } from "./image-resources";
 import { TaskBrowserActivity } from "../task-side-panel/TaskBrowserActivity";
 import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
 import { TaskChatSkillCreatedCard } from "./TaskChatSkillCreatedCard";
@@ -19,6 +20,7 @@ import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatSubagentTree } from "./TaskChatSubagentCard";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatThinking } from "./TaskChatThinking";
@@ -236,6 +238,8 @@ function renderItem(
       );
     case "brief":
       return renderBrief ? renderBrief() : null;
+    case "subagent_group":
+      return <TaskChatSubagentTree subagents={item.subagents} />;
     case "turn":
       return (
         <TaskChatTurn
@@ -328,7 +332,8 @@ export function TaskChatThreadView({
   onOpenBrowser,
 }: TaskChatThreadViewProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
-  const { items: visibleItems, retryMarkers } = useMemo(() => compactAdjacentErrors(items), [items]);
+  const { items: compactedItems, retryMarkers } = useMemo(() => compactAdjacentErrors(items), [items]);
+  const visibleItems = useMemo(() => groupImageResources(compactedItems), [compactedItems]);
   const retryableMarkerId =
     onRetryFailedRun || onTryAgainNoLiveExecutionPath
       ? [...visibleItems]

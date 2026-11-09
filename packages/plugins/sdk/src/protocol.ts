@@ -810,13 +810,21 @@ export interface PluginSyncFileMapping {
    * shows the bytes only to code that already runs in that sandbox.
    */
   mode?: number;
-  /** Glob patterns to exclude when `kind` is `"directory"`. */
+  /** Directory glob patterns; literal root-relative paths when preserving source entries. */
   exclude?: string[];
   /**
    * Symlink handling for `kind: "directory"` transfers. Falsy preserves symlinks
    * as links; `true` dereferences them to their target bytes. Mirrors tar's `-h`.
    */
   followSymlinks?: boolean;
+  /**
+   * Outbound directory transfers preserve source entry names, including `._*`
+   * and provider scratch-like names. In this mode `exclude` contains literal
+   * root-relative paths; providers omit only those paths and scratch paths
+   * created by this exact transfer. Archive member and symlink validation stay
+   * unchanged. Ignored for syncIn/files.
+   */
+  preserveSourceEntries?: boolean;
   /**
    * Advisory read-write intent for the sandbox target. `"rw"` means the author
    * expects the agent to change the bytes at the target and keep the change.
@@ -898,11 +906,13 @@ export interface PluginSyncOperation {
 export interface PluginEnvironmentSyncInParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 export interface PluginEnvironmentSyncOutParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 /** Per-operation transfer accounting returned by a sync hook, for observability. */

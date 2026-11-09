@@ -689,6 +689,12 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
         : await request(app).patch(`/api/issues/${f.issueId}`).send({ comment: "Verified source recovery; continue the original work." });
 
       expect(res.status, JSON.stringify(res.body)).toBe(method === "post" ? 201 : 200);
+      const [comment] = await db.select({ id: issueComments.id }).from(issueComments)
+        .where(eq(issueComments.issueId, f.issueId));
+      expect(comment).toBeDefined();
+      await expect.poll(async () => db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, f.companyId),
+          sql`${agentWakeupRequests.payload}->>'commentId' = ${comment!.id}`))).toHaveLength(1);
       await heartbeat.drainActiveRunExecutions();
       const progress = once(child, "message", { signal: AbortSignal.timeout(5_000) });
       child.send("continue-work");

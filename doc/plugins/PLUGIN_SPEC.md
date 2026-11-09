@@ -682,6 +682,7 @@ The host provides:
 - tool name (without plugin namespace prefix)
 - parsed parameters matching the tool's declared schema
 - run context: agent ID, run ID, company ID, project ID
+  (the project ID is an empty string when the run has no project)
 
 The worker executes the tool and returns a typed result (string content, structured data, or error).
 

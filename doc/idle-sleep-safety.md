@@ -386,6 +386,11 @@ settles, including after the raw socket closes. Detached startup reconciliation
 for built-in agents, managed homes and persisted runtime services also remains
 counted after readiness until its writes settle.
 
+Retained native response presentation also continues after web readiness. Its
+fair scheduler and persisted retry deadlines remain in effect; in-flight work
+stays counted for idle and is joined at shutdown. Web readiness does not require
+the retained reply queue to become idle.
+
 Scheduler work already in flight remains counted until its promise settles.
 Idle holds pause new scheduler admissions. Database backup promises remain
 counted through success or failure. Configured periodic backups block sleep by
@@ -594,6 +599,19 @@ No plugin approval or configuration bypass is supported. Scheduled and
 externally triggered work needs a durable host wake mechanism before it can
 permit sleep.
 
+The host's agent-runtime lifecycle notification listener has separate ownership
+from its SDK worker. A normal owned safety read retires its exclusive listener
+client only after admitted delivery and journal work settle. Failed or uncertain
+retirement remains a blocker; diagnostics never perform this retirement. Closing
+a subscription alone does not prove that its PostgreSQL backend closed. The
+client belongs only to lifecycle delivery, so retirement preserves the main
+pool and other features' notification channels. Releasing the hold or its existing shared expiry deadline
+recreates the listener and reconstructs delivery from the durable journal before
+normal dispatch, including events whose notification arrived while it was closed.
+This preserves at-least-once delivery and existing company filtering; it does not
+promise exactly-once callback invocation or add a wake guarantee for arbitrary
+external SQL writers while compute is stopped.
+
 This is a single-process admission protocol. A restart clears the owner. The
 host must serialize sleep with deploy/wake operations and bind its final check
 to the instance it stops. An unexpected restart after the final check can still
@@ -654,3 +672,46 @@ Tenant authorization still runs after wake. Personal GitHub credential continuit
 and unsupported transports retain their blockers. See [authenticated incoming
 wake proof](idle-incoming-wake.md) for scope, HTTP versus durable-event guarantees,
 rate/availability bounds, compatibility and remaining transport dependencies.
+
+## Registered owner deadline coverage
+
+The negotiated domain deadline catalog also inspects the registered status-card,
+external-object, skill-sync, watchdog, retry and quota-monitor owners. `index.ts`
+passes the actual services and worker reconciliation callbacks to the report.
+A route-created service or an arbitrary in-memory `nextWakeAt` cannot establish
+this coverage. Missing owner callbacks preserve the original durable work checks.
+
+Each owner reads the supplied bounded, repeatable-read snapshot. Its normalized
+state and future deadlines join the existing generation fingerprint. Startup,
+dirty reconstruction, failed reconciliation, concurrent revision changes and
+stopped workers cannot relax a blocker. The report checks owner revisions again
+after inspection and backup preparation. Owner reads share the catalog's query
+and elapsed-time budget; exhaustion refuses sleep.
+
+Scheduled retry coverage is limited to a future legacy assignee-task retry and
+its exact same-company, same-agent queued wake pointing back to that run. Other
+runs and wakes retain their checks, as do accounting, budget-stop, resources and
+cleanup. Native retries, review retries, coalesced wakes, claimed cancellation
+and tasks with a separate monitor remain conservative. After wake, ordinary
+run-dispatch admission and claims still decide whether execution may start.
+
+The reserved legacy quota monitor validates its saved source run and current
+assignee or agent reviewer target separately from ordinary issue monitors.
+Claimed, due, blocked, malformed, native-source or mismatched-source monitors
+remain work. Watchdog inspection reuses its subtree classifier; stopped or
+incomplete subtrees remain work. First-run grace remains exactly 15 seconds
+from issue creation. Cloud may refuse sleep when a real deadline is too near;
+inspection never extends that deadline to make sleep eligible.
+
+A completed or cancelled legacy quota task can retain its reserved monitor policy
+and timestamp as history. The scheduler's terminal-status exclusion disarms that
+schedule; inspection does not clear or postpone it. The quota owner additionally
+requires a valid settled legacy source, idle execution state, no monitor claim or
+execution lock, and no linked unfinished run or wake before treating it as
+passive. A live task's due monitor remains work. Source uncertainty and unrelated
+accounting/resource obligations retain their independent checks.
+
+Pending `budget_evaluation_work` rows also block sleep. The budget owner removes
+only the input IDs it has consumed. The queue has no completed-history rows.
+The durable check still applies when a worker is absent or has not reconstructed
+its work; a process-local idle count does not replace this check.

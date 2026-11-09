@@ -691,6 +691,10 @@ The `create_project` runtime tool uses the normal project API with durable idemp
 
 Confirmed project creation appears as a durable card in the shared task transcript, including selected repository links. Tasks are linked inline. Failed creation never produces a success card. Tool evals cover planning/handoff, project/repository selection, retries, permission and mode denials, and ordinary delegation regressions using the production chat directive.
 
+Task replies and new tasks submit with Enter by default; Shift+Enter adds a new
+line. The **Command/Ctrl+Enter to Submit** experiment restores the previous
+keyboard behavior.
+
 ### Paused task messages
 
 A paused task takes over the composer with an amber notice and a Resume action.
@@ -842,7 +846,7 @@ A company may configure a shared decision model for optional Paperclip features.
 
 Organizational projects, task files, personal agent home, and provider home are separate concepts. App and chat tasks share one workspace policy: preserve a binding or explicit configured folder, otherwise allocate a stable task directory. A repository is optional and can be prepared without creating a project. Optional connection and destination defaults feed the same task policy; they do not grant permissions or relocate existing conversations.
 
-Agents select authorized workspace/repository intent while the harness owns paths, preparation, persistence and safe transitions. Intentional simultaneous sharing of one physical local/SSH folder remains supported. Provider sessions keep their admitted root through completion and recovery. See [SPEC-implementation.md](SPEC-implementation.md) and [the layer architecture](plans/2026-10-09-task-workspaces.md) for the versioned contracts and rollout constraints.
+Agents select authorized workspace/repository intent while the harness owns paths, preparation, persistence and safe transitions. Intentional simultaneous sharing of one physical local/SSH folder remains supported. A subtask never shares its parent's realized workspace: it keeps the parent's project and workspace strategy and gets its own workspace from the project base, exactly as a top-level task in that project would (a project configured for one shared folder still shares that folder across all its tasks). Provider sessions keep their admitted root through completion and recovery. See [SPEC-implementation.md](SPEC-implementation.md) and [the layer architecture](plans/2026-10-09-task-workspaces.md) for the versioned contracts and rollout constraints.
 
 ### Fast responses
 

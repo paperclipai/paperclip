@@ -10,6 +10,7 @@ import {
   issueComments,
   issueDocuments,
   issueAccessGrants,
+  issueRelations,
   issueLabels,
   issueWorkProducts,
   issues,
@@ -174,6 +175,29 @@ describeEmbeddedPostgres("companySearchService", () => {
     });
     return id;
   }
+
+  it("returns glyph-only blocker state for blocked results without blocker details (BUG-07)", async () => {
+    const companyId = await createCompany();
+    const parent = await createIssue(companyId, { title: "Launch parent", status: "blocked" });
+    const blocker = await createIssue(companyId, { title: "Hidden blocker detail", status: "todo", identifier: "SRCH-2" });
+    const open = await createIssue(companyId, { title: "Launch open", status: "todo" });
+    await db.insert(issueRelations).values({ companyId, issueId: blocker, relatedIssueId: parent, type: "blocks" });
+    try {
+      const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "launch", scope: "issues" }));
+      const blocked = result.results.find((row) => row.id === parent)?.issue;
+      expect(blocked?.blockerAttention).toMatchObject({ state: "needs_attention", unresolvedBlockerCount: 1 });
+      expect(Object.keys(blocked!.blockerAttention!).sort()).toEqual([
+        "attentionBlockerCount", "coveredBlockerCount", "reason", "sampleBlockerIdentifier",
+        "sampleStalledBlockerIdentifier", "stalledBlockerCount", "state", "unresolvedBlockerCount",
+      ]);
+      expect(blocked?.blockerAttention?.sampleBlockerIdentifier).toBeNull();
+      expect(JSON.stringify(result)).not.toContain("Hidden blocker detail");
+      expect(JSON.stringify(result)).not.toContain(blocker);
+      expect(result.results.find((row) => row.id === open)?.issue).not.toHaveProperty("blockerAttention");
+    } finally {
+      await db.delete(issueRelations);
+    }
+  });
 
   it("paginates issue-result-only searches before unrelated entity competition", async () => {
     const companyId = await createCompany();

@@ -2699,6 +2699,70 @@ mod tests {
     }
 
     #[test]
+    fn disconnected_managed_executor_does_not_restore_or_reconcile_remote_streams() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-managed-disconnected-{}", Uuid::new_v4()));
+        let config = test_config(&directory);
+        let mut executor = ManagedProviderCommandExecutor::with_runner_config(&directory, &config);
+        let mut payload = claude_prepare_payload();
+        payload["provider"]["runtimeContext"] = Value::Null;
+        executor
+            .execute(&test_command(1, "run.prepare", payload))
+            .unwrap();
+        let ManagedProviderDescriptor::ClaudeManaged(descriptor) =
+            executor.state.as_ref().unwrap().descriptor.clone()
+        else {
+            panic!("expected Claude managed descriptor");
+        };
+        let (provider, requests) =
+            crate::claude_managed_provider::tests::disconnected_executor_fixture(descriptor);
+        executor.provider = Some(provider);
+        executor.state.as_mut().unwrap().lifecycle = "session_open".to_owned();
+        executor.refresh_provider_checkpoint();
+        executor.save_state().unwrap();
+        let retained = fs::read(executor.state_path()).unwrap();
+        let before = requests();
+        assert_eq!(
+            before
+                .iter()
+                .filter(|path| path.contains("/events/stream"))
+                .count(),
+            1
+        );
+
+        for _ in 0..64 {
+            assert!(executor.poll_disconnected_events().unwrap().is_empty());
+        }
+        assert_eq!(requests(), before);
+        assert_eq!(fs::read(executor.state_path()).unwrap(), retained);
+
+        let mut replacement =
+            ManagedProviderCommandExecutor::with_runner_config(&directory, &config);
+        assert!(replacement.poll_disconnected_events().unwrap().is_empty());
+        assert!(!replacement.restore_checked);
+        assert_eq!(requests(), before);
+
+        // The real worker's closed stream needs history and a reopen on ordinary
+        // polling. This control proves disconnected polling left it untouched.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while requests().len() == before.len() && std::time::Instant::now() < deadline {
+            let _ = executor.poll_events();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let after = requests();
+        assert!(after.iter().any(|path| path.contains("/events?")));
+        assert_eq!(
+            after
+                .iter()
+                .filter(|path| path.contains("/events/stream"))
+                .count(),
+            2
+        );
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn attach_refreshes_tools_in_the_same_session_and_preserves_profile_fences() {
         let directory =
             std::env::temp_dir().join(format!("paperclip-managed-refresh-{}", Uuid::new_v4()));

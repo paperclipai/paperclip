@@ -40,6 +40,20 @@ export function responsibleConnectionUser(actor: AuthorizationActor): string | n
   return (actor.type === "agent" ? actor.onBehalfOfUserId : actor.userId) ?? null;
 }
 
+/** Installation changes require the same agent-edit authority at every entry point. */
+export async function assertAgentConnectionInstallAccess(db: Db, actor: AuthorizationActor, companyId: string, agentIds: string[]) {
+  const authorization = authorizationService(db);
+  for (const agentId of new Set(agentIds)) {
+    const [agent] = await db.select({ id: agents.id }).from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).limit(1);
+    if (!agent) throw forbidden("The target agent is not available in this company");
+    const decision = await authorization.decide({
+      actor, action: "agent_config:update", resource: { type: "agent", companyId, agentId }, scope: { targetAgentId: agentId },
+    });
+    if (!decision.allowed) throw forbidden(`You cannot edit agent ${agentId}, so you cannot change its connection installs`);
+  }
+}
+
 /** Used at HTTP and service boundaries; capability probes call the same evaluator. */
 export function connectionManagementService(db: Db) {
   const authorization = authorizationService(db);

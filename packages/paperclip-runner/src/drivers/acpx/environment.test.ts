@@ -3,12 +3,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => vi.unstubAllEnvs());
 
-import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, CLAUDE_TODO_TOOLS_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
+
+const claudeLauncherEnv = { [CLAUDE_TODO_TOOLS_ENV]: "1" };
 
 describe("ACPX launch environment", () => {
+  it("enables Claude's task-list tools for the native plan and only for Claude", () => {
+    const host = { PATH: "/bin", [CLAUDE_TODO_TOOLS_ENV]: "0" };
+    expect(createSanitizedAcpxSpawnInput(host, "claude").env[CLAUDE_TODO_TOOLS_ENV]).toBe("1");
+    expect(createSanitizedAcpxSpawnInput({ PATH: "/bin" }, "claude").env[CLAUDE_TODO_TOOLS_ENV]).toBe("1");
+    expect(createSanitizedAcpxSpawnInput(host, "codex").env[CLAUDE_TODO_TOOLS_ENV]).toBeUndefined();
+  });
+
   it("rejects task shell selectors without a controller-owned helper projection", () => {
     const selectors = { BASH_ENV: "/workspace/hook.sh", ZDOTDIR: "/workspace", GH_CONFIG_DIR: "/workspace/gh" };
-    expect(createSanitizedAcpxSpawnInput(selectors, "claude").env).toEqual({});
+    expect(createSanitizedAcpxSpawnInput(selectors, "claude").env).toEqual(claudeLauncherEnv);
     for (const [key, value] of Object.entries(selectors)) {
       expect(configuredEnvironmentProjection({[key]: value})).not.toHaveProperty(key);
       expect(() => createSanitizedAcpxSpawnInput({[key]:value, [CONFIGURED_ENVIRONMENT_KEYS]:JSON.stringify([key])}, "claude")).toThrow("configured environment");
@@ -21,7 +30,7 @@ describe("ACPX launch environment", () => {
       PAPERCLIP_GITHUB_BRIDGE_TOKEN: "bridge-capability" };
     const source = { ...helpers, GH_TOKEN: "host-secret", GITHUB_TOKEN: "host-secret",
       PAPERCLIP_GIT_TOKEN: "host-secret", NODE_OPTIONS: "--require=untrusted" };
-    expect(createSanitizedAcpxSpawnInput(source, "claude").env).toEqual(helpers);
+    expect(createSanitizedAcpxSpawnInput(source, "claude").env).toEqual({ ...helpers, ...claudeLauncherEnv });
     for (const [key, value] of Object.entries(helpers)) vi.stubEnv(key, value);
     const ambient = createSanitizedAcpxSpawnInput(undefined, "claude").env;
     const sibling = createSanitizedAcpxSpawnInput(source, "cursor").env;
@@ -30,7 +39,7 @@ describe("ACPX launch environment", () => {
       expect(sibling).not.toHaveProperty(key);
     }
     const { PAPERCLIP_GITHUB_LAUNCHER_DIR: _launcher, ...withoutLauncher } = source;
-    expect(createSanitizedAcpxSpawnInput(withoutLauncher, "claude").env).toEqual({ PATH: helpers.PATH });
+    expect(createSanitizedAcpxSpawnInput(withoutLauncher, "claude").env).toEqual({ PATH: helpers.PATH, ...claudeLauncherEnv });
     for (const [key, value] of Object.entries(helpers).filter(([key]) => key.startsWith("PAPERCLIP_GITHUB_"))) {
       expect(configuredEnvironmentProjection({ [key]: value })).not.toHaveProperty(key);
       expect(() => createSanitizedAcpxSpawnInput({ [key]: value, [CONFIGURED_ENVIRONMENT_KEYS]: JSON.stringify([key]) }, "claude")).toThrow("configured environment");
@@ -94,6 +103,7 @@ describe("ACPX launch environment", () => {
       ANTHROPIC_BASE_URL: source.ANTHROPIC_BASE_URL,
       ANTHROPIC_AUTH_TOKEN: "selected-key", CLAUDE_CODE_USE_BEDROCK: "1",
       AWS_REGION: "us-east-1", AWS_BEARER_TOKEN_BEDROCK: "bedrock-key",
+      ...claudeLauncherEnv,
     });
     expect(createSanitizedAcpxSpawnInput(source, "codex").env).toEqual({ PAPERCLIP_AI_PROVIDER_KEY: "codex-key" });
     expect(createSanitizedAcpxSpawnInput(source, "cursor").env).toEqual({});
@@ -126,6 +136,7 @@ describe("ACPX launch environment", () => {
       LC_ALL: "C.UTF-8",
       HTTPS_PROXY: "https://proxy.example",
       ANTHROPIC_API_KEY: "anthropic-secret",
+      ...claudeLauncherEnv,
     });
     expect(createSanitizedAcpxSpawnInput(source, "pi").env).toEqual({
       PATH: "/bin",

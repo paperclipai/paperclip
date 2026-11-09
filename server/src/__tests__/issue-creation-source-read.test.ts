@@ -64,7 +64,7 @@ describe.skipIf(!support.supported)("creation source run projections", () => {
       expect(reads.reduce((count, event) => count + Number(event.calls), 0)).toBe(1);
       expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(8192);
       expect(result).toMatchObject({ run: { id: run.id, companyId, agentId }, sourceIssue: { id: sourceId } });
-      expect(runBoundIssueReference(result!.run)).toBe(binding === "scoped" ? sourceId : "CSR-1");
+      expect(runBoundIssueReference(result!.run!)).toBe(binding === "scoped" ? sourceId : "CSR-1");
       for (const key of ["runnerProfileJson", "stdoutExcerpt", "stderrExcerpt", "resultJson"]) expect(result!.run).not.toHaveProperty(key);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
       expect(JSON.stringify(events)).not.toContain("retained-source-context");

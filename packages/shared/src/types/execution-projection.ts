@@ -28,6 +28,7 @@ export interface ExecutionBlocker {
 
 /** Presentation of existing execution records, not a second task status machine. */
 export interface ExecutionProjection {
+  /** The board can Stop this run now: any queued or running run, or a failed native run whose retry is still pending. */
   canStop?: boolean;
   phase:
     | "working"
@@ -72,6 +73,7 @@ export const EXECUTION_RECONCILIATION_CAUSES = [
   "native_session_retry_exhausted",
   "native_restart_recovery_blocked",
   "native_continuation_requires_reconciliation",
+  "native_provider_side_effect_pending",
   "legacy_execution_requires_reconciliation",
 ] as const;
 export function requiresExecutionReconciliation(
@@ -96,6 +98,22 @@ export interface ExecutionReconciliation {
     sources: Array<{ attachmentId: string; sha256: string; byteSize: number; filename: string | null }>;
     interveningExecutions?: Array<{ runId: string; recoveryActionId: string; evidenceSha256: string }>;
   };
+  /**
+   * The system continued from the last committed workspace save because the
+   * retained source of this run could not be verified. Its unsaved files were
+   * never applied; when readable they are attached to the task, unverified.
+   */
+  retainedSourceFallback?: {
+    schema: "paperclip.retained-source-fallback.v1";
+    outcome: "retained_source_unverifiable_continued_from_last_saved";
+    workspaceId: string;
+    abandonedEpoch: number;
+    epoch: number;
+    snapshotId: string | null;
+    quarantine:
+      | { state: "captured"; attachmentId: string; filename: string; sha256: string; byteSize: number }
+      | { state: "unreadable"; reason: string };
+  };
 }
 /** A task-level view of one interruption. Diagnostics keep the underlying runs
  * and recovery records; ordinary product surfaces render this projection. */
@@ -109,9 +127,13 @@ export interface TaskInterruptionPresentation {
   state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
   nextRetryAt: string | null;
   canRetry: boolean;
-  userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | "project_access" | null;
+  userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | "project_access"
+    /** Board confirms that a previous server, which can no longer report, stopped its workspace copyback. */
+    | "confirm_owner_stop" | null;
   /** Only the task's own project id is exposed. Other source projects stay unnamed. */
   projectAccess?: { agentId: string; projectId: string | null; ready: boolean };
   sourceRunIds: string[];
   observedRunId: string | null;
+  /** The saved-work recovery step that must finish before the task continues. */
+  recoveryStep?: "checking_previous_run" | "saving_previous_files" | "finishing_recovery";
 }

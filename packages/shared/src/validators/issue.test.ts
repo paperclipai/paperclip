@@ -55,6 +55,14 @@ describe("issue validators", () => {
     }
   });
 
+  it("accepts an optional attachment-preparation identity and rejects malformed markers", () => {
+    const metadata = { version: 1, sections: [{ rows: [{ type: "text", text: "Details" }] }] };
+    const attachmentPreparation = { attachmentId: "9af8228f-0be7-45ae-a104-6fbe0af6f1d3" };
+    expect(issueCommentMetadataSchema.parse({ ...metadata, attachmentPreparation }).attachmentPreparation).toEqual(attachmentPreparation);
+    expect(issueCommentMetadataSchema.parse(metadata).attachmentPreparation).toBeUndefined();
+    expect(issueCommentMetadataSchema.safeParse({ ...metadata, attachmentPreparation: { attachmentId: "bad-id" } }).success).toBe(false);
+  });
+
   it("uses the same bounded unique upload ID contract for comment and update requests", () => {
     const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
     expect(
@@ -714,6 +722,18 @@ describe("persisted canonical question initial text", () => {
       const initialText = "a".repeat(codePoints - 1) + "😀";
       expect(Buffer.byteLength(JSON.stringify(input({ initialText })))).toBeLessThan(196 * 1024);
       expect(paperclipQuestionSetPayloadSchema.safeParse(input({ initialText })).success).toBe(codePoints === 100_000);
+    }
+  });
+  it("bounds question text by the string length the Runner parser enforces", () => {
+    const within = paperclipQuestionSetPayloadSchema.safeParse(input({ prompt: "😀".repeat(2000) }));
+    expect(within.success).toBe(true);
+    for (const payload of [
+      input({ prompt: "😀".repeat(2000) + "x" }),
+      input({ id: "😀".repeat(81) }),
+      { ...input({}), title: "😀".repeat(501) },
+      { ...input({}), submitLabel: "😀".repeat(101) },
+    ]) {
+      expect(paperclipQuestionSetPayloadSchema.safeParse(payload).success).toBe(false);
     }
   });
   it("rejects non-text modes and unbounded or nonstring defaults", () => {

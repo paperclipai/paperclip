@@ -319,12 +319,16 @@ export async function collectChatRunEvidence(
     run.logStore === null && run.logRef === null && ["failed", "interrupted"].includes(run.status) &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   const reassignedBeforeStart = isReassignedUnstartedWake(run);
+  const terminalBeforeStart = run.status === "cancelled" && run.errorCode === "issue_terminal_status" &&
+    run.startedAt === null && run.logStore === null && run.logRef === null;
   return {
     runId: run.id,
     ...(providerNeverStarted ? { logOmissionReason: "provider_not_started" } : {}),
     ...(admissionWait ? { logOmissionReason: "pre_dispatch_execution_wait" } : {}),
     ...(reassignedBeforeStart ? { logOmissionReason: "assignee_changed_before_start" } : {}),
+    ...(terminalBeforeStart ? { logOmissionReason: "issue_terminal_before_start" } : {}),
     log: isResetRun(run) || isBlockedUnstartedWake({ ...run }) || providerNeverStarted || admissionWait || reassignedBeforeStart
+      || terminalBeforeStart
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
     events: admissionEvents ?? await collectRunEvents((afterSeq, limit) =>

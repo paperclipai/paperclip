@@ -1,4 +1,5 @@
 import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-snapshot-retention.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
@@ -6,6 +7,7 @@ import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notific
 import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
+import { withEnvironmentLeaseController } from "./environment-lease-controller.js";
 import { randomUUID } from "node:crypto";
 
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "./environment-custom-image-runtime.js";
@@ -50,6 +52,19 @@ import {
   stockHash,
   type ManagedResourceStockStatus,
 } from "./managed-resource-drift.js";
+import {
+  archiveManagedPluginEnvironment as archiveManagedPluginEnvironmentRow,
+  ensureManagedPluginEnvironment as ensureManagedPluginEnvironmentRow,
+  findManagedPluginEnvironment as findManagedPluginEnvironmentRow,
+  type ManagedPluginEnvironmentInput,
+  type ManagedPluginEnvironmentReconcileAction,
+} from "./managed-plugin-environments.js";
+
+/** Lease policies whose sandbox outlives its run: a reusable warm sandbox, and a
+ * retain-on-failure sandbox kept stopped as a workspace-restore source. The
+ * delete blast radius, the atomic delete guard and the consented teardown must
+ * all use this one list, or a delete can orphan a sandbox. */
+export const KEPT_SANDBOX_LEASE_POLICIES = ["reuse_by_environment", "retain_on_failure"] as const;
 
 export async function attachSandboxCreation(db: Db, id: string, scope: { companyId: string; environmentId: string; heartbeatRunId?: string | null },
   attach: (tx: Db) => Promise<EnvironmentLease>): Promise<EnvironmentLease> {
@@ -758,7 +773,9 @@ export function environmentService(db: Db) {
               mergeManagedEnvironmentMetadata(row.metadata, desiredMetadata, keys),
             ),
             status: "active",
-            updatedAt: new Date(),
+            updatedAt: row.status === "active" && stockHash(row.config) === stockHash(desiredConfig)
+              ? row.updatedAt
+              : new Date(),
           })
           .where(eq(environments.id, row.id))
           .returning()
@@ -1061,6 +1078,35 @@ export function environmentService(db: Db) {
     archiveManagedSandboxEnvironment,
 
     /**
+     * Ensure the instance-level row of one managed-config plugin entry,
+     * validating its driver config through the plugin environment validator.
+     * Adopts an unmarked row for the same plugin and driver (see
+     * `managed-plugin-environments.ts`).
+     */
+    ensureManagedPluginEnvironment: async (
+      input: ManagedPluginEnvironmentInput,
+    ): Promise<{ environment: Environment; action: ManagedPluginEnvironmentReconcileAction }> => {
+      const result = await ensureManagedPluginEnvironmentRow(db, input);
+      return { environment: toEnvironment(result.row), action: result.action };
+    },
+
+    /** Archive the active row of a managed plugin entry whose plugin is not running. */
+    archiveManagedPluginEnvironment: async (
+      input: { pluginKey: string; driverKey: string },
+    ): Promise<Environment | null> => {
+      const row = await archiveManagedPluginEnvironmentRow(db, input);
+      return row ? toEnvironment(row) : null;
+    },
+
+    /** The marked row of a managed plugin entry, archived or not. */
+    findManagedPluginEnvironment: async (
+      input: { pluginKey: string; driverKey: string },
+    ): Promise<Environment | null> => {
+      const row = await findManagedPluginEnvironmentRow(db, input);
+      return row ? toEnvironment(row) : null;
+    },
+
+    /**
      * Idempotently ensure a managed Kubernetes sandbox environment exists for
      * an instance, configured from instance/operator-supplied config. A thin
      * wrapper over `ensureManagedSandboxEnvironment` that pins the provider to
@@ -1272,7 +1318,7 @@ export function environmentService(db: Db) {
             sql`not exists (
               select 1 from ${environmentLeases}
               where ${environmentLeases.environmentId} = ${environments.id}
-                and ${environmentLeases.leasePolicy} = 'reuse_by_environment'
+                and ${inArray(environmentLeases.leasePolicy, [...KEPT_SANDBOX_LEASE_POLICIES])}
                 and ${environmentLeases.status} in ('active', 'released', 'retained', 'failed')
             )`,
           ),
@@ -1375,6 +1421,7 @@ export function environmentService(db: Db) {
         db
           .select({
             leaseId: environmentLeases.id,
+            leasePolicy: environmentLeases.leasePolicy,
             executionWorkspaceId: environmentLeases.executionWorkspaceId,
             executionWorkspaceName: executionWorkspaces.name,
             issueId: environmentLeases.issueId,
@@ -1387,7 +1434,7 @@ export function environmentService(db: Db) {
           .where(
             and(
               eq(environmentLeases.environmentId, id),
-              eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+              inArray(environmentLeases.leasePolicy, [...KEPT_SANDBOX_LEASE_POLICIES]),
               inArray(environmentLeases.status, ["active", "released", "retained", "failed"]),
             ),
           ),
@@ -1407,6 +1454,7 @@ export function environmentService(db: Db) {
       const pendingCleanupLeaseCount = countFromRows(pendingCleanupLeaseRows);
       const reusableSandboxLeaseHolders = reusableSandboxLeaseRows.map((row) => ({
         leaseId: row.leaseId,
+        leasePolicy: row.leasePolicy,
         executionWorkspaceId: row.executionWorkspaceId,
         executionWorkspaceName: row.executionWorkspaceName,
         issueId: row.issueId,
@@ -1530,7 +1578,8 @@ export function environmentService(db: Db) {
         releasedAt: null,
         failureReason: null,
         cleanupStatus: null,
-        metadata: withoutReusableLeaseHandoff(withoutCleanupVerification(input.metadata)),
+        // The holder stamp is written with the row that makes the lease active.
+        metadata: withEnvironmentLeaseController(withoutReusableLeaseHandoff(withoutCleanupVerification(input.metadata))),
         createdAt: now,
         updatedAt: now,
       };
@@ -1622,7 +1671,8 @@ export function environmentService(db: Db) {
                     expiresAt: input.expiresAt ?? null,
                     failureReason: null,
                     cleanupStatus: null,
-                    metadata: preserveReusableLeaseHandoff(previous?.metadata ?? null, withoutCleanupVerification(input.metadata)),
+                    metadata: withEnvironmentLeaseController(
+                      preserveReusableLeaseHandoff(previous?.metadata ?? null, withoutCleanupVerification(input.metadata))),
                     updatedAt: now,
                   })
                   .where(
@@ -1733,6 +1783,7 @@ export function environmentService(db: Db) {
           // Messages saved behind a finished run wait for its cleanup to
           // settle. Reconsider them through normal deferred admission.
           await notifyDeferredExecutionWork(tx, { companyId: previous.companyId });
+          await promoteDeferredWorkIntents(tx, { companyId: previous.companyId, trigger: "lock_released", issueId: previous.issueId });
         }
         if (previous.creationOperationId && previous.status === "pending_cleanup" && options?.cleanupStatus === "success" && status !== "pending_cleanup") {
           await tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: now })
@@ -1867,12 +1918,15 @@ export function environmentService(db: Db) {
     ): Promise<EnvironmentLease[]> => {
       const now = new Date();
       const rows = await db.transaction(async tx => {
-        const [run] = await tx.select({ companyId: heartbeatRuns.companyId }).from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, heartbeatRunId)).limit(1);
+        const [run] = await tx.select({ companyId: heartbeatRuns.companyId,
+          issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')` })
+          .from(heartbeatRuns).where(eq(heartbeatRuns.id, heartbeatRunId)).limit(1);
         if (run) {
           await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: heartbeatRunId });
           await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: heartbeatRunId });
           await notifyDeferredExecutionWork(tx, { companyId: run.companyId });
+          await promoteDeferredWorkIntents(tx, { companyId: run.companyId, trigger: "lock_released",
+            issueId: run.issueId && /^[0-9a-f-]{36}$/i.test(run.issueId) ? run.issueId : null });
         }
         return tx.update(environmentLeases)
         .set({

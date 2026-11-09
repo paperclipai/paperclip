@@ -68,6 +68,7 @@
     "i18next": "^26.4.2",
     "lexical": "0.48.0",
     "lucide-react": "^1.48.0",
+    "mdast-util-from-markdown": "^2.0.3",
     "mermaid": "^12.1.0",
     "motion": "^13.1.1",
     "radix-ui": "^1.6.7",

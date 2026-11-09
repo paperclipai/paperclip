@@ -508,6 +508,7 @@ describe("native runner file handoff", () => {
         body: "Prepared Requested answer for this response.",
         metadata: expect.objectContaining({
           authorizationReason: "paperclip_runner_protocol",
+          attachmentPreparation: { attachmentId: first.entityRefs[0] },
         }),
       }),
     ]);

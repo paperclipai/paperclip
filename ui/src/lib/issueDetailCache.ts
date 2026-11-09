@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { Issue, IssueComment } from "@paperclipai/shared";
+import type { InstanceExperimentalSettings, Issue, IssueComment } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
+import { getIssueRecentCommentsQueryOptions } from "./issue-comment-window-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { getNextIssueCommentPageParam, ISSUE_COMMENT_PAGE_SIZE } from "@/lib/optimistic-issue-comments";
 
@@ -147,6 +148,17 @@ export function seedIssueDetailProjections(
   }
 }
 
+export function getIssueCoreQueryOptions(queryClient: QueryClient, issueRef: string) {
+  return {
+    queryKey: [...queryKeys.issues.detail(issueRef), "core"] as const,
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      const issue = await issuesApi.getCore(issueRef, { signal });
+      seedIssueDetailProjections(queryClient, issue, issueRef);
+      return issue;
+    },
+  };
+}
+
 export async function fetchIssueDetail(
   queryClient: QueryClient,
   issueRef: string,
@@ -212,21 +224,30 @@ export function prefetchIssueComments(queryClient: QueryClient, issueRef: string
   });
 }
 
-/**
- * Prefetch everything the issue-detail first paint needs — the detail snapshot
- * and the first comments page — for instant warm navigation from a list row.
- * Seeds the full list-row snapshot when provided so the header + description
- * paint immediately with no loading state.
- */
 export function prefetchIssueDetailForNavigation(
   queryClient: QueryClient,
   issueRef: string,
-  options?: {
-    issue?: Issue | null;
-  },
+  options?: { issue?: Issue | null },
 ) {
+  const fullHistory = queryClient.getQueryData(["issues", "history-expanded", issueRef]) === true
+    || queryClient.getQueryData<InstanceExperimentalSettings>(queryKeys.instance.experimentalSettings)?.enableClassicTaskInterface === true;
+  if (fullHistory) {
+    return Promise.all([
+      prefetchIssueDetail(queryClient, issueRef, options),
+      prefetchIssueComments(queryClient, issueRef),
+    ]);
+  }
+  if (isCompleteIssueSnapshot(options?.issue)) {
+    seedIssueDetailCache(queryClient, options.issue, { issueRef });
+  }
   return Promise.all([
-    prefetchIssueDetail(queryClient, issueRef, options),
-    prefetchIssueComments(queryClient, issueRef),
+    queryClient.prefetchQuery({
+      ...getIssueCoreQueryOptions(queryClient, issueRef),
+      staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,
+    }),
+    queryClient.prefetchQuery({
+      ...getIssueRecentCommentsQueryOptions(queryClient, issueRef),
+      staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,
+    }),
   ]);
 }

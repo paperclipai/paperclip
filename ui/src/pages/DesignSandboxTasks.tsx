@@ -16,7 +16,8 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useTaskListCollection } from "@/hooks/useTaskListCollection";
-import { buildCompanyUserLabelMap } from "@/lib/company-members";
+import { formatUserLabel } from "@/lib/assignees";
+import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { queryKeys } from "@/lib/queryKeys";
 import { taskListViewStorageKey } from "@/lib/task-list-views";
 import type { Issue } from "@paperclipai/shared";
@@ -66,14 +67,16 @@ export function DesignSandboxTasks() {
     },
     enabled: !!companyId && !!userId,
   });
-  const users = buildCompanyUserLabelMap(directory.data?.users);
-  const agentNames = new Map(agents.data?.map(agent => [agent.id, agent.name]));
+  const users = buildCompanyUserProfileMap(directory.data?.users);
+  const agentById = new Map(agents.data?.map(agent => [agent.id, agent]));
   const projectById = new Map(projects.data?.map(project => [project.id, project]));
   const items: TaskListItem[] = [...new Map((tasks.data?.pages.flat() ?? []).map(issue => [issue.id, issue])).values()].map(issue => ({
     issue: { ...issue, project: issue.project ?? projectById.get(issue.projectId ?? "") },
     unread: unread.data?.has(issue.id) ?? false,
-    createdBy: issue.createdByAgentId ? agentNames.get(issue.createdByAgentId) ?? "Unknown agent" : users.get(issue.createdByUserId ?? "") ?? (issue.createdByUserId === "local-board" ? "Board" : "Unknown user"),
-    assignee: issue.assigneeAgentId ? agentNames.get(issue.assigneeAgentId) ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "") ?? (issue.assigneeUserId === "local-board" ? "Board" : null),
+    createdBy: issue.createdByAgentId ? agentById.get(issue.createdByAgentId)?.name ?? "Unknown agent" : users.get(issue.createdByUserId ?? "")?.label ?? (issue.createdByUserId === "local-board" ? "Board" : "Unknown user"),
+    assignee: issue.assigneeAgentId ? agentById.get(issue.assigneeAgentId)?.name ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "")?.label ?? formatUserLabel(issue.assigneeUserId),
+    assigneeAgent: agentById.get(issue.assigneeAgentId ?? ""),
+    assigneeUserAvatarUrl: users.get(issue.assigneeUserId ?? "")?.image,
   }));
   const collection = useTaskListCollection({ items, companyId, userId,
     viewStorageKey: taskListViewStorageKey("design-integration-sandbox", userId ?? "local-board"),

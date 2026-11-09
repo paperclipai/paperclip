@@ -21,7 +21,8 @@ function field(value: unknown, key: string): unknown {
   catch { return undefined; }
 }
 
-function sanitize(input: { httpStatus?: unknown; errorCode?: unknown }): PluginEnvironmentResumeErrorDiagnostic | null {
+/** Shared with the acquisition envelope: the same closed status/errno fields. */
+export function sanitizeProviderErrorDiagnostic(input: { httpStatus?: unknown; errorCode?: unknown }): PluginEnvironmentResumeErrorDiagnostic | null {
   const httpStatus = Number.isInteger(input.httpStatus) && (input.httpStatus as number) >= 100 && (input.httpStatus as number) <= 599
     ? input.httpStatus as number : undefined;
   const errorCode = typeof input.errorCode === "string" && ERROR_CODES.has(input.errorCode) ? input.errorCode : undefined;
@@ -29,8 +30,8 @@ function sanitize(input: { httpStatus?: unknown; errorCode?: unknown }): PluginE
   return { ...(httpStatus !== undefined ? { httpStatus } : {}), ...(errorCode !== undefined ? { errorCode } : {}) };
 }
 
-/** Worker side: derive safe fields from a thrown provider error and its causes. */
-export function environmentResumeErrorData(error: unknown): { schema: string; diagnostic: PluginEnvironmentResumeErrorDiagnostic } | undefined {
+/** Derive the closed status/errno fields from a thrown provider error and its causes. */
+export function providerErrorDiagnostic(error: unknown): PluginEnvironmentResumeErrorDiagnostic | null {
   let httpStatus: unknown;
   let errorCode: unknown;
   for (let cause = error, depth = 0; cause && depth < 4; cause = field(cause, "cause"), depth++) {
@@ -39,7 +40,12 @@ export function environmentResumeErrorData(error: unknown): { schema: string; di
     const code = field(cause, "code");
     if (errorCode === undefined && typeof code === "string" && ERROR_CODES.has(code)) errorCode = code;
   }
-  const diagnostic = sanitize({ httpStatus, errorCode });
+  return sanitizeProviderErrorDiagnostic({ httpStatus, errorCode });
+}
+
+/** Worker side: derive safe fields from a thrown provider error and its causes. */
+export function environmentResumeErrorData(error: unknown): { schema: string; diagnostic: PluginEnvironmentResumeErrorDiagnostic } | undefined {
+  const diagnostic = providerErrorDiagnostic(error);
   return diagnostic ? { schema: SCHEMA, diagnostic } : undefined;
 }
 
@@ -48,5 +54,5 @@ export function readEnvironmentResumeErrorDiagnostic(error: unknown): PluginEnvi
   const data = field(error, "data");
   if (field(data, "schema") !== SCHEMA) return null;
   const diagnostic = field(data, "diagnostic");
-  return sanitize({ httpStatus: field(diagnostic, "httpStatus"), errorCode: field(diagnostic, "errorCode") });
+  return sanitizeProviderErrorDiagnostic({ httpStatus: field(diagnostic, "httpStatus"), errorCode: field(diagnostic, "errorCode") });
 }
