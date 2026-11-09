@@ -2055,7 +2055,7 @@ export class DurablePrpControlPlane {
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
   #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
-  #eventDeliveryStall: { ackedSourceSeq: number; since: number; failures: number; cause: string } | null = null;
+  #eventDeliveryStall: { runId: string; ackedSourceSeq: number; since: number; failures: number } | null = null;
   #connectionLeaseTtlMs: number;
   #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
   #persistedRevision = -1;
@@ -2227,10 +2227,15 @@ export class DurablePrpControlPlane {
     }
     const checkpoint = this.flushCheckpoint();
     const frame = structuredClone(value);
+    let checkpointFailure: unknown = null;
     const sending = (this.#sendQueues.get(connection) ?? Promise.resolve())
-      .then(() => checkpoint)
+      .then(() => checkpoint.catch(error => { checkpointFailure = error ?? new Error("checkpoint_failed"); throw error; }))
       .then(() => connection.sendJson(frame))
-      .catch(() => connection.close());
+      .catch(() => {
+        if (checkpointFailure !== null && this.#eventOwner === connection && this.#protocolIntegrityError === null) {
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${eventCommitFailureCause(checkpointFailure)}`);
+        } else connection.close();
+      });
     this.#sendQueues.set(connection, sending);
     void sending.finally(() => {
       if (this.#sendQueues.get(connection) === sending) this.#sendQueues.delete(connection);
@@ -3822,7 +3827,12 @@ export class DurablePrpControlPlane {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     }
-    this.#store.save();
+    try {
+      this.#store.save();
+    } catch (error) {
+      this.#failEventCommit(connection, `journal_write_failed:${eventCommitFailureCause(error)}`);
+      return;
+    }
     this.#sendJson(connection, {
       protocol,
       version: lease.protocolVersion,
@@ -4140,21 +4150,25 @@ export class DurablePrpControlPlane {
     );
   }
 
-  #eventCommitFailed(connection: AuthorityConnection, cause: string, now = Date.now()): void {
+  #eventCommitFailed(connection: AuthorityConnection, cause: string, sourceSeq?: number, now = Date.now()): void {
     const acked = this.#store.state.ackedSourceSeq;
+    const runId = this.#identity.runId;
     const stall = this.#eventDeliveryStall;
-    if (stall === null || stall.ackedSourceSeq !== acked) {
-      this.#eventDeliveryStall = { ackedSourceSeq: acked, since: now, failures: 1, cause };
+    if (stall === null || stall.ackedSourceSeq !== acked || stall.runId !== runId) {
+      this.#eventDeliveryStall = { runId, ackedSourceSeq: acked, since: now, failures: 1 };
     } else {
       stall.failures += 1;
-      stall.cause = cause;
       if (stall.failures >= EVENT_DELIVERY_STALL_FAILURES && now - stall.since >= EVENT_DELIVERY_STALL_MS) {
-        this.#failProtocolIntegrity(connection,
-          new NativeSessionProtocolIntegrityError("runner_event_commit_stalled", `${cause} at source seq ${acked + 1}`));
+        this.#failEventCommit(connection, cause, sourceSeq);
         return;
       }
     }
     connection.close();
+  }
+
+  #failEventCommit(connection: AuthorityConnection, cause: string, sourceSeq?: number): void {
+    this.#failProtocolIntegrity(connection, new NativeSessionProtocolIntegrityError("runner_event_commit_stalled",
+      `${cause} at source seq ${sourceSeq ?? this.#store.state.ackedSourceSeq + 1}`));
   }
 
   #failProtocolIntegrity(
@@ -4310,7 +4324,7 @@ export class DurablePrpControlPlane {
       if (error instanceof NativeSessionProtocolIntegrityError) {
         this.#failProtocolIntegrity(connection, error);
       } else {
-        this.#eventCommitFailed(connection, eventCommitFailureCause(error));
+        this.#eventCommitFailed(connection, eventCommitFailureCause(error), sourceSeq);
       }
       return;
     }
@@ -4357,13 +4371,28 @@ export class DurablePrpControlPlane {
       // turn before readers react or a replacement owner adopts their cursor.
       const candidate = buildCandidate(this.#store.state);
       if (candidate === null) {
-        this.#eventCommitFailed(connection, "journal_sequence_not_contiguous");
+        this.#eventCommitFailed(connection, "journal_sequence_not_contiguous", sourceSeq);
         return;
       }
-      this.#store.commit(candidate, !isStreamingEvent(event));
-    } else if (!await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event))) {
-      if (isCurrentOwner()) this.#eventCommitFailed(connection, "journal_commit_refused");
-      return;
+      try {
+        this.#store.commit(candidate, !isStreamingEvent(event));
+      } catch (error) {
+        this.#failEventCommit(connection, `journal_write_failed:${eventCommitFailureCause(error)}`, sourceSeq);
+        return;
+      }
+    } else {
+      let committed: boolean;
+      try {
+        committed = await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event));
+      } catch (error) {
+        if (isCurrentOwner()) this.#failEventCommit(connection, `journal_write_failed:${eventCommitFailureCause(error)}`, sourceSeq);
+        else connection.close();
+        return;
+      }
+      if (!committed) {
+        if (isCurrentOwner()) this.#eventCommitFailed(connection, "journal_commit_refused", sourceSeq);
+        return;
+      }
     }
     if (!isCurrentOwner()) return;
 
@@ -4387,7 +4416,7 @@ export class DurablePrpControlPlane {
         await this.flushCheckpoint();
       } catch (error) {
         if (this.#eventOwner === connection && this.#identity === identity) {
-          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${eventCommitFailureCause(error)}`);
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${eventCommitFailureCause(error)}`, sourceSeq);
         }
         return;
       }
@@ -4449,6 +4478,7 @@ export class DurablePrpControlPlane {
           })
           .finally(() => this.#pendingSemanticCalls.delete(commandId));
       }
+      this.#eventDeliveryStall = null;
       this.#sendJson(connection,
         this.#controlEnvelope(
           connection,

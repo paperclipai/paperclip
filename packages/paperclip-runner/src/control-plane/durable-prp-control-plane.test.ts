@@ -1366,7 +1366,7 @@ it("fails closed with the schema issue when the runner keeps redelivering an inv
     await core.start();
     let lease: string | null = null;
     for (let attempt = 1; attempt <= 20; attempt += 1) {
-      const client = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
       lease = client.leaseToken ?? lease;
       sendSecure(client, envelope);
       await vi.waitFor(() => expect(client.socket.destroyed || client.socket.readyState === "closed"
@@ -1381,6 +1381,36 @@ it("fails closed with the schema issue when the runner keeps redelivering an inv
     expect(failure.detail).toMatch(/^event_schema_invalid:\/\S* at source seq 1$/);
   } finally {
     now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed at once when the journal cannot record a runner event", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-journal-failure-"));
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: vi.fn(async () => undefined), onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "journal-failure-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  try {
+    await core.start();
+    const client: AuthenticatedClient = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const journal = core.store as unknown as { commit: (...args: unknown[]) => void; commitEvent: (...args: unknown[]) => Promise<boolean> };
+    const diskFull = Object.assign(new Error("no space on /private/disk"), { code: "ENOSPC" });
+    vi.spyOn(journal, "commit").mockImplementation(() => { throw diskFull; });
+    vi.spyOn(journal, "commitEvent").mockRejectedValue(diskFull);
+    sendSecure(client, envelope);
+    await vi.waitFor(() => expect(onProtocolIntegrityError).toHaveBeenCalledOnce());
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error & { reason: string; detail: string };
+    expect(failure).toMatchObject({ reason: "runner_event_commit_stalled", detail: "journal_write_failed:ENOSPC at source seq 1" });
+    expect(failure.message).not.toContain("/private/disk");
+    client.socket.destroy();
+  } finally {
     await core.stop();
     rmSync(root, { recursive: true, force: true });
   }
@@ -1407,7 +1437,7 @@ it("fails closed when runner events keep failing to commit without progress", as
     await core.start();
     let lease: string | null = null;
     for (let attempt = 1; attempt <= 20; attempt += 1) {
-      const client = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
       lease = client.leaseToken ?? lease;
       sendSecure(client, envelope);
       await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(attempt));
