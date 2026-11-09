@@ -363,7 +363,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(triggered.monitorNextCheckAt).toBeNull();
   });
 
-  it("does not record a deferred monitor claim as issue activity", async () => {
+  it("does not record a deferred monitor claim as issue activity, and records it when the monitor dispatches", async () => {
     const { companyId, issueId, agentId, nextCheckAt } = await seedFixture();
     const sourceRunId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId,
@@ -384,9 +384,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(deferred.monitorWakeRequestedAt).toBeNull();
     expect(deferred.monitorNextCheckAt).toEqual(nextCheckAt);
     expect(deferred.monitorAttemptCount).toBe(0);
-    // A claim and its release are scheduler bookkeeping, not issue activity. Two
-    // sterile passes must leave the board's activity signal where the last real
-    // change left it, so a stalled task still reads as stalled.
     expect(deferred.updatedAt).toEqual(seeded.updatedAt);
 
     await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date(),
@@ -397,7 +394,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
     const [triggered] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(triggered.monitorAttemptCount).toBe(1);
-    // The pass that dispatches is real activity, so it does move the signal.
     expect(triggered.updatedAt.getTime()).toBeGreaterThan(seeded.updatedAt.getTime());
   });
 
