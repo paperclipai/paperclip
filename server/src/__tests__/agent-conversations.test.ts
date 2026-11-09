@@ -998,7 +998,8 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("Ready-made teams are installable packages in Paperclip's teams catalog");
     expect(AGENT_CHAT_DIRECTIVE).toContain("list the catalog with GET /api/teams/catalog");
     expect(AGENT_CHAT_DIRECTIVE).toContain("do not look for others in package registries, repositories or the web");
-    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/teams-catalog/<the team's id>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The web app has no teams catalog page, so do not link one");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("paperclipai teams install <team id> --company-id <companyId>");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("GET /api/teams/catalog");
   });
