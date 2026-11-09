@@ -331,6 +331,16 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("tells agents managed-agent profiles are created with the CLI, not a web page", () => {
+    const route = buildOpenApiSpec().paths["/api/companies/{companyId}/managed-agent-profiles"];
+    for (const operation of [route.get, route.post]) {
+      expect(operation.description).toContain("Board only");
+      expect(operation.description).toContain("There is no web page");
+    }
+    expect(route.post.description).toContain("paperclipai managed-agent setup --company-id <companyId>");
+    expect(route.post.description).toContain("--acknowledge-retention");
+  });
+
   it("documents the export include body so agents can request projects and skills", () => {
     const spec = buildOpenApiSpec();
     for (const path of ["/api/companies/{companyId}/exports", "/api/companies/{companyId}/exports/preview"]) {

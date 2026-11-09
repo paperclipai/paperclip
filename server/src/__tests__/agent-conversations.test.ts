@@ -1058,6 +1058,15 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<agentId>/runs/<runId>");
   });
 
+  it("says the task-chat lab exists only under pnpm dev in the person's own checkout", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Some developer labs, including the task-chat interaction lab at /<prefix>/dev/task-chat-lab, are registered only in a development build of the UI");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("Developer labs, such as");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the design guide and the ux-lab pages, are registered in every build");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("running pnpm dev in their own Paperclip checkout and visiting /<prefix>/dev/task-chat-lab");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/dev/task-chat-lab");
+  });
+
   it("routes a person's own profile change to their profile settings instead of an agent write", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("only they can change them in their profile settings at /<prefix>/company/settings/instance/profile");
     expect(AGENT_CHAT_DIRECTIVE).toContain("link that page instead of attempting the change");
