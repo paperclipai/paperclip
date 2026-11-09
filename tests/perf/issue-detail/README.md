@@ -67,8 +67,15 @@ requests that finished last before it (`releasedBy`), the slowest and repeated
 requests, layout shifts, and any movement of the latest message after it first
 appeared. `serverMs` comes from the `paperclip_api` Server-Timing entry that every
 API response carries, so a long `duration` with a short `serverMs` points to the
-network or browser queueing rather than the handler. Run samples serially and
-record whether each task's data was already cached (a revisit) or not.
+network or browser queueing rather than the handler. A fetch that is still
+running when the sample ends is listed with `pending: true`. Run samples
+serially and record whether each task's data was already cached (a revisit) or
+not.
+
+The summary labels each sample (`sample 1`, ...) instead of the task reference.
+It replaces query values and every path segment that contains a digit with a
+placeholder. Other path segments can stay, so review the output before you
+share it outside the instance.
 
 ## Task layout stability
 
