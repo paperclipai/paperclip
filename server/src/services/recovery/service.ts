@@ -2985,17 +2985,10 @@ export function recoveryService(
 
   async function resolveContinuationWaitingOnReview(
     issue: RecoveryIssue,
-    cause:
-      | "continuation_waiting_on_review"
-      | "dispatch_cancelled_by_dependencies" = "continuation_waiting_on_review",
   ) {
-    // Dispatch refused the run because of the saved blockers, so those
-    // relationships are already correct: keep them as they are (including
-    // cancelled or finalizing blockers) and do not add open children.
-    const preserveRelations = cause === "dispatch_cancelled_by_dependencies";
     const [existingBlockers, openChildren] = await Promise.all([
       existingUnresolvedBlockerIssues(issue.companyId, issue.id),
-      preserveRelations ? Promise.resolve([]) : openChildIssues(issue),
+      openChildIssues(issue),
     ]);
     const blockedByIssueIds = [
       ...new Set([
@@ -3005,12 +2998,10 @@ export function recoveryService(
     ];
     if (blockedByIssueIds.length === 0) return null;
 
-    const updated = await issuesSvc.update(
-      issue.id,
-      preserveRelations
-        ? { status: "blocked" }
-        : { status: "blocked", blockedByIssueIds },
-    );
+    const updated = await issuesSvc.update(issue.id, {
+      status: "blocked",
+      blockedByIssueIds,
+    });
     if (!updated) return null;
 
     const waitingOn = formatIssueLinksForComment([
@@ -3021,11 +3012,8 @@ export function recoveryService(
       issue.id,
       `This task is waiting on ${waitingOn} to finish. ` +
         "It will continue automatically when that work is done — there's nothing you need to do. " +
-        (cause === "dispatch_cancelled_by_dependencies"
-          ? "(Its latest run was not started because those blockers are still open; " +
-            "Paperclip recorded that as a normal dependency wait instead of flagging it as stuck.)"
-          : "(It was paused because the latest run reported it was waiting for review/approval; " +
-            "Paperclip turned that into a normal dependency wait instead of flagging it as stuck.)"),
+        "(It was paused because the latest run reported it was waiting for review/approval; " +
+        "Paperclip turned that into a normal dependency wait instead of flagging it as stuck.)",
       {},
       {
         authorType: "system",
@@ -3041,7 +3029,7 @@ export function recoveryService(
                 {
                   type: "key_value",
                   label: "Cause",
-                  value: cause,
+                  value: "continuation_waiting_on_review",
                 },
                 {
                   type: "key_value",
@@ -3072,13 +3060,143 @@ export function recoveryService(
         identifier: issue.identifier,
         status: "blocked",
         previousStatus: issue.status,
-        source:
-          cause === "dispatch_cancelled_by_dependencies"
-            ? "recovery.reconcile_dispatch_cancelled_by_dependencies"
-            : "recovery.reconcile_continuation_waiting_on_review",
+        source: "recovery.reconcile_continuation_waiting_on_review",
         blockedByIssueIds,
       },
     });
+    return updated;
+  }
+
+  function observedIssueChanged(current: RecoveryIssue, observed: RecoveryIssue) {
+    return Boolean(current.hiddenAt)
+      || current.status !== observed.status
+      || ["done", "cancelled"].includes(current.status)
+      || current.statusVersion !== observed.statusVersion
+      || current.lastStatusDecisionId !== observed.lastStatusDecisionId
+      || current.assigneeAgentId !== observed.assigneeAgentId
+      || current.assigneeUserId !== observed.assigneeUserId
+      || current.executionRunId !== observed.executionRunId
+      || current.checkoutRunId !== observed.checkoutRunId
+      || current.executionAgentNameKey !== observed.executionAgentNameKey
+      || current.updatedAt.getTime() !== observed.updatedAt.getTime();
+  }
+
+  async function hasPendingAgentHandoff(
+    tx: DbTransaction,
+    issue: Pick<RecoveryIssue, "companyId" | "id">,
+  ) {
+    const pendingHandoff = await tx.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(
+      eq(caseHandoffs.companyId, issue.companyId),
+      eq(caseHandoffs.issueId, issue.id),
+      eq(caseHandoffs.destinationKind, "agent"),
+      inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]),
+    )).limit(1).then((rows) => rows[0] ?? null);
+    return Boolean(pendingHandoff);
+  }
+
+  // Dispatch refused the assignee's latest run because of the saved
+  // blockers, so those relationships are already correct: record the wait
+  // without rewriting them (cancelled or still-finalizing blockers stay as
+  // they are). The sweep read the task before its async checks, so lock it
+  // and give up if anything changed, or if dispatch would now let it run.
+  async function recordDispatchDependencyWait(issue: RecoveryIssue) {
+    const publications: ActivityPublication[] = [];
+    const postCommitActions: IssuePostCommitAction[] = [];
+    const updated = await db.transaction(async (tx) => {
+      const current = await tx.select().from(issues).where(and(
+        eq(issues.companyId, issue.companyId),
+        eq(issues.id, issue.id),
+      )).for("update").limit(1).then((rows) => rows[0] ?? null);
+      if (!current || observedIssueChanged(current, issue)) return null;
+      if (await hasPendingAgentHandoff(tx, current)) return null;
+
+      const readiness = (await issuesSvc.listDependencyReadiness(
+        issue.companyId,
+        [issue.id],
+        tx,
+      )).get(issue.id);
+      if (!readiness || readiness.isDependencyReady) return null;
+      const waitingOn = await tx
+        .select({ id: issues.id, identifier: issues.identifier })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, issue.companyId),
+          inArray(issues.id, readiness.unresolvedBlockerIssueIds),
+        ));
+      if (waitingOn.length === 0) return null;
+
+      const transactionIssuesSvc = issueService(tx as unknown as Db);
+      const next = await transactionIssuesSvc.update(issue.id, {
+        status: "blocked",
+        companyGuard: issue.companyId,
+      }, tx, publications, postCommitActions);
+      if (!next) return null;
+
+      const blockedByIssueIds = waitingOn.map((row) => row.id);
+      const comment = await transactionIssuesSvc.addComment(
+        issue.id,
+        `This task is waiting on ${formatIssueLinksForComment(waitingOn)} to finish. ` +
+          "It will continue automatically when that work is done — there's nothing you need to do. " +
+          "(Its latest run was not started because those blockers are not finished yet; " +
+          "Paperclip recorded that as a normal dependency wait instead of flagging it as stuck.)",
+        {},
+        {
+          authorType: "system",
+          presentation: compactRecoveryPresentation(
+            "Recovery: waiting on dependencies — moved to blocked",
+          ),
+          metadata: {
+            version: 1,
+            sections: [
+              {
+                title: "Recovery",
+                rows: [
+                  { type: "key_value", label: "Cause", value: "dispatch_cancelled_by_dependencies" },
+                  { type: "key_value", label: "Previous status", value: issue.status },
+                  {
+                    type: "key_value",
+                    label: "Blocking issues",
+                    value: blockedByIssueIds.join(", ").slice(0, 2000),
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        tx,
+      );
+      await logActivity(tx as unknown as Db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { commentId: comment.id, bodySnippet: comment.body.slice(0, 120) },
+      }, publications);
+      await logActivity(tx as unknown as Db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          status: "blocked",
+          previousStatus: issue.status,
+          source: "recovery.reconcile_dispatch_cancelled_by_dependencies",
+          blockedByIssueIds,
+        },
+      }, publications);
+      return next;
+    });
+    if (updated) {
+      for (const publication of publications) publishActivity(publication);
+      await executeIssuePostCommitActions(db, postCommitActions);
+    }
     return updated;
   }
 
@@ -4052,31 +4170,13 @@ export function recoveryService(
         eq(issues.companyId, input.issue.companyId),
         eq(issues.id, input.issue.id),
       )).for("update").limit(1).then((rows) => rows[0] ?? null);
-      if (!current || current.hiddenAt
-        || current.status !== input.issue.status
-        || ["done", "cancelled"].includes(current.status)
-        || current.statusVersion !== input.issue.statusVersion
-        || current.lastStatusDecisionId !== input.issue.lastStatusDecisionId
-        || current.assigneeAgentId !== input.issue.assigneeAgentId
-        || current.assigneeUserId !== input.issue.assigneeUserId
-        || current.executionRunId !== input.issue.executionRunId
-        || current.checkoutRunId !== input.issue.checkoutRunId
-        || current.executionAgentNameKey !== input.issue.executionAgentNameKey
-        || current.updatedAt.getTime() !== input.issue.updatedAt.getTime()) {
-        return null;
-      }
+      if (!current || observedIssueChanged(current, input.issue)) return null;
 
       // Acceptance holds the same issue lock before writing its successor.
       // An awaiting-release handoff need not change the issue's version or
       // owner, and generic recovery must not cancel that durable successor.
       // Terminal intent has no successor; ordinary task recovery still owns it.
-      const pendingHandoff = await tx.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(
-        eq(caseHandoffs.companyId, current.companyId),
-        eq(caseHandoffs.issueId, current.id),
-        eq(caseHandoffs.destinationKind, "agent"),
-        inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]),
-      )).limit(1).then((rows) => rows[0] ?? null);
-      if (pendingHandoff) return null;
+      if (await hasPendingAgentHandoff(tx, current)) return null;
 
       return applyStrandedAssignedIssueEscalation(input, tx, publications, postCommitActions);
     });
@@ -4824,10 +4924,7 @@ export function recoveryService(
         latestRun.status === "cancelled" &&
         latestRun.errorCode === "issue_dependencies_blocked"
       ) {
-        const resolved = await resolveContinuationWaitingOnReview(
-          issue,
-          "dispatch_cancelled_by_dependencies",
-        );
+        const resolved = await recordDispatchDependencyWait(issue);
         if (resolved) {
           result.dependencyWaitResolved += 1;
           result.issueIds.push(issue.id);

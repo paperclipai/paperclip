@@ -21,6 +21,7 @@ import { legacyDispositionFingerprint, LEGACY_DISPOSITION_REPAIR_INSTRUCTION } f
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import * as instructionWorkingCopies from "../services/agent-instruction-working-copies.js";
 import * as runEvents from "../services/heartbeat-run-events.js";
+import * as pauseHoldGuard from "../services/recovery/pause-hold-guard.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -7979,6 +7980,97 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments[0]?.body).toContain(`${issuePrefix}-21`);
     expect(comments[0]?.body).not.toContain(`${issuePrefix}-23`);
+  });
+
+  it("records a dependency-cancelled wait when a cancelled blocker is the only blocker", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      retryReason: null,
+      runErrorCode: "issue_dependencies_blocked",
+      runError: "Run cancelled because issue dependencies are still blocked",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const cancelledBlockerId = randomUUID();
+    await db.insert(issues).values({
+      id: cancelledBlockerId,
+      companyId,
+      title: "Cancelled blocker",
+      status: "cancelled",
+      priority: "medium",
+      issueNumber: 24,
+      identifier: `${issuePrefix}-24`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: cancelledBlockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect(result.dependencyWaitResolved).toBe(1);
+    expect((await selectRecoveryIssueById(issueId))?.status).toBe("blocked");
+    expect(await sourceBlockerIssueIds(companyId, issueId)).toEqual([cancelledBlockerId]);
+    expect(await selectStrandedRecoveryIssuesForCompany(companyId)).toHaveLength(0);
+    const comments = await selectRecoveryCommentsForIssue(issueId);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain(`${issuePrefix}-24`);
+    const commentActivity = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.comment_added")));
+    expect(commentActivity).toHaveLength(1);
+  });
+
+  it("does not record a dependency-cancelled wait over a decision made after the sweep read the task", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      retryReason: null,
+      runErrorCode: "issue_dependencies_blocked",
+      runError: "Run cancelled because issue dependencies are still blocked",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Open blocker",
+      status: "in_review",
+      priority: "medium",
+      issueNumber: 25,
+      identifier: `${issuePrefix}-25`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    // A person closes the task while the sweep runs its checks on it.
+    const pauseHold = vi
+      .spyOn(pauseHoldGuard, "isAutomaticRecoverySuppressedByPauseHold")
+      .mockImplementationOnce(async () => {
+        await db.update(issues)
+          .set({ status: "done", updatedAt: new Date(Date.now() + 1_000) })
+          .where(eq(issues.id, issueId));
+        return false;
+      });
+    try {
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result.dependencyWaitResolved).toBe(0);
+    } finally {
+      pauseHold.mockRestore();
+    }
+
+    expect((await selectRecoveryIssueById(issueId))?.status).toBe("done");
+    expect(
+      (await selectRecoveryCommentsForIssue(issueId)).filter((comment) =>
+        comment.body.includes("continue automatically")),
+    ).toHaveLength(0);
   });
 
   it("repairs the PAP-16986 deliberate wait through the original owner when no target exists", async () => {
