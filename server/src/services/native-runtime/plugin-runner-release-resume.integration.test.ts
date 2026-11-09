@@ -35,6 +35,7 @@ const { createPrivateHostControlFixture } = await import(new URL("../../../../pa
 };
 
 const fakeAcpxSidecar = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar");
+const originalToolDefinitions = PaperclipRunnerToolAuthority.prototype.definitions;
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(Object.fromEntries(Object.entries(source).sort(([a], [b]) => a.localeCompare(b)))))}`;
 
@@ -51,7 +52,10 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const qualifiedCancellation = mode === "adopted cancellation" || mode === "cached cancellation";
     const managedGitHub = mode.endsWith("managed GitHub"), brokerUrl = "https://core.example.test/api", brokerToken = (runId: string) => `fixture-broker-${runId}`;
     const preparedBrokers: Array<{ runId: string; token?: string }> = [];
-    const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}`);
+    let phase = "fixture preparation", failurePhase: string | undefined;
+    const operationKinds: string[] = [];
+    context.onTestFailed(() => console.info("entry-fixture-failure", { harness, mode, phase: failurePhase ?? phase, operations: operationKinds.slice(-30) }));
+    const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}-${randomUUID()}`);
     const { db, runId, issueId, native } = first;
     const { companyId, agentId, runtimeRoot } = environment.current;
     const root = join(runtimeRoot, runId), workspace = join(root, "workspace"), home = join(root, "credential-home");
@@ -127,9 +131,8 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const releases: DurableRecoveryIdentity[] = [], claims: DurableRecoveryIdentity[] = [];
     const operationsDuringClaim: string[] = [];
     let claimHeld = false, holdPreparationFor: string | undefined, claimedDuringPreparation = false;
-    const toolDefinitions = PaperclipRunnerToolAuthority.prototype.definitions;
     const preparation = vi.spyOn(PaperclipRunnerToolAuthority.prototype, "definitions").mockImplementation(function (this: PaperclipRunnerToolAuthority) {
-      const definitions = toolDefinitions.call(this);
+      const definitions = originalToolDefinitions.call(this);
       if (holdPreparationFor === undefined || this.binding.runId !== holdPreparationFor) return definitions;
       holdPreparationFor = undefined;
       return waitForCondition("claim during preparation", () => claims.length === 1)
@@ -148,6 +151,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const sameSource = (a: DurableRecoveryIdentity, b: DurableRecoveryIdentity) => Object.entries(a).every(([key, value]) => b[key as keyof DurableRecoveryIdentity] === value);
     const task = async (raw: unknown, authorityRunId: string): Promise<unknown> => {
       const operation = environmentTaskOperationSchema.parse(raw);
+      operationKinds.push(operation.kind);
       if (claimHeld) operationsDuringClaim.push(operation.kind);
       if (operation.kind === "describe") return { kind: "description", taskId, launchPreparationVersion: 1,
         projectAuthCheckVersion: 1, warmTaskVersion: 1, releaseResumeVersion: 1, runner: artifact, ...(qualifiedCancellation ? { executionContextVersion: 1 } : {}),
@@ -242,9 +246,19 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
           sandboxLeaseAcquisition: { outcome: leaseId === leaseA ? "created" : "resumed", providerLeaseId: taskId } } });
     };
     const adoption = vi.spyOn(remoteWarmRecovery, "inspectRemoteWarmSessionRecovery");
+    let globalsRestored = false;
+    const restoreTestGlobals = () => {
+      if (globalsRestored) return;
+      globalsRestored = true;
+      adoption.mockRestore(); preparation.mockRestore();
+      https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
+    };
+    context.onTestFinished(restoreTestGlobals);
     try {
       setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
+      phase = "first execution";
       const a = await execute(execution, leaseA); expect(a).toMatchObject({ exitCode: 0, timedOut: false });
+      phase = "first release";
       await waitForCondition("automatic release A", () => releases.length === 1);
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))[0]).toMatchObject({ schemaStatus: "accepted", resultJson: { result: { reportedWorkDisposition: "done" } } });
       expect(await proof()).toMatchObject({ source: releases[0], taskId });
@@ -300,6 +314,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         await reconcileNativeFinalizations(db, [runB]);
         return runB;
       };
+      phase = "retained continuation";
       const runB = await admitNext();
       if (cancellation) return;
       await waitForCondition("automatic release B", () => releases.length === 2);
@@ -328,11 +343,13 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         expect(journal.filter(entry => entry.command === "turn.start")).toHaveLength(adopted ? 3 : 2);
       }
     } catch (error) {
+      failurePhase = phase;
       const live = await state().catch(() => ({}));
       console.info("entry-fixture", { releases: releases.length, claims: claims.length, lifecycle: live.lifecycle,
         lastCommand: live.lastControllerCommandSeq, ackedSource: live.ackedSourceSeq, outbox: live.outbox?.map((e: { envelope?: { payload?: { eventType?: string } } }) => e.envelope?.payload?.eventType), wire: wireEvents.slice(-70) });
       throw error;
     } finally {
+      phase = "cleanup";
       releaseClaimReply();
       await pendingFollowup?.catch(() => undefined);
       try {
@@ -342,8 +359,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         const failures = cleanup.filter((result): result is PromiseRejectedResult => result.status === "rejected");
         if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Fixture cleanup failed");
       } finally {
-        adoption.mockRestore(); preparation.mockRestore();
-        https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
+        restoreTestGlobals();
       }
     }
   });
