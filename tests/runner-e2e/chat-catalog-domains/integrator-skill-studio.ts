@@ -9,7 +9,39 @@ import { checks, observation, project, type Entity, type InternalObservation } f
 import { fixtureWorker } from "./internal-definition.js";
 import { integratorDefinition, observeInternal } from "./integrator-support.js";
 export const studioPageInput = '<!doctype html><html lang="en"><head><title>Synthetic landing page</title></head><body><main><h1>Launch trial</h1><form><input type="email" id="trial-email"><button type="submit">Join trial</button></form></main></body></html>';
-const studioMarkdown = "---\nname: accessibility-review\ndescription: Review supplied synthetic HTML for accessibility.\n---\n\nInspect the provided input only. Check that every input has a visible associated label. Record the exact element and evidence for any failed check. Do not invent browser tests or claim production qualification. Save the requested test output and complete the test task; do not create other work.";
+const studioMarkdown = "---\nname: accessibility-review\ndescription: Review supplied synthetic HTML for accessibility.\n---\n\nInspect the provided input only. Check that every input has a visible associated label. Record the exact element and evidence for any failed check. Do not invent browser tests or claim production qualification. Save the requested test output and complete the test task; do not create other work. End the output with a fenced json block recording the result exactly as {\"passed\": <number of passed checks>, \"failed\": <number of failed checks>, \"failures\": [{\"check\": \"<check name>\", \"element\": \"<failing element markup copied exactly from the input>\"}]}.";
+// The fixture skill asks for this literal record, so grading reads the record,
+// not the wording of the review around it.
+export interface StudioResultRecord { passed: number; failed: number; failures: Array<{ check: string; element: string }> }
+export function studioResultRecord(output: string): StudioResultRecord | undefined {
+  const block = [...output.matchAll(/```json[^\n]*\n([\s\S]*?)```/gi)].at(-1)?.[1];
+  if (!block) return undefined;
+  try {
+    const value = JSON.parse(block) as StudioResultRecord;
+    const count = (n: unknown) => Number.isInteger(n) && (n as number) >= 0;
+    return count(value.passed) && count(value.failed) && Array.isArray(value.failures) && value.failures.length === value.failed
+      && value.failures.every(row => typeof row?.check === "string" && !!row.check.trim() && typeof row.element === "string" && !!row.element.trim()) ? value : undefined;
+  } catch { return undefined; }
+}
+// The only form control in the synthetic input has no label; every reported
+// failing element must be markup copied from the input.
+export function recordFindsMissingLabel(record: StudioResultRecord | undefined) {
+  return !!record && record.failed >= 1 && record.failures.every(row => row.element.trim().startsWith("<") && studioPageInput.includes(row.element.trim()))
+    && record.failures.some(row => /^<input\b[^>]*\bid="trial-email"/.test(row.element.trim()));
+}
+// The completion reply must link the saved result: the hidden harness task (or
+// its output document) or the Studio run page.
+export function completionReplyLinksResult(o: StudioObservation) {
+  const run = o.studioRuns[0]; if (!run) return false;
+  const completion = o.runs.find(row => row.agentId === o.leadId && (row.contextSnapshot?.chatCompletionUpdates as Array<{ id?: unknown }> | undefined)?.some(update => update?.id === run.issueId));
+  const body = o.sourceComments.find(row => !!completion && row.authorAgentId === o.leadId && row.createdByRunId === completion.id)?.body ?? "";
+  const targets = [run.issueId, run.harnessIssue?.identifier].filter((id): id is string => !!id);
+  return [...body.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!).some(href => {
+    const url = new URL(href, "https://paperclip.invalid");
+    return url.origin === "https://paperclip.invalid" && (targets.some(id => new RegExp(`^/[^/]+/issues/${id.replace(/[-]/g, "\\-")}$`).test(url.pathname))
+      || (url.pathname.endsWith(`/skills/studio/${run.skillId}`) && url.searchParams.get("run") === run.id));
+  });
+}
 const root = (ctx: ChatCatalogContext, skillId: string) => `/api/companies/${ctx.input.fixtures.company.id}/skills/${skillId}`;
 interface StudioObservation extends InternalObservation { skill: CompanySkillDetail; studioRuns: CompanySkillTestRunDetail[]; pinnedVersions: Record<string, CompanySkillVersion>; sourceIssueId: string; sourceComments: Entity[] }
 async function observeStudio(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<StudioObservation> {
@@ -79,18 +111,13 @@ export function gradeIntegratorSkillStudio(value: unknown) {
     && run.harnessIssue?.id === run.issueId && run.harnessIssue.status === "done" && run.harnessContent.available,
   "Studio success is backed by a real completed native harness task; it is not a fabricated test row or another task's run.");
   const output = run?.outputBody ?? "";
-  c.add("saved-concrete-sample-failure", !!run && output.length > 0 && output === run.outputSnapshot
-    && /trial-email|email (?:input|field)/i.test(output) && /\b(?:label|labelled|labeled)\b/i.test(output)
-    && /\b(?:missing|absent|no (?:visible |associated )?label|unlabelled|unlabeled|fails?|without)\b/i.test(output)
-    && !/\b(?:all checks pass|no accessibility (?:issues|failures)|(?:input|field) (?:has|includes) (?:a )?(?:visible |associated )?label)\b/i.test(output)
+  c.add("saved-concrete-sample-failure", !!run && output.length > 0 && output === run.outputSnapshot && recordFindsMissingLabel(studioResultRecord(output))
     && run.documents.some(doc => doc.key === run.outputDocumentKey && doc.body === output),
-  "The saved inspectable output identifies the genuine missing label on the supplied email input; a successful test execution cannot turn a failing sample into a clean page.");
+  "The saved output's requested result record counts at least one failure and names the supplied unlabeled email input by its exact markup; a successful test execution cannot turn a failing sample into a clean page.");
   c.add("no-unrelated-work-or-skill-mutation", o.skill.currentVersionId === before?.currentVersionId && o.skill.markdown === before.markdown
     && o.tasks.every(task => task.id === run?.issueId) && !o.activity.some(event => event.agentId === o.leadId && event.action === "company.skill_file_updated"),
   "The test does not rewrite its tested revision or create unrelated production tasks.");
-  c.add("bounded-report-not-global-qualification", !/\b(?:all|every)\s+(?:production )?(?:agents?|pages?|websites?)\b[^.!?\n]{0,45}\b(?:qualified|passed|accessible|verified|enabled)\b/i.test(o.reply)
-    && !(/\b(?:test|run)\b[^.!?\n]{0,35}\b(?:passed|succeeded|completed)\b/i.test(o.reply) && run?.status !== "succeeded"),
-  "Chat does not elevate one test to universal qualification or misreport the actual test status.");
+  c.add("reply-links-saved-result", completionReplyLinksResult(o), "The completion reply links the saved Studio result (its test task, output document or Studio run) so the person can inspect it.");
   return c.result();
 }
 export const integratorSkillStudioCases = [integratorDefinition("skills", "skills.studio-test", async ctx => {
@@ -109,7 +136,7 @@ export const integratorSkillStudioCases = [integratorDefinition("skills", "skill
   await ctx.input.evidence("chat-skill-studio-visible-result.json", { skillId: o.skill.id, testRunId: run.id, status: run.status, issueId: run.issueId, interactions: run.interactions, url: ctx.input.page.url() });
   await ctx.input.page.goto(source); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
 }, { authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "../../server/src/services/chat-completion-delivery.ts", "chat-catalog-domains/integrator-skill-studio.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/skills.yaml"],
-  oracleVersion: "paperclip.chat-catalog.skill-studio.v2", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 540_000,
+  oracleVersion: "paperclip.chat-catalog.skill-studio.v3", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 540_000,
   async act(ctx, state) {
     await pollUntil({ label: "actual bounded skill Studio output", deadlineAt: Date.now() + 240_000, intervalMs: 1000,
       load: () => observeStudio(ctx, state), accept: o => studioNativeRunsComplete(o),
