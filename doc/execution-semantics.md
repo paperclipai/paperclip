@@ -727,8 +727,10 @@ the binding release above is allowed. The child's binding is released, the
 escalation resolves with the outcome `legacy_shared_workspace_rehomed`
 (`issue.legacy_workspace_rehomed` system activity), the child returns to
 `todo`, and a pending wake is recorded. The assignee is then woken once with a
-fresh session; a wake lost to a crash stays pending and a later pass delivers
-it while the child is still an assigned `todo`. What the moved child
+fresh session. Only a created run settles the wake: a wake lost to a crash or
+refused by the heartbeat stays pending, backs off (5 minutes, doubling, at most
+an hour), and is retried at that deadline while the child is still an assigned
+`todo`. What the moved child
 sees is a fresh workspace from the project base: no parent changes, and none of
 its own earlier files from the shared workspace. The child that still holds the
 shared workspace with unsaved files is not moved; its save recovery owns the

@@ -162,7 +162,7 @@ describePostgres("stranded subtasks bound to a parent's held workspace", () => {
     // Nothing ran for the parent or the writer child in the shared workspace.
     expect(dispatched.filter(turn => [f.parent.id, f.writer.id].includes(turn.issueId))).toEqual([]);
     // A later pass changes nothing.
-    expect(await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).toEqual([]);
+    expect((await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).rehomed).toEqual([]);
     expect((await issue(f.hero.id)).executionWorkspaceId).not.toBe(f.workspaceId);
   }, 60_000);
 
@@ -170,7 +170,7 @@ describePostgres("stranded subtasks bound to a parent's held workspace", () => {
     const f = await seedSharedFamily();
     const hero = await f.strand(f.hero.id);
     // The move commits, then the process stops before it wakes the assignee.
-    expect(await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).toEqual([f.hero.id]);
+    expect((await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).rehomed).toEqual([f.hero.id]);
     expect((await action(hero.actionId)).evidence).toMatchObject({ legacyWorkspaceRehome: { wake: "pending" } });
     expect(await issue(f.hero.id)).toMatchObject({ status: "todo", executionWorkspaceId: null });
 
@@ -182,36 +182,61 @@ describePostgres("stranded subtasks bound to a parent's held workspace", () => {
     expect((await issue(f.hero.id)).status).toBe("done");
   }, 60_000);
 
-  it("backs off a failing wake so it cannot hold up the others", async () => {
+  it("keeps a refused or failing wake pending and backs it off without holding up the others", async () => {
     const f = await seedSharedFamily();
     const hero = await f.strand(f.hero.id), pricing = await f.strand(f.pricing.id);
-    expect((await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).sort()).toEqual([f.hero.id, f.pricing.id].sort());
+    expect((await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).rehomed.sort()).toEqual([f.hero.id, f.pricing.id].sort());
     const woken: string[] = [];
-    const failing = async (_agentId: string, options: { payload: Record<string, unknown> }) => {
-      if (options.payload.issueId === f.hero.id) throw new Error("agent cannot take wakes now");
+    // The heartbeat refuses the hero's wake (it returns null, as for disabled on-demand wakes).
+    const refusing = async (_agentId: string, options: { payload: Record<string, unknown> }) => {
+      if (options.payload.issueId === f.hero.id) return null;
       woken.push(String(options.payload.issueId));
-      return null;
+      return { id: randomUUID() };
     };
 
-    await rehomeStrandedLegacyWorkspaceTasks(db, failing as never, { companyId: f.companyId });
+    const first = await rehomeStrandedLegacyWorkspaceTasks(db, refusing as never, { companyId: f.companyId });
     expect(woken).toEqual([f.pricing.id]);
     const backedOff = (await action(hero.actionId)).evidence.legacyWorkspaceRehome as Record<string, unknown>;
     expect(backedOff).toMatchObject({ wake: "pending", wakeFailures: 1 });
     expect(Number(backedOff.wakeRetryAt)).toBeGreaterThan(Date.now());
+    // The pass reports that deadline to the worker, so the retry is scheduled.
+    expect(first.nextWakeRetryAt).toBe(Number(backedOff.wakeRetryAt));
     expect((await action(pricing.actionId)).evidence).toMatchObject({ legacyWorkspaceRehome: { wake: "delivered" } });
-
-    // Not retried before its time; retried once it is due.
-    await rehomeStrandedLegacyWorkspaceTasks(db, failing as never, { companyId: f.companyId });
-    expect(woken).toEqual([f.pricing.id]);
+    // The company stays selected by the scheduled worker while a wake is owed, also after a restart.
     const [selected] = await db.selectDistinct({ companyId: issueRecoveryActions.companyId }).from(issueRecoveryActions)
       .where(and(recoveryActionSweepCondition(), eq(issueRecoveryActions.companyId, f.companyId)));
-    expect(selected).toBeUndefined();
+    expect(selected).toBeDefined();
+
+    // Not retried before its time, and a thrown wake backs off too.
+    await rehomeStrandedLegacyWorkspaceTasks(db, refusing as never, { companyId: f.companyId });
+    expect(woken).toEqual([f.pricing.id]);
     await db.update(issueRecoveryActions).set({ evidence: { ...(await action(hero.actionId)).evidence,
       legacyWorkspaceRehome: { ...backedOff, wakeRetryAt: Date.now() - 1 } } }).where(eq(issueRecoveryActions.id, hero.actionId));
-    await rehomeStrandedLegacyWorkspaceTasks(db, (async (_agentId: string, options: { payload: Record<string, unknown> }) => {
-      woken.push(String(options.payload.issueId)); return null; }) as never, { companyId: f.companyId });
+    await rehomeStrandedLegacyWorkspaceTasks(db, (async () => { throw new Error("enqueue failed"); }) as never, { companyId: f.companyId });
+    expect((await action(hero.actionId)).evidence).toMatchObject({ legacyWorkspaceRehome: { wake: "pending", wakeFailures: 2 } });
+
+    // Once due and accepted, the wake settles.
+    await db.update(issueRecoveryActions).set({ evidence: { ...(await action(hero.actionId)).evidence,
+      legacyWorkspaceRehome: { ...backedOff, wakeFailures: 2, wakeRetryAt: Date.now() - 1 } } }).where(eq(issueRecoveryActions.id, hero.actionId));
+    const last = await rehomeStrandedLegacyWorkspaceTasks(db, (async (_agentId: string, options: { payload: Record<string, unknown> }) => {
+      woken.push(String(options.payload.issueId)); return { id: randomUUID() }; }) as never, { companyId: f.companyId });
     expect(woken).toEqual([f.pricing.id, f.hero.id]);
     expect((await action(hero.actionId)).evidence).toMatchObject({ legacyWorkspaceRehome: { wake: "delivered" } });
+    expect(last.nextWakeRetryAt).toBeNull();
+  }, 60_000);
+
+  it("pages past escalations the guards reject", async () => {
+    const f = await seedSharedFamily();
+    // Thirty escalations that match the query but fail a guard (another setup error).
+    for (let index = 0; index < 30; index++) {
+      const [other] = await db.insert(issues).values({ companyId: f.companyId, title: `Other ${index}`, parentId: f.parent.id,
+        status: "blocked", assigneeAgentId: f.agentId, executionWorkspaceId: f.workspaceId, issueNumber: 100 + index }).returning();
+      await f.strand(other.id, "Project access denied");
+    }
+    const hero = await f.strand(f.hero.id);
+    // The eligible escalation sorts after every rejected one.
+    await db.update(issueRecoveryActions).set({ id: "ffffffff-ffff-4fff-bfff-ffffffffffff" }).where(eq(issueRecoveryActions.id, hero.actionId));
+    expect((await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).rehomed).toEqual([f.hero.id]);
   }, 60_000);
 
   it("keeps a stranded child whose dependency still forbids work", async () => {

@@ -92,9 +92,9 @@ export function recoveryActionSweepCondition() {
       sql`exists (select 1 from ${issues} stalled where stalled.id = ${issueRecoveryActions.sourceIssueId}
         and stalled.company_id = ${issueRecoveryActions.companyId} and stalled.status = 'blocked')`),
     // A legacy subtask moved to its own workspace whose wake is still owed.
+    // The pass returns its retry time, which schedules the company again.
     and(eq(issueRecoveryActions.status, "resolved"),
-      sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`,
-      sql`coalesce((${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wakeRetryAt}')::bigint, 0) <= (extract(epoch from now()) * 1000)::bigint`),
+      sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`),
   )!;
 }
 
