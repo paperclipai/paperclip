@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { QueryClient } from "@tanstack/react-query";
 import type { Issue, IssueRecentComments } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,8 +11,10 @@ import {
   readFromIssueChatBootstrap,
   resetIssueChatBootstrapsForTest,
   seedIssueChatBootstrap,
+  startIssueChatBootstrap,
   type ChatBootstrapItem,
 } from "./issue-chat-bootstrap";
+import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "./issue-detail-preload-events";
 import { queryKeys } from "./queryKeys";
 
 vi.mock("@/api/client", () => ({ api: { get: vi.fn() } }));
@@ -145,5 +149,27 @@ describe("readFromIssueChatBootstrap", () => {
     await expect(readFromIssueChatBootstrap("ABC-4", (bootstrap) => bootstrap.attachments, read)).resolves.toEqual(["server"]);
     await expect(readFromIssueChatBootstrap("ABC-5", (bootstrap) => bootstrap.attachments, read)).resolves.toEqual(["server"]);
     expect(read).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("startIssueChatBootstrap", () => {
+  it("adopts the hard load's early fetch instead of sending a request", async () => {
+    (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "abc-3", promise: Promise.resolve(item("ABC-3")) };
+    startIssueChatBootstrap(client, null, "ABC-3");
+    const ownRead = vi.fn();
+    await expect(readFromIssueChatBootstrap("ABC-3", (bootstrap) => bootstrap.recentActivity, ownRead)).resolves.toEqual([{ id: "event-3" }]);
+    expect(client.getQueryData([...queryKeys.issues.detail("ABC-3"), "core"])).toMatchObject({ identifier: "ABC-3" });
+    expect(api.get).not.toHaveBeenCalled();
+    expect(ownRead).not.toHaveBeenCalled();
+    expect((window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL]).toBeUndefined();
+  });
+
+  it("ignores an early fetch for another task and loads this one through the company endpoint", async () => {
+    (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "ABC-1", promise: Promise.resolve(item("ABC-1")) };
+    vi.mocked(api.get).mockResolvedValue(respondWith(["ABC-2"]));
+    startIssueChatBootstrap(client, "company-1", "ABC-2");
+    await expect(readFromIssueChatBootstrap("ABC-2", (bootstrap) => bootstrap.issue.identifier, vi.fn())).resolves.toBe("ABC-2");
+    expect(api.get).toHaveBeenCalledOnce();
+    delete (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL];
   });
 });

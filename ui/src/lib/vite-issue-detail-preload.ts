@@ -1,5 +1,5 @@
 import type { Plugin } from "vite";
-import { TASK_COLLECTION_PAINTED_EVENT } from "./issue-detail-preload-events";
+import { EARLY_CHAT_BOOTSTRAP_GLOBAL, TASK_COLLECTION_PAINTED_EVENT } from "./issue-detail-preload-events";
 
 export function preloadIssueDetail(): Plugin {
   return {
@@ -47,7 +47,21 @@ export function preloadIssueDetail(): Plugin {
             }
             for (const href of ${JSON.stringify([...dependencies].map(fileName => `/${fileName}`))}) append(href);
           };
-          if (isDetail(location.pathname)) preload();
+          if (isDetail(location.pathname)) {
+            preload();
+            // A hard load of a task starts the chat's first-frame data now, in
+            // parallel with the app's JavaScript; the page adopts this answer.
+            const parts = location.pathname.split("/").filter(Boolean);
+            const ref = parts[parts.length - 1];
+            if (parts[parts.length - 2] === "issues" && ref) {
+              window[${JSON.stringify(EARLY_CHAT_BOOTSTRAP_GLOBAL)}] = {
+                ref: decodeURIComponent(ref),
+                promise: fetch("/api/issues/" + ref + "/chat-bootstrap", { credentials: "include", headers: { Accept: "application/json" } })
+                  .then(response => response.ok ? response.json() : null)
+                  .catch(() => null),
+              };
+            }
+          }
           window.addEventListener(${JSON.stringify(TASK_COLLECTION_PAINTED_EVENT)}, () => preload(true), { once: true });
           const onIntent = event => {
             const link = event.target.closest?.("a[href]");

@@ -12,6 +12,7 @@ import {
   type RecentIssueRunWindow,
 } from "@/lib/issue-chat-history-queries";
 import { seedIssueDetailProjections } from "@/lib/issueDetailCache";
+import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "@/lib/issue-detail-preload-events";
 import { queryKeys } from "@/lib/queryKeys";
 
 // A task opens instantly when everything its chat reads before the first frame
@@ -128,9 +129,38 @@ function startChunk(queryClient: QueryClient, companyId: string, refs: string[],
   return request.then(() => undefined, () => undefined);
 }
 
+/**
+ * Adopt the fetch the page's inline script started on a hard load of this task
+ * (see `vite-issue-detail-preload`), so the first answer needs no new request.
+ */
+function adoptEarlyChatBootstrap(queryClient: QueryClient, ref: string) {
+  if (typeof window === "undefined") return false;
+  const early = (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] as
+    | { ref: string; promise: Promise<ChatBootstrapItem | null> }
+    | undefined;
+  if (!early || refKey(early.ref) !== refKey(ref)) return false;
+  delete (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL];
+  const promise = early.promise.then((item) => {
+    if (!item) return undefined;
+    seedIssueChatBootstrap(queryClient, item);
+    return item;
+  }, () => undefined);
+  const entry: Entry = { startedAt: Date.now(), promise };
+  void promise.then((item) => {
+    entry.settledAt = Date.now();
+    if (!item && entries.get(refKey(ref)) === entry) entries.delete(refKey(ref));
+  });
+  entries.set(refKey(ref), entry);
+  return true;
+}
+
 /** Start a single-task bootstrap for a cold open, unless one is fresh or loading. */
 export function startIssueChatBootstrap(queryClient: QueryClient, companyId: string | null | undefined, ref: string | null | undefined) {
-  if (!companyId || !ref) return;
+  if (!ref) return;
+  const current = entries.get(refKey(ref));
+  if (current && (current.settledAt === undefined || Date.now() - current.settledAt < CHAT_BOOTSTRAP_FRESH_MS)) return;
+  if (adoptEarlyChatBootstrap(queryClient, ref)) return;
+  if (!companyId) return;
   void loadIssueChatBootstraps(queryClient, companyId, [ref]);
 }
 
