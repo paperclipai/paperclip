@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { parseCommand, parseReplayRef, waveIdFor } from "./config.js";
+import { parseCommand, parseReplayRef, waveIdFor, publicGitHubUrl } from "./config.js";
 import { chaosLifecycleOverrides } from "./seed.js";
 import { K4_HOLD_RANGE_MS, STORM_GAP_RANGE_MS, createRng, observedFaultSchedule, planStorm, planTasks, planWave, replayWave,
   StormRun, stormActive, stormFaultDue, taskFaultSchedule, type StormState } from "./scheduler.js";
@@ -47,6 +51,37 @@ describe("scheduler determinism", () => {
     expect(single.options.workloads).not.toContain("M1");
     expect(both.options.workloads).toContain("M1");
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "M1"])).toThrow(/two agents/);
+    const stored = parseCommand(["--storage", "s3", "--seed", "5"]);
+    if (stored.mode !== "wave") throw new Error("expected a wave");
+    expect(stored.options.storage).toBe("s3");
+    expect(both.options.storage).toBeUndefined();
+    expect(() => parseCommand(["--storage", "gcs"])).toThrow(/local or s3/);
+    const faulted = parseCommand(["--storage", "s3", "--storage-faults", "ST1,ST3", "--seed", "5"]);
+    if (faulted.mode !== "wave") throw new Error("expected a wave");
+    expect(faulted.options.storageFaults).toEqual(["ST1", "ST3"]);
+    expect(() => parseCommand(["--storage-faults", "ST1"])).toThrow(/needs --storage s3/);
+    const short = parseCommand(["--storage", "s3", "--storage-faults", "ST1", "--storage-fault-seconds", "15-45", "--seed", "5"]);
+    if (short.mode !== "wave") throw new Error("expected a wave");
+    expect(short.options.storageFaultMs).toEqual([15_000, 45_000]);
+    expect(() => parseCommand(["--storage", "s3", "--storage-faults", "ST1", "--storage-fault-seconds", "45-15"])).toThrow(/storage-fault-seconds/);
+    expect(() => parseCommand(["--storage", "s3", "--storage-fault-seconds", "15-45"])).toThrow(/needs --storage-faults/);
+    const repo = mkdtempSync(path.join(os.tmpdir(), "restart-chaos-origin-"));
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe", encoding: "utf8" }).trim();
+    git("init", "-q"); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+    git("remote", "add", "origin", "git@github.com:acme/widget.git");
+    git("update-ref", "refs/remotes/origin/master", "HEAD");
+    const masterCommit = git("rev-parse", "HEAD");
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y@sha256:" + "a".repeat(64), "--workloads", "R1", "--workspace-repo", repo]))
+      .toThrow(/needs --storage s3/);
+    const daytonaR1 = parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y@sha256:" + "a".repeat(64), "--workloads", "R1",
+      "--workspace-repo", repo, "--storage", "s3", "--seed", "5"]);
+    if (daytonaR1.mode !== "wave") throw new Error("expected a wave");
+    expect(daytonaR1.options).toMatchObject({ env: "daytona", storage: "s3", workloads: ["R1"] });
+    expect(daytonaR1.options).toMatchObject({ workspaceGitUrl: "https://github.com/acme/widget.git", workspaceCommit: masterCommit });
+    rmSync(repo, { recursive: true, force: true });
+    expect(publicGitHubUrl("git@github.com:paperclipai/paperclip.git")).toBe("https://github.com/paperclipai/paperclip.git");
+    expect(publicGitHubUrl("https://github.com/paperclipai/paperclip")).toBe("https://github.com/paperclipai/paperclip.git");
+    expect(() => publicGitHubUrl("/Users/me/repo")).toThrow(/GitHub origin/);
     expect(() => parseCommand(["--k4-hold-max-seconds", "601"])).toThrow(/between 120 and 600/);
     expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
   });
