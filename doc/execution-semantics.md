@@ -716,6 +716,24 @@ its task tree created: the task that created the workspace keeps it, and the
 relative bound to it (for example a parent that selected its child's workspace)
 moves to its own on its next admission.
 
+A legacy child can have no next admission: when another task's writer held the
+shared workspace, the child's run failed setup before any provider work, and
+stranded-work recovery blocked it with a board-owned escalation. The
+stranded-work sweep moves such a child without a person, in one transaction,
+when the escalation's latest run failed setup on that workspace hold, the
+child's Blocked status came from that escalation, no unresolved blocker keeps
+it, and the binding release above is allowed. The child's binding is released,
+the escalation resolves with the outcome `legacy_shared_workspace_rehomed`
+(`issue.legacy_workspace_rehomed` system activity), the child returns to
+`todo`, and its assignee is woken once with a fresh session. A lost wake leaves
+an assigned `todo` task that the same sweep dispatches. What the moved child
+sees is a fresh workspace from the project base: no parent changes, and none of
+its own earlier files from the shared workspace. The child that still holds the
+shared workspace with unsaved files is not moved; its save recovery owns the
+hold, its files stay in the shared workspace and its saved-work receipts, and it
+moves on its first admission after that recovery settles. The parent keeps its
+workspace throughout.
+
 ### Blockers (`blockedByIssueIds`)
 
 This is dependency semantics.
