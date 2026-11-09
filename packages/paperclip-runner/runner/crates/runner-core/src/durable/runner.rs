@@ -318,6 +318,10 @@ pub trait CommandExecutor {
         Ok(false)
     }
 
+    fn prepare_for_park(&mut self) -> Result<bool, DurableRunnerError> {
+        Ok(false)
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
     fn observe_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
@@ -1451,6 +1455,19 @@ fn process_host_control<E: CommandExecutor>(
             )
             && executor.host_park_ready()? =>
         {
+            let ready = match executor.prepare_for_park() {
+                Ok(false) => true,
+                Ok(true) => executor.host_park_ready()?,
+                Err(error) => {
+                    state.record_diagnostic(format!("host park preparation failed: {error}"));
+                    store.save(state)?;
+                    false
+                }
+            };
+            if !ready {
+                control.channel.reply(&request, "conflict")?;
+                return Ok(HostAction::None);
+            }
             control.park_id = Some(id.clone());
             control.channel.reply(&request, "parked")?;
             Ok(HostAction::Park)
@@ -3214,6 +3231,136 @@ mod tests {
         ));
         assert_eq!(executor.shutdowns, 1);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hosted_park_reproves_a_prepared_provider_before_replying() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        struct PreparingExecutor {
+            calls: Vec<&'static str>,
+            prepared: Option<bool>,
+            ready_after_prepare: bool,
+            prepared_once: bool,
+        }
+        impl CommandExecutor for PreparingExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("private control cannot execute PRP commands");
+            }
+            fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+                self.calls.push("proof");
+                Ok(!self.prepared_once || self.ready_after_prepare)
+            }
+            fn prepare_for_park(&mut self) -> Result<bool, DurableRunnerError> {
+                self.calls.push("prepare");
+                self.prepared_once = true;
+                self.prepared
+                    .ok_or_else(|| DurableRunnerError::invalid("replacement provider failed"))
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.calls.push("shutdown");
+                Ok(())
+            }
+        }
+        for (prepared, ready_after_prepare, status, calls) in [
+            (
+                Some(true),
+                true,
+                "parked",
+                vec!["proof", "prepare", "proof"],
+            ),
+            (
+                Some(true),
+                false,
+                "conflict",
+                vec!["proof", "prepare", "proof"],
+            ),
+            (None, true, "conflict", vec!["proof", "prepare"]),
+            (Some(false), false, "parked", vec!["proof", "prepare"]),
+        ] {
+            let directory = std::env::temp_dir()
+                .join(format!("paperclip-host-prepare-{}", uuid::Uuid::new_v4()));
+            let config = config(directory.clone());
+            let store = DurableStateStore::new(&config.state_dir).unwrap();
+            let mut state = DurableState::new(&config);
+            let (socket, mut host) = UnixStream::pair().unwrap();
+            let mut reader = BufReader::new(host.try_clone().unwrap());
+            let mut control = HostedRunnerControl::new(HostControl::new(socket).unwrap());
+            let mut executor = PreparingExecutor {
+                calls: Vec::new(),
+                prepared,
+                ready_after_prepare,
+                prepared_once: false,
+            };
+            let identity = json!({
+                "runnerInstanceId":state.runner_instance_id,"environmentLeaseId":state.environment_lease_id,
+                "runId":state.run_id,"normalizedSessionId":state.normalized_session_id,"turnId":state.turn_id,"itemId":state.item_id,
+            });
+            let mut exchange = |request: Value,
+                                state: &mut DurableState,
+                                control: &mut HostedRunnerControl,
+                                executor: &mut PreparingExecutor,
+                                parked: bool| {
+                writeln!(host, "{request}").unwrap();
+                let action = process_host_control(
+                    control,
+                    state,
+                    &store,
+                    executor,
+                    parked,
+                    Some(Duration::from_secs(1)),
+                )
+                .unwrap();
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                (action, serde_json::from_str::<Value>(&line).unwrap())
+            };
+            let (action, reply) = exchange(
+                json!({"op":"park","id":"park-1","identity":identity,
+                    "lastControllerCommandSeq":0,"ackedSourceSeq":0}),
+                &mut state,
+                &mut control,
+                &mut executor,
+                false,
+            );
+            assert_eq!(reply["status"], status);
+            assert_eq!(executor.calls, calls);
+            assert_eq!(matches!(action, HostAction::Park), status == "parked");
+            assert_eq!(control.park_id.is_some(), status == "parked");
+            assert_eq!(
+                state
+                    .diagnostics
+                    .iter()
+                    .any(|message| message.contains("host park preparation failed")),
+                prepared.is_none()
+            );
+            if prepared == Some(true) && status == "parked" {
+                let (action, _) = exchange(
+                    json!({"op":"claim","id":"claim-1","parkId":"park-1","bootstrapTicket":"fresh-private-ticket"}),
+                    &mut state,
+                    &mut control,
+                    &mut executor,
+                    true,
+                );
+                assert!(matches!(action, HostAction::Claim(_)));
+                let (action, reply) = exchange(
+                    json!({"op":"retire","id":"retire-claim","parkId":"park-1","claimId":"claim-1",
+                        "identity":identity,"lastControllerCommandSeq":0,"ackedSourceSeq":0}),
+                    &mut state,
+                    &mut control,
+                    &mut executor,
+                    false,
+                );
+                assert_eq!(reply["status"], "retired");
+                assert!(matches!(action, HostAction::Retire));
+                assert_eq!(
+                    executor.calls,
+                    ["proof", "prepare", "proof", "proof", "shutdown"]
+                );
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]

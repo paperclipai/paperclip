@@ -266,6 +266,11 @@ fn hosted_park_acpx_requires_completion_in_this_lifetime_and_exact_authority() {
         .unwrap();
     settle(&mut executor);
     assert!(executor.host_park_ready().unwrap());
+    assert!(executor.prepare_for_park().unwrap());
+    assert!(
+        executor.host_park_ready().unwrap(),
+        "a prepared dormant generation inherits its park proof"
+    );
     config.run_id = "other-run".to_owned();
     executor.rotate_authority(&config);
     assert!(!executor.host_park_ready().unwrap());
@@ -467,5 +472,6 @@ fn hosted_park_acpx_does_not_enable_an_unqualified_park_provider() {
         .unwrap();
     settle(&mut executor);
     assert!(!executor.host_park_ready().unwrap());
+    assert!(!executor.prepare_for_park().unwrap());
     executor.shutdown().unwrap();
 }
