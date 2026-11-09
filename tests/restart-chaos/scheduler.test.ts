@@ -61,6 +61,13 @@ describe("scheduler determinism", () => {
     expect(short.options.storageFaultMs).toEqual([15_000, 45_000]);
     expect(() => parseCommand(["--storage", "s3", "--storage-faults", "ST1", "--storage-fault-seconds", "45-15"])).toThrow(/storage-fault-seconds/);
     expect(() => parseCommand(["--storage", "s3", "--storage-fault-seconds", "15-45"])).toThrow(/needs --storage-faults/);
+    const repo = process.cwd();
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y@sha256:" + "a".repeat(64), "--workloads", "R1", "--workspace-repo", repo]))
+      .toThrow(/needs --storage s3/);
+    const daytonaR1 = parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y@sha256:" + "a".repeat(64), "--workloads", "R1",
+      "--workspace-repo", repo, "--storage", "s3", "--seed", "5"]);
+    if (daytonaR1.mode !== "wave") throw new Error("expected a wave");
+    expect(daytonaR1.options).toMatchObject({ env: "daytona", storage: "s3", workloads: ["R1"] });
     expect(() => parseCommand(["--k4-hold-max-seconds", "601"])).toThrow(/between 120 and 600/);
     expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
   });

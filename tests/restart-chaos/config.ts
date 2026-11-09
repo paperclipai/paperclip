@@ -178,12 +178,13 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (crashPoint) throw new Error("--upgrade-from does not combine with --crash-point");
     options.upgradeFrom = path.resolve(upgradeFrom);
   }
+  const storage = values.storage ?? "local";
   const workspaceRepo = values["workspace-repo"];
   if (options.workloads.includes("R1") !== (workspaceRepo !== undefined)) {
     throw new Error("R1 (code change in a cloned repository) and --workspace-repo <git repository> go together: pass both or neither");
   }
   if (workspaceRepo !== undefined) {
-    if (env !== "local") throw new Error("--workspace-repo runs only with --env local");
+    if (env !== "local" && storage !== "s3") throw new Error("--workspace-repo on Daytona needs --storage s3, so the clone reaches the sandbox as a remote workspace");
     if (options.workloads.some(id => id === "B1" || id === "B5")) throw new Error("--workspace-repo replaces the chaoscli fixture that B1 and B5 need");
     options.workspaceRepo = path.resolve(workspaceRepo);
     options.workspaceCommit = execFileSync("git", ["-C", options.workspaceRepo, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -208,7 +209,6 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
         + "for chaos tasks. Lower one of them (RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).");
     }
   }
-  const storage = values.storage ?? "local";
   if (storage !== "local" && storage !== "s3") throw new Error("--storage must be local or s3");
   if (storage === "s3") options.storage = "s3";
   if (values["storage-faults"] !== undefined) {

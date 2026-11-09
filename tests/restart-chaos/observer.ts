@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -685,6 +685,11 @@ export class TaskObserver {
     return attempt;
   }
 
+  private async remoteWorkspaceFile(issueId: string, relative: string): Promise<string | null> {
+    const url = `${this.api.baseUrl}/api/issues/${issueId}/file-resources/content?path=${encodeURIComponent(relative)}&download=true`;
+    return await fetch(url, { signal: AbortSignal.timeout(15_000) }).then(response => response.ok ? response.text() : null).catch(() => null);
+  }
+
   async workspacePath(): Promise<string | null> {
     if (!this.definition.usesRepository) return null;
     const current = this.issue?.currentExecutionWorkspace as Json | null | undefined;
@@ -881,15 +886,29 @@ export class TaskObserver {
     }
     const files: Record<string, string | null> = {};
     const commands: OracleArtifacts["commands"] = {};
-    if (workspacePath) {
-      for (const relative of definition.collect.files(this.plan.nonce)) {
-        files[relative] = await readFile(path.join(workspacePath, relative), "utf8").catch(() => null);
-      }
-      // Agent-editable code: run it sandboxed, away from the operator's home directory.
+    const runCommands = async (cwd: string) => {
       for (const command of definition.collect.commands) {
         const argv = typeof command.argv === "function" ? command.argv(this.plan.nonce) : command.argv;
-        commands[command.name] = await runOracleCommand(argv, workspacePath, { protectedRoots: this.protectedRoots,
+        commands[command.name] = await runOracleCommand(argv, cwd, { protectedRoots: this.protectedRoots,
           readableFiles: argv[0] === process.execPath ? [process.execPath] : [] });
+      }
+    };
+    const wanted = definition.collect.files(this.plan.nonce);
+    if (workspacePath && await access(workspacePath).then(() => true, () => false)) {
+      for (const relative of wanted) files[relative] = await readFile(path.join(workspacePath, relative), "utf8").catch(() => null);
+      await runCommands(workspacePath);
+    } else if (workspacePath && wanted.length) {
+      const staged = await mkdtemp(path.join(os.tmpdir(), "restart-chaos-oracle-"));
+      try {
+        for (const relative of wanted) {
+          files[relative] = await this.remoteWorkspaceFile(issueId, relative);
+          if (files[relative] === null) continue;
+          await mkdir(path.dirname(path.join(staged, relative)), { recursive: true });
+          await writeFile(path.join(staged, relative), files[relative]!);
+        }
+        await runCommands(staged);
+      } finally {
+        await rm(staged, { recursive: true, force: true });
       }
     }
     return {

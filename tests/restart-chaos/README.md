@@ -197,6 +197,11 @@ method and status are written to `storage-proxy.json`.
 `--storage-fault-seconds 15-45` sets the window length range (5–900 s), for example to find how long
 an outage a run survives. The windows are logged in the timeline and written to `storage-faults.json`.
 
+With `--env daytona --storage s3`, each task's workspace is a remote workspace: the controller saves
+and restores it through the store, so the faults also hit workspace save, restore and copyback. R1
+(`--workspace-repo`) runs on Daytona only with `--storage s3`; its oracle reads the task's files through
+the board API and runs its commands on a local copy.
+
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
 R3 as `ui_retry_button_missing (user saw: …)`; a click that sends no retry request fails as
