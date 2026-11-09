@@ -43,6 +43,9 @@ describe("board-only denial", () => {
     ["post", "/api/plugins/install", "[Open plugin settings](/<prefix>/company/settings/instance/plugins)"],
     ["post", `/api/plugins/${AGENT_ID}/config`, `[Open the plugin's settings](/<prefix>/company/settings/instance/plugins/${AGENT_ID})`],
     ["post", "/api/plugins/acme.website-preview/disable", "[Open the plugin's settings](/<prefix>/company/settings/instance/plugins/acme.website-preview)"],
+    ["post", "/api/plugins/my-plugin/config", "[Open the plugin's settings](/<prefix>/company/settings/instance/plugins/my-plugin)"],
+    ["post", "/api/plugins/tools/execute", "[Open plugin settings](/<prefix>/company/settings/instance/plugins)"],
+    ["get", "/api/plugins/ui-contributions", "[Open plugin settings](/<prefix>/company/settings/instance/plugins)"],
     ["post", `/api/projects/${AGENT_ID}/access-members`, `[Open the project's access settings](/<prefix>/projects/${AGENT_ID}/configuration)`],
     ["delete", `/api/projects/${AGENT_ID}/access-members/m-1`, `[Open the project's access settings](/<prefix>/projects/${AGENT_ID}/configuration)`],
   ] as const)("tells an agent %s %s is final and names the board page", async (method, path, link) => {

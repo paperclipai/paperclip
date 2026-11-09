@@ -67,13 +67,15 @@ const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray, req: Request)
 ];
 
 // Plugin management pages. A plugin id or key segment opens that plugin's settings
-// (the page accepts either); any other segment (install, tools) opens the manager.
+// (the page accepts either); a plugin-manager endpoint segment opens the manager.
 // An operator can hide plugin management, so link it only while it is visible.
-const PLUGIN_REFERENCE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)+)$/i;
+const PLUGIN_REFERENCE = /^[a-z0-9][a-z0-9._-]*$/i;
+const PLUGIN_MANAGER_SEGMENTS = new Set(["examples", "install", "tools", "ui-contributions"]);
 function pluginControlPage(path: string): [string, string] | null {
   const match = /^\/plugins(?:\/([^/]+))?(?:\/|$)/.exec(path);
   if (!match || getHiddenSettings().has("instance.plugins")) return null;
-  const plugin = match[1] && PLUGIN_REFERENCE.test(match[1]) ? match[1] : null;
+  const segment = match[1];
+  const plugin = segment && PLUGIN_REFERENCE.test(segment) && !PLUGIN_MANAGER_SEGMENTS.has(segment) ? segment : null;
   return plugin
     ? ["the plugin's settings", `/<prefix>/company/settings/instance/plugins/${plugin}`]
     : ["plugin settings", "/<prefix>/company/settings/instance/plugins"];
