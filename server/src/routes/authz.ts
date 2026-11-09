@@ -52,6 +52,8 @@ const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray) => [string, s
   [/^\/companies\/[^/]+\/(?:members|invites|join-requests)(?:\/|$)/, () => ["company members", "/<prefix>/company/settings/members"]],
   [/^\/companies\/[^/]+\/(?:tools\/)?gateways(?:\/|$)|^\/tool-gateway\//, () => ["tool gateways", "/<prefix>/apps/gateways"]],
   [/^\/approvals\/([^/]+)/, match => ["the approval", `/<prefix>/approvals/${match[1]}`]],
+  // Project sharing is under the project's Configuration tab (Manage access).
+  [/^\/projects\/([0-9a-f-]{36})\/access-members(?:\/|$)/i, match => ["the project's access settings", `/<prefix>/projects/${match[1]}/configuration`]],
   [/^\/agents\/([0-9a-f-]{36})(?:\/([^/]+))?(?:\/|$)/i, match => {
     const tab = match[2] && Object.hasOwn(AGENT_PROFILE_TABS, match[2]) ? AGENT_PROFILE_TABS[match[2]] : undefined;
     return tab ? [`the agent's ${tab[0]}`, `/<prefix>/agents/${match[1]}/${tab[1]}`] : ["the agent's profile", `/<prefix>/agents/${match[1]}`];
