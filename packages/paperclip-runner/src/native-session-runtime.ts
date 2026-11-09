@@ -2717,6 +2717,7 @@ export async function executeNativeSession(
     const recoveredContinuation = recovered && nativeRestartContinuationInFlight(recoveredSnapshot)
       ? recoveredSnapshot
       : recovered && persistedSession && nativeRestartContinuationInFlight(persistedSession)
+          && nativeRestartInterruptedTurnId(recoveredSnapshot, "restart") !== persistedSession.activeTurnId
         ? persistedSession : null;
     let restartContinuationStarted = recoveredContinuation !== null;
     let borrowedContinuationTurnId: string | null = null;

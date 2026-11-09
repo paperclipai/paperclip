@@ -108,7 +108,7 @@ export function isNativeReceiptLimitInterruption(error: unknown): boolean {
 /** The terminal fingerprint survives a crash between interruption and continuation. */
 export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSession,
   "driverKind" | "activeTurnId" | "semanticResult" | "terminalTurns" | "dispositionOnlyRecoveryConsumed" | "pendingRuntimeRequests" | "goal"
->): string | null {
+>, cause: "any" | "restart" = "any"): string | null {
   // Runnerd records this cause for Codex app-server and ACPX sessions after
   // proving the old provider lifetime ended and restoring the conversation.
   // A lost continuation re-arms the driver's marker before it is checkpointed,
@@ -122,7 +122,7 @@ export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSes
     const fingerprint = JSON.parse(terminal.fingerprint);
     return fingerprint.result === null &&
       ((fingerprint?.terminalState === "failed" && isNativeRestartInterruption(fingerprint.error)) ||
-        (fingerprint?.terminalState === "interrupted" && isNativeReceiptLimitInterruption(fingerprint.error))) ? terminal.turnId : null;
+        (cause === "any" && fingerprint?.terminalState === "interrupted" && isNativeReceiptLimitInterruption(fingerprint.error))) ? terminal.turnId : null;
   } catch { return null; }
 }
 

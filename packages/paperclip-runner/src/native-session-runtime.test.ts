@@ -737,6 +737,53 @@ describe("executeNativeSession recovery", () => {
       .toBe(false);
   });
 
+  it.each(["restart", "receipt-limit"])("continues a checkpointed continuation lost to another confirmed restart (%s)", async (cause) => {
+    const failure = { code: cause === "restart" ? "provider_turn_lost_on_restore" : "semantic_tool_receipt_limit_recovered", recoverable: true };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "runner", driverKind: "codex_app_server", sessionId: "thread-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: "turn-continuation",
+      terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "failed", turnTerminalState: "failed", reportedWorkDisposition: "yielded" },
+      terminalTurns: [{ turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: cause === "restart" ? "failed" : "interrupted", error: failure, result: null }) }],
+      semanticResult: null, pendingRuntimeRequests: [], lineage: [],
+      dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-continuation",
+    };
+    const savedCheckpoint = structuredClone(checkpoint);
+    checkpoint.activeTurnId = null;
+    checkpoint.dispositionOnlyRecoveryConsumed = false;
+    checkpoint.terminalTurns!.push({ turnId: "turn-continuation", fingerprint: JSON.stringify({ terminalState: "failed", error: { code: "provider_turn_lost_on_restore", recoverable: true }, result: null }) });
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-next" }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        yield { ...runnerEvent(1, "turn.failed", { status: "failed", error: { code: "provider_turn_lost_on_restore", recoverable: true } }), turnId: "turn-continuation" };
+        yield { ...runnerEvent(2, "turn.completed", { status: "completed" }), turnId: "turn-next" };
+      },
+      startTurn,
+      async result() { return { result, terminal, turnId: "turn-next" }; },
+      async snapshot() { return structuredClone(checkpoint); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "restart", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { throw new Error("must preserve the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await expect(executeNativeSession({
+      input, backend, controlPlane: port, persistedSession: savedCheckpoint,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      resumeInterruptedTurn: true,
+    })).resolves.toMatchObject({ result, turnId: "turn-next", terminal: { runTerminalState: "succeeded" } });
+    expect(startTurn).toHaveBeenCalledOnce();
+  });
+
   it.each(["restart", "receipt-limit"])("does not rotate an already active continuation again after controller recovery (%s)", async (cause) => {
     const failure = { code: cause === "restart" ? "provider_turn_lost_on_restore" : "semantic_tool_receipt_limit_recovered", recoverable: true };
     const checkpoint: PersistedNativeSession = {
