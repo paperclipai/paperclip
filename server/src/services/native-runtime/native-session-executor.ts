@@ -16869,6 +16869,10 @@ async function createRunnerdBackendWithinSessionClaim(
       if (!reattachClaim && input.remoteWarmRecovery) {
         throw new Error("native_runner_replacement_requires_fresh_launch");
       }
+      if (reattachClaim && await stopStaleRemoteRunnerBeforeBootstrap({ execution: input.execution,
+        runnerExecutionTarget: input.runnerExecutionTarget, identity: durableIdentity ?? {}, onLog: input.onLog }) === "stop_failed") {
+        throw new Error("native_runner_replacement_stop_failed");
+      }
       await measureNativeRunnerSpan(
         input.trace,
         "provider.session.archive_before_replacement",

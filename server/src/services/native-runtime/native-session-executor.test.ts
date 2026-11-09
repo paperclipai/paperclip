@@ -2608,7 +2608,16 @@ describe("remote provider pack manifest", () => {
         next.digest = "sha256:" + createHash("sha256").update(canonical(next.payload)).digest("hex");
         await writeFile(state.bundledPackManifestPath!, JSON.stringify(next));
         await writeFile(state.bundledRunnerBinary!, Buffer.concat([daemon, Buffer.from("new release")]));
+        let recoveredRunnerStopped = false;
         const recoveryExecute = vi.fn(async (request: { args: string[] }) => {
+          if (request.args[2] === "paperclip-runner-recovery-check" && request.args[1]?.includes('kill -"$6"')) {
+            const exitCode = recoveredRunnerStopped ? 45 : 0;
+            recoveredRunnerStopped = true;
+            return { exitCode, timedOut: false, stderr: "", stdout: "" };
+          }
+          if (request.args[2] === "paperclip-runner-recovery-check" && recoveredRunnerStopped) {
+            return { exitCode: 45, timedOut: false, stderr: "", stdout: "" };
+          }
           if (request.args[0] === "--build-metadata") return { exitCode: 0, timedOut: false, stderr: "", stdout: JSON.stringify({
             schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
             packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
@@ -2693,7 +2702,7 @@ describe("remote provider pack manifest", () => {
               expect(freshPreparation).toHaveBeenCalled();
               expect(replaced).toBe(replacement);
               expect(state.createBackend.mock.results.at(-1)!.value).not.toBe(recoveredBackendMock);
-              expect(admittedNativeProviderPack(replaced, nativeIdentity)).not.toEqual(coldAdmission);
+              expect(admittedNativeProviderPack(replaced, nativeIdentity)).toBeNull();
             }
           }
         }
@@ -16276,17 +16285,30 @@ describe("runnerd provider runtime wiring", () => {
       state.resolveRemoteRunnerBinary.mockResolvedValue(state.bundledRunnerBinary);
       state.resolveRunnerBinary.mockReturnValue(state.bundledRunnerBinary);
     }
-    const execute = vi.fn(async (request: { args: string[] }) => ({ exitCode: 0, timedOut: false, stderr: "",
-      stdout: request.args[0] === "--build-metadata" ? JSON.stringify({
-        schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
-        packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
-        durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
-        providerPacks: installed ? [{ root: "/opt/paperclip-runner/provider-pack", manifest: installed, immutable: true }] : [],
-      }) : request.args[1]?.includes("base64") ? Buffer.from(JSON.stringify({ ...identity, lifecycle: "suspended" })).toString("base64")
-        : request.args[1]?.includes("cat --") ? `nonce\n123\n2026-09-19T10:00:00.000Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "" }));
+    let runnerStopped = false, sessionArchived = false;
+    const execute = vi.fn(async (request: { args: string[] }) => {
+      const script = request.args[1] ?? "";
+      if (script.includes(".continuity-break-")) sessionArchived = true;
+      if (request.args[2] === "paperclip-runner-recovery-check") {
+        const signalled = script.includes('kill -"$6"');
+        const exitCode = runnerStopped ? 45 : 0;
+        if (signalled) runnerStopped = true;
+        return { exitCode, timedOut: false, stderr: "", stdout: "" };
+      }
+      if (sessionArchived && script.includes("runner-state.json")) return { exitCode: 1, timedOut: false, stderr: "", stdout: "" };
+      return { exitCode: 0, timedOut: false, stderr: "",
+        stdout: request.args[0] === "--build-metadata" ? JSON.stringify({
+          schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+          packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+          durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+          providerPacks: installed ? [{ root: "/opt/paperclip-runner/provider-pack", manifest: installed, immutable: true }] : [],
+        }) : script.includes("base64") ? Buffer.from(JSON.stringify({ ...identity, lifecycle: "suspended" })).toString("base64")
+          : script.includes("cat --") ? `nonce\n123\n2026-09-19T10:00:00.000Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "" };
+    });
     state.createBackend.mockClear(); state.createTransport.mockClear();
-    const openSession = vi.fn(async () => ({ close: async () => undefined }));
-    const freshOpenSession = vi.fn(async () => ({ close: async () => undefined }));
+    const nativeIdentity = { ...current.binding, sessionId: current.session.normalizedSessionId! };
+    const openSession = vi.fn(async () => ({ close: async () => undefined, identity: () => nativeIdentity }));
+    const freshOpenSession = vi.fn(async () => ({ close: async () => undefined, identity: () => nativeIdentity }));
     state.createBackend.mockReturnValueOnce({ kind: "test", openSession, descriptor: () => ({ name: "reattached" }) } as never)
       .mockReturnValueOnce({ kind: "test", openSession: freshOpenSession, descriptor: () => ({ name: "replacement" }) } as never);
     const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
@@ -16305,7 +16327,12 @@ describe("runnerd provider runtime wiring", () => {
     expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({ prpIdentity: identity, adoptExistingRunner: { pid: 123 } });
     const spawnedBefore = driver.mock.calls.at(-1)![0].processStarted;
     expect(backend.descriptor()).toEqual({ name: "reattached" });
-    const replaced = await backend.openReplacementSession!({ identity: current.binding } as never, {} as never);
+    const replaced = await backend.openReplacementSession!({ identity: nativeIdentity } as never, {} as never);
+    expect(runnerStopped).toBe(true);
+    const signalIndex = execute.mock.calls.findIndex(([request]) => request.args[1]?.includes('kill -"$6"'));
+    const archiveIndex = execute.mock.calls.findIndex(([request]) => request.args[1]?.includes(".continuity-break-"));
+    expect(signalIndex).toBeGreaterThanOrEqual(0);
+    expect(signalIndex).toBeLessThan(archiveIndex);
     expect(backend.descriptor()).toEqual({ name: "replacement" });
     expect(backend.bindManagedSession(replaced)).toBe(replaced);
     expect(openSession).not.toHaveBeenCalled();
@@ -16322,6 +16349,8 @@ describe("runnerd provider runtime wiring", () => {
     expect(await Promise.race([spawnedAfter.then(() => "spawned"), Promise.resolve("pending")])).toBe("pending");
     if (provider === "acpx") {
       expect(replacement).toMatchObject({ providerNodeCommand: expect.any(String), acpxSidecarPath: expect.any(String) });
+      expect(admittedNativeProviderPack(replaced, nativeIdentity)).toMatchObject({
+        authority: "core_verified_selection", providerPackDigest: (installed as { digest: string }).digest });
     }
   });
 
