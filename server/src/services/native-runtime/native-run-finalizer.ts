@@ -278,8 +278,6 @@ async function claimCoordinator(input: {
  * remoteWorkspaceFailureCause and the native post-result diagnostic). Re-check the shape before it reaches the run:
  * no paths, no line breaks, bounded length.
  */
-export const WORKSPACE_FINALIZE_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 180_000, 240_000] as const;
-
 export function readWorkspaceFailureCause(value: unknown): string | null {
   return typeof value === "string" && value.length <= 1024
     && /^(?:remote_workspace|native_post_result)_[a-z_]+(?::[A-Za-z0-9_=;:,.() -]*)?$/.test(value) ? value : null;
@@ -430,11 +428,8 @@ async function recordRetryableFailure(input: {
     const exhausted =
       input.permanent === true ||
       (workspaceFinalizeAttempt !== null
-        ? workspaceFinalizeAttempt > WORKSPACE_FINALIZE_RETRY_DELAYS_MS.length
+        ? workspaceFinalizeAttempt >= 3
         : input.coordinator.attempt >= 3);
-    const retryAt = workspaceFinalizeAttempt !== null && !exhausted
-      ? new Date(now.getTime() + WORKSPACE_FINALIZE_RETRY_DELAYS_MS[workspaceFinalizeAttempt - 1]!)
-      : nextAttemptAt;
     const phase =
       supersededByNewerRun || exhausted
         ? ("terminal_failure" as const)
@@ -477,7 +472,7 @@ async function recordRetryableFailure(input: {
               : { kind: "agent", agentId: input.run.agentId },
           nextAction: input.nextAction,
         },
-        nextAttemptAt: supersededByNewerRun || exhausted ? null : retryAt,
+        nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
         updatedAt: now,
       })
       .where(eq(nativeRunFinalizations.runId, input.run.id));
@@ -522,7 +517,7 @@ async function recordRetryableFailure(input: {
           originalFailureCode: input.failureCode,
           // The latest attempt's redacted cause; cleared when it named none.
           failureCause,
-          nextAttemptAt: supersededByNewerRun || exhausted ? null : retryAt.toISOString(),
+          nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt.toISOString(),
         })}::jsonb`,
         updatedAt: now,
       })
@@ -610,16 +605,16 @@ async function recordRetryableFailure(input: {
           : {
               kind: "resume_native_run",
               runId: input.run.id,
-              notBefore: retryAt.toISOString(),
+              notBefore: nextAttemptAt.toISOString(),
             },
-        maxAttempts: workspaceFinalizeAttempt !== null ? WORKSPACE_FINALIZE_RETRY_DELAYS_MS.length + 1 : 3,
+        maxAttempts: 3,
         supersedeOnIdentityChange: true,
       });
     }
     return {
       phase,
       failureCode,
-      nextAttemptAt: supersededByNewerRun || exhausted ? null : retryAt,
+      nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
     };
   });
   if (terminalRunToEmit) {

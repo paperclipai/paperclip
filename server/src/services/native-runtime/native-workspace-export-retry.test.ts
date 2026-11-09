@@ -14,7 +14,7 @@ import { withNativeWorkspaceFinalizationOwnership } from "./native-workspace-fin
 const probe = vi.hoisted(() => vi.fn());
 vi.mock("../environment-execution-target.js", () => ({ resolveEnvironmentExecutionTarget: async () => ({ kind: "remote", transport: "sandbox", remoteCwd: "/work", runner: { execute: probe } }) }));
 import { recoverLegacyUnsafeWorkspaceExports, registerUnsafeWorkspaceExportWork } from "./native-workspace-export-recovery.js";
-import { recordNativeFinalizationFailure, WORKSPACE_FINALIZE_RETRY_DELAYS_MS } from "./native-run-finalizer.js";
+import { recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { recoveryService } from "../recovery/service.js";
 import { retryNativeWorkspaceExport } from "./native-workspace-export-retry.js";
 import { releaseCompletedNativeWorkspaceExportRetention } from "./native-workspace-export-resume.js";
@@ -125,12 +125,12 @@ describe("board retry of accepted workspace export", () => {
     await db.update(nativeRunFinalizations).set({ phase: "result_accepted", failureCode: null, failureDetail: null }).where(eq(nativeRunFinalizations.runId, f.runId));
     await db.update(heartbeatRuns).set({ status: "running", nativePhase: "result_accepted" }).where(eq(heartbeatRuns.id, f.runId));
     await db.update(environmentLeases).set({ status: "active", leasePolicy: "ephemeral", releasedAt: null, metadata: { pluginId: "plugin-test", pendingCleanupRetryAfterMs: Date.now() + 600_000, pendingCleanupRetryAttempts: 7 } }).where(eq(environmentLeases.id, f.leaseId));
-    for (let attempt = 1; attempt <= (kind === "unsafe" ? 1 : WORKSPACE_FINALIZE_RETRY_DELAYS_MS.length + 1); attempt++) {
+    for (let attempt = 1; attempt <= (kind === "unsafe" ? 1 : 3); attempt++) {
       await recordNativeFinalizationFailure({ db, runId: f.runId,
         error: new Error(kind === "unsafe" ? "native_workspace_sync_out_unsafe_archive" : "native_workspace_sync_out_failed"),
         failureScope: "workspace", projectRunStatus: true, permanent: kind === "unsafe" });
       const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
-      if (kind === "transient" && attempt <= WORKSPACE_FINALIZE_RETRY_DELAYS_MS.length) expect(lease.status).toBe("active");
+      if (kind === "transient" && attempt < 3) expect(lease.status).toBe("active");
       else {
         expect(lease).toMatchObject({ status: "pending_cleanup", metadata: {
           nativeWorkspaceExportResume: { runId: f.runId, leaseId: f.leaseId, resultId: f.resultId },

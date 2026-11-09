@@ -104,6 +104,24 @@ describe("S3 transient failures on saved files", () => {
       ["GET", null, null], ["GET", "bytes=8-19", '"v1"']]);
   });
 
+  it("closes a stalled download's connection when its reader gives up", async () => {
+    let closed!: () => void;
+    const connectionClosed = new Promise<void>(resolve => { closed = resolve; });
+    respond = (_req, res) => {
+      res.writeHead(200, { "content-length": "20", etag: '"v1"' });
+      res.write("01234567");
+      res.on("close", () => closed());
+    };
+
+    const object = await provider().getObject({ objectKey: "company/restore.pcws" });
+    const reader = object.stream[Symbol.asyncIterator]();
+    expect(String((await reader.next()).value)).toBe("01234567");
+    object.stream.destroy();
+
+    await expect(Promise.race([connectionClosed.then(() => "closed"),
+      new Promise(resolve => setTimeout(() => resolve("still open"), 2_000))])).resolves.toBe("closed");
+  });
+
   it("fails instead of mixing bytes when the object changed before the download resumed", async () => {
     const content = "0123456789abcdefghij";
     respond = (_req, res, _body, index) => {

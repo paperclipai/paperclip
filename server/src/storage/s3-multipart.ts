@@ -155,12 +155,16 @@ export async function sendFileRequestWithRetry<T>(signal: AbortSignal | undefine
     } catch (error) {
       if (signal?.aborted) throw error;
       if (isRequestRateLimited(error)) {
+        recordStorageThrottle();
         if (++throttles >= THROTTLED_PART_ATTEMPTS) throw error;
         const ceiling = Math.min(THROTTLE_BACKOFF_MAX_MS, THROTTLE_BACKOFF_BASE_MS * 2 ** (throttles - 1));
-        await delay(Math.floor(Math.random() * ceiling), undefined, { signal });
+        const wait = Math.floor(Math.random() * ceiling);
+        recordStorageBackoff(wait);
+        await delay(wait, undefined, { signal });
         continue;
       }
       if (++failures >= FILE_PART_ATTEMPTS) throw error;
+      recordStorageBackoff(failures * 500);
       await delay(failures * 500, undefined, { signal });
     }
   }

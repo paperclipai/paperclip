@@ -84,23 +84,35 @@ function isTransientBodyError(error: unknown) {
     || (typeof message === "string" && /socket hang up|aborted|premature close/i.test(message));
 }
 
-async function* resumeBodyAfterTransientFailure(first: Readable, reopen: (offset: number) => Promise<Readable>, signal?: AbortSignal) {
-  let current = first, offset = 0, resumes = 0;
-  while (true) {
-    try {
-      for await (const chunk of current) {
-        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-        offset += bytes.length;
-        yield bytes;
+function resumableBody(first: Readable, reopen: (offset: number) => Promise<Readable>, signal?: AbortSignal) {
+  let current = first, closed = false;
+  async function* chunks() {
+    let offset = 0, resumes = 0;
+    while (true) {
+      try {
+        for await (const chunk of current) {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+          offset += bytes.length;
+          yield bytes;
+        }
+        return;
+      } catch (error) {
+        current.destroy();
+        if (closed || signal?.aborted || resumes >= BODY_RESUME_ATTEMPTS || !isTransientBodyError(error)) throw error;
+        resumes += 1;
+        current = await reopen(offset);
+        if (closed) { current.destroy(); return; }
       }
-      return;
-    } catch (error) {
-      current.destroy();
-      if (signal?.aborted || resumes >= BODY_RESUME_ATTEMPTS || !isTransientBodyError(error)) throw error;
-      resumes += 1;
-      current = await reopen(offset);
     }
   }
+  const stream = Readable.from(chunks(), { objectMode: false });
+  const destroyWrapper = stream._destroy.bind(stream);
+  stream._destroy = (error, callback) => {
+    closed = true;
+    current.destroy();
+    destroyWrapper(error, callback);
+  };
+  return stream;
 }
 
 function toDate(value: Date | undefined): Date | undefined {
@@ -252,7 +264,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           return observeBodyFailures(await toReadableStream(resumed.Body), resumed);
         };
         const stream = etag && end !== undefined
-          ? Readable.from(resumeBodyAfterTransientFailure(first, reopen, input.signal), { objectMode: false })
+          ? resumableBody(first, reopen, input.signal)
           : first;
         if (input.signal) addAbortSignal(input.signal, stream);
         return {
