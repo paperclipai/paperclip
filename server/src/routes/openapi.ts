@@ -1582,6 +1582,13 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-identity-links/request-access",
   "POST /api/chat-endpoints/{endpointId}/publications/{publicationId}/resolve",
   "POST /api/chat-endpoints/{endpointId}/actions/{actionId}/resolve",
+  // Task-tree pause, cancel and resume controls are board-only (assertBoard in routes/issue-tree-control.ts).
+  "GET /api/issues/{id}/tree-control/state",
+  "POST /api/issues/{id}/tree-control/preview",
+  "GET /api/issues/{id}/tree-holds",
+  "POST /api/issues/{id}/tree-holds",
+  "GET /api/issues/{id}/tree-holds/{holdId}",
+  "POST /api/issues/{id}/tree-holds/{holdId}/release",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -8530,6 +8537,7 @@ registry.registerPath({
   path: "/api/issues/{id}/tree-holds",
   tags: ["issues"],
   summary: "Create an issue tree hold",
+  description: "Board-only. An agent cannot pause, cancel or resume a task tree, and this denial is final for agents. A person pauses the parent task and all of its subtasks on the company-prefixed task page /{prefix}/issues/{identifier}: More task actions, then Pause subtree. The person resumes it later on the same page with Resume subtree. Link that task page. Moving tasks to backlog or changing assignees is not a tree pause.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createIssueTreeHoldSchema),
