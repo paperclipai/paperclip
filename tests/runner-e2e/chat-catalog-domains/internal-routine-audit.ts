@@ -79,6 +79,9 @@ function routineAudit(): ChatCatalogCase {
     const browserTimezone = await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
     if (browserTimezone !== timezone) throw new Error(`Browser timezone override did not apply (${browserTimezone})`);
     const p = await project(ctx, "Launch"); const worker = await fixtureWorker(ctx);
+    // The harness funds the company and lead before setup; fund the routine's worker the same way so its
+    // unpriced setup turn does not budget-pause it before the query.
+    await api.post(`${companyPath(ctx)}/budgets/policies`, { scopeType: "agent", scopeId: worker.id, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
     const routine = await api.post<Entity>(`${companyPath(ctx)}/routines`, { title: "Daily launch readiness", projectId: p.id, assigneeAgentId: worker.id, description: ORIGINAL_DESCRIPTION });
     // A daily schedule in the person's timezone, firing at the next real minute that leaves room for the edit.
     const fireAt = new Date(Date.now() + (new Date().getUTCSeconds() >= 45 ? 180_000 : 120_000)); const fire = localClock(fireAt, timezone);
