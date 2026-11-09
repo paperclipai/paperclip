@@ -168,6 +168,23 @@ export function allowsIssueInteractionWake(
   return Boolean(deriveCommentId(contextSnapshot));
 }
 
+/**
+ * Whether a wake may run while its issue still has unresolved blockers: a
+ * verified comment interaction, or a stalled child or blocker
+ * (`issue_blocker_stalled`, once per stall), which the assignee must be able
+ * to re-delegate, escalate or block on while that dependency is stuck. The
+ * caller verifies the stall against server state (`verifyBlockerStallWake`);
+ * the wake reason string alone never qualifies. Pause holds are separate and
+ * do not use this rule.
+ */
+export function allowsDependencyBlockedWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  interactionWakeReasons: ReadonlySet<string>,
+  verifiedBlockerStall: boolean,
+): boolean {
+  return allowsIssueInteractionWake(contextSnapshot, interactionWakeReasons) || verifiedBlockerStall;
+}
+
 export function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown): boolean {
   const context = parseObject(contextSnapshot);
   const interactionId = readNonEmptyString(context.interactionId);
