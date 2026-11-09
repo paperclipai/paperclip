@@ -438,10 +438,8 @@ export const IssueLinkQuicklook = React.forwardRef<
     <Popover open={open} onOpenChange={(next) => (next ? openNow() : close())}>
       <PopoverTrigger
         asChild
-        onMouseEnter={() => {
-          handlePrefetch();
-          scheduleOpen();
-        }}
+        // The link's own hover handler warms the task; history waits for a dwell.
+        onMouseEnter={scheduleOpen}
         onMouseLeave={close}
       >
         {link}

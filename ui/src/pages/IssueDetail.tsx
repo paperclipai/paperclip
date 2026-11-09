@@ -80,6 +80,8 @@ import { activityApi, type RunForIssue } from "../api/activity";
 import {
   fetchRecentIssueActivity,
   fetchRecentIssueRunWindow,
+  issueCommentInputFactsQueryKey,
+  issueInputCommentIds,
   recentIssueActivityQueryKey,
   recentIssueRunWindowQueryKey,
   type RecentIssueRunWindow,
@@ -1497,9 +1499,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       ? queryClient.getQueryData<ActivityEvent[]>([...queryKeys.issues.activity(issueQueryRef), "recent"])
       : undefined,
   });
-  const inputCommentIds = comments.filter((comment) => !("clientStatus" in comment) || !comment.clientStatus).map((comment) => comment.id).sort();
+  const inputCommentIds = issueInputCommentIds(comments);
   const inputFacts = useIssueIdBatches(
-    [...queryKeys.issues.activity(issueQueryRef), "comment-inputs"], inputCommentIds,
+    issueCommentInputFactsQueryKey(issueQueryRef), inputCommentIds,
     ids => activityApi.inputFactsForIssue(issueQueryRef, ids), !!issueId && !historyExpanded,
   );
   const {

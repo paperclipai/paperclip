@@ -1,8 +1,9 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { ActivityEvent, Issue } from "@paperclipai/shared";
+import type { ActivityEvent, Issue, IssueComment, IssueRecentComments } from "@paperclipai/shared";
 import { activityApi, type RunForIssue } from "@/api/activity";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
+import { prefetchIssueIdBatches } from "@/hooks/useIssueIdBatches";
 import { queryKeys } from "@/lib/queryKeys";
 
 // The compact task chat reveals its first frame only after these reads settle
@@ -20,6 +21,34 @@ export function recentIssueActivityQueryKey(issueRef: string) {
 
 export function recentIssueRunWindowQueryKey(issueRef: string) {
   return [...queryKeys.issues.runs(issueRef), "recent-window"] as const;
+}
+
+/** Base key of the batched input facts for the comments in the chat window. */
+export function issueCommentInputFactsQueryKey(issueRef: string) {
+  return [...queryKeys.issues.activity(issueRef), "comment-inputs"] as const;
+}
+
+/** The saved (not optimistic) comment ids whose input facts the chat reads, sorted. */
+export function issueInputCommentIds(comments: readonly IssueComment[]) {
+  return comments
+    .filter((comment) => !("clientStatus" in comment) || !comment.clientStatus)
+    .map((comment) => comment.id)
+    .sort();
+}
+
+/**
+ * Warm the input facts of the recent comments already in cache, under the
+ * batch keys that `useIssueIdBatches` reads in the chat.
+ */
+export function prefetchIssueCommentInputFacts(queryClient: QueryClient, issueRef: string, staleTime: number) {
+  const recent = queryClient.getQueryData<IssueRecentComments>([...queryKeys.issues.comments(issueRef), "recent"]);
+  return prefetchIssueIdBatches(
+    queryClient,
+    issueCommentInputFactsQueryKey(issueRef),
+    issueInputCommentIds(recent?.comments ?? []),
+    (ids) => activityApi.inputFactsForIssue(issueRef, ids),
+    staleTime,
+  );
 }
 
 /** Recent activity, merged with events already observed while the task is open. */
@@ -75,9 +104,14 @@ const LIVE_STATE_PREFETCH_STALE_TIME_MS = 5_000;
 export function prefetchIssueChatHistory(
   queryClient: QueryClient,
   issueRef: string,
-  options: { issue?: Pick<Issue, "status" | "executionRunId"> | null; staleTime: number },
+  options: {
+    issue?: Pick<Issue, "status" | "executionRunId" | "conversationAgentId"> | null;
+    staleTime: number;
+  },
 ) {
   const { staleTime } = options;
+  // Same mode as the page, so a reconnect reconciles only the watched runs.
+  const conversationMode = !!options.issue?.conversationAgentId;
   const reads: Promise<unknown>[] = [
     queryClient.prefetchQuery({
       queryKey: recentIssueActivityQueryKey(issueRef),
@@ -86,7 +120,7 @@ export function prefetchIssueChatHistory(
     }),
     queryClient.prefetchQuery({
       queryKey: recentIssueRunWindowQueryKey(issueRef),
-      queryFn: () => fetchRecentIssueRunWindow(queryClient, issueRef),
+      queryFn: () => fetchRecentIssueRunWindow(queryClient, issueRef, { conversationMode }),
       staleTime,
     }),
     queryClient.prefetchQuery({

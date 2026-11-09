@@ -2,7 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { InstanceExperimentalSettings, Issue, IssueComment } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { getIssueRecentCommentsQueryOptions } from "./issue-comment-window-query";
-import { prefetchIssueChatHistory } from "./issue-chat-history-queries";
+import { prefetchIssueChatHistory, prefetchIssueCommentInputFacts } from "./issue-chat-history-queries";
 import { queryKeys } from "@/lib/queryKeys";
 import { getNextIssueCommentPageParam, ISSUE_COMMENT_PAGE_SIZE } from "@/lib/optimistic-issue-comments";
 
@@ -229,7 +229,8 @@ export function prefetchIssueComments(queryClient: QueryClient, issueRef: string
  * Warm what a task's first frame needs before the person opens it.
  *
  * `history: true` also warms every other read that gates the compact chat's
- * first reveal (activity, runs, interactions, attachments, live runs). Callers
+ * first reveal (activity, runs, comment input facts, interactions,
+ * attachments, live runs). Callers
  * pass it when an open is likely: a press, focus, keyboard selection, or a
  * hover that rests on the link. A pointer passing over rows warms only the
  * issue and its recent comments.
@@ -258,7 +259,10 @@ export function prefetchIssueDetailForNavigation(
     queryClient.prefetchQuery({
       ...getIssueRecentCommentsQueryOptions(queryClient, issueRef),
       staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,
-    }),
+    }).then(() => options?.history
+      // The chat also waits for the input facts of the comments it shows.
+      ? prefetchIssueCommentInputFacts(queryClient, issueRef, ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS)
+      : undefined),
     ...(options?.history
       ? [prefetchIssueChatHistory(queryClient, issueRef, {
           issue: options.issue ?? getCachedIssueDetail(queryClient, issueRef),

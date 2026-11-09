@@ -4,7 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { issuesApi } from "@/api/issues";
 import { activityApi } from "@/api/activity";
 import { heartbeatsApi } from "@/api/heartbeats";
-import { recentIssueActivityQueryKey, recentIssueRunWindowQueryKey } from "./issue-chat-history-queries";
+import {
+  issueCommentInputFactsQueryKey,
+  recentIssueActivityQueryKey,
+  recentIssueRunWindowQueryKey,
+} from "./issue-chat-history-queries";
 import {
   fetchIssueDetail,
   getCachedIssueDetail,
@@ -25,7 +29,7 @@ vi.mock("@/api/issues", () => ({
   },
 }));
 vi.mock("@/api/activity", () => ({
-  activityApi: { recentForIssue: vi.fn(), recentRunsForIssue: vi.fn(), runsForIssue: vi.fn(), runsByIdsForIssue: vi.fn() },
+  activityApi: { recentForIssue: vi.fn(), recentRunsForIssue: vi.fn(), runsForIssue: vi.fn(), runsByIdsForIssue: vi.fn(), inputFactsForIssue: vi.fn() },
 }));
 vi.mock("@/api/heartbeats", () => ({
   heartbeatsApi: { liveRunsForIssue: vi.fn(), activeRunForIssue: vi.fn() },
@@ -231,6 +235,43 @@ describe("task navigation prefetch", () => {
         await prefetchIssueDetailForNavigation(client, issue.identifier!, { issue, history: true });
         expect(heartbeatsApi.activeRunForIssue).toHaveBeenCalledWith(issue.identifier);
         expect(client.getQueryData(queryKeys.issues.activeRun(issue.identifier!))).toBeNull();
+      } finally { client.clear(); }
+    });
+
+    it("warms the input facts of the recent comments under the chat's batch keys", async () => {
+      vi.clearAllMocks();
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const issue = mockHistoryReads();
+      const ref = issue.identifier!;
+      const comment = (id: string) => ({ id, body: id, createdAt: "2026-11-09T00:00:00Z" });
+      vi.mocked(issuesApi.recentComments).mockResolvedValue({
+        comments: [comment("comment-b"), comment("comment-a")],
+        latestCommentId: "comment-b", oldestCommentId: "comment-a", hasMore: false,
+      } as never);
+      vi.mocked(activityApi.inputFactsForIssue).mockResolvedValue([{ id: "input-1" }] as never);
+      try {
+        await prefetchIssueDetailForNavigation(client, ref, { issue, history: true });
+        // The same ids, order and keys that the chat's useIssueIdBatches reads.
+        expect(activityApi.inputFactsForIssue).toHaveBeenCalledWith(ref, ["comment-a", "comment-b"]);
+        const key = issueCommentInputFactsQueryKey(ref);
+        expect(client.getQueryData([...key, "batch-ids"])).toEqual([["comment-a", "comment-b"]]);
+        expect(client.getQueryData([...key, "batch", ["comment-a", "comment-b"]])).toEqual([{ id: "input-1" }]);
+      } finally { client.clear(); }
+    });
+
+    it("reconciles a watched agent conversation's runs by id, not by reading every run", async () => {
+      vi.clearAllMocks();
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const issue = { ...mockHistoryReads(), conversationAgentId: "agent-1" };
+      const ref = issue.identifier!;
+      // A run watched earlier is still running, but has left the recent window.
+      client.setQueryData(recentIssueRunWindowQueryKey(ref), { runs: [run("run-0", "running")], hasEarlierRuns: false });
+      client.getQueryCache().find({ queryKey: recentIssueRunWindowQueryKey(ref) })!.invalidate();
+      vi.mocked(activityApi.runsByIdsForIssue).mockResolvedValue([run("run-2", "failed"), run("run-0", "succeeded")] as never);
+      try {
+        await prefetchIssueDetailForNavigation(client, ref, { issue, history: true });
+        expect(activityApi.runsByIdsForIssue).toHaveBeenCalledWith(ref, ["run-0", "run-2", "run-1"]);
+        expect(activityApi.runsForIssue).not.toHaveBeenCalled();
       } finally { client.clear(); }
     });
 

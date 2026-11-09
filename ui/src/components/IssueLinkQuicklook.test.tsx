@@ -109,13 +109,13 @@ describe("IssueLinkQuicklook", () => {
   });
 
   describe("navigation prefetch", () => {
-    function renderLink() {
+    function renderLink({ quicklook = false } = {}) {
       navigationPrefetches.length = 0;
       act(() => {
         root.render(
           <QueryClientProvider client={queryClient}>
             <MemoryRouter>
-              <IssueLinkQuicklook issuePathId="PAP-1" issuePrefetch={createIssue()} to="/companies/company-1/issues/PAP-1" disableIssueQuicklook>
+              <IssueLinkQuicklook issuePathId="PAP-1" issuePrefetch={createIssue()} to="/companies/company-1/issues/PAP-1" disableIssueQuicklook={!quicklook}>
                 PAP-1
               </IssueLinkQuicklook>
             </MemoryRouter>
@@ -129,6 +129,15 @@ describe("IssueLinkQuicklook", () => {
 
     it("warms only the issue and recent comments when a pointer passes over a task", () => {
       const link = renderLink();
+      hover(link, "mouseover");
+      act(() => { vi.advanceTimersByTime(ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS - 1); });
+      hover(link, "mouseout");
+      act(() => { vi.advanceTimersByTime(1_000); });
+      expect(navigationPrefetches).toEqual([{ ref: "PAP-1", history: false }]);
+    });
+
+    it("waits for a hover to rest before warming history when the quicklook is on", () => {
+      const link = renderLink({ quicklook: true });
       hover(link, "mouseover");
       act(() => { vi.advanceTimersByTime(ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS - 1); });
       hover(link, "mouseout");
