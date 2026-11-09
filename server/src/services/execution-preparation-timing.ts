@@ -106,6 +106,7 @@ export type ExecutionPhase =
   | "storage.snapshot.prior_attempts" | "storage.snapshot.encrypt" | "storage.snapshot.digest" | "storage.snapshot.put"
   | "storage.snapshot.verify" | "storage.snapshot.download" | "storage.snapshot.decrypt" | "storage.snapshot.verify_plaintext"
   | "storage.snapshot.publish" | "workspace.snapshot.sandbox_restore"
+  | "workspace.snapshot.sandbox_upload" | "workspace.snapshot.sandbox_extract"
   | "execution.runtime" | "execution.workspace_ownership" | "execution.workspace_finalize" | "execution.workspace_restore" | "execution.workspace_commit"
   | "execution.workspace_ownership_wait" | "execution.realtime"
   | "execution.usage" | "execution.native_finalize"
