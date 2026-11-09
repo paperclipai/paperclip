@@ -82,6 +82,10 @@ function registerModuleMocks() {
     RunnerGoalActionError: class RunnerGoalActionError extends Error {},
     RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
   }));
+  vi.doMock("../services/chat-channel-binding.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../services/chat-channel-binding.js")>(),
+    assertExternalChannelAssigneeChangeAllowed: vi.fn(async () => undefined),
+  }));
 
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({

@@ -208,6 +208,16 @@ Execution work is paused because the next move belongs to a reviewer or approver
 
 An external review service can also be a valid review path when the issue keeps an agent assignee and has an active one-shot monitor that will wake that assignee to check the service later.
 
+Tasks bound to Slack or another external channel keep their assigned agent so
+replies retain their channel identity. A human review handoff uses a pending
+human-only interaction and `in_review` without changing the assignees. An attempt
+to change the bound agent is rejected before stopping its goal or active run.
+The rejection does not cancel the current run. The agent can delegate work with
+a child task, or save the review interaction and finish its channel update in the
+same run. Fixed agent-chat conversation identity is also checked before Stop; its
+existing 422 response remains unchanged. Workflow-selected assignees are checked
+before a board interrupt as well as before an ownership stop.
+
 For a native completion review addressed to an agent, the server saves the review
 card and a durable reviewer wake in the same transaction. The reviewer can act
 on the child task even when its own parent task waits for that child. The child

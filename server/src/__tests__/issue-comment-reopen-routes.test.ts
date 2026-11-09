@@ -240,6 +240,11 @@ vi.mock("../services/external-objects.js", () => ({
   externalObjectService: () => mockExternalObjectService,
 }));
 
+vi.mock("../services/chat-channel-binding.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../services/chat-channel-binding.js")>(),
+  assertExternalChannelAssigneeChangeAllowed: vi.fn(async () => undefined),
+}));
+
 vi.mock("../services/cross-issue-influence-limit.js", () => ({
   observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
   crossIssueInfluenceLimitError: mockCrossIssueInfluenceLimitError,

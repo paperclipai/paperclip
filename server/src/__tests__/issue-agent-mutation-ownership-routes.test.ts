@@ -27,6 +27,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
   getComment: vi.fn(),
+  getCurrentScheduledRetry: vi.fn(async () => null),
   getDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -2886,6 +2887,68 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  describe("bound task reassignment preflight", () => {
+    it.each(["agent_jwt", "board", "native", "idle", "mcp_oauth"])(
+      "rejects %s reassignment before stopping the owner", async scenario => {
+        const binding = { id: recoveryActionId, companyId, issueId, state: "completed" };
+        const current = makeIssue({ executionRunId: scenario === "idle" ? null : ownerRunId });
+        mockIssueService.getById.mockResolvedValue(current);
+        mockHeartbeatService.getRun.mockResolvedValue({ id: ownerRunId, companyId,
+          agentId: ownerAgentId, status: "running", runtimeMode: scenario === "native" ? "native" : "legacy",
+          contextSnapshot: { issueId } });
+        // Model the existing persistence guard. The real preflight must prevent
+        // both executor cancellation and this late persistence call.
+        mockIssueService.update.mockRejectedValue(new HttpError(409, "Bound task", {
+          code: "chat_binding_agent_locked", conversationId: binding.id,
+        }));
+        mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(peerAgentId) });
+        const actor = scenario === "board" ? boardActor() : { ...ownerActor(),
+          source: scenario === "mcp_oauth" ? "mcp_oauth" : "agent_jwt" };
+        const db = createRunContextDb({}, ownerAgentId, ownerRunId, [binding], true);
+        const res = await request(createApp(actor, db)).patch(`/api/issues/${issueId}`)
+          .send({ assigneeAgentId: peerAgentId });
+        expect(res.status, JSON.stringify(res.body)).toBe(409);
+        expect(res.body.details ?? res.body).toMatchObject({
+          code: scenario === "mcp_oauth" ? "MCP_ACTIVE_EXECUTION" : "chat_binding_agent_locked",
+        });
+        expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+        expect(mockRunnerGoalService.projection).not.toHaveBeenCalled();
+        expect(mockRunnerGoalService.act).not.toHaveBeenCalled();
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+        if (scenario !== "mcp_oauth") {
+          expect(db.chatBindingQueries.some(query => query.params.includes(companyId) && query.params.includes(issueId))).toBe(true);
+        }
+      },
+    );
+  });
+
+  it("rejects fixed conversation reassignment before cancelling its run", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ conversationAgentId: ownerAgentId, executionRunId: ownerRunId }));
+    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(peerAgentId) });
+    const res = await request(createApp({ ...ownerActor(), source: "agent_jwt" }))
+      .patch(`/api/issues/${issueId}`).send({ assigneeAgentId: peerAgentId });
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockRunnerGoalService.projection).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a workflow-selected bound assignee before a board interrupt", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId,
+      executionPolicy: { stages: [{ id: recoveryActionId, type: "review",
+        participants: [{ type: "agent", agentId: peerAgentId }] }] } }));
+    const db = createRunContextDb({}, ownerAgentId, ownerRunId,
+      [{ id: recoveryActionId, companyId, issueId, state: "active" }], true);
+    const res = await request(createApp(boardActor(), db)).patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Ready for configured review", interrupt: true });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details ?? res.body).toMatchObject({ code: "chat_binding_agent_locked" });
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockRunnerGoalService.projection).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   describe("human self-handoff", () => {
     const runningRun = {
       id: ownerRunId,
@@ -3445,7 +3508,10 @@ describe("agent issue mutation checkout ownership", () => {
         transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
           from: vi.fn((table: Parameters<typeof getTableName>[0]) => getTableName(table) === "case_handoffs"
-            ? emptyCaseHandoffQuery() : buildQuery(selection)),
+            ? emptyCaseHandoffQuery()
+            : getTableName(table) === "chat_conversations"
+              ? { where: vi.fn(() => ({ limit: vi.fn(async () => []) })) }
+              : buildQuery(selection)),
         })),
       };
     }

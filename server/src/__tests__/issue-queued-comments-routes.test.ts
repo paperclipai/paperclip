@@ -12,6 +12,8 @@ import {
   agents,
   activityLog,
   companies,
+  chatConversations,
+  chatEndpoints,
   companyMemberships,
   companySkills,
   completionContracts,
@@ -26,6 +28,8 @@ import {
   nativeRunResults,
   issues,
   runIdentityContexts,
+  toolApplications,
+  toolConnections,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
@@ -86,14 +90,14 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await tempDb?.cleanup();
   });
 
-  function app(companyId: string, userId = "queue-owner", agentActor?: { agentId: string; runId: string }, database = db) {
+  function app(companyId: string, userId = "queue-owner", agentActor?: { agentId: string; runId: string; source?: string }, database = db) {
     const testApp = express();
     testApp.use(express.json());
     testApp.use((req, _res, next) => {
       (req as any).actor = {
         type: agentActor ? "agent" : "board",
         ...(agentActor ? { ...agentActor, companyId } : {}),
-        source: "session",
+        source: agentActor?.source ?? "session",
         userId,
         companyIds: [companyId],
         memberships: [{ companyId, status: "active", membershipRole: "operator" }],
@@ -396,6 +400,178 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await expect(issueService(db).update(seeded.issueId, { ...data, status: "done" }))
       .rejects.toMatchObject({ status: 403, details: { code: "agent_run_cancelled" } });
   });
+
+  it.each([
+    ["agent", false, "human"],
+    ["board", false, "human"],
+    ["board", true, "human"],
+    ["agent", false, "agent"],
+    ["board", false, "agent"],
+    ["board", true, "agent"],
+  ] as const)(
+    "keeps the run alive when the %s attempts a Slack-bound handoff (interrupt: %s, target: %s)",
+    async (actorType, interrupt, target) => {
+      const seeded = await seedQueue();
+      await db
+        .delete(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, seeded.wakeId));
+      await db
+        .update(agents)
+        .set({ adapterType: "codex_local" })
+        .where(eq(agents.id, seeded.agentId));
+      await db
+        .update(heartbeatRuns)
+        .set({ runtimeMode: "legacy" })
+        .where(eq(heartbeatRuns.id, seeded.runId));
+      await db
+        .update(issues)
+        .set({
+          createdByUserId: "queue-owner",
+          externalConversationState: "active",
+        })
+        .where(eq(issues.id, seeded.issueId));
+      const replacementAgentId = randomUUID();
+      await db.insert(agents).values({ id: replacementAgentId, companyId: seeded.companyId,
+        name: "Available delegate", role: "engineer", status: "idle", adapterType: "codex_local" });
+      const applicationId = randomUUID();
+      const connectionId = randomUUID();
+      const endpointId = randomUUID();
+      await db
+        .insert(toolApplications)
+        .values({
+          id: applicationId,
+          companyId: seeded.companyId,
+          applicationKey: `chat:slack:${endpointId}`,
+          name: "Slack",
+          type: "chat",
+          status: "active",
+        });
+      await db
+        .insert(toolConnections)
+        .values({
+          id: connectionId,
+          companyId: seeded.companyId,
+          applicationId,
+          uid: endpointId,
+          name: "Slack",
+          connectionPurpose: "channel",
+          transport: "chat_sdk",
+          status: "active",
+        });
+      await db
+        .insert(chatEndpoints)
+        .values({
+          id: endpointId,
+          companyId: seeded.companyId,
+          connectionId,
+          provider: "slack",
+          publicId: randomUUID(),
+          assignedAgentId: seeded.agentId,
+          status: "active",
+        });
+      const [conversation] = await db
+        .insert(chatConversations)
+        .values({
+          companyId: seeded.companyId,
+          endpointId,
+          issueId: seeded.issueId,
+          externalConversationId: "test-channel",
+          externalThreadId: "test-thread",
+          externalLabel: "Test Slack thread",
+          state: target === "agent" ? "completed" : "active",
+        })
+        .returning();
+      const child = spawn(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1000)"],
+        { stdio: "ignore" },
+      );
+      testProcesses.set(seeded.runId, child);
+      runningProcesses.set(seeded.runId, {
+        child,
+        graceSec: 1,
+        processGroupId: null,
+      });
+      const client = app(
+        seeded.companyId,
+        "queue-owner",
+        actorType === "agent" ? { ...seeded, source: "agent_jwt" } : undefined,
+      );
+
+      const rejected = await request(client)
+        .patch(`/api/issues/${seeded.issueId}`)
+        .send({
+          status: "in_review",
+          assigneeAgentId: target === "agent" ? replacementAgentId : null,
+          assigneeUserId: target === "agent" ? null : "queue-owner",
+          comment: "Ready for human review.",
+          ...(interrupt ? { interrupt: true } : {}),
+        })
+        .expect(409);
+
+      expect(rejected.body.details).toMatchObject({
+        code: "chat_binding_agent_locked",
+        conversationId: conversation.id,
+      });
+      expect(
+        (
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, seeded.runId))
+        )[0],
+      ).toMatchObject({ status: "running", errorCode: null });
+      expect(child.killed).toBe(false);
+      expect(
+        (await db.select().from(issues).where(eq(issues.id, seeded.issueId)))[0],
+      ).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: seeded.agentId,
+        executionRunId: seeded.runId,
+      });
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+
+      await issueThreadInteractionService(db).create(
+        { id: seeded.issueId, companyId: seeded.companyId },
+        {
+          kind: "request_confirmation",
+          resolverPolicy: "human_only",
+          payload: { version: 1, prompt: "Review the completed pull request." },
+        },
+        { agentId: seeded.agentId, runId: seeded.runId },
+      );
+      const agentClient = app(seeded.companyId, "queue-owner", seeded);
+      await request(agentClient)
+        .patch(`/api/issues/${seeded.issueId}`)
+        .send({
+          status: "in_review",
+          comment:
+            "Implementation approved. The pull request is ready for human review.",
+        })
+        .expect(200);
+      expect(
+        (
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, seeded.runId))
+        )[0].status,
+      ).toBe("running");
+      expect(
+        (await db.select().from(issues).where(eq(issues.id, seeded.issueId)))[0],
+      ).toMatchObject({ status: "in_review", assigneeAgentId: seeded.agentId });
+      expect(
+        await db
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.issueId, seeded.issueId)),
+      ).toContainEqual(
+        expect.objectContaining({
+          body: "Implementation approved. The pull request is ready for human review.",
+        }),
+      );
+    },
+  );
 
   it.each(["questions", "verdicts"] as const)("rejects admitted %s responses after Stop revokes the run", async kind => {
     const seeded = await seedQueue();
