@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, ne } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -8,6 +8,7 @@ import {
   createDb,
   environmentLeases,
   environments,
+  executionWorkspaces,
   heartbeatRuns,
   issueRecoveryActions,
   issues,
@@ -22,6 +23,7 @@ import { hasRecoveredCleanupStopReceipt } from "../services/remote-execution-ter
 import { taskChatRetryExecutionStopped } from "../services/chat-channels/task-retry-authority.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import { ORPHANED_SANDBOX_RECOVERY_KEY, settleStopOnlyCleanup } from "../services/sandbox-stop-and-retain.js";
+import { releasableRetainedOrphanCondition } from "../services/environment-retained-orphan-settlement.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -59,6 +61,9 @@ suite("retained orphan sandbox on the shared ownership path", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(environmentLeases);
     await db.delete(heartbeatRuns);
+    await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, issueId));
+    await db.delete(issues).where(ne(issues.id, issueId));
+    await db.delete(executionWorkspaces);
   });
 
   afterAll(async () => {
@@ -290,6 +295,150 @@ suite("retained orphan sandbox on the shared ownership path", () => {
     const { kind } = await pass();
     expect(kind).toMatchObject({ settled: 1 });
     expect((await row(leaseId)).status).toBe("pending_cleanup");
+  });
+
+  async function workspace() {
+    const [created] = await db.insert(executionWorkspaces).values({ companyId, mode: "isolated_workspace",
+      strategyType: "git_worktree", name: "Task workspace" }).returning({ id: executionWorkspaces.id });
+    return created!.id;
+  }
+
+  /** A warm sandbox the previous release left behind: a reuse_by_environment
+   * lease the plugin stopped and kept for the next turn on its workspace. This
+   * is the exact row shape releases before this change wrote; it carries no
+   * new marker. */
+  async function warmLease(runId: string, input: { status?: string; workspaceId: string | null; receipt?: boolean;
+    providerLeaseId?: string; createdAt?: Date }) {
+    const id = randomUUID(), providerLeaseId = input.providerLeaseId ?? `sandbox://fake/${id}`;
+    const now = input.createdAt ?? new Date();
+    await db.insert(environmentLeases).values({ id, companyId, environmentId, issueId, heartbeatRunId: runId,
+      executionWorkspaceId: input.workspaceId, status: input.status ?? "released", cleanupStatus: "success",
+      leasePolicy: "reuse_by_environment", provider: "fake", providerLeaseId, acquiredAt: now, releasedAt: now,
+      createdAt: now, updatedAt: now,
+      metadata: { agentId, reuseLease: true, ...(input.receipt === false ? {} : { remoteExecutionTermination: {
+        schema: "paperclip.remote-termination.v1", companyId, runId, leaseId: id, provider: "fake", providerLeaseId,
+        state: "stopped", confirmedAt: now.toISOString() } }) } });
+    return id;
+  }
+
+  it("destroys a task's warm sandbox once the task moves to another workspace", async () => {
+    const [oldWorkspace, newWorkspace] = [await workspace(), await workspace()];
+    const leaseId = await warmLease(await run("failed"), { workspaceId: oldWorkspace });
+    // A Retry kept a fresh workspace: no acquire can match the old lineage again.
+    await db.update(issues).set({ executionWorkspaceId: newWorkspace }).where(eq(issues.id, issueId));
+    const { kind } = await pass();
+    expect(kind).toMatchObject({ settled: 1 });
+    const released = await row(leaseId);
+    expect(released).toMatchObject({ status: "pending_cleanup", failureReason: "retained_orphan_sandbox_released" });
+    // The successor is never blocked on this destroy.
+    expect(hasRecoveredCleanupStopReceipt(released)).toBe(true);
+    expect(await hasPendingRunCleanup(db, companyId, released.heartbeatRunId!)).toBe(false);
+  });
+
+  it("destroys a warm sandbox behind a failed lease, which no turn can resume", async () => {
+    const current = await workspace();
+    await db.update(issues).set({ executionWorkspaceId: current }).where(eq(issues.id, issueId));
+    const leaseId = await warmLease(await run("failed"), { status: "failed", workspaceId: current });
+    const { kind } = await pass();
+    expect(kind).toMatchObject({ settled: 1 });
+    expect((await row(leaseId)).status).toBe("pending_cleanup");
+  });
+
+  it.each([
+    ["the task can still resume it on its own workspace", async () => {
+      const current = await workspace();
+      await db.update(issues).set({ executionWorkspaceId: current }).where(eq(issues.id, issueId));
+      return [await warmLease(await run("succeeded"), { workspaceId: current })];
+    }],
+    ["it has no confirmed stop receipt", async () => {
+      await db.update(issues).set({ executionWorkspaceId: await workspace() }).where(eq(issues.id, issueId));
+      return [await warmLease(await run("failed"), { status: "failed", workspaceId: await workspace(), receipt: false })];
+    }],
+    ["a newer lease on the same sandbox handed it on", async () => {
+      const current = await workspace();
+      await db.update(issues).set({ executionWorkspaceId: current }).where(eq(issues.id, issueId));
+      const providerLeaseId = `sandbox://fake/${randomUUID()}`;
+      const older = await warmLease(await run("failed"), { status: "failed", workspaceId: current, providerLeaseId,
+        createdAt: new Date(Date.now() - 60_000) });
+      const newer = await warmLease(await run("succeeded"), { workspaceId: current, providerLeaseId });
+      return [older, newer];
+    }],
+    ["its task has no bound workspace (finished, or between bindings)", async () => {
+      await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, issueId));
+      return [await warmLease(await run("succeeded"), { workspaceId: await workspace() }),
+        await warmLease(await run("succeeded"), { status: "retained", workspaceId: await workspace(), receipt: false })];
+    }],
+    ["another task still shares its workspace", async () => {
+      const [shared, fresh] = [await workspace(), await workspace()];
+      await db.update(issues).set({ executionWorkspaceId: fresh }).where(eq(issues.id, issueId));
+      await db.insert(issues).values({ companyId, title: "Sibling on the shared workspace", executionWorkspaceId: shared });
+      return [await warmLease(await run("failed"), { workspaceId: shared })];
+    }],
+    ["the task still has a run in flight", async () => {
+      const [oldWorkspace, newWorkspace] = [await workspace(), await workspace()];
+      await db.update(issues).set({ executionWorkspaceId: newWorkspace }).where(eq(issues.id, issueId));
+      const leaseId = await warmLease(await run("failed"), { workspaceId: oldWorkspace });
+      await run("running");
+      return [leaseId];
+    }],
+  ] as const)("keeps a warm sandbox while %s", async (_label, arrange) => {
+    const ids = await arrange();
+    const before = await Promise.all(ids.map(row));
+    const { kind } = await pass();
+    expect(kind).toMatchObject({ settled: 0 });
+    expect(await Promise.all(ids.map(row))).toEqual(before);
+  });
+
+  it("lists only one newest row when two rows for a sandbox share a created_at", async () => {
+    const current = await workspace();
+    await db.update(issues).set({ executionWorkspaceId: current }).where(eq(issues.id, issueId));
+    const providerLeaseId = `sandbox://fake/${randomUUID()}`, createdAt = new Date();
+    const [lower, higher] = ["00000000-0000-4000-8000-000000000001", "ffffffff-ffff-4fff-bfff-ffffffffffff"];
+    for (const id of [lower, higher]) {
+      const runId = await run("failed");
+      await db.insert(environmentLeases).values({ id, companyId, environmentId, issueId, heartbeatRunId: runId,
+        executionWorkspaceId: current, status: "failed", cleanupStatus: "success", leasePolicy: "reuse_by_environment",
+        provider: "fake", providerLeaseId, acquiredAt: createdAt, releasedAt: createdAt, createdAt, updatedAt: createdAt,
+        metadata: { agentId, remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId, runId,
+          leaseId: id, provider: "fake", providerLeaseId, state: "stopped", confirmedAt: createdAt.toISOString() } } });
+    }
+    const listed = await db.select({ id: environmentLeases.id }).from(environmentLeases)
+      .where(releasableRetainedOrphanCondition());
+    expect(listed.map(row => row.id)).toEqual([higher]);
+  });
+
+  it("stops, then destroys, a running warm sandbox once its task moves to another workspace", async () => {
+    const [oldWorkspace, newWorkspace] = [await workspace(), await workspace()];
+    const runId = await run("succeeded");
+    // A keep-running release: retained, no stop, no receipt. Its idle timer
+    // lived in the process that kept it.
+    const leaseId = await warmLease(runId, { status: "retained", workspaceId: oldWorkspace, receipt: false });
+    await db.update(environmentLeases).set({ releasedAt: null }).where(eq(environmentLeases.id, leaseId));
+    await db.update(issues).set({ executionWorkspaceId: newWorkspace }).where(eq(issues.id, issueId));
+
+    expect((await pass()).kind).toMatchObject({ settled: 1 });
+    const stopping = await row(leaseId);
+    expect(stopping).toMatchObject({ status: "pending_cleanup", failureReason: "sandbox_stop_pending" });
+    const intent = stopping.metadata?.sandboxStopAndRetain as { requestId: string; recoveredOrphanedRunLease?: boolean };
+    expect(intent).toMatchObject({ recoveredOrphanedRunLease: true, supersededWarmSandbox: true });
+    // The cleanup sweep's first stop is due at once.
+    expect(await nextEnvironmentCleanupAt(db)).toBeLessThanOrEqual(Date.now());
+
+    // The provider confirms the stop; the next pass hands it to destruction.
+    const stopped = await settleStopOnlyCleanup(db, stopping, { attemptId: intent.requestId,
+      receipt: { providerLeaseId: stopping.providerLeaseId, state: "stopped" } });
+    expect(stopped).toMatchObject({ status: "released", cleanupStatus: "success" });
+    expect((await pass()).kind).toMatchObject({ settled: 1 });
+    expect(await row(leaseId)).toMatchObject({ status: "pending_cleanup", failureReason: "retained_orphan_sandbox_released" });
+  });
+
+  it("keeps a running warm sandbox its task can still resume after a restart", async () => {
+    const current = await workspace();
+    await db.update(issues).set({ executionWorkspaceId: current }).where(eq(issues.id, issueId));
+    const leaseId = await warmLease(await run("succeeded"), { status: "retained", workspaceId: current, receipt: false });
+    const before = await row(leaseId);
+    expect((await pass()).kind).toMatchObject({ settled: 0 });
+    expect(await row(leaseId)).toEqual(before);
   });
 
   it("leaves an ordinary retained sandbox (no orphan marker) alone", async () => {

@@ -331,9 +331,13 @@ export function defaultDaytonaImageCacheRoot(): string {
   return path.resolve(process.env.RESTART_CHAOS_IMAGE_CACHE ?? path.join(import.meta.dirname, "results", "daytona-images"));
 }
 
+export const SKOPEO_ATTEMPT_TIMEOUT_MS = 20 * 60_000;
+
 export async function copyImageToDir(input: { skopeo: string; image: string; blobs: string; attempts?: number;
-  log?: (line: string) => void }): Promise<void> {
+  attemptTimeoutMs?: number; log?: (line: string) => void }): Promise<void> {
   const attempts = input.attempts ?? 3;
+  const timeout = input.attemptTimeoutMs
+    ?? (Number(process.env.RESTART_CHAOS_SKOPEO_ATTEMPT_TIMEOUT_MS) || SKOPEO_ATTEMPT_TIMEOUT_MS);
   const log = input.log ?? (() => undefined);
   for (let attempt = 1; ; attempt += 1) {
     await rm(input.blobs, { recursive: true, force: true });
@@ -341,7 +345,7 @@ export async function copyImageToDir(input: { skopeo: string; image: string; blo
     log(`skopeo copy ${input.image} (linux/amd64) → ${input.blobs} (attempt ${attempt}/${attempts})`);
     try {
       await execFileAsync(input.skopeo, ["copy", "--retry-times", "3", "--override-os", "linux", "--override-arch", "amd64",
-        `docker://${input.image}`, `dir:${input.blobs}`], { maxBuffer: 16 * 1024 * 1024 });
+        `docker://${input.image}`, `dir:${input.blobs}`], { maxBuffer: 16 * 1024 * 1024, timeout, killSignal: "SIGKILL" });
       return;
     } catch (error) {
       if (attempt >= attempts) throw error;

@@ -65,17 +65,35 @@ suite("durable plugin task credential handoff", () => {
     const lease = () => db.select().from(environmentLeases).where(and(eq(environmentLeases.id, leaseId), eq(environmentLeases.companyId, companyId))).then(rows => rows[0]!);
     return { companyId, agentId, runId, environmentId, leaseId, owner, selection: selection!, managed, workers, calls, lease,
       failExport(value: boolean) { failExport = value; }, credential: () => service.credential(selection!),
-      settle: () => settleDispatchedEnvironmentTask(db, workers, { companyId, id: leaseId }) };
+      settle: (executionStopObserved = false) => settleDispatchedEnvironmentTask(db, workers, { companyId, id: leaseId }, { executionStopObserved }) };
   }
   it("persists refreshed credentials before completing a stopped task, after controller files disappear", async () => {
     const f = await fixture();
-    expect(await f.settle()).toBe(true);
+    expect(await f.settle()).toBe("completed");
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect(f.calls.indexOf("credentials")).toBeLessThan(f.calls.indexOf("complete"));
     const saved = await f.lease();
     expect(saved.metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete" });
     expect(JSON.stringify(saved.metadata)).not.toContain("fixture-refreshed");
     expect(JSON.stringify(saved.metadata)).not.toContain(f.managed.home!);
+  });
+  it("writes back credentials before completing a task whose stop was already observed, without stopping it again", async () => {
+    const f = await fixture();
+    expect(await f.settle(true)).toBe("completed");
+    expect(f.calls).toEqual(["status", "credentials", "complete"]);
+    expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete" });
+  });
+  it("leaves an observed-stop task for cleanup when credential writeback fails", async () => {
+    const f = await fixture(); f.failExport(true);
+    await expect(f.settle(true)).rejects.toThrow("termination is unconfirmed");
+    expect(f.calls).toEqual(["status", "credentials"]);
+    expect(await f.lease()).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed" });
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
+    f.failExport(false);
+    expect(await f.settle()).toBe("completed");
+    expect(f.calls.slice(2)).toEqual(["stop", "status", "credentials", "complete"]);
+    expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
   });
   it("keeps a failed transfer pending and recovers through a fresh cleanup after run and environment deletion", async () => {
     const f = await fixture(); f.failExport(true);
@@ -86,7 +104,7 @@ suite("durable plugin task credential handoff", () => {
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     await db.delete(environments).where(eq(environments.id, f.environmentId));
     f.failExport(false);
-    expect(await f.settle()).toBe(true);
+    expect(await f.settle()).toBe("completed");
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect(f.calls.at(-1)).toBe("complete");
   });
@@ -104,7 +122,7 @@ suite("durable plugin task credential handoff", () => {
       expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
     } finally { await db.execute(sql`drop trigger reject_runner_credential_save on company_secret_versions; drop function reject_runner_credential_save()`); }
     const receiver = createDb(database.connectionString);
-    expect(await settleDispatchedEnvironmentTask(receiver, f.workers, { companyId: f.companyId, id: f.leaseId })).toBe(true);
+    expect(await settleDispatchedEnvironmentTask(receiver, f.workers, { companyId: f.companyId, id: f.leaseId })).toBe("completed");
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect(f.calls.filter(call => call === "credentials")).toHaveLength(2);
     expect(f.calls.at(-1)).toBe("complete");
@@ -113,13 +131,13 @@ suite("durable plugin task credential handoff", () => {
   it("does not overwrite an explicit account replacement", async () => {
     const f = await fixture();
     await secretService(db).rotate(f.managed.credentialWriteback!.secretId, { value: auth("fixture-reconnected", 2022) }, { userId: f.owner });
-    expect(await f.settle()).toBe(true);
+    expect(await f.settle()).toBe("completed");
     expect(f.calls).not.toContain("credentials");
     expect(await f.credential()).toBe(auth("fixture-reconnected", 2022));
   });
   it("allows concurrent cleanup to complete the same durable handoff", async () => {
     const f = await fixture();
-    expect(await Promise.all([f.settle(), f.settle()])).toEqual([true, true]);
+    expect(await Promise.all([f.settle(), f.settle()])).not.toContain(false);
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete" });
   });

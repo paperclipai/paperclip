@@ -5,6 +5,7 @@ import { withQueuedCommentIdsInWakePayload } from "./issue-queued-comment-queue.
 import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
 /**
  * Work-intent outbox (durable ownership plan, section E; invariant 4).
@@ -111,9 +112,11 @@ export async function saveUndeliveredUserComments(db: Db, input: {
   source?: string | null; triggerDetail?: string | null;
   /** Names why the receipt waits and what promotes it. */
   executionWait?: Record<string, unknown>;
+  reopenAgentClosedDone?: boolean;
 }): Promise<string | null> {
   if (input.commentIds.length === 0) return null;
-  return db.transaction(async tx => {
+  let publication: ActivityPublication | undefined;
+  const savedId = await db.transaction(async tx => {
     const [issue] = await tx.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId,
       conversationAgentId: issues.conversationAgentId }).from(issues)
       .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
@@ -147,6 +150,18 @@ export async function saveUndeliveredUserComments(db: Db, input: {
         [DEFERRED_WAKE_CONTEXT_KEY]: { issueId: input.issueId, taskId: input.issueId, wakeReason: "issue_commented",
           source: "issue.comment", wakeCommentIds: remaining, wakeCommentId: latest } }, remaining),
     }).returning({ id: agentWakeupRequests.id });
+    if (saved && issue.status === "done" && input.reopenAgentClosedDone) {
+      const { issueService } = await import("./issues.js");
+      const updated = await issueService(tx as unknown as Db).updateForCompany(input.issueId, input.companyId,
+        { status: "todo", executionState: null }, tx);
+      if (!updated) throw new Error("undelivered_comment_task_changed");
+      publication = (await persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system",
+        actorId: "ownership-reconciler", agentId: input.agentId, action: "issue.updated", entityType: "issue",
+        entityId: input.issueId,
+        details: { status: "todo", reopened: true, reopenedFrom: "done", source: "undelivered_comment_backstop" } })).publication;
+    }
     return saved?.id ?? null;
   });
+  if (publication) publishActivity(publication);
+  return savedId;
 }

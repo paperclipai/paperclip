@@ -185,6 +185,34 @@ describe("deferred receipt durable dispatch", () => {
     return { ...f, receipt, blocker };
   }
 
+  it("starts a deferred children-completed wake left behind when its parent's run blocked the parent (restart chaos t06)", async () => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issue.id, status: "succeeded",
+      errorCode: null, contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_assigned" } }).where(eq(heartbeatRuns.id, f.source.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId: f.source.id, phase: "committed" });
+    await db.update(issues).set({ status: "blocked", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issue.id));
+    const [child] = await db.insert(issues).values({ companyId: f.companyId, title: "Part 1", parentId: f.issue.id,
+      status: "done", completedAt: new Date() }).returning();
+    const [receipt] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "system", idempotencyKey: `issue_children_completed:${f.issue.id}`,
+      payload: { issueId: f.issue.id, childIssueIds: [child.id], _paperclipWakeContext: { issueId: f.issue.id,
+        taskId: f.issue.id, wakeReason: "issue_children_completed", source: "native_status_decision", childIssueIds: [child.id] } },
+    }).returning();
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+    await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
+    await waitForReal(async () => {
+      await Promise.allSettled([...passes]); await heartbeat.drainActiveRunExecutions();
+      const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
+      expect(saved.status, JSON.stringify({ errors })).toBe("completed");
+      expect(saved.runId).not.toBeNull();
+    }, { timeout: 15_000 });
+    await finish(f.issue.id);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(runs.filter(run => run.contextSnapshot?.wakeReason === "issue_children_completed")).toHaveLength(1);
+    await quiet();
+  });
+
   it.each(["restart", "cleanup"] as const)("recovers a dependency wake after native audit %s into one continuation", async event => {
     const f = await strandedDependency();
     const { receipt } = f;

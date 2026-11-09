@@ -220,8 +220,9 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
       // correctly trip the facade's strict turn-binding validator.
       if (
         !shouldForwardOpenCodeProxyItem({
+          eventType: event.eventType,
           turnId: event.turnId,
-          kind: payload.kind,
+          payload,
         })
       )
         continue;

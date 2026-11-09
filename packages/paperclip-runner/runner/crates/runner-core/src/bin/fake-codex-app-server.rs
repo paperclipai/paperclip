@@ -1862,6 +1862,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(delay) = argument(&args, "--turn-started-delay-ms") {
                     thread::sleep(Duration::from_millis(delay.parse()?));
                 }
+                // A test can hold the start until it has detached the controller.
+                if let Some(gate) = argument(&args, "--turn-started-gate").map(PathBuf::from) {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                    while !gate.is_file() && std::time::Instant::now() < deadline {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                }
                 // An accepted turn can be lost before it starts.
                 if args
                     .iter()

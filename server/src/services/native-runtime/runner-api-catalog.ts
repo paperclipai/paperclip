@@ -89,6 +89,8 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
       const conversationalConfirmation = method === "POST"
         && /^\/api\/issues\/\{[^}]+\}\/interactions\/\{[^}]+\}\/resolve-from-comment$/.test(path);
       const taskTitleUpdate = method === "PUT" && /^\/api\/issues\/\{[^}]+\}\/title$/.test(path);
+      // Computes an install plan without saving it, so read-only modes may call it.
+      const readOnlyPreview = method === "POST" && path === "/api/companies/{companyId}/teams/catalog/{catalogId}/preview";
       const skillReference = runnerApiReference[`${method} ${path.replace(/\{[^}]+\}/g, "{}")}`];
       const protocol = operation["x-paperclip-transport"] === "protocol" || (operation["x-paperclip-transport"] !== "rest" && (!path.startsWith("/api/") || /\/(oauth|auth|runtime-tools|mcp|ws)(\/|$)/.test(path)
         || /\/(claude-login|login-sessions|start-authorization|finalize-oauth-access)(\/|$)/.test(path)
@@ -116,7 +118,7 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
           ? "Prefer hire_agent for native teammate identity and persona fields. It fixes the reportsTo and source task context and inherits the caller's native runtime. Additional API fields use the route's existing agent permissions."
           : "Prefer an available dedicated tool for its supported fields. call_api supports the route's other operations and fields under the same agent permissions.",
         allowedModes: operation["x-paperclip-connection-management"] ? (method === "GET" ? ["standard", "ask", "planning"] : ["standard"]) : method !== "GET" && (path.endsWith("/case-handoffs") || /\/handoffs\//.test(path)) ? ["standard"]
-          : method === "GET" || method === "HEAD" || taskTitleUpdate ? ["standard", "ask", "planning", "skill_test"]
+          : method === "GET" || method === "HEAD" || taskTitleUpdate || readOnlyPreview ? ["standard", "ask", "planning", "skill_test"]
           : conversationalConfirmation ? ["standard", "planning", "skill_test"] : ["standard", "skill_test"],
         ...(skillReference ? { skillReference } : {}),
       });
