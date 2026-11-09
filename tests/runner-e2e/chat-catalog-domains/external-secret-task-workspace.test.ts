@@ -85,3 +85,25 @@ it("actual endpoint binds the server's running Morgan run, probes with its own a
     expect(JSON.stringify({ calls: endpoint.calls, receipts: endpoint.scopeReceipts, output })).not.toContain("synthetic-deployment-value");
   } finally { await endpoint.close(); }
 });
+it("active-run consumer mode attributes the bound credential to the server's one running run, without shell identity headers", async () => {
+  const f = await fixture(); vi.stubEnv("PAPERCLIP_HOME", path.join(await realpath(f.root), "home"));
+  f.ctx.scenario.id = "secrets.vault-reference";
+  const endpoint = await secretTestEndpoint(f.ctx, "morgan", "synthetic-deployment-value", "DEPLOYMENT_API_KEY", undefined, { forbidAwsRuntimeAuthority: true, activeRunConsumer: true });
+  const statuses: number[] = [];
+  const invoke = (authorization: string, headers: Record<string, string> = {}) => handlers[0]!({ headers: { authorization, "x-paperclip-no-aws": "true", ...headers }, method: "GET", url: "/publishing-check" }, { writeHead: (status: number) => statuses.push(status), end: () => {} });
+  try {
+    expect(endpoint.command).not.toContain("synthetic-deployment-value");
+    const { readFile } = await import("node:fs/promises");
+    expect(await readFile(endpoint.scriptPath, "utf8")).not.toMatch(/PAPERCLIP_AGENT_ID|PAPERCLIP_RUN_ID|x-paperclip-agent|x-paperclip-run/);
+    await invoke("Bearer synthetic-deployment-value"); expect(statuses.at(-1)).toBe(200);
+    expect(endpoint.calls.at(-1)).toMatchObject({ authorized: true, agentId: "morgan", runId: f.run.id, awsAuthorityAbsent: true });
+    // Forged shell headers are ignored: identity comes from the server.
+    await invoke("Bearer synthetic-deployment-value", { "x-paperclip-agent": "ceo", "x-paperclip-run": "33333333-3333-3333-3333-333333333333" });
+    expect(endpoint.calls.at(-1)).toMatchObject({ agentId: "morgan", runId: f.run.id });
+    await invoke("Bearer wrong-value"); expect(statuses.at(-1)).toBe(403);
+    await invoke("Bearer synthetic-deployment-value", { "x-paperclip-no-aws": "false" }); expect(statuses.at(-1)).toBe(403);
+    f.runs[0]!.status = "succeeded"; await invoke("Bearer synthetic-deployment-value"); expect(statuses.at(-1)).toBe(403);
+    f.runs[0]!.status = "running"; f.runs[1]!.status = "running"; await invoke("Bearer synthetic-deployment-value"); expect(statuses.at(-1)).toBe(403);
+    f.runs[1]!.status = "succeeded"; f.run.agentId = "ceo"; await invoke("Bearer synthetic-deployment-value"); expect(statuses.at(-1)).toBe(403);
+  } finally { await endpoint.close(); }
+});

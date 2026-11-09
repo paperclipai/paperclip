@@ -368,7 +368,7 @@ export const vaultReferenceExternalCases = [
           value,
           "DEPLOYMENT_API_KEY",
           undefined,
-          { forbidAwsRuntimeAuthority: true },
+          { forbidAwsRuntimeAuthority: true, activeRunConsumer: true },
         );
         const task = await ctx.input.api.post<Entity>(`${root(ctx)}/issues`, {
           title: "Vault deployment check",
@@ -426,7 +426,7 @@ export const vaultReferenceExternalCases = [
     },
     gradeVaultReference,
     {
-      oracleVersion: "paperclip.chat-catalog.external.v8", authentication: "human-session",
+      oracleVersion: "paperclip.chat-catalog.external-vault-reference.v9", authentication: "human-session",
       expectedRunCount: 3,
       minimumRunCount: 2,
       expectedHumanMessageCount: 2,
