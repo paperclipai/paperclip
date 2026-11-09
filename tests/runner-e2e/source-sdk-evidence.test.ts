@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 import { afterEach, expect, it } from "vitest";
 import { stagePrivateDiagnostics } from "./private-diagnostics.js";
 import { prepareSourceServerDependencies } from "./source-startup.js";
@@ -109,3 +110,19 @@ it("retains declarations and source maps under names the private result sealer a
   for (const file of receipt.files) expect(hash(await readFile(path.join(uploadDir, SOURCE_SDK_DIAGNOSTICS, file.retainedPath)))).toBe(file.sha256);
   await expect(sealManualResultEvidence(context, [], results)).resolves.not.toThrow();
 });
+// Needs the built SDK (scripts/ensure-plugin-build-deps.mjs) and the pinned public source.
+const builtSdk = ["packages/shared/dist", "packages/plugins/sdk/dist"].every(target =>
+  existsSync(new URL(`../../${target}/.paperclip-build-complete`, import.meta.url)));
+it.skipIf(!builtSdk)("seals the real built SDK upload, keeping proven key-shaped declarations out", async () => {
+  const repositoryRoot = await realpath(path.resolve(import.meta.dirname, "../.."));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "source-sdk-real-unit-"))); roots.push(root);
+  const temporaryRoot = path.join(root, "attempt"), results = path.join(root, "results"), uploadDir = path.join(results, "campaign", "attempt-1");
+  await mkdir(path.join(temporaryRoot, "artifacts-private"), { recursive: true, mode: 0o700 }); await mkdir(path.join(temporaryRoot, "selected-private-inputs"), { recursive: true, mode: 0o700 });
+  const secrets = ["synthetic-unit-provider-credential-0123456789"]; stagePrivateDiagnostics(temporaryRoot, [executionId], secrets);
+  await retainPreparedSourceSdk({ repositoryRoot, temporaryRoot, executionIds: [executionId], sourceRevision, installed: false });
+  await copyRetainedSourceSdk(temporaryRoot, executionId, sourceRevision, uploadDir, secrets, repositoryRoot);
+  await expect(stat(path.join(uploadDir, SOURCE_SDK_DIAGNOSTICS, "packages/shared/dist/validators/agent.d.ts.txt"))).rejects.toThrow();
+  await expect(stat(path.join(uploadDir, SOURCE_SDK_DIAGNOSTICS, "packages/shared/dist/validators/agent.js"))).resolves.toBeTruthy();
+  const context = { root, protocol: MANUAL_PRIVATE_PROTOCOL, private: true, workflowSha: "a".repeat(40), targetSha: "b".repeat(40), runId: "123", attempt: "1", executionIds: [MANUAL_PRIVATE_EXECUTIONS[0]!] } as ManualPrivateHandoff;
+  await expect(sealManualResultEvidence(context, secrets, results)).resolves.not.toThrow();
+}, 120_000);
