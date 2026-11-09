@@ -2262,7 +2262,20 @@ export class DurablePrpControlPlane {
     this.#semanticInputSourceRunId = null;
   }
 
-  async recoverPendingSemanticInputs(): Promise<void> {
+  #semanticRecoveryPass: Promise<void> | null = null;
+
+  recoverPendingSemanticInputs(): Promise<void> {
+    const pass = (this.#semanticRecoveryPass ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.#recoverPendingSemanticInputsOnce());
+    this.#semanticRecoveryPass = pass;
+    void pass.finally(() => {
+      if (this.#semanticRecoveryPass === pass) this.#semanticRecoveryPass = null;
+    }).catch(() => undefined);
+    return pass;
+  }
+
+  async #recoverPendingSemanticInputsOnce(): Promise<void> {
     if (this.#retainsSourceInputs() || !this.#recoverSemanticToolInput) return;
     const identity = this.#identity;
     for (const saved of [...this.#store.state.committedEvents]) {

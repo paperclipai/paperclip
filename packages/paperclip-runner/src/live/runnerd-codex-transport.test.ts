@@ -1408,7 +1408,7 @@ it("answers a held call before starting the next turn (restart chaos t101)", asy
   const order: string[] = [];
   const recovered = vi.fn(async (call: { callId: string }) => {
     order.push(`recover:${call.callId}`);
-    await new Promise<void>((resolveRead) => setTimeout(resolveRead, 50));
+    await new Promise<void>((resolveRead) => setTimeout(resolveRead, 300));
     return { result: { success: true, contentItems: [{ type: "inputText", text: "brief body" }] } };
   });
   const bundle = createCapabilityRunnerdCodexTransport({
@@ -1432,10 +1432,13 @@ it("answers a held call before starting the next turn (restart chaos t101)", asy
       order.push(type);
       return queueCommand(type, ...rest);
     });
+    const startupPass = core.recoverPendingSemanticInputs();
+    await vi.waitFor(() => expect(recovered).toHaveBeenCalledOnce());
     const turnStarted = expectTurnStarted(bundle.transport.notifications()[Symbol.asyncIterator]());
     void turnStarted.catch(() => undefined);
     await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Continue after the restart." }] });
     await turnStarted;
+    await startupPass;
     expect(recovered).toHaveBeenCalledOnce();
     expect(order.slice(0, 2)).toEqual(["recover:exec-held-read", "semantic_tool.result"]);
     expect(order.indexOf("semantic_tool.result")).toBeLessThan(order.indexOf("turn.start"));
