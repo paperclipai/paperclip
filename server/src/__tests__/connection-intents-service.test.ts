@@ -226,6 +226,34 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     }
   });
 
+  it("names the instance setting and its page when a requested chat channel is turned off", async () => {
+    const settings = instanceSettingsService(db);
+    const previous = await settings.getExperimental();
+    const service = connectionIntentService(db);
+    try {
+      await settings.updateExperimental({ enableChatConnectors: false });
+      const off = await service.search(claims, "iMessage");
+      const imessage = off.results.find(item => item.service === "imessage-photon");
+      expect(imessage).toMatchObject({ state: "unavailable", methods: [] });
+      expect(imessage?.reason).toMatch(/\[Experimental settings\]\(\/[A-Z0-9]+\/company\/settings\/instance\/experimental\)/);
+      expect(off.instruction).toContain("Explain the reason");
+      // Channels that also offer tools keep their usual result; only their chat methods stay hidden.
+      expect((await service.search(claims, "slack")).results.some(item => item.state === "unavailable" && item.methods.length === 0)).toBe(false);
+      await settings.updateExperimental({ enableChatConnectors: true });
+      const on = (await service.search(claims, "iMessage")).results.find(item => item.service === "imessage-photon");
+      expect(on?.state).not.toBe("unavailable");
+      expect(on?.methods.some(method => method.purpose === "channel")).toBe(true);
+    } finally {
+      await settings.updateExperimental({ enableChatConnectors: previous.enableChatConnectors });
+    }
+  });
+
+  it("points a service the catalog does not list at the secure own-server setup page", async () => {
+    const result = await connectionIntentService(db).search(claims, "Synthetic notes service");
+    expect(result.instruction).toMatch(/\[Connect your own MCP server\]\(\/[A-Z0-9]+\/apps\/byo\)/);
+    expect(result.instruction).toContain("never ask for a key in chat");
+  });
+
   it("creates one addressed request, resolves after install, and then reports ready for the responsible user", async () => {
     const service = connectionIntentService(db);
     const first = await service.request(claims, "notion");
