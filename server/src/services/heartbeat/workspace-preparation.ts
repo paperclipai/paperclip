@@ -2,7 +2,8 @@ import { NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH, remoteRecoveryLeaseMismatch } fr
 import { readInheritedRunnerRetainedSandbox } from "../native-runtime/native-inherited-runner-retry.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { assertEphemeralWorkspaceExecution, readRemoteWorkspaceAuthority, RemoteWorkspaceWriterActiveError, reserveRemoteWorkspace, shouldUseRemoteWorkspaces } from "../remote-workspaces.js";
-import { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS, WorkspaceBusyDeferral } from "./retries.js";
+import { WorkspaceBusyDeferral } from "./retries.js";
+import { remoteWorkspaceHoldRefusesStart } from "../remote-workspace-writer-hold.js";
 import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { readFreshWorkspaceReadiness } from "../fresh-workspace-continuation.js";
 import { assertNativeSessionPreparationAuthority } from "../native-runtime/native-execution-lease.js";
@@ -1056,8 +1057,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         } : {}),
       }).catch(error => {
         if (!(error instanceof RemoteWorkspaceWriterActiveError)
-          || (!error.writer.ownerFenceHeld
-            && error.writer.lastActivityAt.getTime() < Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS)) throw error;
+          || remoteWorkspaceHoldRefusesStart({ kind: "held", writer: error.writer })) throw error;
         throw new WorkspaceBusyDeferral({ holder: error.writer, executionWorkspaceId: error.workspaceId,
           deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0,
           wasIssueAssignee: input.task.wasIssueAssignee, holderEnded: error.writer.ended === true });

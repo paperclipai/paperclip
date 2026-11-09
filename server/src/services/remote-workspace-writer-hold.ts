@@ -4,6 +4,7 @@ import type { RemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "./remote-workspace-transport.js";
+import { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS } from "../modules/run-dispatch/index.js";
 
 const object = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -19,6 +20,24 @@ export function runOwnerFenceHeldSql() {
   return sql<boolean>`(coalesce(${heartbeatRuns.controllerLeaseExpiresAt} > now(), false) or exists (
     select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
       and ${nativeRunFinalizations.leaseOwner} is not null and ${nativeRunFinalizations.leaseExpiresAt} > now()))`;
+}
+
+/** The setup error a run gets when reservation refuses a remote workspace hold. */
+export const REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE = "The workspace still has an unfinished writer or save operation.";
+
+type RemoteWorkspaceWriterHold = Awaited<ReturnType<typeof readRemoteWorkspaceWriterHold>>;
+
+/**
+ * Whether a hold refuses a new run outright instead of parking it in a
+ * workspace wait: a writer that cannot be named, or one silent past the holder
+ * cutoff with no live owner fence. Workspace reservation fails setup on such a
+ * hold, so senders of automatic wakes read this same rule to hold a wake until
+ * the hold settles rather than create a run that can only fail.
+ */
+export function remoteWorkspaceHoldRefusesStart(hold: RemoteWorkspaceWriterHold, now = Date.now()): boolean {
+  if (hold.kind === "unattributed") return true;
+  if (hold.kind !== "held") return false;
+  return !hold.writer.ownerFenceHeld && hold.writer.lastActivityAt.getTime() < now - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS;
 }
 
 /**

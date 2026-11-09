@@ -37,6 +37,7 @@ import { canAdoptNativeSourceRetention, retainNativeRecoverySource, settleRecove
 import { saveRemoteWorkspace } from "./remote-workspaces.js";
 import { continueFromLastSavedWorkspace, isUnverifiableSourceFailure, recordRetainedSourceFallbackDeferral, settleExhaustedRetainedHold } from "./workspace-recovery-fallback.js";
 import { retainedSourceFallbackDueCondition } from "./workspace-recovery-fallback-discovery.js";
+import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-settlement.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
@@ -446,6 +447,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           throw new Error("workspace_recovery_generation_changed");
         if (inspected.action.evidence.nativeSourceRetention && !await settleRecoveredNativeSourceRetention(tx as unknown as Db, input, next.preservationOperationIds))
           throw new SystemRecoveryFailure("effect_unresolved", "recheck_evidence");
+        // A settled restore hold returns its warm sandbox to reuse. A hold that
+        // fails any guard keeps its protection; the saved files still count.
+        await settleRecoveredWorkspaceRestoreHolds(tx as unknown as Db, input);
         return persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "workspace-recovery",
           action: "issue.workspace_recovered", entityType: "issue", entityId: input.issueId, runId: input.runId,
           details: { recoveryActionId: input.actionId, summary: "Saved work recovered." } });

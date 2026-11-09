@@ -1520,6 +1520,20 @@ timestamps, including on repeated release. For unfinished issues it clears the
 agent assignee; only `in_progress` changes to `todo`. Existing company access,
 assignee/run ownership checks, and the `issue.released` activity event still apply.
 
+A status change releases the checkout and execution locks but does not stop the
+run that holds them. An agent request (`PATCH /issues/:issueId` or a recovery
+resolution) that sets a status other than `in_progress` (even its current value) on
+a task whose lock is held by a different queued or running run is refused with
+`409` and code `issue_status_change_live_run`;
+otherwise the run would keep going with no task bound to it, which is the effect
+of interrupting another agent's run. The denial is final and names the person's
+controls on the linked task: the run's Stop or Interrupt, or More task actions,
+then Pause subtree on the parent. The lock-holding run, board users, and paths
+that stop the run themselves (cancelling the task, reassigning it, and completing
+through `PATCH` a task whose Runner goal is paused first) are unaffected. The write
+is conditional on the lock the check saw; a run that acquires the lock in between returns `409`
+`issue_execution_lock_changed`.
+
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
 
 ## 10.5 Projects

@@ -242,6 +242,7 @@ import {
 } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
+import { apiServerTiming } from "./middleware/api-server-timing.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
@@ -483,6 +484,8 @@ export async function createApp(
   },
 ) {
   const app = express();
+  // First, so the reported server time includes admission and database waits.
+  app.use("/api", apiServerTiming());
   app.use(databaseOperationMiddleware);
   app.use(idleAdmissionMiddleware);
   const staticUi = express.Router();

@@ -23,7 +23,7 @@ import { logger } from "../middleware/logger.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
-import { readRemoteWorkspaceWriterHold, type RemoteWorkspaceWriter } from "./remote-workspace-writer-hold.js";
+import { readRemoteWorkspaceWriterHold, REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE, type RemoteWorkspaceWriter } from "./remote-workspace-writer-hold.js";
 import { persistActivity } from "./activity-log.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import {
@@ -171,7 +171,7 @@ export class RemoteWorkspaceWriterActiveError extends HttpError {
     readonly workspaceId: string,
     readonly writer: RemoteWorkspaceWriter,
   ) {
-    super(409, "The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
+    super(409, REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE, { code: "remote_workspace_writer_pending" });
   }
 }
 
@@ -247,7 +247,7 @@ export async function reserveRemoteWorkspace(input: {
       }
       const hold = await readRemoteWorkspaceWriterHold(tx as unknown as Db, { companyId: input.companyId, authority, runId: input.runId });
       if (hold.kind === "held") throw new RemoteWorkspaceWriterActiveError(existing.id, hold.writer);
-      if (hold.kind === "unattributed") throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
+      if (hold.kind === "unattributed") throw conflict(REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE, { code: "remote_workspace_writer_pending" });
       if (authority.writerRunId === input.runId) return existing;
       const next: RemoteWorkspaceAuthority = { ...authority, source, epoch: authority.epoch + 1, writerRunId: input.runId };
       const [saved] = await tx.update(executionWorkspaces).set({ metadata: { ...existing.metadata, remoteWorkspace: next,

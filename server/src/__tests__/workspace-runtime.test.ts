@@ -148,7 +148,7 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres workspace-runtime tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
-const provisionWorktreeScriptPath = new URL("../../../scripts/provision-worktree.sh", import.meta.url);
+const provisionWorktreeScriptPath = new URL("../../../scripts/setup-paperclip-worktree.sh", import.meta.url);
 
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
@@ -2045,7 +2045,7 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
 
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.copyFile(
-      fileURLToPath(new URL("../../../scripts/provision-worktree.sh", import.meta.url)),
+      fileURLToPath(new URL("../../../scripts/setup-paperclip-worktree.sh", import.meta.url)),
       path.join(repoRoot, "scripts", "provision-worktree.sh"),
     );
     await runGit(repoRoot, ["add", "scripts/provision-worktree.sh"]);

@@ -3,6 +3,9 @@ import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 
 export const LEGACY_WORKSPACE_RECOVERY_KEY = "workspaceRestoreRecovery";
 export const LEGACY_WORKSPACE_RECOVERY_SCHEMA = "paperclip.workspace-restore-recovery.v1";
+/** Lease metadata that replaces the hold marker once recovery saved the files
+ * and returned the warm sandbox to reuse. It grants no recovery authority. */
+export const SETTLED_WORKSPACE_RESTORE_HOLD_KEY = "workspaceRestoreRecoverySettled";
 
 /** The admitted external contract can prohibit workspace access even though its
  * managed Runner has a synchronization descriptor for durable recovery. That

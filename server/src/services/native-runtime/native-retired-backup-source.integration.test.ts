@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
@@ -21,7 +22,8 @@ describeDb("retired native backup source authority", () => {
 
   async function fixture(options: { termination?: "destroyed" | "stopped" | null; status?: string; stampSha?: string;
     providerEventAt?: Date; secondLease?: boolean; handoffs?: number;
-    handoffFault?: "missing_receipt" | "changed_receipt" | "active_predecessor" | "missing_predecessor" } = {}) {
+    handoffFault?: "missing_receipt" | "changed_receipt" | "active_predecessor" | "missing_predecessor";
+    restoreHold?: "settled" | "no_marker" | "foreign_marker" | "reusable_policy" | "no_stop_receipt" | "dirty_writer" } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), sessionId = randomUUID(), runnerInstanceId = randomUUID();
     const sourceRunId = randomUUID(), currentRunId = randomUUID(), leaseId = randomUUID(), providerLeaseId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Retired source", issuePrefix: `R${companyId.slice(0, 5)}` });
@@ -39,7 +41,25 @@ describeDb("retired native backup source authority", () => {
           runId: sourceRunId, leaseId: id, provider: "daytona", providerLeaseId, state: options.termination ?? "destroyed",
           confirmedAt: new Date().toISOString() } }),
       } });
-    const sourceLease = lease(leaseId);
+    const sourceLease: ReturnType<typeof lease> & Partial<typeof environmentLeases.$inferInsert> = lease(leaseId);
+    if (options.restoreHold) {
+      // The exact row an older release left after a restore hold settled:
+      // released, retain_on_failure, stop-and-retain receipt, hold marker.
+      const hold = options.restoreHold, pluginId = randomUUID();
+      const termination = sourceLease.metadata.remoteExecutionTermination!;
+      Object.assign(sourceLease, { status: "released", leasePolicy: hold === "reusable_policy" ? "reuse_by_environment" : "retain_on_failure",
+        acquiredAt: new Date(Date.now() - 60_000), releasedAt: new Date(Date.now() + 1_000) });
+      sourceLease.metadata = { ...sourceLease.metadata, pluginId,
+        ...(hold === "no_marker" ? {} : { workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1",
+          runId: hold === "foreign_marker" ? randomUUID() : sourceRunId } }),
+        ...(hold === "no_stop_receipt" ? {} : { sandboxStopAndRetainReceipt: { schema: "paperclip.sandbox-stop-and-retain-receipt.v1",
+          requestId: randomUUID(), companyId, runId: sourceRunId, leaseId, provider: "daytona", providerLeaseId, pluginId,
+          method: "environmentStopLease", confirmedAt: termination.confirmedAt } }) };
+      if (hold === "dirty_writer") await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: {
+        schema: "paperclip.native-workspace-sync/v3", state: "prepared", leaseId, providerLeaseId, workspaceId: randomUUID(),
+        remoteCwd: "/work", resourceDisposition: "keep_running", descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+        finalHostSha256: null } } }).where(eq(heartbeatRuns.id, sourceRunId));
+    }
     if (options.handoffs) {
       const environmentId = randomUUID(), issueId = randomUUID(), workspaceId = randomUUID();
       await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
@@ -55,7 +75,9 @@ describeDb("retired native backup source authority", () => {
         const acquiredAt = new Date(completedAt.getTime() - (options.handoffs - index + 1) * 60_000);
         const row = { ...sourceLease, id: index === options.handoffs ? leaseId : randomUUID(),
           heartbeatRunId: ownerRunId, environmentId, issueId, executionWorkspaceId: workspaceId, acquiredAt,
-          leasePolicy: "reuse_by_environment", metadata: { ...sourceLease.metadata, agentId } };
+          leasePolicy: "reuse_by_environment", metadata: { ...sourceLease.metadata, agentId },
+          // Only the tip carries a settled restore hold; its predecessors retired by handoff.
+          ...(options.restoreHold ? index === options.handoffs ? { leasePolicy: sourceLease.leasePolicy } : { status: "expired" } : {}) };
         if (index < options.handoffs) {
           const { nativeHarnessBackup: _backup, remoteExecutionTermination: _termination, ...metadata } = row.metadata;
           history.push({ ...row, metadata });
@@ -119,6 +141,26 @@ describeDb("retired native backup source authority", () => {
     ["one allocation maps to two host leases", { secondLease: true }],
   ])("fails closed when %s", async (_label, options) => {
     await expect(fixture(options)).resolves.toBe(false);
+  });
+
+  // Regression, old-saved/new-resumed: an older release stopped a warm sandbox
+  // under a restore hold, moved it to retain_on_failure, and never returned it
+  // to reuse. Nothing can select it again, so its backup is the newest state.
+  it.each([0, 2])("authorizes the backup of a settled restore hold after %i warm handoffs", async (handoffs) => {
+    await expect(fixture({ termination: "stopped", restoreHold: "settled", handoffs })).resolves.toBe(true);
+  });
+
+  it.each([
+    ["the hold marker is missing", { restoreHold: "no_marker" as const }],
+    ["the hold marker names another run", { restoreHold: "foreign_marker" as const }],
+    ["the stopped lease is still reusable", { restoreHold: "reusable_policy" as const }],
+    ["no stop-and-retain receipt exists", { restoreHold: "no_stop_receipt" as const }],
+    ["an unsaved writer is still bound to it", { restoreHold: "dirty_writer" as const }],
+    ["the stamp names another checkpoint", { restoreHold: "settled" as const, stampSha: `sha256:${"c".repeat(64)}` }],
+    ["provider work followed the checkpoint", { restoreHold: "settled" as const, providerEventAt: new Date(completedAt.getTime() + 60_000) }],
+    ["one allocation maps to two host leases", { restoreHold: "settled" as const, secondLease: true }],
+  ])("keeps a restore-hold backup held when %s", async (_label, options) => {
+    await expect(fixture({ termination: "stopped", ...options })).resolves.toBe(false);
   });
 
   it("ignores provider work that finished before the checkpoint", async () => {

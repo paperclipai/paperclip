@@ -52,6 +52,14 @@ export const CHILD_WAKE_GRACE_MS = 60_000;
 export const CHILD_STALL_CHECK_MS = 10_000;
 export const STOP_CONTINUE_AFTER_MS = 20_000;
 
+type ChildSpeedTask = { issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> };
+
+export async function childSpeedTasksInTurn(observers: ReadonlyArray<{ childSpeedTasks(): Promise<ChildSpeedTask[]> }>): Promise<ChildSpeedTask[]> {
+  const tasks: ChildSpeedTask[] = [];
+  for (const observer of observers) tasks.push(...await observer.childSpeedTasks());
+  return tasks;
+}
+
 export function childrenPending(children: ReadonlyArray<{ status: string | null }> | null): boolean {
   return !children || children.some(child => !["done", "cancelled", "blocked"].includes(child.status ?? ""));
 }
@@ -348,7 +356,7 @@ export class TaskObserver {
       case "stop": {
         const stop = this.record.stop;
         if (!stop) return null;
-        return stop.error ? "missed" : stop.at;
+        return stop.error || stop.missed ? "missed" : stop.at;
       }
       case "result": {
         // B8: the run that received the follow-up has accepted its result but
@@ -501,10 +509,15 @@ export class TaskObserver {
   }
 
   private async maybeStop(sample: TaskSample, now: number): Promise<boolean> {
-    if (!this.definition.stopBeforeFollowUp || this.record.stop || this.plan.followUpAfterMs === null || !sample.reachable) return false;
+    if (!this.definition.stopBeforeFollowUp || this.record.stop || this.plan.followUpAfterMs === null || !sample.serverReady) return false;
     if (now < this.record.createdAt! + this.plan.followUpAfterMs) return false;
     const running = (sample.runs ?? []).find(run => run.status === "running");
-    if (!running) return false;
+    if (!running) {
+      if (!isResting(sample)) return false;
+      this.record.stop = { at: now, runId: null, httpStatus: null, error: null, missed: true };
+      this.timeline.add("task_stop_missed", { taskId: this.plan.taskId, status: sample.issueStatus ?? null });
+      return true;
+    }
     const stop: NonNullable<TaskRecord["stop"]> = { at: now, runId: running.id, httpStatus: null, error: null };
     try {
       await this.api.post(`/api/heartbeat-runs/${running.id}/cancel`, { cancellationRequestId: randomUUID() });
@@ -588,6 +601,7 @@ export class TaskObserver {
       .catch(() => null);
     const blocked = (Array.isArray(rows) ? rows : []).filter(row => row.parentId === this.record.issueId && row.status === "blocked").map(row => String(row.id));
     const parent = await this.api.get<Json>(`/api/issues/${this.record.issueId}`).catch(() => null);
+    if (!parent) this.childStallCheckedAt = null;
     const stalled = Array.isArray(parent?.stalledDependencies) ? parent.stalledDependencies as Json[] : [];
     for (const dependency of stalled) {
       if (dependency.relation !== "child" || typeof dependency.stalledIssueId !== "string") continue;
@@ -611,8 +625,8 @@ export class TaskObserver {
     const startedBeforeContinue = [...runs.values()].filter(run => run.id !== stop.runId && run.createdAt
       && !(continueCommentId && (run.wakeCommentIds ?? []).includes(continueCommentId))
       && Date.parse(run.createdAt) > stop.at && (continueAt === null || Date.parse(run.createdAt) < continueAt)).map(run => run.id);
-    return { runId: stop.runId, runStatus: runs.get(stop.runId)?.status ?? null, runsStartedBeforeContinue: startedBeforeContinue,
-      continuePosted: Boolean(this.record.followUp?.commentId) };
+    return { runId: stop.runId, runStatus: stop.runId ? runs.get(stop.runId)?.status ?? null : null, runsStartedBeforeContinue: startedBeforeContinue,
+      continuePosted: Boolean(this.record.followUp?.commentId), ...(stop.missed ? { missed: true } : {}) };
   }
 
   private async retryBlockedChildren(childIds: readonly string[], now: number): Promise<boolean> {
@@ -805,7 +819,7 @@ export class TaskObserver {
       runsStartedWhilePaused: governance.runsStartedWhilePaused });
   }
 
-  async childSpeedTasks(): Promise<Array<{ issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }>> {
+  async childSpeedTasks(): Promise<ChildSpeedTask[]> {
     if (!this.definition.collect.childDocuments || !this.record.issueId) return [];
     const rows = await this.api.get<Json[]>(`/api/companies/${this.lab.companyId}/issues?view=index&parentIds=${encodeURIComponent(this.record.issueId)}&limit=20`);
     const tasks: Array<{ issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }> = [];

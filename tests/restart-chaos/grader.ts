@@ -61,8 +61,9 @@ export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly F
   if (record.launchError) return { verdict: "fail", detail: `launch_failed: ${record.launchError}` };
   if (record.retry) return { verdict: "n/a", detail: "task rested needing Retry; graded under R3" };
   const expected = expectedFinalStatus(record);
+  if (record.timedOut) return { verdict: "fail", detail: `no_rest_within_budget (last status ${record.finalStatus ?? "unknown"})` };
   if (record.finalStatus !== expected) {
-    return { verdict: "fail", detail: record.timedOut ? `no_rest_within_budget (last status ${record.finalStatus ?? "unknown"})` : `rested_not_done (status ${record.finalStatus ?? "unknown"}, no Retry offered)` };
+    return { verdict: "fail", detail: `rested_not_done (status ${record.finalStatus ?? "unknown"}, no Retry offered)` };
   }
   const allowed = budgetMs + outageOverlapMs(record, faults);
   const took = (record.restAt ?? Number.POSITIVE_INFINITY) - record.createdAt!;

@@ -247,6 +247,11 @@ describe("T-oracles", () => {
     expect(restarted.checks.find(check => check.name === "nothing_ran_after_stop")).toMatchObject({ ok: false, detail: "continue=true runs=r2" });
     expect(workloadDefinitions.S1.grade("abcd1234", { ...base, stop: { ...base.stop!, runStatus: "succeeded" } }).verdict).toBe("fail");
     expect(workloadDefinitions.S1.grade("abcd1234", { ...base, stop: undefined }).verdict).toBe("fail");
+    const missed = workloadDefinitions.S1.grade("abcd1234", { ...base, stop: { runId: null, runStatus: null, runsStartedBeforeContinue: [], continuePosted: true, missed: true } });
+    expect(missed.verdict).toBe("pass");
+    expect(missed.checks.find(check => check.name === "stop_took_effect")).toMatchObject({ ok: true, detail: "missed: the run finished before the stop window" });
+    expect(workloadDefinitions.S1.grade("abcd1234", { ...base, documents: { brief: "CHAOS-abcd1234\n- one\n- two\n- three\n" },
+      stop: { runId: null, runStatus: null, runsStartedBeforeContinue: [], continuePosted: true, missed: true } }).verdict).toBe("fail");
   });
 
   it("grades B1 by running the tests and the CLI", () => {

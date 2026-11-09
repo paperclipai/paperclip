@@ -46,8 +46,10 @@ export function budgetFor(environment: EnvironmentKind, adapter: string, metric:
   return byStart[start === "warm" ? "warm" : "cold"];
 }
 
+export const MIN_AGGREGATE_SAMPLES = 5;
+
 export function breachesOf(measured: Distribution, budget: SpeedBudget | null): Array<"p50" | "p95"> {
-  if (!budget) return [];
+  if (!budget || measured.n < MIN_AGGREGATE_SAMPLES) return [];
   const out: Array<"p50" | "p95"> = [];
   if (measured.p50 !== null && measured.p50 > budget.p50Ms) out.push("p50");
   if (measured.p95 !== null && measured.p95 > budget.p95Ms) out.push("p95");
@@ -211,6 +213,9 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
     const bootBudget = budgetFor(environment, run.adapter, "agent_boot", start);
     return (activity !== null && activityBudget !== null && activity > activityBudget.p95Ms)
       || (boot !== null && bootBudget !== null && boot > bootBudget.p95Ms);
+  }).length + samples.filter(sample => {
+    const budget = budgetFor(environment, sample.adapter, "restart_recovery_control_plane", "restart");
+    return !sample.interruptedByFault && sample.controlPlaneMs !== null && budget !== null && sample.controlPlaneMs > budget.p95Ms;
   }).length;
   const breaches = rows.reduce((total, row) => total + row.breaches.length, 0) + singleRunBreaches;
   return { environment, rows,
@@ -237,7 +242,9 @@ async function runEvents(api: ChaosApi, runId: string): Promise<BaselineEvent[]>
     const page = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=500`, 15_000);
     for (const row of page) events.push({ eventType: String(row.eventType), createdAt: String(row.createdAt), payload: (row.payload ?? null) as Json | null });
     if (page.length < 500) return events;
-    afterSeq = Number(page[page.length - 1]!.seq);
+    const next = Number(page[page.length - 1]!.seq);
+    if (!Number.isFinite(next) || next <= afterSeq) throw new Error(`run events page after seq ${afterSeq} has no later seq`);
+    afterSeq = next;
   }
 }
 
@@ -282,16 +289,21 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
   return gradeWaveSpeed(environment, runs, faultRuns(faults, timing), runBudgetExceeded, errors, outage);
 }
 
+function breachCell(row: SpeedRow): string {
+  if (row.breaches.length) return row.breaches.join(", ");
+  return row.budget && row.measured.n > 0 && row.measured.n < MIN_AGGREGATE_SAMPLES ? `insufficient sample (n < ${MIN_AGGREGATE_SAMPLES})` : "—";
+}
+
 export function speedMarkdown(speed: WaveSpeed): string {
   const s = (value: number | null) => value === null ? "—" : `${(value / 1000).toFixed(1)} s`;
   const lines = [`## Speed (${speed.environment})`, "",
-    `Breaches: ${speed.breaches} (aggregate p50/p95 rows plus ${speed.singleRunBreaches} runs over the p95 budget after outage removal; the server logged ${speed.runBudgetExceeded} budget_exceeded events before removal).`,
+    `Breaches: ${speed.breaches} (aggregate p50/p95 rows with at least ${MIN_AGGREGATE_SAMPLES} samples plus ${speed.singleRunBreaches} runs or restart recoveries over the p95 budget after outage removal; the server logged ${speed.runBudgetExceeded} budget_exceeded events before removal).`,
     `Restart samples with no provider event after ready: ${speed.recoveryWithoutProviderEvent}. Interrupted by a later fault (not graded): ${speed.recoveryInterruptedByFault}.`,
     `Outage time removed from ${speed.outageAdjustedSpans} spans: ${s(speed.outageRemovedMs)} (fault start to server ready; budgets judge the rest).`, "",
     "| Adapter | Metric | Start | n | p50 | p95 | Budget p50 / p95 | Breach |", "|---|---|---|---|---|---|---|---|"];
   for (const row of speed.rows) {
     lines.push(`| ${row.adapter} | ${row.metric} | ${row.start} | ${row.measured.n} | ${s(row.measured.p50)} | ${s(row.measured.p95)} | `
-      + `${row.budget ? `${s(row.budget.p50Ms)} / ${s(row.budget.p95Ms)}` : "no budget"} | ${row.breaches.join(", ") || "—"} |`);
+      + `${row.budget ? `${s(row.budget.p50Ms)} / ${s(row.budget.p95Ms)}` : "no budget"} | ${breachCell(row)} |`);
   }
   if (speed.errors.length) lines.push("", `Speed grade incomplete: ${speed.errors.length} run logs not read; the wave fails.`);
   return `${lines.join("\n")}\n`;

@@ -93,6 +93,19 @@ describe("heartbeat task markdown rendering", () => {
     expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, statusCardsEnabled: true }))
       .not.toContain("Status Cards:");
   });
+  it("tells a standing chat to link a case's page by its identifier, only while the Cases experiment is enabled", () => {
+    const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
+    const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, casesEnabled: true })!;
+    expect(enabled).toContain("Cases:");
+    expect(enabled).toContain("/<prefix>/cases/<case identifier>");
+    expect(enabled).toContain("[RUN-C1](/<prefix>/cases/RUN-C1)");
+    // The named page is the board's real route.
+    const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/path="cases\/:caseIdentifier"/);
+    expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("Cases:");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, casesEnabled: true }))
+      .not.toContain("Cases:");
+  });
   it("returns null without a task or a nonempty wake comment", () => {
     expect(buildPaperclipTaskMarkdown({ issue: null })).toBeNull();
     expect(buildPaperclipTaskMarkdown({

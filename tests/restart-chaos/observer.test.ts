@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childrenPending, listWorkspaceFiles } from "./observer.js";
+import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childSpeedTasksInTurn, childrenPending, listWorkspaceFiles } from "./observer.js";
 import { gradeTask } from "./grader.js";
 import { createFixtureRepository, type ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
@@ -142,6 +142,31 @@ describe("TaskObserver", () => {
     expect(childRetries).toHaveLength(1);
   });
 
+  it("M1: rereads a parent whose read failed on the next poll, and reads each stall wake from the parent's activity", async () => {
+    const base = fakeApi({ "parentIds=": () => [{ id: "c2", parentId: "i1", status: "blocked" }], "/documents/": () => null, "/comments": () => [],
+      "/workspace-operations": () => [], "/api/issues/c2": () => ({ id: "c2", status: "blocked", interruption: { canRetry: false } }),
+      "/activity": () => [{ action: "issue.blocker_stalled_wake", details: { stalledIssueId: "c2", recoveryActionId: "a1" } },
+        { action: "issue.updated", details: {} }, { action: "issue.blocker_stalled_wake", details: {} }] }, "blocked");
+    let failNextStallRead = false;
+    const api = { ...base.api, async get(route: string, timeoutMs?: number) {
+        if (route === "/api/issues/i1") {
+          if (timeoutMs === undefined && failNextStallRead) { failNextStallRead = false; throw new Error("503"); }
+          return { id: "i1", status: "blocked", stalledDependencies: [{ stalledIssueId: "c2", relation: "child", recoveryAction: { id: "a1", ownerType: "board" } }] };
+        }
+        return base.api.get(route);
+      }, post: base.api.post.bind(base.api) } as unknown as ChaosApi;
+    const observer = new TaskObserver({ ...plan, workload: "M1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    failNextStallRead = true;
+    await observer.poll(start + 1_000);
+    expect(observer.record.childStalls ?? []).toEqual([]);
+    await observer.poll(start + 2_000);
+    expect(observer.record.childStalls).toEqual([{ childIssueId: "c2", recoveryActionId: "a1" }]);
+    const artifacts = await observer.collectArtifacts();
+    expect(artifacts.stallWakes).toEqual([{ stalledIssueId: "c2", recoveryActionId: "a1" }, { stalledIssueId: null, recoveryActionId: null }]);
+  });
+
   it("S1: stops the running run as the board would, then posts the continue comment only after it settles", async () => {
     let runStatus = "running";
     const base = fakeApi({ "/runs": () => [{ id: "r1", status: runStatus, createdAt: new Date(0).toISOString(), finishedAt: null }] }, "in_progress");
@@ -162,6 +187,67 @@ describe("TaskObserver", () => {
     await observer.poll(start + 2_000 + STOP_CONTINUE_AFTER_MS + 1);
     expect(observer.record.followUp).toMatchObject({ commentId: "comment-1", duringRun: false });
     expect(posted.filter(route => route.endsWith("/cancel"))).toHaveLength(1);
+  });
+
+  it("S1: holds the Stop while another task's fault has the server down or recovering", async () => {
+    const base = fakeApi({ "/runs": () => [{ id: "r1", status: "running", createdAt: new Date(0).toISOString(), finishedAt: null }] }, "in_progress");
+    const posted: string[] = [];
+    const api = { ...base.api, get: base.api.get.bind(base.api), async post(route: string) {
+      posted.push(route);
+      return route.endsWith("/issues") ? { id: "i1", identifier: "CHA-1" } : { id: "r1" };
+    } } as unknown as ChaosApi;
+    const supervisor = { serverReady: true, faultInProgress: false };
+    const observer = new TaskObserver({ ...plan, workload: "S1", followUpAfterMs: 1_000 }, api, lab, new Timeline(null), supervisor);
+    await observer.launch();
+    supervisor.faultInProgress = true;
+    await observer.poll(observer.record.createdAt! + 2_000);
+    expect(posted.filter(route => route.endsWith("/cancel"))).toEqual([]);
+    supervisor.faultInProgress = false;
+    await observer.poll(observer.record.createdAt! + 3_000);
+    expect(posted.filter(route => route.endsWith("/cancel"))).toEqual(["/api/heartbeat-runs/r1/cancel"]);
+  });
+
+  it("S1: records a missed Stop and still posts the continue comment when the run finished before the stop window", async () => {
+    const base = fakeApi({ "/runs": () => [{ id: "r1", status: "succeeded", createdAt: new Date(0).toISOString(), finishedAt: new Date(1).toISOString() }],
+      "/comments": () => [], "/documents/": () => null, "/workspace-operations": () => [] }, "done");
+    const posted: string[] = [];
+    const api = { ...base.api, get: base.api.get.bind(base.api), async post(route: string) {
+      posted.push(route);
+      return route.endsWith("/issues") ? { id: "i1", identifier: "CHA-1" } : { id: "comment-1" };
+    } } as unknown as ChaosApi;
+    const timeline = new Timeline(null);
+    const observer = new TaskObserver({ ...plan, workload: "S1", followUpAfterMs: 1_000 }, api, lab, timeline, ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 2_000);
+    expect(observer.record.stop).toMatchObject({ runId: null, missed: true });
+    expect(timeline.entries.some(entry => entry.kind === "task_stop_missed")).toBe(true);
+    await observer.poll(start + 2_000 + STOP_CONTINUE_AFTER_MS + 1);
+    expect(observer.record.followUp).toMatchObject({ commentId: "comment-1" });
+    expect(posted.filter(route => route.endsWith("/cancel"))).toEqual([]);
+    expect((await observer.collectArtifacts()).stop).toMatchObject({ missed: true, continuePosted: true, runsStartedBeforeContinue: [] });
+  });
+
+  it("S1: arms a stop-triggered fault at the Stop click plus its delay, and misses it when the Stop was missed", async () => {
+    const running = fakeApi({ "/runs": () => [{ id: "r1", status: "running", createdAt: new Date(0).toISOString(), finishedAt: null }] }, "in_progress");
+    const stopPlan: TaskPlan = { ...plan, workload: "S1", followUpAfterMs: 1_000, trigger: "stop", triggerDelayMs: 500 };
+    const observer = new TaskObserver(stopPlan, running.api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    expect(observer.faultDue(start + 5_000)).toBeNull();
+    await observer.poll(start + 2_000);
+    const clicked = observer.record.stop!.at;
+    expect(observer.faultDue(clicked + 499)).toBeNull();
+    expect(observer.faultDue(clicked + 500)).toMatchObject({ trigger: "stop", kind: "K1" });
+
+    const finished = fakeApi({ "/runs": () => [{ id: "r1", status: "succeeded", createdAt: new Date(0).toISOString(), finishedAt: new Date(1).toISOString() }] }, "done");
+    const timeline = new Timeline(null);
+    const missed = new TaskObserver(stopPlan, finished.api, lab, timeline, ready);
+    await missed.launch();
+    await missed.poll(missed.record.createdAt! + 2_000);
+    expect(missed.record.stop).toMatchObject({ missed: true });
+    expect(missed.faultDue(missed.record.createdAt! + 2_600)).toBeNull();
+    expect(missed.record.triggerMissed).toEqual(["stop"]);
   });
 
   it("S1: does not count the continue comment's own run as a run after the stop, even when it starts before the comment returns", async () => {
@@ -294,3 +380,18 @@ describe("childrenPending", () => {
     expect(childrenPending([{ status: "done" }, { status: "blocked" }])).toBe(false);
   });
 });
+
+describe("childSpeedTasksInTurn", () => {
+  it("reads each observer's subtasks one at a time so a large wave does not flood the API", async () => {
+    let inFlight = 0, peak = 0;
+    const observers = [1, 2, 3].map(id => ({ childSpeedTasks: async () => {
+      inFlight += 1; peak = Math.max(peak, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return [{ issueId: `c${id}`, adapter: "codex" as const, samples: [] }];
+    } }));
+    expect((await childSpeedTasksInTurn(observers)).map(task => task.issueId)).toEqual(["c1", "c2", "c3"]);
+    expect(peak).toBe(1);
+  });
+});
+
