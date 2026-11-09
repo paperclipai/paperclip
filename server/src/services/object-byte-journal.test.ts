@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
+import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
+import { isStorageUnavailableError } from "../storage/storage-unavailable.js";
 import {
   createObjectByteJournal,
   ObjectJournalBusyError,
@@ -69,6 +71,24 @@ const authority = async () => undefined;
 afterEach(() => vi.useRealTimers());
 
 describe("object byte journal", () => {
+  it("keeps a slow store's head write recognizable as a storage outage when its deadline expires", async () => {
+    const s = storage();
+    const put = s.provider.putObjectConditional!;
+    s.provider.putObjectConditional = async (input) => {
+      if (!input.objectKey.endsWith("/head.json")) return put(input);
+      return withS3FailureDiagnostics("put_object", () => new Promise<never>((_resolve, reject) => {
+        input.signal!.addEventListener("abort", () => {
+          const aborted = new Error("Request aborted");
+          aborted.name = "AbortError";
+          reject(aborted);
+        }, { once: true });
+      }), input.signal);
+    };
+    const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/slow/log" });
+    const failure = await journal.claim({ expectedOwner: null, assertAuthority: authority }).catch((error: unknown) => error);
+    expect(isStorageUnavailableError(failure)).toBe(true);
+  }, 40_000);
+
   it("keeps a shared capability probe alive for another writer when one claim cancels", async () => {
     const s = storage();
     const put = s.provider.putObjectConditional!;

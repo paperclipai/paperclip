@@ -83,7 +83,7 @@ async function retryObjectOperation<T>(operation: () => Promise<T>, signal?: Abo
     try {
       return await operation();
     } catch (error) {
-      if (attempt >= 2 || !isRetryable(error)) throw error;
+      if (attempt >= 2 || !isRetryable(error) || signal?.aborted) throw error;
       await delay(100 * 2 ** attempt, undefined, { signal });
     }
   }
@@ -522,6 +522,7 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
         });
         return { head: value, etag: result.etag };
       } catch (error) {
+        if (signal.aborted) throw error;
         const observed = await head(signal);
         if (observed && JSON.stringify(observed.head) === JSON.stringify(value)) return observed;
         if (isObjectPreconditionFailure(error) || (observed?.etag ?? null) !== etag)

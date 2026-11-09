@@ -1,4 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { storageFailureDiagnosticsFor } from "./failure-diagnostics.js";
+import { recordStorageBackoff } from "./request-stats.js";
 
 export const STORAGE_UNAVAILABLE_CODE = "storage_unavailable";
 
@@ -33,10 +36,45 @@ function networkFailure(error: unknown): boolean {
   return false;
 }
 
+function recordedStorageFailure(error: unknown) {
+  for (let candidate = error, depth = 0; candidate && depth < 6; candidate = ownValue(candidate, "cause"), depth++) {
+    const diagnostics = storageFailureDiagnosticsFor(candidate);
+    if (diagnostics) return { error: candidate, diagnostics };
+  }
+  return null;
+}
+
 export function isStorageUnavailableError(error: unknown): boolean {
-  const diagnostics = storageFailureDiagnosticsFor(error);
-  if (!diagnostics) return false;
+  const recorded = recordedStorageFailure(error);
+  if (!recorded) return false;
+  const { diagnostics } = recorded;
   const status = diagnostics.httpStatus;
   if (status !== null && (status < 200 || status >= 300)) return UNAVAILABLE_STATUS.has(status);
-  return UNAVAILABLE_NAMES.has(diagnostics.errorCode) || UNAVAILABLE_CODES.has(diagnostics.errorCode) || networkFailure(error);
+  return UNAVAILABLE_NAMES.has(diagnostics.errorCode) || UNAVAILABLE_CODES.has(diagnostics.errorCode) || networkFailure(recorded.error);
+}
+
+export const STORAGE_OUTAGE_WAIT = { budgetMs: 5 * 60_000, firstDelayMs: 2_000, maxDelayMs: 30_000 } as const;
+
+const outageWaitScope = new AsyncLocalStorage<true>();
+
+export function waitOutStorageOutages<T>(work: () => Promise<T>): Promise<T> {
+  return outageWaitScope.run(true, work);
+}
+
+export async function retryThroughStorageOutage<T>(send: () => Promise<T>, signal?: AbortSignal,
+  policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number } = STORAGE_OUTAGE_WAIT): Promise<T> {
+  const startedAt = Date.now();
+  for (let wait = policy.firstDelayMs; ; wait = Math.min(wait * 2, policy.maxDelayMs)) {
+    try {
+      return await send();
+    } catch (error) {
+      if (signal?.aborted || !isStorageUnavailableError(error) || Date.now() - startedAt + wait > policy.budgetMs) throw error;
+      recordStorageBackoff(wait);
+      await delay(wait, undefined, { signal });
+    }
+  }
+}
+
+export function sendThroughStorageOutage<T>(send: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  return outageWaitScope.getStore() ? retryThroughStorageOutage(send, signal) : send();
 }

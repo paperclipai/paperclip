@@ -788,14 +788,15 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       resultJson: { providerFailure } });
   });
 
-  it.each(["run", "setup"] as const)("waits a minute and suppresses rapid recovery when %s fails because storage is unavailable (storage chaos ST1)", async phase => {
+  it.each(["run", "setup", "restore"] as const)("waits a minute and suppresses rapid recovery when %s fails because storage is unavailable (storage chaos ST1)", async phase => {
     const f = await fixture();
     const outage = await withS3FailureDiagnostics("put_object", async () => {
       throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable",
         $fault: "server", $metadata: { httpStatusCode: 503, attempts: 3 } });
     }).catch(error => error as Error);
     f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled", run: { id: "wait" } } as never);
-    if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    if (phase === "restore") await f.completion.failRunSetup(f.setup(new RemoteWorkspaceRestoreError("snapshot_download", true, outage)));
+    else if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
     else await f.completion.failRun(f.failure(outage));
     const failed = await read(f.run.id);
     expect(failed).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE, error: STORAGE_UNAVAILABLE_MESSAGE });

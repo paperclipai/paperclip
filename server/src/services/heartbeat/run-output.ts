@@ -1,4 +1,5 @@
 import { notifyActiveRunSilence } from "../live-run-recovery-notifications.js";
+import { retryThroughStorageOutage } from "../../storage/storage-unavailable.js";
 import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { AdapterInvocationMeta, AdapterRuntimeEvent } from "../../adapters/index.js";
@@ -124,14 +125,15 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
     const run = currentRun;
     if (run.logStore != null && !isRunLogStoreType(run.logStore))
       throw new Error("Run log backend is not supported");
-    handle = await runLogStore.begin({
+    const previousStore = run.logStore ?? undefined;
+    handle = await retryThroughStorageOutage(() => runLogStore.begin({
       companyId: run.companyId,
       agentId: run.agentId,
       runId,
       newRun: isNewRunLog(run),
       assertWriterAuthority: input.assertWriterAuthority,
-      previousStore: run.logStore ?? undefined,
-    });
+      previousStore,
+    }));
 
     outputSeq = handle.initialSequence ?? outputSeq;
     persistedLogBytes = handle.initialBytes ?? persistedLogBytes;

@@ -1,4 +1,5 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
+import { waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
@@ -1873,7 +1874,7 @@ export function heartbeatService(
       onNativeExecutionLeaseAcquired?: () => Promise<void>;
     } = {},
   ) {
-    return withRunExecutionTiming(runId, () => executeRunAttempt(runId, runOptions));
+    return withRunExecutionTiming(runId, () => waitOutStorageOutages(() => executeRunAttempt(runId, runOptions)));
   }
 
   const { deferRunForProviderLimit } = createProviderLimitWait(db, {
