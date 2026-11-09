@@ -189,6 +189,7 @@ rl.on("line", (line) => {
     routes.set(params.hostRouteId, {
       workerSessionId,
       closeMode,
+      rejectInput: directive.rejectInput === true,
       pendingOutput: directive.emitOnInput === true
         ? scriptedOutputLines(directive, params.hostRouteId, workerSessionId)
         : null,
@@ -253,6 +254,14 @@ rl.on("line", (line) => {
     // test proves the input reaches the worker and the output routes back.
     for (const [hostRouteId, entry] of routes.entries()) {
       if (entry.workerSessionId === params.workerSessionId) {
+        if (entry.rejectInput) {
+          send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "input delivery unconfirmed" } });
+          return;
+        }
+        if (typeof params.inputId !== "string" || params.inputId.length === 0) {
+          send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "input identity missing" } });
+          return;
+        }
         if (entry.pendingOutput !== null) {
           process.stdout.write(entry.pendingOutput);
           entry.pendingOutput = null;

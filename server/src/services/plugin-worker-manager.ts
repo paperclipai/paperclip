@@ -590,6 +590,7 @@ export type ExecuteLogSink = (
  * carries no command string, so a caller cannot select the command.
  */
 export interface LoginPtyOpenInput {
+  expiresAt?: string;
   /** The environment driver key. It routes the worker; it confers no command authority. */
   driverKey: string;
   companyId: string;
@@ -1957,6 +1958,7 @@ export function createPluginWorkerHandle(
           providerLeaseId: input.providerLeaseId,
           loginCommandKey: input.loginCommandKey,
           sessionHome: input.sessionHome,
+          ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
         },
         loginPtyOpenTimeoutMs,
       );
@@ -2001,9 +2003,9 @@ export function createPluginWorkerHandle(
         if (route.state !== "open" || !sid) return;
         void callInternal(
           "loginPtyInput",
-          { workerSessionId: sid, data },
+          { workerSessionId: sid, data, inputId: randomUUID() },
           loginPtyOpenTimeoutMs,
-        ).catch(() => {});
+        ).catch(() => terminalizeLoginPtyRoute(route));
       },
       wait(): Promise<{ exitCode: number | null }> {
         return waitPromise;

@@ -1336,6 +1336,17 @@ describe("plugin worker manager setup-token pty route gate", () => {
     }
   });
 
+  it("fails the login when input delivery is unconfirmed", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ rejectInput: true }));
+      session.write("browser-code");
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      await session.close();
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
   it("terminalizes the route when the cumulative output passes the per-route bound", async () => {
     const handle = makeLoginPtyHandle({
       loginPtyLimits: { maxTotalChars: 10 },
