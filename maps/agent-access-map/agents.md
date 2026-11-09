@@ -212,7 +212,7 @@ CLI.
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
 
-Changes to the legacy `budgetMonthlyCents` field and built-in provision budget overrides require a board actor, including budget-changing rollbacks. Agent-authored rollbacks with an unchanged amount do not write budget policy or policy audit. Board mutations retain the actual operator identity.
+Changes to the legacy `budgetMonthlyCents` field and built-in provision budget overrides require a board actor, including budget-changing rollbacks.
 
 The roster intent preserves unrelated settings, rejects stale model/connection
 previews and harness changes, and checks the full execution configuration under

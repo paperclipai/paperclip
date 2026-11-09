@@ -80,6 +80,7 @@ export interface CodexAppServerTransport {
   /** Relinquish controller authority while leaving durable runner work alive. */
   detachControllerForRestart?(): Promise<void>;
   processInfo?(): CodexTransportProcessInfo;
+  beginRunAttachment?(input: { runId: string }): boolean;
   attachRun?(input: {
     runId: string;
     turnId: string;

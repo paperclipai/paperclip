@@ -208,6 +208,8 @@ describe("built-in agent routes", () => {
     const app = await createApp({ type: "agent", agentId: "agent-1", companyId, source: "agent_key" });
     const response = await request(app).post(`/api/companies/${companyId}/built-in-agents/briefs/provision`).send({ budgetMonthlyCents });
     expect(response.status).toBe(403);
+    expect(response.body.code).toBe("board_access_required");
+    expect(response.body.remediation).toContain("[Open budgets](/<prefix>/activity/budgets)");
     expect(mockBuiltInAgentService.provision).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });

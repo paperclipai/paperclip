@@ -44,13 +44,22 @@ const AGENT_PROFILE_TABS: Record<string, [string, string]> = {
   "runtime-state": ["harness settings", "runtime"],
 };
 
+/** A board page as [label, path], where the path keeps <prefix> for the agent to fill. */
+export type BoardControlPage = [label: string, path: string];
+
+/** Budgets are board-only. These pages hold the budget controls behind any route that writes one. */
+export const COMPANY_BUDGETS_PAGE: BoardControlPage = ["budgets", "/<prefix>/activity/budgets"];
+export function agentBudgetPage(agentId: string): BoardControlPage {
+  return [`the agent's ${AGENT_PROFILE_TABS.budgets![0]}`, `/<prefix>/agents/${agentId}/${AGENT_PROFILE_TABS.budgets![1]}`];
+}
+
 // The board page that holds the control behind a board-only API route, when one
 // is known. Paths keep <prefix> for the agent to fill from its own task identifier.
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray, req: Request) => [string, string] | null]> = [
   [/^\/(?:companies\/[^/]+\/)?secrets?(?:[-/]|$)/, () => ["company secrets", "/<prefix>/company/settings/secrets"]],
-  [/^\/companies\/[^/]+\/(?:budgets|budget-incidents|costs)(?:\/|$)/, () => ["budgets", "/<prefix>/activity/budgets"]],
+  [/^\/companies\/[^/]+\/(?:budgets|budget-incidents|costs)(?:\/|$)/, () => COMPANY_BUDGETS_PAGE],
   [/^\/companies\/[^/]+\/(?:prompt-injection-prevention|decision-model)(?:\/|$)/, () => ["connection settings", "/<prefix>/company/settings/connections"]],
   [/^\/companies\/[^/]+\/(?:members|invites|join-requests)(?:\/|$)/, () => ["company members", "/<prefix>/company/settings/members"]],
   [/^\/companies\/[^/]+\/(?:tools\/)?gateways(?:\/|$)|^\/tool-gateway\//, () => ["tool gateways", "/<prefix>/apps/gateways"]],
@@ -105,9 +114,9 @@ function boardControlPage(req: Request) {
  * A board-only denial. Agents get a final, actionable remediation so they hand the
  * action to the person instead of searching other routes for one that does not exist.
  */
-export function boardAccessRequired(req: Request) {
+export function boardAccessRequired(req: Request, controlPage?: BoardControlPage) {
   if (req.actor.type !== "agent") return forbidden("Board access required");
-  const page = boardControlPage(req);
+  const page = controlPage ?? boardControlPage(req);
   const scope = PLUGIN_ROUTE.test(deniedApiPath(req)) ? `${PLUGIN_ADMINISTRATION_SCOPE} ` : "";
   const where = page
     ? `They can do it in the Paperclip web app: link [Open ${page[0]}](${page[1]}), with this conversation's company prefix as <prefix>.`
@@ -135,9 +144,13 @@ export function issueNotFoundBody(req: Request): Record<string, unknown> {
   };
 }
 
-export function assertBoard(req: Request) {
+/**
+ * Board-only check. Pass `controlPage` when the board control lives on a different
+ * page from the one the route path implies, e.g. a budget field on a general route.
+ */
+export function assertBoard(req: Request, controlPage?: BoardControlPage) {
   if (req.actor.type !== "board") {
-    throw boardAccessRequired(req);
+    throw boardAccessRequired(req, controlPage);
   }
 }
 

@@ -31,6 +31,8 @@ async function pendingNativeInteraction(input: {
   issueId: string;
   runId: string;
   ignoredInteractionIds?: string[];
+  /** Only a card this run created; any other card can hold the task but not present the turn. */
+  createdByRun?: boolean;
 }): Promise<{ id: string } | null> {
   const [issue] = await input.db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
     .from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
@@ -43,6 +45,7 @@ async function pendingNativeInteraction(input: {
         eq(issueThreadInteractions.issueId, input.issueId),
         eq(issueThreadInteractions.status, "pending"),
         ...(input.ignoredInteractionIds?.length ? [notInArray(issueThreadInteractions.id, input.ignoredInteractionIds)] : []),
+        ...(input.createdByRun ? [eq(issueThreadInteractions.sourceRunId, input.runId)] : []),
         activeIssueInteractionCondition({ runId: input.runId, conversationMode: isConversation(issue) }),
       ),
     )
@@ -89,9 +92,10 @@ export async function pendingNativeGovernance(input: {
 
 /**
  * A committed conversation turn has answered the person, whatever status its
- * task keeps. An approval or an execution stage can hold the task, but neither
- * presents that answer in the conversation. Only a pending thread interaction
- * (a question or confirmation card) is the turn's visible response.
+ * task keeps. An approval, an execution stage or a card the run did not create
+ * (an earlier turn's, or one the board addressed to someone else) can hold the
+ * task, but none presents that answer in the conversation. Only a pending
+ * question or confirmation card this run created is the turn's visible response.
  */
 export async function conversationTurnAnswered(input: {
   db: Db;
@@ -101,5 +105,25 @@ export async function conversationTurnAnswered(input: {
 }): Promise<boolean> {
   // Check cards on their own: an execution stage outranks a card as the
   // status gate, but it does not present the turn.
-  return !(await pendingNativeInteraction(input));
+  return !(await pendingNativeInteraction({ ...input, createdByRun: true }));
+}
+
+/**
+ * The one rule for whether a successful conversation turn's prose is its
+ * answer. Live run completion and background presentation recovery both use
+ * it, so a restart between the status commit and the live presentation
+ * presents the same reply the live path would have.
+ */
+export async function conversationTurnPresentsAnswer(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+  runId: string;
+  finalizationPhase: unknown;
+  finalizationReasonCode: unknown;
+}): Promise<boolean> {
+  if (input.finalizationReasonCode === "conversation_turn_finished") return true;
+  // A turn left waiting on an approval, an execution stage or a blocker still
+  // answered the person. Only its own question card presents it instead.
+  return input.finalizationPhase === "committed" && await conversationTurnAnswered(input);
 }
