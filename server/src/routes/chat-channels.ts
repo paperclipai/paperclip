@@ -205,7 +205,6 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertConnectionManager(req, companyId);
-      // Setup pages are hidden while the provider's experiment is off; the API must not create the endpoint either.
       assertChatProviderEnabledForCreate(req.body.provider, await instanceSettingsService(db).getExperimental());
       if (req.body.provider === "slack" && !req.body.slackSetupMethod) {
         req.body.slackSetupMethod = service.slackRegistration.managerGrants.defaultMethod();
