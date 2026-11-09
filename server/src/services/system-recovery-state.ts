@@ -134,6 +134,11 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState): strin
   if (state.failure?.code === "copyback_stop_unconfirmed")
     return "Recovery of saved work is waiting for the previous server's file copy to stop. "
       + "Recovery resumes once Paperclip can confirm that it stopped. No provider turn is submitted.";
+  // An unproven agent stop is re-proven automatically once the run is over
+  // (workspace-recovery-stop-proof); the wait is bounded and needs no person.
+  if (state.failure?.code === "agent_stop_unconfirmed")
+    return "Recovery of saved work is waiting to confirm that the previous run stopped. "
+      + "Paperclip tries again automatically, and the agent will not repeat its work.";
   const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
   if (isDeterministicRecoveryRefusal(state)) {
     const code = state.failure!.code;
