@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -18,11 +20,15 @@ import {
   ensureAdapterExecutionTargetDirectory,
   isAdapterExecutionTargetUnavailableError,
   runAdapterExecutionTargetProcess,
+  runAdapterExecutionTargetShellCommand,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
+  prepareAdapterExecutionTargetRuntime,
+  runtimeAssetDir,
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverPiModelsCached } from "./models.js";
 import { parsePiJsonl } from "./parse.js";
+import { preparePiRuntimeConfig } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -128,215 +134,291 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...env }));
 
-  const cwdInvalid = checks.some((check) => check.code === "pi_cwd_invalid");
-  if (cwdInvalid) {
-    checks.push({
-      code: "pi_command_skipped",
-      level: "warn",
-      message: "Skipped command check because working directory validation failed.",
-      detail: command,
-    });
-  } else {
-    const installCheck = await maybeRunSandboxInstallCommand({
-      runId,
-      target,
-      adapterKey: "pi",
-      installCommand: SANDBOX_INSTALL_COMMAND,
-    detectCommand: command,
-      env,
-    });
-    if (installCheck) checks.push(installCheck);
-    try {
-      await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
-      checks.push({
-        code: "pi_command_resolvable",
-        level: "info",
-        message: `Command is executable: ${command}`,
-      });
-    } catch (err) {
-      checks.push({
-        code: "pi_command_unresolvable",
-        ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
-        level: "error",
-        message: err instanceof Error ? err.message : "Command is not executable",
-        detail: command,
-      });
-    }
-  }
+  // Materialize custom Pi providers (PAPERCLIP_PI_PROVIDERS) into a managed
+  // PI_CODING_AGENT_DIR before runtimeEnv is computed, so model discovery and the
+  // hello probe resolve them exactly like the execute path does. Without this, a
+  // pi harness routed through a gateway provider sees "No models available"
+  // during lifecycle verification and the probe fails.
+  const preparedRuntimeConfig = await preparePiRuntimeConfig({ env });
+  let preparedRemoteRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
+  let remoteAgentConfigDir: string | null = null;
+  try {
+    if (preparedRuntimeConfig.agentConfigDir) env.PI_CODING_AGENT_DIR = preparedRuntimeConfig.agentConfigDir;
 
-  const canRunProbe =
-    checks.every((check) => check.code !== "pi_cwd_invalid" && check.code !== "pi_command_unresolvable");
-
-  // Pi model discovery shells out to `pi --list-models` locally; when probing a
-  // remote target we skip discovery and let the remote hello probe surface
-  // model/auth issues directly.
-  if (!targetIsRemote && canRunProbe) {
-    try {
-      const discovered = await discoverPiModelsCached({ command, cwd, env: runtimeEnv });
-      if (discovered.length > 0) {
-        checks.push({
-          code: "pi_models_discovered",
-          level: "info",
-          message: `Discovered ${discovered.length} model(s) from Pi.`,
+    // Remote targets run the probe inside the sandbox, so the managed agent
+    // config dir must exist there. Stage it as a runtime asset (the same shape
+    // execute.ts ships) and repoint PI_CODING_AGENT_DIR at the in-sandbox copy
+    // before runtimeEnv is computed. Without this, a remote probe with
+    // PAPERCLIP_PI_PROVIDERS set can never see models.json and fails with
+    // "No models available".
+    if (targetIsRemote && preparedRuntimeConfig.agentConfigDir) {
+      // Give this check its own remote agent-config directory. The SSH runtime
+      // root is `<remoteCwd>/.paperclip-runtime/pi` (the runId only scopes the
+      // workspace, not the asset root), so a fixed `agentConfig` key would make
+      // concurrent checks against the same environment overwrite each other's
+      // models.json. A per-run key keeps each probe isolated.
+      const agentConfigKey = `agentConfig-${runId}`;
+      try {
+        preparedRemoteRuntime = await prepareAdapterExecutionTargetRuntime({
+          runId,
+          target,
+          adapterKey: "pi",
+          workspaceLocalDir: path.join(os.tmpdir(), "paperclip-pi-envtest-workspace"),
+          syncWorkspace: false,
+          installCommand: SANDBOX_INSTALL_COMMAND,
+          detectCommand: command,
+          assets: [
+            {
+              key: agentConfigKey,
+              localDir: preparedRuntimeConfig.agentConfigDir,
+            },
+          ],
+          workspaceRestoreRetryDelaysMs: [],
         });
-      } else {
+        env.PI_CODING_AGENT_DIR = runtimeAssetDir(preparedRemoteRuntime, agentConfigKey, cwd);
+        remoteAgentConfigDir = env.PI_CODING_AGENT_DIR;
+      } catch (err) {
+        // Staging failing must surface as a check (the probe would fail anyway),
+        // not abort the whole environment test.
+        preparedRemoteRuntime = null;
+        delete env.PI_CODING_AGENT_DIR;
         checks.push({
-          code: "pi_models_empty",
-          level: "warn",
-          message: "Pi returned no models.",
-          hint: "Run `pi --list-models` and verify provider authentication.",
+          code: "pi_agent_config_stage_failed",
+          level: "error",
+          message: "Failed to stage the managed Pi agent config into the remote target.",
+          detail: err instanceof Error ? err.message : String(err),
         });
       }
-    } catch (err) {
-      checks.push(
-        buildPiModelDiscoveryFailureCheck(
-          err instanceof Error ? err.message : "Pi model discovery failed.",
-        ),
-      );
     }
-  }
 
-  const configuredModel = asString(config.model, "").trim();
-  if (!configuredModel) {
-    checks.push({
-      code: "pi_model_required",
-      level: "error",
-      message: "Pi requires a configured model in provider/model format.",
-      hint: "Set adapterConfig.model using an ID from `pi --list-models`.",
-    });
-  } else if (targetIsRemote) {
-    checks.push({
-      code: "pi_model_validation_skipped_remote",
-      level: "info",
-      message: `Skipped local model validation; will be validated by the hello probe inside ${targetLabel}.`,
-    });
-  } else if (canRunProbe) {
-    // Verify model is in the list
-    try {
-      const discovered = await discoverPiModelsCached({ command, cwd, env: runtimeEnv });
-      const modelExists = discovered.some((m: { id: string }) => m.id === configuredModel);
-      if (modelExists) {
+    const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...env }));
+
+    const cwdInvalid = checks.some((check) => check.code === "pi_cwd_invalid");
+    if (cwdInvalid) {
+      checks.push({
+        code: "pi_command_skipped",
+        level: "warn",
+        message: "Skipped command check because working directory validation failed.",
+        detail: command,
+      });
+    } else {
+      const installCheck = await maybeRunSandboxInstallCommand({
+        runId,
+        target,
+        adapterKey: "pi",
+        installCommand: SANDBOX_INSTALL_COMMAND,
+        detectCommand: command,
+        env,
+      });
+      if (installCheck) checks.push(installCheck);
+      try {
+        await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
+        checks.push({
+          code: "pi_command_resolvable",
+          level: "info",
+          message: `Command is executable: ${command}`,
+        });
+      } catch (err) {
+        checks.push({
+          code: "pi_command_unresolvable",
+          level: "error",
+          message: err instanceof Error ? err.message : "Command is not executable",
+          detail: command,
+        });
+      }
+    }
+
+    const canRunProbe =
+      checks.every((check) => check.code !== "pi_cwd_invalid" && check.code !== "pi_command_unresolvable");
+
+    // Pi model discovery shells out to `pi --list-models` locally; when probing a
+    // remote target we skip discovery and let the remote hello probe surface
+    // model/auth issues directly.
+    if (!targetIsRemote && canRunProbe) {
+      try {
+        const discovered = await discoverPiModelsCached({ command, cwd, env: runtimeEnv });
+        if (discovered.length > 0) {
+          checks.push({
+            code: "pi_models_discovered",
+            level: "info",
+            message: `Discovered ${discovered.length} model(s) from Pi.`,
+          });
+        } else {
+          checks.push({
+            code: "pi_models_empty",
+            level: "warn",
+            message: "Pi returned no models.",
+            hint: "Run `pi --list-models` and verify provider authentication.",
+          });
+        }
+      } catch (err) {
+        checks.push(
+          buildPiModelDiscoveryFailureCheck(
+            err instanceof Error ? err.message : "Pi model discovery failed.",
+          ),
+        );
+      }
+    }
+
+    const configuredModel = asString(config.model, "").trim();
+    if (!configuredModel) {
+      checks.push({
+        code: "pi_model_required",
+        level: "error",
+        message: "Pi requires a configured model in provider/model format.",
+        hint: "Set adapterConfig.model using an ID from `pi --list-models`.",
+      });
+    } else if (targetIsRemote) {
+      checks.push({
+        code: "pi_model_validation_skipped_remote",
+        level: "info",
+        message: `Skipped local model validation; will be validated by the hello probe inside ${targetLabel}.`,
+      });
+    } else if (canRunProbe) {
+      // Verify model is in the list
+      try {
+        const discovered = await discoverPiModelsCached({ command, cwd, env: runtimeEnv });
+        const modelExists = discovered.some((m: { id: string }) => m.id === configuredModel);
+        if (modelExists) {
+          checks.push({
+            code: "pi_model_configured",
+            level: "info",
+            message: `Configured model: ${configuredModel}`,
+          });
+        } else {
+          checks.push({
+            code: "pi_model_not_found",
+            level: "warn",
+            message: `Configured model "${configuredModel}" not found in available models.`,
+            hint: "Run `pi --list-models` and choose a currently available provider/model ID.",
+          });
+        }
+      } catch {
+        // If we can't verify, just note it
         checks.push({
           code: "pi_model_configured",
           level: "info",
           message: `Configured model: ${configuredModel}`,
         });
-      } else {
-        checks.push({
-          code: "pi_model_not_found",
-          level: "warn",
-          message: `Configured model "${configuredModel}" not found in available models.`,
-          hint: "Run `pi --list-models` and choose a currently available provider/model ID.",
-        });
       }
-    } catch {
-      // If we can't verify, just note it
-      checks.push({
-        code: "pi_model_configured",
-        level: "info",
-        message: `Configured model: ${configuredModel}`,
-      });
     }
-  }
 
-  if (canRunProbe && configuredModel) {
-    // Parse model for probe
-    const provider = configuredModel.includes("/") 
-      ? configuredModel.slice(0, configuredModel.indexOf("/")) 
-      : "";
-    const modelId = configuredModel.includes("/")
-      ? configuredModel.slice(configuredModel.indexOf("/") + 1)
-      : configuredModel;
-    const thinking = asString(config.thinking, "").trim();
-    const extraArgs = (() => {
-      const fromExtraArgs = asStringArray(config.extraArgs);
-      if (fromExtraArgs.length > 0) return fromExtraArgs;
-      return asStringArray(config.args);
-    })();
+    if (canRunProbe && configuredModel) {
+      // Parse model for probe
+      const provider = configuredModel.includes("/")
+        ? configuredModel.slice(0, configuredModel.indexOf("/"))
+        : "";
+      const modelId = configuredModel.includes("/")
+        ? configuredModel.slice(configuredModel.indexOf("/") + 1)
+        : configuredModel;
+      const thinking = asString(config.thinking, "").trim();
+      const extraArgs = (() => {
+        const fromExtraArgs = asStringArray(config.extraArgs);
+        if (fromExtraArgs.length > 0) return fromExtraArgs;
+        return asStringArray(config.args);
+      })();
 
-    const args = ["-p", "Respond with hello.", "--mode", "json"];
-    if (provider) args.push("--provider", provider);
-    if (modelId) args.push("--model", modelId);
-    if (thinking) args.push("--thinking", thinking);
-    args.push("--tools", "read");
-    if (extraArgs.length > 0) args.push(...extraArgs);
+      const args = ["-p", "Respond with hello.", "--mode", "json"];
+      if (provider) args.push("--provider", provider);
+      if (modelId) args.push("--model", modelId);
+      if (thinking) args.push("--thinking", thinking);
+      args.push("--tools", "read");
+      if (extraArgs.length > 0) args.push(...extraArgs);
 
-    try {
-      const probe = await runAdapterExecutionTargetProcess(
-        runId,
-        target,
-        command,
-        args,
-        {
-          cwd,
-          env: runtimeEnv,
-          timeoutSec: 60,
-          graceSec: 5,
-          onLog: async () => {},
-        },
-      );
+      try {
+        const probe = await runAdapterExecutionTargetProcess(
+          runId,
+          target,
+          command,
+          args,
+          {
+            cwd,
+            env: runtimeEnv,
+            timeoutSec: 60,
+            graceSec: 5,
+            onLog: async () => {},
+          },
+        );
 
-      const parsed = parsePiJsonl(probe.stdout);
-      const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errors[0] ?? null);
-      const authEvidence = `${parsed.errors.join("\n")}\n${probe.stdout}\n${probe.stderr}`.trim();
+        const parsed = parsePiJsonl(probe.stdout);
+        const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errors[0] ?? null);
+        const authEvidence = `${parsed.errors.join("\n")}\n${probe.stdout}\n${probe.stderr}`.trim();
 
-      if (probe.timedOut) {
-        checks.push({
-          code: "pi_hello_probe_timed_out",
-          level: "warn",
-          message: "Pi hello probe timed out.",
-          hint: "Retry the probe. If this persists, run Pi manually in this working directory.",
-        });
-      } else if ((probe.exitCode ?? 1) === 0 && parsed.errors.length === 0) {
-        const summary = (parsed.finalMessage || parsed.messages.join(" ")).trim();
-        const hasHello = /\bhello\b/i.test(summary);
-        checks.push({
-          code: hasHello ? "pi_hello_probe_passed" : "pi_hello_probe_unexpected_output",
-          level: hasHello ? "info" : "warn",
-          message: hasHello
-            ? "Pi hello probe succeeded."
-            : "Pi probe ran but did not return `hello` as expected.",
-          ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
-          ...(hasHello
-            ? {}
-            : {
-                hint: "Run `pi --mode json` manually and prompt `Respond with hello` to inspect output.",
-              }),
-        });
-      } else if (PI_AUTH_REQUIRED_RE.test(authEvidence)) {
-        checks.push({
-          code: "pi_hello_probe_auth_required",
-          level: "warn",
-          message: "Pi is installed, but provider authentication is not ready.",
-          ...(detail ? { detail } : {}),
-          hint: "Set provider API key environment variable (e.g., ANTHROPIC_API_KEY, XAI_API_KEY) and retry.",
-        });
-      } else {
+        if (probe.timedOut) {
+          checks.push({
+            code: "pi_hello_probe_timed_out",
+            level: "warn",
+            message: "Pi hello probe timed out.",
+            hint: "Retry the probe. If this persists, run Pi manually in this working directory.",
+          });
+        } else if ((probe.exitCode ?? 1) === 0 && parsed.errors.length === 0) {
+          const summary = (parsed.finalMessage || parsed.messages.join(" ")).trim();
+          const hasHello = /\bhello\b/i.test(summary);
+          checks.push({
+            code: hasHello ? "pi_hello_probe_passed" : "pi_hello_probe_unexpected_output",
+            level: hasHello ? "info" : "warn",
+            message: hasHello
+              ? "Pi hello probe succeeded."
+              : "Pi probe ran but did not return `hello` as expected.",
+            ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
+            ...(hasHello
+              ? {}
+              : {
+                  hint: "Run `pi --mode json` manually and prompt `Respond with hello` to inspect output.",
+                }),
+          });
+        } else if (PI_AUTH_REQUIRED_RE.test(authEvidence)) {
+          checks.push({
+            code: "pi_hello_probe_auth_required",
+            level: "warn",
+            message: "Pi is installed, but provider authentication is not ready.",
+            ...(detail ? { detail } : {}),
+            hint: "Set provider API key environment variable (e.g., ANTHROPIC_API_KEY, XAI_API_KEY) and retry.",
+          });
+        } else {
+          checks.push({
+            code: "pi_hello_probe_failed",
+            level: "error",
+            message: "Pi hello probe failed.",
+            ...(detail ? { detail } : {}),
+            hint: "Run `pi --mode json` manually in this working directory to debug.",
+          });
+        }
+      } catch (err) {
         checks.push({
           code: "pi_hello_probe_failed",
           level: "error",
           message: "Pi hello probe failed.",
-          ...(detail ? { detail } : {}),
+          detail: err instanceof Error ? err.message : String(err),
           hint: "Run `pi --mode json` manually in this working directory to debug.",
         });
       }
-    } catch (err) {
-      checks.push({
-        code: "pi_hello_probe_failed",
-        level: "error",
-        message: "Pi hello probe failed.",
-        detail: err instanceof Error ? err.message : String(err),
-        hint: "Run `pi --mode json` manually in this working directory to debug.",
-      });
     }
-  }
 
-  return {
-    adapterType: ctx.adapterType,
-    status: summarizeStatus(checks),
-    checks,
-    testedAt: new Date().toISOString(),
-  };
+    return {
+      adapterType: ctx.adapterType,
+      status: summarizeStatus(checks),
+      checks,
+      testedAt: new Date().toISOString(),
+    };
+  } finally {
+    // Remove the per-run agent config directory from the remote host. With
+    // syncWorkspace:false, restoreWorkspace() is a no-op, so without this each
+    // check would leave an abandoned <remoteCwd>/.paperclip-runtime/pi/
+    // agentConfig-<runId> tree behind. Best effort: a failed cleanup must not
+    // fail the environment check.
+    if (targetIsRemote && remoteAgentConfigDir) {
+      await runAdapterExecutionTargetShellCommand(
+        runId,
+        target,
+        `rm -rf -- '${remoteAgentConfigDir.replace(/'/g, "'\"'\"'")}'`,
+        { cwd, env: {}, timeoutSec: 15 },
+      ).catch(() => undefined);
+    }
+    // Tear down the in-sandbox runtime (agent config copy) before removing the
+    // local temp dir, mirroring the execute path's restore order.
+    await preparedRemoteRuntime?.restoreWorkspace().catch(() => undefined);
+    await preparedRuntimeConfig.cleanup();
+  }
 }

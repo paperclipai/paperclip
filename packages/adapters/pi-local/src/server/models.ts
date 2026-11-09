@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { asString, runChildProcess, sanitizeInheritedPaperclipEnv } from "@paperclipai/adapter-utils/server-utils";
+import { preparePiRuntimeConfig } from "./runtime-config.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 
@@ -108,32 +109,41 @@ export async function discoverPiModels(input: {
   const command = resolvePiCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const runtimeEnv = normalizeEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...env });
+  // Materialize custom Pi providers (PAPERCLIP_PI_PROVIDERS) so model discovery
+  // resolves gateway/custom providers the same way execution does. This is what
+  // makes `pi --list-models` (and the adapter model picker) surface custom
+  // providers such as llm2.
+  const prepared = await preparePiRuntimeConfig({ env });
+  try {
+    const runtimeEnv = normalizeEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...env, ...prepared.env });
 
-  const result = await runChildProcess(
-    `pi-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    command,
-    ["--list-models"],
-    {
-      cwd,
-      env: runtimeEnv,
-      timeoutSec: 20,
-      graceSec: 3,
-      onLog: async () => {},
-    },
-  );
+    const result = await runChildProcess(
+      `pi-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command,
+      ["--list-models"],
+      {
+        cwd,
+        env: runtimeEnv,
+        timeoutSec: 20,
+        graceSec: 3,
+        onLog: async () => {},
+      },
+    );
 
-  if (result.timedOut) {
-    throw new Error("`pi --list-models` timed out.");
+    if (result.timedOut) {
+      throw new Error("`pi --list-models` timed out.");
+    }
+    if ((result.exitCode ?? 1) !== 0) {
+      const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
+      throw new Error(detail ? `\`pi --list-models\` failed: ${detail}` : "`pi --list-models` failed.");
+    }
+
+    // Pi outputs model list to stderr, but fall back to stdout for older versions
+    const output = result.stderr || result.stdout;
+    return sortModels(dedupeModels(parseModelsOutput(output)));
+  } finally {
+    await prepared.cleanup();
   }
-  if ((result.exitCode ?? 1) !== 0) {
-    const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
-    throw new Error(detail ? `\`pi --list-models\` failed: ${detail}` : "`pi --list-models` failed.");
-  }
-
-  // Pi outputs model list to stderr, but fall back to stdout for older versions
-  const output = result.stderr || result.stdout;
-  return sortModels(dedupeModels(parseModelsOutput(output)));
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {

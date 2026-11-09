@@ -116,9 +116,14 @@ describe("Standard image remote provider pack", () => {
     expect(pack).toContain('if [ -n "${PAPERCLIP_BUILD_COMMIT}" ]; then');
     expect(pack).toContain("mkdir -p /provider-pack");
     expect(pack).toContain("Skipping remote provider pack");
+    // The pack's world-readable modes are applied in the throwaway build stage
+    // (a+rX) so the production COPY carries them without a mode-rewriting RUN
+    // layer. A `chmod -R` in production rewrites every file and costs ~590 MB
+    // of image, so production must not reintroduce it.
+    expect(pack).toContain("chmod -R a+rX /provider-pack");
     expect(production).toContain("--from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack");
     expect(production).not.toContain("--chown=node:node --from=runner-provider-pack");
-    expect(production).toContain("chmod -R a+rX /opt/paperclip-runner/provider-pack");
+    expect(production).not.toContain("chmod -R a+rX");
     expect(production).toContain("gosu 65534:65534 node");
     expect(production).toContain("Object.values(manifest.payload.artifacts)");
     expect(production).toContain("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack");

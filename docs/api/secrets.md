@@ -223,12 +223,19 @@ Per-provider `config` shapes:
   `secretNamePrefix`, `kmsKeyId`, `ownerTag`, `environmentTag`.
 - `gcp_secret_manager` (coming soon): optional `projectId`, `location`,
   `namespace`, `secretNamePrefix`.
-- `vault` (coming soon): optional origin-only HTTPS `address`, `namespace`,
-  `mountPath`, `secretPathPrefix`. `address` values with embedded credentials,
-  paths, query strings, or fragments are rejected.
+- `vault`: optional origin-only HTTPS `address`, `namespace`, `kvMount`,
+  `kvPathPrefix`, `versionRetention`, and `auth` (`method` = `kubernetes` with
+  `role`/`saTokenPath`, or token via the standard `VAULT_TOKEN` /
+  `PAPERCLIP_SECRETS_VAULT_TOKEN_FILE`). `address` values with embedded
+  credentials, paths, query strings, or fragments are rejected. The `address`
+  is operator-pinned: the deployment's `PAPERCLIP_SECRETS_VAULT_ADDR`/`VAULT_ADDR`
+  env always wins, so a vault config `address` may restate it but cannot redirect
+  the deployment's Vault credential to a different host. See
+  `doc/SECRETS-VAULT-PROVIDER.md` for the full config, policy, and auth options.
 
-`status` defaults to `ready` for `local_encrypted` and `aws_secrets_manager`,
-and to `coming_soon` for `gcp_secret_manager` and `vault`. Coming-soon and
+`status` defaults to `ready` for providers with a runtime
+(`local_encrypted`, `aws_secrets_manager`, `file`, `env`, `sops`, `op`,
+`vault`), and to `coming_soon` for `gcp_secret_manager`. Coming-soon and
 disabled vaults cannot be marked `isDefault`. Setting `isDefault: true` clears
 the previous default for the same provider in the same transaction.
 
@@ -252,9 +259,8 @@ PATCH /api/secret-provider-configs/{id}
 ```
 
 `config` is replaced wholesale on update — pass the full provider config
-payload, not a partial diff. Status transitions for `gcp_secret_manager` and
-`vault` are constrained to `coming_soon` and `disabled` until their runtime
-modules ship.
+payload, not a partial diff. Status transitions for `gcp_secret_manager` are
+constrained to `coming_soon` and `disabled` until its runtime module ships.
 
 ### Disable Vault
 

@@ -262,6 +262,27 @@ If memory is limited, use `node scripts/typecheck-low-memory.mjs` instead of `pn
 
 If anything cannot be run, explicitly report what was not run and why.
 
+### Docker image changes (image-bloat gate)
+
+When a change touches `Dockerfile`, `pnpm-lock.yaml`, or `pnpm-workspace.yaml`, run the deterministic bloat detector against the built image before pushing, and fail the change on a regression:
+
+```sh
+node scripts/image-bloat-detect.mjs --image <built-image> --check scripts/image-bloat-budget.json
+```
+
+`--check` fails on: image growth over the recorded budget, a new duplicate package installed in more than one node_modules tree, a new non-target platform package (musl / darwin / win32 / other libc), or a new mode-rewrite layer (`chmod`/`chown -R`). Record the budget with `--record-budget scripts/image-bloat-budget.json` after an intentionally-shrunk build, and only update it when a change removes bytes.
+
+Then run the advisory LLM pass — it predicts which parts of the diff are likely to add duplicated bytes. It is endpoint-explicit and opt-in: it only sends the repo diffs and the bearer key to the gateway named by `LITELLM_BASE_URL` (no third-party default is shipped), and skips cleanly with a note when no key or no `LITELLM_BASE_URL` is configured:
+
+```sh
+node scripts/image-bloat-llm.mjs \
+  --detector-report <report>.json \
+  --dockerfile-diff <(git diff -- Dockerfile) \
+  --lockfile-diff <(git diff -- pnpm-lock.yaml)
+```
+
+The LLM pass is advisory only and never runs inside `docker build`: a key in the build context or an ARG ends up in the image or the build cache, and an LLM call would make the build non-deterministic and network-dependent.
+
 ## 8. API and Auth Expectations
 
 - Base path: `/api`

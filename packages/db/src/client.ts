@@ -136,6 +136,14 @@ export type MigrationState =
       reason: "no-migration-journal-empty-db" | "no-migration-journal-non-empty-db" | "pending-migrations";
     };
 
+export type CredentialSource = () => string | Promise<string>;
+
+type CredentialMeta = {
+  credentialSource?: CredentialSource;
+  credentialUrl?: string;
+  lastCredentialUrl?: string;
+};
+
 export interface DatabaseClientOptions {
   prepare?: boolean;
   /** postgres.js `max` — connection pool size (driver default: 10). */
@@ -358,13 +366,26 @@ export async function closeFileStorageDb(db: Db, timeoutSeconds: number): Promis
   await fileStorageDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
 }
 
-export function createDb(url: string, options?: DatabaseClientOptions) {
-  const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
-  return createDbClient(url, resolved);
+export function createDb(url: string, options?: DatabaseClientOptions & { credentialSource?: CredentialSource }) {
+  const { credentialSource, ...clientOptions } = options ?? {};
+  const resolved = resolveDatabaseClientOptions(Object.keys(clientOptions).length > 0
+    ? clientOptions
+    : databaseClientOptionsFromEnv());
+  return createDbClient(url, resolved, undefined, credentialSource);
 }
 
-function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object) {
-  const sql = postgres(url, postgresJsOptions(resolved));
+function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object, credentialSource?: CredentialSource) {
+  const sql = postgres(url, {
+    ...postgresJsOptions(resolved),
+    ...(credentialSource
+      ? {
+          pass: async () => {
+            const next = new URL(await credentialSource());
+            return next.password ? decodeURIComponent(next.password) : "";
+          },
+        }
+      : {}),
+  });
   if (resolved.prepare === true) installPreparedQueries(sql);
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);
@@ -373,23 +394,68 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   // message cannot establish that replay is safe. Leave retries to callers
   // that know the complete operation is idempotent.
   const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
+  (db as Db & CredentialMeta).credentialSource = credentialSource;
+  (db as Db & CredentialMeta).credentialUrl = url;
+  (db as Db & CredentialMeta).lastCredentialUrl = url;
   installDatabaseResponseCapture(db, schema);
   dedicatedDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
-  }, db));
+  }, db, credentialSource));
   ownedDatabaseListenerFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1,
-  }, db));
+  }, db, credentialSource));
   livenessDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: LIVENESS_POOL_MAX_CONNECTIONS, applicationName: "paperclip-controller-lease",
-  }, db));
+  }, db, credentialSource));
   checkpointDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",
-  }, db));
+  }, db, credentialSource));
   fileStorageDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 2, applicationName: "paperclip-file-storage",
-  }, db));
+  }, db, credentialSource));
   return db;
+}
+
+function parseDatabaseTarget(url: string): { host: string; port: number; user: string; database: string } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") return null;
+  return {
+    host: parsed.hostname,
+    port: parsed.port === "" ? 5432 : Number.parseInt(parsed.port, 10),
+    user: decodeURIComponent(parsed.username),
+    database: parsed.pathname.replace(/^\/+/, ""),
+  };
+}
+
+export interface ReloadCredentialResult {
+  reloaded: boolean;
+  reason?: string;
+}
+
+export async function reloadDatabaseCredential(db: Db): Promise<ReloadCredentialResult> {
+  const meta = db as Db & CredentialMeta;
+  if (!meta.credentialSource) return { reloaded: false, reason: "no credential source configured" };
+  const nextUrl = await meta.credentialSource();
+  if (nextUrl === meta.lastCredentialUrl) return { reloaded: false, reason: "credential unchanged" };
+  meta.lastCredentialUrl = nextUrl;
+  const next = parseDatabaseTarget(nextUrl);
+  const current = parseDatabaseTarget(meta.credentialUrl ?? "");
+  if (!next || !current) return { reloaded: false, reason: "could not parse database URL" };
+  if (
+    next.host !== current.host ||
+    next.port !== current.port ||
+    next.user !== current.user ||
+    next.database !== current.database
+  ) {
+    return { reloaded: false, reason: "database target changed; keeping existing pool" };
+  }
+  await (db.$client as unknown as { close: () => Promise<void> }).close();
+  return { reloaded: true };
 }
 
 export async function getPostgresDataDirectory(url: string): Promise<string | null> {

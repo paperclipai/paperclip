@@ -3,7 +3,7 @@ import type { PreparedSecretVersion, SecretProviderModule } from "./types.js";
 import { createHash } from "node:crypto";
 
 function unavailableProvider(
-  id: "aws_secrets_manager" | "gcp_secret_manager" | "vault",
+  id: "aws_secrets_manager" | "gcp_secret_manager",
   label: string,
 ): SecretProviderModule {
   function externalFingerprint(externalRef: string, providerVersionRef: string | null): string {
@@ -84,4 +84,3 @@ export const gcpSecretManagerProvider = unavailableProvider(
   "gcp_secret_manager",
   "GCP Secret Manager",
 );
-export const vaultProvider = unavailableProvider("vault", "HashiCorp Vault");

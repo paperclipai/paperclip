@@ -211,7 +211,7 @@ const PROVIDER_ORDER: SecretProvider[] = [
 ];
 
 function defaultProviderVaultStatus(provider: SecretProvider): SecretProviderConfigStatus {
-  return provider === "gcp_secret_manager" || provider === "vault" ? "coming_soon" : "ready";
+  return provider === "gcp_secret_manager" ? "coming_soon" : "ready";
 }
 
 function emptyProviderVaultForm(provider: SecretProvider = "local_encrypted"): ProviderVaultForm {
@@ -2998,10 +2998,10 @@ export function Secrets() {
                     }));
                   }}
                 >
-                  <option value="ready" disabled={vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault"}>
+                  <option value="ready" disabled={vaultForm.provider === "gcp_secret_manager"}>
                     Ready
                   </option>
-                  <option value="warning" disabled={vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault"}>
+                  <option value="warning" disabled={vaultForm.provider === "gcp_secret_manager"}>
                     Warning
                   </option>
                   <option value="coming_soon">Coming soon</option>
@@ -3575,7 +3575,7 @@ export function ProviderVaultsTab({
     id: providerId,
     provider: providerMap.get(providerId),
     Icon: providerFamilyIcon(providerId),
-    isComingSoonFamily: providerId === "gcp_secret_manager" || providerId === "vault",
+    isComingSoonFamily: providerId === "gcp_secret_manager",
     configs: providerConfigs.filter((config) => config.provider === providerId),
   }));
 
@@ -3814,6 +3814,12 @@ function ProviderVaultFields({
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       <TextField label="Address" value={form.address} onChange={(value) => setField("address", value)} placeholder="https://vault.example.com" />
+      <p className="text-xs text-muted-foreground sm:col-span-2">
+        When the deployment sets PAPERCLIP_SECRETS_VAULT_ADDR or VAULT_ADDR, the operator-controlled
+        address wins and a different value is ignored with a warning. Otherwise this value is used
+        only when the operator also sets PAPERCLIP_SECRETS_VAULT_ALLOW_CONFIG_ADDR=1; without that
+        opt-in a company-chosen address is ignored, so a saved address may not take effect.
+      </p>
       <TextField label="Namespace" value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="admin" />
       <TextField label="Mount path" value={form.mountPath} onChange={(value) => setField("mountPath", value)} placeholder="secret" />
       <TextField label="Secret path prefix" value={form.secretPathPrefix} onChange={(value) => setField("secretPathPrefix", value)} placeholder="paperclip/prod" />

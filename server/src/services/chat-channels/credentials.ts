@@ -61,6 +61,7 @@ import {
 } from "../chat-teams-credentials.js";
 
 import { secretService } from "../secrets.js";
+import { getConfiguredSecretProvider } from "../../secrets/configured-provider.js";
 import { isSecretProviderClientError } from "../../secrets/types.js";
 
 export const CHAT_HUMAN_CREDENTIAL_FIELDS = ["signingSecret", "webhookSecret", "privateKey", "clientSecret", "projectSecret"] as const;
@@ -313,7 +314,7 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
           {
             name: `chat.${endpoint.provider}.${endpoint.id.slice(0, 8)}.${key}.${suffix.slice(0, 8)}`,
             key: `CHAT_${endpoint.provider.replaceAll("-", "_")}_${endpoint.id.replaceAll("-", "_")}_${key}_${suffix}`.toUpperCase(),
-            provider: "local_encrypted",
+            provider: getConfiguredSecretProvider(),
             managedMode: "paperclip_managed",
             value,
             description: `${PROVIDER_LABELS[endpoint.provider]} channel credential for endpoint ${endpoint.id}`,

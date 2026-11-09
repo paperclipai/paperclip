@@ -14,6 +14,7 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_BIND_HOST` | (unset) | Required when `PAPERCLIP_BIND=custom` |
 | `HOST` | `127.0.0.1` | Legacy host override; prefer `PAPERCLIP_BIND` for new setups |
 | `DATABASE_URL` | (embedded) | PostgreSQL connection string |
+| `DATABASE_URL_FILE` | (unset) | Path to a file holding the connection string. When set, the password is re-read from this file on every pool connection, and `SIGHUP` closes the pool so the next query reconnects with a freshly written credential — a credential rotation without a restart. See [Credential reload](./database.md#credential-reload-sighup). |
 | `PAPERCLIP_HOME` | `~/.paperclip` | Base directory for all Paperclip data |
 | `PAPERCLIP_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances) |
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
@@ -186,6 +187,20 @@ configuration fails closed.
 | `PAPERCLIP_SECRETS_MASTER_KEY` | (from file) | 32-byte encryption key (base64/hex/raw) |
 | `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | `~/.paperclip/.../secrets/master.key` | Path to key file |
 | `PAPERCLIP_SECRETS_STRICT_MODE` | `false` | Require secret refs for sensitive env vars |
+| `PAPERCLIP_SECRETS_PROVIDER` | `local_encrypted` | Active secret provider: `local_encrypted`, `file`, `env`, `sops`, `op`, or `vault` |
+| `PAPERCLIP_SECRETS_VAULT_ADDR` | falls back to `VAULT_ADDR` | Vault/OpenBao server address (e.g. `https://vault:8200`) |
+| `PAPERCLIP_SECRETS_VAULT_AUTH_METHOD` | auto | `kubernetes` (ServiceAccount) or token auth |
+| `PAPERCLIP_SECRETS_VAULT_K8S_ROLE` | (required for `kubernetes` auth) | Vault Kubernetes auth role |
+| `PAPERCLIP_SECRETS_VAULT_SA_TOKEN_PATH` | in-cluster default | SA token path for `kubernetes` auth |
+| `PAPERCLIP_SECRETS_VAULT_TOKEN_FILE` | (unset) | Path to a file holding the Vault token; re-read on every use so an orchestrator (e.g. Nomad) can rotate it in place |
+| `PAPERCLIP_SECRETS_VAULT_KV_MOUNT` | `secret` | KV v2 mount |
+| `PAPERCLIP_SECRETS_VAULT_KV_PATH_PREFIX` | `paperclip` | Path prefix for managed secrets |
+| `PAPERCLIP_SECRETS_VAULT_VERSION_RETENTION` | `10` | KV `max_versions` retention |
+| `PAPERCLIP_SECRETS_VAULT_NAMESPACE` | (unset) | Vault Enterprise namespace |
+| `PAPERCLIP_SECRETS_VAULT_ALLOW_CONFIG_ADDR` | `0` | When `1` (and no operator pin is set), a per-vault config `address` may receive the deployment's Vault credential. Off by default so a company writer cannot redirect the credential to a self-chosen host |
+| `VAULT_HTTP_TIMEOUT_MS` | `30000` | Bounded lifetime for a single Vault HTTP request (including response body); `0`/invalid falls back to the default |
+| `VAULT_ADDR` | (unset) | Standard Vault address; honored as a fallback when `PAPERCLIP_SECRETS_VAULT_ADDR` is unset (set natively by Nomad/Docker/k8s) |
+| `VAULT_TOKEN` | (unset) | Standard Vault token; used for token auth |
 
 ## Agent Runtime (Injected into agent processes)
 

@@ -135,8 +135,9 @@ import {
   splitRemoteUrlCredential,
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
-import { connectionCredentialConfigPath as credentialRefConfigPath, validateConnectionGrantSecretOwnership, writeConnectionCredential } from "./connection-credentials.js";
-
+import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
+import { connectionCredentialConfigPath as credentialRefConfigPath, connectionGrantCredentialRef, connectionSecretsUsedByOtherConsumers, resolveConnectionGrantSecret, validateConnectionGrantSecretOwnership, writeConnectionCredential } from "./connection-credentials.js";
+import { agentmailApi } from "./agentmail-api.js";
 import type { ConfigureRailwaySsh, RailwaySshSetup } from "@paperclipai/shared";
 import { generateRailwaySshKey, RAILWAY_SSH_SECRET_PATH, validateRailwayKnownHosts } from "./railway-ssh.js";
 import { isRailwayConnection } from "./railway.js";
@@ -2397,7 +2398,7 @@ export function toolAccessService(
           {
             name: `${name} OAuth client secret ${randomUUID().slice(0, 8)}`,
             key: `tool_app.${randomUUID()}.oauth_client_secret`,
-            provider: "local_encrypted",
+            provider: getConfiguredSecretProvider(),
             value: input.oauthClient.clientSecret,
             description: `OAuth client secret for ${name}.`,
           },

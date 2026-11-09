@@ -109,6 +109,13 @@ User-scoped values can use the same provider families as company secrets:
 - `aws_secrets_manager`: the hosted/provider-vault path. Use it when the
   deployment already relies on AWS Secrets Manager, KMS, CloudTrail, and
   infrastructure IAM for custody.
+- `vault` (HashiCorp Vault / OpenBao): the self-hosted KV-v2 path. Use it when
+  the deployment runs its own Vault/OpenBao. The provider is
+  orchestrator-agnostic — it authenticates via a Kubernetes ServiceAccount, the
+  standard `VAULT_TOKEN`, or a token file — and makes no assumption about Nomad,
+  a specific Helm chart, or a particular Vault topology. See
+  `doc/SECRETS-VAULT-PROVIDER.md` for the full API, required policy, and auth
+  options.
 - Dedicated provider vaults: optional. Use a dedicated vault only when you need
   a separate AWS account, Region, KMS key, prefix, retention posture, or
   import boundary for user-owned values. Do not create one vault per user by

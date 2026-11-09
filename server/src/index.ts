@@ -99,6 +99,7 @@ import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/nativ
 import { executionControlSchedule, registerExecutionControlWork } from "./services/execution-control-work.js";
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { Server, RequestListener } from "node:http";
 import { createPaperclipHttpServer } from "./http/server.js";
 import { resolve } from "node:path";
@@ -110,6 +111,8 @@ import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { and, eq } from "drizzle-orm";
 import {
   createDb,
+  reloadDatabaseCredential,
+  type CredentialSource,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
   getPostgresDataDirectory,
@@ -506,6 +509,7 @@ async function startServerWithDatabaseTeardown(
   
   let db;
   let pluginMigrationDb;
+  let databaseCredentialSource: CredentialSource | undefined;
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
   let embeddedPostgresSupervisor: EmbeddedPostgresSupervisor | null = null;
   let embeddedPostgresStartedByThisProcess = false;
@@ -519,8 +523,13 @@ async function startServerWithDatabaseTeardown(
   if (startupConfig.databaseUrl) {
     const migrationUrl = startupConfig.databaseMigrationUrl ?? startupConfig.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
-
-    db = createDb(startupConfig.databaseUrl);
+    const databaseUrlFile = "deploymentMode" in startupConfig
+      ? startupConfig.databaseUrlFile
+      : undefined;
+    databaseCredentialSource = databaseUrlFile
+      ? async () => (await readFile(resolve(databaseUrlFile), "utf8")).trim()
+      : undefined;
+    db = createDb(startupConfig.databaseUrl, { credentialSource: databaseCredentialSource });
     pluginMigrationDb = startupConfig.databaseMigrationUrl ? createDb(startupConfig.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
     activeDatabaseConnectionString = startupConfig.databaseUrl;
@@ -2227,6 +2236,23 @@ async function startServerWithDatabaseTeardown(
   process.once("SIGTERM", () => {
     void shutdown("SIGTERM", true);
   });
+
+  if (databaseCredentialSource) {
+    process.on("SIGHUP", () => {
+      void (async () => {
+        try {
+          const result = await reloadDatabaseCredential(db);
+          if (result.reloaded) {
+            logger.info(`SIGHUP: reloaded database credential from ${config.databaseUrlFile}`);
+          } else {
+            logger.info(`SIGHUP: credential reload skipped: ${result.reason}`);
+          }
+        } catch (error) {
+          logger.warn({ err: error }, "SIGHUP: database credential reload failed; keeping the existing pool");
+        }
+      })();
+    });
+  }
 
   return {
     server,

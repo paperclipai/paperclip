@@ -63,4 +63,32 @@ describe("pi models", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("injects PAPERCLIP_PI_PROVIDERS providers into discovery via a managed models.json", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "paperclip-pi-providers-"));
+    const command = join(directory, "pi");
+    await writeFile(
+      command,
+      `#!/bin/sh\nif [ -f "$PI_CODING_AGENT_DIR/models.json" ]; then\n  printf 'provider  model\\n'\n  printf 'llm2  qwen3.8-27b-w4a16\\n'\nelse\n  printf 'No models available.\\n' >&2\n  exit 1\nfi\n`,
+    );
+    await chmod(command, 0o755);
+
+    process.env.PAPERCLIP_PI_COMMAND = command;
+    process.env.PAPERCLIP_PI_PROVIDERS = JSON.stringify({
+      llm2: {
+        name: "test provider",
+        baseUrl: "https://example.com/v1",
+        apiKey: "test-key",
+        models: [{ id: "qwen3.8-27b-w4a16" }],
+      },
+    });
+
+    try {
+      const models = await listPiModels();
+      expect(models.map((model) => model.id)).toContain("llm2/qwen3.8-27b-w4a16");
+    } finally {
+      delete process.env.PAPERCLIP_PI_PROVIDERS;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });

@@ -48,6 +48,7 @@ import { prepareAntigravityCredentialRecovery } from "./native-runtime/antigravi
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
 import { probeAiAccountIdentity } from "./ai-account-identity.js";
 
@@ -759,7 +760,7 @@ export function aiConnectionService(db: Db) {
           {
             key: `ai_${grantId.replaceAll("-", "_")}`,
             name: input.name,
-            provider: "local_encrypted",
+            provider: getConfiguredSecretProvider(),
           },
           { userId },
         );
@@ -776,7 +777,7 @@ export function aiConnectionService(db: Db) {
             companyId,
             {
               name: `ai-${grantId}`,
-              provider: "local_encrypted",
+              provider: getConfiguredSecretProvider(),
               value: verifiedCredential,
             },
             { userId },

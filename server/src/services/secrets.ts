@@ -100,10 +100,7 @@ export const DEVICE_LOGIN_SECRET_CHECK_CONSUMER_ID = "device-login-secret-check"
 const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const REDACTED_SENTINEL = "***REDACTED***";
-const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
-  "gcp_secret_manager",
-  "vault",
-]);
+const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set(["gcp_secret_manager"]);
 const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {
   hermes_gateway: ["apiKey"],
 };
@@ -3063,7 +3060,12 @@ export function secretService(db: Db | DbTransaction) {
       providerConfigId,
     });
     const idSuffix = randomUUID();
-    const key = normalizeSecretKey(`user.${definition.key}.${idSuffix}`);
+    // Cap the definition-key portion so the random UUID suffix always survives
+    // normalizeSecretKey's 120-char truncation. Without this, two users saving
+    // values for a long-keyed definition (> 60 normalized chars) truncate to the
+    // same key, collide in the provider path (e.g. Vault), and the second write fails.
+    const defKeyPart = normalizeSecretKey(definition.key).slice(0, 60);
+    const key = normalizeSecretKey(`user.${defKeyPart}.${idSuffix}`);
     const name = `${definition.name} (${ownerUserId})`;
     const providerWriteContext = {
       companyId,

@@ -301,12 +301,28 @@ function rejectUnsafeVaultAddress(value: unknown, ctx: z.RefinementCtx) {
   }
 }
 
-export const vaultProviderConfigSchema = z.object({
-  address: vaultAddressSchema.optional().nullable(),
-  namespace: optionalSafeShortText,
-  mountPath: optionalSafeShortText,
-  secretPathPrefix: optionalSafeShortText,
-}).strict();
+export const vaultProviderConfigSchema = z
+  .object({
+    address: vaultAddressSchema.optional().nullable(),
+    namespace: optionalSafeShortText,
+    mountPath: optionalSafeShortText,
+    secretPathPrefix: optionalSafeShortText,
+    // Legacy aliases accepted for configs written before the canonical
+    // mountPath/secretPathPrefix names; the provider reads both.
+    kvMount: optionalSafeShortText.optional(),
+    kvPathPrefix: optionalSafeShortText.optional(),
+    versionRetention: z.number().int().min(2).max(100).optional().nullable(),
+    auth: z
+      .object({
+        method: z.enum(["token", "kubernetes", "approle"]),
+        role: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional().nullable(),
+        saTokenPath: z.string().trim().min(1).max(512).optional().nullable(),
+      })
+      .strict()
+      .optional()
+      .nullable(),
+  })
+  .strict();
 
 export const secretProviderConfigPayloadSchema = z.discriminatedUnion("provider", [
   z.object({ provider: z.literal("local_encrypted"), config: localEncryptedProviderConfigSchema }),
@@ -335,8 +351,8 @@ export const createSecretProviderConfigSchema = z.object({
       });
     }
   }
-  const status = value.status ?? (["gcp_secret_manager", "vault"].includes(value.provider) ? "coming_soon" : "ready");
-  if ((value.provider === "gcp_secret_manager" || value.provider === "vault") && status !== "coming_soon" && status !== "disabled") {
+  const status = value.status ?? (value.provider === "gcp_secret_manager" ? "coming_soon" : "ready");
+  if (value.provider === "gcp_secret_manager" && status !== "coming_soon" && status !== "disabled") {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["status"],
@@ -363,6 +379,11 @@ export const updateSecretProviderConfigSchema = z.object({
   if (value.config !== undefined) {
     rejectSensitiveProviderConfigKeys(value.config, ctx);
     rejectUnsafeVaultAddress(value.config.address, ctx);
+    // Provider-specific config validation is NOT done here: updates carry no
+    // `provider` field, so validating against one provider's schema would
+    // reject every other provider's config (e.g. an AWS `region` would fail
+    // the strict Vault schema). The service re-validates the merged config
+    // per provider via validateProviderConfigPayload.
   }
   if ((value.status === "coming_soon" || value.status === "disabled") && value.isDefault) {
     ctx.addIssue({

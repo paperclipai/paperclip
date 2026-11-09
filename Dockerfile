@@ -94,6 +94,20 @@ RUN set -eux; \
 COPY packages/paperclip-runner/rust-toolchain.toml /tmp/runner-toolchain/rust-toolchain.toml
 RUN cd /tmp/runner-toolchain && rustup show
 
+# Forgejo CLI (fj) and its Actions/web-UI extension (fj-ex) for agents working
+# against self-hosted Forgejo instances (forgejo.big.netlobo.com). Both are Rust
+# crates; built here in a dedicated stage so the production image carries only
+# the two binaries, not the full Rust toolchain. Versions are pinned.
+FROM rust-toolchain AS forgejo-cli
+# forgejo-cli links openssl-sys (via libgit2/git transport), which needs system
+# OpenSSL dev headers; the runner toolchain stage only adds gcc/libc6/pkg-config.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libssl-dev \
+  && rm -rf /var/lib/apt/lists/*
+RUN cd /tmp/runner-toolchain \
+  && cargo install --locked forgejo-cli --version 0.7.0 \
+  && cargo install --locked forgejo-cli-ex --version 0.1.12
+
 # Pin the recipe generator and its dependency lockfile. It is a build-only tool
 # and uses the same package-owned compiler as both native build stages.
 FROM rust-toolchain AS rust-chef
@@ -172,6 +186,12 @@ RUN mkdir -p /provider-pack /provider-pack-transport \
   else \
     echo "Skipping remote provider pack: supply a full PAPERCLIP_BUILD_COMMIT to enable remote OpenCode/ACPX execution"; \
   fi
+# Set pack permissions in this throwaway build stage so the production COPY
+# carries correct modes without a mode-rewriting layer. A `chmod -R` in the
+# production stage rewrites every file and costs ~590 MB of image (it is a
+# pure mode-change layer); doing it here is free because build-stage layers
+# never ship in the final image.
+RUN chmod -R a+rX /provider-pack
 
 FROM base AS production
 ARG USER_UID=1000
@@ -186,12 +206,16 @@ WORKDIR /app
 # (the single most expensive layer: four CLI toolchains + apt, per arch) can
 # never hit the layer cache and rebuilds on every build.
 RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
-  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest @moonshot-ai/kimi-code@latest \
+  && npm install --global --omit=dev @anthropic-ai/claude-code@2.1.301 @openai/codex@0.160.0 opencode-ai@1.18.34 @google/gemini-cli@0.64.0 @moonshot-ai/kimi-code@2.2.0 @earendil-works/pi-coding-agent@0.74.0 \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
+
+# Forgejo CLI for agents (fj: issues/PRs/repos; fj-ex: Actions logs/artifacts).
+# Built in the forgejo-cli cargo stage; copied next to gh so agents reach both.
+COPY --from=forgejo-cli /usr/local/cargo/bin/fj /usr/local/cargo/bin/fj-ex /usr/local/bin/
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
@@ -202,10 +226,10 @@ COPY --chown=0:0 --from=runner-provider-pack /provider-pack /opt/paperclip-runne
 COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/
 # Managed deployments can remap node's UID at startup. This immutable pack
 # contains public code and integrity metadata, never credentials; it must remain
-# readable afterward.
+# readable afterward. Permissions were applied in the runner-provider-pack
+# build stage (a+rX), so this COPY carries them without a mode-rewriting layer.
 # Keep it root-owned and verify access as an unrelated unprivileged UID.
-RUN chmod -R a+rX /opt/paperclip-runner/provider-pack \
-  && if [ -f /opt/paperclip-runner/provider-pack/provider-pack.json ]; then \
+RUN if [ -f /opt/paperclip-runner/provider-pack/provider-pack.json ]; then \
     gosu 65534:65534 node -e 'const fs = require("node:fs"); const path = require("node:path"); const root = "/opt/paperclip-runner/provider-pack"; const manifest = JSON.parse(fs.readFileSync(path.join(root, "provider-pack.json"), "utf8")); for (const artifact of Object.values(manifest.payload.artifacts)) fs.readFileSync(path.join(root, artifact.path)); fs.accessSync(path.join(root, manifest.payload.artifacts.nodeCommand.path), fs.constants.X_OK);'; \
   fi
 ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack
