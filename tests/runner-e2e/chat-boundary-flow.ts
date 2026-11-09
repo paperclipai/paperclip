@@ -18,6 +18,8 @@ export async function runChatBoundaryFlow(context: IdentityBoundaryContext, desc
     originalQuery: context.scenario.query, querySent: false, context: context.scenario.context, expectedOutcome: context.scenario.expected_outcome });
   try {
     observation = await implementation.run(ownContext);
+    // Capture the page the boundary ended on before cleanup removes its resources.
+    await context.captureFinalState?.();
     const grade = validateChatCatalogGrade(implementation.grade(observation));
     const checks = [...grade.checks,
       { id: "boundary-complete-conditions", passed: !implementation.coverageGaps?.length, detail: implementation.coverageGaps?.length

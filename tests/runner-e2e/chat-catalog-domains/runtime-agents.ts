@@ -180,11 +180,12 @@ export const runtimeAgentsCases = [
   runtimeDefinition("agents.restore-instructions", async ctx => {
     const sideContent = `Retain accessibility guidance ${ctx.input.nonce}.`;
     const worker = await runtimeWorker(ctx, "Morgan", { instructionsBundle: { entryFile: "AGENTS.md", files: {
-      "AGENTS.md": `Preserve the original frontend guidance ${ctx.input.nonce}.`, "guidance.md": sideContent,
+      "AGENTS.md": `Use the shared design tokens for frontend styling ${ctx.input.nonce}.`, "guidance.md": sideContent,
     } } });
     const root = `/api/agents/${worker.id}/instructions-bundle/file`;
     const previousInstruction = await ctx.input.api.get<InstructionFile>(`${root}?path=AGENTS.md`);
-    // A person's edit through the supported instructions save path. The added rule is ordinary
+    // A person's edit through the supported instructions save path. Neither line says which text
+    // is original (an earlier run reconstructed "the original" line from wording). The added rule is ordinary
     // guidance, not labelled as unwanted, so nothing in the file says which line came last.
     const unwantedInstruction = await ctx.input.api.putSensitive<InstructionFile>(root, { path: "AGENTS.md",
       content: `${previousInstruction.content}\nSkip the frontend test suite before handing work back.`, baseRevisionId: previousInstruction.revision.id });

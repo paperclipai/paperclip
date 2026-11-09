@@ -982,6 +982,7 @@ for (const execution of executions) {
         const checks = await runChatBoundaryFlow({ journeyKind: "browser-boundary", boundaryTarget: catalogDescriptor.boundaryTarget,
           scenario, page, api, execution, nonce, credentials: { ...credentials, ...privateInputs?.credentials }, privateSecrets: secrets, privateDir, deadlineAt: startedAtMs + deadlineMs,
           capture: captureScreenshot,
+          captureFinalState: () => capturePrivateScreenshot("final-state", "final-state.png"),
           evidence: async (name, value) => {
             await writeSanitizedJson(snapshotsDir, name, value, secrets);
             if (name === "chat-boundary-observation.json") boundaryObservation = value;
@@ -1000,7 +1001,6 @@ for (const execution of executions) {
         const boundarySnapshots = boundaryStandardSnapshots({ scenarioId: execution.task.id, trail: boundaryTrail, boundaryObservation });
         await writeSanitizedJson(snapshotsDir, "fixtures.json", boundarySnapshots.fixtures, secrets);
         await writeSanitizedJson(snapshotsDir, "api-state.json", boundarySnapshots.apiState, secrets);
-        await capturePrivateScreenshot("final-state", "final-state.png");
         matcherResults.push(...checks.map(check => ({ matcher: { kind: "json_path" as const, path: `boundary.${check.id}`, expected: true }, passed: check.passed, detail: check.detail })));
       } else {
       if (execution.task.flow === "public_mcp" || execution.suite.id === "chat-features" && findChatCatalogCase(execution.task.id)?.authentication === "human-session") publicMcpUserId = await establishPublicMcpSession(api, page, secrets);

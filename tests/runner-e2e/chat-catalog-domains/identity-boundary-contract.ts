@@ -12,6 +12,8 @@ export interface IdentityBoundaryContext {
   credentials: Partial<Record<CredentialName, string>>; privateSecrets: string[]; privateDir: string; deadlineAt: number;
   evidence(name: string, value: unknown): Promise<void>;
   capture(id: string, label: string, file: string): Promise<void>;
+  /** Private standard final-state capture, taken after the boundary's run and before its cleanup. */
+  captureFinalState?(): Promise<void>;
   /** Real resources may be observed only after their supported creation. */
   observeResources(value: { companyId?: string; agentId?: string; runIds: string[] }): void;
 }
