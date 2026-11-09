@@ -45,13 +45,19 @@ const AGENT_PROFILE_TABS: Record<string, [string, string]> = {
 
 // The board page that holds the control behind a board-only API route, when one
 // is known. Paths keep <prefix> for the agent to fill from its own task identifier.
-const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray) => [string, string]]> = [
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray, req: Request) => [string, string] | null]> = [
   [/^\/(?:companies\/[^/]+\/)?secrets?(?:[-/]|$)/, () => ["company secrets", "/<prefix>/company/settings/secrets"]],
   [/^\/companies\/[^/]+\/(?:budgets|budget-incidents|costs)(?:\/|$)/, () => ["budgets", "/<prefix>/activity/budgets"]],
   [/^\/companies\/[^/]+\/(?:prompt-injection-prevention|decision-model)(?:\/|$)/, () => ["connection settings", "/<prefix>/company/settings/connections"]],
   [/^\/companies\/[^/]+\/(?:members|invites|join-requests)(?:\/|$)/, () => ["company members", "/<prefix>/company/settings/members"]],
   [/^\/companies\/[^/]+\/(?:tools\/)?gateways(?:\/|$)|^\/tool-gateway\//, () => ["tool gateways", "/<prefix>/apps/gateways"]],
   [/^\/approvals\/([^/]+)/, match => ["the approval", `/<prefix>/approvals/${match[1]}`]],
+  [/^\/projects\/([^/]+)\/access-members(?:\/|$)/, (match, req) => {
+    const projectId = [req.params?.id, match[1]].find((id): id is string => typeof id === "string" && UUID_PATTERN.test(id));
+    return projectId ? ["the project's access settings", `/<prefix>/projects/${projectId}/configuration`] : null;
+  }],
   [/^\/agents\/([0-9a-f-]{36})(?:\/([^/]+))?(?:\/|$)/i, match => {
     const tab = match[2] && Object.hasOwn(AGENT_PROFILE_TABS, match[2]) ? AGENT_PROFILE_TABS[match[2]] : undefined;
     return tab ? [`the agent's ${tab[0]}`, `/<prefix>/agents/${match[1]}/${tab[1]}`] : ["the agent's profile", `/<prefix>/agents/${match[1]}`];
@@ -63,7 +69,7 @@ function boardControlPage(req: Request) {
   const path = (req.originalUrl ?? "").split("?")[0]!.replace(/^\/api(?=\/)/, "");
   for (const [pattern, page] of BOARD_CONTROL_PAGES) {
     const match = pattern.exec(path);
-    if (match) return page(match);
+    if (match) return page(match, req);
   }
   return null;
 }
