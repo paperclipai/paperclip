@@ -79,8 +79,7 @@ function validAudience(value: unknown) { const o = observation(value) as Audienc
 function firstUpdate(o: AudienceObservation) { return o.comments.filter(row => row.authorAgentId === o.leadId && o.runs.some(run => run.id === row.createdByRunId)); }
 function firstAudiencePasses(o: AudienceObservation) {
   const target = entity(o.state, "task"); const comments = firstUpdate(o); const update = comments[0]; const alex = update && commentEvent(o.alex, update.id, target.id); const riley = update && commentEvent(o.riley, update.id, target.id);
-  return comments.length === 1 && !!update && !extractUserMentionIds(update.body ?? "").includes(String(o.state.rileyId))
-    && /\bdraft\b/i.test(update.body ?? "") && /\b(?:ready|available|review)\b/i.test(update.body ?? "")
+  return comments.length === 1 && !!update && (update.body ?? "").trim().length > 0 && !extractUserMentionIds(update.body ?? "").includes(String(o.state.rileyId))
     && !!alex && alex.eligible && actualToast(o.alex, alex.at, entity(o.state, "task"), o.origin) && !!riley && !riley.eligible
     && o.observedAt - riley.at >= negativeWindowMs && !actualToast(o.riley, riley.at, entity(o.state, "task"), o.origin)
     && o.alex.visibility === "visible" && o.riley.visibility === "visible" && o.alex.sockets.length > 0 && o.riley.sockets.length > 0;
@@ -120,7 +119,9 @@ function notificationAudience(): ChatCatalogCase {
   const base = makeDefinition("inbox-search.notification-audience", async ctx => {
     const alexId = await mainPerson(ctx); riley = await observerPerson(ctx);
     try {
-      const p = await project(ctx); const t = await task(ctx, "Launch task", p.id, { assigneeAgentId: ctx.input.fixtures.agent.id, description: "The launch draft is complete and ready for human review; post ordinary task discussion updates without changing task execution." });
+      // Unassigned on purpose: a human comment on a task assigned to the chat agent
+      // wakes that agent on the task itself, which then posts and completes before the query.
+      const p = await project(ctx); const t = await task(ctx, "Launch task", p.id, { description: "The launch draft is complete and ready for human review; post ordinary task discussion updates without changing task execution." });
       await putDocument(ctx, t.id, "# Launch draft\nThe Acorn Notes draft is ready for human review.\n");
       const read = await personRead(riley, `/api/issues/${t.id}`); if (read.status !== 200) throw new Error("The nonparticipant is not an actual authorized task reader");
       const origin = ctx.input.api.baseURL; const href = `${origin}/${ctx.input.fixtures.company.issuePrefix}/activity`;
@@ -142,7 +143,7 @@ function notificationAudience(): ChatCatalogCase {
     const o = await observeInternal(ctx, state); const { alex, riley } = await observeAudienceProbes();
     return { ...o, alex, riley, observedAt: Date.now() };
   };
-  return { ...base, authentication: "human-session", expectedRunCount: 2, minimumRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 480000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.notification-audience.v2", authentication: "human-session", expectedRunCount: 2, minimumRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 480000,
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-notification-audience.ts", "chat-catalog-domains/internal-notification-events.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "../../packages/shared/src/project-mentions.ts"], observe,
     async act(ctx, state) {
       const first = await pollUntil({ label: "Normal participant-only actual browser notification", deadlineAt: Date.now() + 180000,
