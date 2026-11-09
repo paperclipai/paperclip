@@ -521,6 +521,22 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       expect(followUp.logs.join("")).toContain(`Run ${prior.runId} finished without a saved runner checkpoint`);
     }, 60_000);
 
+  it.each(["created", "replacement"] as const)(
+    "bootstraps again when a restart cut the follow-up off after it retired the finished owner: %s sandbox", async outcome => {
+      const prior = await seedRecoveredPriorRun();
+      const followUp = await admitFollowUp(prior);
+      expect(await followUp.start(outcome)).toBe(ADMITTED);
+      const root = await sessionRoot();
+      expect(existsSync(join(root, "control-plane"))).toBe(false);
+      expect(await archivedOwners(root)).toEqual([prior.runId]);
+      followUp.logs.length = 0;
+      expect(await followUp.start(outcome, { kind: "bootstrap_incomplete", runId: followUp.runId, leaseOwner: "successor",
+        controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null } as never)).toBe(ADMITTED);
+      const [copy] = await quarantined();
+      expect(copy).toMatch(/\.identity_indeterminate\./);
+      expect(existsSync(join(stateDirectory, "quarantine", copy!, "continuity-breaks"))).toBe(true);
+    }, 60_000);
+
   async function keepLocalRootWithoutPointer(prior: Awaited<ReturnType<typeof seedRecoveredPriorRun>>,
     followUp: Awaited<ReturnType<typeof admitFollowUp>>) {
     await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
