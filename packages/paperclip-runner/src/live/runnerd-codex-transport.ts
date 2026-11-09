@@ -4000,6 +4000,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #detachPromise: Promise<void> | null = null;
   #startupOperation: Promise<unknown> | null = null;
   #attachmentOperation: Promise<void> | null = null;
+  #earlyClaim: { runId: string; operation: Promise<void> } | null = null;
   #releaseEpisode: {
     source: DurableRecoveryIdentity; confirmed: boolean; claimed?: boolean;
     claimantRunId?: string; ticket?: string; ticketFlushed?: boolean; deadline?: number;
@@ -4721,6 +4722,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.options.adoptExistingRunner && this.#adoptedRunnerMonitor === null) this.#watchAdoptedRunner(this.options.adoptExistingRunner);
   }
 
+  beginRunAttachment(input: { runId: string }): boolean {
+    if (this.#attachmentOperation !== null || !this.#releaseEpisode?.confirmed || this.#releaseEpisode.claimed || !input.runId) return false;
+    try {
+      this.#assertStartupOpen();
+      this.#assertRunAttachmentAdmission();
+    } catch {
+      return false;
+    }
+    const operation = this.#claimReleasedRunner(input.runId);
+    void operation.catch(() => undefined);
+    this.#attachmentOperation = operation;
+    this.#earlyClaim = { runId: input.runId, operation };
+    return true;
+  }
+
   attachRun(input: {
     runId: string;
     turnId: string;
@@ -4728,12 +4744,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     currentRunGrant?: NativeRunRuntimeGrant;
     completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void> {
-    if (this.#attachmentOperation !== null) {
+    const earlyClaim = this.#earlyClaim?.runId === input.runId ? this.#earlyClaim.operation : undefined;
+    if (this.#attachmentOperation !== null && earlyClaim === undefined) {
       return Promise.reject(new Error("native_runner_run_attachment_in_progress"));
     }
+    this.#earlyClaim = null;
     const operation = Promise.resolve().then(() => {
       this.#assertStartupOpen();
-      return this.#attachRun(input);
+      return this.#attachRun(input, earlyClaim);
     }).finally(() => { this.#attachmentOperation = null; });
     this.#attachmentOperation = operation;
     return operation;
@@ -4745,20 +4763,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     itemId: string;
     currentRunGrant?: NativeRunRuntimeGrant;
     completionContract?: { revision: string; criterionIds: readonly string[] };
-  }): Promise<void> {
+  }, earlyClaim?: Promise<void>): Promise<void> {
     const previous = record(this.#runAttachTemplate?.provider).runtimeContext;
     const current = input.currentRunGrant?.runtimeContext;
-    return this.options.measureOperation ? this.options.measureOperation("runner.transport.attach", () => this.#attachRunWork(input),
-      previous === undefined ? undefined : {contextReused:current === undefined || commandDigest(current) === commandDigest(previous)}) : this.#attachRunWork(input);
+    return this.options.measureOperation ? this.options.measureOperation("runner.transport.attach", () => this.#attachRunWork(input, earlyClaim),
+      previous === undefined ? undefined : {contextReused:current === undefined || commandDigest(current) === commandDigest(previous)}) : this.#attachRunWork(input, earlyClaim);
   }
 
-  async #attachRunWork(input: {
-    runId: string;
-    turnId: string;
-    itemId: string;
-    currentRunGrant?: NativeRunRuntimeGrant;
-    completionContract?: { revision: string; criterionIds: readonly string[] };
-  }): Promise<void> {
+  #assertRunAttachmentAdmission(): { core: DurablePrpControlPlane; retainingSource: boolean } {
     if (this.#pendingWarmRecoveryCompletion !== null) {
       throw new Error("native_runner_warm_transition_completion_pending");
     }
@@ -4769,6 +4781,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (retainingSource && this.#bridgedRuntimeInputs.size > 0) {
       throw new NativeRunnerSourceReconciliationRequiredError("runtime");
+    }
+    return { core, retainingSource };
+  }
+
+  async #attachRunWork(input: {
+    runId: string;
+    turnId: string;
+    itemId: string;
+    currentRunGrant?: NativeRunRuntimeGrant;
+    completionContract?: { revision: string; criterionIds: readonly string[] };
+  }, earlyClaim?: Promise<void>): Promise<void> {
+    const { core, retainingSource } = this.#assertRunAttachmentAdmission();
+    if (earlyClaim) {
+      await earlyClaim;
+      if (this.#releaseEpisode && Date.now() >= this.#releaseEpisode.deadline!) {
+        throw new Error("native_runner_resume_reconciliation_expired");
+      }
     }
     if (this.#releaseEpisode) await this.#resumeReleasedRunner(input.runId);
     await this.#awaitWarmRunAttachmentReady();

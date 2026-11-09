@@ -10707,6 +10707,7 @@ async function executePaperclipNativeSessionWithinScope(
     `native-warm-session:${input.execution.binding.runId}`,
   );
   let existingWarmSession: NativeSession | undefined;
+  let reusingReleasedRunner = false;
   let pluginTaskDescription: Extract<ReturnType<typeof environmentTaskResultSchema.parse>,{kind:"description"}> | undefined;
   let managedCredentialSession: NativeSession | undefined;
   let githubAccess: NativeGitHubAccess | undefined;
@@ -10798,6 +10799,7 @@ async function executePaperclipNativeSessionWithinScope(
         entry.instructionWorkingCopy = input.instructionWorkingCopy?.checkpointWarm ? undefined : input.instructionWorkingCopy;
         entry.busy = true;
         entry.ownerToken = warmSessionOwnerToken;
+        reusingReleasedRunner = entry.released === true;
         entry.released = false;
         entry.environmentId =
           input.runnerExecutionTarget?.environmentId ?? null;
@@ -10960,6 +10962,10 @@ async function executePaperclipNativeSessionWithinScope(
     const resolveWake = () => timeController("wake_binding", () => resolveCurrentWakeCommentsBinding(input.db, input.execution.binding));
     const expectedCurrentWakeComments = await (executionContext ? executionContext.wait(resolveWake) : resolveWake());
     let remoteWarmRecoveryPending = remoteWarmRecovery !== undefined;
+    const beginRetainedRunAttachment = (session: NativeSession) => () => {
+      session.beginRunAttachment?.({ identity: { runId: input.execution.binding.runId, sessionId: session.identity().sessionId,
+        companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId, agentId: input.execution.binding.agentId } });
+    };
     const createExecutionBackend = () => createRunnerdBackend({
       ...input,
       onDiagnosticLease: ownDiagnosticLease,
@@ -10979,6 +10985,7 @@ async function executePaperclipNativeSessionWithinScope(
       runnerInstanceId: effectiveRunnerInstanceId,
       pluginTaskDescription,
       retainedPluginTaskOwner: existingWarmSession ? pluginTaskSessionOwners.get(existingWarmSession) : undefined,
+      beginRetainedRunAttachment: existingWarmSession && reusingReleasedRunner ? beginRetainedRunAttachment(existingWarmSession) : undefined,
       durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
       remoteWarmRecovery: remoteWarmRecovery ? {
         ...remoteWarmRecovery,
@@ -14193,6 +14200,7 @@ export async function createRunnerdBackend(input: {
   durableEnvironmentLeaseId?: string;
   remoteWarmRecovery?: Omit<RemoteWarmSessionRecovery, "revalidate"> & { revalidate: () => Promise<void> };
   retainedPluginTaskOwner?: ReturnType<typeof createPluginRunnerTaskOwner>;
+  beginRetainedRunAttachment?: () => void;
   pluginTaskDescription?: Extract<ReturnType<typeof environmentTaskResultSchema.parse>,{kind:"description"}>;
   onSpawn?: (meta: {
     pid: number;
@@ -14487,7 +14495,13 @@ async function createRunnerdBackendWithinSessionClaim(
   if (relayAssignedMcp && hasAssignedMcp && !assignedGatewayPublicId) {
     throw new Error("assigned native MCP gateway path is invalid");
   }
-  const [preparedEnvironment, preparedAssignedMcp] = await Promise.allSettled([
+  let durableState: ReturnType<typeof readDurableState> | undefined;
+  let pluginTaskOwner: ReturnType<typeof preparePluginTaskOwner> | undefined;
+  const earlyPluginTaskOwner = pluginTask && remoteTarget?.transport === "sandbox" && input.beginRetainedRunAttachment
+    && input.retainedPluginTaskOwner && !input.remoteWarmRecovery && !input.restartRecovery
+    ? pluginTaskOwner = preparePluginTaskOwner().then(prepared => { input.beginRetainedRunAttachment!(); return prepared; })
+    : undefined;
+  const [preparedEnvironment, preparedAssignedMcp, preparedPluginTaskOwner] = await Promise.allSettled([
     Promise.resolve().then(() => input.prepareRunnerEnvironment?.() ?? input.runnerEnvironment),
     Promise.resolve().then(() => relayAssignedMcp && !nativeReview && assignedMcpUrl && assignedMcpToken
       ? timeController("assigned_mcp", () => createAssignedMcpTools({
@@ -14498,9 +14512,11 @@ async function createRunnerdBackendWithinSessionClaim(
         ...(input.execution.provider.kind === "opencode" ? { delivery: "on_demand" as const } : {}),
       }))
       : undefined),
+    earlyPluginTaskOwner,
   ]);
   if (preparedEnvironment.status === "rejected") throw preparedEnvironment.reason;
   if (preparedAssignedMcp.status === "rejected") throw preparedAssignedMcp.reason;
+  if (preparedPluginTaskOwner.status === "rejected") throw preparedPluginTaskOwner.reason;
   const runnerEnvironment = preparedEnvironment.value;
   const assignedMcpTools = preparedAssignedMcp.value;
   const dotAttachmentActor = input.execution.schema === "paperclip.native-execution-input.v6"
@@ -14565,13 +14581,7 @@ async function createRunnerdBackendWithinSessionClaim(
     authorityEpoch.revoke();
     throw error;
   }
-  const root = runnerdStateRoot(input.execution);
-  const durableIdentity = readRunnerdDurableIdentity(root);
-  const durableBinding = retainedTransition
-    ? loadRunnerdDurableBinding(input.execution, retainedTransition)
-    : durableIdentityMatchesSession(durableIdentity, input.execution)
-      ? durableIdentity
-      : null;
+  const { root, durableIdentity, durableBinding } = durableState ??= readDurableState();
   const stagedRecovery = input.restartRecovery?.kind === "reattach_remote_runner"
     ? await verifyStagedAttachmentRestart(input) : null;
   const retainedSystemInstructions = input.restartRecovery?.kind === "reattach_remote_runner"
@@ -14632,7 +14642,21 @@ async function createRunnerdBackendWithinSessionClaim(
     input.durableEnvironmentLeaseId ??
     input.execution.binding.executionWorkspaceId;
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  if (pluginTask && remoteTarget?.transport === "sandbox" && input.execution.schema !== "paperclip.native-execution-input.v6" && input.execution.schema !== "paperclip.native-execution-input.v8") {
+  function readDurableState() {
+    const root = runnerdStateRoot(input.execution);
+    const durableIdentity = readRunnerdDurableIdentity(root);
+    const durableBinding = retainedTransition
+      ? loadRunnerdDurableBinding(input.execution, retainedTransition)
+      : durableIdentityMatchesSession(durableIdentity, input.execution)
+        ? durableIdentity
+        : null;
+    return { root, durableIdentity, durableBinding };
+  }
+  async function preparePluginTaskOwner() {
+    if (!pluginTask || remoteTarget?.transport !== "sandbox" || input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8") {
+      throw new Error("Plugin Runner tasks require a workspace session");
+    }
+    const { root, durableIdentity, durableBinding } = durableState ??= readDurableState();
     const provider = input.execution.provider;
     if (provider.kind !== "codex" && provider.kind !== "opencode" && provider.kind !== "acpx") throw new Error("Plugin Runner tasks require a workspace harness");
     if (remoteTarget.sandboxLeaseAcquisition?.outcome === "resumed" && !durableBinding && !input.retainedPluginTaskOwner && !input.remoteWarmRecovery) {
@@ -14719,6 +14743,10 @@ async function createRunnerdBackendWithinSessionClaim(
     if (input.execution.session.lifecyclePolicy.mode === "warm" && (!credentials.accountIdentity || description.warmTaskVersion !== 1)) throw new Error("Plugin warm task capability or account unavailable");
     const owner = retainedOwner ?? createPluginRunnerTaskOwner(ownerInput);
     if (retainedOwner) retainedOwner.rebind(ownerInput);
+    return { provider, description, prior, adoptionIdentity, adopting, owner };
+  }
+  if (pluginTask && remoteTarget?.transport === "sandbox" && input.execution.schema !== "paperclip.native-execution-input.v6" && input.execution.schema !== "paperclip.native-execution-input.v8") {
+    const { provider, description, prior, adoptionIdentity, adopting, owner } = await (pluginTaskOwner ??= preparePluginTaskOwner());
     if (description.workspaceFileReadVersion === 1) {
       authority.binding.readRemoteApiFile = owner.readWorkspaceFile;
       authority.binding.readRemoteTaskFile = file => owner.readWorkspaceFile(file.contentRef, file.byteSize);
