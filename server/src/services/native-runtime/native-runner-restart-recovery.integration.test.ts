@@ -2308,6 +2308,9 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     registerControllerInstanceDb(fixture.db);
     const stamped = vi.fn(), unsubscribe = onControllerStamp(stamped);
     try {
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "hard", runIds: [randomUUID()] })).toEqual([]);
+      expect(stamped).not.toHaveBeenCalled();
       const [waiting] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
         restartKind: "hard", runIds: [fixture.runId] });
       expect(waiting).toMatchObject({ kind: "awaiting_evidence", reason: "controller_lease_held", retryAt: expect.any(Date) });

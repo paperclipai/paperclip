@@ -1,4 +1,3 @@
-import { currentControllerProcess } from "../controller-process-identity.js";
 import { carriesInheritedRunnerIdentity } from "./native-inherited-runner-retry.js";
 import { readPendingNativeRunStop } from "./native-cancellation-request.js";
 import { CONTROLLER_LEASE_RENEW_MS } from "../controller-instance-lease.js";
@@ -993,7 +992,7 @@ export async function claimNativeRestartRecoveries(input: {
   const now = input.now ?? new Date();
   const controller =
     input.controller ?? (await currentNativeControllerIdentity());
-  const controllerHostHash = (await currentControllerProcess()).hostHash;
+  const controllerHostHash = currentProcessSpaceHash();
   const candidateQuery = input.db
     .select({
       runId: heartbeatRuns.id,

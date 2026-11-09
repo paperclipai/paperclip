@@ -632,8 +632,8 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         mode === "null" ? null : mode === "foreign" ? `foreign:${actual.hostHash}` : actual.hostHash);
       const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
       expect(before.resultId).toBeNull();
-      const unknown = mode === "unknown-current" ? vi.spyOn(controllerProcess, "currentControllerProcess")
-        .mockResolvedValue({ ...actual, hostHash: "unknown" }) : null;
+      const unknown = mode === "unknown-current" ? vi.spyOn(controllerProcess, "currentProcessSpaceHash")
+        .mockReturnValue("unknown") : null;
       const probe = observeOwnerPid();
       const onClaim = vi.fn();
       try {
@@ -1261,7 +1261,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       expect(actual.hostHash).not.toBe("unknown");
       const f = await seedClaim("CLAIM-SPACE-READABLE-AGAIN", "expired", actual.hostHash);
       // Degrade evidence for the first scan; never fabricate a stronger hash.
-      const unreadable = vi.spyOn(controllerProcess, "currentControllerProcess").mockResolvedValue({ ...actual, hostHash: "unknown" });
+      const unreadable = vi.spyOn(controllerProcess, "currentProcessSpaceHash").mockReturnValue("unknown");
       try {
         expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId] }))
           .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified" }]);
