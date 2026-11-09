@@ -5347,11 +5347,23 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+// A plugin-managed routine is still an ordinary routine row, so agents read it
+// through the routine routes; say there who owns it and where it is changed.
+const PLUGIN_MANAGED_ROUTINE_GUIDANCE =
+  "A routine with a non-null `managedByPlugin` is a plugin-managed routine: that plugin created it and owns its definition "
+  + "(title, instructions, schedule, assignee), and the plugin can reset it to its manifest defaults. "
+  + "It is changed through the settings that plugin exposes, which a board user opens at "
+  + "[plugin settings](/<prefix>/company/settings/instance/plugins/<pluginId>), with `managedByPlugin.pluginId` as <pluginId> "
+  + "and this conversation's company prefix as <prefix>. "
+  + "Do not rewrite, detach or duplicate a plugin-managed routine to imitate a change, and do not search for another route: "
+  + "reply now with that link and the routine's page link.";
+
 registry.registerPath({
   method: "get",
   path: "/api/routines/{id}",
   tags: ["routines"],
   summary: "Get a routine",
+  description: `Routine details including triggers. ${PLUGIN_MANAGED_ROUTINE_GUIDANCE}`,
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
@@ -5361,6 +5373,7 @@ registry.registerPath({
   path: "/api/routines/{id}",
   tags: ["routines"],
   summary: "Update a routine",
+  description: `Agents can update only routines assigned to them and cannot reassign them. ${PLUGIN_MANAGED_ROUTINE_GUIDANCE}`,
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateRoutineSchema),
