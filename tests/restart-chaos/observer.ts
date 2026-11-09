@@ -52,6 +52,8 @@ export const REST_CONFIRM_MS = 12_000;
 export const CHILD_WAKE_GRACE_MS = 60_000;
 export const CHILD_STALL_CHECK_MS = 10_000;
 export const STOP_CONTINUE_AFTER_MS = 20_000;
+export const REMOTE_FILE_WAIT_MS = 4 * 60_000;
+export const REMOTE_FILE_POLL_MS = 2_000;
 
 type ChildSpeedTask = { issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> };
 
@@ -693,8 +695,17 @@ export class TaskObserver {
   private async remoteWorkspaceFile(issueId: string, relative: string): Promise<string | null> {
     const captured = this.record.remoteFiles?.[relative];
     if (typeof captured === "string") return captured;
-    return await this.api.getText(`/api/issues/${issueId}/file-resources/content?path=${encodeURIComponent(relative)}&download=true`, 15_000)
-      .catch(() => null);
+    const route = `/api/issues/${issueId}/file-resources/content?path=${encodeURIComponent(relative)}&download=true`;
+    const deadline = Date.now() + REMOTE_FILE_WAIT_MS;
+    for (;;) {
+      let unavailable = false;
+      const text = await this.api.getText(route, 15_000).catch((error: unknown) => {
+        unavailable = error instanceof ChaosApiError && error.status === 422;
+        return null;
+      });
+      if (text !== null || !unavailable || Date.now() >= deadline) return text;
+      await new Promise(resolve => setTimeout(resolve, REMOTE_FILE_POLL_MS));
+    }
   }
 
   private async captureRemoteFilesAtDone(sample: TaskSample): Promise<void> {

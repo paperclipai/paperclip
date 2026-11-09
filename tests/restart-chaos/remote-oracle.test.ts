@@ -31,6 +31,7 @@ const plan: TaskPlan = { taskId: "t01", index: 0, workload: "R1", adapter: "code
   holdMs: 0, followUpAfterMs: null, nonce };
 let server: Server;
 let sandboxReleased = false;
+let unavailableReads = 0;
 let baseUrl: string;
 
 beforeAll(async () => {
@@ -38,6 +39,7 @@ beforeAll(async () => {
     const url = new URL(incoming.url ?? "/", "http://x");
     if (url.pathname === "/api/issues/i1/file-resources/content" && url.searchParams.get("download") === "true") {
       if (incoming.headers.origin !== baseUrl) { outgoing.writeHead(403).end(); return; }
+      if (unavailableReads > 0) { unavailableReads -= 1; outgoing.writeHead(422, { "content-type": "application/json" }).end(JSON.stringify({ code: "workspace_unavailable" })); return; }
       if (sandboxReleased) { outgoing.writeHead(422, { "content-type": "application/json" }).end(JSON.stringify({ code: "workspace_unavailable" })); return; }
       const body = remoteFiles[url.searchParams.get("path") ?? ""];
       outgoing.writeHead(body ? 200 : 404, { "content-type": "text/plain" }).end(body ?? "");
@@ -104,6 +106,43 @@ describe("oracle for a remote workspace", () => {
       expect(artifacts.files).toEqual(remoteFiles);
       expect(artifacts.commands.node_test).toMatchObject({ exitCode: 0 });
     } finally { sandboxReleased = false; }
+  }, 60_000);
+
+  it("waits for the closing save to make a remote workspace readable again before grading its files", async () => {
+    const api = {
+      baseUrl,
+      async get(route: string) {
+        if (route.endsWith("/comments")) return [];
+        return { id: "i1", status: "done", currentExecutionWorkspace: { cwd: "/home/daytona/workspaces/not-on-this-host" } };
+      },
+      async post() { return { id: "i1", identifier: "CHA-1" }; },
+      getText: (route: string) => new ChaosApi(baseUrl).getText(route),
+    } as unknown as ChaosApi;
+    const observer = new TaskObserver(plan, api, lab, new Timeline(null), { serverReady: true, faultInProgress: false });
+    await observer.launch();
+    sandboxReleased = false;
+    unavailableReads = 2;
+    const artifacts = await observer.collectArtifacts();
+    expect(unavailableReads).toBe(0);
+    expect(artifacts.files).toEqual(remoteFiles);
+  }, 60_000);
+
+  it("does not wait on a file the agent never wrote", async () => {
+    const api = {
+      baseUrl,
+      async get(route: string) {
+        if (route.endsWith("/comments")) return [];
+        return { id: "i1", status: "done", currentExecutionWorkspace: { cwd: "/home/daytona/workspaces/not-on-this-host" } };
+      },
+      async post() { return { id: "i1", identifier: "CHA-1" }; },
+      getText: (route: string) => new ChaosApi(baseUrl).getText(route.replace(/slug-/g, "missing-")),
+    } as unknown as ChaosApi;
+    const observer = new TaskObserver(plan, api, lab, new Timeline(null), { serverReady: true, faultInProgress: false });
+    await observer.launch();
+    const started = Date.now();
+    const artifacts = await observer.collectArtifacts();
+    expect(Object.values(artifacts.files)).toEqual([null, null]);
+    expect(Date.now() - started).toBeLessThan(10_000);
   }, 60_000);
 });
 
