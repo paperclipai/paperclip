@@ -754,6 +754,55 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0].status).toBe("deferred_issue_execution");
   });
 
+  // H1 bug B: a budget pause stopped the agent's run, and the release blocked
+  // the task behind a reconciliation incident with no control. A pause is an
+  // intentional stop; resuming continues the task.
+  it.each(["Agent lifecycle stop requested", "Cancelled due to budget pause"])(
+    "keeps a native task's status and opens no incident when a pause stopped its run (%s)", async (reason) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId, errorCode: "cancelled",
+      resultJson: { cancellation: { reason, source: "control_plane", expected: true, initiator: { type: "system" },
+        recordedAt: new Date().toISOString() },
+        ...(reason === "Agent lifecycle stop requested" ? { pauseStop: { holds: ["budget"], companyPauseReason: null } } : {}) } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => undefined as never);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "in_progress" });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+  });
+
+  it("still opens a reconciliation incident when agent termination stopped the run", async () => {
+    // Termination and cleanup use the lifecycle stop reason too, with no pauseStop.
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId, errorCode: "cancelled",
+      resultJson: { cancellation: { reason: "Agent lifecycle stop requested", source: "control_plane",
+        expected: true, initiator: { type: "system" } } } }).where(eq(heartbeatRuns.id, runId));
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => undefined as never);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))[0])
+      .toMatchObject({ cause: "native_continuation_requires_reconciliation" });
+  });
+
+  it("still opens a reconciliation incident for a native run cancelled by another system stop", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId, errorCode: "cancelled",
+      resultJson: { cancellation: { reason: "Cancelled because the company was archived", source: "control_plane",
+        expected: true, initiator: { type: "system" } } } }).where(eq(heartbeatRuns.id, runId));
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => undefined as never);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))[0])
+      .toMatchObject({ cause: "native_continuation_requires_reconciliation" });
+  });
+
   it.each(["in_progress", "blocked"])("preserves recovery ownership and queued messages when a native task fails from %s", async (status) => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
