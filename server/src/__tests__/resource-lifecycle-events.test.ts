@@ -491,7 +491,13 @@ describePostgres("Resource lifecycle events", () => {
       [resourceId, String(rows[acknowledged + 1].id)],
       [other, expect.any(String)],
     ]);
-    expect(elapsedMs).toBeLessThan(1_000);
+    // Before: 3.5 s locally. After: under 30 ms. The bound leaves room for a slow runner.
+    expect(elapsedMs).toBeLessThan(2_000);
+
+    // Acknowledgement applies the same head rule that the list used.
+    await expect(inbox.acknowledge(companyId, String(rows[acknowledged + 2].id))).rejects.toMatchObject({ status: 409 });
+    await inbox.acknowledge(companyId, listed[0].id);
+    expect((await inbox.list(companyId, 100))[0]).toMatchObject({ resourceId, id: String(rows[acknowledged + 2].id) });
   }, 120_000);
 
   it("never skips a lower event id that commits after a higher id is acknowledged", async () => {

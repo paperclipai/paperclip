@@ -40,7 +40,8 @@ export function pluginLifecycleInbox(db: Db, pluginId: string) {
       await assertAvailable(db, companyId);
       // Each resource delivers in order, so only its head is deliverable: its
       // unacknowledged creation, otherwise its lowest unacknowledged event.
-      // This is the set `firstForResource` admits, picked in one pass. Testing
+      // This is the set `firstForResource` admits (and `acknowledge` still
+      // enforces), picked in one pass; keep the two rules in step. Testing
       // every unacknowledged event against every older event of its resource
       // costs (acknowledged prefix × backlog) probes and ran for minutes.
       const heads = db.$with("lifecycle_heads").as(
