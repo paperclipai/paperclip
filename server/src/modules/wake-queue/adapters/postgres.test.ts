@@ -3,7 +3,7 @@ import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.j
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -772,6 +772,29 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => undefined as never);
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "in_progress" });
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+  });
+
+  // Review: the full release (createReleaseIssueExecution), not only the
+  // native incident step, must leave a paused agent's task unblocked.
+  it.each(["native", "legacy"] as const)("keeps a %s task unblocked through the full release when its agent's pause stopped the run", async (runtimeMode) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    await db.update(agents).set({ status: "paused", lifecycleState: "pausing", lifecycleHolds: ["manual"] }).where(eq(agents.id, agentId));
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode, ...(runtimeMode === "native" ? { nativeIssueId: issueId } : {}),
+      errorCode: "cancelled", resultJson: { cancellation: { reason: "Agent lifecycle stop requested", source: "control_plane",
+        expected: true, initiator: { type: "system" } }, pauseStop: { holds: ["manual"], companyPauseReason: null } } })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
+    const escalateStrandedAssignedIssue = vi.fn(async () => undefined);
+    const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: { escalateStrandedAssignedIssue, escalateStrandedRecoveryIssueInPlace: async () => undefined },
+    });
+    await release({ companyId, runId, now: new Date() });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "in_progress" });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+    expect(escalateStrandedAssignedIssue).not.toHaveBeenCalled();
   });
 
   it("still opens a reconciliation incident when termination replaced the pause that stamped the run", async () => {

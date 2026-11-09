@@ -125,6 +125,9 @@ export function isOperatorStoppedRunRow(row: Pick<HeartbeatRunRow, "status" | "e
   const cancellation = readRunCancellation(row.resultJson);
   if (cancellation?.source === "queued_message") return false;
   if (cancellation?.source === "operator" && cancellation.expected) return true;
+  // A pause's stop (budget, agent or lifecycle pause) is intentional too: the
+  // release must not treat the paused agent's task as stranded work.
+  if (isGovernancePauseStop(row)) return true;
   if (row.errorCode && OPERATOR_STOP_ERROR_CODES.has(row.errorCode)) return true;
   const actorType = parseObject(row.resultJson).cancelledByActorType;
   return actorType === "user" || actorType === "board";
