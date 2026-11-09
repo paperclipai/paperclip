@@ -42,7 +42,7 @@ export const wrongResolverExternalCases=[definition("connection-setup.wrong-pers
   const original=state.original as ConnectionIntentInteraction,related=state.related as Entity,source=ctx.input.page.url();
   const current=await ctx.input.api.get<{user:{id:string}}>("/api/auth/get-session");state.otherSessionConfirmed=current.user.id===state.otherId&&current.user.id!==state.alexId;
   await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${related.id}`,{waitUntil:"domcontentloaded"});await expect(ctx.input.page.getByText(related.title!,{exact:true}).first()).toBeVisible();state.relatedVisible=true;
-  await expect(ctx.input.page.getByTestId("connection-authorization-waiting").filter({hasText:"Waiting for Alex"})).toBeVisible();state.waitingVisible=true;
+  await expect(ctx.input.page.getByTestId(/^connection-(?:intent|authorization)-waiting$/).filter({hasText:"Waiting for Alex"})).toBeVisible();state.waitingVisible=true;
   state.connectControlAbsent=await ctx.input.page.getByRole("button",{name:/^Connect (?:Notion|account)$/}).count()===0;
   const denied:Record<string,number>={};
   for(const [name,suffix,method,data] of [["setupOptions","setup-options","GET",undefined],["phase","phase","POST",{phase:"authorizing"}],["complete","complete","POST",{connectionId:randomUUID()}],["decline","decline","POST",{}]] as const){
@@ -55,6 +55,6 @@ export const wrongResolverExternalCases=[definition("connection-setup.wrong-pers
   state.after=after;state.relatedStatusUnchanged=task.status===related.status&&task.assigneeAgentId===related.assigneeAgentId;state.alexSourceRunCount=o.runs.filter(run=>run.contextSnapshot?.issueId===related.id).length;state.canonicalSourceDifferent=ctx.issue()?.id!==related.id;
   return {...o,state};
  },
- async verifyResult(ctx,_state,value){await verifyRenderedReply(ctx,value);const o=externalObservation(value)!;const source=ctx.input.page.url();try{await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${(o.state.related as Entity).id}`,{waitUntil:"domcontentloaded"});await expect(ctx.input.page.getByTestId("connection-authorization-waiting").filter({hasText:"Waiting for Alex"})).toBeVisible();}finally{await ctx.input.page.goto(source,{waitUntil:"domcontentloaded"});}},
+ async verifyResult(ctx,_state,value){await verifyRenderedReply(ctx,value);const o=externalObservation(value)!;const source=ctx.input.page.url();try{await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${(o.state.related as Entity).id}`,{waitUntil:"domcontentloaded"});await expect(ctx.input.page.getByTestId(/^connection-(?:intent|authorization)-waiting$/).filter({hasText:"Waiting for Alex"})).toBeVisible();}finally{await ctx.input.page.goto(source,{waitUntil:"domcontentloaded"});}},
  async cleanup(ctx){try{await people.get(ctx)?.dispose();}finally{people.delete(ctx);}},
 })];
