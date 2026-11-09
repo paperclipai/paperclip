@@ -780,10 +780,16 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
     ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
     issue.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(issue.status);
+  if (!applies || isAcknowledgedNativeStop(run) || isAcknowledgedNativeReassignmentStop(run)) return false;
   // A pause's stop is intentional: the task keeps its status and resuming
-  // continues it. It is never a reconciliation incident with no control.
-  if (!applies || isAcknowledgedNativeStop(run) || isAcknowledgedNativeReassignmentStop(run)
-    || isGovernancePauseStop(run)) return false;
+  // continues it. It is never a reconciliation incident with no control. A
+  // termination that replaced the pause shares its stop reason, so the agent
+  // must still be pausable, not terminating or terminated.
+  if (isGovernancePauseStop(run)) {
+    const [agent] = await tx.select({ lifecycleState: agents.lifecycleState }).from(agents)
+      .where(and(eq(agents.id, run.agentId), eq(agents.companyId, issue.companyId)));
+    if (agent && !["terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState)) return false;
+  }
 
   const existing = await tx
     .select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence })

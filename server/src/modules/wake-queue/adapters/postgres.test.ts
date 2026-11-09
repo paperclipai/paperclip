@@ -774,6 +774,22 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
   });
 
+  it("still opens a reconciliation incident when termination replaced the pause that stamped the run", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    await db.update(agents).set({ lifecycleState: "terminating" }).where(eq(agents.id, agentId));
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId, errorCode: "cancelled",
+      resultJson: { cancellation: { reason: "Agent lifecycle stop requested", source: "control_plane", expected: true,
+        initiator: { type: "system" } }, pauseStop: { holds: ["budget"], companyPauseReason: null } } })
+      .where(eq(heartbeatRuns.id, runId));
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => undefined as never);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))[0])
+      .toMatchObject({ cause: "native_continuation_requires_reconciliation" });
+  });
+
   it("still opens a reconciliation incident when agent termination stopped the run", async () => {
     // Termination and cleanup use the lifecycle stop reason too, with no pauseStop.
     const companyId = await seedCompany();
