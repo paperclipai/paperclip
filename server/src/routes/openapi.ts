@@ -1430,6 +1430,14 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  // Budget changes are board-only (assertBoard in routes/costs.ts).
+  "POST /api/companies/{companyId}/budgets/policies",
+  "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
+  "PATCH /api/companies/{companyId}/budgets",
+  "PATCH /api/agents/{agentId}/budgets",
+  // Approval decisions are board-only (assertBoard in routes/approvals.ts).
+  "POST /api/approvals/{id}/approve",
+  "POST /api/approvals/{id}/reject",
   "GET /api/agents/{id}/project-access",
   "POST /api/agents/{id}/project-access",
   "GET /api/issues/{id}/pending-questions",
@@ -4125,7 +4133,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/adapters/{type}/models",
   tags: ["adapters"],
   summary: "List models for an adapter type and runner provider",
-  description: "Answers which models an agent's runtime can select. For a paperclip_runner agent, pass its adapterConfig.provider and its defaultEnvironmentId; the response is the runtime's own list. An OpenCode agent whose model starts with openrouter/ uses an OpenRouter key: list those choices with type opencode_local and provider=openrouter. That list is OpenRouter's public catalog, so whether a model works depends on the key's account and is not a qualification. These calls are the complete answer: report the options with that caveat and reply, rather than enumerating providers through other routes, the shell or the web.",
+  description: "Answers which models an agent's runtime can select. For a paperclip_runner agent, pass its adapterConfig.provider, its adapterConfig.acpxAgent when the provider is acpx, and its defaultEnvironmentId; the response is that runtime's own list. An OpenCode agent whose model starts with openrouter/ uses an OpenRouter key: list those choices with type opencode_local and provider=openrouter. That list is OpenRouter's public catalog, so whether a model works depends on the key's account and is not a qualification. With those inputs, these calls answer the question: report the options with that caveat and reply, rather than enumerating providers through other routes, the shell or the web.",
   request: {
     params: z.object({ companyId: z.string(), type: z.string() }),
     query: z.object({
@@ -11817,7 +11825,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/connections",
   tags: ["tool-access"],
   summary: "Create a tool connection",
-  description: "Saves a connection as given without checking that its server answers. To connect an MCP server from its URL, use POST /api/companies/{companyId}/tools/apps/connect with link instead: it checks the server before saving and keeps an unreachable server as an editable draft.",
+  description: "Saves a connection as given without checking that its server answers. To connect an MCP server from its URL, use POST /api/companies/{companyId}/tools/apps/connect with link instead: it checks the server first, and a fresh setup saves nothing when the server cannot be reached.",
   body: createToolConnectionSchema,
   responses: {
     201: r.ok(),

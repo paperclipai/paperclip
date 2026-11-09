@@ -11,7 +11,6 @@ import { unreachableServerRemediation } from "../services/tool-access/catalog/fa
 
 const COMPANY_ID = "10000000-0000-4000-8000-000000000001";
 const OTHER_COMPANY_ID = "10000000-0000-4000-8000-000000000009";
-const CONNECTION_ID = "30000000-0000-4000-8000-000000000003";
 
 const agentActor: Express.Request["actor"] = { type: "agent", source: "agent_key", agentId: "agent-1", companyId: COMPANY_ID };
 const boardActor: Express.Request["actor"] = { type: "board", source: "local_implicit", userId: "local-board" };
@@ -56,25 +55,25 @@ describe("agent refusals that are final", () => {
 
   it("tells an agent an unreachable MCP server is the person's to fix, and not to probe other addresses", async () => {
     const error = await refusedConnection("ECONNREFUSED");
-    const { remediation } = unreachableServerRemediation(error, CONNECTION_ID, { actorType: "agent" }) as { remediation: string };
+    const { remediation } = unreachableServerRemediation(error, { actorType: "agent" }) as { remediation: string };
     expect(remediation).toContain("nothing accepted the connection");
     expect(remediation).toContain("they must correct the URL, or start the server");
     expect(remediation).toContain("you must not contact other hosts, ports or network addresses yourself");
     expect(remediation).toContain("Reply now");
-    expect(remediation).toContain(`[Open the connection](/<prefix>/apps/${CONNECTION_ID}/permissions)`);
+    expect(remediation).toContain("[Open Connectors](/<prefix>/apps)");
   });
 
   it("adds no MCP remediation for people or for failures that reached the server", async () => {
     const error = await refusedConnection("ECONNREFUSED");
-    expect(unreachableServerRemediation(error, CONNECTION_ID, { actorType: "user" })).toEqual({});
-    expect(unreachableServerRemediation(new Error("tool list was invalid"), CONNECTION_ID, { actorType: "agent" })).toEqual({});
+    expect(unreachableServerRemediation(error, { actorType: "user" })).toEqual({});
+    expect(unreachableServerRemediation(new Error("tool list was invalid"), { actorType: "agent" })).toEqual({});
   });
 
   it("returns the MCP remediation in the error body an agent receives", async () => {
     const source = await refusedConnection("ENOTFOUND");
     const routed = express();
     routed.post("/check", () => {
-      throw new HttpError(502, "fetch failed", { code: "runtime_error", ...unreachableServerRemediation(source, CONNECTION_ID, { actorType: "agent" }) });
+      throw new HttpError(502, "fetch failed", { code: "runtime_error", ...unreachableServerRemediation(source, { actorType: "agent" }) });
     });
     routed.use(errorHandler);
     const res = await request(routed).post("/check").expect(502);
@@ -82,12 +81,25 @@ describe("agent refusals that are final", () => {
     expect(res.body.remediation).toContain("its host name did not resolve");
   });
 
+  it("marks budget changes and approval decisions board-only in the API catalog", () => {
+    const paths = buildOpenApiDocument().paths;
+    for (const [path, method] of [
+      ["/api/companies/{companyId}/budgets/policies", "post"],
+      ["/api/companies/{companyId}/budget-incidents/{incidentId}/resolve", "post"],
+      ["/api/companies/{companyId}/budgets", "patch"],
+      ["/api/agents/{agentId}/budgets", "patch"],
+      ["/api/approvals/{id}/approve", "post"],
+      ["/api/approvals/{id}/reject", "post"],
+    ] as const) expect(paths[path][method]["x-paperclip-authorization"], `${method} ${path}`).toEqual({ actor: "board" });
+  });
+
   it("points the API catalog at the checked MCP setup route and the complete model lists", () => {
     const paths = buildOpenApiDocument().paths;
     expect(paths["/api/companies/{companyId}/tools/connections"].post.description).toContain("POST /api/companies/{companyId}/tools/apps/connect with link");
     const models = paths["/api/companies/{companyId}/adapters/{type}/models"].get;
     expect(models.description).toContain("type opencode_local and provider=openrouter");
-    expect(models.description).toContain("These calls are the complete answer");
+    expect(models.description).toContain("its adapterConfig.acpxAgent when the provider is acpx");
+    expect(models.description).toContain("these calls answer the question");
     const provider = models.parameters.find((row: { name: string }) => row.name === "provider");
     expect(provider.schema.enum).toContain("openrouter");
   });
