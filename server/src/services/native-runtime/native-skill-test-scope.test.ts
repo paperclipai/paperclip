@@ -40,6 +40,16 @@ describe("native Studio test authorization", () => {
     const context = await authority.execute(call("get_task_context"));
     expect(context).toMatchObject({ activeTask: { id: fixture.issueId }, childTasks: [], childReviewOutcomes: [] });
     expect(JSON.stringify(context)).not.toContain(fixture.blockerId);
+    const [original] = await server.db.select({ description: issues.description }).from(issues).where(eq(issues.id, fixture.issueId));
+    await server.db.update(issues).set({ description: "skill-test-content".repeat(40_000) }).where(eq(issues.id, fixture.issueId));
+    const oversized = await authority.execute(call("get_task_context"));
+    expect(oversized).toMatchObject({ code: "paperclip_runner_task_context_too_large",
+      readWith: [{ tool: "get_task_context", arguments: { view: "full", offset: 0 } }] });
+    expect(Buffer.byteLength(JSON.stringify(oversized))).toBeLessThan(500_000);
+    const page = await authority.execute(call("get_task_context", { view: "full" }));
+    expect(page).toMatchObject({ jsonText: expect.any(String), nextOffset: expect.any(Number) });
+    expect(JSON.stringify(page)).not.toContain(fixture.blockerId);
+    await server.db.update(issues).set({ description: original.description }).where(eq(issues.id, fixture.issueId));
     const write = call("write_document", { key: "proof", title: "Studio evidence", body: "Executed the delivered skill", idempotencyKey: "own-proof" });
     const receipt = await authority.execute(write);
     expect(await authority.recover(write)).toEqual({ result: receipt });

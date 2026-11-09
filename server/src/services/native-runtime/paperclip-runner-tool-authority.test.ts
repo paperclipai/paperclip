@@ -641,12 +641,39 @@ describe("PaperclipRunnerToolAuthority", () => {
       expect(new Set(context.childTasks.map(task => task.id))).toEqual(new Set(ids));
       expect(context.childTasks.every(task => task.descriptionTruncated === true && !task.description.includes("�"))).toBe(true);
       expect(context.delegationGuidance).toContain("get_task");
+      const first = await authority.execute({ tool: "get_task_context", callId: "full-child-context", arguments: { view: "full" } }) as { jsonText: string; contextDigest: string; nextOffset: number | null };
+      expect(first.jsonText).toBeTypeOf("string");
+      let text = first.jsonText;
+      let offset = first.nextOffset;
+      while (offset !== null) {
+        const page = await authority.execute({ tool: "get_task_context", callId: `full-child-${offset}`,
+          arguments: { view: "full", offset, contextDigest: first.contextDigest } }) as typeof first;
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(RUNNER_TOOL_RESULT_MAX_BYTES);
+        expect(page.contextDigest).toBe(first.contextDigest);
+        text += page.jsonText;
+        offset = page.nextOffset;
+      }
+      const complete = JSON.parse(text);
+      expect(complete.childTasks.every((task: { description: string }) => task.description === description)).toBe(true);
+      expect(new Set(complete.childTasks.map((task: { id: string }) => task.id))).toEqual(new Set(ids));
       const [saved] = await db.select({ description: issues.description }).from(issues).where(eq(issues.id, ids[0]!));
       expect(saved.description).toBe(description);
     } finally {
       await db.delete(issues).where(inArray(issues.id, ids));
       await db.update(issues).set({ description: original.description }).where(eq(issues.id, issueId));
     }
+  });
+
+  it("advertises context paging to reviewers without adding task or API access", () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+      nativeReview: { nativeReviewInteractionId: randomUUID(), nativeReviewDecisionId: randomUUID() } });
+    const definitions = authority.definitions();
+    expect(definitions.find(tool => tool.name === "get_task_context")).toMatchObject({
+      inputSchema: { properties: { view: { enum: ["full"] }, contextDigest: expect.any(Object) } },
+    });
+    expect(definitions.map(tool => tool.name)).not.toContain("get_task");
+    expect(definitions.map(tool => tool.name)).not.toContain("search_tasks");
+    expect(definitions.map(tool => tool.name)).not.toContain("call_api");
   });
 
   it("advertises API tools by default and preserves direct-chat file tools when disabled", () => {
