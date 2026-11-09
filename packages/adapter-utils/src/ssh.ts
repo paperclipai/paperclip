@@ -269,22 +269,22 @@ async function spawnText(
     };
 
     let killEscalation: NodeJS.Timeout | null = null;
+    const terminateChild = () => {
+      child.kill("SIGTERM");
+      if (killEscalation) return;
+      killEscalation = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          return;
+        }
+      }, 5_000);
+      killEscalation.unref?.();
+    };
     const timeout = options.timeout && options.timeout > 0
       ? setTimeout(() => {
           timedOut = true;
-          child.kill("SIGTERM");
-          // Escalate to SIGKILL after a 5s grace window so a hung remote
-          // command that ignores SIGTERM cannot keep the child alive
-          // indefinitely.
-          killEscalation = setTimeout(() => {
-            try {
-              child.kill("SIGKILL");
-            } catch {
-              // child may have already exited between the SIGTERM and the
-              // escalation — that's fine.
-            }
-          }, 5_000);
-          killEscalation.unref?.();
+          terminateChild();
         }, options.timeout)
       : null;
 
@@ -320,6 +320,11 @@ async function spawnText(
         signal,
         killed: timedOut,
       }));
+    });
+
+    child.stdin?.on("error", (error) => {
+      terminateChild();
+      finishReject(error);
     });
 
     if (options.stdin != null && child.stdin) {
