@@ -436,6 +436,7 @@ import {
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
   REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT,
   verifyRemoteRunnerReattachment,
+  archiveStaleRemoteRunnerStateBeforeBootstrap,
   stopStaleRemoteRunnerBeforeBootstrap,
   verifyRemoteRunnerOrSettledExit,
   readRemoteProviderPackManifest,
@@ -653,6 +654,35 @@ describe("remote controller restart adoption", () => {
       await expect(stopStaleRemoteRunnerBeforeBootstrap({ execution, runnerExecutionTarget: target as never, identity },
         { waitMs: 20, pollMs: 1 })).resolves.toBe("no_prior_runner");
       expect(signalled(execute)).toEqual([]);
+    });
+    it.each(["absent_confirmed", "stopped", "killed"] as const)(
+      "archives the gone runner's journal so a relaunched runner cannot reuse its command ids (%s)", async stopOutcome => {
+        const { execute, target } = fixture();
+        execute.mockImplementation(async request => ({
+          stdout: request.args[1]!.includes(" mv ") ? "archived\n" : "", stderr: "", exitCode: 0, timedOut: false }));
+        await expect(archiveStaleRemoteRunnerStateBeforeBootstrap({ execution, runnerExecutionTarget: target as never, stopOutcome }))
+          .resolves.toBe("archived");
+        const stateDirectory = `/workspace/.paperclip-runtime/paperclip-runner/sessions/${
+          createHash("sha256").update("session").digest("hex")}/runner`;
+        const [request] = execute.mock.calls.at(-1)!;
+        expect(request.args[1]).toContain(`mv '${stateDirectory}' '${stateDirectory}.bootstrap-`);
+        expect(request.args[1]).not.toMatch(/\brm\b/);
+      });
+    it.each(["no_prior_runner", "stop_failed"] as const)(
+      "keeps the journal of a runner it could not prove gone (%s)", async stopOutcome => {
+        const { execute, target } = fixture();
+        await expect(archiveStaleRemoteRunnerStateBeforeBootstrap({ execution, runnerExecutionTarget: target as never, stopOutcome }))
+          .resolves.toBe("skipped");
+        expect(execute).not.toHaveBeenCalled();
+      });
+    it("reports an absent journal and a failed archive", async () => {
+      const { execute, target } = fixture();
+      execute.mockResolvedValueOnce({ stdout: "absent\n", stderr: "", exitCode: 0, timedOut: false });
+      await expect(archiveStaleRemoteRunnerStateBeforeBootstrap({ execution, runnerExecutionTarget: target as never,
+        stopOutcome: "absent_confirmed" })).resolves.toBe("absent");
+      execute.mockResolvedValueOnce({ stdout: "", stderr: "mv: permission denied", exitCode: 1, timedOut: false });
+      await expect(archiveStaleRemoteRunnerStateBeforeBootstrap({ execution, runnerExecutionTarget: target as never,
+        stopOutcome: "absent_confirmed" })).resolves.toBe("failed");
     });
     it("signals nothing when no prior runner is alive", async () => {
       const { execute, target } = fixture();

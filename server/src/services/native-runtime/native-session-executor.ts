@@ -5821,8 +5821,9 @@ async function migrateRunnerdStateRootForExecution(input: {
         || (remoteSandbox && runnerdStateProvesNoRemoteProviderTurn(scoped))) {
         if (remoteSandbox) {
           takeRemoteBootstrapRestartProof(input.execution.binding.runId);
-          recordRemoteBootstrapRestartProof(input.execution.binding.runId,
-            await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity }));
+          const stopOutcome = await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity });
+          recordRemoteBootstrapRestartProof(input.execution.binding.runId, stopOutcome);
+          await archiveStaleRemoteRunnerStateBeforeBootstrap({ ...input, stopOutcome });
         }
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
         return;
@@ -6434,6 +6435,38 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
     await input.onLog?.("stderr", `[paperclip-runner] Could not stop the interrupted runner before restarting the bootstrap: ${
       error instanceof Error ? error.message : String(error)}\n`);
     return "stop_failed";
+  }
+}
+
+export async function archiveStaleRemoteRunnerStateBeforeBootstrap(input: {
+  execution: NativeExecutionInput;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+  stopOutcome: Awaited<ReturnType<typeof stopStaleRemoteRunnerBeforeBootstrap>>;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<"archived" | "absent" | "skipped" | "failed"> {
+  const target = input.runnerExecutionTarget;
+  if (!["absent_confirmed", "stopped", "killed"].includes(input.stopOutcome) ||
+      target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return "skipped";
+  const stateDirectory = remoteRunnerStateDirectory(target.remoteCwd, nativeSessionKey(input.execution));
+  const archive = `${stateDirectory}.bootstrap-${Date.now()}-${randomUUID()}`;
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  try {
+    const result = await target.runner.execute({
+      command: "sh",
+      args: ["-c", `if [ -e ${quote(stateDirectory)} ]; then mv ${quote(stateDirectory)} ${quote(archive)} && echo archived; else echo absent; fi`],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) throw new Error(`exit=${result.exitCode} timedOut=${result.timedOut}`);
+    const outcome = result.stdout.trim() === "archived" ? "archived" : "absent";
+    if (outcome === "archived") {
+      await input.onLog?.("stdout", "[paperclip-runner] Archived the interrupted runner's journal before restarting the bootstrap.\n");
+    }
+    return outcome;
+  } catch (error) {
+    await input.onLog?.("stderr", `[paperclip-runner] Could not archive the interrupted runner's journal before restarting the bootstrap: ${
+      error instanceof Error ? error.message : String(error)}\n`);
+    return "failed";
   }
 }
 
