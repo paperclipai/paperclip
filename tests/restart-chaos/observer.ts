@@ -428,6 +428,7 @@ export class TaskObserver {
     if (this.done || !this.record.issueId) return;
     const sample = await this.sample(now);
     this.record.samples.push(sample);
+    await this.captureRemoteFilesAtDone(sample);
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();
     await this.governanceStep(sample, now);
@@ -690,8 +691,21 @@ export class TaskObserver {
   }
 
   private async remoteWorkspaceFile(issueId: string, relative: string): Promise<string | null> {
-    const url = `${this.api.baseUrl}/api/issues/${issueId}/file-resources/content?path=${encodeURIComponent(relative)}&download=true`;
-    return await fetch(url, { signal: AbortSignal.timeout(15_000) }).then(response => response.ok ? response.text() : null).catch(() => null);
+    const captured = this.record.remoteFiles?.[relative];
+    if (typeof captured === "string") return captured;
+    return await this.api.getText(`/api/issues/${issueId}/file-resources/content?path=${encodeURIComponent(relative)}&download=true`, 15_000)
+      .catch(() => null);
+  }
+
+  private async captureRemoteFilesAtDone(sample: TaskSample): Promise<void> {
+    const wanted = this.definition.collect.files(this.plan.nonce);
+    if (!wanted.length || this.lab.environmentKind === "local" || sample.issueStatus !== "done" || !this.record.issueId) return;
+    const captured = this.record.remoteFiles ??= {};
+    for (const relative of wanted) {
+      if (typeof captured[relative] === "string") continue;
+      captured[relative] = await this.api.getText(`/api/issues/${this.record.issueId}/file-resources/content?path=${encodeURIComponent(relative)}&download=true`, 15_000)
+        .catch(() => null);
+    }
   }
 
   async workspacePath(): Promise<string | null> {

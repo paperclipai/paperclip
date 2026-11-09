@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ChaosApi } from "./api.js";
+import { ChaosApi } from "./api.js";
 import { TaskObserver } from "./observer.js";
 import type { ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
@@ -30,12 +30,15 @@ const lab = { companyId: "c1", projectId: "p1", environmentId: "e1", environment
 const plan: TaskPlan = { taskId: "t01", index: 0, workload: "R1", adapter: "codex", fault: "K1", fireAfterMs: 999_999,
   holdMs: 0, followUpAfterMs: null, nonce };
 let server: Server;
+let sandboxReleased = false;
 let baseUrl: string;
 
 beforeAll(async () => {
   server = createServer((incoming, outgoing) => {
     const url = new URL(incoming.url ?? "/", "http://x");
     if (url.pathname === "/api/issues/i1/file-resources/content" && url.searchParams.get("download") === "true") {
+      if (incoming.headers.origin !== baseUrl) { outgoing.writeHead(403).end(); return; }
+      if (sandboxReleased) { outgoing.writeHead(422, { "content-type": "application/json" }).end(JSON.stringify({ code: "workspace_unavailable" })); return; }
       const body = remoteFiles[url.searchParams.get("path") ?? ""];
       outgoing.writeHead(body ? 200 : 404, { "content-type": "text/plain" }).end(body ?? "");
       return;
@@ -56,9 +59,11 @@ describe("oracle for a remote workspace", () => {
         return { id: "i1", status: "done", currentExecutionWorkspace: { cwd: "/home/daytona/workspaces/not-on-this-host" } };
       },
       async post() { return { id: "i1", identifier: "CHA-1" }; },
+      getText: (route: string) => new ChaosApi(baseUrl).getText(route),
     } as unknown as ChaosApi;
     const observer = new TaskObserver(plan, api, lab, new Timeline(null), { serverReady: true, faultInProgress: false });
     await observer.launch();
+    sandboxReleased = false;
     const artifacts = await observer.collectArtifacts();
     expect(artifacts.files).toEqual(remoteFiles);
     expect(artifacts.commands.node_test).toMatchObject({ exitCode: 0 });
@@ -78,5 +83,27 @@ describe("oracle for a remote workspace", () => {
     expect(observer.record).toMatchObject({ preFaultFiles: null, remoteWorkspace: true });
     expect(observer.record.preFaultSnapshotError).toBeUndefined();
   });
+
+  it("captures the task's files when it first sees the task done, before the sandbox is released", async () => {
+    const api = {
+      baseUrl,
+      async get(route: string) {
+        if (route.endsWith("/runs") || route.endsWith("/comments")) return [];
+        return { id: "i1", status: "done", currentExecutionWorkspace: { cwd: "/home/daytona/workspaces/not-on-this-host" } };
+      },
+      async post() { return { id: "i1", identifier: "CHA-1" }; },
+      getText: (route: string) => new ChaosApi(baseUrl).getText(route),
+    } as unknown as ChaosApi;
+    const observer = new TaskObserver(plan, api, lab, new Timeline(null), { serverReady: true, faultInProgress: false });
+    await observer.launch();
+    sandboxReleased = false;
+    await observer.poll(observer.record.createdAt! + 1_000);
+    sandboxReleased = true;
+    try {
+      const artifacts = await observer.collectArtifacts();
+      expect(artifacts.files).toEqual(remoteFiles);
+      expect(artifacts.commands.node_test).toMatchObject({ exitCode: 0 });
+    } finally { sandboxReleased = false; }
+  }, 60_000);
 });
 

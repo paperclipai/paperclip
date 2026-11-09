@@ -89,6 +89,9 @@ export function gradeR2(record: TaskRecord, oracle: OracleResult): RuleResult {
   if (fileChecks.length && record.finalStatus === "done") {
     return { verdict: "fail", detail: `workspace_files_missing_after_done: ${fileChecks.map(check => check.name).join(",")}` };
   }
+  if (record.remoteWorkspace && !record.preFaultFiles) {
+    return { verdict: "n/a", detail: "remote workspace: files before and after the fault are not compared from this host" };
+  }
   const transient = record.samples.some(sample => sample.interruption?.workspaceFailure);
   return { verdict: "pass", detail: transient ? "workspace failure appeared during recovery and cleared" : "no workspace failure at rest" };
 }

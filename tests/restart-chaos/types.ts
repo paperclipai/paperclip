@@ -308,6 +308,7 @@ export interface TaskRecord {
   /** Set when the pre-fault snapshot could not read the workspace; R2 then fails visibly. */
   preFaultSnapshotError?: string | null;
   remoteWorkspace?: boolean;
+  remoteFiles?: Record<string, string | null>;
   /** Pre-fault files missing at rest; null when not checked. */
   lostFiles: string[] | null;
   /** B5: distinct bench progress values the observer read during polling. */
