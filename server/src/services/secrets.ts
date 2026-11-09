@@ -1359,10 +1359,11 @@ export function secretService(db: Db | DbTransaction) {
     version: number | "latest",
     options?: SecretResolutionOptions,
     readOnlyEnvironmentInspection = false,
+    preloaded?: { secret: typeof companySecrets.$inferSelect; version: typeof companySecretVersions.$inferSelect | null },
   ): Promise<RuntimeSecretResolution> {
     const bindingContext = options?.bindingContext;
     const accessContext = options?.accessContext ?? bindingContext;
-    const secret = await getById(secretId);
+    const secret = preloaded && preloaded.secret.id === secretId ? preloaded.secret : await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
     const instanceOwned = secret.scope === "instance" && options?.instanceOwner &&
@@ -1384,7 +1385,8 @@ export function secretService(db: Db | DbTransaction) {
         throw unprocessable("Secret is not active", { code: "secret_inactive" });
       }
       const binding = await assertBindingContext(companyId, secret.id, bindingContext);
-      const versionRow = await getSecretVersion(secret.id, resolvedVersion);
+      const versionRow = preloaded?.secret === secret && preloaded.version?.version === resolvedVersion
+        ? preloaded.version : await getSecretVersion(secret.id, resolvedVersion);
       if (!versionRow) throw new HttpError(404, "Secret version not found", { code: "version_missing" });
       if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
         throw unprocessable("Secret version is not active", { code: "version_inactive" });
@@ -3513,16 +3515,18 @@ export function secretService(db: Db | DbTransaction) {
 
   const instanceSecrets = {
     async read(scope: InstanceSecretScope): Promise<Record<string, string>> {
-      const rows = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, scope.companyId),
-        eq(companySecrets.scope, "instance"), scope.agentId !== undefined ? eq(companySecrets.ownerAgentId, scope.agentId) : eq(companySecrets.ownerProjectId, scope.projectId),
-        eq(companySecrets.ownerPluginId, scope.pluginId), ne(companySecrets.status, "deleted")));
+      const rows = await db.select({ secret: companySecrets, version: companySecretVersions }).from(companySecrets)
+        .leftJoin(companySecretVersions, and(eq(companySecretVersions.secretId, companySecrets.id), eq(companySecretVersions.version, companySecrets.latestVersion)))
+        .where(and(eq(companySecrets.companyId, scope.companyId),
+          eq(companySecrets.scope, "instance"), scope.agentId !== undefined ? eq(companySecrets.ownerAgentId, scope.agentId) : eq(companySecrets.ownerProjectId, scope.projectId),
+          eq(companySecrets.ownerPluginId, scope.pluginId), ne(companySecrets.status, "deleted")));
       const values: Record<string, string> = Object.create(null);
       for (const row of rows) {
-        const resolved = await resolveSecretValueInternal(scope.companyId, row.id, "latest", {
+        const resolved = await resolveSecretValueInternal(scope.companyId, row.secret.id, "latest", {
           instanceOwner: scope, accessContext: { consumerType: "plugin_worker", consumerId: scope.pluginId,
             actorType: "plugin", actorId: scope.pluginId, pluginId: scope.pluginId },
-        });
-        values[row.name] = resolved.value;
+        }, false, row);
+        values[row.secret.name] = resolved.value;
       }
       return values;
     },
