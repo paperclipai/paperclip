@@ -324,8 +324,10 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     await expect(betaContact).toHaveAttribute("aria-current", "page");
     expect(await json(await request.get(chatListPath))).toHaveLength(0);
     await alphaContact.click();
+    await expect(alphaContact).toHaveAttribute("aria-current", "page");
     const compose = sidebar.getByRole("button", { name: "Add chat", exact: true });
     const picker = page.getByRole("dialog");
+    const previousDefaultEditor = await page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]').elementHandle();
     await compose.click();
     await expect(picker.getByRole("option")).toHaveCount(6);
     await picker.getByRole("combobox").fill("Beta");
@@ -336,6 +338,8 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     expect(await sidebar.boundingBox()).toEqual(landingBounds);
     const [beta] = await json(await request.get(chatListPath));
     const betaPath = `/api/issues/${beta.id}`;
+    await expect(page).toHaveURL(new RegExp(`${beta.id}$`));
+    await previousDefaultEditor!.waitForElementState("hidden");
     expect(beta.conversationAgentId).toBe(f.agents[1].id);
     expect(await json(await request.get(chatListPath))).toHaveLength(1);
     expect(await json(await request.get(`/api/companies/${f.company.id}/heartbeat-runs`))).toHaveLength(0);
@@ -344,12 +348,14 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     await betaDraftEditor.fill("First Beta conversation draft");
 
     // Adding the same agent again creates a distinct conversation.
+    const previousBetaEditor = await betaDraftEditor.elementHandle();
     await compose.click();
     await expect(picker.getByRole("combobox")).toHaveValue("");
     await picker.getByRole("combobox").fill("Beta");
     await expect(picker.getByRole("option", { name: /^Beta / })).toContainText("New chat");
     await picker.getByRole("combobox").press("Enter");
     await expect(picker).not.toBeVisible();
+    await previousBetaEditor!.waitForElementState("hidden");
     await expect(betaDraftEditor).toHaveText("");
     await betaDraftEditor.fill("Second Beta conversation draft");
     const betaChats = await json(await request.get(chatListPath));
