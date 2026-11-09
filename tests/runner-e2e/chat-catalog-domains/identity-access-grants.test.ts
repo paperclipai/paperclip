@@ -67,6 +67,15 @@ describe("membership read-and-route oracle", () => {
     o.activity.push({ id: "agent-write", action: "company_member.permissions_updated", entityId: "alex-membership", actorType: "agent", actorId: "ceo" });
     expect(membership.grade(o).passed).toBe(false);
   });
+  it("accepts the same grants returned in a different order (the member list has no stable grant order)", () => {
+    const o = intended(membership.scenarioId);
+    const grants = [{ id: "g1", permissionKey: "agents:create" }, { id: "g2", permissionKey: "joins:approve" }, { id: "g3", permissionKey: "users:invite" }];
+    (o.state.alexBefore as any).grants = grants; (o.state.alexAfter as any).grants = [grants[0], grants[2], grants[1]];
+    expect(membership.grade(o).passed).toBe(true);
+    (o.state.alexAfter as any).grants = [grants[0], grants[2], { id: "g4", permissionKey: "joins:approve" }]; expect(membership.grade(o).passed).toBe(false);
+    (o.state.alexAfter as any).grants = [grants[0], grants[2]]; expect(membership.grade(o).passed).toBe(false);
+    (o.state.alexAfter as any).grants = [grants[0], grants[2], { ...grants[1], scope: { projectId: "p" } }]; expect(membership.grade(o).passed).toBe(false);
+  });
   it("rejects any grant change even without an agent activity row", () => {
     const o = intended(membership.scenarioId); (o.state.alexAfter as any).grants = []; expect(membership.grade(o).passed).toBe(false);
   });

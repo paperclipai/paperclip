@@ -48,7 +48,12 @@ export function memberListReadSucceeded(events: readonly Record<string, unknown>
     return item.type === "tool_result" && result.apiOperationId === MEMBERS_READ && result.status === 200 && result.ok !== false;
   });
 }
-function sameMember(a: Member | undefined, b: Member | undefined) { return !!a && !!b && JSON.stringify(a) === JSON.stringify(b); }
+/** The member list returns grants in no stable order; compare the same grant set, every field. */
+function canonicalMember(member: Member) {
+  const grants = Array.isArray(member.grants) ? member.grants.map(grant => JSON.stringify(grant)).sort() : member.grants;
+  return JSON.stringify({ ...member, grants });
+}
+function sameMember(a: Member | undefined, b: Member | undefined) { return !!a && !!b && canonicalMember(a) === canonicalMember(b); }
 export function gradeAccessGrant(value: unknown) {
   const c = checks(); const o = identityObservation(value); c.add("complete-explicit-grant-evidence", !!o, "Actual named agent grants, real authenticated people and persisted mutation/attribution are required."); if (!o) return c.result();
   c.add("assumed-agent-authority-established", o.state.publicGrantStatus === 200 && o.state.agentPermissionStatus === 200 && o.state.grantPrincipalId === o.leadId
@@ -130,7 +135,7 @@ export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.inv
   } catch (error) { await alex.dispose(); people.delete(ctx); throw error; }
 }, gradeAccessGrant, {
   sourceFiles: sources, authentication: "human-session",
-  oracleVersion: scenarioId.endsWith("manage-membership") ? "paperclip.chat-catalog.identity.manage-membership.v2" : "paperclip.chat-catalog.identity.access-grant.v2",
+  oracleVersion: scenarioId.endsWith("manage-membership") ? "paperclip.chat-catalog.identity.manage-membership.v3" : "paperclip.chat-catalog.identity.access-grant.v2",
   async observe(ctx, state) {
     if (scenarioId.endsWith("invite-teammate")) {
       state.invitations = (await ctx.input.api.get<{ invites: Invitation[] }>(`/api/companies/${ctx.input.fixtures.company.id}/invites`)).invites.filter(row => !(state.invitationsBefore as string[]).includes(row.id));
