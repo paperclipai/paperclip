@@ -202,6 +202,65 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     });
   });
 
+  it.each(["scheduled", "manual"] as const)("preserves task activity during %s monitor claims and releases", async (source) => {
+    const f = await fixture();
+    const updatedAt = new Date(now.getTime() + 15_000);
+    await db.update(issues).set({ updatedAt }).where(eq(issues.id, f.issue.id));
+    const claimedTimestamps: Date[] = [];
+    f.deps.enqueueWakeup.mockImplementation(async () => {
+      const claimed = await readIssue(f.issue.id);
+      claimedTimestamps.push(claimed.updatedAt);
+      return null;
+    });
+    for (const at of [now, new Date(now.getTime() + 30_000)]) {
+      if (source === "scheduled") await f.scheduler.tickTimers(at);
+      else await f.scheduler.triggerIssueMonitor(f.issue.id, { now: at });
+      expect(await readIssue(f.issue.id)).toMatchObject({
+        updatedAt, monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0,
+      });
+    }
+    expect(claimedTimestamps).toEqual([updatedAt, updatedAt]);
+  });
+
+  it.each(["scheduled", "manual"] as const)("preserves task activity after a %s monitor admission error", async (source) => {
+    const f = await fixture();
+    f.deps.enqueueWakeup.mockRejectedValue(new Error("Temporary admission failure"));
+    if (source === "scheduled") await f.scheduler.tickTimers(now);
+    else await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now })).rejects.toThrow("Temporary admission failure");
+    expect(await readIssue(f.issue.id)).toMatchObject({
+      updatedAt: f.issue.updatedAt, monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0,
+    });
+  });
+
+  it("preserves task activity when monitor diagnostic storage fails", async () => {
+    const f = await fixture();
+    await db.execute(sql`create function fail_monitor_activity_test() returns trigger language plpgsql as $$
+      begin if new.action = 'issue.monitor_deferred' then raise exception 'Synthetic diagnostic storage failure'; end if; return new; end; $$`);
+    await db.execute(sql`create trigger fail_monitor_activity_test before insert on activity_log
+      for each row execute function fail_monitor_activity_test()`);
+    try {
+      f.deps.enqueueWakeup.mockResolvedValue(null);
+      await f.scheduler.tickTimers(now);
+      expect(await readIssue(f.issue.id)).toMatchObject({
+        updatedAt: f.issue.updatedAt, monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0,
+      });
+    } finally {
+      await db.execute(sql`drop trigger fail_monitor_activity_test on activity_log`);
+      await db.execute(sql`drop function fail_monitor_activity_test()`);
+    }
+  });
+
+  it.each(["triggered", "cleared"] as const)("updates task activity when a monitor is %s", async (outcome) => {
+    const f = await fixture();
+    await db.update(issues).set({ updatedAt: dueAt }).where(eq(issues.id, f.issue.id));
+    if (outcome === "cleared") f.deps.enqueueWakeup.mockRejectedValue(conflict("Agent is paused"));
+    await f.scheduler.tickTimers(now);
+    const issue = await readIssue(f.issue.id);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(issue.updatedAt.getTime()).toBeGreaterThan(dueAt.getTime());
+    expect(issue.monitorAttemptCount).toBe(outcome === "triggered" ? 1 : 0);
+  });
+
   it("keeps manual error recovery distinct from scheduled client-error handling", async () => {
     const f = await fixture();
     f.deps.enqueueWakeup.mockRejectedValue(conflict("Agent is paused"));
