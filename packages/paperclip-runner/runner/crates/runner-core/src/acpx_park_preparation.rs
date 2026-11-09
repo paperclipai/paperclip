@@ -49,6 +49,11 @@ impl AcpxCommandExecutor {
         // same conversation instead of starting a new one.
         self.failed_turn_end_restart = Some(error.to_string());
         self.unreported_turn_end_restart_failure = Some(error.to_string());
+        let run_id = self.context.run_id.clone();
+        self.state
+            .as_mut()
+            .expect("ACPX state remains available after a failed turn-end restart")
+            .turn_end_restart_failed_run = Some(run_id);
         self.recover_failed_generation_restart()
     }
 

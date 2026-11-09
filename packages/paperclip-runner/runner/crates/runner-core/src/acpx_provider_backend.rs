@@ -627,6 +627,11 @@ struct AcpxDurableState {
     /// never sees their results; the controller may still deliver them.
     #[serde(default)]
     retired_semantic_calls: BTreeSet<String>,
+    /// The run whose turn-end provider restart failed. Its later turns fail
+    /// closed, even after a Runner process restart; the next run's attach
+    /// clears it and resumes the saved session. Written only while set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turn_end_restart_failed_run: Option<String>,
 }
 
 /// The saved launch names the same executable and sidecar files as this
@@ -677,6 +682,7 @@ impl AcpxDurableState {
             next_event_sequence: initial_event_sequence(),
             open_semantic_calls: BTreeSet::new(),
             retired_semantic_calls: BTreeSet::new(),
+            turn_end_restart_failed_run: None,
         }
     }
 
@@ -746,6 +752,10 @@ impl AcpxDurableState {
                 .is_some_and(|result| !result.is_object())
             || (self.identity.is_none()
                 && !matches!(self.lifecycle.as_str(), "prepared" | "closed"))
+            || self
+                .turn_end_restart_failed_run
+                .as_ref()
+                .is_some_and(|run_id| *run_id != self.descriptor.run_id)
         {
             return Err(DurableRunnerError::invalid(
                 "ACPX durable provider state is malformed or inconsistent",
@@ -966,9 +976,8 @@ pub struct AcpxCommandExecutor {
     fail_after_state_rename: bool,
     launch_profile: Option<AcpxLaunchProfile>,
     recovery_pending_effects: Option<usize>,
+    /// The failed turn-end restart's cause, reported by the next turn start.
     failed_turn_end_restart: Option<String>,
-    /// The failed turn-end restart already failed a turn of this run closed.
-    turn_end_restart_failed_turn: bool,
     /// The failed turn-end restart's cause, until the Runner records it.
     unreported_turn_end_restart_failure: Option<String>,
 }
@@ -1011,7 +1020,6 @@ impl AcpxCommandExecutor {
             restore_checked: false,
             recovery_pending_effects: None,
             failed_turn_end_restart: None,
-            turn_end_restart_failed_turn: false,
             unreported_turn_end_restart_failure: None,
             restore_error: None,
             persistence_error: None,
@@ -1220,6 +1228,10 @@ impl AcpxCommandExecutor {
         // run.attach. Do not restart the provider under the prior run authority
         // or emit prior-run events into the new run while attachment is pending.
         if state.descriptor.run_id != self.context.run_id {
+            return Ok(());
+        }
+        // This run's turn-end provider restart failed; its turns fail closed.
+        if state.turn_end_restart_failed_run.as_deref() == Some(self.context.run_id.as_str()) {
             return Ok(());
         }
         if !matches!(
@@ -1744,17 +1756,24 @@ impl AcpxCommandExecutor {
         state.semantic_result = None;
         state.pending_events.clear();
         state.lifecycle = "suspended".to_owned();
+        // A new run starts a fresh provider generation; the previous run's
+        // failed turn-end restart no longer applies to it. A same-run attach
+        // keeps the restriction.
+        let clears_turn_end_restart_failure = state
+            .turn_end_restart_failed_run
+            .as_ref()
+            .is_some_and(|run_id| *run_id != attachment_context.run_id);
+        if clears_turn_end_restart_failure {
+            state.turn_end_restart_failed_run = None;
+        }
         let saved = if cold_candidate_attachment {
             self.commit_staged_state(state)
         } else {
             self.state = Some(state);
             self.save_state()
         };
-        // A new run starts a fresh provider generation; the previous run's
-        // failed turn-end restart no longer applies to it.
-        if saved.is_ok() {
+        if saved.is_ok() && clears_turn_end_restart_failure {
             self.failed_turn_end_restart = None;
-            self.turn_end_restart_failed_turn = false;
         }
         saved
     }
@@ -1944,17 +1963,19 @@ impl AcpxCommandExecutor {
         turn_start_request(payload)?;
         // A failed turn-end restart fails every later turn of this run closed,
         // like a failed restart at turn start: the first names the cause, later
-        // ones find no open session. Only the next run's attach clears it.
-        if self.session.is_none() {
-            if let Some(error) = self.failed_turn_end_restart.take() {
-                self.turn_end_restart_failed_turn = true;
-                return Err(DurableRunnerError::invalid(format!(
-                    "ACPX turn start failed closed: {error}"
-                )));
-            }
-            if self.turn_end_restart_failed_turn {
-                return Err(DurableRunnerError::invalid("ACPX session is not open"));
-            }
+        // ones find no open session. The restriction is saved, so it outlasts a
+        // Runner process restart; only the next run's attach clears it.
+        if self.session.is_none()
+            && self.state.as_ref().is_some_and(|state| {
+                state.turn_end_restart_failed_run.as_deref() == Some(self.context.run_id.as_str())
+            })
+        {
+            return Err(match self.failed_turn_end_restart.take() {
+                Some(error) => {
+                    DurableRunnerError::invalid(format!("ACPX turn start failed closed: {error}"))
+                }
+                None => DurableRunnerError::invalid("ACPX session is not open"),
+            });
         }
         let reopenable = self.session.is_none()
             && self.state.as_ref().is_some_and(|state| {

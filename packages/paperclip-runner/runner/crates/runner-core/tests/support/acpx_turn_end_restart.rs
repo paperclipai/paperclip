@@ -410,3 +410,58 @@ fn the_next_run_resumes_the_conversation_after_a_failed_turn_end_restart() {
         harness.executor.shutdown().unwrap();
     }
 }
+
+#[test]
+fn a_runner_restart_in_the_same_run_keeps_the_failed_turn_end_restart_closed() {
+    let mut harness = Harness::new();
+    let conversation = harness.opened["providerSessionId"].clone();
+    harness.complete_turn("first");
+    harness.fixture.fault("reject-open");
+    harness.executor.prepare_next_turn().unwrap();
+    harness.fixture.fault("");
+    let saved = harness.fixture.state();
+    assert_eq!(
+        saved["turnEndRestartFailedRun"], harness.config.run_id,
+        "{saved}"
+    );
+    // The Runner process restarts inside the same run: its turns still fail
+    // closed instead of reopening the saved session.
+    harness.executor.shutdown().unwrap();
+    harness.executor =
+        NativeProviderCommandExecutor::with_runner_config(&harness.fixture.0, &harness.config);
+    let starts = harness.fixture.process_starts().len();
+    let failed = harness
+        .executor
+        .execute(&command(
+            90,
+            "turn.start",
+            json!({"turnId": "second", "text": "Complete the work."}),
+        ))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(failed, "ACPX session is not open");
+    assert_eq!(harness.fixture.process_starts().len(), starts);
+    assert_eq!(live_providers(&harness), Vec::<Value>::new());
+    assert_eq!(harness.fixture.state()["lifecycle"], "suspended");
+    // The next run still resumes the conversation and clears the restriction.
+    harness.executor.shutdown().unwrap();
+    harness.sequence = 90;
+    harness.config.run_id = "run-2".to_owned();
+    harness.executor =
+        NativeProviderCommandExecutor::with_runner_config(&harness.fixture.0, &harness.config);
+    let payload = harness.attach_payload("run-2", |payload| {
+        payload
+            .as_object_mut()
+            .unwrap()
+            .remove("paperclipNextAuthority");
+    });
+    let attached = harness.execute("run.attach", payload);
+    assert_eq!(attached.result["providerSessionId"], conversation);
+    assert!(harness
+        .fixture
+        .state()
+        .get("turnEndRestartFailedRun")
+        .is_none());
+    harness.complete_turn("next-run");
+    harness.executor.shutdown().unwrap();
+}
