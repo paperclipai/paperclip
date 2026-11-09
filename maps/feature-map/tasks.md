@@ -126,8 +126,6 @@ that slow workspace restoration does not turn the task Blocked. Try a later edit
 from the outgoing run and verify rejection. Repeat a board
 reassignment and confirm that the outgoing run still stops.
 
-Manual: For a disposable externally connected task with a running owner, request a different agent or human assignee. Expect a channel-binding error and no forced cancellation. Repeat with a board interrupt and a workflow-selected reviewer. The same agent can report the rejection and delegate through a child task.
-
 Manual: Add a comment and edit authorized properties. Reload and verify history, actor, and values. Complete a disposable task and inspect its deliverable; reopen through an available action and confirm the next execution follows current policy.
 
 Manual: Ask a standard native agent to schedule a future check on its current
