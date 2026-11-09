@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueRecoveryActions, issues, statusDecisions, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { releaseAncestorWorkspaceBinding } from "../execution-workspaces.js";
@@ -127,7 +127,13 @@ async function rehomeOne(tx: Db, input: { actionId: string; companyId: string; i
   // The Blocked status belongs to this escalation: set after that run, and no blocker keeps it.
   const blockedAt = issue.blockedTransitionAt?.getTime();
   if (blockedAt === undefined || !run.finishedAt || blockedAt < run.finishedAt.getTime() - 1_000
-    || blockedAt > action.updatedAt.getTime() + BLOCK_OWNERSHIP_SLACK_MS || issue.lastStatusDecisionId !== null) return null;
+    || blockedAt > action.updatedAt.getTime() + BLOCK_OWNERSHIP_SLACK_MS) return null;
+  // A status decision after the block owns the status now; an earlier one does not matter.
+  if (issue.lastStatusDecisionId) {
+    const [decision] = await tx.select({ createdAt: statusDecisions.createdAt }).from(statusDecisions).where(and(
+      eq(statusDecisions.companyId, input.companyId), eq(statusDecisions.id, issue.lastStatusDecisionId)));
+    if (!decision || decision.createdAt.getTime() >= blockedAt) return null;
+  }
   // The shared dependency rule: any blocker that still forbids work keeps the task blocked.
   const readiness = await issueService(tx).listDependencyReadiness(input.companyId, [issue.id], tx);
   if (readiness.get(issue.id)?.isDependencyReady !== true) return null;

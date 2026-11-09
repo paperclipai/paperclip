@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, agentWakeupRequests, authUsers, companies, companyMemberships, createDb, executionWorkspaces,
-  heartbeatRuns, issueRecoveryActions, issueRelations, issues } from "@paperclipai/db";
+  heartbeatRuns, issueRecoveryActions, issueRelations, issues, statusDecisions } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../services/remote-workspace-writer-hold.js";
@@ -193,6 +193,35 @@ describePostgres("stranded subtasks bound to a parent's held workspace", () => {
 
     expect(await issue(f.hero.id)).toMatchObject({ status: "blocked", executionWorkspaceId: f.workspaceId });
     expect(await action(stranded.actionId)).toMatchObject({ status: "active", ownerType: "board" });
+  }, 60_000);
+
+  it("moves a child whose last status decision came before the block, and keeps one decided after it", async () => {
+    const f = await seedSharedFamily();
+    const earlier = await f.strand(f.hero.id), later = await f.strand(f.pricing.id);
+    const decide = async (issueId: string, at: Date) => {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId, status: "succeeded",
+        finishedAt: at, contextSnapshot: { issueId } }).returning();
+      // Only the decision's time matters here; its assessment chain is out of scope.
+      const decisionId = randomUUID();
+      await db.transaction(async tx => {
+        await tx.execute(sql`set local session_replication_role = replica`);
+        await tx.insert(statusDecisions).values({ id: decisionId, companyId: f.companyId, issueId, runId: run.id,
+          assessmentId: randomUUID(), decisionVersion: 1, policyVersion: "test", fromStatus: "todo", toStatus: "in_progress",
+          reasonCode: "test", decisionJson: {}, decisionDigest: "test", createdAt: at });
+      });
+      await db.update(issues).set({ lastStatusDecisionId: decisionId }).where(eq(issues.id, issueId));
+    };
+    const blockedAt = (await issue(f.hero.id)).blockedTransitionAt!.getTime();
+    await decide(f.hero.id, new Date(blockedAt - 86_400_000));
+    await decide(f.pricing.id, new Date(blockedAt + 5_000));
+
+    await scheduledRecoveryPass(f.companyId);
+
+    expect((await issue(f.hero.id)).executionWorkspaceId).not.toBe(f.workspaceId);
+    expect(await action(earlier.actionId)).toMatchObject({ status: "resolved" });
+    expect(await issue(f.pricing.id)).toMatchObject({ status: "blocked", executionWorkspaceId: f.workspaceId });
+    expect(await action(later.actionId)).toMatchObject({ status: "active" });
+    await heartbeat.drainActiveRunExecutions();
   }, 60_000);
 
   it("keeps a stranded child whose setup failed for another reason", async () => {
