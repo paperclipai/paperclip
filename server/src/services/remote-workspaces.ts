@@ -69,7 +69,7 @@ type RemoteWorkspaceSaveTiming = RemoteWorkspaceSavePhaseTiming & {
 };
 const RETIRED_SAVE_SCHEMA = "paperclip.remote-workspace-retired-save.v1";
 type SaveWork = { schema: typeof SAVE_WORK_SCHEMA; activeIds: string[]; unknown: boolean; quiescedAt: string | null };
-function readSaveWork(metadata: Record<string, unknown> | null | undefined): SaveWork | null {
+export function readSaveWork(metadata: Record<string, unknown> | null | undefined): SaveWork | null {
   const work = object(metadata?.saveWork);
   return work.schema === SAVE_WORK_SCHEMA && Array.isArray(work.activeIds)
     && work.activeIds.every(id => typeof id === "string") && new Set(work.activeIds).size === work.activeIds.length
