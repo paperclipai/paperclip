@@ -68,6 +68,7 @@ export const EXECUTION_RECONCILIATION_CAUSES = [
   "provider_failure_meaning_unverified",
   "provider_ownership_unverified",
   "native_provider_terminal_failed",
+  "native_governed_wait_settlement_pending",
   "native_event_replay_conflict",
   "native_session_cleanup_quarantined",
   "native_session_retry_exhausted",

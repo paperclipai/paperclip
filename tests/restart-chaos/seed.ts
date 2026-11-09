@@ -177,6 +177,7 @@ export async function seedChaosLab(input: {
   agentReadyTimeoutMs?: number;
   workspaceRepo?: string;
   workspaceCommit?: string;
+  workspaceGitUrl?: string;
   waveId: string;
   timeline: Timeline;
   /** Merged into each agent's adapterConfig (for example a runner lifecycle mode). */
@@ -284,7 +285,9 @@ export async function seedChaosLab(input: {
       environmentId,
       workspaceStrategy: { type: "git_worktree" },
     },
-    workspace: { name: "Primary", sourceType: "local_path", cwd: fixtureRepositoryPath, isPrimary: true },
+    workspace: input.workspaceGitUrl
+      ? { name: "Primary", sourceType: "git_repo", repoUrl: input.workspaceGitUrl, repoRef: input.workspaceCommit, isPrimary: true }
+      : { name: "Primary", sourceType: "local_path", cwd: fixtureRepositoryPath, isPrimary: true },
   });
   timeline.add("seed_project", { projectId: project.id, fixtureRepositoryPath });
   return { companyId: company.id, environmentId, environmentKind: input.env, projectId: project.id, fixtureRepositoryPath, agents };
