@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { sidecarShutdownSnapshot } from "./acpx-sidecar-shutdown.js";
 import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
@@ -145,6 +146,7 @@ function reportRetainedAcpxCleanupFailure(
 
 interface PendingTool {
   turnId: string;
+  startedAt: number;
   settle(value: unknown): void;
   reject(error: Error): void;
   cleanup(): void;
@@ -225,6 +227,11 @@ process.once("SIGINT", () => {
 function requestShutdown(reason: string): void {
   if (shutdownRequested) return;
   shutdownRequested = true;
+  // Snapshot before queued shutdown or provider cancellation removes waiters.
+  // stderr remains useful if the controller can no longer read event frames.
+  diagnostic("sidecar_shutdown_requested", JSON.stringify(sidecarShutdownSnapshot(
+    reason, tools, inputs.size, permissions.size, normalizingTools.size,
+  )));
   if (!inputClosed) lines.pause();
   pendingInput = enqueueAcpxSidecarInput(
     pendingInput,
@@ -907,6 +914,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       call.signal.addEventListener("abort", abort, { once: true });
       tools.set(callId, {
         turnId: activeTurnId,
+        startedAt: performance.now(),
         settle: (result) => {
           // A pipe write alone does not prove receiver admission. Only this
           // call's turn-bound tool.resolve success confirms runnerd accepted
@@ -939,6 +947,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
     call.signal.addEventListener("abort", abort, { once: true });
     tools.set(callId, {
       turnId: activeTurnId,
+      startedAt: performance.now(),
       settle,
       reject,
       cleanup: () => call.signal.removeEventListener("abort", abort),

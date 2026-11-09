@@ -5,6 +5,21 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## ACPX sidecar shutdown
+
+The ACPX sidecar emits `runtime.diagnostic` with code
+`sidecar_shutdown_requested` once at the first local shutdown request, before
+waiters are removed. Its JSON message records the local reason, pending tool,
+input and permission counts, completion-normalization count, and at most 16
+oldest pending tools. Each tool sample contains elapsed milliseconds and a
+SHA-256 call ID. Hash the corresponding `runtime.tool_called` call ID to match
+it. Arguments, results, operation names and raw call IDs are excluded.
+The existing diagnostic path also writes this message to sidecar stderr.
+A controller that has already stopped may not ingest the frame. Stdin EOF
+identifies a closed controller pipe, not the upstream reason for that closure.
+This is local run evidence; no first-party Telemetry event or OpenTelemetry
+span is added. Retry, cancellation and authorization behavior stay unchanged.
+
 ## Startup reuse evidence
 
 `run.startup.reuse` uses schema `paperclip.startup-reuse.v1`. Each receipt names
