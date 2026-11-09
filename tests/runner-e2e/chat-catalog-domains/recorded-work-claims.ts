@@ -54,14 +54,26 @@ export function groundedOverviewBlocker(reply: string, blocked: Entity, knownTas
   return units.some(unit => unit.includes(reason) && /\b(?:blocked|waiting|awaits?|awaiting|pending|needs?)\b/i.test(unit) && !claimsResolution(unit))
     && !units.some(claimsResolution);
 }
-export function reportsRecordedCaseRole(reply: string, task: Entity, linkedTasks: Entity[], role: "work" | "reference") {
-  const units = recordedTaskUnits(reply, task, linkedTasks);
-  const work = /\b(?:primary|main|initial investigation)\b|\|\s*work\s*\|/i;
-  const reference = /\b(?:linked|reference)\b|\|\s*reference\s*\|/i;
-  const yes = role === "work" ? work : reference;
-  const other = role === "work" ? /\|\s*reference\s*\||\b(?:is|as|role[: ]+) (?:a |the )?reference\b/i : /\|\s*work\s*\||\b(?:is|as|role[: ]+) (?:a |the )?(?:primary|main)\b/i;
+/**
+ * True when the reply assigns the task a case role it does not have. The
+ * relationship itself is proven by saved forward/reverse case links and the
+ * task pages opened from the reply, so wording that names the right role in
+ * any vocabulary (primary, main, work task, linked, reference) is not required.
+ */
+export function contradictsRecordedCaseRole(reply: string, task: Entity, linkedTasks: Entity[], role: "work" | "reference") {
+  const words = role === "work" ? "reference(?:-linked)?" : "primary|main|work";
+  const noun = "(?:\\s+(?:task|item|link|role))?";
+  // Prose claims ("is the primary", "a reference task") and standalone labels in
+  // tables, dash or dot separated lists ("| work |", "— primary —", "role: reference").
+  const other = new RegExp([
+    `\\b(?:is|as|role[: ]+) (?:a |the |an )?(?:${words})\\b`,
+    `\\b(?:${words})\\s+(?:task|item)\\b`,
+    `(?:^|[|\u00b7:,(]|\\s[-\u2013\u2014]\\s|[\u2013\u2014])\\s*[*_]*(?:${words})${noun}[*_]*\\s*(?=$|[|\u00b7,;.)]|\\s[-\u2013\u2014]\\s|[\u2013\u2014])`,
+  ].join("|"), "i");
   const denied = role === "work" ? /\bnot (?:the |a )?(?:primary|main|work task)\b/i : /\bnot (?:the |a )?(?:linked|reference)\b/i;
-  return units.some(unit => yes.test(unit) && !other.test(unit) && !denied.test(unit)) && !units.some(unit => other.test(unit) || denied.test(unit));
+  // A denial of the other role ("a reference task, not the primary task") restates the right role.
+  const deniesOther = new RegExp(`\\b(?:not|never|rather than|instead of|as opposed to) (?:the |a |an )?(?:${words})${noun}\\b`, "gi");
+  return recordedTaskUnits(reply, task, linkedTasks).some(unit => other.test(unit.replace(deniesOther, "")) || denied.test(unit));
 }
 export function explicitlyUnrelatedWork(reply: string, unrelated: Entity, knownTasks: Entity[]) {
   const units = recordedTaskUnits(reply, unrelated, knownTasks);
