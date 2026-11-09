@@ -47,12 +47,9 @@ export async function hasChatRunOwnedProviderInteraction(
         eq(issueThreadInteractions.companyId, input.companyId),
         eq(issueThreadInteractions.issueId, input.issueId),
         eq(issueThreadInteractions.sourceRunId, input.runId),
-        inArray(issueThreadInteractions.kind, [
-          "ask_user_questions",
-          "request_confirmation",
-        ]),
         or(
           and(
+            inArray(issueThreadInteractions.kind, ["ask_user_questions", "request_confirmation"]),
             eq(issueThreadInteractions.status, "pending"),
             exists(
               db

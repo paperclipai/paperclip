@@ -2,6 +2,7 @@ import { and, eq, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   approvals,
+  caseHandoffs,
   agents,
   heartbeatRunEvents,
   issueApprovals,
@@ -20,7 +21,7 @@ export type NativeEvidenceOutcome = "accepted" | "missing" | "rejected" | "unver
 
 export interface NativeEvidenceRefAssessment {
   ref: string;
-  kind: "event" | "work_product" | "approval" | "interaction" | "attachment" | "unknown";
+  kind: "event" | "work_product" | "approval" | "interaction" | "attachment" | "case_handoff" | "unknown";
   outcome: NativeEvidenceOutcome;
   reasonCode: string;
   durableRecordId: string | null;
@@ -67,9 +68,10 @@ export interface NativeEvidenceAssessment {
     scope: "current_track" | "task_wide";
   } | null;
   continuation: {
-    kind: "same_agent" | "retry" | "delegated_issue" | "response_wake" | "monitor";
+    kind: "same_agent" | "retry" | "delegated_issue" | "response_wake" | "monitor" | "case_handoff";
     summary: string;
     idempotencyKey: string;
+    handoffId?: string;
   } | null;
   /** Actionable, blocking requests only. */
   attentionRequests: PrpNormalizedAttentionRequest[];
@@ -100,17 +102,35 @@ function uuidRef(ref: string, prefixes: string[]): string | null {
   return null;
 }
 
+export function readNativeEventEvidenceOutcome(value: unknown): "accepted" | "rejected" | null {
+  const event = record(value);
+  if (event.sourceKind !== "control_plane") return null;
+  const outcome = text(record(event.payload).evidenceOutcome);
+  return outcome === "accepted" || outcome === "rejected" ? outcome : null;
+}
+
 async function classifyEvidenceRef(input: {
   db: Db;
   companyId: string;
   issueId: string;
   runId: string;
   ref: string;
+  lockSources?: boolean;
 }): Promise<NativeEvidenceRefAssessment> {
+  const handoffId = uuidRef(input.ref, ["case-handoff"]);
+  if (handoffId) {
+    const query = input.db.select({ id: caseHandoffs.id, state: caseHandoffs.state }).from(caseHandoffs).where(and(
+      eq(caseHandoffs.id, handoffId), eq(caseHandoffs.companyId, input.companyId), eq(caseHandoffs.issueId, input.issueId),
+      eq(caseHandoffs.sourceRunId, input.runId),
+    )).limit(1);
+    const [row] = await (input.lockSources ? query.for("share", { noWait: true }) : query);
+    return { ref: input.ref, kind: "case_handoff", outcome: !row ? "missing" : row.state === "cancelled" ? "rejected" : "accepted",
+      reasonCode: !row ? "case_handoff_missing" : row.state === "cancelled" ? "case_handoff_cancelled" : "case_handoff_persisted", durableRecordId: row?.id ?? null };
+  }
   const eventMatch = /^event:(\d+)$/.exec(input.ref);
   if (eventMatch) {
     const cursor = Number(eventMatch[1]);
-    const event = await input.db.select({
+    const query = input.db.select({
       id: heartbeatRunEvents.id,
       eventType: heartbeatRunEvents.eventType,
       payload: heartbeatRunEvents.payload,
@@ -120,16 +140,16 @@ async function classifyEvidenceRef(input: {
         eq(heartbeatRunEvents.companyId, input.companyId),
         eq(heartbeatRunEvents.runId, input.runId),
         or(eq(heartbeatRunEvents.seq, cursor), eq(heartbeatRunEvents.sourceSeq, cursor)),
-      )).limit(1).then((rows) => rows[0] ?? null);
+      )).limit(1);
+    const [event] = await (input.lockSources ? query.for("share", { noWait: true }) : query);
     if (!event) {
       return { ref: input.ref, kind: "event", outcome: "missing", reasonCode: "durable_run_event_missing", durableRecordId: null };
     }
-    const prpEvent = record(record(event.payload).prpEvent);
-    const evidenceOutcome = text(record(prpEvent.payload).evidenceOutcome);
-    if (prpEvent.sourceKind === "control_plane" && evidenceOutcome === "accepted") {
+    const evidenceOutcome = readNativeEventEvidenceOutcome(record(event.payload).prpEvent);
+    if (evidenceOutcome === "accepted") {
       return { ref: input.ref, kind: "event", outcome: "accepted", reasonCode: "control_plane_evidence_accepted", durableRecordId: String(event.id) };
     }
-    if (prpEvent.sourceKind === "control_plane" && evidenceOutcome === "rejected") {
+    if (evidenceOutcome === "rejected") {
       return { ref: input.ref, kind: "event", outcome: "rejected", reasonCode: "control_plane_evidence_rejected", durableRecordId: String(event.id) };
     }
     return {
@@ -145,7 +165,7 @@ async function classifyEvidenceRef(input: {
 
   const workProductId = uuidRef(input.ref, ["work_product", "work-product", "artifact"]);
   if (workProductId) {
-    const row = await input.db.select({
+    const query = input.db.select({
       id: issueWorkProducts.id,
       status: issueWorkProducts.status,
       reviewState: issueWorkProducts.reviewState,
@@ -153,7 +173,8 @@ async function classifyEvidenceRef(input: {
       eq(issueWorkProducts.id, workProductId),
       eq(issueWorkProducts.companyId, input.companyId),
       eq(issueWorkProducts.issueId, input.issueId),
-    )).limit(1).then((rows) => rows[0] ?? null);
+    )).limit(1);
+    const [row] = await (input.lockSources ? query.for("share", { noWait: true }) : query);
     if (!row) return { ref: input.ref, kind: "work_product", outcome: "missing", reasonCode: "work_product_missing", durableRecordId: null };
     if (
       ["failed", "error", "cancelled", "rejected", "changes_requested"].includes(row.status)
@@ -172,7 +193,7 @@ async function classifyEvidenceRef(input: {
 
   const approvalId = uuidRef(input.ref, ["approval"]);
   if (approvalId) {
-    const row = await input.db.select({ id: approvals.id, status: approvals.status })
+    const query = input.db.select({ id: approvals.id, status: approvals.status })
       .from(issueApprovals)
       .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
       .where(and(
@@ -180,7 +201,8 @@ async function classifyEvidenceRef(input: {
         eq(issueApprovals.issueId, input.issueId),
         eq(approvals.companyId, input.companyId),
         eq(approvals.id, approvalId),
-      )).limit(1).then((rows) => rows[0] ?? null);
+      )).limit(1);
+    const [row] = await (input.lockSources ? query.for("share", { noWait: true }) : query);
     if (!row) return { ref: input.ref, kind: "approval", outcome: "missing", reasonCode: "approval_missing", durableRecordId: null };
     if (row.status === "approved") return { ref: input.ref, kind: "approval", outcome: "accepted", reasonCode: "approval_approved", durableRecordId: row.id };
     if (["rejected", "cancelled"].includes(row.status)) return { ref: input.ref, kind: "approval", outcome: "rejected", reasonCode: "approval_rejected", durableRecordId: row.id };
@@ -189,7 +211,7 @@ async function classifyEvidenceRef(input: {
 
   const interactionId = uuidRef(input.ref, ["interaction"]);
   if (interactionId) {
-    const row = await input.db.select({
+    const query = input.db.select({
       id: issueThreadInteractions.id,
       status: issueThreadInteractions.status,
       result: issueThreadInteractions.result,
@@ -197,7 +219,8 @@ async function classifyEvidenceRef(input: {
       eq(issueThreadInteractions.id, interactionId),
       eq(issueThreadInteractions.companyId, input.companyId),
       eq(issueThreadInteractions.issueId, input.issueId),
-    )).limit(1).then((rows) => rows[0] ?? null);
+    )).limit(1);
+    const [row] = await (input.lockSources ? query.for("share", { noWait: true }) : query);
     if (!row) return { ref: input.ref, kind: "interaction", outcome: "missing", reasonCode: "interaction_missing", durableRecordId: null };
     const outcome = text(record(row.result).outcome);
     if (["accepted", "answered", "resolved"].includes(outcome ?? "") || ["accepted", "answered"].includes(row.status)) {
@@ -211,11 +234,12 @@ async function classifyEvidenceRef(input: {
 
   const attachmentId = uuidRef(input.ref, ["attachment"]);
   if (attachmentId) {
-    const row = await input.db.select({ id: issueAttachments.id }).from(issueAttachments).where(and(
+    const query = input.db.select({ id: issueAttachments.id }).from(issueAttachments).where(and(
       eq(issueAttachments.id, attachmentId),
       eq(issueAttachments.companyId, input.companyId),
       eq(issueAttachments.issueId, input.issueId),
-    )).limit(1).then((rows) => rows[0] ?? null);
+    )).limit(1);
+    const [row] = await (input.lockSources ? query.for("share", { noWait: true }) : query);
     return row
       ? { ref: input.ref, kind: "attachment", outcome: "accepted", reasonCode: "attachment_persisted", durableRecordId: row.id }
       : { ref: input.ref, kind: "attachment", outcome: "missing", reasonCode: "attachment_missing", durableRecordId: null };
@@ -230,10 +254,10 @@ async function classifyEvidenceRef(input: {
   };
 }
 
-/**
- * Classifies model claims against immutable server-owned records. A model's
- * `satisfied` or `passed` value is retained as a claim but never becomes proof.
- */
+
+
+
+
 export async function classifyNativeEvidence(input: {
   db: Db;
   companyId: string;
@@ -241,6 +265,8 @@ export async function classifyNativeEvidence(input: {
   runId: string;
   contract: Record<string, unknown>;
   result: Record<string, unknown>;
+
+  lockSources?: boolean;
 }): Promise<NativeEvidenceAssessment> {
   const claim = record(input.result.completionClaim);
   const claimedCriteria = Array.isArray(claim.criteria) ? claim.criteria.map(record) : [];
@@ -344,11 +370,12 @@ export async function classifyNativeEvidence(input: {
   const ignoredAttentionRequests = [...normalizedSignals.ignoredAttentionRequests];
   for (const request of normalizedSignals.actionableAttentionRequests) {
     if (request.ownerClass === "agent" && request.targetAgentId) {
-      const targetExists = await input.db.select({ id: agents.id }).from(agents).where(and(
+      const targetQuery = input.db.select({ id: agents.id }).from(agents).where(and(
         eq(agents.id, request.targetAgentId),
         eq(agents.companyId, input.companyId),
-      )).limit(1).then((rows) => rows.length > 0);
-      if (!targetExists) {
+      )).limit(1);
+      const targets = await (input.lockSources ? targetQuery.for("share", { noWait: true }) : targetQuery);
+      if (targets.length === 0) {
         ignoredAttentionRequests.push({
           sourceIndex: request.sourceIndex,
           sourceKind: request.sourceKind,
@@ -395,13 +422,14 @@ export async function classifyNativeEvidence(input: {
         }
       : null,
     continuation: reported === "yielded"
-      && ["same_agent", "retry", "delegated_issue", "response_wake", "monitor"].includes(String(continuationKind))
+      && ["same_agent", "retry", "delegated_issue", "response_wake", "monitor", "case_handoff"].includes(String(continuationKind))
       && text(continuation.summary)
       && text(continuation.idempotencyKey)
       ? {
           kind: continuationKind as NativeEvidenceAssessment["continuation"] extends infer T ? T extends { kind: infer K } ? K : never : never,
           summary: text(continuation.summary)!,
           idempotencyKey: text(continuation.idempotencyKey)!,
+          ...(continuationKind === "case_handoff" && text(continuation.handoffId) ? { handoffId: text(continuation.handoffId)! } : {}),
         }
       : null,
     attentionRequests: actionableAttentionRequests,

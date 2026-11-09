@@ -16,12 +16,12 @@ function call(index: number) {
 }
 
 describe("large journal boundary evidence", () => {
-  it("requires one correctly owned journal over the boundary and an independent completed-call count", async () => {
+  it.each([1, 2])("requires one correctly owned v%s journal over the boundary and an independent completed-call count", async version => {
     const root = await mkdtemp(path.join(tmpdir(), "journal-evidence-"));
     const directory = path.join(root, "a".repeat(64), "control-plane");
     await mkdir(directory, { recursive: true });
     const filename = path.join(directory, "control-plane-state.json");
-    const state = { schema: "paperclip.runner.durable.control-plane-state.v1", identity: { runId: "expected-run" }, commands: [] };
+    const state = { schema: `paperclip.runner.durable.control-plane-state.v${version}`, identity: { runId: "expected-run" }, commands: [] };
     const input = { stateRoot: root, runId: "expected-run", minimumBytes: 1024, minimumCompletedStimulusCalls: 2 };
     try {
       await writeFile(filename, JSON.stringify(state));
@@ -33,6 +33,9 @@ describe("large journal boundary evidence", () => {
       expect(Object.keys(evidence)).toEqual(["journalBytes", "minimumBytes", "completedStimulusCalls", "minimumCompletedStimulusCalls"]);
       expect(evidence.completedStimulusCalls).toBe(2);
       await expect(largeJournalEvidence({ ...input, runId: "another-run" })).rejects.toThrow("boundary not reached");
+      await writeFile(filename, JSON.stringify({ ...state, schema: "paperclip.runner.durable.control-plane-state.v999",
+        committedEvents: [...call(1), ...call(2)].map(event => ({ envelope: { payload: event } })) }));
+      await expect(largeJournalEvidence(input)).rejects.toThrow("boundary not reached");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

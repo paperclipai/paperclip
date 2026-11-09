@@ -72,10 +72,13 @@ export default defineConfig({
     // blob reports. The wrapper inherits the test process and strips provider
     // keys before spawning the real Paperclip process.
     command: runnerE2EWebServerCommand(repositoryRoot),
-    gracefulShutdown: runnerE2EWebServerGracefulShutdown,
+    gracefulShutdown: { ...runnerE2EWebServerGracefulShutdown,
+      ...(JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]").some((id: string) => id.startsWith("rolling-web-deployment.")) ? { timeout: 105_000 } : {}),
+    },
     url: `${baseURL}/api/health`,
     reuseExistingServer: false,
-    timeout: 180_000,
+    // Fresh databases apply the complete migration history before health is ready.
+    timeout: 300_000,
     stdout: "pipe",
     stderr: "pipe",
   },

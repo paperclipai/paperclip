@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";

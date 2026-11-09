@@ -2,7 +2,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Navigate, useNavigate, useSearchParams } from "@/lib/router";
-import { ArrowUpDown, Check, ChevronDown, ChevronRight, Layers, Plus, Repeat } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Repeat } from "lucide-react";
 import { routinesApi } from "../api/routines";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
@@ -24,6 +24,8 @@ import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects"
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
+import { describeError } from "../api/errors";
 import { PageTabBar } from "../components/PageTabBar";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
@@ -37,7 +39,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { RoutinesToolbar, type RoutineGroupBy, type RoutineSortField, type RoutineSortDir } from "@/components/RoutinesToolbar";
 import {
   Select,
   SelectContent,
@@ -67,6 +69,7 @@ import {
   selectedFolderFromList,
   type FolderSelection,
 } from "../components/folders/FolderControls";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
@@ -86,10 +89,7 @@ function autoResizeTextarea(element: HTMLTextAreaElement | null) {
   element.style.height = `${element.scrollHeight}px`;
 }
 
-type RoutineGroupBy = "folder" | "none" | "project" | "assignee";
 type RoutinesTab = "routines" | "runs";
-type RoutineSortField = "updated" | "created" | "title" | "lastRun";
-type RoutineSortDir = "asc" | "desc";
 
 type RoutineViewState = {
   sortField: RoutineSortField;
@@ -361,6 +361,7 @@ export function Routines() {
   const routineViewStateKey = selectedCompanyId
     ? `paperclip:routines-view:${selectedCompanyId}`
     : "paperclip:routines-view";
+  const [query, setQuery] = useState("");
   const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
 
@@ -372,11 +373,13 @@ export function Routines() {
     setRoutineViewState(getRoutineViewState(routineViewStateKey));
   }, [routineViewStateKey]);
 
-  const { data: routines, isLoading, error } = useQuery({
+  const routinesQuery = useQuery({
     queryKey: queryKeys.routines.list(selectedCompanyId!),
     queryFn: () => routinesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: routines, isLoading } = routinesQuery;
+  const routinesView = useQueryView(routinesQuery);
   const { data: routineFolders, isLoading: foldersLoading } = useQuery({
     queryKey: queryKeys.folders.list(selectedCompanyId!, "routine"),
     queryFn: () => foldersApi.list(selectedCompanyId!, "routine"),
@@ -397,11 +400,13 @@ export function Routines() {
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: routineExecutionIssues, isLoading: recentRunsLoading, error: recentRunsError } = useQuery({
+  const recentRunsQuery = useQuery({
     queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
     queryFn: () => issuesApi.list(selectedCompanyId!, { originKind: "routine_execution" }),
     enabled: !!selectedCompanyId && !streamlinedUiEnabled && activeTab === "runs",
   });
+  const { data: routineExecutionIssues, isLoading: recentRunsLoading } = recentRunsQuery;
+  const recentRunsView = useQueryView(recentRunsQuery);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
@@ -479,7 +484,7 @@ export function Routines() {
         } catch (moveError) {
           pushToast({
             title: "Folder created, move failed",
-            body: moveError instanceof Error ? moveError.message : "Paperclip could not move the selected routines.",
+            body: describeError(moveError, { action: "move the selected routines" }).body,
             tone: "error",
           });
           return;
@@ -492,7 +497,7 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Failed to save folder",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not save the folder.",
+        body: describeError(mutationError, { action: "save the folder" }).body,
         tone: "error",
       });
     },
@@ -508,7 +513,7 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Folder save failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not update the folder.",
+        body: describeError(mutationError, { action: "update the folder" }).body,
         tone: "error",
       });
     },
@@ -527,7 +532,7 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Folder delete failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not delete the folder.",
+        body: describeError(mutationError, { action: "delete the folder" }).body,
         tone: "error",
       });
     },
@@ -544,7 +549,7 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Move failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not move the routine.",
+        body: describeError(mutationError, { action: "move the routine" }).body,
         tone: "error",
       });
     },
@@ -566,7 +571,7 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Failed to update routine",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not update the routine.",
+        body: describeError(mutationError, { action: "update the routine" }).body,
         tone: "error",
       });
     },
@@ -601,7 +606,7 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        body: describeError(mutationError, { action: "start the routine run" }).body,
         tone: "error",
       });
     },
@@ -654,13 +659,9 @@ export function Routines() {
     () => createIssueDetailLocationState("Recent Runs", "/routines?tab=runs", "issues"),
     [],
   );
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
-      });
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId: selectedCompanyId,
+    invalidateKeys: selectedCompanyId ? [[...queryKeys.issues.list(selectedCompanyId), "routine-executions"]] : [],
   });
 
   function handleLegacyTabChange(tab: string) {
@@ -696,8 +697,15 @@ export function Routines() {
     };
   }, [routineFolders, visibleRoutines]);
   const sortedRoutines = useMemo(
-    () => sortRoutines(folderFilteredRoutines, routineViewState.sortField, routineViewState.sortDir),
-    [folderFilteredRoutines, routineViewState.sortDir, routineViewState.sortField],
+    () => {
+      const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+      const matches = folderFilteredRoutines.filter(routine => {
+        const text = `${routine.title} ${routine.description ?? ""}`.toLowerCase();
+        return terms.every(term => text.includes(term));
+      });
+      return sortRoutines(matches, routineViewState.sortField, routineViewState.sortDir);
+    },
+    [folderFilteredRoutines, query, routineViewState.sortDir, routineViewState.sortField],
   );
   const routineSections = useMemo(
     () => buildRoutineSections(sortedRoutines, routineViewState.groupBy, projectById, agentById, folderById),
@@ -756,7 +764,7 @@ export function Routines() {
     } catch (moveError) {
       pushToast({
         title: "Failed to move routines",
-        body: moveError instanceof Error ? moveError.message : "Paperclip could not move the selected routines.",
+        body: describeError(moveError, { action: "move the selected routines" }).body,
         tone: "error",
       });
     }
@@ -796,7 +804,9 @@ export function Routines() {
     return <Navigate to={auditSectionHref("runs", {})} replace />;
   }
 
-  if (isLoading) {
+  // Keep loaded routines on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || routinesView.kind === "reconnecting") {
     return <PageSkeleton variant="issues-list" />;
   }
 
@@ -828,8 +838,10 @@ export function Routines() {
         </Tabs>
         <IssuesList
           issues={routineExecutionIssues ?? []}
-          isLoading={recentRunsLoading}
-          error={recentRunsError as Error | null}
+          isLoading={recentRunsLoading || recentRunsView.kind === "reconnecting"}
+          error={recentRunsView.kind === "error" ? (recentRunsView.error as Error) : null}
+          onRetry={recentRunsView.retry}
+          retrying={recentRunsView.isFetching}
           agents={agents}
           projects={projects}
           liveIssueIds={liveIssueIds}
@@ -843,25 +855,16 @@ export function Routines() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <h1 className="text-xl font-bold">Routines</h1>
-          <p className="text-sm text-muted-foreground">
-            Recurring work definitions that materialize into auditable execution tasks.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {streamlinedUiEnabled ? (
-            <Button variant="outline" asChild>
-              <Link to={auditSectionHref("runs", {})}>View all runs</Link>
-            </Button>
-          ) : null}
-          <Button onClick={openCreateRoutine}>
-            <Plus className="mr-2 h-4 w-4" />
-            Create routine
-          </Button>
-        </div>
-      </div>
+      <RoutinesToolbar
+        query={query} onQueryChange={setQuery}
+        sortField={routineViewState.sortField} sortDir={routineViewState.sortDir} groupBy={routineViewState.groupBy}
+        onSortChange={(sortField, sortDir) => updateRoutineView({ sortField, sortDir })}
+        onGroupChange={groupBy => updateRoutineView({ groupBy, collapsedGroups: [] })}
+        onNewFolder={routineViewState.groupBy === "folder" && !hasRoutineFolders ? () => openCreateFolder() : undefined}
+        onCreateRoutine={openCreateRoutine}
+        tasksHref="/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc"
+        selectMode={selectMode} onToggleSelect={showFolderRail ? () => setSelectMode(current => !current) : undefined}
+      />
 
       {!streamlinedUiEnabled ? (
         <Tabs value={activeTab} onValueChange={handleLegacyTabChange}>
@@ -878,96 +881,6 @@ export function Routines() {
       ) : null}
 
       <div className="flex flex-col gap-4">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm text-muted-foreground">
-            {visibleRoutines.length} routine{visibleRoutines.length === 1 ? "" : "s"}
-          </p>
-          <div className="flex items-center gap-1">
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="ghost" size="sm" className="text-xs" title="Sort">
-                    <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                    <span className="hidden sm:inline">Sort</span>
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-44 p-0">
-                  <div className="p-2 space-y-0.5">
-                    {([
-                      ["updated", "Updated"],
-                      ["created", "Created"],
-                      ["lastRun", "Last run"],
-                      ["title", "Title"],
-                    ] as const).map(([field, label]) => (
-                      <button
-                        key={field}
-                        className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
-                          routineViewState.sortField === field
-                            ? "bg-accent/50 text-foreground"
-                            : "text-muted-foreground hover:bg-accent/50"
-                        }`}
-                        onClick={() => {
-                          updateRoutineView(
-                            routineViewState.sortField === field
-                              ? { sortDir: routineViewState.sortDir === "asc" ? "desc" : "asc" }
-                              : { sortField: field, sortDir: field === "title" ? "asc" : "desc" },
-                          );
-                        }}
-                      >
-                        <span>{label}</span>
-                        {routineViewState.sortField === field ? (
-                          <span className="text-xs text-muted-foreground">
-                            {routineViewState.sortDir === "asc" ? "Asc" : "Desc"}
-                          </span>
-                        ) : null}
-                      </button>
-                    ))}
-                  </div>
-                </PopoverContent>
-              </Popover>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="ghost" size="sm" className="text-xs" title="Group">
-                    <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                    <span className="hidden sm:inline">Group</span>
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-44 p-0">
-                  <div className="p-2 space-y-0.5">
-                    {([
-                      ["folder", "Folder"],
-                      ["project", "Project"],
-                      ["assignee", "Agent"],
-                      ["none", "None"],
-                    ] as const).map(([value, label]) => (
-                      <button
-                        key={value}
-                        className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
-                          routineViewState.groupBy === value
-                            ? "bg-accent/50 text-foreground"
-                            : "text-muted-foreground hover:bg-accent/50"
-                        }`}
-                        onClick={() => updateRoutineView({ groupBy: value, collapsedGroups: [] })}
-                      >
-                        <span>{label}</span>
-                        {routineViewState.groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
-                      </button>
-                    ))}
-                  </div>
-                </PopoverContent>
-              </Popover>
-              {routineViewState.groupBy === "folder" && !hasRoutineFolders ? (
-                <Button variant="outline" size="sm" onClick={() => openCreateFolder()}>
-                  <Plus className="mr-2 h-3.5 w-3.5" />
-                  New folder
-                </Button>
-              ) : null}
-              {showFolderRail ? (
-                <Button variant="ghost" size="sm" className="text-xs" onClick={() => setSelectMode((current) => !current)}>
-                  {selectMode ? "Done" : "Select"}
-                </Button>
-              ) : null}
-          </div>
-        </div>
         {routineViewState.groupBy === "folder" ? (
           <div className="md:hidden">
             <FolderChip
@@ -1245,9 +1158,9 @@ export function Routines() {
                 <Plus className="mr-2 h-4 w-4" />
                 {createRoutine.isPending ? "Creating..." : "Create routine"}
               </Button>
-              {createRoutine.isError ? (
-                <p className="text-sm text-destructive">
-                  {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
+              {createRoutine.isError ? ( // query-error-ok: mutation result, not a query
+                <p role="alert" className="text-sm text-destructive">
+                  {describeError(createRoutine.error, { action: "create the routine" }).body}
                 </p>
               ) : null}
             </div>
@@ -1255,12 +1168,13 @@ export function Routines() {
         </DialogContent>
       </Dialog>
 
-      {error ? (
-        <Card>
-          <CardContent className="pt-6 text-sm text-destructive">
-            {error instanceof Error ? error.message : "Failed to load routines"}
-          </CardContent>
-        </Card>
+      {routinesView.kind === "error" ? (
+        <QueryErrorState
+          error={routinesView.error}
+          action="load routines"
+          onRetry={routinesView.retry}
+          retrying={routinesView.isFetching}
+        />
       ) : null}
 
       <div className={cn(showFolderRail && "flex gap-4")}>
@@ -1324,7 +1238,7 @@ export function Routines() {
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message={folderSelection === "all" ? "No routines match this view." : "This folder is empty."}
+                message={query.trim() ? "No routines match your search." : folderSelection === "all" ? "No routines match this view." : "This folder is empty."}
               />
               {folderSelection !== "all" ? (
                 <div className="mt-3 flex justify-center">

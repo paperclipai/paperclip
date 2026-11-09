@@ -1268,8 +1268,29 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(
       { ...importRequest, pauseAutomations: true },
       null,
-      { mode: "agent_safe", sourceCompanyId: companyId, pauseAutomations: true },
+      { mode: "agent_safe", sourceCompanyId: companyId, pauseAutomations: true, assertCanCreateAgents: expect.any(Function) },
     );
+  });
+
+  it("refuses a CEO agent whose hiring is denied when its import would create agents", async () => {
+    (mockAccessService as Record<string, unknown>).decide = vi.fn(async () => ({
+      allowed: false, action: "agents:create", reason: "deny_missing_grant", explanation: "Missing permission: agents:create.",
+    }));
+    mockCompanyPortabilityService.importBundle.mockImplementationOnce(async (_body: unknown, _user: unknown, options: { assertCanCreateAgents?: () => Promise<void> }) => {
+      await options.assertCanCreateAgents?.();
+      return createImportResult("created");
+    });
+    const app = await createApp({ type: "agent", agentId: ceoAgentId, companyId, source: "agent_key", runId: "run-1" });
+
+    const res = await request(app).post(`/api/companies/${companyId}/imports/apply`).send(importRequest);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Missing permission: agents:create.");
+    expect(res.body.error).toContain("Importing new agents is hiring");
+    expect((mockAccessService as unknown as { decide: ReturnType<typeof vi.fn> }).decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agents:create", resource: { type: "company", companyId },
+    }));
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("imports a company from a multipart zip upload, unzipping into the same inline bundle", async () => {

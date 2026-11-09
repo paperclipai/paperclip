@@ -16,6 +16,20 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it.each(["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"])("rejects task-owned managed shell selector %s", key => {
+    for (const name of [key, key.toLowerCase()]) {
+      const overrides = {adapterConfig:{env:{[name]:"/workspace/startup"}}};
+      expect(createIssueSchema.safeParse({title:"Task",assigneeAdapterOverrides:overrides}).success).toBe(false);
+      expect(updateIssueSchema.safeParse({assigneeAdapterOverrides:overrides}).success).toBe(false);
+    }
+  });
+  it("retains an optional nonnegative integer version for prepared-task promotion", () => {
+    expect(updateIssueSchema.parse({ status: "todo", expectedStatusVersion: 0 }).expectedStatusVersion).toBe(0);
+    expect(updateIssueSchema.parse({}).expectedStatusVersion).toBeUndefined();
+    for (const version of [-1, 0.5, null, "0"]) {
+      expect(updateIssueSchema.safeParse({ status: "todo", expectedStatusVersion: version }).success).toBe(false);
+    }
+  });
   it("preserves the exact expected execution policy snapshot without defaults", () => {
     const snapshot = { mode: "normal", stages: [], monitor: { nextCheckAt: "2026-10-10T12:00:00Z" } };
     expect(updateIssueSchema.parse({ expectedExecutionPolicy: snapshot }).expectedExecutionPolicy).toEqual(snapshot);
@@ -39,6 +53,14 @@ describe("issue validators", () => {
     for (const patch of [{ actionId: "bad-id" }, { attemptCount: -1 }, { attemptCount: 0.5 }, { maxAttempts: 0 }, { kind: "prose" }]) {
       expect(issueCommentMetadataSchema.safeParse({ ...metadata, recovery: { ...recovery, ...patch } }).success).toBe(false);
     }
+  });
+
+  it("accepts an optional attachment-preparation identity and rejects malformed markers", () => {
+    const metadata = { version: 1, sections: [{ rows: [{ type: "text", text: "Details" }] }] };
+    const attachmentPreparation = { attachmentId: "9af8228f-0be7-45ae-a104-6fbe0af6f1d3" };
+    expect(issueCommentMetadataSchema.parse({ ...metadata, attachmentPreparation }).attachmentPreparation).toEqual(attachmentPreparation);
+    expect(issueCommentMetadataSchema.parse(metadata).attachmentPreparation).toBeUndefined();
+    expect(issueCommentMetadataSchema.safeParse({ ...metadata, attachmentPreparation: { attachmentId: "bad-id" } }).success).toBe(false);
   });
 
   it("uses the same bounded unique upload ID contract for comment and update requests", () => {
@@ -652,6 +674,18 @@ describe("issue validators", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it.each(["preconfigured", "isolated"])("rejects task-level homeMode %s on create and update", homeMode => {
+    const overrides = { assigneeAdapterOverrides: { adapterConfig: { homeMode } } };
+    expect(createIssueSchema.safeParse({ title: "Task", ...overrides }).success).toBe(false);
+    expect(updateIssueSchema.safeParse(overrides).success).toBe(false);
+  });
+
+  it.each(["PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME", "paperclip_runner_prepared_harness_home"])("rejects task-level prepared storage via %s", key => {
+    const overrides = { assigneeAdapterOverrides: { adapterConfig: { env: { [key]: "/home/agent/.claude", TASK_FLAG: "kept" } } } };
+    expect(createIssueSchema.safeParse({ title: "Task", ...overrides }).success).toBe(false);
+    expect(updateIssueSchema.safeParse(overrides).success).toBe(false);
+  });
+
   it("rejects retired model profiles in agent runtime config", () => {
     const parsed = createAgentSchema.safeParse({
       name: "Coder",
@@ -688,6 +722,18 @@ describe("persisted canonical question initial text", () => {
       const initialText = "a".repeat(codePoints - 1) + "😀";
       expect(Buffer.byteLength(JSON.stringify(input({ initialText })))).toBeLessThan(196 * 1024);
       expect(paperclipQuestionSetPayloadSchema.safeParse(input({ initialText })).success).toBe(codePoints === 100_000);
+    }
+  });
+  it("bounds question text by the string length the Runner parser enforces", () => {
+    const within = paperclipQuestionSetPayloadSchema.safeParse(input({ prompt: "😀".repeat(2000) }));
+    expect(within.success).toBe(true);
+    for (const payload of [
+      input({ prompt: "😀".repeat(2000) + "x" }),
+      input({ id: "😀".repeat(81) }),
+      { ...input({}), title: "😀".repeat(501) },
+      { ...input({}), submitLabel: "😀".repeat(101) },
+    ]) {
+      expect(paperclipQuestionSetPayloadSchema.safeParse(payload).success).toBe(false);
     }
   });
   it("rejects non-text modes and unbounded or nonstring defaults", () => {

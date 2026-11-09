@@ -49,6 +49,16 @@ it("keeps negated bootstrap instructions out of the production file-delivery con
   expect(explicitlyRequestsFileOutput(`${prompt}\nCreate a downloadable report.txt file.`)).toBe(true);
 });
 
+it("delivers the required direct Copilot context tool guidance before publishing native actions", () => {
+  const h = harness();
+  const prompt = createRemoteNativeBootstrap({ ...h.input, requireCopilotTaskContext: true }, h.bind).prompt("copilot");
+  expect(prompt).toContain("get_task_context tool is already available directly");
+  expect(prompt).toContain("get_task_context exactly once");
+  expect(prompt).toContain("Do not call search_api or use call_api or an HTTP route as a substitute");
+  expect(explicitlyRequestsFileOutput(prompt)).toBe(false);
+  expect(h.bootstrap.prompt("other-provider")).not.toContain("get_task_context");
+});
+
 it("keeps async completion immediate with a private sentinel and no delivery wait", () => {
   const task = copilotProtectionTasks.find(task => task.id === "attached-async-settlement")!;
   const action = task.buildPrompt("nonce");
@@ -428,4 +438,19 @@ it.each([
   expect(classifyFailure(error)).toBe("candidate_failure");
   expect(error.cause).toBeUndefined(); expect(error.stack).not.toContain("PRIVATE");
   expect(h.bind).not.toHaveBeenCalled();
+});
+
+it("uses a short exact Copilot bootstrap path while preserving observer-before-action delivery", async () => {
+  const h = harness();
+  const bootstrap = createRemoteNativeBootstrap({ ...h.input, requireCopilotTaskContext: true }, h.bind);
+  const prompt = bootstrap.prompt("copilot-short-path");
+  const path = prompt.match(/workspace file (\S+)\./u)?.[1];
+  expect(path).toMatch(/^\.paperclip-eval-action-[a-f0-9]{12}\.txt$/u);
+  expect(prompt).toContain("exact relative file");
+  expect(prompt).toContain("retry the read for up to 20 seconds");
+  expect(h.fixture.publishAction).not.toHaveBeenCalled();
+  await bootstrap.bindAndRelease(h.request);
+  expect(h.bind).toHaveBeenCalledWith(expect.objectContaining({ actionFile: path }));
+  expect(h.fixture.publishAction).toHaveBeenCalledWith(path, "PRIVATE ACTUAL ACTION");
+  expect(h.order.indexOf("armed")).toBeLessThan(h.order.indexOf("publish"));
 });

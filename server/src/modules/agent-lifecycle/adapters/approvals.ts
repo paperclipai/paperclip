@@ -73,7 +73,7 @@ export function hireApprovalService(db: Db, effects: LifecycleEffects) {
             spentMonthlyCents: 0,
             permissions: undefined,
             lastHeartbeatAt: null,
-          }, { createdByUserId: approval!.requestedByAgentId ? null : approval!.requestedByUserId, responsibleUserId: approval!.requestedByUserId });
+          }, { runnerResolved: true, createdByUserId: approval!.requestedByAgentId ? null : approval!.requestedByUserId, responsibleUserId: approval!.requestedByUserId });
           agentId = created.id;
         }
         if (approval && agentId && typeof payload.budgetMonthlyCents === "number" && payload.budgetMonthlyCents > 0) {

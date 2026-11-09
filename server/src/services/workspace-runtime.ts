@@ -1,3 +1,16 @@
+import { formatCommandForDisplay } from "./workspace-command-display.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { insertIssueComment } from "./issue-comment-writes.js";
+import { restoreGitWorkspaceContents } from "./git-workspace-contents.js";
+import { savedGitWorkspaceRestoration, ensureSavedGitCommit, GitCacheRestorationFailure } from "./git-workspace-restoration.js";
+import { applyGitRestorePointToWorktree, ensureGitRestorePointCommit } from "./git-restore-point-storage.js";
+import { getStorageService } from "../storage/index.js";
+import type { StorageService } from "../storage/types.js";
+import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
+import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
+import { assertCurrentWorkspaceSourceHeld, workspaceSourceIdentities, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
+export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -11,6 +24,7 @@ import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   DEFAULT_TAILSCALE_HTTPS_EXPOSURE,
+  readRemoteWorkspaceAuthority,
   deriveViteHmrPort,
   forceLoopbackBindInCommand,
   isRuntimeExposureAppPort,
@@ -32,9 +46,11 @@ import {
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
-import { and, desc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
-import { conflict } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
+import { registerIdleLocalWorkProbe, type IdleLocalWork } from "./idle-local-work.js";
+import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
@@ -106,6 +122,7 @@ import {
   type PersistedExposureRowSnapshot,
 } from "./runtime-exposure/port-reservation.js";
 import { resolveTailscaleDnsName } from "./runtime-exposure/tailscale-hostname.js";
+import { collectNestedRepositoryWorktrees, releaseNestedRepositoryWorktrees } from "./nested-repository-worktrees.js";
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -129,6 +146,7 @@ export interface ExecutionWorkspaceAdditionalInput {
 }
 
 export interface ExecutionWorkspaceInput {
+  providerBinding?: import("@paperclipai/shared").WorkspaceProviderBinding;
   baseCwd: string;
   source: "project_primary" | "task_session" | "agent_home";
   projectId: string | null;
@@ -269,6 +287,23 @@ const quarantinedRuntimeExposurePorts = new Set<number>();
  * companion together or not at all.
  */
 const exposurePortPairClaims = new ExposurePortPairClaims();
+let runtimeReconstructionComplete = false;
+let runtimeStopsInFlight = 0;
+let runtimeReconstructionEpoch = 0;
+let runtimeReconciliation: ReturnType<typeof reconstructRuntimeServices> | null = null;
+
+/** Read owner memory only. Durable stopped rows do not describe a surviving
+ * registry process, an allocation being published, or unfinished exposure cleanup. */
+export function readWorkspaceRuntimeIdleWork(): IdleLocalWork {
+  if (!runtimeReconstructionComplete || runtimeReconciliation !== null) return "unknown";
+  return runtimeStopsInFlight || runtimeServicesById.size || runtimeProvisionByWorkspace.size || runtimeControlStartByOwner.size
+    || runtimeReplacementClaimsByReuseKey.size || quarantinedRuntimeExposurePorts.size
+    || exposurePortPairClaims.activePorts().size
+    || [...inFlightAllocatedPorts.values()].some(until => until > Date.now()) ? "present" : "none";
+}
+// This registry and its probe share the application process lifetime, like the
+// native-session owner. Stopping one resource must not unregister its siblings.
+registerIdleLocalWorkProbe(readWorkspaceRuntimeIdleWork);
 /**
  * Execution-workspace statuses that still hold an exclusive lease. `archived`
  * is the only terminal state; everything else — including `idle` — is a lane an
@@ -511,6 +546,8 @@ type ProcessOutputAccumulator = {
 export async function resetRuntimeServicesForTests(
   opts: { terminateProcesses?: boolean; simulateSupervisorExit?: boolean } = {},
 ) {
+  runtimeReconstructionComplete = false;
+  runtimeReconstructionEpoch += 1;
   if (opts.terminateProcesses) {
     for (const serviceId of [...runtimeServicesById.keys()]) {
       await stopRuntimeService(serviceId).catch(() => undefined);
@@ -681,23 +718,6 @@ export async function ensureServerWorkspaceLinksCurrent(
   );
 }
 
-export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...baseEnv };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
-      delete env[key];
-    }
-  }
-  // These origin settings belong to the parent instance. Letting them leak into a
-  // managed worktree runtime can send auth cookies and OAuth callbacks to the wrong
-  // Paperclip instance. Runtime/service overrides are merged back after sanitizing.
-  delete env.BETTER_AUTH_URL;
-  delete env.BETTER_AUTH_BASE_URL;
-  delete env.DATABASE_URL;
-  delete env.npm_config_tailscale_auth;
-  delete env.npm_config_authenticated_private;
-  return env;
-}
 
 function stableRuntimeServiceId(input: {
   adapterType: string;
@@ -769,7 +789,7 @@ function sanitizeSlugPart(value: string | null | undefined, fallback: string): s
   return normalized.length > 0 ? normalized : fallback;
 }
 
-function renderWorkspaceTemplate(template: string, input: {
+export function renderWorkspaceTemplate(template: string, input: {
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
   projectId: string | null;
@@ -797,7 +817,7 @@ function renderWorkspaceTemplate(template: string, input: {
   });
 }
 
-function sanitizeBranchName(value: string): string {
+export function sanitizeBranchName(value: string): string {
   return value
     .trim()
     .replace(/[^A-Za-z0-9._/-]+/g, "-")
@@ -815,12 +835,6 @@ function resolveConfiguredPath(value: string, baseDir: string): string {
     return resolveHomeAwarePath(value);
   }
   return path.resolve(baseDir, value);
-}
-
-function formatCommandForDisplay(command: string, args: string[]) {
-  return [command, ...args]
-    .map((part) => (/^[A-Za-z0-9_./:-]+$/.test(part) ? part : JSON.stringify(part)))
-    .join(" ");
 }
 
 function trimToLastBytes(value: string, limit: number) {
@@ -873,6 +887,8 @@ async function executeProcess(input: {
   env?: NodeJS.ProcessEnv;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
+  /** Stops the child (SIGTERM, then SIGKILL 5 s later) and reports a failure after this long. */
+  timeoutMs?: number;
 }): Promise<{
   stdout: string;
   stderr: string;
@@ -887,10 +903,13 @@ async function executeProcess(input: {
     stderr: ProcessOutputAccumulator;
     code: number | null;
   }>((resolve, reject) => {
+    // A deadline-bound command runs in its own process group, so its hooks and
+    // helpers stop with it instead of holding the output pipes open.
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: input.env ?? process.env,
+      detached: input.timeoutMs !== undefined && process.platform !== "win32",
     });
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
@@ -900,8 +919,42 @@ async function executeProcess(input: {
     child.stderr?.on("data", (chunk) => {
       stderr.append(String(chunk));
     });
+    let timedOut = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    const signal = (name: NodeJS.Signals) => {
+      try {
+        if (child.pid && process.platform !== "win32") process.kill(-child.pid, name);
+        else child.kill(name);
+      } catch { /* already exited */ }
+    };
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      if (deadline) clearTimeout(deadline);
+      if (killTimer) clearTimeout(killTimer);
+      if (timedOut) stderr.append(`\n${input.command} timed out after ${input.timeoutMs} ms`);
+      resolve({ stdout, stderr, code: timedOut ? null : code });
+    };
+    const deadline = input.timeoutMs === undefined ? null : setTimeout(() => {
+      timedOut = true;
+      signal("SIGTERM");
+      killTimer = setTimeout(() => signal("SIGKILL"), 5_000);
+      killTimer.unref?.();
+    }, input.timeoutMs);
+    deadline?.unref?.();
     child.on("error", reject);
-    child.on("close", (code) => resolve({ stdout, stderr, code }));
+    child.on("close", finish);
+    // After a deadline the group is signalled; do not wait for pipes a straggler may hold.
+    child.on("exit", (code) => {
+      if (!timedOut) return;
+      // Git can exit while a helper that ignores SIGTERM keeps running; stop
+      // the whole group now so nothing still writes when the queue moves on.
+      signal("SIGKILL");
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      finish(code);
+    });
   });
   const stdout = proc.stdout.finish();
   const stderr = proc.stderr.finish();
@@ -1642,45 +1695,40 @@ async function writeDirtyQuarantineAuditComments(input: {
   let sourceAuditCommentId: string | null = null;
   let claimantAuditCommentId: string | null = null;
   const now = new Date();
-  if (input.evidence.sourceIssueId) {
-    const [sourceComment] = await input.db
-      .insert(issueComments)
-      .values({
-        companyId: input.companyId,
-        issueId: input.evidence.sourceIssueId,
-        authorAgentId: null,
-        authorUserId: null,
-        authorType: "system",
-        createdByRunId: input.heartbeatRunId,
-        body,
-      })
-      .returning({ id: issueComments.id });
+  const sourceIssueId = input.evidence.sourceIssueId;
+  if (sourceIssueId) {
+    const [sourceComment] = await insertIssueComment(input.db, {
+      companyId: input.companyId,
+      issueId: sourceIssueId,
+      authorAgentId: null,
+      authorUserId: null,
+      authorType: "system",
+      createdByRunId: input.heartbeatRunId,
+      body,
+    });
     sourceAuditCommentId = sourceComment?.id ?? null;
-    await input.db
-      .update(issues)
-      .set({ updatedAt: now })
-      .where(eq(issues.id, input.evidence.sourceIssueId));
+    await input.db.transaction(async tx => {
+      await notifyStatusCardIssueChange(tx, input.companyId);
+      await tx.update(issues).set({ updatedAt: now }).where(eq(issues.id, sourceIssueId));
+    });
   }
 
   const claimantIssueId = input.evidence.contention?.claimedByIssueId ?? null;
   if (claimantIssueId && claimantIssueId !== input.evidence.sourceIssueId) {
-    const [claimantComment] = await input.db
-      .insert(issueComments)
-      .values({
-        companyId: input.companyId,
-        issueId: claimantIssueId,
-        authorAgentId: null,
-        authorUserId: null,
-        authorType: "system",
-        createdByRunId: input.heartbeatRunId,
-        body,
-      })
-      .returning({ id: issueComments.id });
+    const [claimantComment] = await insertIssueComment(input.db, {
+      companyId: input.companyId,
+      issueId: claimantIssueId,
+      authorAgentId: null,
+      authorUserId: null,
+      authorType: "system",
+      createdByRunId: input.heartbeatRunId,
+      body,
+    });
     claimantAuditCommentId = claimantComment?.id ?? null;
-    await input.db
-      .update(issues)
-      .set({ updatedAt: now })
-      .where(eq(issues.id, claimantIssueId));
+    await input.db.transaction(async tx => {
+      await notifyStatusCardIssueChange(tx, input.companyId);
+      await tx.update(issues).set({ updatedAt: now }).where(eq(issues.id, claimantIssueId));
+    });
   }
 
   return { sourceAuditCommentId, claimantAuditCommentId };
@@ -2717,10 +2765,17 @@ function parseGitWorktreeListPorcelain(raw: string): GitWorktreeListEntry[] {
 }
 
 async function resolveGitOwnerRepoRoot(cwd: string): Promise<string> {
-  const checkoutRoot = path.resolve(await runGit(["rev-parse", "--show-toplevel"], cwd));
-  const commonDir = await runGit(["rev-parse", "--git-common-dir"], checkoutRoot).catch(() => null);
-  if (!commonDir) return checkoutRoot;
-  return path.dirname(path.resolve(checkoutRoot, commonDir));
+  const checkoutRoot = await fs.realpath(path.resolve(await runGit(["rev-parse", "--show-toplevel"], cwd)));
+  try {
+    const commonDir = await fs.realpath(path.resolve(checkoutRoot, await runGit(["rev-parse", "--git-common-dir"], checkoutRoot)));
+    const candidate = path.dirname(commonDir);
+    const candidateRoot = await fs.realpath(path.resolve(await runGit(["rev-parse", "--show-toplevel"], candidate)));
+    const candidateGitDir = await fs.realpath(path.resolve(candidate, await runGit(["rev-parse", "--absolute-git-dir"], candidate)));
+    const candidateCommonDir = await fs.realpath(path.resolve(candidate, await runGit(["rev-parse", "--git-common-dir"], candidate)));
+    if (candidateRoot === candidate && candidateGitDir === commonDir && candidateCommonDir === commonDir) return candidateRoot;
+  } catch {
+  }
+  return checkoutRoot;
 }
 
 async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: string): Promise<string | null> {
@@ -3055,6 +3110,19 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
   return command;
 }
 
+/**
+ * A configured workspace command ran to completion but exited non-zero. The message carries the
+ * command's own output. The default `Error` name is kept so existing reports keep their grouping.
+ */
+export class WorkspaceCommandExitError extends Error {
+  readonly exitCode: number | null;
+
+  constructor(message: string, exitCode: number | null) {
+    super(message);
+    this.exitCode = exitCode;
+  }
+}
+
 async function runWorkspaceCommand(input: {
   command: string;
   resolvedCommand?: string;
@@ -3075,11 +3143,74 @@ async function runWorkspaceCommand(input: {
   if (proc.code === 0) return;
 
   const details = [proc.stderr.trim(), proc.stdout.trim()].filter(Boolean).join("\n");
-  throw new Error(
+  throw new WorkspaceCommandExitError(
     details.length > 0
       ? `${input.label} failed: ${details}`
       : `${input.label} failed with exit code ${proc.code ?? -1}`,
+    proc.code,
   );
+}
+
+/**
+ * `git worktree add` writes the repository's shared `.git/config` (the new
+ * branch's upstream). Two creates on one repository at once fail with "could
+ * not lock config file". Creates in this process run one at a time per
+ * repository, keyed by its git common dir; a create that still meets another
+ * process's lock retries a few times after a short wait.
+ */
+const repositoryWorktreeLocks = new Map<string, Promise<unknown>>();
+export const WORKTREE_CONFIG_LOCK_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
+/** A stuck create must not hold its repository's queue forever. Tests shorten it. */
+export const worktreeCreateLimits = { timeoutMs: 10 * 60_000 };
+
+async function withRepositoryWorktreeLock<T>(cwd: string, work: () => Promise<T>): Promise<T> {
+  const commonDir = await executeProcess({ command: "git", args: ["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd })
+    .then(result => result.code === 0 && result.stdout.trim() ? result.stdout.trim() : path.resolve(cwd))
+    .catch(() => path.resolve(cwd));
+  const key = await fs.realpath(commonDir).catch(() => commonDir);
+  const previous = repositoryWorktreeLocks.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(work);
+  const tail = current.catch(() => undefined);
+  repositoryWorktreeLocks.set(key, tail);
+  try {
+    return await current;
+  } finally {
+    if (repositoryWorktreeLocks.get(key) === tail) repositoryWorktreeLocks.delete(key);
+  }
+}
+
+function isGitConfigLockFailure(result: { code: number | null; stderr: string }) {
+  return result.code !== 0 && /could not lock config file/i.test(result.stderr);
+}
+
+async function executeGitCommand(args: string[], cwd: string) {
+  if (args[0] !== "worktree" || args[1] !== "add") return executeProcess({ command: "git", args, cwd });
+  return withRepositoryWorktreeLock(cwd, async () => {
+    const branchIndex = args.indexOf("-b");
+    const branch = branchIndex > 0 ? args[branchIndex + 1] : undefined;
+    const startPoint = branch ? args[branchIndex + 3] : undefined;
+    const baseCommit = branch && startPoint ? await executeProcess({ command: "git",
+      args: ["rev-parse", "--verify", "--quiet", `${startPoint}^{commit}`], cwd }).then(result => result.code === 0 ? result.stdout.trim() : null)
+      .catch(() => null) : null;
+    for (let attempt = 0; ; attempt += 1) {
+      const result = await executeProcess({ command: "git", args, cwd, timeoutMs: worktreeCreateLimits.timeoutMs });
+      if (!isGitConfigLockFailure(result)) return result;
+      // `worktree add -b` creates the branch, then fails writing its upstream,
+      // and adds no worktree. The branch did not exist before (otherwise git
+      // refuses with "already exists" first), so this command created it.
+      // Remove it, also after the last attempt, so a retry creates it again
+      // with its upstream. A branch that moved off the base commit belongs to
+      // someone else meanwhile (a same-issue retry elsewhere) and is kept.
+      if (branch && baseCommit) {
+        const tip = await executeProcess({ command: "git", args: ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], cwd })
+          .then(found => found.code === 0 ? found.stdout.trim() : null).catch(() => null);
+        if (tip === baseCommit) await executeProcess({ command: "git", args: ["branch", "-D", branch], cwd }).catch(() => undefined);
+      }
+      const delayMs = WORKTREE_CONFIG_LOCK_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) return result;
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  });
 }
 
 async function recordGitOperation(
@@ -3094,7 +3225,9 @@ async function recordGitOperation(
   },
 ): Promise<string> {
   if (!recorder) {
-    return runGit(input.args, input.cwd);
+    const result = await executeGitCommand(input.args, input.cwd);
+    if (result.code !== 0) throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${input.args.join(" ")} failed`);
+    return result.stdout.trim();
   }
 
   let stdout = "";
@@ -3106,11 +3239,7 @@ async function recordGitOperation(
     cwd: input.cwd,
     metadata: input.metadata ?? null,
     run: async () => {
-      const result = await executeProcess({
-        command: "git",
-        args: input.args,
-        cwd: input.cwd,
-      });
+      const result = await executeGitCommand(input.args, input.cwd);
       stdout = result.stdout;
       stderr = result.stderr;
       code = result.code;
@@ -3211,10 +3340,11 @@ async function recordWorkspaceCommandOperation(
   if (code === 0) return operation;
 
   const details = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
-  throw new Error(
+  throw new WorkspaceCommandExitError(
     details.length > 0
       ? `${input.label} failed: ${details}`
       : `${input.label} failed with exit code ${code ?? -1}`,
+    code,
   );
 }
 
@@ -3227,8 +3357,10 @@ async function provisionExecutionWorktree(input: {
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
   created: boolean;
+  skipHostProvision?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }) {
+  if (input.skipHostProvision) return;
   const provisionCommand = resolveWorkspaceProvisionCommand(input.strategy, input.repoRoot);
   if (!provisionCommand) return;
   const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
@@ -3323,6 +3455,9 @@ export async function realizeExecutionWorkspace(input: {
   enableWorkspaceDirtyQuarantineRepair?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
   resolveGitAuth?: GitRemoteAuthProvider | null;
+  skipHostProvision?: boolean;
+  beforeSourceCopy?: (sourceCwd: string, targetCwd: string) => Promise<void>;
+  afterSourceCopy?: (sourceCwd: string, targetCwd: string) => Promise<void>;
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
@@ -3404,6 +3539,7 @@ export async function realizeExecutionWorkspace(input: {
       },
     );
   }
+  await input.beforeSourceCopy?.(repoRoot, worktreePath);
   let pendingForwardBranchReconcile: PendingForwardBranchReconcile | null = null;
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
@@ -3426,6 +3562,7 @@ export async function realizeExecutionWorkspace(input: {
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
   async function reuseExistingWorktree(reusablePath: string, effectiveBranchName = branchName, extraWarnings: string[] = []) {
+    if (reusablePath !== worktreePath) await input.beforeSourceCopy?.(repoRoot, reusablePath);
     // An exact-branch attach must never move the requested branch, so skip
     // the unstarted-worktree fast-forward that template-derived reuse gets.
     const refresh = currentBaseRefSha && !requestedExistingBranch
@@ -3467,7 +3604,9 @@ export async function realizeExecutionWorkspace(input: {
         }),
       });
     }
+    await input.afterSourceCopy?.(repoRoot, reusablePath);
     await provisionExecutionWorktree({
+      skipHostProvision: input.skipHostProvision,
       strategy: rawStrategy,
       base: input.base,
       repoRoot,
@@ -3625,7 +3764,9 @@ export async function realizeExecutionWorkspace(input: {
         },
       );
     }
+    await input.afterSourceCopy?.(repoRoot, worktreePath);
     await provisionExecutionWorktree({
+      skipHostProvision: input.skipHostProvision,
       strategy: rawStrategy,
       base: input.base,
       repoRoot,
@@ -3720,7 +3861,9 @@ export async function realizeExecutionWorkspace(input: {
       return await reuseExistingWorktree(reusablePath);
     }
   }
+  await input.afterSourceCopy?.(repoRoot, worktreePath);
   await provisionExecutionWorktree({
+    skipHostProvision: input.skipHostProvision,
     strategy: rawStrategy,
     base: input.base,
     repoRoot,
@@ -3746,7 +3889,22 @@ export async function realizeExecutionWorkspace(input: {
   };
 }
 
+function isPersistedTaskDirectory(workspace: {
+  strategyType: string | null | undefined;
+  projectId: string | null | undefined;
+  projectWorkspaceId: string | null | undefined;
+  repoUrl: string | null | undefined;
+  metadata?: Record<string, unknown> | null;
+}): boolean {
+  return workspace.strategyType === "project_primary" && workspace.metadata?.source === "task_session"
+    && workspace.projectId === null && workspace.projectWorkspaceId === null && workspace.repoUrl === null;
+}
+
 export async function ensurePersistedExecutionWorkspaceAvailable(input: {
+  prepareRestoredLocalSource?: (sourceCwd: string) => Promise<() => Promise<void>>;
+  persistContentsRestoredAt?: (at: string | null) => Promise<void>;
+  persistRestorePointAppliedAt?: (at: string) => Promise<void>;
+  restorePointStorage?: StorageService;
   db?: Db | null;
   base: ExecutionWorkspaceInput;
   workspace: {
@@ -3773,18 +3931,22 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   enableWorkspaceDirtyQuarantineRepair?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
   resolveGitAuth?: GitRemoteAuthProvider | null;
+  skipHostProvision?: boolean;
+  beforeSourceCopy?: (sourceCwd: string, targetCwd: string) => Promise<void>;
+  afterSourceCopy?: (sourceCwd: string, targetCwd: string) => Promise<void>;
 }): Promise<RealizedExecutionWorkspace | null> {
   const cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
   if (!cwd) return null;
 
   const strategy = input.workspace.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
+  const taskDirectory = isPersistedTaskDirectory(input.workspace);
   const realized: RealizedExecutionWorkspace = {
     baseCwd: input.base.baseCwd,
-    source: input.workspace.mode === "shared_workspace" ? "project_primary" : "task_session",
-    projectId: input.workspace.projectId ?? input.base.projectId,
-    workspaceId: input.workspace.projectWorkspaceId ?? input.base.workspaceId,
-    repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
-    repoRef: input.workspace.baseRef ?? input.base.repoRef,
+    source: input.workspace.mode === "shared_workspace" && !taskDirectory ? "project_primary" : "task_session",
+    projectId: input.workspace.projectId === undefined ? input.base.projectId : input.workspace.projectId,
+    workspaceId: input.workspace.projectWorkspaceId === undefined ? input.base.workspaceId : input.workspace.projectWorkspaceId,
+    repoUrl: taskDirectory ? null : input.workspace.repoUrl ?? input.base.repoUrl,
+    repoRef: taskDirectory ? null : input.workspace.baseRef ?? input.base.repoRef,
     additionalWorkspaces: input.base.additionalWorkspaces ?? [],
     strategy,
     cwd,
@@ -3824,7 +3986,68 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       "Cannot rebuild the git worktree: the base project checkout directory does not exist.",
     );
   }
+  const restoration = savedGitWorkspaceRestoration({ metadata: input.workspace.metadata, companyId: input.agent.companyId,
+    workspaceId: input.workspace.id, cwd, baseCwd, repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
+    branchName: input.workspace.branchName ?? null });
+  const savedCommit = restoration?.commit ?? null;
+  let currentRecipe = input.workspace.metadata?.gitCacheRestoration;
+  const persistContentsRestoredAt = async (at: string | null) => {
+    if (!restoration?.contents || !input.workspace.id) return;
+    if (input.persistContentsRestoredAt) await input.persistContentsRestoredAt(at);
+    else {
+      if (!input.db) throw new GitCacheRestorationFailure();
+      const updated = await input.db.update(executionWorkspaces).set({
+        metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{gitCacheRestoration,contentsRestoredAt}', ${JSON.stringify(at)}::jsonb)`,
+      }).where(and(eq(executionWorkspaces.id, input.workspace.id), eq(executionWorkspaces.companyId, input.agent.companyId),
+        sql`${executionWorkspaces.metadata}->'gitCacheRestoration' = ${JSON.stringify(currentRecipe)}::jsonb`))
+        .returning({ id: executionWorkspaces.id });
+      if (updated.length !== 1) throw new GitCacheRestorationFailure();
+    }
+    currentRecipe = { ...currentRecipe as Record<string, unknown>, contentsRestoredAt: at };
+    input.workspace.metadata!.gitCacheRestoration = currentRecipe;
+  };
+  const applyRestorePoint = async (repositoryCwd: string, worktreePath: string) => {
+    const ref = restoration?.restorePoint;
+    if (!ref || ref.appliedAt || !input.workspace.id) return;
+    await applyGitRestorePointToWorktree({ storage: input.restorePointStorage ?? getStorageService(),
+      workspace: { companyId: input.agent.companyId, id: input.workspace.id }, ref, repositoryCwd, worktreePath })
+      .catch(() => { throw new GitCacheRestorationFailure(); });
+    const at = new Date().toISOString();
+    if (input.persistRestorePointAppliedAt) await input.persistRestorePointAppliedAt(at);
+    else {
+      if (!input.db) throw new GitCacheRestorationFailure();
+      const updated = await input.db.update(executionWorkspaces).set({
+        metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{gitCacheRestoration,restorePoint,appliedAt}', ${JSON.stringify(at)}::jsonb)`,
+      }).where(and(eq(executionWorkspaces.id, input.workspace.id), eq(executionWorkspaces.companyId, input.agent.companyId),
+        sql`${executionWorkspaces.metadata}->'gitCacheRestoration'->'restorePoint'->>'id' = ${ref.id}`))
+        .returning({ id: executionWorkspaces.id });
+      if (updated.length !== 1) throw new GitCacheRestorationFailure();
+    }
+    ref.appliedAt = at;
+    currentRecipe = { ...currentRecipe as Record<string, unknown>, restorePoint: { ...ref } };
+    input.workspace.metadata!.gitCacheRestoration = currentRecipe;
+  };
+  const restoreContents = async () => {
+    if (!restoration?.contents || !input.workspace.id) return;
+    await restoreGitWorkspaceContents({ cwd, companyId: input.agent.companyId, workspaceId: input.workspace.id,
+      projectId: input.workspace.projectId, contents: restoration.contents, resolveGitAuth: async url => {
+        const auth = await input.resolveGitAuth?.(url);
+        if (!auth) return null;
+        const source = auth.source;
+        if (source !== "company_secret" && source !== "managed_connection" && source !== "server_env") throw new GitCacheRestorationFailure();
+        return { ...auth, source, secretName: auth.secretName ?? null };
+      },
+      authorizeSource: async source => {
+        if (!input.db || !input.workspace.projectId) throw new GitCacheRestorationFailure();
+        const [row] = await input.db.select().from(projectWorkspaces).where(and(
+          eq(projectWorkspaces.id, source.id), eq(projectWorkspaces.companyId, input.agent.companyId),
+          eq(projectWorkspaces.projectId, input.workspace.projectId)));
+        if (!row || row.repoUrl !== source.repoUrl) throw new GitCacheRestorationFailure();
+      }, prepareLocalSource: input.prepareRestoredLocalSource });
+    await persistContentsRestoredAt(new Date().toISOString());
+  };
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], baseCwd);
+  await input.beforeSourceCopy?.(repoRoot, realized.worktreePath ?? cwd);
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
   if (await directoryExists(cwd)) {
     const reuseBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
@@ -3883,7 +4106,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     const currentBaseRefSha = reuseBaseRef ? await resolveBaseRefSha(repoRoot, reuseBaseRef) : null;
     // An unstarted-worktree refresh can fast-forward the checked-out branch.
     // Never run it for an attached operator-owned ref.
-    const refresh = realized.branchCreatedByRuntime && reuseBaseRef && currentBaseRefSha
+    const refresh = !savedCommit && realized.branchCreatedByRuntime && reuseBaseRef && currentBaseRefSha
       ? await refreshUnstartedWorktreeToBase({
           repoRoot,
           worktreePath: reuseWorktreePath,
@@ -3903,7 +4126,11 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     });
     realized.warnings = [...repairWarnings, ...baseRefreshWarnings, ...baseDrift.warnings];
     realized.baseRefSha = refresh.baseRefSha ?? recordedBaseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha;
+    await input.afterSourceCopy?.(repoRoot, realized.worktreePath ?? cwd);
+    await applyRestorePoint(repoRoot, realized.worktreePath ?? cwd);
+    if (restoration && !restoration.contentsRestored) await restoreContents();
     await provisionExecutionWorktree({
+      skipHostProvision: input.skipHostProvision,
       strategy: {
         type: "git_worktree",
         ...(provisionCommand ? { provisionCommand } : {}),
@@ -3926,9 +4153,22 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     throw new Error(`Execution workspace "${cwd}" is missing and cannot be restored because no branch name is recorded.`);
   }
 
+  await persistContentsRestoredAt(null);
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
   await runGit(["worktree", "prune"], repoRoot).catch(() => {});
-  const restoreBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+  if (savedCommit) {
+    if (restoration?.restorePoint && input.workspace.id) {
+      await ensureGitRestorePointCommit({ storage: input.restorePointStorage ?? getStorageService(),
+        workspace: { companyId: input.agent.companyId, id: input.workspace.id }, ref: restoration.restorePoint, repositoryCwd: repoRoot })
+        .catch(() => { throw new GitCacheRestorationFailure(); });
+    }
+    await ensureSavedGitCommit(repoRoot, input.workspace.repoUrl ?? input.base.repoUrl!, savedCommit, input.resolveGitAuth ?? (async () => null));
+    const existingTip = await resolveBaseRefSha(repoRoot, `refs/heads/${branchName}`);
+    // Once restored, subsequent task commits own this branch. The saved commit
+    // still prevents a clean resumed worktree from refreshing to upstream HEAD.
+    if (existingTip && existingTip !== savedCommit && !restoration?.restored) throw new GitCacheRestorationFailure();
+  }
+  const restoreBaseRef = savedCommit ? null : input.workspace.baseRef ?? input.base.repoRef ?? null;
   const restoreRefreshWarnings = restoreBaseRef
     ? await refreshRemoteTrackingBaseRef(repoRoot, restoreBaseRef, input.resolveGitAuth)
     : [];
@@ -3965,7 +4205,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
         `Execution workspace "${worktreePath}" cannot be restored because its operator-owned branch "${branchName}" no longer exists.`,
       );
     }
-    const baseRef = input.workspace.baseRef ?? await detectDefaultBranch(repoRoot) ?? "HEAD";
+    const baseRef = savedCommit ?? input.workspace.baseRef ?? await detectDefaultBranch(repoRoot) ?? "HEAD";
     const recreatedBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
@@ -3995,7 +4235,11 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     skipRefresh: true,
   });
 
+  await input.afterSourceCopy?.(repoRoot, worktreePath);
+  await applyRestorePoint(repoRoot, worktreePath);
+  await restoreContents();
   await provisionExecutionWorktree({
+    skipHostProvision: input.skipHostProvision,
     strategy: {
       type: "git_worktree",
       ...(provisionCommand ? { provisionCommand } : {}),
@@ -4127,6 +4371,7 @@ async function deleteGitBranchAtVerifiedTip(input: {
 export async function cleanupExecutionWorkspaceArtifacts(input: {
   workspace: {
     id: string;
+    companyId: string;
     cwd: string | null;
     providerType: string;
     providerRef: string | null;
@@ -4151,21 +4396,28 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   runCleanupCommands?: boolean;
   forceWorktreeRemoval?: boolean;
 }) {
+  if (input.workspace.providerType === "plugin") throw new Error("Managed workspace cleanup requires its storage plugin");
+  if (readRemoteWorkspaceAuthority(input.workspace.metadata)) throw new Error("Remote workspace cleanup requires its sandbox lifecycle");
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
+  const isolatedSource = await verifiedRecordedIsolatedRemoteSource(input.workspace);
   const repoRoot = input.workspace.providerType === "git_worktree" && workspacePath
     ? await resolveGitRepoRootForWorkspaceCleanup(
       workspacePath,
-      input.projectWorkspace?.cwd ?? null,
+      isolatedSource ?? input.projectWorkspace?.cwd ?? null,
     )
     : null;
   const cleanupEnv = buildExecutionWorkspaceCleanupEnv({
     workspace: input.workspace,
-    projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
+    projectWorkspaceCwd: isolatedSource ?? input.projectWorkspace?.cwd ?? null,
   });
   // Callers can require the workspace to match an assessed snapshot before
   // cleanup begins. Destructive paths recheck immediately before removal.
   await input.assertSafeToCleanup?.();
+  const nestedWorktrees = workspacePath ? await collectNestedRepositoryWorktrees(workspacePath).catch((err) => {
+    warnings.push(`Could not inspect nested repository worktrees: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }) : [];
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
   let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
@@ -4341,6 +4593,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   const cleaned =
     !workspacePath ||
     !(await directoryExists(workspacePath));
+  if (cleaned) warnings.push(...await releaseNestedRepositoryWorktrees(nestedWorktrees));
 
   return {
     cleanedPath: workspacePath,
@@ -5013,6 +5266,7 @@ function renderRuntimeServiceEnv(input: {
 function resolveRuntimeServiceReuseIdentity(input: {
   service: Record<string, unknown>;
   workspace: RealizedExecutionWorkspace;
+  executionWorkspaceId?: string | null;
   agent: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   adapterEnv: Record<string, string>;
@@ -5057,6 +5311,8 @@ function resolveRuntimeServiceReuseIdentity(input: {
             stableStringify({
               scopeType: input.scopeType,
               scopeId: input.scopeId,
+              ...(input.scopeType === "run" && input.executionWorkspaceId
+                ? { executionWorkspaceId: input.executionWorkspaceId } : {}),
               serviceName,
               command,
               cwd: serviceCwd,
@@ -5139,23 +5395,32 @@ export async function runWorkspaceJobForControl(input: {
     adapterEnv: input.adapterEnv ?? {},
   });
   if (!resolved.command) {
-    throw new Error(`Workspace job "${resolved.name}" is missing command`);
+    throw unprocessable(`Workspace job "${resolved.name}" is missing command`);
   }
 
   await ensureServerWorkspaceLinksCurrent(resolved.cwd);
-  return await recordWorkspaceCommandOperation(input.recorder, {
-    phase: "workspace_provision",
-    command: resolved.command,
-    cwd: resolved.cwd,
-    env: resolved.env,
-    label: `Workspace job "${resolved.name}"`,
-    metadata: {
-      workspaceCommandKind: "job",
-      workspaceCommandName: resolved.name,
-      ...(input.metadata ?? {}),
-    },
-    successMessage: `Completed workspace job "${resolved.name}"\n`,
-  });
+  try {
+    return await recordWorkspaceCommandOperation(input.recorder, {
+      phase: "workspace_provision",
+      command: resolved.command,
+      cwd: resolved.cwd,
+      env: resolved.env,
+      label: `Workspace job "${resolved.name}"`,
+      metadata: {
+        workspaceCommandKind: "job",
+        workspaceCommandName: resolved.name,
+        ...(input.metadata ?? {}),
+      },
+      successMessage: `Completed workspace job "${resolved.name}"\n`,
+    });
+  } catch (error) {
+    // A job is an operator-authored command: a non-zero exit is its result, already recorded on
+    // the operation, not a server fault.
+    if (error instanceof WorkspaceCommandExitError) {
+      throw unprocessable(error.message, { code: "workspace_job_failed", exitCode: error.exitCode });
+    }
+    throw error;
+  }
 }
 
 function resolveServiceScopeId(input: {
@@ -5236,21 +5501,33 @@ export async function waitForRuntimeServiceReadiness(input: {
   let lastError = "service did not become ready";
   let lastCause: unknown;
   let probes = 0;
+  let sawServiceFailure = false;
   while (now() < deadline) {
-    const probeBudgetMs = Math.max(1, Math.min(RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS, deadline - now()));
+    const remainingMs = deadline - now();
+    // When the readiness budget is what bounds this probe, aborting it only means we ran out of
+    // time — it is not an observation about the service, so it must not replace one we already have.
+    const boundedByDeadline = remainingMs <= RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS;
+    const probeBudgetMs = Math.max(1, Math.min(RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS, remainingMs));
+    let probeSignal: AbortSignal | undefined;
     probes += 1;
     try {
-      const response = await fetchImpl(readinessUrl, { signal: AbortSignal.timeout(probeBudgetMs) });
+      probeSignal = AbortSignal.timeout(probeBudgetMs);
+      const response = await fetchImpl(readinessUrl, { signal: probeSignal });
       if (response.ok) return;
       lastError = `received HTTP ${response.status}`;
       lastCause = undefined;
+      sawServiceFailure = true;
     } catch (err) {
-      lastCause = err;
-      lastError = err instanceof Error ? err.message : String(err);
-      // Node fetch hides connection errors behind "fetch failed". Retain the
-      // transport cause so a refused port is distinguishable from a timeout.
-      if (err instanceof Error && err.cause instanceof Error) {
-        lastError += `: ${err.cause.message}`;
+      const abortedByDeadline = Boolean(probeSignal?.aborted) && boundedByDeadline;
+      if (!abortedByDeadline || !sawServiceFailure) {
+        lastCause = err;
+        lastError = err instanceof Error ? err.message : String(err);
+        // Node fetch hides connection errors behind "fetch failed". Retain the
+        // transport cause so a refused port is distinguishable from a timeout.
+        if (err instanceof Error && err.cause instanceof Error) {
+          lastError += `: ${err.cause.message}`;
+        }
+        sawServiceFailure = true;
       }
     }
     if (now() >= deadline) break;
@@ -6031,6 +6308,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const identity = resolveRuntimeServiceReuseIdentity({
     service: input.service,
     workspace: input.workspace,
+    executionWorkspaceId: input.executionWorkspaceId,
     agent: input.agent,
     issue: input.issue,
     adapterEnv: input.adapterEnv,
@@ -6502,6 +6780,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }
 
   try {
+    if (input.db) await assertCurrentWorkspaceSourceHeld(serviceCwd);
     await ensureServerWorkspaceLinksCurrent(serviceCwd, {
       onLog: input.onLog,
     });
@@ -6515,6 +6794,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const shell = resolveShell();
   const serviceLog = await openLocalServiceLogFile(serviceKey);
   let child: ChildProcess;
+  let childFailure: Promise<Error>;
   try {
     child = spawn(shell, ["-lc", command], {
       cwd: serviceCwd,
@@ -6525,27 +6805,20 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       // on an orphaned socketpair during startup reconciliation.
       stdio: ["ignore", serviceLog.handle.fd, serviceLog.handle.fd],
     });
+    childFailure = new Promise<Error>((resolve) => {
+      child.once("error", resolve);
+      child.once("close", (code, signal) => {
+        resolve(new Error(
+          `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
+        ));
+      });
+    });
   } finally {
     await serviceLog.handle.close();
   }
   record.child = child;
   record.providerRef = child.pid ? String(child.pid) : null;
   record.processGroupId = child.pid ?? null;
-  const spawnErrorPromise = new Promise<never>((_, reject) => {
-    child.once("error", (err) => {
-      reject(err);
-    });
-  });
-  const earlyExitPromise = new Promise<never>((_, reject) => {
-    // `close` follows `exit` after the child's inherited stdout/stderr file
-    // descriptors are closed. Waiting for it makes the startup log excerpt
-    // deterministic instead of racing the final validation line.
-    child.once("close", (code, signal) => {
-      reject(new Error(
-        `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
-      ));
-    });
-  });
   const readServiceOutputExcerpt = async () => {
     try {
       const contents = await fs.readFile(serviceLog.logPath);
@@ -6611,8 +6884,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         waitForAllocatedPortBind({ service: input.service, port: ownedPort, child })
       ),
     ]).then(() => undefined),
-    spawnErrorPromise,
-    earlyExitPromise,
+    childFailure.then((error) => { throw error; }),
   ]).then(async () => {
     releasePortReservation(reservedPort);
     releasePortReservation(claimedIdentityPort);
@@ -6831,6 +7103,7 @@ async function prepareRuntimeProvisioning(
   const identity = resolveRuntimeServiceReuseIdentity({
     service: input.service,
     workspace: input.workspace,
+    executionWorkspaceId: input.executionWorkspaceId,
     agent: input.agent,
     issue: input.issue,
     adapterEnv: input.adapterEnv,
@@ -6997,7 +7270,21 @@ async function cleanupRecordExposure(
   await persistRuntimeServiceRecord(record.db, record).catch(() => undefined);
 }
 
+async function withRuntimeStopWork<T>(stop: () => Promise<T>): Promise<T> {
+  runtimeStopsInFlight += 1;
+  try { return await stop(); }
+  catch (error) {
+    runtimeReconstructionComplete = false;
+    runtimeReconstructionEpoch += 1;
+    throw error;
+  } finally { runtimeStopsInFlight -= 1; }
+}
+
 async function stopRuntimeService(serviceId: string) {
+  return withRuntimeStopWork(() => stopRuntimeServiceRecord(serviceId));
+}
+
+async function stopRuntimeServiceRecord(serviceId: string) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
   clearIdleTimer(record);
@@ -7383,14 +7670,14 @@ function selectRuntimeServiceEntries(input: {
   });
 }
 
-async function isPersistedIsolatedExecutionWorkspace(input: {
+async function inspectPersistedRuntimeWorkspace(input: {
   db?: Db;
   companyId: string;
   executionWorkspaceId?: string | null;
 }) {
-  if (!input.db || !input.executionWorkspaceId) return false;
+  if (!input.db || !input.executionWorkspaceId) return { isolated: false, remote: false };
   const row = await input.db
-    .select({ mode: executionWorkspaces.mode })
+    .select({ mode: executionWorkspaces.mode, metadata: executionWorkspaces.metadata })
     .from(executionWorkspaces)
     .where(
       and(
@@ -7400,7 +7687,7 @@ async function isPersistedIsolatedExecutionWorkspace(input: {
     )
     .limit(1)
     .then((rows) => rows[0] ?? null);
-  return row?.mode === "isolated_workspace";
+  return { isolated: row?.mode === "isolated_workspace", remote: Boolean(readRemoteWorkspaceAuthority(row?.metadata)) };
 }
 
 type EnsureRuntimeServicesForRunInput = {
@@ -7411,6 +7698,7 @@ type EnsureRuntimeServicesForRunInput = {
   workspace: RealizedExecutionWorkspace;
   executionWorkspaceId?: string | null;
   config: Record<string, unknown>;
+  skipHostProvision?: boolean;
   adapterEnv: Record<string, string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   recorder?: WorkspaceOperationRecorder | null;
@@ -7427,14 +7715,24 @@ async function ensureRuntimeServicesForRunInvocation(
   });
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
-  const runtimeProvision = resolveRuntimeProvision(input);
-  const runtimeProvisionCommand = runtimeProvision.command;
-  const provisionCoordinator = createRuntimeProvisionCoordinator();
-  const allowFixedPortFallback = await isPersistedIsolatedExecutionWorkspace({
+  const persistedWorkspace = await inspectPersistedRuntimeWorkspace({
     db: input.db,
     companyId: input.agent.companyId,
     executionWorkspaceId: input.executionWorkspaceId,
   });
+  if (persistedWorkspace.remote) {
+    if (rawServices.length > 0) {
+      throw new WorkspaceRuntimeValidationFailure("Remote workspace storage does not support Core workspace services.",
+        { reason: "remote_workspace_runtime_services_unsupported" });
+    }
+    return [];
+  }
+  const allowFixedPortFallback = persistedWorkspace.isolated;
+  const runtimeProvision = input.skipHostProvision
+    ? { command: "", kind: null }
+    : resolveRuntimeProvision(input);
+  const runtimeProvisionCommand = runtimeProvision.command;
+  const provisionCoordinator = createRuntimeProvisionCoordinator();
   runtimeServiceLeasesByRun.set(input.runId, acquiredServiceIds);
 
   try {
@@ -7450,6 +7748,7 @@ async function ensureRuntimeServicesForRunInvocation(
       const reuseKey = resolveRuntimeServiceReuseIdentity({
         service,
         workspace: input.workspace,
+        executionWorkspaceId: input.executionWorkspaceId,
         agent: input.agent,
         issue: input.issue,
         adapterEnv: input.adapterEnv,
@@ -7550,6 +7849,7 @@ function resolveRuntimeStartMutexPlan(input: {
     const reuseKey = resolveRuntimeServiceReuseIdentity({
       service,
       workspace: input.workspace,
+      executionWorkspaceId: input.executionWorkspaceId,
       agent: input.agent,
       issue: input.issue,
       adapterEnv: input.adapterEnv,
@@ -7598,6 +7898,23 @@ async function withRuntimeStartMutexes<T>(
   return await acquire(0);
 }
 
+async function withRuntimeServiceSourceLocks<T>(input: {
+  db?: Db; workspace: RealizedExecutionWorkspace; agent: ExecutionWorkspaceAgentRef;
+  issue: ExecutionWorkspaceIssueRef | null; adapterEnv: Record<string, string>; services: Record<string, unknown>[];
+}, action: () => Promise<T>): Promise<T> {
+  if (!input.db || input.services.length === 0) return action();
+  const paths = [...localWorkspaceSourcePaths({ cwd: input.workspace.cwd, providerRef: input.workspace.worktreePath }),
+    input.workspace.baseCwd, ...input.services.map(service =>
+    resolveRuntimeServiceReuseIdentity({ ...input, service, scopeType: "project_workspace", scopeId: input.workspace.workspaceId }).serviceCwd)];
+  const projectIds: string[] = [], issueIds: string[] = [];
+  for (const cwd of new Set(paths)) {
+    const identities = await workspaceSourceIdentities(input.agent.companyId, cwd);
+    projectIds.push(...identities.projectIds);
+    issueIds.push(...identities.issueIds);
+  }
+  return withWorkspaceSourceLocks(input.db, { companyId: input.agent.companyId, projectIds, issueIds }, action);
+}
+
 export async function ensureRuntimeServicesForRun(
   input: EnsureRuntimeServicesForRunInput,
 ): Promise<RuntimeServiceRef[]> {
@@ -7619,7 +7936,7 @@ export async function ensureRuntimeServicesForRun(
   try {
     return await withRuntimeStartMutexes(
       mutexPlan.ownerKeys,
-      () => ensureRuntimeServicesForRunInvocation(input),
+      () => withRuntimeServiceSourceLocks({ ...input, services }, () => ensureRuntimeServicesForRunInvocation(input)),
     );
   } finally {
     releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
@@ -7684,6 +8001,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     const reuseKey = resolveRuntimeServiceReuseIdentity({
       service,
       workspace: input.workspace,
+      executionWorkspaceId: input.executionWorkspaceId,
       agent: input.actor,
       issue: input.issue,
       adapterEnv: input.adapterEnv,
@@ -7883,6 +8201,7 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
         const reuseKey = resolveRuntimeServiceReuseIdentity({
           service,
           workspace: input.workspace,
+          executionWorkspaceId: input.executionWorkspaceId,
           agent: input.actor,
           issue: input.issue,
           adapterEnv: input.adapterEnv,
@@ -8054,6 +8373,7 @@ export async function startRuntimeServicesForWorkspaceControl(
     defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "stopped",
     serviceStates: readConfiguredServiceStates(input.config),
   });
+  if (services.length === 0) return [];
   const invocationId = input.invocationId ?? "workspace_control";
   const mutexPlan = resolveRuntimeStartMutexPlan({
     services,
@@ -8067,7 +8387,30 @@ export async function startRuntimeServicesForWorkspaceControl(
   try {
     return await withRuntimeStartMutexes(
       mutexPlan.ownerKeys,
-      () => startRuntimeServicesForWorkspaceControlInvocation(input),
+      () => withRuntimeServiceSourceLocks({ ...input, agent: input.actor, services }, async () => {
+        if (!input.db || !input.executionWorkspaceId) return startRuntimeServicesForWorkspaceControlInvocation(input);
+        // Startup and direct callers can bypass the HTTP operation recorder.
+        // Keep migration fenced through provision/bind/persistence, including the
+        // HTTPS path which intentionally commits its reservation before binding.
+        return withExecutionWorkspaceLifecycleLock(input.db, input.executionWorkspaceId, async (tx) => {
+          const [fresh] = await tx.select({ cwd: executionWorkspaces.cwd, metadata: executionWorkspaces.metadata })
+            .from(executionWorkspaces).where(and(eq(executionWorkspaces.id, input.executionWorkspaceId!),
+              eq(executionWorkspaces.companyId, input.actor.companyId)));
+          if (!fresh) throw new Error("Execution workspace not found before starting runtime services");
+          if (readRemoteWorkspaceAuthority(fresh.metadata)) {
+            throw unprocessable("Workspace commands are not supported for remote workspaces yet. Run the command through an agent task.",
+              { code: "remote_workspace_runtime_commands_unsupported" });
+          }
+          if (fresh.metadata?.remoteWorkspaceMigration) {
+            throw conflict("The workspace is being moved to remote storage. Retry after migration completes.",
+              { code: "workspace_runtime_migration_in_progress" });
+          }
+          if (fresh.cwd !== input.workspace.cwd) {
+            throw conflict("Execution workspace changed before command admission.", { code: "workspace_runtime_authority_changed" });
+          }
+          return startRuntimeServicesForWorkspaceControlInvocation(input);
+        });
+      }),
     );
   } finally {
     releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
@@ -8101,7 +8444,11 @@ export async function releaseRuntimeServicesForRun(runId: string) {
   }
 }
 
-export async function stopRuntimeServicesForExecutionWorkspace(input: {
+export async function stopRuntimeServicesForExecutionWorkspace(input: Parameters<typeof stopRuntimeServicesForExecutionWorkspaceOwned>[0]) {
+  return withRuntimeStopWork(() => stopRuntimeServicesForExecutionWorkspaceOwned(input));
+}
+
+async function stopRuntimeServicesForExecutionWorkspaceOwned(input: {
   db?: Db;
   executionWorkspaceId: string;
   workspaceCwd?: string | null;
@@ -8156,7 +8503,11 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
   }
 }
 
-export async function stopRuntimeServicesForProjectWorkspace(input: {
+export async function stopRuntimeServicesForProjectWorkspace(input: Parameters<typeof stopRuntimeServicesForProjectWorkspaceOwned>[0]) {
+  return withRuntimeStopWork(() => stopRuntimeServicesForProjectWorkspaceOwned(input));
+}
+
+async function stopRuntimeServicesForProjectWorkspaceOwned(input: {
   db?: Db;
   projectWorkspaceId: string;
   runtimeServiceId?: string | null;
@@ -8382,6 +8733,19 @@ export async function refreshPersistedRuntimeServiceHealth(input: {
 }
 
 export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
+  if (runtimeReconciliation) return runtimeReconciliation;
+  runtimeReconstructionComplete = false;
+  const epoch = ++runtimeReconstructionEpoch;
+  runtimeReconciliation = reconstructRuntimeServices(db).then(result => {
+    if (epoch === runtimeReconstructionEpoch) {
+      runtimeReconstructionComplete = result.restartFailed === 0 && result.exposureReservationDrift.length === 0;
+    }
+    return result;
+  }).finally(() => { runtimeReconciliation = null; });
+  return runtimeReconciliation;
+}
+
+async function reconstructRuntimeServices(db: Db) {
   const rows = await db
     .select()
     .from(workspaceRuntimeServices)
@@ -8788,7 +9152,7 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
           : null,
         workspace: {
           baseCwd: row.cwd,
-          source: row.mode === "shared_workspace" ? "project_primary" : "task_session",
+          source: row.mode === "shared_workspace" && !isPersistedTaskDirectory(row) ? "project_primary" : "task_session",
           projectId: row.projectId,
           workspaceId: row.projectWorkspaceId ?? null,
           repoUrl: row.repoUrl ?? null,

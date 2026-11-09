@@ -119,6 +119,38 @@ describe("opencode remote environment diagnostics", () => {
     },
   );
 
+  it("gives each concurrent native probe its own OpenCode data directory", async () => {
+    vi.stubEnv("HOME", "/host/user");
+    vi.stubEnv("XDG_DATA_HOME", "/host/user/.local/share");
+    const probe = () => testEnvironment({ companyId: "company-1", adapterType: "paperclip_runner",
+      config: { model: "openrouter/deepseek/deepseek-v4-flash-0731", env: { XDG_CONFIG_HOME: configHome } } });
+    const results = await Promise.all([probe(), probe()]);
+    expect(results.map(result => result.status)).toEqual(["pass", "pass"]);
+    const envs = runAdapterExecutionTargetProcess.mock.calls.map(call =>
+      (call as unknown as [unknown, unknown, unknown, unknown, { env: Record<string, string> }])[4].env);
+    expect(envs).toHaveLength(2);
+    for (const env of envs) {
+      expect(path.basename(env.HOME)).toMatch(/^paperclip-opencode-native-probe-home-/);
+      for (const key of ["XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"]) {
+        expect(path.dirname(env[key])).toBe(env.HOME);
+      }
+      expect(env).toMatchObject({ OPENCODE_DISABLE_MODELS_FETCH: "true", OPENCODE_DISABLE_DEFAULT_PLUGINS: "true" });
+      await expect(stat(env.HOME)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(envs[0].XDG_DATA_HOME).not.toBe(envs[1].XDG_DATA_HOME);
+  });
+
+  it("keeps the host OpenCode home for the legacy local adapter, which owns its login", async () => {
+    vi.stubEnv("HOME", "/host/user");
+    vi.stubEnv("XDG_DATA_HOME", "/host/user/.local/share");
+    vi.mocked(discoverOpenCodeModels).mockResolvedValueOnce([{ id: "provider/model", label: "Model" }]);
+    vi.mocked(ensureOpenCodeModelConfiguredAndAvailable).mockResolvedValueOnce([{ id: "provider/model", label: "Model" }]);
+    await testEnvironment({ companyId: "company-1", adapterType: "opencode_local",
+      config: { model: "provider/model", env: { XDG_CONFIG_HOME: configHome } } });
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [unknown, unknown, unknown, unknown, { env: Record<string, string> }];
+    expect(call[4].env).toMatchObject({ HOME: "/host/user", XDG_DATA_HOME: "/host/user/.local/share" });
+  });
+
   it("rejects a malformed native model before starting the probe", async () => {
     const result = await testEnvironment({ companyId: "company-1", adapterType: "paperclip_runner",
       config: { model: "missing-provider", env: { XDG_CONFIG_HOME: configHome } } });

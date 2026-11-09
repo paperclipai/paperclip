@@ -16,5 +16,5 @@ export const aiProviderDefaults = pgTable("ai_provider_defaults", {
 }, (t) => [
   uniqueIndex("ai_provider_defaults_owner_provider_uq").on(t.companyId, t.userId, t.provider),
   foreignKey({ columns: [t.companyId, t.grantId], foreignColumns: [connectionGrants.companyId, connectionGrants.id], name: "ai_provider_defaults_company_grant_fk" }),
-  check("ai_provider_defaults_provider_check", sql`${t.provider} in ('anthropic','openai','openrouter','xai','google')`),
+  check("ai_provider_defaults_provider_check", sql`${t.provider} in ('anthropic','openai','openrouter','xai','google','github')`),
 ]);

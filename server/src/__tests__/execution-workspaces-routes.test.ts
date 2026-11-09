@@ -146,6 +146,7 @@ describe("execution workspace routes", () => {
       issueId: undefined,
       status: undefined,
       reuseEligible: true,
+      selectableForTask: false,
     });
     expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
   });
@@ -168,6 +169,23 @@ describe("execution workspace routes", () => {
       limit: 25,
       offset: 10,
     }, expect.anything());
+  });
+
+  it("bounds summary discovery after company and visibility checks", async () => {
+    const cursor = "00000000-0000-4000-8000-000000000001";
+    const res = await request(createApp())
+      .get(`/api/companies/company-1/execution-workspaces?summary=true&selectableForTask=true&limit=51&cursor=${cursor}`);
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.listSummaries).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      readCondition: expect.anything(), selectableForTask: true,
+    }), { limit: 51, cursor });
+    expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
+  });
+
+  it.each(["limit=1000", "limit=0", "limit=1.5", "cursor=invalid"])("rejects invalid summary pagination (%s)", async query => {
+    const res = await request(createApp()).get(`/api/companies/company-1/execution-workspaces?summary=true&${query}`);
+    expect(res.status).toBe(422);
+    expect(mockExecutionWorkspaceService.listSummaries).not.toHaveBeenCalled();
   });
 
   it("rejects invalid workspace overview pagination", async () => {

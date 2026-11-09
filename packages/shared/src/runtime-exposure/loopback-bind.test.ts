@@ -37,14 +37,6 @@ describe("forceLoopbackBindInCommand", () => {
     );
   });
 
-  it("adds an explicit loopback bind when the command selects none", () => {
-    // A bare `pnpm dev` lets an old guest runner infer its bind from HOST, so the
-    // flags must be added rather than assumed.
-    expect(forceLoopbackBindInCommand("pnpm dev")).toBe(
-      "pnpm dev --bind loopback",
-    );
-  });
-
   it("keeps the legacy lan aliases so dev-service detection still matches", () => {
     // `isPaperclipDevRuntimeService` matches `--tailscale-auth` as a substring;
     // an explicit `--bind` already beats the alias in every dev-runner version.

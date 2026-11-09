@@ -30,6 +30,7 @@ function createMemoryReaperStore(): AdapterAuthReaperStore & {
     seed(input) {
       const row: AdapterAuthSessionRow = {
         id: input.id,
+        publicSessionId: input.publicSessionId ?? randomUUID(),
         companyId: input.companyId ?? randomUUID(),
         environmentId: input.environmentId ?? randomUUID(),
         adapterType: input.adapterType ?? ADAPTER_TYPE,
@@ -40,6 +41,7 @@ function createMemoryReaperStore(): AdapterAuthReaperStore & {
         promotionExpiresAt: input.promotionExpiresAt ?? null,
         finishedAt: input.finishedAt ?? null,
         failureReason: input.failureReason ?? null,
+        resultClaim: input.resultClaim ?? null,
       };
       rows.set(row.id, row);
       return row;

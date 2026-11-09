@@ -1,0 +1,410 @@
+{
+  "schema": "paperclip.e2e.kimi-context-real-producer-calibration.v1",
+  "identity": {
+    "runnerInstanceId": "runner-test-1",
+    "environmentLeaseId": "environment-test-1",
+    "runId": "00000000-0000-4000-8000-000000000001",
+    "normalizedSessionId": "session-test-1",
+    "turnId": "turn-test-1",
+    "itemId": "item-test-1"
+  },
+  "nativeTurnId": "native-turn-test",
+  "requestId": "context-request",
+  "toolCallId": "0:synthetic-context-call",
+  "action": "synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation ",
+  "publication": {
+    "observerLeaseId": "synthetic-lease",
+    "companyId": "synthetic-company",
+    "agentId": "synthetic-agent",
+    "issueId": "synthetic-task",
+    "environmentId": "synthetic-env",
+    "runId": "00000000-0000-4000-8000-000000000001",
+    "sessionId": "session-test-1",
+    "sourceInstanceId": "runner-test-1",
+    "turnId": "native-turn-test",
+    "requestId": "context-request",
+    "toolCallId": "0:synthetic-context-call",
+    "actionSha256": "sha256:d074470e2899007f3814a855423002b3fff1f3290254826adfcf076e02ee8e0a"
+  },
+  "committedEvents": [
+    {
+      "sourceSeq": 1,
+      "sourceEventId": "semantic-event-1",
+      "eventType": "turn.started",
+      "priority": 0,
+      "envelope": {
+        "protocol": "paperclip.runner",
+        "version": 1,
+        "kind": "event",
+        "runnerInstanceId": "runner-test-1",
+        "environmentLeaseId": "environment-test-1",
+        "runId": "00000000-0000-4000-8000-000000000001",
+        "normalizedSessionId": "session-test-1",
+        "turnId": "turn-test-1",
+        "itemId": "item-test-1",
+        "payload": {
+          "sourceSeq": 1,
+          "sourceEventId": "semantic-event-1",
+          "sourceInstanceId": "runner-test-1",
+          "sourceKind": "runner",
+          "runId": "00000000-0000-4000-8000-000000000001",
+          "normalizedSessionId": "session-test-1",
+          "turnId": "turn-test-1",
+          "itemId": "item-test-1",
+          "eventType": "turn.started",
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "priority": 0,
+          "emittedAt": "2026-08-25T18:00:00.000Z",
+          "payload": {
+            "provider": "acpx",
+            "providerTurnId": "native-turn-test",
+            "status": "running",
+            "turn": {
+              "id": "native-turn-test"
+            }
+          }
+        }
+      },
+      "deliveryCount": 1,
+      "logicalEffectCount": 1
+    },
+    {
+      "sourceSeq": 2,
+      "sourceEventId": "semantic-event-2",
+      "eventType": "runtime_request.created",
+      "priority": 0,
+      "envelope": {
+        "protocol": "paperclip.runner",
+        "version": 1,
+        "kind": "event",
+        "runnerInstanceId": "runner-test-1",
+        "environmentLeaseId": "environment-test-1",
+        "runId": "00000000-0000-4000-8000-000000000001",
+        "normalizedSessionId": "session-test-1",
+        "turnId": "turn-test-1",
+        "itemId": "item-test-1",
+        "payload": {
+          "sourceSeq": 2,
+          "sourceEventId": "semantic-event-2",
+          "sourceInstanceId": "runner-test-1",
+          "sourceKind": "runner",
+          "runId": "00000000-0000-4000-8000-000000000001",
+          "normalizedSessionId": "session-test-1",
+          "turnId": "turn-test-1",
+          "itemId": "item-test-1",
+          "eventType": "runtime_request.created",
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "priority": 0,
+          "emittedAt": "2026-08-25T18:00:00.000Z",
+          "payload": {
+            "request": {
+              "schema": "paperclip.runtime_request.v2",
+              "requestKind": "permission_approval",
+              "type": "permission",
+              "status": "pending",
+              "requestId": "context-request",
+              "turnId": "turn-test-1",
+              "itemId": "item-test-1",
+              "prompt": "mcp__paperclip__get_task_context",
+              "origin": {
+                "adapter": "acpx-runtime-sidecar",
+                "provider": "kimi",
+                "method": "session/request_permission"
+              },
+              "choices": [
+                {
+                  "key": "accept",
+                  "label": "Allow once"
+                },
+                {
+                  "key": "decline",
+                  "label": "Reject"
+                },
+                {
+                  "key": "cancel",
+                  "label": "Cancel"
+                }
+              ],
+              "details": {
+                "toolCallId": "0:synthetic-context-call"
+              }
+            }
+          }
+        }
+      },
+      "deliveryCount": 1,
+      "logicalEffectCount": 1
+    },
+    {
+      "sourceSeq": 3,
+      "sourceEventId": "semantic-event-3",
+      "eventType": "runtime_request.resolved",
+      "priority": 0,
+      "envelope": {
+        "protocol": "paperclip.runner",
+        "version": 1,
+        "kind": "event",
+        "runnerInstanceId": "runner-test-1",
+        "environmentLeaseId": "environment-test-1",
+        "runId": "00000000-0000-4000-8000-000000000001",
+        "normalizedSessionId": "session-test-1",
+        "turnId": "turn-test-1",
+        "itemId": "item-test-1",
+        "payload": {
+          "sourceSeq": 3,
+          "sourceEventId": "semantic-event-3",
+          "sourceInstanceId": "runner-test-1",
+          "sourceKind": "runner",
+          "runId": "00000000-0000-4000-8000-000000000001",
+          "normalizedSessionId": "session-test-1",
+          "turnId": "turn-test-1",
+          "itemId": "item-test-1",
+          "eventType": "runtime_request.resolved",
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "priority": 0,
+          "emittedAt": "2026-08-25T18:00:00.000Z",
+          "payload": {
+            "requestId": "context-request",
+            "requestKind": "permission_approval",
+            "turnId": "turn-test-1",
+            "itemId": "item-test-1",
+            "action": "accept",
+            "status": "resolved",
+            "provider": "acpx"
+          }
+        }
+      },
+      "deliveryCount": 1,
+      "logicalEffectCount": 1
+    },
+    {
+      "sourceSeq": 4,
+      "sourceEventId": "semantic-event-4",
+      "eventType": "semantic_tool.input",
+      "priority": 0,
+      "envelope": {
+        "protocol": "paperclip.runner",
+        "version": 1,
+        "kind": "event",
+        "runnerInstanceId": "runner-test-1",
+        "environmentLeaseId": "environment-test-1",
+        "runId": "00000000-0000-4000-8000-000000000001",
+        "normalizedSessionId": "session-test-1",
+        "turnId": "turn-test-1",
+        "itemId": "item-test-1",
+        "payload": {
+          "sourceSeq": 4,
+          "sourceEventId": "semantic-event-4",
+          "sourceInstanceId": "runner-test-1",
+          "sourceKind": "runner",
+          "runId": "00000000-0000-4000-8000-000000000001",
+          "normalizedSessionId": "session-test-1",
+          "turnId": "turn-test-1",
+          "itemId": "item-test-1",
+          "eventType": "semantic_tool.input",
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "priority": 0,
+          "emittedAt": "2026-08-25T18:00:00.000Z",
+          "payload": {
+            "semantic_tool": {
+              "schema": "paperclip.prp.semantic_tool.v1",
+              "schemaVersion": 1,
+              "phase": "input",
+              "callId": "native-mcp-context-1",
+              "operationId": "get_task_context",
+              "correlation": {
+                "runId": "00000000-0000-4000-8000-000000000001",
+                "normalizedSessionId": "session-test-1",
+                "turnId": "turn-test-1",
+                "itemId": "item-test-1"
+              },
+              "idempotencyKey": null,
+              "content": {
+                "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "redactionDisposition": "digest_only",
+                "references": []
+              },
+              "input": {}
+            }
+          }
+        }
+      },
+      "deliveryCount": 1,
+      "logicalEffectCount": 1
+    }
+  ],
+  "commands": [
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_prp_00000001",
+      "controllerSeq": 1,
+      "type": "turn.start",
+      "issuedAt": "2026-10-29T20:32:36.009Z",
+      "payload": {
+        "text": "synthetic scoped task",
+        "turnId": "native-turn-test"
+      },
+      "status": "completed",
+      "result": {
+        "commandId": "command_prp_00000001",
+        "controllerSeq": 1,
+        "commandType": "turn.start",
+        "status": "completed",
+        "result": {
+          "status": "accepted",
+          "providerTurnId": "native-turn-test"
+        }
+      }
+    },
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_prp_00000002",
+      "controllerSeq": 2,
+      "type": "request.resolve",
+      "issuedAt": "2026-10-29T20:32:36.067Z",
+      "payload": {
+        "requestId": "context-request",
+        "turnId": "turn-test-1",
+        "resolution": {
+          "action": "accept"
+        }
+      },
+      "status": "completed",
+      "result": {
+        "commandId": "command_prp_00000002",
+        "controllerSeq": 2,
+        "commandType": "request.resolve",
+        "status": "completed",
+        "result": {
+          "status": "delivered",
+          "requestId": "context-request"
+        }
+      }
+    },
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_tool_a840ed4f1dc2c14279f748c5dd1ea8b3",
+      "controllerSeq": 3,
+      "type": "semantic_tool.result",
+      "issuedAt": "2026-10-29T20:32:36.177Z",
+      "payload": {
+        "callId": "native-mcp-context-1",
+        "operationId": "get_task_context",
+        "sourceEventId": "semantic-event-4",
+        "sourceEventType": "semantic_tool.input",
+        "correlation": {
+          "runId": "00000000-0000-4000-8000-000000000001",
+          "normalizedSessionId": "session-test-1",
+          "turnId": "turn-test-1",
+          "itemId": "item-test-1"
+        },
+        "inputDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "result": {
+          "company": {
+            "id": "synthetic-company"
+          },
+          "actor": {
+            "id": "synthetic-agent"
+          },
+          "activeTask": {
+            "id": "synthetic-task",
+            "description": "synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation "
+          }
+        },
+        "isError": false
+      },
+      "status": "completed",
+      "result": {
+        "commandId": "command_tool_a840ed4f1dc2c14279f748c5dd1ea8b3",
+        "controllerSeq": 3,
+        "commandType": "semantic_tool.result",
+        "status": "completed",
+        "result": {
+          "status": "delivered",
+          "callId": "native-mcp-context-1"
+        }
+      }
+    }
+  ],
+  "projected": {
+    "schema": "paperclip.e2e.kimi-context-authority.v2",
+    "companyId": "synthetic-company",
+    "issueId": "synthetic-task",
+    "agentId": "synthetic-agent",
+    "environmentId": "synthetic-env",
+    "runId": "00000000-0000-4000-8000-000000000001",
+    "sessionId": "session-test-1",
+    "sourceInstanceId": "runner-test-1",
+    "turnId": "native-turn-test",
+    "observerLeaseId": "synthetic-lease",
+    "executionWorkspaceId": "environment-test-1",
+    "controllerTurnId": "turn-test-1",
+    "controllerItemId": "item-test-1",
+    "requestId": "context-request",
+    "toolCallId": "0:synthetic-context-call",
+    "requestCreatedSourceSeq": 2,
+    "requestResolvedSourceSeq": 3,
+    "requestCreatedSha256": "sha256:ace2ee97798265b4cdc5a6e99c070925494f32cc6bf0bfa5880e512d5fd42adc",
+    "requestResolvedSha256": "sha256:81ad2e894058d8aedf8159165d1a4ceac804119abd9cb39d9046161817fdf135",
+    "turnStartSha256": "sha256:197cfbf7b3672e3c3eba8a76f63cf3b6f9936d87eff4818a7861c7faeb9ae9b9",
+    "resolutionCommandSha256": "sha256:90b3828448dd987e9d514816d56c3ef968c5077e9a896f80c2d71542434930a0",
+    "actionSha256": "sha256:d074470e2899007f3814a855423002b3fff1f3290254826adfcf076e02ee8e0a",
+    "callId": "native-mcp-context-1",
+    "inputSourceSeq": 4,
+    "inputSourceEventId": "semantic-event-4",
+    "inputSha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "inputEventSha256": "sha256:fd6478ab28148b294051aaa5471a8adf043812b049f60958bbb8849793c3d104",
+    "resultSha256": "sha256:2b8100a593ee7ad9e0cb2a155c4dd8aa996b6a111034bd1ef64bca0bdb056ca2",
+    "correlationSha256": "sha256:e7b944a6f5b4b8ebca18e2125b06a9e76dc040cc007fe9bda4706fe46eb6d30d",
+    "commandId": "command_tool_a840ed4f1dc2c14279f748c5dd1ea8b3",
+    "controllerSeq": 3,
+    "commandSha256": "sha256:89dc8ed35644e6e991740d5e844208eb8265039cfd07607ae8cb65bd6b1d6e05",
+    "deliverySha256": "sha256:8c8d8c89917f99ca52e3982ed7ba36efbdffca1d09a516098f323bbac3e7e367",
+    "checkpointIdentitySha256": "sha256:449ca73c797d0a5c63ae11086d0cd64e83296ad8e6bfcce83ee21254c406b3ce",
+    "authenticatedConnectionCount": 1,
+    "highestRecordedSourceSeq": 4
+  },
+  "checkpoint": {
+    "runId": "00000000-0000-4000-8000-000000000001",
+    "recoveryEvidence": {
+      "runnerInstanceId": "runner-test-1",
+      "normalizedSessionId": "session-test-1",
+      "authenticatedConnectionCount": 1,
+      "highestRecordedSourceSeq": 4
+    },
+    "records": [
+      [
+        "command:1",
+        "{\"schema\":\"paperclip.prp.command.v1\",\"commandId\":\"command_prp_00000001\",\"controllerSeq\":1,\"type\":\"turn.start\",\"issuedAt\":\"2026-10-29T20:32:36.009Z\",\"payload\":{\"text\":\"synthetic scoped task\",\"turnId\":\"native-turn-test\"},\"status\":\"completed\",\"result\":{\"commandId\":\"command_prp_00000001\",\"controllerSeq\":1,\"commandType\":\"turn.start\",\"status\":\"completed\",\"result\":{\"status\":\"accepted\",\"providerTurnId\":\"native-turn-test\"}}}"
+      ],
+      [
+        "command:2",
+        "{\"schema\":\"paperclip.prp.command.v1\",\"commandId\":\"command_prp_00000002\",\"controllerSeq\":2,\"type\":\"request.resolve\",\"issuedAt\":\"2026-10-29T20:32:36.067Z\",\"payload\":{\"requestId\":\"context-request\",\"turnId\":\"turn-test-1\",\"resolution\":{\"action\":\"accept\"}},\"status\":\"completed\",\"result\":{\"commandId\":\"command_prp_00000002\",\"controllerSeq\":2,\"commandType\":\"request.resolve\",\"status\":\"completed\",\"result\":{\"status\":\"delivered\",\"requestId\":\"context-request\"}}}"
+      ],
+      [
+        "command:3",
+        "{\"schema\":\"paperclip.prp.command.v1\",\"commandId\":\"command_tool_a840ed4f1dc2c14279f748c5dd1ea8b3\",\"controllerSeq\":3,\"type\":\"semantic_tool.result\",\"issuedAt\":\"2026-10-29T20:32:36.177Z\",\"payload\":{\"callId\":\"native-mcp-context-1\",\"operationId\":\"get_task_context\",\"sourceEventId\":\"semantic-event-4\",\"sourceEventType\":\"semantic_tool.input\",\"correlation\":{\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\"},\"inputDigest\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"result\":{\"company\":{\"id\":\"synthetic-company\"},\"actor\":{\"id\":\"synthetic-agent\"},\"activeTask\":{\"id\":\"synthetic-task\",\"description\":\"synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation synthetic operator continuation \"}},\"isError\":false},\"status\":\"completed\",\"result\":{\"commandId\":\"command_tool_a840ed4f1dc2c14279f748c5dd1ea8b3\",\"controllerSeq\":3,\"commandType\":\"semantic_tool.result\",\"status\":\"completed\",\"result\":{\"status\":\"delivered\",\"callId\":\"native-mcp-context-1\"}}}"
+      ],
+      [
+        "event:1",
+        "{\"sourceSeq\":1,\"sourceEventId\":\"semantic-event-1\",\"eventType\":\"turn.started\",\"priority\":0,\"envelope\":{\"protocol\":\"paperclip.runner\",\"version\":1,\"kind\":\"event\",\"runnerInstanceId\":\"runner-test-1\",\"environmentLeaseId\":\"environment-test-1\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"payload\":{\"sourceSeq\":1,\"sourceEventId\":\"semantic-event-1\",\"sourceInstanceId\":\"runner-test-1\",\"sourceKind\":\"runner\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"eventType\":\"turn.started\",\"schema\":\"paperclip.prp.event.v1\",\"schemaVersion\":1,\"priority\":0,\"emittedAt\":\"2026-08-25T18:00:00.000Z\",\"payload\":{\"provider\":\"acpx\",\"providerTurnId\":\"native-turn-test\",\"status\":\"running\",\"turn\":{\"id\":\"native-turn-test\"}}}},\"deliveryCount\":1,\"logicalEffectCount\":1}"
+      ],
+      [
+        "event:2",
+        "{\"sourceSeq\":2,\"sourceEventId\":\"semantic-event-2\",\"eventType\":\"runtime_request.created\",\"priority\":0,\"envelope\":{\"protocol\":\"paperclip.runner\",\"version\":1,\"kind\":\"event\",\"runnerInstanceId\":\"runner-test-1\",\"environmentLeaseId\":\"environment-test-1\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"payload\":{\"sourceSeq\":2,\"sourceEventId\":\"semantic-event-2\",\"sourceInstanceId\":\"runner-test-1\",\"sourceKind\":\"runner\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"eventType\":\"runtime_request.created\",\"schema\":\"paperclip.prp.event.v1\",\"schemaVersion\":1,\"priority\":0,\"emittedAt\":\"2026-08-25T18:00:00.000Z\",\"payload\":{\"request\":{\"schema\":\"paperclip.runtime_request.v2\",\"requestKind\":\"permission_approval\",\"type\":\"permission\",\"status\":\"pending\",\"requestId\":\"context-request\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"prompt\":\"mcp__paperclip__get_task_context\",\"origin\":{\"adapter\":\"acpx-runtime-sidecar\",\"provider\":\"kimi\",\"method\":\"session/request_permission\"},\"choices\":[{\"key\":\"accept\",\"label\":\"Allow once\"},{\"key\":\"decline\",\"label\":\"Reject\"},{\"key\":\"cancel\",\"label\":\"Cancel\"}],\"details\":{\"toolCallId\":\"0:synthetic-context-call\"}}}}},\"deliveryCount\":1,\"logicalEffectCount\":1}"
+      ],
+      [
+        "event:3",
+        "{\"sourceSeq\":3,\"sourceEventId\":\"semantic-event-3\",\"eventType\":\"runtime_request.resolved\",\"priority\":0,\"envelope\":{\"protocol\":\"paperclip.runner\",\"version\":1,\"kind\":\"event\",\"runnerInstanceId\":\"runner-test-1\",\"environmentLeaseId\":\"environment-test-1\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"payload\":{\"sourceSeq\":3,\"sourceEventId\":\"semantic-event-3\",\"sourceInstanceId\":\"runner-test-1\",\"sourceKind\":\"runner\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"eventType\":\"runtime_request.resolved\",\"schema\":\"paperclip.prp.event.v1\",\"schemaVersion\":1,\"priority\":0,\"emittedAt\":\"2026-08-25T18:00:00.000Z\",\"payload\":{\"requestId\":\"context-request\",\"requestKind\":\"permission_approval\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"action\":\"accept\",\"status\":\"resolved\",\"provider\":\"acpx\"}}},\"deliveryCount\":1,\"logicalEffectCount\":1}"
+      ],
+      [
+        "event:4",
+        "{\"sourceSeq\":4,\"sourceEventId\":\"semantic-event-4\",\"eventType\":\"semantic_tool.input\",\"priority\":0,\"envelope\":{\"protocol\":\"paperclip.runner\",\"version\":1,\"kind\":\"event\",\"runnerInstanceId\":\"runner-test-1\",\"environmentLeaseId\":\"environment-test-1\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"payload\":{\"sourceSeq\":4,\"sourceEventId\":\"semantic-event-4\",\"sourceInstanceId\":\"runner-test-1\",\"sourceKind\":\"runner\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"eventType\":\"semantic_tool.input\",\"schema\":\"paperclip.prp.event.v1\",\"schemaVersion\":1,\"priority\":0,\"emittedAt\":\"2026-08-25T18:00:00.000Z\",\"payload\":{\"semantic_tool\":{\"schema\":\"paperclip.prp.semantic_tool.v1\",\"schemaVersion\":1,\"phase\":\"input\",\"callId\":\"native-mcp-context-1\",\"operationId\":\"get_task_context\",\"correlation\":{\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\"},\"idempotencyKey\":null,\"content\":{\"digest\":\"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"redactionDisposition\":\"digest_only\",\"references\":[]},\"input\":{}}}}},\"deliveryCount\":1,\"logicalEffectCount\":1}"
+      ]
+    ]
+  }
+}

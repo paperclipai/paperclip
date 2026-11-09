@@ -1,4 +1,9 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
+import type { AutomaticCompletionReviewScope } from "../automatic-completion-review-notifications.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
+import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import {
   completionContracts,
   issueThreadInteractions,
@@ -15,6 +20,7 @@ import {
   type ActivityPublication,
 } from "../activity-log.js";
 import { enqueueTerminalIssueInteractionChatPublications } from "../chat-interaction-publications.js";
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { logger } from "../../middleware/logger.js";
 
@@ -23,7 +29,7 @@ const automaticPrompt =
   "Review the persisted native-run evidence and confirm whether this issue may be completed.";
 
 /** Identify only proven system fallback cards; this lookup never changes state. */
-export async function findAutomaticCompletionReviews(db: Db, issueId?: string) {
+function findAutomaticReviewCandidates(db: Db, options: { issueId?: string; companyId?: string; id?: string; after?: string } = {}) {
   return db
     .select({ interaction: issueThreadInteractions, decision: statusDecisions })
     .from(issueThreadInteractions)
@@ -82,17 +88,20 @@ export async function findAutomaticCompletionReviews(db: Db, issueId?: string) {
         sql`${issueThreadInteractions.payload}->'target'->>'key' = 'native_completion_review'`,
         sql`${issueThreadInteractions.payload}->'target'->>'revisionId' = ${statusDecisions.id}::text`,
         sql`split_part(${issueThreadInteractions.payload}->>'prompt', E'\n', 1) = ${automaticPrompt}`,
-        ...(issueId ? [eq(issueThreadInteractions.issueId, issueId)] : []),
+        options.issueId ? eq(issueThreadInteractions.issueId, options.issueId) : undefined,
+        options.companyId ? eq(issueThreadInteractions.companyId, options.companyId) : undefined,
+        options.id ? eq(issueThreadInteractions.id, options.id) : undefined,
+        options.after ? gt(issueThreadInteractions.id, options.after) : undefined,
       ),
     )
-    .limit(100)
-    .catch((err) => {
-      logger.warn(
-        { err },
-        "Automatic completion review lookup failed; will retry",
-      );
-      return [];
-    });
+    .orderBy(asc(issueThreadInteractions.id)).limit(100);
+}
+
+export async function findAutomaticCompletionReviews(db: Db, issueId?: string) {
+  return findAutomaticReviewCandidates(db, { issueId }).catch((err) => {
+    logger.warn({ err }, "Automatic completion review lookup failed; will retry");
+    return [];
+  });
 }
 
 /** Narrow, replay-safe retirement. Explicit requests and answered cards are immutable here. */
@@ -100,7 +109,10 @@ export async function dismissAutomaticCompletionReviews(
   db: Db,
   issueId?: string,
 ) {
-  const candidates = await findAutomaticCompletionReviews(db, issueId);
+  await dismissCandidates(db, await findAutomaticCompletionReviews(db, issueId));
+}
+
+async function dismissCandidates(db: Db, candidates: Awaited<ReturnType<typeof findAutomaticReviewCandidates>>) {
   for (const { interaction, decision } of candidates) {
     const publications: ActivityPublication[] = [];
     try {
@@ -126,6 +138,8 @@ export async function dismissAutomaticCompletionReviews(
           )
           .for("update");
         if (!issue) return;
+        await notifyChatRunMilestones(tx, interaction);
+        await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id, runId: decision.runId });
         const now = new Date();
         const [retired] = await tx
           .update(issueThreadInteractions)
@@ -145,6 +159,10 @@ export async function dismissAutomaticCompletionReviews(
               eq(issueThreadInteractions.companyId, issue.companyId),
               eq(issueThreadInteractions.status, "pending"),
               eq(issueThreadInteractions.payload, interaction.payload),
+              eq(issueThreadInteractions.kind, interaction.kind),
+              eq(issueThreadInteractions.sourceRunId, decision.runId),
+              eq(issueThreadInteractions.idempotencyKey, interaction.idempotencyKey!),
+              isNull(issueThreadInteractions.createdByAgentId), isNull(issueThreadInteractions.createdByUserId),
             ),
           )
           .returning();
@@ -210,4 +228,34 @@ export async function decisionHasRetiredAutomaticReview(
     )
     .limit(1);
   return rows.length > 0;
+}
+
+export function registerAutomaticCompletionReviewWork(db: Db, coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+  type Entry = { id: string; companyId: string; issueId: string; dueAt: number };
+  async function load(scope?: AutomaticCompletionReviewScope, signal?: AbortSignal): Promise<Entry[]> {
+    const entries = new Map<string, Entry>();
+    let after: string | undefined;
+    while (canRun() && !signal?.aborted) {
+      const rows = await findAutomaticReviewCandidates(db, { ...scope, after });
+      for (const { interaction } of rows) entries.set(interaction.id, {
+        id: interaction.id, companyId: interaction.companyId, issueId: interaction.issueId, dueAt: 0,
+      });
+      if (rows.length < 100) return [...entries.values()];
+      after = rows[rows.length - 1].interaction.id;
+    }
+    throw new Error("Automatic completion review discovery stopped");
+  }
+  return registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.automaticCompletionReviews, batchSize: 20,
+    decodeScope: (hint: string): AutomaticCompletionReviewScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+    matches: (entry: Entry, scope?: AutomaticCompletionReviewScope) => !scope || entry.companyId === scope.companyId && entry.issueId === scope.issueId,
+    load,
+    check: async (entry: Entry, signal?: AbortSignal) => {
+      const candidates = await findAutomaticReviewCandidates(db, entry);
+      if (!canRun() || signal?.aborted) throw new Error("Automatic completion review cleanup stopped");
+      await dismissCandidates(db, candidates);
+      const pending = await findAutomaticReviewCandidates(db, entry);
+      return pending.length ? { ...entry, dueAt: Date.now() + 30_000 } : null;
+    },
+  }, canRun);
 }

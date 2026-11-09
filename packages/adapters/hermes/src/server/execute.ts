@@ -72,6 +72,14 @@ function cfgStringArray(v: unknown): string[] | undefined {
     ? (v as string[])
     : undefined;
 }
+function cfgEnvString(v: unknown): string | undefined {
+  if (typeof v === "string" && v.length > 0) return v;
+  if (v && typeof v === "object" && "value" in v) {
+    const value = (v as { value?: unknown }).value;
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+  return undefined;
+}
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
@@ -432,8 +440,17 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
+  const userEnvForPrompt = config.env as Record<string, unknown> | undefined;
+  const promptConfig: Record<string, unknown> = { ...config };
+  if (!cfgString(promptConfig.paperclipApiUrl) && userEnvForPrompt && typeof userEnvForPrompt === "object") {
+    const configuredPaperclipApiUrl = cfgEnvString(userEnvForPrompt.PAPERCLIP_API_URL);
+    if (configuredPaperclipApiUrl) {
+      promptConfig.paperclipApiUrl = configuredPaperclipApiUrl;
+    }
+  }
+
   const sessionId = persistSession ? prevSessionId : undefined;
-  const prompt = buildPrompt(ctx, config, { resumedSession: Boolean(sessionId) });
+  const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line

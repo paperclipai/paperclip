@@ -5,6 +5,20 @@ must be attached to the Paperclip issue before the agent chooses a final
 disposition. A local workspace path is not enough, because cloud users and
 reviewers often cannot access the agent's disk.
 
+## Upload files from a task
+
+People can open the task's Artifacts tab and use the upload icon, or drop files
+anywhere in the panel, including its header and existing artifact cards. Uploads
+save directly to the task. They do not send a message, assign an agent, or
+release a pause hold. Files from people and agents appear together in Artifacts.
+
+Markdown imports create task documents. Repeated filenames get a new document
+key instead of replacing an existing revision.
+Hidden system keys and artifact-review prefixes are reserved; imports with
+those filenames receive a visible upload document key. Other supported files use
+the existing attachment API and its type and size limits. Failed uploads show
+an inline Retry action while successful files remain available.
+
 ## Native runner
 
 When `register_deliverable` is available, use it for files in the bound local or
@@ -12,6 +26,14 @@ remote workspace. Supply a workspace-relative `contentRef`, basename `filename`,
 `contentType`, exact `byteSize` and SHA-256, `title`, and a stable `idempotencyKey`.
 The tool verifies the file, stores an attachment and artifact work product, and
 binds it to the response. Generic API tools and a legacy API key are unnecessary.
+
+Named JSON file outputs and explicit publication requests require the same
+verified delivery evidence as other file outputs. A saved summary document does
+not replace a requested downloadable JSON file. Reading JSON inputs or discussing
+their contents inline does not by itself require a file attachment.
+JSON output intent is recognized from a direct filename or an explicit output
+destination. Ambiguous descriptions of input files joined by `to` remain text
+requests; use `as`, `into`, or an explicit output file when an artifact is required.
 
 The completion gate permits a narrow sentence-bound exception for one requested
 file when the following sentence explicitly qualifies it, for example:
@@ -31,6 +53,12 @@ confirms storage and response binding in Paperclip; it does not confirm delivery
 to an external chat provider. If registration fails, use the returned error to
 resolve the failure or explain the limitation; do not describe a workspace path
 as an uploaded file.
+
+With workspace-relative file access, create or copy task deliverables into the
+directory returned by `get_workspace.cwd` before registration. `AGENT_HOME`
+holds personal instructions and memory. If registration reports a missing
+workspace file, copy the file to that task directory and retry with a relative
+`contentRef`.
 
 ## Legacy adapters
 

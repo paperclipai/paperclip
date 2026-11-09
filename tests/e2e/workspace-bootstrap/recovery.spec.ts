@@ -75,6 +75,18 @@ for (const persistent of [false, true]) {
       // Independently confirm the configured source was never overwritten.
       expect(sourceCopy).toBeTruthy();
       expect(completed.scheduledRetryAttempt).toBe(1);
+      const completedRun = await api(`/heartbeat-runs/${completed.id}`);
+      const completedLog = await api(`/heartbeat-runs/${completed.id}/log`);
+      expect(completedRun.stdoutExcerpt).toContain("Workspace recovery verification complete.");
+      expect(completedRun.lastOutputSeq).toBeGreaterThan(0);
+      expect(completedRun.lastOutputBytes).toBe(completedRun.logBytes);
+      expect(completedLog.content).toContain("Workspace recovery verification complete.");
+      const [runtimeService] = completedRun.contextSnapshot.paperclipRuntimeServices;
+      expect(runtimeService).toMatchObject({ serviceName: "fixture-web", companyId: fixture.companyId, provider: "local_process" });
+      const comments = await api(`/issues/${task.id}/comments`);
+      expect(comments.some((comment: { body: string }) => comment.body.includes("## Workspace Ready") && comment.body.includes(runtimeService.url))).toBe(true);
+      // Run status precedes final cleanup; wait for the owned ephemeral listener to stop.
+      await expect.poll(async () => fetch(runtimeService.url, { signal: AbortSignal.timeout(2_000) }).then(() => true, () => false)).toBe(false);
       expect(await readFile(path.join(fixture.source, "README.md"), "utf8")).toBe("Existing uncommitted work\n");
     }
     await page.reload();

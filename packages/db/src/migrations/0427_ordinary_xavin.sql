@@ -1,0 +1,1 @@
+CREATE INDEX "execution_workspace_snapshots_imported_children_idx" ON "execution_workspace_snapshots" USING gin (("metadata"->'importedWorkspaceChildren') jsonb_path_ops) WHERE "execution_workspace_snapshots"."metadata" ? 'importedWorkspaceChildren';

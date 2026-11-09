@@ -3,6 +3,7 @@ import { and, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, heartbeatRuns, type Db } from "@paperclipai/db";
 import { hasWorkspaceRestoreFailure, WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { hasConfirmedSandboxStopAndRetain, prepareSandboxStopAndRetain } from "./sandbox-stop-and-retain.js";
+import { preparedRemoteWorkspaceSource } from "./remote-workspace-lifecycle.js";
 
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 
@@ -14,7 +15,7 @@ export type LegacyWorkspaceRestoreSource = Pick<typeof environmentLeases.$inferS
   | "provider" | "providerLeaseId" | "acquiredAt" | "leasePolicy" | "metadata">;
 
 function needsRemoteRestore(run: Run): boolean {
-  return run.runtimeMode === "legacy" && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
+  return ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
     && hasWorkspaceRestoreFailure(run.resultJson);
 }
 
@@ -54,7 +55,7 @@ function matchesOriginalSource(lease: typeof environmentLeases.$inferSelect, run
 
 /** A local lock timeout has no remote source to retain and keeps its old policy. */
 export async function hasUnrestoredRemoteWorkspace(db: Db, run: Run): Promise<boolean> {
-  if (!needsRemoteRestore(run)) return false;
+  if (run.runtimeMode !== "legacy" || !needsRemoteRestore(run)) return false;
   if (hasRequiredWorkspaceRecovery(run.resultJson)) return true;
   const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases)
     .leftJoin(environments, eq(environments.id, environmentLeases.environmentId)).where(leaseScope(run)).limit(1);
@@ -65,15 +66,21 @@ export async function hasUnrestoredRemoteWorkspace(db: Db, run: Run): Promise<bo
  * failed run without its exact stop-only intent. The original allocation must
  * not enter warm reuse; it belongs to the board's workspace repair action. */
 export async function preserveLegacyWorkspaceRestoreSources(db: Db, run: Run, source?: LegacyWorkspaceRestoreSource): Promise<string[]> {
-  if (!needsRemoteRestore(run)) return [];
+  if (!needsRemoteRestore(run) || (run.runtimeMode === "native" && !source)) return [];
   const rows = await db.select({ lease: environmentLeases }).from(environmentLeases)
     .leftJoin(environments, eq(environments.id, environmentLeases.environmentId))
-    .where(leaseScope(run, source)).for("update", { of: environmentLeases });
+    .where(and(leaseScope(run, source), run.runtimeMode === "native" && source ? eq(environmentLeases.id, source.id) : undefined))
+    .for("update", { of: environmentLeases });
   const retained: string[] = [];
   for (const { lease } of rows) {
     if (lease.status !== "active") {
       const recovery = lease.metadata?.workspaceRestoreRecovery as Record<string, unknown> | undefined;
       if (recovery?.schema === LEGACY_WORKSPACE_RECOVERY_SCHEMA && recovery.runId === run.id) {
+        retained.push(lease.id); continue;
+      }
+      if (source && run.runtimeMode === "native" && hasConfirmedSandboxStopAndRetain(lease)
+        && ["reuse_by_environment", "reuse_by_execution_workspace"].includes(lease.leasePolicy)
+        && await preparedRemoteWorkspaceSource(db, lease)) {
         retained.push(lease.id); continue;
       }
       // Cancellation can finish the dedicated stop before copy-back reports its

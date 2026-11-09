@@ -38,6 +38,8 @@ import {
 } from "../lib/attention";
 import { cn } from "../lib/utils";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
+import { describeError } from "../api/errors";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
 import { DecisionsToolbar } from "../components/DecisionsToolbar";
 import { Curtain, AgingItemRow } from "../components/DecisionShelf";
@@ -68,6 +70,8 @@ export function DecisionQueuePage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { dismiss, snooze } = useInboxDismissals(selectedCompanyId);
 
+  const [searchQuery, setSearchQuery] = useState("");
+
   // Toolbar preferences (persisted to localStorage, shared with the desk).
   const [groupBy, setGroupBy] = useState<AttentionGroupBy>(() => loadAttentionGroupBy());
   const [sortOrder, setSortOrder] = useState<AttentionSortOrder>(() => loadAttentionSortOrder());
@@ -91,11 +95,7 @@ export function DecisionQueuePage() {
   });
   const queue = useMemo(() => queues?.find((q) => q.key === queueKey) ?? null, [queues, queueKey]);
 
-  const {
-    data: feed,
-    isLoading,
-    error,
-  } = useQuery({
+  const feedQuery = useQuery({
     queryKey: [
       ...queryKeys.attention(selectedCompanyId!),
       "queue",
@@ -107,6 +107,8 @@ export function DecisionQueuePage() {
     enabled: !!selectedCompanyId && !!queueKey,
     refetchOnWindowFocus: true,
   });
+  const { data: feed, isLoading } = feedQuery;
+  const feedView = useQueryView(feedQuery);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -159,13 +161,13 @@ export function DecisionQueuePage() {
   // when something carries an explicit due decide-by); any explicit group-by keeps
   // the Inbox-style activity grouping.
   const groups = useMemo<AttentionGroup[]>(() => {
-    const filtered = filterAttentionItems(listItems, filters);
+    const filtered = filterAttentionItems(listItems, filters, searchQuery);
     if (groupBy === "none") {
       return buildDeskShelves(filtered, now);
     }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
-  }, [listItems, filters, sortOrder, groupBy, now]);
+  }, [listItems, filters, searchQuery, sortOrder, groupBy, now]);
 
   const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
 
@@ -206,7 +208,7 @@ export function DecisionQueuePage() {
     onError: (err) =>
       pushToast({
         title: "Could not update seeding",
-        body: err instanceof Error ? err.message : "Please try again.",
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -214,20 +216,35 @@ export function DecisionQueuePage() {
   if (!selectedCompanyId) {
     return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
   }
-  if (isLoading) {
+  // Keep a loaded queue on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || feedView.kind === "reconnecting") {
     return <PageSkeleton variant="approvals" />;
+  }
+  if (feedView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={feedView.error}
+        action="load this queue"
+        onRetry={feedView.retry}
+        retrying={feedView.isFetching}
+      />
+    );
   }
 
   const isEmpty = activeItems.length === 0;
 
   return (
     <div className="max-w-3xl space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="space-y-4">
         <div className="min-w-0">
           <h1 className="text-xl font-bold">{queue?.title ?? queueKey}</h1>
           {queue?.description && <p className="mt-0.5 text-sm text-muted-foreground">{queue.description}</p>}
         </div>
         <DecisionsToolbar
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
           visibleCount={visibleCount}
           filterOptions={filterOptions}
           filters={filters}
@@ -260,8 +277,6 @@ export function DecisionQueuePage() {
         />
       )}
 
-      {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
-
       {isEmpty ? (
         <div className="rounded-xl border border-dashed border-border py-14 text-center">
           <p className="text-sm font-medium text-foreground">This queue is empty.</p>
@@ -273,8 +288,8 @@ export function DecisionQueuePage() {
         <div className="space-y-4">
           {visibleCount === 0 ? (
             <div className="rounded-xl border border-dashed border-border py-10 text-center">
-              <p className="text-sm font-medium text-foreground">No decisions match your filters.</p>
-              <p className="mt-1 text-xs text-muted-foreground">Adjust or clear the filters to see the rest.</p>
+              <p className="text-sm font-medium text-foreground">No decisions match your search or filters.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Adjust or clear your search and filters to see the rest.</p>
             </div>
           ) : (
             groups.map((group) => {
@@ -451,7 +466,7 @@ function QueueItemRow({
     onError: (err) =>
       pushToast({
         title: "Could not exclude",
-        body: err instanceof Error ? err.message : "Please try again.",
+        body: describeError(err).body,
         tone: "error",
       }),
   });

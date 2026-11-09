@@ -79,6 +79,7 @@ describe("human invite roles", () => {
       { permissionKey: "tools:manage_runtime", scope: null },
       { permissionKey: "tools:use", scope: null },
       { permissionKey: "tools:admin", scope: null },
+      { permissionKey: "commentary:view", scope: null },
     ]);
   });
 
@@ -95,6 +96,7 @@ describe("human invite roles", () => {
       { permissionKey: "tools:manage_runtime", scope: null },
       { permissionKey: "tools:use", scope: null },
       { permissionKey: "tools:admin", scope: null },
+      { permissionKey: "commentary:view", scope: null },
     ]);
   });
 
@@ -106,7 +108,6 @@ describe("human invite roles", () => {
       { permissionKey: "environments:manage", scope: null },
       { permissionKey: "users:invite", scope: null },
       { permissionKey: "tasks:assign", scope: null },
-      { permissionKey: "pipelines:write", scope: null },
       { permissionKey: "tools:manage_connections", scope: null },
       { permissionKey: "tools:manage_profiles", scope: null },
       { permissionKey: "tools:manage_runtime", scope: null },
@@ -114,7 +115,15 @@ describe("human invite roles", () => {
       { permissionKey: "tools:admin", scope: null },
       { permissionKey: "tools:view_audit", scope: null },
       { permissionKey: "audit:view_agent_actions", scope: null },
+      { permissionKey: "commentary:view", scope: null },
     ]);
+  });
+
+  it("lets viewers read commentary without granting agent audit access", () => {
+    expect(grantsForHumanRole("viewer")).toEqual([
+      { permissionKey: "commentary:view", scope: null },
+    ]);
+    expect(humanJoinGrantsFromDefaults(null, "viewer")).toEqual(grantsForHumanRole("viewer"));
   });
 
   it("defaults legacy or missing roles to operator", () => {
@@ -136,7 +145,17 @@ describe("human invite roles", () => {
     expect(humanJoinGrantsFromDefaults(null, "operator")).toEqual(grantsForHumanRole("operator"));
   });
 
-  it("preserves explicit human invite grants", () => {
+  it.each(["owner", "admin", "operator", "viewer"] as const)("adds commentary access to saved pre-upgrade %s invite grants", (role) => {
+    const legacyGrants = grantsForHumanRole(role).filter((grant) => grant.permissionKey !== "commentary:view");
+    expect(humanJoinGrantsFromDefaults({ human: { role, grants: legacyGrants } }, role)).toEqual(grantsForHumanRole(role));
+  });
+
+  it("preserves an explicitly scoped commentary grant", () => {
+    const grants = [{ permissionKey: "commentary:view", scope: { agentIds: ["agent-1"] } }];
+    expect(humanJoinGrantsFromDefaults({ human: { grants } }, "operator")).toEqual(grants);
+  });
+
+  it("preserves explicit human invite scopes and adds the commentary default", () => {
     expect(
       humanJoinGrantsFromDefaults(
         {
@@ -156,6 +175,7 @@ describe("human invite roles", () => {
         permissionKey: "users:invite",
         scope: { companyId: "company-1" },
       },
+      { permissionKey: "commentary:view", scope: null },
     ]);
   });
 });

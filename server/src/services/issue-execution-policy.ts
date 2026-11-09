@@ -325,12 +325,8 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
-  return {
-    mode: policy.mode,
-    commentRequired: policy.commentRequired,
-    stages: policy.stages,
-  };
+  const { monitor: _monitor, ...remainingPolicy } = policy;
+  return normalizeIssueExecutionPolicy(remainingPolicy);
 }
 
 export function setIssueExecutionPolicyMonitorScheduledBy(
@@ -402,12 +398,13 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   const authorizationPolicy = parsed.data.authorizationPolicy;
 
   if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy
-    && parsed.data.maxReviewRounds == null) return null;
+    && parsed.data.maxReviewRounds == null && !parsed.data.requiredQualityReview) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
     commentRequired: true,
     stages,
+    ...(parsed.data.requiredQualityReview ? { requiredQualityReview: parsed.data.requiredQualityReview } : {}),
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
@@ -697,6 +694,24 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (existingState?.currentStageId && !currentStage) {
+    // The stored stage id no longer resolves against the (possibly just
+    // replaced) policy — e.g. the caller PATCHed a brand-new executionPolicy
+    // in the same request that regenerated stage ids. When a review cycle is
+    // genuinely live (pending, or awaiting the assignee's response to
+    // changes requested), letting `done` ride along on that request would
+    // silently drop the cycle and mark the issue complete through a review
+    // that never ran — so `done` is rejected. Every other requested status,
+    // including a board cancellation that deliberately abandons the cycle,
+    // keeps the established clear/return-to-executor behavior below, exactly
+    // like a bare policy edit with no requested status.
+    const hasLiveReviewCycle =
+      existingState.status === PENDING_STATUS || existingState.status === CHANGES_REQUESTED_STATUS;
+    if (hasLiveReviewCycle && requestedStatus === "done") {
+      throw unprocessable(
+        "This issue has an unexecuted review stage from a live review cycle. Resolve the review before marking it done.",
+        { code: "unexecuted_review_stage" },
+      );
+    }
     clearExecutionStatePatch({
       patch,
       issueStatus: input.issue.status,

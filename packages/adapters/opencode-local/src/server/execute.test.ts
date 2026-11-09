@@ -177,7 +177,7 @@ describe("OpenCode local skill injection", () => {
     }
   });
 
-  it("passes an OpenRouter key and complete model to OpenCode without logging the key", async () => {
+  it.each([false, true])("preserves API billing in streamed usage and final results without leaking keys (timedOut=%s)", async (timedOut) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-openrouter-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "opencode");
@@ -187,15 +187,15 @@ describe("OpenCode local skill injection", () => {
     await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", "utf8");
     await fs.chmod(commandPath, 0o755);
     runProcessMock.mockReset();
-    runProcessMock.mockResolvedValueOnce(probeResult({
-      stdout: JSON.stringify({
-        type: "text",
-        sessionID: "session-openrouter",
-        part: { text: "done" },
-      }),
-    }));
+    const usageLine = JSON.stringify({ type: "step_finish", sessionID: "session-openrouter",
+      part: { cost: 0.0025, tokens: { input: 10, output: 2, cache: { read: 100, write: 0 } } } });
+    runProcessMock.mockImplementationOnce(async (...args) => {
+      await args[4].onLog("stdout", `${usageLine}\n`);
+      return probeResult({ stdout: usageLine, timedOut, exitCode: timedOut ? 143 : 0, signal: timedOut ? "SIGTERM" : null });
+    });
     const logs: string[] = [];
     const metadata: unknown[] = [];
+    const onUsage = vi.fn();
 
     try {
       const result = await execute({
@@ -225,6 +225,7 @@ describe("OpenCode local skill injection", () => {
         },
         context: {},
         authToken: "run-jwt-token",
+        onUsage,
         onLog: async (_stream, chunk) => {
           logs.push(chunk);
         },
@@ -233,8 +234,13 @@ describe("OpenCode local skill injection", () => {
         },
       });
 
-      expect(result.exitCode).toBe(0);
+      expect(result.exitCode).toBe(timedOut ? 143 : 0);
+      expect(result.usageComplete).toBe(!timedOut);
       expect(result.model).toBe(model);
+      expect(result.billingType).toBe("metered_api");
+      expect(result.biller).toBe("openrouter");
+      expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ billingType: "metered_api", biller: "openrouter", model, complete: false }));
+      expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ billingType: "metered_api", biller: "openrouter", model, complete: !timedOut }));
       const executionCall = runProcessMock.mock.calls.at(-1)!;
       expect(executionCall[3]).toContain("--model");
       expect(executionCall[3]).toContain(model);

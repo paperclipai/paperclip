@@ -191,6 +191,22 @@ A disabled or removed plugin cannot silently release an existing requirement.
 Restore that plugin to complete the operation.
 A later plugin installation does not change an existing selection.
 
+A plugin with an environment driver that declares `requiresAgent: true` is
+selected only for an agent on that environment. The host uses the agent's default
+environment, or the instance default when the agent has none. Other lifecycle
+plugins are selected for all agents, including a sandbox provider that declares
+`requiresAgent: true`.
+
+When an agent moves to such an environment, the host adds the plugin at the next
+`preparing` or `resuming` step. An agent in `ready` cannot move to it until it is
+paused, because the plugin must finish its work before the agent uses that
+environment. An agent in `verifying` returns to `preparing`. An agent that moves away keeps the selection until it is terminated,
+so the plugin keeps its resources until then.
+
+Saving an environment or the instance default that gives such a plugin to `ready`
+or `verifying` agents without that selection returns a conflict. Pause those agents,
+save the change, and then resume them.
+
 Each request contains these fields:
 
 - `companyId` and `agentId` identify the agent.
@@ -203,6 +219,7 @@ Return the same `operationId` and `version` with `status: "complete"` or
 Return `complete` only after the requested effect is complete.
 Return `pending` while external work continues.
 Throw an error when the step fails.
+
 The host stores a fixed error message. It does not store the provider error text.
 Server logs identify the failed step, phase, operation, and plugin when available.
 They include only known error codes. Unknown codes become `unclassified`.
@@ -217,6 +234,41 @@ It must reject an older request after it accepts a newer version.
 It must also prevent an older operation from creating resources after cleanup.
 Serialize external effects or remove resources from a late completion.
 Do not treat a host timeout as cancellation of the external effect.
+
+### Local instance secrets
+
+Lifecycle requests include `instanceSecrets`, a map of this plugin's private
+credentials for this company and agent. A plugin can return an `instanceSecrets`
+map with its result to save values. A null value removes the key. Omitted keys
+remain unchanged. Writes are allowed during preparation and resume; removals can
+also occur during stop and cleanup. Use at most 16 keys per result, with names
+matching `[a-z][a-z0-9_]{0,63}` and values no larger than 64 KiB each.
+
+The tenant persists the changes before accepting the result. It locks the agent
+and checks its company, phase, operation, revision, required plugin selection,
+and the captured attempt's current lease owner and unexpired deadline.
+A stale reply or a failed secret write cannot complete preparation. Calls after
+a restart receive the saved values. Stop and cleanup requests receive an empty
+map, so a damaged credential cannot block removal. Return removals even while
+cleanup is pending. An older host omits the field; plugins that require durable
+credentials must reject that host before resource effects.
+
+This uses the existing secret service, `company_secrets`, secret versions, and
+`local_encrypted` provider. There is no new encryption system or remote API.
+The `instance` scope requires an owning agent and plugin. Agent/plugin deletion
+cascades the native secret records. These secrets are excluded from company
+catalogs, normal secret references, agent access, plugin state, and public agent
+records. The general SDK `ctx.secrets.resolve()` remains read-only. Company vault imports
+ignore instance-owned names and keys. Device-login cleanup checks instance-owned
+account-home claims privately and keeps the directory if a value cannot be read.
+
+Trusted server runtime code can resolve values with
+`agentInstanceSecretService(db).read({ companyId, agentId, pluginId })` after its
+normal execution admission checks. Use the installed plugin's database ID.
+Never place returned values in an agent environment, task payload, log, or UI
+response. Preserve the existing secret master key through restarts and backups.
+Migration `0339_luxuriant_iron_monger.sql` adds native secret ownership and its
+scope constraint; keep these columns when reverting application code.
 
 ## Verification and recovery
 

@@ -1,4 +1,6 @@
+import { describeError } from "@/api/errors";
 import { useMemo, useState } from "react";
+import { agentHarnessType } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -65,7 +67,7 @@ export function ConfigureBuiltInAgentModal({
   const { definition } = state;
 
   const [adapterType, setAdapterType] = useState<string>(
-    () => state.agent?.adapterType ?? defaultAdapterType(state),
+    () => state.agent && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agentHarnessType(state.agent.adapterType, state.agent.adapterConfig)) ? agentHarnessType(state.agent.adapterType, state.agent.adapterConfig) : state.agent?.adapterType ?? defaultAdapterType(state),
   );
   const [model, setModel] = useState<string>(() => {
     const config = state.agent?.adapterConfig;
@@ -127,9 +129,15 @@ export function ConfigureBuiltInAgentModal({
     mutationFn: async () => {
       const adapterConfig: Record<string, unknown> = {};
       if (model.trim()) adapterConfig.model = model.trim();
+      const existing = state.agent;
+      const sameHarness = existing && agentHarnessType(existing.adapterType, existing.adapterConfig) === adapterType;
+      const savedModel = typeof existing?.adapterConfig.model === "string" ? existing.adapterConfig.model.trim() : "";
+      const alreadyConfigured = state.status === "ready" || state.status === "paused";
+      const adapterInput = alreadyConfigured && sameHarness && normalizedModel === savedModel ? {}
+        : sameHarness ? { adapterType: existing.adapterType, adapterConfig: { ...existing.adapterConfig, ...adapterConfig } }
+        : { adapterType, adapterConfig };
       const result = await builtInAgentsApi.provision(companyId, definition.key, {
-        adapterType,
-        adapterConfig,
+        ...adapterInput,
         ...(budgetMonthlyCents !== undefined ? { budgetMonthlyCents } : {}),
       });
       return result;
@@ -163,7 +171,7 @@ export function ConfigureBuiltInAgentModal({
             board.
           </InlineBanner>
 
-          <Field label="Adapter type">
+          <Field label="Harness">
             <AdapterTypeDropdown
               value={adapterType}
               onChange={(next) => {

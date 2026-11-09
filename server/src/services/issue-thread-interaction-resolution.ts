@@ -25,7 +25,16 @@ export type IssueThreadInteractionResolutionDenialCode =
 
 export type IssueThreadInteractionResolverActor =
   | { type: "user"; userId: string }
-  | { type: "agent"; agentId: string | null | undefined; runId: string | null | undefined }
+  | {
+      type: "agent";
+      agentId: string | null | undefined;
+      runId: string | null | undefined;
+      /**
+       * Set only by conversational confirmation resolution after it verified
+       * the bound user's latest comment. It never makes the agent a human.
+       */
+      relayedHumanUserId?: string | null;
+    }
   | { type: "system"; systemId: string };
 
 export type IssueThreadInteractionResolverRestriction = {
@@ -48,6 +57,7 @@ export type IssueThreadInteractionResolverAudienceInput = {
     addresseeAgentId?: string | null;
     addresseeUserId?: string | null;
     effectiveResolverPolicy: IssueThreadInteractionResolverPolicy | string;
+    effectiveResolverPolicySource?: string | null;
     resolverPolicyProvenance?: string | null;
   };
   /**
@@ -65,7 +75,8 @@ export type IssueThreadInteractionResolverAudienceDecision =
   | {
       allowed: true;
       effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
-      reason: "allow_anyone" | "allow_addressee" | "allow_human" | "allow_system" | "allow_human_override";
+      reason: "allow_anyone" | "allow_addressee" | "allow_human" | "allow_system" | "allow_human_override"
+        | "allow_relayed_human";
     }
   | {
       allowed: false;
@@ -145,6 +156,31 @@ function reviewPolicyDeniedDecision(
         : "Change reviewPolicy to `anyone`, or move the issue out of and back into `in_review` to record a requester before another writer submits the verdict.",
     },
   };
+}
+
+/**
+ * An agent may record a human-only confirmation only as the relay of a verified
+ * human decision, and only on a card it created with an explicit human_only
+ * request. Company caps (checked again at resolution by the caller), governed
+ * actions and binding-flow restrictions still require a direct human resolution.
+ */
+function relayedHumanDecisionAllowed(
+  input: IssueThreadInteractionResolverAudienceInput,
+  persistedPolicy: IssueThreadInteractionCanonicalResolverPolicy,
+  additionalRestriction: IssueThreadInteractionResolverRestriction | null | undefined,
+) {
+  if (input.actor.type !== "agent") return false;
+  const userId = input.actor.relayedHumanUserId;
+  return Boolean(userId && input.actor.agentId)
+    && !input.governedAction
+    && persistedPolicy === "human_only"
+    // Only this agent's own explicit request; a company default, cap or a
+    // human-created card keeps its direct human resolution.
+    && input.interaction.createdByAgentId === input.actor.agentId
+    && input.interaction.resolverPolicyProvenance === "explicit"
+    && input.interaction.effectiveResolverPolicySource === "requested"
+    && !additionalRestriction
+    && (!input.interaction.addresseeUserId || input.interaction.addresseeUserId === userId);
 }
 
 /**
@@ -246,6 +282,9 @@ export function evaluateIssueThreadInteractionResolverAudience(
   }
 
   if (effectiveResolverPolicy === "human_only") {
+    if (relayedHumanDecisionAllowed(input, persistedPolicy, additionalRestriction)) {
+      return { allowed: true, effectiveResolverPolicy, reason: "allow_relayed_human" };
+    }
     return {
       allowed: false,
       effectiveResolverPolicy,

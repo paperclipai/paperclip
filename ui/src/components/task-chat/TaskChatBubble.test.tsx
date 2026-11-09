@@ -1,15 +1,67 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
-import { TaskChatBubble } from "./TaskChatBubble";
+import { MemoryRouter, useLocation } from "@/lib/router";
+import { TaskChatAgentIdentity, TaskChatBubble } from "./TaskChatBubble";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { paperclipHumanAvatarUrl } from "@/lib/issue-chat-human-author";
 import type { TaskChatMessageItem } from "./task-chat-model";
+
+vi.mock("@/context/CompanyContext", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/context/CompanyContext")>(),
+  useCompany: () => ({ selectedCompany: { issuePrefix: "TES" } }),
+}));
+
+vi.mock("@/lib/clipboard", () => ({ copyTextToClipboard: vi.fn().mockResolvedValue(undefined) }));
+
+function CurrentPath() {
+  return <output>{useLocation().pathname}</output>;
+}
+
+describe("chat author navigation", () => {
+  it.each(["name", "avatar"])("opens the responding agent's company-scoped overview from its %s", async (target) => {
+    const container = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(container);
+    try {
+      flushSync(() => root.render(
+        <MemoryRouter initialEntries={["/TES/chats/conversation-agent"]}>
+          <TaskChatAgentIdentity agentName="Responding agent" agent={{ id: "responding-agent" }} />
+          <CurrentPath />
+        </MemoryRouter>,
+      ));
+      const identity = container.querySelector('[data-testid="task-chat-agent-identity"]')!;
+      const clickTarget = target === "avatar"
+        ? identity.querySelector('[data-testid="task-chat-agent-avatar"]')!
+        : [...identity.querySelectorAll("span")].find(node => node.textContent === "Responding agent")!;
+      await act(async () => {
+        clickTarget.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+      });
+      expect(container.querySelector("output")?.textContent).toBe("/TES/agents/responding-agent/overview");
+    } finally {
+      flushSync(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("keeps an identity without an agent ID readable and unlinked", () => {
+    const container = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(container);
+    try {
+      flushSync(() => root.render(<TaskChatAgentIdentity agentName="Unknown agent" agent={{ name: "Unknown agent" }} />));
+      expect(container.textContent).toBe("Unknown agent");
+      expect(container.querySelector("a")).toBeNull();
+    } finally {
+      flushSync(() => root.unmount());
+      container.remove();
+    }
+  });
+});
 
 describe("TaskChatBubble attachment chips", () => {
   let container: HTMLDivElement;
@@ -93,6 +145,39 @@ describe("TaskChatBubble attachment chips", () => {
     }
     renderMessage("Board reply");
     expect(container.textContent).not.toContain("Sent from iMessage");
+  });
+
+  it("copies the viewer's original Markdown beside the timestamp, including attachment links", async () => {
+    const text = "**My message**\n\n[report.txt](/api/attachments/report/content)";
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatBubble item={{ id: "own", kind: "message", author: "human", isCurrentUser: true, text, timestamp: "15m ago" }} />
+      </ThemeProvider>,
+    ));
+    const toolbar = container.querySelector('[data-testid="task-chat-bubble-actions"]')!;
+    const copyWrapper = toolbar.parentElement!;
+    const timestamp = copyWrapper.nextElementSibling;
+    expect(timestamp?.textContent).toBe("15m ago");
+    expect(timestamp).toBe(copyWrapper.parentElement?.lastElementChild);
+    const button = toolbar.querySelector('button[aria-label="Copy message"]') as HTMLButtonElement;
+    await act(async () => button.click());
+    expect(copyTextToClipboard).toHaveBeenLastCalledWith(text);
+    expect(button.querySelector(".lucide-check")).not.toBeNull();
+  });
+
+  it.each([
+    { author: "human" as const, isCurrentUser: false },
+    { author: "human" as const, isCurrentUser: undefined },
+    { author: "agent" as const, isCurrentUser: true },
+    { author: "human" as const, isCurrentUser: true, optimistic: "pending" as const },
+    { author: "human" as const, isCurrentUser: true, optimistic: "queued" as const },
+  ])("omits the own-message toolbar for %j", (state) => {
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatBubble item={{ id: "other", kind: "message", text: "Message", timestamp: "15m ago", ...state }} />
+      </ThemeProvider>,
+    ));
+    expect(container.querySelector('[data-testid="task-chat-bubble-actions"]')).toBeNull();
   });
 
   it("opens attachment images in the shared task gallery", () => {

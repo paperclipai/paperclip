@@ -1,11 +1,26 @@
+import { renderCatalogOverview, catalogOverviewStyles, catalogOverviewScript, type CatalogOverview, type CatalogScenarioDescription } from "./catalog-overview.js";
+import { campaignAttemptTimeLabel, campaignTimingScope, renderWorkerPhaseTiming, summarizeCampaignTiming, summarizeWorkerPhaseTiming } from "./campaign-timing.js";
+import { html, durationLabel, tokenLabel, llmCostLabel, usdLabel } from "./report-format.js";
+import { renderReportShell, reportNavigationStyles, reportShellScript } from "./report-navigation.js";
+import { reportBrowserScript } from "./report-browser.js";
+import { reportEvidenceHref, reportTargetUrl } from "./report-target.js";
 import { isIncompleteFirstTaskResult, renderCaseOutcome } from "./case-outcome.js";
+import { latencyIntervalLabel } from "./latency-timing.js";
+import { campaignSuiteSummaryStyles, renderCampaignSuiteSummary, renderSuiteCaseIndex } from "./campaign-summary.js";
+import { journeyCapabilities, journeyFeatureIds } from "./journey-features.js";
+import { journeyFeatureStyles, renderJourneyFeatureCoverage, renderJourneyFeatureOptions } from "./feature-coverage.js";
+import { STARTUP_REUSE_LAYERS } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { renderFirstTaskDetails } from "./first-task-report.js";
+import { renderTaskChat } from "./task-chat-report.js";
+import { summarizeCampaignFeedback } from "./feedback.js";
+import { renderCampaignFeedbackReview } from "./feedback-dispositions.js";
+import { renderEvalOperationsReport } from "./operations-report.js";
+import { renderBraintrustExperiment } from "./braintrust-experiment.js";
 import {
   discoverReportCatalog,
   type ReportExecution,
 } from "./report-catalog.js";
 import type {
-  RunnerE2EBillingSummary,
   RunnerE2ECampaign,
   RunnerE2EHistoryIndex,
   RunnerE2EResult,
@@ -33,7 +48,14 @@ export interface RunnerDashboardInput {
   entries: readonly RunnerDashboardEntry[];
   campaign?: RunnerE2ECampaign;
   history?: RunnerE2EHistoryIndex;
-  publicSummaryImageHref?: string;
+  catalogOverview?: CatalogOverview;
+  catalogOverviewDescriptions?: ReadonlyMap<string, CatalogScenarioDescription>;
+  presentation?: {
+    title?: string;
+    description?: string;
+    notes?: readonly string[];
+    links?: readonly { label: string; href: string }[];
+  };
 }
 
 interface ResolvedScreenshot {
@@ -41,36 +63,6 @@ interface ResolvedScreenshot {
   label: string;
   file: string;
   href: string;
-}
-
-function html(value: unknown) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function durationLabel(durationMs: number) {
-  if (durationMs < 1_000) return `${durationMs}ms`;
-  const seconds = Math.round(durationMs / 1_000);
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
-function tokenLabel(value: number, llm?: RunnerE2EBillingSummary["llm"]) {
-  const formatted = new Intl.NumberFormat("en-US").format(value);
-  return llm ? billingCoverageLabel(formatted, llm.runsWithTokenUsage, llm.runCount) : formatted;
-}
-
-function llmCostLabel(value: number, llm: RunnerE2EBillingSummary["llm"]) {
-  return billingCoverageLabel(usdLabel(value), llm.runsWithReportedCost, llm.runCount);
-}
-
-function usdLabel(value: number | null) {
-  if (value === null) return "Unknown";
-  return `$${value.toFixed(value < 0.01 ? 6 : 4)}`;
 }
 
 function safeEvidenceHref(base: string | undefined, relative: string) {
@@ -86,17 +78,6 @@ function safeEvidenceHref(base: string | undefined, relative: string) {
     .map(encodeURIComponent)
     .join("/");
   return `${cleanBase}/${cleanRelative}`;
-}
-
-function safePublicAssetHref(relative: string | undefined) {
-  if (!relative || /^(?:[a-z]+:|\/\/|\/)/i.test(relative)) return null;
-  const segments = relative.split("/");
-  if (
-    segments.some((segment) => !segment || segment === "." || segment === "..")
-  ) {
-    return null;
-  }
-  return segments.map(encodeURIComponent).join("/");
 }
 
 function compactJson(value: unknown) {
@@ -177,7 +158,15 @@ function renderCase(
       : item,
   );
   const billing = entry ? summarizeExecutionBilling(entry.result) : null;
+  const targetUrl = reportTargetUrl(entry?.result);
+  const capabilities = journeyCapabilities(execution);
+  const features = [...new Map(capabilities.map((capability) => [capability.feature.id, capability.feature])).values()];
+  const outcome = entry ? renderCaseOutcome(entry.result, entry.valid, entry.errors) : "";
+  const passed = state === "passed" && entry?.result.status === "passed";
   const firstTaskChecks = entry?.result.firstTask?.checks;
+  const taskChatCoversOnboarding = entry?.result.taskChat?.status === "complete" &&
+    entry.result.taskChat.threads.some(thread => thread.issueId === entry.result.firstTask?.onboardingIssueId);
+  const productChecks = entry?.result.productJourney?.checks;
   const notReached = firstTaskChecks?.filter((c) => c.notReached).length ?? 0;
   const matcherResults = firstTaskChecks?.length
     ? firstTaskChecks.filter((c) => !c.notReached).map((c) => ({
@@ -185,7 +174,10 @@ function renderCase(
         passed: c.passed,
         detail: c.detail,
       }))
-    : entry?.result.matcherResults ?? [];
+    : productChecks?.length ? productChecks.map(c => ({
+        matcher: { kind: "json_path" as const, path: `productJourney.checks.${c.id}`, expected: true },
+        passed: c.passed, detail: c.id.replaceAll("-", " "),
+      })) : entry?.result.matcherResults ?? [];
   const passedMatchers = matcherResults.filter(
     (result) => result.passed,
   ).length;
@@ -199,6 +191,7 @@ function renderCase(
     execution.environment.label,
     execution.environment.provider,
     execution.suite.label,
+    ...capabilities.flatMap((capability) => [capability.id, capability.label, capability.feature.title]),
     label,
   ]
     .join(" ")
@@ -221,9 +214,8 @@ function renderCase(
     return href ? [`<a href="${html(href)}">${html(label)}</a>`] : [];
   });
   const links =
-    screenshots.length > 0 || playwright || structuredLinks.length > 0
+    playwright || structuredLinks.length > 0
       ? `<nav class="evidence-links" aria-label="Evidence for ${html(execution.id)}">
-          ${screenshots.map((item) => `<a href="${html(item.href)}" target="_blank" rel="noreferrer">Open ${html(item.label.toLowerCase())}</a>`).join("")}
           ${playwright ? `<a href="${html(playwright)}">Open Playwright report</a>` : ""}
           ${structuredLinks.join("")}
         </nav>`
@@ -250,6 +242,18 @@ function renderCase(
       </tr>`,
     )
     .join("");
+  const latencyRows = (entry?.result.latencyProbes ?? []).map(probe => `<tr>
+    <td>${html(probe.event)}</td><td>${html(probe.verdict)}</td>
+    <td>${html(latencyIntervalLabel(probe))}</td><td>${html(`${probe.target.operator} ${probe.target.ms} ms`)}</td>
+    <td>${html(probe.resolutionMs === null ? "unknown" : `${probe.resolutionMs} ms`)}</td>
+    </tr>`).join("");
+  const startupReuseRows = (entry?.result.startupReuse ?? []).filter(reuse =>
+    reuse.providerLaunchCount !== null || STARTUP_REUSE_LAYERS.some(layer => reuse.layers[layer].state !== "unknown"),
+  ).map(reuse => `<tr>
+    <td><code>${html(reuse.runId)}</code></td><td>${html(reuse.warmth)}</td>
+    ${STARTUP_REUSE_LAYERS.map(layer => `<td>${html(reuse.layers[layer].state)} (${html(reuse.layers[layer].reason)})</td>`).join("")}
+    <td>${html(reuse.providerLaunchCount === null ? "unknown" : reuse.providerLaunchCount)}</td>
+  </tr>`).join("");
   const gallery = screenshots.length
     ? `<div class="gallery" aria-label="Screenshots for ${html(execution.id)}">${screenshots
         .map(
@@ -260,6 +264,7 @@ function renderCase(
             data-gallery-href="${html(item.href)}"
             data-gallery-label="${html(item.label)}"
             data-gallery-execution="${html(execution.id)}"
+            data-gallery-target-url="${html(targetUrl)}"
             data-gallery-case="${html(execution.task.label)}"
             data-gallery-profile="${html(execution.profile.label)}"
             data-gallery-generation="${html(execution.profile.generation)}"
@@ -272,7 +277,7 @@ function renderCase(
             data-gallery-status="${html(label)}"
             data-gallery-duration="${html(entry ? durationLabel(entry.result.durationMs) : "Not run")}"
             data-gallery-tokens="${html(billing ? `${tokenLabel(billing.llm.inputTokens, billing.llm)} in · ${tokenLabel(billing.llm.outputTokens, billing.llm)} out` : "Unavailable")}"
-            data-gallery-matchers="${html(matcherResults.length > 0 ? `${passedMatchers}/${matcherResults.length} matchers passed${notReached ? ` · ${notReached} not reached` : ""}` : "No matchers recorded")}"
+            data-gallery-matchers="${html(matcherResults.length > 0 ? `${passedMatchers}/${matcherResults.length} checks passed${notReached ? ` · ${notReached} not reached` : ""}` : "No checks recorded")}"
             aria-label="Open ${html(item.label)} for ${html(execution.id)} in gallery"
           >
             <span class="screenshot-frame"><img src="${html(item.href)}" loading="lazy" alt="${html(item.label)} for ${html(execution.id)}"></span>
@@ -285,7 +290,8 @@ function renderCase(
     ? `<div class="billing-strip" aria-label="Billing for ${html(execution.id)}">
         <div><span>Tokens</span><strong>${html(tokenLabel(billing.llm.inputTokens, billing.llm))} in · ${html(tokenLabel(billing.llm.outputTokens, billing.llm))} out</strong><small>${html(tokenLabel(billing.llm.cachedInputTokens, billing.llm))} cached · ${billing.llm.runsWithTokenUsage}/${billing.llm.runCount} runs covered</small></div>
         <div><span>LLM spend</span><strong>${html(llmCostLabel(billing.reportedCostUsd, billing.llm))}</strong><small>${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs provider-priced</small></div>
-        <div><span>Execution</span><strong>${billing.runtime.estimatedListCostUsd === undefined ? html(billing.runtime.costStatus === "not_metered" ? "Local · not metered" : "Cost unavailable") : `${html(usdLabel(billing.runtime.estimatedListCostUsd))} est.`}</strong><small>${html(durationLabel(billing.runtime.agentRunDurationMs))} agent${billing.runtime.leaseDurationMs === null ? "" : ` · ${html(durationLabel(billing.runtime.leaseDurationMs))} lease`}</small></div>
+        ${(billing.llm.runsWithEstimatedCost ?? 0) > 0 ? `<div><span>LLM estimate</span><strong>${html(billingCoverageLabel(usdLabel(billing.llm.estimatedCostUsd ?? 0), billing.llm.runsWithEstimatedCost ?? 0, billing.llm.runCount))}</strong><small>Estimated from captured usage</small></div>` : ""}
+        <div><span>Execution</span><strong>${billing.runtime.estimatedListCostUsd === undefined ? html(billing.runtime.costStatus === "not_metered" ? "Local · not metered" : "Unavailable") : `${html(usdLabel(billing.runtime.estimatedListCostUsd))} est.`}</strong>${billing.runtime.agentRunDurationMs === null && billing.runtime.leaseDurationMs === null ? "" : `<small>${billing.runtime.agentRunDurationMs === null ? "" : `${html(durationLabel(billing.runtime.agentRunDurationMs))} agent`}${billing.runtime.leaseDurationMs === null ? "" : ` · ${html(durationLabel(billing.runtime.leaseDurationMs))} lease`}</small>`}</div>
         ${billing.assistant ? `<div><span>External assistant</span><strong>${html(usdLabel(billing.assistant.estimatedCostUsd))} est.</strong><small>${html(billing.assistant.model)} · ${billing.assistant.requests} requests · ${html(tokenLabel(billing.assistant.inputTokens + billing.assistant.cachedInputTokens))} in / ${html(tokenLabel(billing.assistant.outputTokens))} out</small></div>` : ""}
       </div>`
     : "";
@@ -294,24 +300,46 @@ function renderCase(
     class="case case-${state}"
     data-execution-id="${html(execution.id)}"
     data-report-case
+    data-report-label="${html(execution.task.label)}"
+    data-report-case-key="${html(`${execution.suite.id}.${execution.task.id}`)}"
     data-report-suite="${html(execution.suite.id)}"
+    data-report-features="${html(journeyFeatureIds(execution).join(" "))}"
     data-report-profile="${html(execution.profile.id)}"
     data-report-environment="${html(execution.environment.id)}"
     data-report-status="${html(state)}"
     data-report-search="${html(searchText)}"
   >
     <div class="case-heading">
-      <strong>${html(execution.task.label)}</strong>
+      <strong><a class="case-open" data-nav-case="${html(`${execution.suite.id}.${execution.task.id}`)}" href="?view=case&amp;case=${encodeURIComponent(`${execution.suite.id}.${execution.task.id}`)}#execution-${html(execution.id)}">${html(execution.task.label)}</a></strong>
       <span class="status">${html(label)}</span>
     </div>
-    ${entry ? renderCaseOutcome(entry.result, entry.valid, entry.errors) : ""}
+    ${features.length ? `<div class="case-features">${features.map((feature) =>
+      `<button type="button" class="feature-choice" data-report-feature-choice="${html(feature.id)}" title="${html(capabilities.filter((capability) => capability.feature.id === feature.id).map((capability) => capability.id).join(", "))}">${html(feature.title)}</button>`,
+    ).join("")}</div>` : ""}
+    ${passed ? "" : outcome}
+    ${!entry ? `<p class="case-empty">No result artifact was uploaded.</p>` : ""}
     ${gallery}
+    <details class="case-context case-diagnostics">
+      <summary><span>Test details</span><span class="case-detail-summary">${matcherResults.length ? `${passedMatchers}/${matcherResults.length} checks${notReached ? ` · ${notReached} not reached` : ""}` : "No checks recorded"}${entry ? ` · ${html(durationLabel(entry.result.durationMs))}` : ""}</span></summary>
+    ${entry ? `<dl class="case-facts">
+      <div><dt>Tested URL</dt><dd>${targetUrl ? `<a href="${html(targetUrl)}" target="_blank" rel="noreferrer">${html(targetUrl)} <span aria-hidden="true">↗</span></a>` : "Not recorded"}</dd></div>
+      <div><dt>Environment</dt><dd>${html(execution.environment.label)}</dd></div>
+      ${entry.result.model ? `<div><dt>Model</dt><dd>${html(entry.result.model)}</dd></div>` : ""}
+      <div><dt>Runtime</dt><dd>${html(entry.result.runtimeMode === "none" ? "Browser only" : `${entry.result.runtimeMode} · ${entry.result.provider ?? execution.profile.provider}`)}</dd></div>
+    </dl>` : ""}
+    ${matcherResults.length || notReached ? `<ul class="case-checks" aria-label="Recorded checks">${matcherResults.map(result => `<li><span class="check-state ${result.passed ? "check-passed" : "check-failed"}">${result.passed ? "Pass" : "Fail"}</span><span>${html(result.detail)}</span></li>`).join("")}${firstTaskChecks?.filter(check => check.notReached).map(check => `<li><span class="check-state">Not reached</span><span>${html(check.detail)} · ${html(check.notReached)}</span></li>`).join("") ?? ""}</ul>` : ""}
     ${billingStrip}
+    ${renderFirstTaskDetails(entry?.result, !taskChatCoversOnboarding)}
+    ${renderTaskChat(entry?.result.taskChat)}
     ${links}
-    ${renderFirstTaskDetails(entry?.result)}
+    <details class="case-context case-advanced">
+    <summary>Diagnostics</summary>
+    ${passed ? outcome : ""}
+    ${entry ? `<p class="detail">Worker phase timing: ${entry.result.workerTiming ? html(entry.result.workerTiming.status === "unavailable" ? `unavailable (${entry.result.workerTiming.reason})` : entry.result.workerTiming.status) : "not captured"}. ${entry.result.workerTiming?.status === "partial" ? "Only completed phases have observed durations." : ""}</p>` : ""}
+    ${entry?.result.feedback ? `<p class="detail">Feedback: ${entry.result.feedback.complaints} complaints · ${entry.result.feedback.suggestions} suggestions · ${entry.result.feedback.review.length} distinct items; see campaign feedback review. Saved-feedback collection: ${html(entry.result.feedback.collection)}; invocation coverage: ${html(entry.result.feedback.invocationCollection)}. Tool receipts: ${entry.result.feedback.invocations.failed} failed · ${entry.result.feedback.invocations.unknown} unresolved. Full bodies: access-controlled snapshots/agent-feedback.json or snapshots/agent-feedback-recovered.json.</p>` : entry ? `<p class="detail">Feedback was not captured for this attempt.</p>` : ""}
+    ${entry?.result.tracing ? `<p class="detail">Braintrust worker export: ${html(entry.result.tracing.status)}; native configuration: ${html(entry.result.tracing.nativeConfiguration)}. ${entry.result.tracing.finalization ? `Supervisor outcome: ${html(entry.result.tracing.finalization.outcome)}; finalization export: ${html(entry.result.tracing.finalization.status)}.` : "Supervisor finalization was not captured."} Trace ${html(entry.result.tracing.traceId)} in project ${html(entry.result.tracing.projectId)}. Indexing and native-span correlation require independent verification.</p>` : ""}
     <code class="execution-id">${html(execution.id)}</code>
-    <details class="case-context">
-      <summary>Matchers and test context</summary>
+    ${capabilities.length ? `<ul class="case-capabilities" aria-label="Capabilities tested">${capabilities.map((capability) => `<li>${html(capability.feature.title)} · ${html(capability.label)}</li>`).join("")}</ul>` : ""}
     ${
       entry
         ? `<dl>
@@ -326,238 +354,18 @@ function renderCase(
           </dl>`
         : ""
     }
-    <p class="detail">${html(detail)}</p>
-    ${turnTimingRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Turn</th><th>Run</th><th>Lease</th><th>Scheduler</th><th>Run duration</th><th>Response</th></tr></thead><tbody>${turnTimingRows}</tbody></table></div>` : ""}
-    ${matcherRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Result</th><th>Matcher</th><th>Expectation</th><th>Detail</th></tr></thead><tbody>${matcherRows}</tbody></table></div>` : `<p class="detail">No matcher result was recorded.</p>`}
-    ${entry ? `<details class="usage"><summary>Usage and billing metadata</summary><pre>${html(JSON.stringify({ billing, rawUsage: entry.result.usage ?? null }, null, 2))}</pre></details>` : ""}
+    ${entry?.errors.length ? `<p class="detail">${html(detail)}</p>` : ""}
+    ${turnTimingRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Turn</th><th>Run</th><th>Lease</th><th>Scheduler</th><th>Run duration</th><th>Final settlement (legacy response field)</th></tr></thead><tbody>${turnTimingRows}</tbody></table></div>` : ""}
+    ${latencyRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Event</th><th>Timing verdict</th><th>Possible latency</th><th>Target</th><th>Resolution</th></tr></thead><tbody>${latencyRows}</tbody></table></div>` : ""}
+    ${startupReuseRows ? `<div class="matcher-wrap"><table class="matchers"><caption>Startup reuse evidence</caption><thead><tr><th>Run</th><th>Warmth</th><th>Environment/lease</th><th>Workspace</th><th>Runner</th><th>Provider process</th><th>Provider session</th><th>Provider launches</th></tr></thead><tbody>${startupReuseRows}</tbody></table></div>` : ""}
+    ${matcherRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Result</th><th>Matcher</th><th>Expectation</th><th>Detail</th></tr></thead><tbody>${matcherRows}</tbody></table></div>` : ""}
+    ${entry ? `<details class="usage"><summary>Usage, billing and timing metadata</summary><pre>${html(JSON.stringify({ billing, rawUsage: entry.result.usage ?? null, workerTiming: entry.result.workerTiming ?? null, startupReuse: entry.result.startupReuse ?? null }, null, 2))}</pre></details>` : ""}
+    </details>
     </details>
   </article>`;
 }
 
-function renderTrendChart(input: {
-  history: RunnerE2EHistoryIndex;
-  label: string;
-  value(campaign: RunnerE2EHistoryIndex["campaigns"][number]): number | null;
-  format(value: number): string;
-  include?(campaign: RunnerE2EHistoryIndex["campaigns"][number]): boolean;
-  fingerprint?(campaign: RunnerE2EHistoryIndex["campaigns"][number]): string;
-}) {
-  const campaigns = input.history.campaigns
-    .filter(input.include ?? ((campaign) => campaign.complete))
-    .slice(0, 20)
-    .reverse();
-  if (campaigns.length === 0) {
-    return `<article class="trend-card"><span>${html(input.label)}</span><strong>No complete campaigns</strong></article>`;
-  }
-  const rawValues = campaigns.map(input.value);
-  const values = rawValues.filter((value): value is number => value !== null);
-  if (values.length !== rawValues.length) {
-    const latest = rawValues.at(-1);
-    return `<article class="trend-card"><span>${html(input.label)}</span><strong>${latest == null ? "Unknown" : html(input.format(latest))}</strong><small>Unknown measurements are not plotted. Inspect campaign billing and reserved judge budgets.</small></article>`;
-  }
-  const maximum = Math.max(...values, 1);
-  const pointRows = values.map((value, index) => {
-    const x =
-      campaigns.length === 1 ? 50 : (index / (campaigns.length - 1)) * 100;
-    const y = 96 - (value / maximum) * 88;
-    return {
-      point: `${x.toFixed(2)},${y.toFixed(2)}`,
-      x,
-      y,
-      fingerprint: input.fingerprint?.(campaigns[index]!) ?? "stable",
-    };
-  });
-  const segments = pointRows.reduce<Array<typeof pointRows>>(
-    (groups, point) => {
-      const current = groups.at(-1);
-      if (!current || current.at(-1)?.fingerprint !== point.fingerprint) {
-        groups.push([point]);
-      } else {
-        current.push(point);
-      }
-      return groups;
-    },
-    [],
-  );
-  const definitionCount = new Set(pointRows.map((point) => point.fingerprint))
-    .size;
-  const latest = values.at(-1) ?? 0;
-  return `<article class="trend-card">
-    <span>${html(input.label)}</span>
-    <strong>${html(input.format(latest))}</strong>
-    <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="${html(input.label)} across ${campaigns.length} complete campaign(s)">
-      ${segments.map((segment) => `<polyline points="${segment.map((point) => point.point).join(" ")}" fill="none" vector-effect="non-scaling-stroke" />`).join("")}
-      ${pointRows.map((point) => `<circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="1.3" vector-effect="non-scaling-stroke" />`).join("")}
-    </svg>
-    <small>${campaigns.length} complete campaign${campaigns.length === 1 ? "" : "s"} · ${definitionCount} definition${definitionCount === 1 ? "" : "s"}</small>
-  </article>`;
-}
-
-function suiteSummaryFor(
-  campaign: RunnerE2EHistoryIndex["campaigns"][number],
-  suiteId: string,
-) {
-  return campaign.suites.find((suite) => suite.suiteId === suiteId);
-}
-
-function renderHistory(history: RunnerE2EHistoryIndex | undefined) {
-  if (!history || history.campaigns.length === 0) {
-    return `<section class="history-section" id="history"><div class="section-heading"><div><p class="eyebrow">History</p><h2>Campaign trends</h2></div><p>No historical campaigns have been published yet.</p></div></section>`;
-  }
-  const suiteIds = [
-    ...new Set(
-      history.campaigns.flatMap((campaign) =>
-        campaign.suites.map((suite) => suite.suiteId),
-      ),
-    ),
-  ];
-  const charts = [
-    renderTrendChart({
-      history,
-      label: "Observed + estimated cost",
-      value: (campaign) => campaign.billing.observedAndEstimatedCostUsd,
-      format: usdLabel,
-      fingerprint: (campaign) =>
-        campaign.suites
-          .map((suite) => `${suite.suiteId}:${suite.suiteDefinitionHash}`)
-          .sort()
-          .join("|"),
-    }),
-    renderTrendChart({
-      history,
-      label: "Total tokens",
-      value: (campaign) => campaign.billing.llm.totalTokens,
-      format: tokenLabel,
-      fingerprint: (campaign) =>
-        campaign.suites
-          .map((suite) => `${suite.suiteId}:${suite.suiteDefinitionHash}`)
-          .sort()
-          .join("|"),
-    }),
-    renderTrendChart({
-      history,
-      label: "Agent execution time",
-      value: (campaign) => campaign.billing.agentRunDurationMs,
-      format: durationLabel,
-      fingerprint: (campaign) =>
-        campaign.suites
-          .map((suite) => `${suite.suiteId}:${suite.suiteDefinitionHash}`)
-          .sort()
-          .join("|"),
-    }),
-    renderTrendChart({
-      history,
-      label: "Daytona lease time",
-      value: (campaign) => campaign.billing.leaseDurationMs,
-      format: durationLabel,
-      fingerprint: (campaign) =>
-        campaign.suites
-          .map((suite) => `${suite.suiteId}:${suite.suiteDefinitionHash}`)
-          .sort()
-          .join("|"),
-    }),
-    renderTrendChart({
-      history,
-      label: "Pass rate",
-      value: (campaign) =>
-        campaign.selected > 0 ? (campaign.passed / campaign.selected) * 100 : 0,
-      format: (value) => `${value.toFixed(1)}%`,
-      fingerprint: (campaign) =>
-        campaign.suites
-          .map((suite) => `${suite.suiteId}:${suite.suiteDefinitionHash}`)
-          .sort()
-          .join("|"),
-    }),
-  ].join("");
-  const suiteCharts = suiteIds
-    .map((suiteId) => {
-      const include = (campaign: RunnerE2EHistoryIndex["campaigns"][number]) =>
-        suiteSummaryFor(campaign, suiteId)?.complete === true;
-      const value = (
-        campaign: RunnerE2EHistoryIndex["campaigns"][number],
-        metric: "cost" | "tokens" | "agent" | "lease" | "passRate",
-      ) => {
-        const suite = suiteSummaryFor(campaign, suiteId);
-        if (!suite) return 0;
-        if (metric === "cost") return suite.billing.observedAndEstimatedCostUsd;
-        if (metric === "tokens") return suite.billing.llm.totalTokens;
-        if (metric === "agent") return suite.billing.agentRunDurationMs;
-        if (metric === "lease") return suite.billing.leaseDurationMs;
-        return suite.selected > 0 ? (suite.passed / suite.selected) * 100 : 0;
-      };
-      const fingerprint = (
-        campaign: RunnerE2EHistoryIndex["campaigns"][number],
-      ) => suiteSummaryFor(campaign, suiteId)?.suiteDefinitionHash ?? "unknown";
-      return `<section class="suite-trends" data-history-suite-trends="${html(suiteId)}">
-        <div class="suite-trends-heading"><h3>${html(suiteId)}</h3><span>Complete suite selections only; lines break at definition changes.</span></div>
-        <div class="trend-grid">
-          ${renderTrendChart({ history, label: "Suite cost", value: (campaign) => value(campaign, "cost"), format: usdLabel, include, fingerprint })}
-          ${renderTrendChart({ history, label: "Suite tokens", value: (campaign) => value(campaign, "tokens"), format: tokenLabel, include, fingerprint })}
-          ${renderTrendChart({ history, label: "Suite agent time", value: (campaign) => value(campaign, "agent"), format: durationLabel, include, fingerprint })}
-          ${renderTrendChart({ history, label: "Suite lease time", value: (campaign) => value(campaign, "lease"), format: durationLabel, include, fingerprint })}
-          ${renderTrendChart({ history, label: "Suite pass rate", value: (campaign) => value(campaign, "passRate"), format: (metric) => `${metric.toFixed(1)}%`, include, fingerprint })}
-        </div>
-      </section>`;
-    })
-    .join("");
-  const rows = history.campaigns
-    .map((campaign) => {
-      const status = campaign.failed > 0 ? "failed" : (campaign.incomplete ?? 0) > 0 ? "incomplete" : "passed";
-      const sha = campaign.source.sha;
-      const searchable = [
-        campaign.campaignId,
-        sha,
-        campaign.source.ref,
-        ...campaign.executions.flatMap((execution) => [
-          execution.suiteId,
-          execution.profileId,
-          execution.model,
-          execution.environmentId,
-          execution.caseId,
-          execution.status,
-        ]),
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return `<tr data-history-campaign data-history-date="${html(campaign.generatedAt.slice(0, 10))}" data-history-status="${status}" data-history-complete="${campaign.complete}" data-history-suites="${html(campaign.suites.map((suite) => suite.suiteId).join(" "))}" data-history-search="${html(searchable)}">
-        <td><a href="${html(campaign.publicUrl)}">${html(campaign.campaignId)}</a><small>${html(new Date(campaign.generatedAt).toLocaleString("en-US", { timeZone: "UTC" }))} UTC</small></td>
-        <td>${sha ? `<code>${html(sha.slice(0, 10))}</code>` : "Unknown"}<small>${html(campaign.source.ref ?? "unknown ref")}</small></td>
-        <td><span class="status history-${status}">${status}</span><small>${campaign.passed}/${campaign.selected} passed${campaign.incomplete ? ` · ${campaign.incomplete} incomplete` : ""} · ${campaign.complete ? "complete" : "partial"}</small></td>
-        <td>${html(tokenLabel(campaign.billing.llm.inputTokens, campaign.billing.llm))} / ${html(tokenLabel(campaign.billing.llm.outputTokens, campaign.billing.llm))}<small>input / output · ${html(tokenLabel(campaign.billing.llm.cachedInputTokens, campaign.billing.llm))} cached</small></td>
-        <td>${html(llmCostLabel(campaign.billing.reportedLlmCostUsd, campaign.billing.llm))}<small>${html(usdLabel(campaign.billing.estimatedRuntimeCostUsd))} runtime estimate</small></td>
-        <td>${html(durationLabel(campaign.billing.agentRunDurationMs))}<small>${html(durationLabel(campaign.billing.leaseDurationMs))} lease</small></td>
-      </tr>`;
-    })
-    .join("");
-  const latest = history.campaigns.find(
-    (campaign) => campaign.campaignId === history.latestCampaignId,
-  );
-  const latestGreen = history.campaigns.find(
-    (campaign) => campaign.campaignId === history.latestGreenCampaignId,
-  );
-  return `<section class="history-section" id="history">
-    <div class="section-heading"><div><p class="eyebrow">History</p><h2>Campaign trends</h2></div><p>Complete campaigns are compared by default. Partial smoke runs remain searchable and are labeled explicitly.</p></div>
-    <nav class="history-pointers" aria-label="Campaign pointers">
-      ${latest ? `<a href="${html(latest.publicUrl)}"><span>Latest run</span><strong>${html(latest.campaignId)}</strong></a>` : ""}
-      ${latestGreen ? `<a href="${html(latestGreen.publicUrl)}"><span>Latest green</span><strong>${html(latestGreen.campaignId)}</strong></a>` : ""}
-    </nav>
-    <div class="trend-grid">${charts}</div>
-    ${suiteCharts}
-    <div class="history-filters">
-      <label>Search <input type="search" data-history-query placeholder="SHA, model, profile, case"></label>
-      <label>Suite <select data-history-suite><option value="">All suites</option>${suiteIds.map((suiteId) => `<option value="${html(suiteId)}">${html(suiteId)}</option>`).join("")}</select></label>
-      <label>Status <select data-history-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="incomplete">Incomplete</option></select></label>
-      <label>From <input type="date" data-history-from></label>
-      <label>Through <input type="date" data-history-through></label>
-      <label class="history-checkbox"><input type="checkbox" data-history-partial> Include partial campaigns</label>
-    </div>
-    <div class="history-table-wrap"><table class="history-table"><thead><tr><th>Campaign</th><th>Paperclip SHA</th><th>Result</th><th>Tokens</th><th>Cost</th><th>Execution</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="history-empty" data-history-empty hidden>No campaigns match these filters.</p>
-  </section>`;
-}
-
-function renderSuiteMatrix(input: {
+function renderSuiteResults(input: {
   suiteCatalog: readonly ReportExecution[];
   expected: ReadonlySet<string>;
   entryById: ReadonlyMap<string, RunnerDashboardEntry>;
@@ -565,78 +373,50 @@ function renderSuiteMatrix(input: {
 }) {
   const suite = input.suiteCatalog[0]?.suite;
   if (!suite) return "";
-  const profiles = [
-    ...new Map(
-      input.suiteCatalog.map((execution) => [
-        execution.profile.id,
-        execution.profile,
-      ]),
-    ).values(),
-  ];
-  const environments = [
-    ...new Map(
-      input.suiteCatalog.map((execution) => [
-        execution.environment.id,
-        execution.environment,
-      ]),
-    ).values(),
-  ];
-  const rows = profiles
-    .map((profile, profileIndex) => {
-      const columns = environments
-        .map((environment) => {
-          const executions = input.suiteCatalog.filter(
-            (execution) =>
-              execution.profile.id === profile.id &&
-              execution.environment.id === environment.id,
-          );
-          return `<td>
-            <div class="mobile-environment-header"><strong>${html(environment.label)}</strong><span>${html(environment.provider)} · ${html(environment.expectedExecutionTarget.kind)}</span></div>
-            <div class="case-stack">${executions.map((execution) => renderCase(execution, input.expected, input.entryById)).join("")}</div>
-          </td>`;
-        })
-        .join("");
-      return `<tr data-report-profile-row><th scope="row" class="profile-cell"><div class="profile-sticky">
-        <span class="agent-capsule agent-${(profileIndex % 10) + 1}" aria-hidden="true"></span>
-        <span class="profile-copy"><span><strong>${html(profile.label)}</strong><span class="generation">${html(profile.generation)}</span></span><small>${html(profile.provider)} · ${html(suite.id === "first-task" ? "Production onboarding default" : profile.model)}</small></span>
-      </div></th>${columns}</tr>`;
-    })
-    .join("");
-  const environmentHeaders = environments
-    .map(
-      (environment) =>
-        `<th scope="col"><span class="environment-label">${html(environment.label)}</span><small>${html(environment.provider)} · ${html(environment.expectedExecutionTarget.kind)}</small></th>`,
-    )
-    .join("");
-  const selected = input.suiteCatalog.filter((execution) =>
-    input.expected.has(execution.id),
-  ).length;
   const summary = input.summary;
   const summaryHtml = summary
     ? `<div class="suite-summary" aria-label="${html(suite.label)} current campaign summary">
         <div><span>Pass rate</span><strong>${summary.selected > 0 ? ((summary.passed / summary.selected) * 100).toFixed(1) : "0.0"}%</strong><small>${summary.passed}/${summary.selected} passed${summary.incomplete ? ` · ${summary.incomplete} incomplete` : ""}</small></div>
         <div><span>Tokens</span><strong>${html(tokenLabel(summary.billing.llm.totalTokens, summary.billing.llm))}</strong><small>${html(tokenLabel(summary.billing.llm.inputTokens, summary.billing.llm))} input · ${html(tokenLabel(summary.billing.llm.outputTokens, summary.billing.llm))} output</small></div>
-        <div><span>Known spend</span><strong>${html(summary.billing.llm.runsWithReportedCost > 0 || summary.billing.estimatedRuntimeCostUsd > 0 || summary.billing.judge ? `${usdLabel(summary.billing.observedAndEstimatedCostUsd)}${summary.billing.testsWithCompleteBilling < summary.billing.testCount ? " (partial)" : ""}` : "Unavailable")}</strong><small>reported LLM + runtime${summary.billing.judge ? " + judge" : ""} estimate</small></div>
+        <div><span>Known spend</span><strong>${html(summary.billing.llm.runsWithReportedCost > 0 || (summary.billing.llm.runsWithEstimatedCost ?? 0) > 0 || summary.billing.estimatedRuntimeCostUsd > 0 || summary.billing.judge || summary.billing.assistant ? `${usdLabel(summary.billing.observedAndEstimatedCostUsd)}${summary.billing.testsWithCompleteBilling < summary.billing.testCount ? " (partial)" : ""}` : "Unavailable")}</strong><small>reported LLM + model/runtime estimates${summary.billing.judge ? " + judge" : ""} estimate</small></div>
         <div><span>Agent time</span><strong>${html(durationLabel(summary.billing.agentRunDurationMs))}</strong><small>${html(durationLabel(summary.billing.leaseDurationMs))} lease</small></div>
         <div><span>Execution</span><strong>${summary.executed}/${summary.selected}</strong><small>${summary.retries} retries · cleanup ${summary.cleanupPassed ? "passed" : "failed"}</small></div>
       </div>`
     : "";
-  return `<section class="suite-section" id="suite-${html(suite.id)}">
+  const journeys = [...new Map(input.suiteCatalog.map(row => [row.task.id, row.task])).values()];
+  return `<section class="suite-section" id="suite-${html(suite.id)}" data-report-suite-section="${html(suite.id)}" data-suite-label="${html(suite.label)}">
     <div class="section-heading"><div><p class="eyebrow">Test suite</p><h2>${html(suite.label)}</h2></div><p>${html(suite.description)}</p></div>
     ${summaryHtml}
-    <div class="table-kicker"><strong>Configuration matrix</strong><span>${profiles.length} profiles · ${environments.length} environments · ${selected} selected</span></div>
-    <div class="table-wrap"><table class="matrix"><colgroup><col class="profile-column">${environments.map(() => '<col class="environment-column">').join("")}</colgroup><thead><tr><th scope="col">Agent profile</th>${environmentHeaders}</tr></thead><tbody>${rows}</tbody></table></div>
+    <nav class="suite-case-toc" aria-label="${html(suite.label)} cases">
+      <div class="suite-case-toc-heading"><h3>Cases</h3><a href="#overview">Back to overview ↑</a></div>
+      ${renderSuiteCaseIndex(input.suiteCatalog)}
+    </nav>
+    ${journeys.map(task => {
+      const key = `${suite.id}.${task.id}`;
+      const executions = input.suiteCatalog.filter(row => row.task.id === task.id);
+      const href = `?view=case&case=${encodeURIComponent(key)}`;
+      return `<section class="report-journey" id="journey-${html(key)}" data-report-journey="${html(key)}">
+        <div class="report-journey-heading"><h3><a href="${html(href)}" data-nav-case="${html(key)}" data-report-case-link="${html(key)}">${html(task.label)}</a></h3><a href="${html(href)}" data-nav-case="${html(key)}" data-report-case-link="${html(key)}">Inspect case ↗</a></div>
+        <div class="case-config-options" aria-label="Execution configurations" hidden>${executions.map(row => `<button type="button" data-nav-configuration="${html(row.id)}" aria-pressed="false"><span class="case-status-dot" aria-hidden="true"></span>${html(row.profile.label)} · ${html(row.environment.label)}</button>`).join("")}</div>
+        <div class="execution-previews">${executions.map(row => `<div class="execution-preview"><div class="execution-preview-label"><strong>${html(row.profile.label)}</strong><span>${html(row.environment.label)}</span><span>${html(row.profile.provider)} · ${html(row.profile.model)}</span></div>${renderCase(row, input.expected, input.entryById)}</div>`).join("")}</div>
+      </section>`;
+    }).join("")}
   </section>`;
 }
 
-
 export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
+  if (input.catalogOverview && (input.entries.length || input.expected.length || input.catalog.length || input.campaign)) throw new Error("Catalog metadata cannot be mixed with campaign results");
+  const catalogOverview = input.catalogOverview ? renderCatalogOverview(input.catalogOverview, input.catalogOverviewDescriptions) : null;
+  const presentationLinks = (input.presentation?.links ?? []).flatMap(link => {
+    const href = reportEvidenceHref(link.href);
+    return href ? [{ ...link, href }] : [];
+  });
+  const expected = new Set(input.expected);
   const catalog = discoverReportCatalog({
     catalog: input.catalog,
     expected: input.expected,
     results: input.entries.map((entry) => entry.result),
-  });
-  const expected = new Set(input.expected);
+  }).filter((execution) => expected.has(execution.id));
   const entryById = new Map(
     input.entries.map((entry) => [entry.result.executionId, entry]),
   );
@@ -648,15 +428,13 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     !entry.valid && isIncompleteFirstTaskResult(entry.result, entry.errors),
   ).length;
   const failed = input.expected.length - passed - incomplete;
-  const totalDuration = selectedEntries.reduce(
-    (total, entry) => total + entry.result.durationMs,
-    0,
-  );
+  const timing = summarizeCampaignTiming(selectedEntries.map(entry => entry.result), input.campaign?.accounting);
   const screenshotCount = selectedEntries.reduce(
     (total, entry) => total + resolveScreenshots(entry).length,
     0,
   );
-  const campaignBilling = aggregateCampaignBilling(
+  const campaignFeedback = summarizeCampaignFeedback(input.campaign?.accounting?.attempts ?? input.entries.map(entry => entry.result));
+  const campaignBilling = input.campaign?.billing ?? aggregateCampaignBilling(
     selectedEntries.map((entry) => entry.result),
   );
   const suites = [
@@ -666,7 +444,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
   ];
   const suiteSections = suites
     .map((suite) =>
-      renderSuiteMatrix({
+      renderSuiteResults({
         suiteCatalog: catalog.filter(
           (execution) => execution.suite.id === suite.id,
         ),
@@ -678,10 +456,6 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       }),
     )
     .join("");
-  const historySection = renderHistory(input.history);
-  const publicSummaryImageHref = safePublicAssetHref(
-    input.publicSummaryImageHref,
-  );
   const filterProfiles = [
     ...new Map(
       catalog.map((execution) => [execution.profile.id, execution.profile]),
@@ -739,7 +513,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       --chat-human-foreground: #ffffff;
       --chat-bubble-radius: 1rem;
       --chat-body-size: 0.875rem;
-      --navigation-sticky-offset: 58px;
+      --navigation-sticky-offset: 0px;
       --font-sans: "Paperclip Inter", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
     }
@@ -771,6 +545,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       }
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     html { scroll-behavior: smooth; }
     body { margin: 0; background: var(--background); color: var(--foreground); font: 14px/1.5 var(--font-sans); font-feature-settings: "ss01", "cv11"; }
     button, summary, a { -webkit-tap-highlight-color: transparent; }
@@ -796,7 +571,9 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .gallery-launch { min-width: 138px; padding: 10px 15px; }
     .gallery-launch:hover, .gallery-control:hover, .gallery-close:hover { border-color: var(--foreground); background: var(--primary); color: var(--primary-foreground); }
     .gallery-launch:focus-visible, .gallery-control:focus-visible, .gallery-close:focus-visible, .screenshot-trigger:focus-visible, .report-filters input:focus-visible, .report-filters select:focus-visible, .filter-reset:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
-    .report-filters { display: grid; grid-template-columns: minmax(240px, 1.6fr) repeat(4, minmax(130px, .7fr)) auto; align-items: end; gap: 10px; margin: 0 0 40px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+    .report-filters { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); align-items: end; gap: 10px; margin: 0 0 40px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+    .report-search { grid-column: span 5; }
+    .report-feature { grid-column: span 2; }
     .report-filters label { display: grid; gap: 5px; min-width: 0; }
     .report-filters label > span { color: var(--muted-foreground); font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
     .report-filters input, .report-filters select, .filter-reset { width: 100%; min-height: 38px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: calc(var(--radius) * .8); background: var(--background); color: var(--foreground); }
@@ -838,9 +615,10 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .agent-10 { background: linear-gradient(to bottom, #f2d95f, #4fbcba); }
     .generation { display: inline-block; margin-left: 7px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted-foreground); font: 500 10px/1.4 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
     .case-stack { display: grid; gap: 12px; }
-    .case { min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; }
+    .case { min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; scroll-margin-top: 80px; }
     .case-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
     .case-heading strong { font-size: 14px; font-weight: 650; }
+    .case-empty { margin: 12px 0; color: var(--muted-foreground); font-size: 12px; }
     .status, .matcher-state { display: inline-block; flex: none; padding: 3px 8px; border: 1px solid; border-radius: 999px; font: 600 10px/1.4 var(--font-sans); letter-spacing: .05em; text-transform: uppercase; }
     .case-passed .status, .matcher-passed .matcher-state { border-color: var(--pass-border); background: var(--pass-bg); color: var(--pass-text); }
     .case-failed .status, .matcher-failed .matcher-state { border-color: var(--fail-border); background: var(--fail-bg); color: var(--fail-text); }
@@ -890,9 +668,9 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .billing-metric strong { display: block; overflow-wrap: anywhere; font: 550 17px/1.25 var(--font-mono); font-variant-numeric: tabular-nums; }
     .billing-metric span { display: block; margin-top: 4px; color: var(--muted-foreground); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
     .billing-note { grid-column: 1 / -1; margin: 0; padding: 11px 16px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 11px; }
-    .suite-nav { position: sticky; top: 0; z-index: 12; display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 24px; padding: 10px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--background); }
-    .suite-nav a { padding: 7px 10px; border-radius: calc(var(--radius) * .8); color: var(--muted-foreground); font-size: 12px; font-weight: 600; text-decoration: none; }
-    .suite-nav a:hover { background: var(--raised); color: var(--foreground); }
+    .results-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 40px 0 20px; }
+    .results-heading h2 { margin: 0; font-size: 24px; }
+    .results-heading a { color: var(--muted-foreground); font-size: 12px; }
     .suite-section, .history-section { scroll-margin-top: calc(var(--navigation-sticky-offset) + 16px); margin-top: 64px; }
     .section-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 520px); align-items: end; gap: 32px; margin-bottom: 24px; }
     .section-heading h2 { margin: 0; font-size: clamp(25px, 3vw, 38px); line-height: 1.05; letter-spacing: -.035em; }
@@ -904,42 +682,33 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .suite-summary span, .suite-summary small { color: var(--muted-foreground); font-size: 9px; }
     .suite-summary span { letter-spacing: .06em; text-transform: uppercase; }
     .suite-summary strong { margin: 3px 0 1px; font: 550 15px/1.3 var(--font-mono); }
-    .history-pointers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
-    .history-pointers a { padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); text-decoration: none; }
-    .history-pointers span, .history-pointers strong { display: block; }
-    .history-pointers span { color: var(--muted-foreground); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
-    .history-pointers strong { margin-top: 4px; font: 550 12px/1.4 var(--font-mono); overflow-wrap: anywhere; }
-    .trend-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-    .trend-card { min-width: 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
-    .trend-card > span, .trend-card > strong, .trend-card > small { display: block; }
-    .trend-card > span, .trend-card > small { color: var(--muted-foreground); font-size: 10px; }
-    .trend-card > span { letter-spacing: .06em; text-transform: uppercase; }
-    .trend-card > strong { margin-top: 4px; font: 550 17px/1.3 var(--font-mono); }
-    .trend-card svg { width: 100%; height: 72px; margin: 10px 0 4px; overflow: visible; }
-    .trend-card polyline { stroke: var(--foreground); stroke-width: 1.6; }
-    .trend-card circle { fill: var(--background); stroke: var(--foreground); stroke-width: 1; }
-    .suite-trends { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); }
-    .suite-trends-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
-    .suite-trends-heading h3 { margin: 0; font: 600 14px/1.4 var(--font-mono); }
-    .suite-trends-heading span { color: var(--muted-foreground); font-size: 10px; }
-    .history-filters { display: grid; grid-template-columns: minmax(220px, 1fr) repeat(4, minmax(130px, 180px)) auto; align-items: end; gap: 12px; margin: 24px 0 12px; }
-    .history-filters label { display: grid; gap: 5px; color: var(--muted-foreground); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
-    .history-filters input, .history-filters select { width: 100%; min-height: 38px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: calc(var(--radius) * .8); background: var(--background); color: var(--foreground); }
-    .history-filters .history-checkbox { display: flex; align-items: center; min-height: 38px; padding-bottom: 7px; white-space: nowrap; }
-    .history-checkbox input { width: 16px; min-height: 16px; }
-    .history-table-wrap { overflow-x: auto; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-    .history-table { width: 100%; min-width: 1020px; border-collapse: collapse; }
-    .history-table th, .history-table td { padding: 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
-    .history-table tr:last-child td { border-bottom: 0; }
-    .history-table th { background: var(--raised); color: var(--muted-foreground); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
-    .history-table td small { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 10px; }
-    .history-table .status { margin-bottom: 2px; }
-    .history-passed { border-color: var(--pass-border); background: var(--pass-bg); color: var(--pass-text); }
-    .history-incomplete { border-color: var(--missing-border); background: var(--missing-bg); color: var(--missing-text); }
-    .history-failed { border-color: var(--fail-border); background: var(--fail-bg); color: var(--fail-text); }
-    .history-empty { padding: 24px 0; color: var(--muted-foreground); text-align: center; }
+    .suite-case-toc { margin: 0 0 24px; }
+    .suite-case-toc-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+    .suite-case-toc-heading h3 { margin: 0; font-size: 13px; font-weight: 600; }
+    .suite-case-toc-heading > a { color: var(--muted-foreground); font-size: 11px; }
+
     .case-context > summary, .usage > summary { width: fit-content; cursor: pointer; color: var(--foreground); font-size: 12px; font-weight: 600; }
+    .case-diagnostics { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .case-diagnostics > summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; width: 100%; list-style: none; }
+    .case-diagnostics > summary::-webkit-details-marker { display: none; }
+    .case-diagnostics > summary::before { content: "›"; color: var(--muted-foreground); font-size: 16px; line-height: 1; }
+    .case-diagnostics[open] > summary::before { transform: rotate(90deg); }
+    .case-detail-summary { margin-left: auto; color: var(--muted-foreground); font: 400 11px/1.5 var(--font-mono); }
+    .case-facts { display: grid; gap: 10px; margin: 18px 0; font-size: 12px; }
+    .case-facts > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; gap: 12px; }
+    .case-facts dd { min-width: 0; overflow-wrap: anywhere; font: inherit; }
+    .case-facts a { text-underline-offset: 3px; }
+    .case-checks { display: grid; gap: 9px; list-style: none; padding: 14px 0; margin: 0; border-top: 1px solid var(--border); font-size: 12px; }
+    .case-checks li { display: flex; align-items: baseline; gap: 10px; overflow-wrap: anywhere; }
+    .check-state { flex: none; min-width: 32px; color: var(--muted-foreground); font-size: 10px; font-weight: 600; }
+    .check-passed { color: var(--pass-text); }
+    .check-failed { color: var(--fail-text); }
+    .case-advanced { margin-top: 18px; }
+    .case-advanced > summary { color: var(--muted-foreground); font-weight: 400; }
+    .case-capabilities { padding-left: 16px; color: var(--muted-foreground); font-size: 11px; }
     .case-outcome { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); font-size: 12px; }
+    .case-incomplete > .case-outcome { border-color: var(--missing-border); }
+    .case-failed > .case-outcome { border-color: var(--fail-border); }
     .case-outcome p { margin: 8px 0; }
     .failure-reason { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 var(--font-mono); }
     .conversation-details { margin: 16px 0; }
@@ -1009,6 +778,8 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .gallery-context span { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
     .gallery-context strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
     .gallery-context em { color: #b8b8b5; font: 10px/1.4 var(--font-mono); font-style: normal; white-space: nowrap; }
+    .gallery-context .gallery-target { flex-basis: 100%; }
+    .gallery-target a { color: #fafafa; font-size: 12px; overflow-wrap: anywhere; text-underline-offset: 3px; }
     .gallery-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-top: 8px; }
     .gallery-facts > span { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
     .gallery-facts em { color: #b8b8b5; font: 10px/1.4 var(--font-mono); font-style: normal; text-transform: uppercase; }
@@ -1024,6 +795,8 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .gallery-previous { left: 24px; }
     .gallery-next { right: 24px; }
     .gallery-position { color: #b8b8b5; font: 12px/1.4 var(--font-mono); font-variant-numeric: tabular-nums; }
+    .gallery-original { color: #fafafa; font-size: 12px; }
+    .back-to-top { position: fixed; right: max(24px, env(safe-area-inset-right)); bottom: max(24px, env(safe-area-inset-bottom)); z-index: 10; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--foreground); color: var(--background); font: 600 12px/1.4 var(--font-sans); text-decoration: none; }
     @media (max-width: 1180px) {
       .matrix { display: block; min-width: 0; }
       .matrix thead { display: none; }
@@ -1054,8 +827,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       .trend-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .history-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .report-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .report-search, .filter-result { grid-column: 1 / -1; }
-      .suite-nav { top: 0; }
+      .report-search, .report-feature, .filter-result { grid-column: 1 / -1; }
       .suite-section, .history-section { scroll-margin-top: 72px; }
     }
     @media (max-width: 640px) {
@@ -1076,11 +848,9 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       .gallery-control { width: 40px; height: 56px; }
       .gallery-previous { left: 8px; }
       .gallery-next { right: 8px; }
-      .suite-nav { top: 0; overflow-x: auto; flex-wrap: nowrap; }
-      .suite-nav a { white-space: nowrap; }
       .history-pointers, .trend-grid, .history-filters { grid-template-columns: 1fr; }
       .report-filters { grid-template-columns: 1fr; }
-      .report-search, .filter-result { grid-column: auto; }
+      .report-search, .report-feature, .filter-result { grid-column: auto; }
       .suite-summary { grid-template-columns: 1fr; }
       .suite-summary > div, .suite-summary > div:nth-child(even) { border-right: 0; border-bottom: 1px solid var(--border); }
       .suite-summary > div:last-child { border-bottom: 0; }
@@ -1089,73 +859,81 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 100ms !important; }
     }
-    .public-summary { margin: 0 0 32px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--raised); }
-    .public-summary img { display: block; width: 100%; height: auto; border-radius: 6px; }
+    ${campaignSuiteSummaryStyles}
+    ${journeyFeatureStyles}
     @media print {
       .brand-bar, .gallery-launch, dialog { display: none; }
       main { width: 100%; margin: 0; }
       .table-wrap { max-height: none; overflow: visible; }
       .matrix thead th, .profile-cell, .profile-sticky { position: static; }
     }
+    ${reportNavigationStyles}
+    ${catalogOverviewStyles}
   </style>
 </head>
-<body>
-  <div class="brand-bar">
-    <a class="brand-lockup" href="https://paperclip.ing" aria-label="Paperclip home">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/></svg>
-      <span>Paperclip</span>
-    </a>
-    <span class="brand-context">Quality engineering · Runner acceptance</span>
-  </div>
+<body id="top"${catalogOverview ? " data-catalog-metadata" : ""}>
+  ${renderReportShell(catalogOverview ? { history: input.history } : { campaignId: input.campaign?.campaignId, catalog, history: input.history })}
   <main id="overview">
+    ${catalogOverview ?? `
+    <section class="case-page-heading" data-case-page-heading hidden><p class="eyebrow">Test case</p><h1 data-case-page-title tabindex="-1"></h1><a href="?view=all" data-nav-return>← Back to campaign results</a></section>
+    <section data-campaign-overview>
     <header class="report-header">
       <div>
-        <p class="eyebrow">Full-stack acceptance campaign</p>
-        <h1>${html(input.title)}</h1>
-        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Declared PNG screenshots and normalized results are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.</p>
+        <p class="eyebrow">E2E campaign</p>
+        <h1 tabindex="-1">${html(input.presentation?.title ?? input.title)}</h1>
+        <p class="lede">${html(input.presentation?.description ?? "App and agent journeys across deployment targets, profiles, and execution environments. Declared PNG screenshots and normalized results are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.")}</p>
+        ${input.campaign ? `<p class="report-source"><span>${html(input.generatedAt)}</span>${input.campaign.source.sha ? `<code>${html(input.campaign.source.sha.slice(0,8))}</code>` : ""}${input.campaign.source.workflowRunUrl ? `<a href="${html(input.campaign.source.workflowRunUrl)}">Source run ↗</a>` : ""}</p>` : ""}
       </div>
       <div class="report-actions">
         <div class="summary" aria-label="Campaign summary">
           <div class="metric"><strong>${passed}/${input.expected.length}</strong><span>Passed</span></div>
           <div class="metric"><strong>${failed}</strong><span>Failed</span></div>
           ${incomplete ? `<div class="metric"><strong>${incomplete}</strong><span>Incomplete</span></div>` : ""}
-          <div class="metric"><strong>${html(durationLabel(totalDuration))}</strong><span>Test time</span></div>
+          <div class="metric"><strong>${html(campaignAttemptTimeLabel(timing))}</strong><span>Summed attempt time</span></div>
         </div>
         <button class="gallery-launch" type="button" data-gallery-open ${screenshotCount === 0 ? "disabled" : ""}>${screenshotCount === 0 ? "Visual evidence · workflow artifact only" : `View gallery · ${screenshotCount}`}</button>
       </div>
     </header>
-    ${publicSummaryImageHref ? `<figure class="public-summary"><img src="${html(publicSummaryImageHref)}" alt="Runner E2E campaign status summary"></figure>` : ""}
+    ${input.presentation?.notes?.length || presentationLinks.length ? `<details class="campaign-billing-details campaign-notes"><summary>About this run</summary>${input.presentation?.notes?.map(note => `<p class="detail">${html(note)}</p>`).join("") ?? ""}${presentationLinks.length ? `<nav class="evidence-links" aria-label="Campaign evidence">${presentationLinks.map(link => `<a href="${html(link.href)}">${html(link.label)}</a>`).join("")}</nav>` : ""}</details>` : ""}
+    ${renderCampaignSuiteSummary(input.campaign?.suites ?? [], catalog, "", false)}
+    <details class="campaign-billing-details"><summary>Campaign usage and spend</summary>
     <section class="billing-overview" aria-label="Campaign billing summary">
+      <div class="billing-metric"><strong>${campaignFeedback.complaints} / ${campaignFeedback.suggestions}</strong><span>Complaints / suggestions · retained attempts</span><small>${campaignFeedback.review.length} distinct items · ${campaignFeedback.incomplete} attempts with incomplete collection · ${campaignFeedback.failedSubmissions} failed submissions · ${campaignFeedback.unknownSubmissions} unresolved submissions</small></div>
+      ${input.campaign?.accounting ? `<div class="billing-metric"><strong>${input.campaign.accounting.attempts.length}</strong><span>${input.campaign.accounting.scope === "retained_attempts" ? "Retained attempts" : "Selected results only"}</span><small>${input.campaign.accounting.missingAttempts} missing attempts · ${input.campaign.accounting.excludedArtifacts} out-of-scope artifacts</small></div>` : ""}
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.inputTokens, campaignBilling.llm))}</strong><span>Input tokens</span></div>
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.outputTokens, campaignBilling.llm))}</strong><span>Output tokens</span></div>
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.cachedInputTokens, campaignBilling.llm))}</strong><span>Cached tokens</span></div>
       <div class="billing-metric"><strong>${html(llmCostLabel(campaignBilling.reportedLlmCostUsd, campaignBilling.llm))}</strong><span>LLM reported subtotal</span></div>
+      ${(campaignBilling.llm.runsWithEstimatedCost ?? 0) > 0 ? `<div class="billing-metric"><strong>${html(billingCoverageLabel(usdLabel(campaignBilling.estimatedLlmCostUsd ?? 0), campaignBilling.llm.runsWithEstimatedCost ?? 0, campaignBilling.llm.runCount))}</strong><span>LLM estimated subtotal</span></div>` : ""}
       <div class="billing-metric"><strong>${html(usdLabel(campaignBilling.estimatedRuntimeCostUsd))}</strong><span>Daytona list estimate</span></div>
       ${campaignBilling.judge ? `<div class="billing-metric"><strong>${html(usdLabel(campaignBilling.judge.estimatedCostUsd))}</strong><span>Judge estimate · ${campaignBilling.judge.attempts} attempts · ${campaignBilling.judge.attemptsWithUnknownUsage} unknown usage</span><small>${html(tokenLabel(campaignBilling.judge.inputTokens))} in / ${html(tokenLabel(campaignBilling.judge.outputTokens))} out · $${campaignBilling.judge.reservedCostUsd.toFixed(6)} reserved</small></div>` : ""}
       ${campaignBilling.assistant ? `<div class="billing-metric"><strong>${html(usdLabel(campaignBilling.assistant.estimatedCostUsd))}</strong><span>External assistant estimate · ${campaignBilling.assistant.requests} requests</span><small>${html(tokenLabel(campaignBilling.assistant.inputTokens + campaignBilling.assistant.cachedInputTokens))} in / ${html(tokenLabel(campaignBilling.assistant.outputTokens))} out</small></div>` : ""}
+      <div class="billing-metric"><strong>${html(durationLabel(timing.observedWindowMs))}</strong><span>Observed attempt window</span><small>${timing.retainedAttempts} retained attempts · ${timing.missingAttempts} missing attempts</small></div>
+      <p class="billing-note">${html(campaignTimingScope)}</p>
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.agentRunDurationMs))}</strong><span>Agent execution time</span></div>
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.leaseDurationMs))}</strong><span>Daytona lease time</span></div>
       <div class="billing-metric"><strong>${campaignBilling.llm.runsWithReportedCost}/${campaignBilling.llm.runCount}</strong><span>Runs provider-priced</span></div>
-      <p class="billing-note">Model spend is the provider-reported subtotal; unpriced or unavailable runs are excluded, never counted as free. Daytona runtime is a public-list-price estimate from captured lease time and pinned resources, before credits, discounts, storage allowance, or invoice adjustments. Local execution has no external runtime meter.</p>
+      <p class="billing-note">Campaign costs include retained attempts, including failed retries. Result cards show the selected attempt. Provider-reported amounts and model estimates are separate; unpriced or unavailable runs are excluded, never counted as free. Coverage describes captured usage; unobserved setup, subscriptions, tools, CI and storage require additional accounting. Daytona runtime is a public-list-price estimate from captured lease time and pinned resources, before credits, discounts, storage allowance, or invoice adjustments. Local execution has no external runtime meter.</p>
+    </section>${renderWorkerPhaseTiming(summarizeWorkerPhaseTiming(selectedEntries.map(entry => entry.result), input.campaign?.accounting))}${input.campaign?.operations ? renderEvalOperationsReport(input.campaign.operations) : ""}${input.campaign ? renderCampaignFeedbackReview(input.campaign) + renderBraintrustExperiment(input.campaign) : ""}</details>
     </section>
-    <nav class="suite-nav" aria-label="Report sections">
-      <a href="#overview">Overview</a>
-      ${suites.map((suite) => `<a href="#suite-${html(suite.id)}">${html(suite.label)}</a>`).join("")}
-      <a href="#history">History</a>
-    </nav>
+    <div class="results-heading" id="results"><h2 data-results-title>All results</h2><span data-results-description></span></div>
+    <div data-feature-coverage>${renderJourneyFeatureCoverage(catalog, entryById)}</div>
     <section class="report-filters" aria-label="Filter test results">
       <label class="report-search"><span>Search tests</span><input type="search" placeholder="Test, model, provider, execution ID…" autocomplete="off" data-report-query></label>
+      <button class="filter-reset" type="button" data-report-reset>Reset all filters</button>
+      <label class="report-feature"><span>Feature</span><select data-report-feature><option value="">All features</option>${renderJourneyFeatureOptions(catalog)}</select></label>
       <label><span>Agent profile</span><select data-report-profile><option value="">All profiles</option>${filterProfiles.map((profile) => `<option value="${html(profile.id)}">${html(profile.label)}</option>`).join("")}</select></label>
       <label><span>Environment</span><select data-report-environment><option value="">All environments</option>${filterEnvironments.map((environment) => `<option value="${html(environment.id)}">${html(environment.label)}</option>`).join("")}</select></label>
       <label><span>Suite</span><select data-report-suite><option value="">All suites</option>${suites.map((suite) => `<option value="${html(suite.id)}">${html(suite.label)}</option>`).join("")}</select></label>
-      <label><span>Status</span><select data-report-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="incomplete">Incomplete</option><option value="missing">Missing</option><option value="not-selected">Not selected</option></select></label>
-      <button class="filter-reset" type="button" data-report-reset>Reset</button>
+      <label><span>Status</span><select data-report-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="incomplete">Incomplete</option><option value="missing">Missing</option></select></label>
       <p class="filter-result" data-report-result aria-live="polite"></p>
     </section>
     ${suiteSections}
-    ${historySection}
-    <footer><span>Generated ${html(input.generatedAt)}</span><span>${catalog.length} catalog executions · Declared screenshots and normalized results published</span></footer>
+    <footer><span>Generated ${html(input.generatedAt)}</span><span>${catalog.length} selected executions · Declared screenshots and normalized results published</span></footer>
+    `}
   </main>
+  </div></div>
+  <a class="back-to-top" href="#top" data-back-to-top hidden><span aria-hidden="true">↑</span>Back to top</a>
   <dialog class="gallery-dialog" data-gallery-dialog aria-labelledby="gallery-title">
     <div class="gallery-shell">
       <div class="gallery-toolbar">
@@ -1165,6 +943,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
             <span><strong data-gallery-profile></strong><em data-gallery-profile-detail></em></span>
             <span><em>Environment:</em><strong data-gallery-environment></strong><em data-gallery-environment-detail></em></span>
             <span><strong data-gallery-case></strong><em data-gallery-runtime></em></span>
+            <span class="gallery-target"><em>Tested URL:</em><a data-gallery-target-url target="_blank" rel="noreferrer"></a></span>
           </div>
           <div class="gallery-facts">
             <span class="gallery-status" data-gallery-status></span>
@@ -1183,10 +962,27 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       </div>
       <div class="gallery-footer">
         <span class="gallery-position" data-gallery-position aria-live="polite"></span>
+        <a class="gallery-original" data-gallery-original target="_blank" rel="noreferrer">Open original image ↗</a>
       </div>
     </div>
   </dialog>
   <script>
+    (() => {
+      const backToTop = document.querySelector("[data-back-to-top]");
+      const update = () => { backToTop.hidden = window.scrollY < window.innerHeight; };
+      window.addEventListener("scroll", update, { passive: true });
+      window.addEventListener("resize", update);
+      backToTop.addEventListener("click", (event) => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        window.scrollTo({ top: 0, behavior: "instant" });
+        const hash = document.querySelector('.report-shell').dataset.view === 'case' ? location.hash : '';
+        history.replaceState({ ...history.state, reportScroll: 0 }, "", location.pathname + location.search + hash);
+        document.querySelector("[data-case-page-heading]:not([hidden]) h1, .report-header h1").focus({ preventScroll: true });
+        update();
+      });
+      update();
+    })();
     document.addEventListener("click", (event) => {
       const link = event.target.closest("a[href^='#first-task-']");
       if (!link) return;
@@ -1207,6 +1003,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       const profileDetail = dialog.querySelector("[data-gallery-profile-detail]");
       const environment = dialog.querySelector("[data-gallery-environment]");
       const environmentDetail = dialog.querySelector("[data-gallery-environment-detail]");
+      const targetUrl = dialog.querySelector("[data-gallery-target-url]");
       const caseLabel = dialog.querySelector("[data-gallery-case]");
       const runtime = dialog.querySelector("[data-gallery-runtime]");
       const status = dialog.querySelector("[data-gallery-status]");
@@ -1214,6 +1011,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       const tokens = dialog.querySelector("[data-gallery-tokens]");
       const matchers = dialog.querySelector("[data-gallery-matchers]");
       const position = dialog.querySelector("[data-gallery-position]");
+      const original = dialog.querySelector("[data-gallery-original]");
       const stage = dialog.querySelector("[data-gallery-stage]");
       let activeItem = items[0];
       let pointerStartX = null;
@@ -1228,6 +1026,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         }
         const item = activeItem;
         image.src = item.dataset.galleryHref;
+        original.href = item.dataset.galleryHref;
         image.alt = item.dataset.galleryLabel + " for " + item.dataset.galleryExecution;
         title.textContent = item.dataset.galleryLabel;
         execution.textContent = item.dataset.galleryExecution;
@@ -1235,6 +1034,9 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         profileDetail.textContent = item.dataset.galleryGeneration + " · " + item.dataset.galleryProvider + " · " + item.dataset.galleryModel;
         environment.textContent = item.dataset.galleryEnvironment;
         environmentDetail.textContent = "Provider: " + item.dataset.galleryEnvironmentProvider + " · Target: " + item.dataset.galleryExecutionTarget;
+        targetUrl.textContent = item.dataset.galleryTargetUrl || "Not recorded";
+        if (item.dataset.galleryTargetUrl) targetUrl.href = item.dataset.galleryTargetUrl;
+        else targetUrl.removeAttribute("href");
         caseLabel.textContent = item.dataset.galleryCase;
         runtime.textContent = item.dataset.galleryRuntime + " runtime";
         status.textContent = item.dataset.galleryStatus;
@@ -1284,109 +1086,8 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       stage.addEventListener("pointercancel", () => { pointerStartX = null; });
     })();
   </script>
-  <script>
-    (() => {
-      const cases = Array.from(document.querySelectorAll("[data-report-case]"));
-      if (cases.length === 0) return;
-      const query = document.querySelector("[data-report-query]");
-      const profile = document.querySelector("[data-report-profile]");
-      const environment = document.querySelector("[data-report-environment]");
-      const suite = document.querySelector("[data-report-suite]");
-      const status = document.querySelector("[data-report-status]");
-      const reset = document.querySelector("[data-report-reset]");
-      const result = document.querySelector("[data-report-result]");
-      const galleryLaunch = document.querySelector("[data-gallery-open]");
-      const apply = () => {
-        const search = query.value.trim().toLowerCase();
-        let visible = 0;
-        cases.forEach((item) => {
-          const matches =
-            (!search || item.dataset.reportSearch.includes(search)) &&
-            (!profile.value || item.dataset.reportProfile === profile.value) &&
-            (!environment.value || item.dataset.reportEnvironment === environment.value) &&
-            (!suite.value || item.dataset.reportSuite === suite.value) &&
-            (!status.value || item.dataset.reportStatus === status.value);
-          item.hidden = !matches;
-          if (matches) visible += 1;
-        });
-        document.querySelectorAll("[data-report-profile-row]").forEach((row) => {
-          row.hidden = !row.querySelector("[data-report-case]:not([hidden])");
-        });
-        document.querySelectorAll(".suite-section").forEach((section) => {
-          section.hidden = !section.querySelector("[data-report-case]:not([hidden])");
-        });
-        const visibleImages = cases.reduce(
-          (total, item) => total + (item.hidden ? 0 : item.querySelectorAll("[data-gallery-item]").length),
-          0,
-        );
-        result.textContent = visible + " of " + cases.length + " tests shown";
-        if (galleryLaunch) {
-          galleryLaunch.disabled = visibleImages === 0;
-          galleryLaunch.textContent = visibleImages === 0 ? "No visual evidence in selection" : "View gallery · " + visibleImages;
-        }
-      };
-      [query, profile, environment, suite, status].forEach((control) => {
-        control.addEventListener(control === query ? "input" : "change", apply);
-      });
-      reset.addEventListener("click", () => {
-        query.value = "";
-        profile.value = "";
-        environment.value = "";
-        suite.value = "";
-        status.value = "";
-        apply();
-        query.focus();
-      });
-      document.addEventListener("keydown", (event) => {
-        if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
-        const target = event.target;
-        if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) return;
-        event.preventDefault();
-        query.focus();
-      });
-      apply();
-    })();
-  </script>
-  <script>
-    (() => {
-      const rows = Array.from(document.querySelectorAll("[data-history-campaign]"));
-      if (rows.length === 0) return;
-      const query = document.querySelector("[data-history-query]");
-      const suite = document.querySelector("[data-history-suite]");
-      const status = document.querySelector("[data-history-status]");
-      const from = document.querySelector("[data-history-from]");
-      const through = document.querySelector("[data-history-through]");
-      const partial = document.querySelector("[data-history-partial]");
-      const empty = document.querySelector("[data-history-empty]");
-      const suiteTrends = [...document.querySelectorAll("[data-history-suite-trends]")];
-      const apply = () => {
-        const search = query.value.trim().toLowerCase();
-        let visible = 0;
-        rows.forEach((row) => {
-          const matches =
-            (!search || row.dataset.historySearch.includes(search)) &&
-            (!suite.value || row.dataset.historySuites.split(" ").includes(suite.value)) &&
-            (!status.value || row.dataset.historyStatus === status.value) &&
-            (!from.value || row.dataset.historyDate >= from.value) &&
-            (!through.value || row.dataset.historyDate <= through.value) &&
-            (partial.checked || row.dataset.historyComplete === "true");
-          row.hidden = !matches;
-          if (matches) visible += 1;
-        });
-        suiteTrends.forEach((section) => {
-          section.hidden = Boolean(suite.value) && section.dataset.historySuiteTrends !== suite.value;
-        });
-        empty.hidden = visible !== 0;
-      };
-      query.addEventListener("input", apply);
-      suite.addEventListener("change", apply);
-      status.addEventListener("change", apply);
-      from.addEventListener("change", apply);
-      through.addEventListener("change", apply);
-      partial.addEventListener("change", apply);
-      apply();
-    })();
-  </script>
+  <script>${reportShellScript}${catalogOverview ? catalogOverviewScript : reportBrowserScript}</script>
+
 </body>
 </html>
 `;

@@ -8,6 +8,7 @@ import type { DurableRecoveryCommittedEvent, DurableRecoveryIdentity } from "../
 // event pump, registered handler, and request emission below all run unchanged.
 const peer = vi.hoisted(() => ({ current: null as TestPeer | null }));
 interface TestPeer {
+  readonly recoveredSourceSeq: number;
   store: { state: { identity: DurableRecoveryIdentity; committedEvents: DurableRecoveryCommittedEvent[]; commands: Array<Record<string, unknown>> } };
   emit(type: string, payload: Record<string, unknown>): void;
 }
@@ -17,6 +18,7 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
     ...actual,
     spawnRunner: vi.fn(() => ({ child: { exitCode: null }, completion: new Promise(() => {}) })),
     DurablePrpControlPlane: class implements TestPeer {
+      readonly recoveredSourceSeq = 0;
       store: TestPeer["store"];
       connectUrl = "ws://fixture.invalid";
       constructor(options: { identity: DurableRecoveryIdentity }) {
@@ -25,9 +27,14 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
       }
       async start() {}
       async stop() {}
+      async drainPendingConnectionProcessing() {}
       disconnectActiveRunner() {}
       persistRunAttachTemplate() {}
+      persistPreparedLaunchConfiguration() {}
+      unclaimedBootstrapCheckpoint() { return null; }
       issueBootstrapTicket() { return {}; }
+      async flushCheckpoint() {}
+      async recoverPendingSemanticInputs() {}
       getCommand(id: string) { return this.store.state.commands.find(c => c.commandId === id); }
       queueCommand(type: string, payload: Record<string, unknown>, id = type) {
         this.store.state.commands.push({ type, commandId: id, status: "completed", result: { result: { providerTurnId: payload.turnId } } });
@@ -117,16 +124,18 @@ describe("permission and tool order through the actual transport and harness", (
   });
 });
 
-async function bareTransport() {
+async function bareTransport(authorityRunId?: () => string | undefined) {
   const root = mkdtempSync(join(tmpdir(), "permission-queue-lifecycle-"));
   const binary = join(root, "unexecuted-runner");
   writeFileSync(binary, "not executable: process boundary is mocked");
   const bundle = createCapabilityRunnerdCodexTransport({ runnerBinary: binary, stateDirectory: root,
+    get authorityRunId() { return authorityRunId?.(); },
     sourceCodexHome: join(root, "absent-source-home"), environment: { HOME: root, PATH: "/usr/bin:/bin" },
   });
   await bundle.transport.request("initialize", {});
   await bundle.transport.request("thread/start", { cwd: root });
-  await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Fixture" }] });
+  const started = await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Fixture" }] });
+  const turnId = (started.turn as { id: string }).id;
   const iterator = bundle.transport.notifications()[Symbol.asyncIterator]();
   expect((await iterator.next()).value?.method).toBe("turn/started");
   const emitPermission = (requestId = "permission-7", prompt = "Run command") => peer.current!.emit("runtime_request.created", { request: {
@@ -135,8 +144,38 @@ async function bareTransport() {
     origin: { adapter: "acpx-runtime-sidecar", provider: "cursor", method: "session/request_permission" },
   } });
   const emitMarker = () => peer.current!.emit("item.delta", { kind: "agentMessage", text: "marker" });
-  return { bundle, iterator, emitPermission, emitMarker, async close() { await bundle.detachControllerForRestart(); rmSync(root, { recursive: true, force: true }); } };
+  return { bundle, iterator, turnId, emitPermission, emitMarker, async close() { await bundle.detachControllerForRestart(); rmSync(root, { recursive: true, force: true }); } };
 }
+
+it.each(["same-owner", "rebound-before-queue", "rebound-before-delivery"] as const)("fences deferred permission presentation and preserves settlement: %s", async scenario => {
+  let owner: string | undefined;
+  const fixture = await bareTransport(() => owner); const handler = vi.fn(async () => ({}));
+  fixture.bundle.transport.setServerRequestHandler(handler);
+  const sourceRunId = peer.current!.store.state.identity.runId;
+  owner = scenario === "rebound-before-queue" ? "replacement-owner" : sourceRunId;
+  try {
+    fixture.emitMarker(); fixture.emitPermission(); fixture.emitMarker();
+    expect((await fixture.iterator.next()).value?.method).toBe("item/agentMessage/delta");
+    const request = structuredClone(peer.current!.store.state.committedEvents.find(event => event.eventType === "runtime_request.created"));
+    expect(request).toBeDefined();
+    expect(handler).not.toHaveBeenCalled();
+    if (scenario === "rebound-before-delivery") owner = "replacement-owner";
+    expect((await fixture.iterator.next()).value?.method).toBe("item/agentMessage/delta");
+    expect(handler).toHaveBeenCalledTimes(scenario === "same-owner" ? 1 : 0);
+    const resolve = () => fixture.bundle.transport.resolveRuntimeRequest!({requestId:"permission-7",turnId:fixture.turnId,resolution:{action:"cancel"}});
+    if (scenario !== "same-owner") await expect(resolve()).rejects.toThrow("source_attachment_pending");
+    expect(peer.current!.store.state.committedEvents.find(event => event.eventType === "runtime_request.created")).toEqual(request);
+    // Suppressing presentation must retain the pending request. Its source
+    // owner can still settle it; the later durable receipt retires the binding.
+    owner = sourceRunId;
+    await resolve();
+    expect(peer.current!.store.state.commands.filter(command => command.type === "request.resolve")).toHaveLength(1);
+    peer.current!.emit("runtime_request.resolved", {requestId:"permission-7"}); fixture.emitMarker();
+    expect((await fixture.iterator.next()).value?.method).toBe("item/agentMessage/delta");
+    await expect(resolve()).rejects.toThrow("no longer pending");
+    expect(handler).toHaveBeenCalledTimes(scenario === "same-owner" ? 1 : 0);
+  } finally { await fixture.close(); }
+});
 
 it("discards a queued permission on close before the notification consumer asks for next", async () => {
   const fixture = await bareTransport(); const handler = vi.fn(async () => ({}));
@@ -158,6 +197,10 @@ it("does not dispatch an expired durable request when its consumer resumes", asy
     fixture.emitPermission();
     peer.current!.emit("runtime_request.expired", { requestId: "permission-7" });
     fixture.emitMarker();
+    expect((await fixture.iterator.next()).value).toMatchObject({
+      method: "paperclip/runtimeRequestExpired",
+      params: { payload: { requestId: "permission-7" } },
+    });
     expect((await fixture.iterator.next()).value?.method).toBe("item/agentMessage/delta");
     expect(handler).not.toHaveBeenCalled();
   } finally { await fixture.close(); }

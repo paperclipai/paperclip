@@ -262,6 +262,7 @@ describeEmbeddedPostgres("native question bridge", () => {
 
     const stateDirectory = mkdtempSync(join(tmpdir(), "native-permission-authority-"));
     const server = createServer();
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3213" });
     const authority = new DurablePrpControlPlane({
       stateDirectory,
@@ -295,7 +296,7 @@ describeEmbeddedPostgres("native question bridge", () => {
     } finally {
       await registration.release();
       await authority.stop();
-      server.close();
+      await new Promise<void>(resolve => server.close(() => resolve()));
       rmSync(stateDirectory, { recursive: true, force: true });
     }
   });
@@ -331,7 +332,7 @@ describeEmbeddedPostgres("native question bridge", () => {
       );
       if (answered.kind !== "ask_user_questions") throw new Error("wrong question kind");
       expect(await deliverNativeQuestionResponse(db, answered)).toBe("queued");
-      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ runId, requestId: "request-1", turnId: "turn-1",
+      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ runId, requestId: "request-1", turnId: "turn-1", commandId: `question_${cards[0]!.id}`,
         resolution: { action: "submit", response: { schema: "paperclip.question_response.v1", answers: { color: { selectedOptionIds: ["green"] } } } },
       }));
       await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));

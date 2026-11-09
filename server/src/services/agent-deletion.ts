@@ -1,11 +1,31 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
+import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
+import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
+import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { and, eq, or, sql } from "drizzle-orm";
 import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog,
-  budgetReservations, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
-  principalPermissionGrants, type Db } from "@paperclipai/db";
+  budgetReservations, costEvents, financeEvents, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
+  caseHandoffs, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { deleteAgentAdmissionHistory } from "../modules/execution-admission/index.js";
 
 export async function deleteAgentDependencies(tx: Db, companyId: string, id: string) {
+  // Lifecycle callers use READ COMMITTED. Fence admissions before inspecting
+  // holds, so the next statement sees any admission that committed while waiting.
+  await tx.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, id))).for("update");
+  const [retainedHandoff] = await tx.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(
+    eq(caseHandoffs.companyId, companyId), or(eq(caseHandoffs.fromAgentId, id), eq(caseHandoffs.toAgentId, id)),
+  )).limit(1);
+  if (retainedHandoff) throw conflict("Saved case handoff history requires this agent record. Keep the agent terminated instead of permanently deleting it", {
+    code: "agent_case_history_retained",
+  });
   const [decisionHold] = await tx.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
     eq(budgetReservations.companyId, companyId), eq(budgetReservations.agentId, id),
     eq(budgetReservations.state, "held"), sql`${budgetReservations.decisionInvocationId} is not null`,
@@ -13,7 +33,36 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   if (decisionHold) throw conflict("Wait for active decisions or resolve their unknown charges in Costs before deleting this agent", {
     code: "agent_decision_accounting_pending",
   });
+  const [classifierHold] = await tx.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
+    eq(budgetReservations.companyId, companyId), eq(budgetReservations.agentId, id),
+    eq(budgetReservations.state, "held"), sql`${budgetReservations.promptInjectionInvocationId} is not null`,
+  )).limit(1);
+  if (classifierHold) throw conflict("Wait for active prompt injection checks or resolve their unknown charges in Costs before deleting this agent", {
+    code: "agent_prompt_injection_accounting_pending",
+  });
+  const [fastResponseHold] = await tx.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
+    eq(budgetReservations.companyId, companyId), eq(budgetReservations.agentId, id),
+    eq(budgetReservations.state, "held"), sql`${budgetReservations.fastResponseRequestId} is not null`,
+  )).limit(1);
+  if (fastResponseHold) throw conflict("Wait for active fast responses or resolve their unknown charges in Costs before deleting this agent", {
+    code: "agent_fast_response_accounting_pending",
+  });
+  const agentRuns = sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id}`;
+  const [retainedCost] = await tx.select({ id: costEvents.id }).from(costEvents).where(and(
+    eq(costEvents.companyId, companyId), or(eq(costEvents.agentId, id), sql`${costEvents.heartbeatRunId} in (${agentRuns})`),
+  )).limit(1);
+  const [retainedFinance] = await tx.select({ id: financeEvents.id }).from(financeEvents).where(and(
+    eq(financeEvents.companyId, companyId), or(eq(financeEvents.agentId, id), sql`${financeEvents.heartbeatRunId} in (${agentRuns})`),
+  )).limit(1);
+  if (retainedCost || retainedFinance) throw conflict("Cost history requires this agent record. Keep the agent terminated instead of permanently deleting it", {
+    code: "agent_cost_history_retained",
+  });
+  await notifyAttentionRetentionWork(tx, { companyId });
+  await notifyExternalConversationSettlement(tx, { companyId });
   await issueThreadInteractionService(tx).cancelPendingForDeletedAddressee(companyId, id);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+  await notifyStatusCardIssueChange(tx, companyId);
   await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
   await tx
     .update(issues)
@@ -24,11 +73,22 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   await tx.delete(activityLog).where(
     or(
       eq(activityLog.agentId, id),
-      sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+      sql`${activityLog.runId} in (${agentRuns})`,
     ),
   );
   await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
   await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+  await notifyScheduledRetryCancellation(tx, { companyId: companyId });
+  await notifyInstructionCommit(tx, { companyId: companyId });
+  await notifyDirectoryCleanup(tx, { companyId: companyId });
+  await notifyInstructionCollection(tx, { companyId: companyId });
+  await notifyCancelledWorkspacePreservation(tx, { companyId: companyId });
+  await notifyUnsafeWorkspaceExportRecovery(tx, { companyId });
+  if ((await deleteAgentAdmissionHistory(tx, { companyId, agentId: id })).kind === "unsettled") {
+    throw conflict("Wait for this agent's admitted task executions to settle before deleting it", {
+      code: "agent_execution_admission_pending",
+    });
+  }
   await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
   await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
   await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));

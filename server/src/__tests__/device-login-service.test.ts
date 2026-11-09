@@ -218,6 +218,7 @@ function createMemoryStore(): AdapterAuthSessionStore & {
         promotionExpiresAt: null,
         finishedAt: null,
         failureReason: null,
+        resultClaim: null,
       });
     },
     async recordLeaseAcquired(input) {
@@ -1413,7 +1414,7 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("device-login");
-    stopDb = started.stop;
+    stopDb = started.cleanup;
     db = createDb(started.connectionString);
   });
 
@@ -1975,8 +1976,12 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
 
       const tagged = await reaperRuntime.listTaggedLeases();
       const taggedProviderLeaseIds = tagged.map((lease) => lease.providerLeaseId);
-      expect(taggedProviderLeaseIds).toContain("grok-lease-1");
+      expect(taggedProviderLeaseIds).not.toContain("grok-lease-1");
       expect(taggedProviderLeaseIds).not.toContain("claude-lease-1");
+      await db.update(adapterAuthSessions).set({ status: "failed", providerLeaseId: null })
+        .where(eq(adapterAuthSessions.providerLeaseId, "grok-lease-1"));
+      const orphaned = await reaperRuntime.listTaggedLeases();
+      expect(orphaned.map(lease => lease.providerLeaseId)).toEqual(["grok-lease-1"]);
     });
 
     it("carries the CODEX_HOME variable name on the codex_local profile", () => {
@@ -2035,7 +2040,7 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
         // The start ttl read: `session.expiresAt` reflects the profile's
         // `timeoutMs`, not the fixed `DEVICE_LOGIN_TIMEOUT_MS`.
         const expectedExpiresAt = Date.now() + customTimeoutMs;
-        expect(Math.abs(new Date(started.session.expiresAt).getTime() - expectedExpiresAt)).toBeLessThan(
+        expect(Math.abs(new Date(started.session.expiresAt!).getTime() - expectedExpiresAt)).toBeLessThan(
           5000,
         );
 

@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: multi-surface-three-directions
+expected_outcome: |
+  A new lab under ui/src/<slug>-directions with its own html entry and vite config. The header has a directions row with Today and three numbered directions and a surfaces row with two tabs (thread, panel), plus theme and animation toggles. Every direction's tokens.css carries the V1 MVP hover motion (300ms cubic-bezier(0.3, 0, 0.1, 1), the 6px rise, the 5 degree fan, gated on data-lab-anim and reduced motion). The Today kit mounts the shipped composer components on fixtures. The lab builds with vite, its tests pass, and the design-proposals Storybook gets a catalogued story for the lab.

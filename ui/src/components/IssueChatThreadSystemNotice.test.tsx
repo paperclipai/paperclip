@@ -31,7 +31,10 @@ vi.mock("./MarkdownEditor", () => ({
 }));
 
 vi.mock("./InlineEntitySelector", () => ({ InlineEntitySelector: () => null }));
-vi.mock("./Identity", () => ({ Identity: ({ name }: { name: string }) => <span>{name}</span> }));
+vi.mock("./Identity", async importOriginal => ({
+  ...await importOriginal<typeof import("./Identity")>(),
+  Identity: ({ name }: { name: string }) => <span>{name}</span>,
+}));
 vi.mock("./OutputFeedbackButtons", () => ({ OutputFeedbackButtons: () => null }));
 vi.mock("@/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,

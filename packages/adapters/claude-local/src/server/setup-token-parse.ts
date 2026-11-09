@@ -181,6 +181,10 @@ const URL_PREAMBLE_RE = /the url below to sign in/i;
 // the line.
 const PROMPT_LINE_RE = /^Paste code here if prompted\b[\s>*]*$/;
 
+// The copy hint that `claude` 2.1.291 prints between the URL block and the
+// prompt. The parser skips this exact line and binds no value from it.
+const COPY_HINT_LINE_RE = /^Hold\s+Shift\s+while\s+selecting\s+to\s+use\s+your\s+terminal['’]s\s+native\s+copy\.?$/i;
+
 // The maximum number of characters between the end of the URL preamble line and
 // the start of the URL. The Claude UI prints the URL right after the preamble.
 // The parser accepts a URL start only inside this window, so a URL far from the
@@ -363,9 +367,11 @@ function reassembleUrl(lines: string[], startLine: number): SetupTokenUrlMatch |
  * line after the URL block. The parser reads the non-blank lines after the URL
  * end line. The Claude UI can emit one full URL line per wrapped display row, so
  * it repeats the same full authorization URL on a few consecutive lines. The
- * parser skips a line that repeats `url`, then binds the prompt on the first
- * non-blank, non-repeat line. That line must match the exact prompt shape.
- * Returns null when the first non-blank, non-repeat line is not the prompt.
+ * parser skips a line that repeats `url`. The `claude` 2.1.291 UI also prints a
+ * copy hint before the prompt, so the parser skips a line that matches {@link
+ * COPY_HINT_LINE_RE}. The parser then binds the prompt on the first non-blank
+ * line that is not a repeat and not the copy hint. That line must match the
+ * exact prompt shape. Returns null when that line is not the prompt.
  */
 function findBrowserCodePrompt(lines: string[], endLine: number, url: string): string | null {
   for (let i = endLine + 1; i < lines.length; i += 1) {
@@ -375,6 +381,7 @@ function findBrowserCodePrompt(lines: string[], endLine: number, url: string): s
     // punctuation first, the same way the repeated-URL comparison needs, so a
     // repeated URL with a trailing punctuation mark still matches.
     if (trimmed.replace(TRAILING_PUNCTUATION_RE, "") === url) continue;
+    if (COPY_HINT_LINE_RE.test(trimmed)) continue;
     return PROMPT_LINE_RE.test(trimmed) ? SETUP_TOKEN_PROMPT : null;
   }
   return null;

@@ -1,0 +1,2 @@
+DROP INDEX "execution_workspace_restore_points_live_checkout_uniq";--> statement-breakpoint
+CREATE UNIQUE INDEX "execution_workspace_restore_points_live_status_uniq" ON "execution_workspace_restore_points" USING btree ("execution_workspace_id","generation","checkout_name") WHERE "execution_workspace_restore_points"."status" in ('pending', 'active', 'expiring');

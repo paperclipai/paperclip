@@ -78,7 +78,7 @@ function buildContext(config: Record<string, unknown> = {}) {
       sessionDisplayId: null,
       taskKey: null,
     },
-    config,
+    config: { model: "claude-opus-5", ...config },
     context: {},
     onLog: vi.fn(async () => {}),
   };

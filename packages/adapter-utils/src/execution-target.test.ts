@@ -8,10 +8,84 @@ import {
   prepareGitHubOperationLaunchers,
   adapterExecutionTargetUsesManagedHome,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  ensureAdapterExecutionTargetDirectory,
+  ensureAdapterExecutionTargetCommandResolvable,
+  isAdapterExecutionTargetUnavailableError,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
+  type AdapterSshExecutionTarget,
 } from "./execution-target.js";
+
+function sshExecutionTarget(): AdapterSshExecutionTarget {
+  return {
+    kind: "remote",
+    transport: "ssh",
+    remoteCwd: "/srv/paperclip/workspace",
+    spec: {
+      host: "ssh.example.test",
+      port: 22,
+      username: "ssh-user",
+      remoteCwd: "/srv/paperclip/workspace",
+      remoteWorkspacePath: "/srv/paperclip/workspace",
+      privateKey: null,
+      knownHosts: null,
+      strictHostKeyChecking: true,
+    },
+  };
+}
+
+describe("execution target validation failures", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const result = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: "" };
+
+  it.each(["directory", "command"] as const)("preserves temporary %s probe failures", async check => {
+    for (const failure of ["timeout", "transport", "interrupted"] as const) {
+      const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", runner: {
+        execute: vi.fn(async () => {
+          if (failure === "transport") throw Object.assign(new Error("private transport detail"), { code: "ECONNRESET" });
+          return { ...result, exitCode: null, timedOut: failure === "timeout", signal: failure === "interrupted" ? "SIGTERM" : null };
+        }),
+      } };
+      const work = check === "directory"
+        ? ensureAdapterExecutionTargetDirectory("test", target, "/workspace", { cwd: "/workspace", env: {} })
+        : ensureAdapterExecutionTargetCommandResolvable("opencode", target, "/workspace", {});
+      const error = await work.catch(error => error);
+      expect(isAdapterExecutionTargetUnavailableError(error)).toBe(true);
+    }
+  });
+
+  it("preserves SSH disconnections instead of reporting a missing directory", async () => {
+    vi.spyOn(ssh, "runSshCommand").mockRejectedValue(Object.assign(new Error("private SSH detail"), { code: 255 }));
+    const error = await ensureAdapterExecutionTargetDirectory("test", sshExecutionTarget(), "/workspace", {
+      cwd: "/workspace", env: {},
+    }).catch(error => error);
+    expect(isAdapterExecutionTargetUnavailableError(error)).toBe(true);
+  });
+
+  it.each(["directory", "command"] as const)("retains a confirmed missing %s as a configuration failure", async check => {
+    const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", runner: {
+      execute: vi.fn(async () => ({ ...result, exitCode: 1 })),
+    } };
+    const error = await (check === "directory"
+      ? ensureAdapterExecutionTargetDirectory("test", target, "/workspace", { cwd: "/workspace", env: {} })
+      : ensureAdapterExecutionTargetCommandResolvable("opencode", target, "/workspace", {})).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(isAdapterExecutionTargetUnavailableError(error)).toBe(false);
+  });
+
+  it("does not turn an installation timeout into a permanent missing command", async () => {
+    const execute = vi.fn().mockResolvedValueOnce({ ...result, exitCode: 1 })
+      .mockResolvedValueOnce({ ...result, exitCode: null, timedOut: true })
+      .mockResolvedValueOnce({ ...result, exitCode: 1 });
+    const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", runner: { execute } };
+    const error = await ensureAdapterExecutionTargetCommandResolvable("opencode", target, "/workspace", {}, {
+      installCommand: "install-fixture",
+    }).catch(error => error);
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(isAdapterExecutionTargetUnavailableError(error)).toBe(true);
+  });
+});
 
 describe("runAdapterExecutionTargetShellCommand", () => {
   afterEach(() => {
@@ -27,21 +101,7 @@ describe("runAdapterExecutionTargetShellCommand", () => {
 
     await runAdapterExecutionTargetShellCommand(
       "run-1",
-      {
-        kind: "remote",
-        transport: "ssh",
-        remoteCwd: "/srv/paperclip/workspace",
-        spec: {
-          host: "ssh.example.test",
-          port: 22,
-          username: "ssh-user",
-          remoteCwd: "/srv/paperclip/workspace",
-          remoteWorkspacePath: "/srv/paperclip/workspace",
-          privateKey: null,
-          knownHosts: null,
-          strictHostKeyChecking: true,
-        },
-      },
+      sshExecutionTarget(),
       `printf '%s\\n' "$HOME" && echo "it's ok"`,
       {
         cwd: "/tmp/local",
@@ -74,21 +134,7 @@ describe("runAdapterExecutionTargetShellCommand", () => {
 
     await runAdapterExecutionTargetShellCommand(
       "run-1b",
-      {
-        kind: "remote",
-        transport: "ssh",
-        remoteCwd: "/srv/paperclip/workspace",
-        spec: {
-          host: "ssh.example.test",
-          port: 22,
-          username: "ssh-user",
-          remoteCwd: "/srv/paperclip/workspace",
-          remoteWorkspacePath: "/srv/paperclip/workspace",
-          privateKey: null,
-          knownHosts: null,
-          strictHostKeyChecking: true,
-        },
-      },
+      sshExecutionTarget(),
       "env",
       {
         cwd: "/tmp/local",
@@ -122,21 +168,7 @@ describe("runAdapterExecutionTargetShellCommand", () => {
 
     const result = await runAdapterExecutionTargetShellCommand(
       "run-2",
-      {
-        kind: "remote",
-        transport: "ssh",
-        remoteCwd: "/srv/paperclip/workspace",
-        spec: {
-          host: "ssh.example.test",
-          port: 22,
-          username: "ssh-user",
-          remoteCwd: "/srv/paperclip/workspace",
-          remoteWorkspacePath: "/srv/paperclip/workspace",
-          privateKey: null,
-          knownHosts: null,
-          strictHostKeyChecking: true,
-        },
-      },
+      sshExecutionTarget(),
       "sleep 10",
       {
         cwd: "/tmp/local",
@@ -167,21 +199,7 @@ describe("runAdapterExecutionTargetShellCommand", () => {
 
     const result = await runAdapterExecutionTargetShellCommand(
       "run-3",
-      {
-        kind: "remote",
-        transport: "ssh",
-        remoteCwd: "/srv/paperclip/workspace",
-        spec: {
-          host: "ssh.example.test",
-          port: 22,
-          username: "ssh-user",
-          remoteCwd: "/srv/paperclip/workspace",
-          remoteWorkspacePath: "/srv/paperclip/workspace",
-          privateKey: null,
-          knownHosts: null,
-          strictHostKeyChecking: true,
-        },
-      },
+      sshExecutionTarget(),
       "false",
       {
         cwd: "/tmp/local",
@@ -227,6 +245,35 @@ describe("runAdapterExecutionTargetProcess", () => {
     vi.unstubAllEnvs();
   });
 
+  it.each([true, false, undefined])("preserves the sandbox session choice %s and command outcome", async (useSession) => {
+    const stopped = vi.fn();
+    const onLog = vi.fn(async (_stream: "stdout" | "stderr", _chunk: string) => {});
+    const completed = {
+      exitCode: 7, signal: null, timedOut: false, stdout: "partial output",
+      stderr: "fixture failure", pid: null, startedAt: "2020-01-01T00:00:00.000Z",
+    };
+    const execute = vi.fn(async (input: { onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void> }) => {
+      await input.onLog?.("stdout", completed.stdout);
+      return completed;
+    });
+    const result = await runAdapterExecutionTargetProcess("run-fixture", {
+      kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner: { execute },
+    }, "opencode", ["run"], {
+      cwd: "/local", env: {}, timeoutSec: 14400, graceSec: 20,
+      onLog, onProcessStopped: stopped, ...(useSession === undefined ? {} : { useSession }),
+    });
+    const call = execute.mock.calls[0]![0];
+    expect(call).toMatchObject({ command: "opencode", args: ["run"], cwd: "/workspace", timeoutMs: 14400000 });
+    if (useSession === undefined) expect(call).not.toHaveProperty("useSession");
+    else expect(call).toHaveProperty("useSession", useSession);
+    if (useSession === true) expect(call).toHaveProperty("commandTimeoutMs", 14400000);
+    else expect(call).not.toHaveProperty("commandTimeoutMs");
+    expect(result).toEqual(completed);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(onLog.mock.calls).toEqual([["stdout", "partial output"]]);
+    expect(stopped).toHaveBeenCalledTimes(1);
+  });
+
   it("sanitizes inherited host env before SSH process execution", async () => {
     vi.stubEnv("PATH", "/host/bin:/usr/bin");
     vi.stubEnv("HOME", "/Users/local");
@@ -243,21 +290,7 @@ describe("runAdapterExecutionTargetProcess", () => {
 
     await runAdapterExecutionTargetProcess(
       "run-ssh-process",
-      {
-        kind: "remote",
-        transport: "ssh",
-        remoteCwd: "/srv/paperclip/workspace",
-        spec: {
-          host: "ssh.example.test",
-          port: 22,
-          username: "ssh-user",
-          remoteCwd: "/srv/paperclip/workspace",
-          remoteWorkspacePath: "/srv/paperclip/workspace",
-          privateKey: null,
-          knownHosts: null,
-          strictHostKeyChecking: true,
-        },
-      },
+      sshExecutionTarget(),
       "agent-cli",
       ["--json"],
       {
@@ -269,6 +302,7 @@ describe("runAdapterExecutionTargetProcess", () => {
         },
         timeoutSec: 5,
         graceSec: 1,
+        useSession: true,
         onLog: async () => {},
       },
     );
@@ -283,6 +317,7 @@ describe("runAdapterExecutionTargetProcess", () => {
         },
       }),
     );
+    expect(runChildProcessSpy.mock.calls[0]![3]).not.toHaveProperty("useSession");
   });
 });
 
@@ -336,21 +371,7 @@ describe("ensureAdapterExecutionTargetRuntimeCommandInstalled", () => {
 
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId: "run-skip",
-      target: {
-        kind: "remote",
-        transport: "ssh",
-        remoteCwd: "/srv/paperclip/workspace",
-        spec: {
-          host: "ssh.example.test",
-          port: 22,
-          username: "ssh-user",
-          remoteCwd: "/srv/paperclip/workspace",
-          remoteWorkspacePath: "/srv/paperclip/workspace",
-          privateKey: null,
-          knownHosts: null,
-          strictHostKeyChecking: true,
-        },
-      },
+      target: sshExecutionTarget(),
       installCommand: "npm install -g @google/gemini-cli",
       cwd: "/tmp/local",
       env: {},
@@ -361,21 +382,7 @@ describe("ensureAdapterExecutionTargetRuntimeCommandInstalled", () => {
 });
 
 describe("resolveAdapterExecutionTargetCwd", () => {
-  const sshTarget = {
-    kind: "remote" as const,
-    transport: "ssh" as const,
-    remoteCwd: "/srv/paperclip/workspace",
-    spec: {
-      host: "ssh.example.test",
-      port: 22,
-      username: "ssh-user",
-      remoteCwd: "/srv/paperclip/workspace",
-      remoteWorkspacePath: "/srv/paperclip/workspace",
-      privateKey: null,
-      knownHosts: null,
-      strictHostKeyChecking: true,
-    },
-  };
+  const sshTarget = sshExecutionTarget();
 
   it("falls back to the remote cwd when no adapter cwd is configured", () => {
     expect(resolveAdapterExecutionTargetCwd(sshTarget, "", "/Users/host/repo/server")).toBe(

@@ -4,9 +4,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agents,
   agentWakeupRequests,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
+  externalAgentHolds,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -228,6 +232,66 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(await runStatus(deferredRunId)).toMatchObject({ status: "queued", errorCode: null });
     expect(mockAdapterExecute).toHaveBeenCalledOnce();
     expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
+  });
+
+  it("keeps a routine run queued while another task holds the routine slot, then runs it once the slot is free", async () => {
+    const { companyId, agentId } = await insertAgent();
+    const origin = { originKind: "routine_execution", originId: randomUUID(), originFingerprint: "scheduled" };
+    // The earlier task keeps its lock while its failed run waits for a scheduled resume.
+    const holderIssueId = randomUUID();
+    const holderRunId = randomUUID();
+    await db.insert(issues).values({ id: holderIssueId, companyId, title: "Earlier routine task",
+      status: "in_progress", assigneeAgentId: agentId, ...origin });
+    await db.insert(heartbeatRuns).values({ id: holderRunId, companyId, agentId, status: "failed",
+      finishedAt: new Date(), contextSnapshot: { issueId: holderIssueId } });
+    await db.update(issues).set({ executionRunId: holderRunId }).where(sql`${issues.id} = ${holderIssueId}`);
+    const userId = `routine-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: userId, name: "Routine owner", email: `${userId}@paperclip.test`,
+      createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId,
+      status: "active", membershipRole: "owner" });
+    const routineIssueId = randomUUID();
+    await db.insert(issues).values({ id: routineIssueId, companyId, title: "Current routine task",
+      status: "todo", assigneeAgentId: agentId, responsibleUserId: userId, ...origin });
+    const { runId: routineRunId } = await insertQueuedRun(companyId, agentId, {
+      requestedByActorType: "user", requestedByActorId: userId,
+      payload: { manualUserWake: true, issueId: routineIssueId },
+    }, new Date(Date.now() - 60_000));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: routineIssueId } })
+      .where(sql`${heartbeatRuns.id} = ${routineRunId}`);
+    const { runId: healthyRunId } = await insertClaimableRun(companyId, agentId);
+
+    await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await runStatus(routineRunId)).toMatchObject({ status: "queued", errorCode: null });
+    expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+
+    await db.update(issues).set({ executionRunId: null }).where(sql`${issues.id} = ${holderIssueId}`);
+    await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await runStatus(routineRunId)).toMatchObject({ status: "succeeded" });
+    // Count executions per run: the finished task may queue its own follow-up run.
+    const executedRunIds = mockAdapterExecute.mock.calls.map(call => ((call as unknown[])[0] as { runId?: string }).runId);
+    expect(executedRunIds.filter(id => id === routineRunId)).toHaveLength(1);
+    expect(executedRunIds.filter(id => id === healthyRunId)).toHaveLength(1);
+  });
+
+  it.each(["worker", "native-effects"])("retains a %s barrier across provider changes and resumes only after reconciliation", async barrier => {
+    const { companyId, agentId } = await insertAgent();
+    const { runId } = await insertClaimableRun(companyId, agentId);
+    const [hold] = await db.insert(externalAgentHolds).values({ companyId, agentId, provider: "muse", assignmentId: randomUUID(), bindingId: randomUUID(),
+      bindingGeneration: 1, runId: randomUUID(), workerUnknown: barrier === "worker", nativeEffectsUnknown: barrier === "native-effects" }).returning();
+    // The agent now uses Codex; old external uncertainty still owns admission.
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await runStatus(runId)).toMatchObject({ status: "queued" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    await db.update(externalAgentHolds).set({ workerUnknown: false, nativeEffectsUnknown: false, releasedAt: new Date() }).where(sql`${externalAgentHolds.id} = ${hold.id}`);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await runStatus(runId)).toMatchObject({ status: "succeeded" });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
   });
 
   it("keeps processing other agents' queued runs after one agent's run is rejected", async () => {

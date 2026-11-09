@@ -9,16 +9,17 @@ function loadDismissedQuestions(storageKey: string | null): Set<string> {
   }
 }
 
-/** Presentation preference only: the original question remains answerable. */
+/** Browser fallback for all composer requests; saved interaction dismissal also lives on the server.
+ * Keep the original storage key so existing question dismissals survive upgrades. */
 export function useDismissedTaskQuestions(issueId?: string | null, userId?: string | null) {
   const storageKey = issueId ? `paperclip:task-question-dismissals:${userId ?? "board"}:${issueId}` : null;
   const [state, setState] = useState(() => ({ storageKey, ids: loadDismissedQuestions(storageKey) }));
   const dismissedQuestionIds = useMemo(() => state.storageKey === storageKey
     ? state.ids : loadDismissedQuestions(storageKey), [state, storageKey]);
-  const dismissQuestion = useCallback((interactionId: string) => {
+  const dismissQuestion = useCallback((interactionId: string | readonly string[]) => {
     // Another tab may have saved more dismissals since this thread rendered.
     const ids = new Set([...loadDismissedQuestions(storageKey), ...dismissedQuestionIds]);
-    ids.add(interactionId);
+    for (const id of typeof interactionId === "string" ? [interactionId] : interactionId) ids.add(id);
     try {
       if (storageKey) localStorage.setItem(storageKey, JSON.stringify([...ids]));
     } catch {

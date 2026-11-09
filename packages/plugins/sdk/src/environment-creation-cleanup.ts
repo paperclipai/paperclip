@@ -19,7 +19,18 @@ export interface PluginEnvironmentAcquisitionDiagnostic {
   /** Milliseconds from acquisition start to the first failure, before cleanup. */
   elapsedMs: number;
   budgetMs: number;
+  /**
+   * Provider state of the provisional allocation, observed once after a create
+   * deadline. Only a fixed set of states is reported; it is not the cause.
+   */
+  providerState?: PluginEnvironmentAcquisitionProviderState;
 }
+
+export const ENVIRONMENT_ACQUISITION_PROVIDER_STATES = [
+  "absent", "creating", "pending_build", "building_snapshot", "pulling_snapshot",
+  "starting", "started", "error", "build_failed", "other", "unavailable",
+] as const;
+export type PluginEnvironmentAcquisitionProviderState = typeof ENVIRONMENT_ACQUISITION_PROVIDER_STATES[number];
 
 export function readEnvironmentAcquisitionDiagnostic(error: unknown): PluginEnvironmentAcquisitionDiagnostic | null {
   try {
@@ -33,10 +44,14 @@ export function readEnvironmentAcquisitionDiagnostic(error: unknown): PluginEnvi
     const phase = fields.phase?.value;
     const elapsedMs = fields.elapsedMs?.value;
     const budgetMs = fields.budgetMs?.value;
+    const providerState = fields.providerState?.value;
     if (!["create", "workspace", "shell", "expiry", "sentinel"].includes(phase as string) ||
         typeof elapsedMs !== "number" || !Number.isSafeInteger(elapsedMs) || elapsedMs < 0 || elapsedMs > 604_800_000 ||
         typeof budgetMs !== "number" || !Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > 86_400_000) return null;
-    return { phase: phase as PluginEnvironmentAcquisitionDiagnostic["phase"], elapsedMs, budgetMs };
+    // An unknown optional state is omitted; it never invalidates the observation.
+    const knownState = ENVIRONMENT_ACQUISITION_PROVIDER_STATES.find(value => value === providerState);
+    return { phase: phase as PluginEnvironmentAcquisitionDiagnostic["phase"], elapsedMs, budgetMs,
+      ...(knownState ? { providerState: knownState } : {}) };
   } catch { return null; }
 }
 

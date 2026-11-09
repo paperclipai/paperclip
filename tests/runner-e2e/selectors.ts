@@ -18,6 +18,11 @@ export interface RunnerSelectorOptions {
   maxParallel: number;
   maxAutomaticRetries: number;
   connectionConfig?: string;
+  githubReviewConfig?: string;
+  provisionGitHubRepository?: boolean;
+  antigravityJourneyConfig?: string;
+  antigravityJourneyPreflight?: boolean;
+  antigravityJourneyRecover?: string;
 }
 
 export class RunnerSelectorError extends Error {}
@@ -60,6 +65,20 @@ export function parseRunnerSelectors(
     else if (flag === "--debug") options.debug = true;
     else if (flag === "--connection-config") {
       options.connectionConfig = valueFor(args, index, flag);
+      index += 1;
+    }
+    else if (flag === "--github-review-config") {
+      options.githubReviewConfig = valueFor(args, index, flag);
+      index += 1;
+    }
+    else if (flag === "--provision-github-repository") options.provisionGitHubRepository = true;
+    else if (flag === "--antigravity-journey-config") {
+      options.antigravityJourneyConfig = valueFor(args, index, flag);
+      index += 1;
+    }
+    else if (flag === "--antigravity-journey-preflight") options.antigravityJourneyPreflight = true;
+    else if (flag === "--antigravity-journey-recover") {
+      options.antigravityJourneyRecover = valueFor(args, index, flag);
       index += 1;
     }
     else if (flag === "--max-parallel") {
@@ -176,6 +195,12 @@ export function selectRunnerExecutions(
   const selected = matrix.filter((execution) => {
     if (options.ids.length > 0) return options.ids.includes(execution.id);
     if (execution.suite.manualOnly && !options.suites.includes(execution.suite.id) && !options.list) return false;
+    const unfilteredList = options.list && options.groups.length + options.suites.length + options.profiles.length
+      + options.environments.length + options.cases.length === 0;
+    const explicitGroup = execution.task.explicitGroup;
+    // Naming any of the task's own groups (for example `slow`) also opts in.
+    if (explicitGroup && !unfilteredList && !options.groups.some(group => group === explicitGroup || execution.task.groups.includes(group))
+      && !options.cases.includes(execution.task.id)) return false;
     if (
       options.all ||
       (options.list &&
@@ -207,7 +232,7 @@ export function selectRunnerExecutions(
 export function buildMatrixJobs(
   executions: readonly MatrixExecution[],
 ): MatrixJob[] {
-  if (executions.some(e => e.task.flow === "provider_connection")) throw new RunnerSelectorError("Provider connection journeys use an explicit local/staging connection configuration; they are not admitted to paid CI matrix jobs yet.");
+  if (executions.some(e => ["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(e.task.flow))) throw new RunnerSelectorError("Attended connection journeys require explicit private setup profiles; they are not admitted to paid CI matrix jobs yet.");
   return executions
     .map((execution) => ({
       executionId: execution.id,

@@ -8,7 +8,9 @@ import {
   buildSkillMentionHref,
   type GitHubChatConfiguration,
   type GitHubTaskReview,
+  type ChatExecutionDefaults,
 } from "@paperclipai/shared";
+import { ApiError } from "@/api/client";
 import { ChatEndpointDetail } from "./ChatEndpointDetail";
 import { GitHubReviewList, orderedGitHubReviews } from "./GitHubBotManagement";
 import { GitHubPolicyEditor } from "./GitHubBotConfiguration";
@@ -28,6 +30,8 @@ const mocks = vi.hoisted(() => ({
   repositoryPage: vi.fn(),
   toggleAll: vi.fn(),
   updateResources: vi.fn(),
+  projects: vi.fn(),
+  workspaces: vi.fn(),
   reviews: vi.fn(),
   review: vi.fn(),
   members: vi.fn(),
@@ -52,6 +56,8 @@ vi.mock("@/api/chatEndpoints", () => ({
     listPrincipals: mocks.links,
   },
 }));
+vi.mock("@/api/projects", () => ({ projectsApi: { list: mocks.projects } }));
+vi.mock("@/api/execution-workspaces", () => ({ executionWorkspacesApi: { listSummaries: mocks.workspaces } }));
 vi.mock("@/api/access", () => ({ accessApi: { listMembers: mocks.members } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { get: vi.fn() } }));
 vi.mock("@/context/BreadcrumbContext", () => ({
@@ -136,6 +142,8 @@ describe("GitHub bot management", () => {
     mocks.tab = "settings";
     mocks.reviewId = undefined;
     mocks.get.mockResolvedValue(endpoint);
+    mocks.projects.mockResolvedValue([]);
+    mocks.workspaces.mockResolvedValue([]);
     mocks.config.mockResolvedValue({
       revision: 4,
       configuration: structuredClone(base),
@@ -278,13 +286,125 @@ describe("GitHub bot management", () => {
     expect(container.querySelector('button[aria-label="Disable all repositories"]')?.hasAttribute("disabled")).toBe(false);
   });
   it("keeps repository failures visible and allows a retry", async () => {
-    mocks.repositoryPage.mockRejectedValueOnce(new Error("Unavailable"));
+    mocks.repositoryPage.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
     await render("access");
-    await vi.waitFor(() => expect(container.textContent).toContain("Could not load repositories"));
-    await click("Try again");
+    await vi.waitFor(() => expect(container.textContent).toContain("Couldn't load repositories"));
+    expect(container.textContent).not.toContain("internal_error");
+    await click("Retry");
     await vi.waitFor(() => expect(container.querySelectorAll('[role="region"] [role="switch"]')).toHaveLength(1));
-    expect(container.textContent).not.toContain("Could not load repositories");
+    expect(container.textContent).not.toContain("Couldn't load repositories");
   });
+  it("keeps loaded repositories on screen when a refetch fails transiently", async () => {
+    await render("access");
+    await vi.waitFor(() => expect(container.querySelectorAll('[role="region"] [role="switch"]')).toHaveLength(1));
+    mocks.repositoryPage.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["github-bot-repository-pages", "bot"] });
+    });
+    expect(container.querySelectorAll('[role="region"] [role="switch"]')).toHaveLength(1);
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+  it("saves repository task defaults with explicit, cleared, and inherited values without changing access", async () => {
+    let executionDefaults: ChatExecutionDefaults | null = null;
+    mocks.projects.mockResolvedValue([{ id: "project", name: "Website", workspaces: [] }]);
+    mocks.workspaces.mockResolvedValue([{ id: "workspace", name: "Shared website" }]);
+    mocks.resources.mockImplementation(async () => [{
+      id: "repo", label: "acme/web", type: "repository", enabled: false,
+      availability: "available", executionDefaults,
+    }]);
+    mocks.updateResources.mockImplementation(async (_id, [update]) => {
+      executionDefaults = update.executionDefaults;
+      return mocks.resources();
+    });
+    await render("access");
+    await vi.waitFor(() => expect(container.querySelector('[role="region"] summary')).not.toBeNull());
+    await act(async () => (container.querySelector('[role="region"] summary') as HTMLElement).click());
+    const editor = container.querySelector('[role="region"] form')!;
+    const [project, workspace] = [...editor.querySelectorAll("select")];
+    await vi.waitFor(() => expect(workspace.disabled).toBe(false));
+    expect(mocks.projects).toHaveBeenCalledWith("company");
+    expect(mocks.workspaces).toHaveBeenCalledWith("company", { selectableForTask: true });
+    expect(project.value).toBe("inherit");
+    expect(workspace.value).toBe("inherit");
+    expect(editor.textContent).toContain("Use connection defaults");
+
+    const save = async (expected: ChatExecutionDefaults | null) => {
+      const calls = mocks.updateResources.mock.calls.length;
+      await click("Save defaults");
+      await vi.waitFor(() => {
+        expect(mocks.updateResources).toHaveBeenCalledTimes(calls + 1);
+        expect(editor.textContent).toContain("Saved for new tasks.");
+      });
+      expect(mocks.updateResources).toHaveBeenLastCalledWith("bot", [{ id: "repo", executionDefaults: expected }]);
+      expect(container.querySelector('[role="region"] [role="switch"]')?.getAttribute("aria-checked")).toBe("false");
+    };
+    await input(project, "project");
+    await input(workspace, "existing:workspace");
+    await save({ projectId: "project", workspace: { kind: "existing", workspaceId: "workspace" } });
+    expect(project.value).toBe("project");
+    expect(workspace.value).toBe("existing:workspace");
+    await input(project, "none");
+    await input(workspace, "clear");
+    await save({ projectId: null, workspace: null });
+    await input(project, "inherit");
+    await save({ workspace: null });
+    await input(workspace, "inherit");
+    await save(null);
+    await vi.waitFor(() => {
+      expect(project.value).toBe("inherit");
+      expect(workspace.value).toBe("inherit");
+    });
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(mocks.toggleAll).not.toHaveBeenCalled();
+  });
+  it("keeps a rejected repository task-defaults draft visible for retry", async () => {
+    mocks.updateResources.mockRejectedValueOnce(new Error("Workspace access denied"));
+    await render("access");
+    await vi.waitFor(() => expect(container.querySelector('[role="region"] summary')).not.toBeNull());
+    await act(async () => (container.querySelector('[role="region"] summary') as HTMLElement).click());
+    const editor = container.querySelector('[role="region"] form')!;
+    const workspace = editor.querySelectorAll("select")[1];
+    await vi.waitFor(() => expect(workspace.disabled).toBe(false));
+    await input(workspace, "task");
+    await click("Save defaults");
+    await vi.waitFor(() => expect(editor.querySelector('[role="alert"]')?.textContent).toBe("Workspace access denied"));
+    expect(workspace.value).toBe("task");
+    expect(container.querySelector('[role="region"] [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+    await click("Cancel");
+    expect(workspace.value).toBe("inherit");
+    expect(editor.querySelector('[role="alert"]')).toBeNull();
+  });
+  it("stops automatic paging after a settled 429 while retaining rows and manual retry", async () => {
+    let intersect!: IntersectionObserverCallback;
+    let observers = 0;
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(callback: IntersectionObserverCallback) { intersect = callback; observers += 1; }
+      observe() {}
+      disconnect() {}
+    });
+    let failed = true;
+    mocks.repositoryPage.mockImplementation(async (_id, { offset }) => {
+      if (offset && failed) throw new ApiError("Throttled", 429, null, { retryAfterMs: 60_000 });
+      return { items: Array.from({ length: 20 }, (_, index) => ({ id: `repo-${offset + index}`, label: `sample/repo-${offset + index}`, enabled: true, availability: "available", type: "repository" })),
+        nextOffset: offset === 0 ? 20 : null, totalCount: 40, enabledCount: 40, availableCount: 40 };
+    });
+    await render("access");
+    await vi.waitFor(() => expect(intersect).toBeDefined());
+    const initialObservers = observers;
+    await act(async () => intersect([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+    await vi.waitFor(() => expect(client.getQueryState(["github-bot-repository-pages", "bot", ""])?.status).toBe("error"));
+    await act(async () => { await Promise.resolve(); });
+    expect(observers).toBe(initialObservers);
+    expect(mocks.repositoryPage).toHaveBeenCalledTimes(2);
+    expect(container.querySelectorAll('[role="region"] [role="switch"]')).toHaveLength(20);
+    failed = false;
+    await click("Load more repositories");
+    await vi.waitFor(() => expect(container.querySelectorAll('[role="region"] [role="switch"]')).toHaveLength(40));
+    expect(mocks.repositoryPage).toHaveBeenCalledTimes(3);
+  });
+
   it("automatically loads the next 20 repositories when the scroll sentinel becomes visible", async () => {
     let intersect!: IntersectionObserverCallback;
     vi.stubGlobal("IntersectionObserver", class {
@@ -467,7 +587,7 @@ describe("GitHub bot management", () => {
     mocks.reviewId = "review-1";
     mocks.reviews.mockResolvedValue([]);
     mocks.review.mockImplementation(async (_endpoint, id) => {
-      if (id !== "review-1") throw new Error("not found");
+      if (id !== "review-1") throw new ApiError("Review not found", 404, { error: "Review not found" });
       return review("review-1", "repo", 1, "2026-10-07T10:00:00Z");
     });
     await render("reviews");

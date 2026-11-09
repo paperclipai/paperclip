@@ -1,4 +1,4 @@
-export type StartupRecoveryPhase = "starting" | "recovering" | "ready";
+export type StartupRecoveryPhase = "starting" | "recovering" | "ready" | "draining";
 
 let phase: StartupRecoveryPhase = "ready";
 let updatedAt = new Date().toISOString();

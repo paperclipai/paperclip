@@ -14,6 +14,8 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
 import {
   deriveOriginatingActor,
+  readProviderRateLimits,
+  summarizeProviderRateLimits,
   isArtifactReviewDocumentKey,
   type ExecutionWorkspace,
   type Issue,
@@ -29,11 +31,12 @@ import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
-import { selectAgentArtifactAttachments } from "@/lib/issue-artifacts";
+import { selectArtifactAttachments } from "@/lib/issue-artifacts";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
+import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, nativeTaskModelCatalogOptions } from "../../lib/native-model-catalog";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../../hooks/useProjectOrder";
@@ -49,6 +52,8 @@ import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
 import { useExecutionPolicy } from "../../hooks/useExecutionPolicy";
 import {
+  areAutomaticMonitorChecksPaused,
+  canCheckIssueMonitorNow,
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
   formatMonitorEta,
@@ -66,13 +71,15 @@ import { SHOW_TASK_PRIORITY_UI } from "../../lib/ui-flags";
 import { Identity } from "../Identity";
 import { ProjectTile } from "../ProjectTile";
 import { IssueReferencePill } from "../IssueReferencePill";
-import { formatDate, formatDateTime, cn, projectUrl } from "../../lib/utils";
+import { formatDate, formatDateTime, cn, projectUrl, agentUrl } from "../../lib/utils";
+import { AgentRateLimitPropertyValue } from "../AgentRateLimitGauge";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import { timeAgo } from "../../lib/timeAgo";
 import { invalidateInboxIssueQueries } from "../../lib/inboxArchiveCache";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -102,8 +109,6 @@ import { ExternalObjectRows } from "./external-object-rows";
 import {
   asRecord,
   compactRecord,
-  defaultExecutionWorkspaceModeForProject,
-  defaultProjectWorkspaceIdForProject,
   isMainIssueWorkspace,
   overrideLane,
   sortAdapterModels,
@@ -114,6 +119,7 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import { IssueContextUsageRow } from "./context-usage-row";
 import {
   buildWorkspaceSelectionUpdate,
   currentWorkspaceSelection,
@@ -126,12 +132,14 @@ import {
 import { issueReviewPolicyBadge } from "../../lib/review-policy";
 import { IssueCasesPanel } from "../IssueCasesPanel";
 import { ExpandRelationListButton, RemovableIssueReferencePill } from "./relation-controls";
+import { RoutineOriginRow } from "./routine-origin-row";
 import { Badge } from "@/components/ui/badge";
 import {
   TaskDetailReferencesPanel,
   TaskDetailSubtasksPanel,
   type TaskDetailRelationItem,
 } from "../task-detail/TaskDetailRelationsPanel";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 function splitMiddleTruncation(value: string): { prefix: string; suffix: string } | null {
   const splitAt = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
@@ -208,6 +216,8 @@ interface IssuePropertiesProps {
   documentDeepLink?: IssuePropertiesDocumentDeepLink | null;
   /** Render only the Properties body when a parent owns the side-panel tabs. */
   sidePanelContentOnly?: boolean;
+  /** Overrides the fetched Context row (Storybook fixtures); null hides it. */
+  contextUsage?: import("react").ReactNode;
 }
 
 export interface IssuePropertiesDocumentDeepLink {
@@ -246,6 +256,7 @@ export function IssueProperties({
   checkingMonitorNow = false,
   documentDeepLink,
   sidePanelContentOnly = false,
+  contextUsage,
 }: IssuePropertiesProps) {
   const policyResult = useExecutionPolicy(issue.executionPolicy);
   const policyAvailable = policyResult.success;
@@ -321,12 +332,11 @@ export function IssueProperties({
     || paneTabStandaloneDocuments.length > 0;
   // Artifacts covers the same three sources the tab body composes: work
   // products, documents (redundant with the Plan tab, intentionally), and
-  // agent-created attachments. User comment uploads stay thread-only and
-  // no longer summon the tab.
+  // attachments from agents and people.
   const hasArtifactsTab =
     (paneTabWorkProducts?.length ?? 0) > 0
     || paneTabStandaloneDocuments.length > 0
-    || selectAgentArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
+    || selectArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
   const [paneTab, setPaneTab] = useState<IssuePaneTab>("properties");
   const [closedPaneTabs, setClosedPaneTabs] = useState<Set<IssuePaneTab>>(() => new Set());
   // Once a plan document exists, surface it: switch the pane to the Plan tab so
@@ -426,6 +436,16 @@ export function IssueProperties({
     queryFn: () => agentsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const assigneeRuntimeAgentId = issue.assigneeAgentId ?? null;
+  const { data: assigneeRuntimeState, isLoading: assigneeRuntimeStateLoading } = useQuery({
+    queryKey: queryKeys.agents.runtimeState(assigneeRuntimeAgentId ?? ""),
+    queryFn: () => agentsApi.runtimeState(assigneeRuntimeAgentId!, companyId ?? undefined),
+    // Optional detail: a 403 for board users without agent management access
+    // is not retried by the shared policy and simply hides the row.
+    enabled: !!assigneeRuntimeAgentId && !!companyId,
+  });
+  const assigneeRateLimits = readProviderRateLimits(assigneeRuntimeState?.stateJson);
+  const assigneeRateLimitAgent = assigneeRuntimeAgentId ? agents?.find((agent) => agent.id === assigneeRuntimeAgentId) : null;
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(companyId!),
     queryFn: () => accessApi.listUserDirectory(companyId!),
@@ -608,7 +628,8 @@ export function IssueProperties({
     () => isMainIssueWorkspace({ issue, project: issueProject }),
     [issue, issueProject],
   );
-  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
+  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId && issue.currentExecutionWorkspace?.id === issue.executionWorkspaceId) && !issueUsesMainWorkspace
+    && experimentalSettings?.enableIsolatedWorkspaces === true;
   const workspaceRuntimeConfig = issueUsesMainWorkspace
     ? null
     : issue.currentExecutionWorkspace?.config?.workspaceRuntime ?? null;
@@ -634,7 +655,7 @@ export function IssueProperties({
     onSuccess: (result, request) => {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
+      if (result.workspace.projectId) void queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
       if (companyId) {
@@ -733,11 +754,12 @@ export function IssueProperties({
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
+  const nativeCatalog = nativeTaskModelCatalogOptions(assignee);
   const assigneeAdapterType = assignee?.adapterType ?? null;
   const assigneeAdapterOverrides = issue.assigneeAdapterOverrides ?? null;
   const showAssigneeAdapterOptions = assigneeAdapterOverrides !== null;
   const supportsAssigneeOverrides = Boolean(
-    assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
+    assigneeAdapterType && (ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType) || nativeCatalog),
   );
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
@@ -754,14 +776,26 @@ export function IssueProperties({
   const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
     && assigneeOverrideAdapterConfig.chrome === true;
   const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig).provider ?? "codex") : undefined;
-  const { data: assigneeAdapterModels } = useQuery({
+  const catalogAcpxAgent = catalogProvider === "acpx" ? String(assigneePrimaryAdapterConfig.acpxAgent ?? "claude") : undefined;
+  const catalogEnvironmentId = nativeCatalog ? assignee?.defaultEnvironmentId ?? null : null;
+  const nativeCatalogScope = JSON.stringify(nativeCatalog ?? null);
+  const requestNativeModels = Boolean(nativeCatalog && assigneeOptionsOpen && showAssigneeAdapterOptions && supportsAssigneeOverrides);
+  const { data: assigneeAdapterModels, refetch: refreshAssigneeModels } = useQuery({
     queryKey:
       companyId && assigneeAdapterType
-        ? queryKeys.agents.adapterModels(companyId, assigneeAdapterType, null, catalogProvider)
+        ? [...queryKeys.agents.adapterModels(companyId, assigneeAdapterType, catalogEnvironmentId, catalogProvider), catalogAcpxAgent ?? null, nativeCatalog ?? null]
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, { provider: catalogProvider }),
-    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
+    queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, {
+      provider: catalogProvider,
+      ...(catalogAcpxAgent ? { acpxAgent: catalogAcpxAgent } : {}),
+      ...(nativeCatalog ? { environmentId: catalogEnvironmentId, ...nativeCatalog } : {}),
+    }),
+    ...(nativeCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides && (!nativeCatalog || requestNativeModels),
   });
+  useEffect(() => {
+    if (requestNativeModels) void refreshAssigneeModels();
+  }, [requestNativeModels, nativeCatalogScope, catalogEnvironmentId, companyId, refreshAssigneeModels]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
     const models = sortAdapterModels(assigneeAdapterModels ?? []);
     const options = models.map((model) => ({
@@ -1312,17 +1346,21 @@ export function IssueProperties({
   const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
   const monitorServiceName = executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
   const monitorNotes = executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
-  const monitorNow = useMonitorCountdown(monitorNextCheckAt);
+  const monitorPaused = areAutomaticMonitorChecksPaused(issue);
+  const canCheckMonitorNow = canCheckIssueMonitorNow(issue, monitorServiceName);
+  const monitorNow = useMonitorCountdown(monitorPaused ? null : monitorNextCheckAt);
   const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, monitorNow) : null;
   const monitorIsDueNow = monitorRelative === "due now";
   const monitorIsOverdue = Boolean(monitorRelative?.startsWith("overdue by "));
   const monitorPrimary = monitorNextCheckAt
-    ? formatMonitorEtaLabel(monitorNextCheckAt, monitorNow)
+    ? monitorPaused ? "Automatic checks paused" : formatMonitorEtaLabel(monitorNextCheckAt, monitorNow)
     : monitorState?.status === "cleared"
       ? "Cleared"
       : "None";
   const monitorSecondary = monitorNextCheckAt
-    ? monitorIsDueNow
+    ? monitorPaused
+      ? canCheckMonitorNow ? "Check now to request a manual check" : "Resume this task to continue checking"
+      : monitorIsDueNow
       ? "checking momentarily…"
       : `${formatMonitorAbsolute(monitorNextCheckAt, {}, monitorNow)}${monitorIsOverdue ? " · fires on next tick" : monitorAttemptCount > 0 ? ` · Attempt ${monitorAttemptCount}` : ""}`
     : monitorState?.status === "cleared"
@@ -1365,7 +1403,7 @@ export function IssueProperties({
             <div>
               <div className="text-xs text-muted-foreground">Next check</div>
               <div className="text-sm">{formatMonitorAbsoluteFull(monitorNextCheckAt)}</div>
-              <div className="text-xs text-muted-foreground">{monitorRelative}</div>
+              <div className="text-xs text-muted-foreground">{monitorPaused ? "Automatic checks paused" : monitorRelative}</div>
             </div>
             <div>
               <div className="text-xs text-muted-foreground">Watching</div>
@@ -1381,7 +1419,7 @@ export function IssueProperties({
             </div>
           </div>
           <div className="flex gap-2 border-t border-border px-4 py-3">
-            {onCheckMonitorNow ? (
+            {onCheckMonitorNow && canCheckMonitorNow ? (
               <Button type="button" size="sm" variant="outline" disabled={checkingMonitorNow} onClick={() => { setMonitorDetailsOpen(false); onCheckMonitorNow(); }}>
                 {checkingMonitorNow ? "Checking…" : "Check now"}
               </Button>
@@ -2008,26 +2046,7 @@ export function IssueProperties({
                 option.id === (issue.projectId ?? "") && "bg-accent",
               )}
               onClick={() => {
-                if (option.kind === "project") {
-                  const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
-                  onUpdate({
-                    projectId: option.project.id,
-                    projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
-                    executionWorkspaceId: null,
-                    executionWorkspacePreference: workspaceIsolationControlsVisible ? defaultMode : null,
-                    executionWorkspaceSettings: workspaceIsolationControlsVisible && option.project.executionWorkspacePolicy?.enabled
-                      ? { mode: defaultMode }
-                      : null,
-                  });
-                } else {
-                  onUpdate({
-                    projectId: null,
-                    projectWorkspaceId: null,
-                    executionWorkspaceId: null,
-                    executionWorkspacePreference: null,
-                    executionWorkspaceSettings: null,
-                  });
-                }
+                onUpdate({ projectId: option.kind === "project" ? option.project.id : null });
                 setProjectOpen(false);
               }}
             >
@@ -2187,7 +2206,7 @@ export function IssueProperties({
               setParentOpen(false);
             }}
           >
-            <StatusIcon status={candidate.status} className="h-3 w-3" />
+            <StatusIcon {...taskStatusIconProps(candidate)} className="h-3 w-3" />
             <span className="truncate">
               {candidate.identifier ? `${candidate.identifier} ` : ""}
               {candidate.title}
@@ -2274,7 +2293,7 @@ export function IssueProperties({
               )}
               onClick={() => toggleBlockedBy(candidate.id)}
             >
-              <StatusIcon status={candidate.status} className="h-3 w-3" />
+              <StatusIcon {...taskStatusIconProps(candidate)} className="h-3 w-3" />
               <span className="truncate">
                 {candidate.identifier ? `${candidate.identifier} ` : ""}
                 {candidate.title}
@@ -2312,7 +2331,7 @@ export function IssueProperties({
             className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50"
             onClick={() => setSubtasksOpen(false)}
           >
-            <StatusIcon status={child.status} className="h-3 w-3" />
+            <StatusIcon {...taskStatusIconProps(child)} className="h-3 w-3" />
             <span className="min-w-0 truncate">
               {child.identifier ? `${child.identifier} ` : ""}
               {child.title}
@@ -2349,8 +2368,7 @@ export function IssueProperties({
       >
         <PropertyRow label="Status">
           <StatusIcon
-            status={issue.status}
-            externalConversationState={issue.externalConversationState}
+            {...taskStatusIconProps(issue)}
             glyphContainerClassName="inline-flex size-6 shrink-0 items-center justify-center"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}
@@ -2401,6 +2419,19 @@ export function IssueProperties({
           >
             {assigneeOptionsContent}
           </PropertyPicker>
+        ) : null}
+
+        {assigneeRuntimeStateLoading || (assigneeRateLimits && summarizeProviderRateLimits(assigneeRateLimits, Date.now())) ? (
+          <PropertyRow label="Usage limit">
+            {assigneeRuntimeStateLoading ? (
+              <Skeleton className="h-4 w-32" role="status" aria-label="Loading usage limit" />
+            ) : (
+              <AgentRateLimitPropertyValue
+                snapshot={assigneeRateLimits}
+                detailsHref={assigneeRateLimitAgent ? agentUrl(assigneeRateLimitAgent) : undefined}
+              />
+            )}
+          </PropertyRow>
         ) : null}
 
         <PropertyPicker
@@ -2455,6 +2486,10 @@ export function IssueProperties({
         >
           {parentContent}
         </PropertyPicker>
+
+        {issue.originKind === "routine_execution" && issue.originId ? (
+          <RoutineOriginRow routineId={issue.originId} />
+        ) : null}
 
         {streamlinedPropertiesEnabled ? (
           <PropertyPicker
@@ -2736,6 +2771,10 @@ export function IssueProperties({
         >
           {watchdogContent}
         </PropertyPicker>
+
+        {contextUsage !== undefined
+          ? contextUsage ? <PropertyRow label="Context">{contextUsage}</PropertyRow> : null
+          : <IssueContextUsageRow issueId={issue.id} assigneeAgentId={issue.assigneeAgentId ?? null} issueStatus={issue.status} hasActiveRun={hasActiveRun} />}
       </PropertySection>
 
       {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (

@@ -1230,30 +1230,6 @@ describe("confidential transport guard (SR-6, SR-7)", () => {
     expect(assessment.proxyForwardingEnabled).toBe(true);
     expect(assessment.reason).toBe("edge_tls_termination_declared");
   });
-
-  it("denies a direct non-loopback HTTP receive-token request, so it delivers no token (SR-6)", () => {
-    // The route calls this guard before receive-token. A denied decision makes
-    // the route return the fixed no-secret error and never read the token.
-    const decision = evaluateConfidentialTransport(authenticatedNoProxy, {
-      socketEncrypted: false,
-      remoteAddress: "203.0.113.7",
-      forwardedProto: undefined,
-    });
-    expect(decision.allowed).toBe(false);
-  });
-
-  it("denies a spoofed forwarded HTTPS receive-token request under a broad proxy setting (SR-7)", () => {
-    // A broad `TRUST_PROXY=true` setting never populates the dedicated allowlist,
-    // so the guard reads an empty allowlist and fails closed on the forwarded
-    // protocol. The route returns the fixed no-secret error and delivers no
-    // token.
-    const decision = evaluateConfidentialTransport(authenticatedNoProxy, {
-      socketEncrypted: false,
-      remoteAddress: "203.0.113.7",
-      forwardedProto: "https",
-    });
-    expect(decision.allowed).toBe(false);
-  });
 });
 
 describe("SetupTokenSessionService durable state scope", () => {

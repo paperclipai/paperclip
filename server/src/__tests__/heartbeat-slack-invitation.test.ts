@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, chatConversations, chatDeliveries, chatEndpointResources,
+  agents, authUsers, chatConversations, chatDeliveries, chatEndpointResources,
   chatEndpoints, chatExternalPrincipals, chatIdentityLinks, chatMessageLinks,
   companies, companyMemberships, createDb, issueComments, issues,
   toolApplications, toolConnections,
@@ -55,6 +55,7 @@ describePostgres("saved Slack invitation command in heartbeat prompts", () => {
     const endpointId = randomUUID(), resourceId = randomUUID(), conversationId = randomUUID();
     const applicationId = randomUUID(), connectionId = randomUUID(), principalId = randomUUID();
     const userId = `invitation-user-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: userId, name: "Invitation user", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companies).values({ id: companyId, name: "Invitation fixture", issuePrefix: `I${companyId.slice(0, 6)}` });
     await db.insert(agents).values({
       id: agentId, companyId, name: "Original researcher", adapterType, status: "idle",
@@ -105,7 +106,8 @@ describePostgres("saved Slack invitation command in heartbeat prompts", () => {
     const f = await seed();
     for (let index = 0; index < 2; index++) {
       const input = await turn(f);
-      expect(input.runtime.sessionId).toBe(index === 0 ? null : "invitation-session");
+      const completed = await heartbeat.getRun(input.runId);
+      expect(input.runtime.sessionId, JSON.stringify(completed?.resultJson?.configFreshness)).toBe(index === 0 ? null : "invitation-session");
       const context = input.context;
       for (const key of ["paperclipTaskMarkdown", "paperclipTaskMarkdownCompact", "paperclipTaskMarkdownAssignment", "paperclipTaskMarkdownAssignmentCompact"]) {
         const prompt = String(context[key]);

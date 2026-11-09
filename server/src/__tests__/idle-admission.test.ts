@@ -1,8 +1,9 @@
 import express from "express";
 import request from "supertest";
 import { request as httpRequest } from "node:http";
+import { createServer as createViteServer } from "vite";
 import { afterEach, describe, expect, it } from "vitest";
-import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
+import { drainHttpRequestWork, idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
 import { idleWorkSnapshot, startTaskDrain, stopTaskDrain, readTaskDrain, beginIdleTrackedWork } from "../services/task-admission.js";
 
 function deferred() {
@@ -42,11 +43,46 @@ describe("idle admission", () => {
     trackIdleRequestHandlers(server);
     await request(server).post("/api/work").expect(202);
     expect(idleWorkSnapshot().active).toBe(1);
+    let drained = false;
+    const drain = drainHttpRequestWork(server, new AbortController().signal).then(() => { drained = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(drained).toBe(false);
     startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
     await request(server).post("/api/work").expect(503);
     done.resolve();
+    await drain;
+    expect(drained).toBe(true);
+    expect(idleWorkSnapshot().active).toBe(0);
+  });
+
+  it("tracks ordinary middleware with non-router stack metadata", async () => {
+    const server = app(), done = deferred();
+    const middleware = Object.assign(async (_req: express.Request, res: express.Response) => {
+      res.sendStatus(202); await done.promise;
+    }, { stack: { name: "middleware metadata" } });
+    server.use(middleware);
+    expect(() => trackIdleRequestHandlers(server)).not.toThrow();
+    await request(server).get("/work").expect(202);
+    expect(idleWorkSnapshot().active).toBe(1);
+    done.resolve();
     await new Promise(resolve => setImmediate(resolve));
     expect(idleWorkSnapshot().active).toBe(0);
+  });
+
+  it("supports real Vite Connect route metadata without losing async work", async () => {
+    const vite = await createViteServer({ configFile: false, appType: "custom",
+      server: { middlewareMode: true, watch: null }, optimizeDeps: { noDiscovery: true, include: [] } });
+    const server = app(), done = deferred();
+    try {
+      server.use(vite.middlewares);
+      server.post("/work", async (_req, res) => { res.sendStatus(202); await done.promise; });
+      expect(() => trackIdleRequestHandlers(server)).not.toThrow();
+      await request(server).post("/work").expect(202);
+      expect(idleWorkSnapshot().active).toBe(1);
+      done.resolve();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(idleWorkSnapshot().active).toBe(0);
+    } finally { await vite.close(); }
   });
 
   it("tracks real Vite middleware without confusing Connect mount paths with Express routes", async () => {

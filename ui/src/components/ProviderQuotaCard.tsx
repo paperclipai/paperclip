@@ -5,6 +5,7 @@ import type { CostByProviderModel, CostWindowSpendRow, QuotaWindow, ProviderQuot
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { QuotaBar } from "./QuotaBar";
+import { CostAmount } from "./CostAmount";
 import { ClaudeSubscriptionPanel } from "./ClaudeSubscriptionPanel";
 import { CodexSubscriptionPanel } from "./CodexSubscriptionPanel";
 import {
@@ -63,10 +64,14 @@ export function ProviderQuotaCard({
   const totals = useMemo(() => {
     let inputTokens = 0, outputTokens = 0, costCents = 0;
     let apiRunCount = 0, subRunCount = 0, subInputTokens = 0, subOutputTokens = 0;
+    let eventCount = 0, estimatedEventCount = 0, unpricedEventCount = 0;
     for (const r of rows) {
       inputTokens += r.inputTokens + r.cachedInputTokens;
       outputTokens += r.outputTokens;
       costCents += r.costCents;
+      eventCount += r.eventCount ?? 0;
+      estimatedEventCount += r.estimatedEventCount ?? 0;
+      unpricedEventCount += r.unpricedEventCount ?? 0;
       apiRunCount += r.apiRunCount;
       subRunCount += r.subscriptionRunCount;
       subInputTokens += r.subscriptionInputTokens + r.subscriptionCachedInputTokens;
@@ -81,6 +86,7 @@ export function ProviderQuotaCard({
       totalOutputTokens: outputTokens,
       totalTokens,
       totalCostCents: costCents,
+      eventCount, estimatedEventCount, unpricedEventCount,
       totalApiRuns: apiRunCount,
       totalSubRuns: subRunCount,
       totalSubInputTokens: subInputTokens,
@@ -156,9 +162,10 @@ export function ProviderQuotaCard({
               )}
             </CardDescription>
           </div>
-          <span className="text-xl font-bold tabular-nums shrink-0">
-            {formatCents(totalCostCents)}
-          </span>
+          <div className="text-xl shrink-0">
+            <CostAmount costCents={totalCostCents} eventCount={totals.eventCount}
+              estimatedEventCount={totals.estimatedEventCount} unpricedEventCount={totals.unpricedEventCount} showUnavailableCount />
+          </div>
         </div>
       </CardHeader>
 

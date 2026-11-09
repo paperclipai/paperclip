@@ -13,11 +13,11 @@ const {
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[]) => {
+  runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[], _options?: { onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void> }) => {
     if (args.includes("models")) {
       return {
         exitCode: 0,
-        signal: null,
+        signal: null as string | null,
         timedOut: false,
         stdout: "opencode/gpt-5-nano\nopenai/gpt-4.1\n",
         stderr: "",
@@ -27,7 +27,7 @@ const {
     }
     return {
       exitCode: 0,
-      signal: null,
+      signal: null as string | null,
       timedOut: false,
       stdout: [
         JSON.stringify({ type: "step_start", sessionID: "session_123" }),
@@ -125,6 +125,37 @@ describe("opencode remote execution", () => {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
   });
+
+  it.each([[false, false], [false, true], [true, false], [true, true]])(
+    "uses only forwarded credentials for remote billing (forwarded=%s, timeout=%s)", async (forwarded, timedOut) => {
+      vi.stubEnv("OPENROUTER_API_KEY", "host-only-api-key");
+      const workspace = await mkdtemp(path.join(os.tmpdir(), "opencode-remote-billing-"));
+      cleanupDirs.push(workspace);
+      const usageLine = JSON.stringify({ type: "step_finish", sessionID: "session-billing",
+        part: { cost: 0.001, tokens: { input: 10, output: 2, cache: { read: 1, write: 0 } } } });
+      runChildProcess.mockImplementationOnce(async (_runId, _command, _args, options) => {
+        await options?.onLog?.("stdout", `${usageLine}\n`);
+        return { stdout: usageLine, stderr: "", exitCode: timedOut ? 143 : 0,
+          signal: timedOut ? "SIGTERM" : null, timedOut, pid: 123, startedAt: new Date().toISOString() };
+      });
+      const onUsage = vi.fn();
+      const result = await execute({
+        runId: "remote-billing", agent: { id: "agent", companyId: "company", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: "opencode", cwd: workspace, model: "openrouter/anthropic/claude-sonnet-4.5",
+          env: { OPENCODE_ALLOW_ALL_MODELS: "1", ...(forwarded ? { OPENROUTER_API_KEY: "forwarded-api-key" } : {}) } },
+        context: {}, executionTransport: { remoteExecution: { host: "127.0.0.1", port: 2222, username: "fixture", remoteCwd: "/remote/workspace", remoteWorkspacePath: "/remote/workspace" } },
+        onLog: async () => {}, onUsage,
+      });
+      const expected = forwarded ? "metered_api" : "unknown";
+      expect(result.billingType).toBe(expected);
+      expect(result.timedOut).toBe(timedOut);
+      expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ billingType: expected, complete: false }));
+      expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ billingType: expected, complete: !timedOut }));
+      const runCall = runChildProcess.mock.calls.find(call => call[2].includes("run"))!;
+      expect((runCall[3] as { env: Record<string, string> }).env.OPENROUTER_API_KEY).toBe(forwarded ? "forwarded-api-key" : undefined);
+    },
+  );
 
   it.each([false, true])("prepares the workspace, syncs OpenCode skills, and restores workspace changes for remote SSH execution (managed=%s)", async (managed) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-"));

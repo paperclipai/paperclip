@@ -24,11 +24,14 @@ export function createdFromIssueCondition(companyId: string, sourceIssueId: stri
         nullif(${heartbeatRuns.contextSnapshot}->>'taskKey', '')
       ) IN (${source.id}::text, ${source.identifier})
   `;
+  // A recorded origin task wins; run and activity fallbacks apply only to rows
+  // without one, so the list agrees with the detail's createdFrom.
   return sql<boolean>`
     ${issues.id} <> ${sourceIssueId}
     AND (
-      ${issues.originRunId} IN (${originatingRuns})
-      OR (${issues.originRunId} IS NULL AND EXISTS (
+      ${issues.originIssueId} = ${sourceIssueId}
+      OR (${issues.originIssueId} IS NULL AND ${issues.originRunId} IN (${originatingRuns}))
+      OR (${issues.originIssueId} IS NULL AND ${issues.originRunId} IS NULL AND EXISTS (
         SELECT 1 FROM ${activityLog}
         WHERE ${activityLog.companyId} = ${companyId}
           AND ${activityLog.entityType} = 'issue'
