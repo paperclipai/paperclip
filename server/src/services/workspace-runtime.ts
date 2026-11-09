@@ -4590,8 +4590,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  // A local directory the runtime did not create is never removed here (operator-owned or
+  // retained, such as an isolated task directory). Closing such a record has nothing left to
+  // clean, so its surviving directory is the intended outcome, not a failed cleanup.
+  const retainedByDesign = input.workspace.providerType === "local_fs" && !createdByRuntime;
   const cleaned =
     !workspacePath ||
+    retainedByDesign ||
     !(await directoryExists(workspacePath));
   if (cleaned) warnings.push(...await releaseNestedRepositoryWorktrees(nestedWorktrees));
 
