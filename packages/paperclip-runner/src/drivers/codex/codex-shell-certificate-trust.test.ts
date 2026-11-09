@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createIsolatedCodexAppServerArgs } from "./codex-security-config.js";
 import { createSanitizedCodexEnvironment } from "./app-server-transport.js";
+import { resolveCodexCommand } from "./codex-command.js";
 
 const execFileAsync = promisify(execFile);
 const gitBinary = existsSync("/usr/bin/git") ? "/usr/bin/git" : "git";
@@ -143,4 +144,55 @@ describe.skipIf(!toolsAvailable)("Codex shell certificate trust (synthetic priva
     });
     expect(stdout).toContain("refs/heads/");
   }, 60_000);
+
+  it("keeps injected certificate trust and drops ambient secrets through the pinned Codex binary", async (context) => {
+    // The cases above replay the policy semantics; this one hands the computed
+    // overrides to the pinned Codex binary and lets it spawn the child command,
+    // so a Codex-side change to inherit/include_only/ignore_default_excludes
+    // handling fails here rather than only in production.
+    let codexBinary: string;
+    try {
+      codexBinary = resolveCodexCommand();
+    } catch {
+      return context.skip();
+    }
+    const codexHome = join(root, "codex-home");
+    mkdirSync(join(codexHome, ".codex"), { recursive: true });
+    const args = createIsolatedCodexAppServerArgs(launchEnvironment);
+    const policyOverrides: string[] = [];
+    for (let index = 0; index < args.length - 1; index += 1) {
+      if (args[index] === "-c" && args[index + 1]!.startsWith("shell_environment_policy.")) {
+        policyOverrides.push("-c", args[index + 1]!);
+      }
+    }
+    expect(policyOverrides.length).toBeGreaterThanOrEqual(6);
+    const secretValue = "synthetic-ambient-secret";
+    const injectedEnvironment = {
+      ...createSanitizedCodexEnvironment(launchEnvironment),
+      HOME: codexHome,
+      CODEX_HOME: join(codexHome, ".codex"),
+      GIT_SSL_CAINFO: caCertificatePath,
+      SSL_CERT_FILE: caCertificatePath,
+      PAPERCLIP_AI_PROVIDER_KEY: secretValue,
+    };
+    try {
+      // Codex sandboxes commands with host kernel facilities; hosts without
+      // them keep coverage through the policy-replay cases above.
+      await execFileAsync(codexBinary, ["sandbox", "--", "/usr/bin/true"], {
+        env: injectedEnvironment, cwd: root, timeout: 60_000,
+      });
+    } catch {
+      return context.skip();
+    }
+    const { stdout } = await execFileAsync(
+      codexBinary,
+      ["sandbox", ...policyOverrides, "--", "/usr/bin/env"],
+      { env: injectedEnvironment, cwd: root, timeout: 60_000 },
+    );
+    const lines = stdout.split("\n");
+    expect(lines).toContain(`GIT_SSL_CAINFO=${caCertificatePath}`);
+    expect(lines).toContain(`SSL_CERT_FILE=${caCertificatePath}`);
+    expect(stdout).not.toContain(secretValue);
+    expect(lines.some((line) => line.startsWith("PAPERCLIP_AI_PROVIDER_KEY="))).toBe(false);
+  }, 120_000);
 });
