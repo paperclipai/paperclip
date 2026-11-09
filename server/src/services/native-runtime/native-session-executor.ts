@@ -5628,7 +5628,7 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
   return { finished: true, run: prior.run, recheck };
 }
 
-function quarantinedBootstrapOfOwnerHeldNoProviderWork(root: string, identity: Record<string, string>,
+export function quarantinedBootstrapOfOwnerHeldNoProviderWork(root: string, identity: Record<string, string>,
   localRunner: boolean): boolean {
   if (!isSafeNativeStateDirectory(root)) return false;
   const copied = readRunnerdDurableIdentity(root);

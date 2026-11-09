@@ -39,7 +39,8 @@ vi.mock("./current-wake-comments.js", async importOriginal => ({
   resolveCurrentWakeCommentsBinding: async () => null,
   assertCurrentWakeCommentsRead: async () => undefined,
 }));
-import { buildNativeHarnessBackupManifest, createRunnerdBackend, resolveNativeHarnessPersistenceProfile, scopedRunnerdStateRoot } from "./native-session-executor.js";
+import { buildNativeHarnessBackupManifest, createRunnerdBackend, quarantinedBootstrapOfOwnerHeldNoProviderWork, resolveNativeHarnessPersistenceProfile,
+  scopedRunnerdStateRoot } from "./native-session-executor.js";
 
 // Durable-root admission is the boundary under test. Reaching the run's tool
 // authority proves admission passed; no provider or runner process starts.
@@ -797,6 +798,37 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       schema: "paperclip.runner.durable.state.v1", lifecycle: "ready", ...prior.identity }));
     return { prior, followUp, root };
   }
+
+  it.each(["exited", "alive", "another owner"] as const)(
+    "skips a local quarantined bootstrap that opened a session only when it is this owner's and its processes %s",
+    async scenario => {
+      const runner = scenario === "alive" ? await runnerProcess() : await stoppedRunnerProcess();
+      const root = await mkdtemp(join(tmpdir(), "quarantined-opened-bootstrap-"));
+      const identity = { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "owner-run",
+        normalizedSessionId: "session-1", turnId: "turn-owner-run", itemId: "item-owner-run" };
+      try {
+        await mkdir(join(root, "control-plane"), { recursive: true, mode: 0o700 });
+        await mkdir(join(root, "runner"), { recursive: true, mode: 0o700 });
+        await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify({
+          schema: "paperclip.runner.durable.control-plane-state.v2", identity,
+          bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", originIdentity: identity, credentialsIssued: 1, adopted: false },
+          commands: [
+            { commandId: "prepare", type: "run.prepare", status: "completed", result: { status: "prepared" } },
+            { commandId: "open", type: "session.open", status: "completed", result: { result: { status: "started", processId: runner.pid } } },
+          ],
+          committedEvents: [{ sourceSeq: 1, sourceEventId: "opened-1", eventType: "session.started", priority: 1, envelope: identity }],
+          ackedSourceSeq: 1, connectionCount: 1 }));
+        await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1",
+          ...identity, lifecycle: "ready", outbox: [], processedCommands: {
+            prepare: { commandType: "run.prepare", status: "completed", result: { status: "prepared" } },
+            open: { commandType: "session.open", status: "completed", result: { status: "started", processId: runner.pid } } } }));
+        const owner = scenario === "another owner" ? { ...identity, runId: "another-run" } : identity;
+        expect(quarantinedBootstrapOfOwnerHeldNoProviderWork(root, owner, true)).toBe(scenario === "exited");
+      } finally {
+        if (scenario === "alive") runner.child.kill("SIGKILL");
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 60_000);
 
   it("retires a finished local owner whose Runner stopped before it proved suspension", async () => {
     const { prior, followUp, root } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
