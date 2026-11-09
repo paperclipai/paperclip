@@ -1053,6 +1053,32 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(JSON.stringify(response.body)).not.toContain("PAPERCLIP_PUBLIC_URL");
   });
 
+  it("keeps an action the connection left off from agents that hold only the default unscoped tools:use grant", async () => {
+    installMcpOAuthFixture({ auth: "header", requiredHeader: { name: "Authorization", value: "Bearer fixture-key-123" }, tools: [
+      { name: "list_insights", description: "List insights", annotations: { readOnlyHint: true, destructiveHint: false } },
+      { name: "create_insight", description: "Create an insight", annotations: { readOnlyHint: false, destructiveHint: true } },
+    ] });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board-user", userId: "board-user" } as never;
+    const connected = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture bearer", authMode: "bearer",
+      credentialValues: { "credentials.authorization": "fixture-key-123" }, grantKind: "organization" } as never, actor);
+    const readOnly = connected.actions.readOnly.map((row: { catalogEntryId: string }) => row.catalogEntryId);
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Morgan", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
+    await service.finishGalleryAppConnection(company.id, connected.connectionId, { enabledCatalogEntryIds: readOnly, askFirstCatalogEntryIds: [], access: { agentIds: [] } }, actor);
+    await service.putConnectionInstalls(connected.connectionId, { installs: [{ targetType: "agent", targetId: agent!.id }] }, actor);
+    // Every new standard agent receives this unscoped grant.
+    await db.insert(principalPermissionGrants).values({ companyId: company.id, principalType: "agent", principalId: agent!.id, permissionKey: "tools:use", scope: null });
+    const gateway = createToolGatewayService(db, { toolActionSigningSecret: "fixture-secret" });
+    const summary = async () => (await gateway.summarizeConnectionAccessForAgent({ companyId: company.id, connectionId: connected.connectionId, agentId: agent!.id }))
+      .tools.map(tool => [tool.toolName, tool.decision]).sort();
+    expect(await summary()).toEqual([["create_insight", "off"], ["list_insights", "allowed"]]);
+    // A grant scoped to the action is an explicit choice and still applies.
+    await db.update(principalPermissionGrants).set({ scope: { allow: ["tool:create_insight"] } })
+      .where(and(eq(principalPermissionGrants.principalId, agent!.id), eq(principalPermissionGrants.permissionKey, "tools:use")));
+    expect(await summary()).toEqual([["create_insight", "allowed"], ["list_insights", "allowed"]]);
+  });
+
   it("stores a bearer key as a secret and never reads it back", async () => {
     installMcpOAuthFixture({
       auth: "header",
