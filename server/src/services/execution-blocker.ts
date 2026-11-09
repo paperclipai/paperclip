@@ -194,6 +194,13 @@ export function interruptedPreparationBeforeProviderWorkCondition() {
     and stopped.runner_profile_json->'nativeExecutionInput' is null
     and stopped.process_pid is null and stopped.process_group_id is null and stopped.process_started_at is null
     and stopped.session_id_after is null and stopped.native_issue_id is null and stopped.native_session_id is null
+    and (stopped.controller_lease_expires_at is null or stopped.controller_lease_expires_at <= now())
+    and (stopped.runner_profile_json->'remoteWorkspace' is null or exists (
+      select 1 from jsonb_array_elements_text(case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}') = 'array'
+        then ${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}' else '[]'::jsonb end) saved(id)
+      join ${workspaceOperations} op on op.id::text = saved.id
+      where op.company_id = stopped.company_id and op.heartbeat_run_id = stopped.id and op.status = 'succeeded'
+        and op.metadata->>'snapshotId' = stopped.runner_profile_json#>>'{remoteWorkspace,snapshotId}'))
     and coalesce(stopped.result_json#>'{executionRecovery,providerWorkStarted}', 'false'::jsonb) = 'false'::jsonb
     and case when stopped.result_json->'cancellation' is null then stopped.error_code = 'server_shutdown_interrupted'
       else stopped.result_json#>>'{cancellation,initiator,type}' = 'system'

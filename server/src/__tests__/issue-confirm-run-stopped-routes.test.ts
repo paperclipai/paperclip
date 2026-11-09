@@ -4,7 +4,7 @@ import { once } from "node:events";
 import os from "node:os";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, agentWakeupRequests, applyPendingMigrations, companies, companyMemberships, createDb,
@@ -140,7 +140,7 @@ describe.skipIf(!support.supported)("confirming that an unidentified local run s
     ["remote_environment", async () => {
       const f = await seed();
       const environmentId = randomUUID();
-      await db.insert(environments).values({ id: environmentId, companyId: f.companyId, name: "Sandbox", driver: "sandbox",
+      await db.insert(environments).values({ id: environmentId, name: "Sandbox", driver: "sandbox",
         status: "active", config: { provider: "fake" } });
       await db.insert(environmentLeases).values({ companyId: f.companyId, environmentId, issueId: f.issueId,
         heartbeatRunId: f.runId, status: "released", provider: "daytona", providerLeaseId: "sandbox-1", releasedAt: new Date() });
@@ -157,6 +157,15 @@ describe.skipIf(!support.supported)("confirming that an unidentified local run s
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body).toMatchObject({ details: { code } });
     expect(await hasNativeLocalProcessStop(db, f.companyId, f.runId)).toBe(false);
+  });
+
+  it("judges every parked task on a list page together", async () => {
+    const [a, b, c] = [await seed(), await seed(), await seed({ hostname: "another-server" })];
+    const tasks = await db.select().from(issues).where(inArray(issues.id, [a.issueId, b.issueId, c.issueId]));
+    const byCompany = await Promise.all([a, b, c].map(f => taskInterruptionPresentations(db, f.companyId,
+      tasks.filter(task => task.companyId === f.companyId))));
+    expect(byCompany.map((presentations, index) => presentations.get([a, b, c][index]!.issueId)?.userAction))
+      .toEqual(["confirm_run_stopped", "confirm_run_stopped", null]);
   });
 
   it("reports a stop that was already recorded without recording another", async () => {

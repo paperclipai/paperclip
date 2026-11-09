@@ -52,17 +52,22 @@ suite("Retry after a shutdown interrupted workspace restore before provider work
 
   afterAll(async () => { await temporary?.cleanup(); });
 
-  async function interruptedRestore(options: { cancellationSource?: string; terminationReceipt?: boolean } = {}) {
+  async function interruptedRestore(options: { cancellationSource?: string; terminationReceipt?: boolean;
+    controllerLeaseExpiresAt?: Date; recoveredSnapshotId?: string } = {}) {
     const issueId = randomUUID(), runId = randomUUID(), leaseId = randomUUID(), providerLeaseId = `sandbox-${leaseId}`;
     const finishedAt = new Date(Date.now() - 30_000);
     const restoreRecovery = { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId] };
+    const snapshotId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Follow-up", status: "blocked",
       assigneeAgentId: agentId, statusVersion: 5 });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "automation",
       issueId, status: "interrupted", errorCode: "server_shutdown_interrupted", runtimeMode: "legacy",
       executionStage: "preparing", startedAt: new Date(finishedAt.getTime() - 3_000), finishedAt, nextEventSeq: 1,
       contextSnapshot: { issueId, wakeReason: "issue_commented" },
-      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      controllerLeaseExpiresAt: options.controllerLeaseExpiresAt ?? null,
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" },
+        remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", state: "saved", epoch: 2, leaseId, providerLeaseId,
+          snapshotId, workspaceId: randomUUID(), remoteCwd: "/home/daytona/workspace" } },
       resultJson: { stopReason: "interrupted", workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: restoreRecovery,
         cancellation: { reason: "Server shutdown interrupted execution", source: options.cancellationSource ?? "shutdown",
           expected: true, initiator: { type: "system" }, recordedAt: finishedAt.toISOString() } } });
@@ -74,7 +79,8 @@ suite("Retry after a shutdown interrupted workspace restore before provider work
     const holdId = randomUUID(), preservationId = randomUUID();
     await db.insert(workspaceOperations).values([
       { id: preservationId, companyId, issueId, heartbeatRunId: runId, phase: "workspace_recovery", status: "succeeded",
-        metadata: { recoveryActionId: holdId, storage: "remote_workspace", leaseId, providerLeaseId } },
+        metadata: { recoveryActionId: holdId, storage: "remote_workspace", leaseId, providerLeaseId,
+          snapshotId: options.recoveredSnapshotId ?? snapshotId } },
       { companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded",
         metadata: { owningService: "workspace_recovery", preservationOperationIds: [preservationId] } },
     ]);
@@ -133,6 +139,8 @@ suite("Retry after a shutdown interrupted workspace restore before provider work
     }],
     ["an operator stopped it", () => interruptedRestore({ cancellationSource: "operator" })],
     ["its sandbox has no stop receipt", () => interruptedRestore({ terminationReceipt: false })],
+    ["its controller may still be live", () => interruptedRestore({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })],
+    ["recovery saved a different snapshot", () => interruptedRestore({ recoveredSnapshotId: randomUUID() })],
   ] as const)("keeps the hold when %s", async (_label, arrange) => {
     const f = await arrange();
     expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ recoveryActionId: f.holdId, runId: f.runId });
