@@ -66,6 +66,10 @@ export function waitOutStorageOutages<T>(work: () => Promise<T>): Promise<T> {
   return outageWaitScope.getStore() ? work() : outageWaitScope.run({}, work);
 }
 
+export function runInOwnStorageScope<T>(work: () => Promise<T>): Promise<T> {
+  return outageWaitScope.run({}, () => outageWaitOperation.run(null, work));
+}
+
 export function runSharedStorageWork<T>(work: () => Promise<T>): Promise<T> {
   return outageWaitScope.getStore() ? outageWaitScope.run({}, () => outageWaitOperation.run(null, work)) : outageWaitOperation.run(null, work);
 }

@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
-import { endStorageOutageWaitOn, isStorageUnavailableError, retryThroughStorageOutage, runSharedStorageWork, waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { endStorageOutageWaitOn, isStorageUnavailableError, retryThroughStorageOutage, runInOwnStorageScope, runSharedStorageWork, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import { RemoteWorkspaceRestoreError } from "../services/remote-workspace-transport.js";
 
 const OUTAGE = `<?xml version="1.0" encoding="UTF-8"?>
@@ -175,6 +175,18 @@ describe("the shared storage outage wait", () => {
       const secondRecoversAt = Date.now() + policy.budgetMs - 60;
       await expect(retryThroughStorageOutage(async () => (Date.now() < secondRecoversAt ? outage() : "again"), undefined, policy)).resolves.toBe("again");
     });
+  });
+
+  it("gives a run started from a stopped run's cleanup its own scope", async () => {
+    const stopped = new AbortController();
+    stopped.abort(new Error("Stopped by a board operator"));
+    const wide = { budgetMs: 2_000, firstDelayMs: 20, maxDelayMs: 40 };
+    let calls = 0;
+    const next = await waitOutStorageOutages(async () => {
+      endStorageOutageWaitOn(stopped.signal);
+      return runInOwnStorageScope(() => retryThroughStorageOutage(async () => (++calls < 3 ? outage() : "next run"), undefined, wide));
+    });
+    expect(next).toBe("next run");
   });
 
   it("lets one run's Stop end only its own wait, not shared work another run waits on", async () => {

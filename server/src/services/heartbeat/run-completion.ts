@@ -1306,7 +1306,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         // exhaustion. Once its durable coordinator has classified a
         // terminal failure, generic issue recovery must not create a
         // replacement retryOfRunId chain for the same provider work.
-        suppressImmediateRecovery: nativeTerminalFailureCode !== null || storageWait?.outcome === "scheduled",
+        suppressImmediateRecovery: nativeTerminalFailureCode !== null || storageWait?.outcome === "scheduled"
+          || storageWait?.outcome === "retry_exhausted",
       });
       await handleIssueReviewPathDisposition(livenessRun);
 
@@ -1655,7 +1656,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           });
           reviewedChatRetryScheduled = retry?.outcome === "scheduled";
           if (livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE && retry?.outcome === "retry_exhausted") await markStorageWaitExhausted(livenessRun);
-          storageWaitScheduled = livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE && retry?.outcome === "scheduled";
+          storageWaitScheduled = livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE
+            && (retry?.outcome === "scheduled" || retry?.outcome === "retry_exhausted");
         }
       }
       await releaseIssueExecutionAndPromote(livenessRun, {

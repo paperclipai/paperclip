@@ -807,15 +807,18 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
   });
 
-  it("does not start another retry chain once a storage wait is exhausted", async () => {
+  it.each(["run", "setup"] as const)("ends the task's automatic recovery once its storage wait is exhausted (%s)", async phase => {
     const f = await fixture();
     const outage = await withS3FailureDiagnostics("put_object", async () => {
       throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
     }).catch(error => error as Error);
     f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "retry_exhausted", attempt: 11, maxAttempts: 10 } as never);
-    await f.completion.failRun(f.failure(outage));
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    else await f.completion.failRun(f.failure(outage));
     expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: true }));
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE,
       error: STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE });
   });
