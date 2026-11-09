@@ -380,6 +380,9 @@ export class NativeControllerDetachedForRestartError extends Error {
 const activeNativeSessions = new Map<string, ActiveNativeSession>();
 // Shutdown can race provider startup before onSession publishes its handle.
 const nativeRunsDetachingForRestart = new Map<string, symbol>();
+/** Flushes a run's pending restart-recovery budget check when the controller
+ * detaches it for another restart (its trace never finishes). */
+const nativeRunRecoveryFlushers = new Map<string, () => void>();
 
 // A restart must not cut authority rotation between archiving the previous
 // runner state and authenticating its replacement. Keep the startup owner
@@ -465,6 +468,7 @@ export async function detachNativeSessionsForRestart(
       continue;
     }
     nativeRunsDetachingForRestart.set(runId, Symbol("native controller detach"));
+    try { nativeRunRecoveryFlushers.get(runId)?.(); } catch { /* Diagnostics cannot change detach. */ }
     let active = activeNativeSessions.get(runId);
     if (!active) {
       // Only a startup registered before this fence may complete read-only
@@ -9593,6 +9597,24 @@ async function executePaperclipNativeSessionWithinScope(
   cleanupOnly = false,
   ownDiagnosticLease?: (lease: NativeDiagnosticLease) => void,
 ): Promise<AdapterExecutionResult> {
+  // Drop this attempt's restart-recovery flush however it ends (a failure that
+  // never finishes its trace included), without touching a newer attempt's.
+  const runId = input.execution.binding.runId;
+  const priorFlush = nativeRunRecoveryFlushers.get(runId);
+  try {
+    return await executePaperclipNativeSessionAttempt(input, prepareAfterClaim, cleanupOnly, ownDiagnosticLease);
+  } finally {
+    const current = nativeRunRecoveryFlushers.get(runId);
+    if (current !== undefined && current !== priorFlush) nativeRunRecoveryFlushers.delete(runId);
+  }
+}
+
+async function executePaperclipNativeSessionAttempt(
+  input: Parameters<typeof executePaperclipNativeSession>[0],
+  prepareAfterClaim?: () => Promise<Parameters<typeof executePaperclipNativeSession>[0]>,
+  cleanupOnly = false,
+  ownDiagnosticLease?: (lease: NativeDiagnosticLease) => void,
+): Promise<AdapterExecutionResult> {
   if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "antigravity") {
     const candidate = resolveAntigravityCandidateAdmission({
       companyId: input.execution.binding.companyId, model: input.execution.provider.model,
@@ -9649,16 +9671,25 @@ async function executePaperclipNativeSessionWithinScope(
     preparationSpans,
     Date.now(),
   );
+  const traceRunId = input.execution.binding.runId;
+  const flushRecovery = () => {
+    if (nativeRunRecoveryFlushers.get(traceRunId) === flushRecovery) nativeRunRecoveryFlushers.delete(traceRunId);
+    trace.flushRestartRecovery();
+  };
   const trace = createNativeRunTrace({
-    runId: input.execution.binding.runId,
+    runId: traceRunId,
     startedAtMs: preparationStarts.runStartedAtMs,
     onEvent: input.onEvent,
+    onFinish: () => {
+      if (nativeRunRecoveryFlushers.get(traceRunId) === flushRecovery) nativeRunRecoveryFlushers.delete(traceRunId);
+    },
     budget: {
       adapter: speedBudgetAdapter(input.execution.provider),
       environment: !input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local" ? "local" : "remote",
       restartRecovery: Boolean(input.restartRecovery),
     },
   });
+  nativeRunRecoveryFlushers.set(traceRunId, flushRecovery);
   await emitStartupReuse(input.onEvent, "environment", environmentStartupReuse(input.runnerExecutionTarget));
   if (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") {
     await emitStartupReuse(input.onEvent, "workspace", { state: "not_applicable", reason: "not_applicable" });
