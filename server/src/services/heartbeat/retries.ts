@@ -695,7 +695,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const interactionRunnerWait = retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
+    const interactionRunnerWait = (retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
+      || retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON)
       && isResolvedInteractionContinuationWakeContext(run.contextSnapshot);
     const interactionContinuationPayload =
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON || interactionRunnerWait

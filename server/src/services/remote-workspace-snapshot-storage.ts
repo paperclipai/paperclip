@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import { waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { sendThroughStorageOutage, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import { measureRunPhase, type ExecutionPhase } from "./execution-preparation-timing.js";
 import { collectStorageRequestStats, newStorageRequestStats, type StorageRequestStats } from "../storage/request-stats.js";
 import { constants, createReadStream, createWriteStream } from "node:fs";
@@ -381,14 +381,17 @@ async function loadWorkspaceSnapshotArchiveTimed(input: Parameters<typeof loadWo
   try {
     input.signal?.throwIfAborted();
     const ciphertext = path.join(scratch, "ciphertext"), plaintext = path.join(scratch, "plaintext");
-    let received = 0; const digest = createHash("sha256");
+    let received = 0, digest = createHash("sha256");
     const stalled = new DOMException("remote_workspace_snapshot_download_stalled", "TimeoutError");
     const idle = new AbortController();
     const signal = input.signal ? AbortSignal.any([input.signal, idle.signal]) : idle.signal;
     const timer = setTimeout(() => idle.abort(stalled), DOWNLOAD_IDLE_TIMEOUT_MS);
     timer.unref();
     try {
-      await timedStep(input.timing, "downloadMs", "storage.snapshot.download", async () => {
+      await timedStep(input.timing, "downloadMs", "storage.snapshot.download", () => sendThroughStorageOutage(async () => {
+        timer.refresh();
+        received = 0; digest = createHash("sha256");
+        await rm(ciphertext, { force: true });
         const object = await input.storage.getObject(ref.companyId, ref.objectKey, { signal });
         const bounded = new Transform({ transform(bytes, _encoding, callback) {
           if (bytes.length > 0) timer.refresh();
@@ -397,7 +400,7 @@ async function loadWorkspaceSnapshotArchiveTimed(input: Parameters<typeof loadWo
         } });
         try { await pipeline(object.stream, bounded, createWriteStream(ciphertext, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal }); }
         finally { object.stream.destroy(); }
-      });
+      }, signal));
       if (input.timing) input.timing.bytes = received;
     } catch (error) {
       if (signal.aborted && signal.reason === stalled) throw stalled;

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { sendThroughStorageOutage } from "../storage/storage-unavailable.js";
 import { z } from "zod";
 import { setTimeout as delay } from "node:timers/promises";
 import type { StorageProvider } from "../storage/types.js";
@@ -394,24 +395,27 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       signal = signal
         ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
         : AbortSignal.timeout(15_000);
-      const result = await retryObjectOperation(
-        () => provider.getObject({ objectKey: key, signal }),
-        signal,
-      );
-      const chunks: Buffer[] = [];
-      let size = 0;
-      try {
-        for await (const chunk of result.stream) {
-          const bytes = Buffer.from(chunk);
-          size += bytes.length;
-          if (size > limit) throw new Error("object_journal_object_too_large");
-          chunks.push(bytes);
+      const read = signal;
+      return sendThroughStorageOutage(async () => {
+        const result = await retryObjectOperation(
+          () => provider.getObject({ objectKey: key, signal: read }),
+          read,
+        );
+        const chunks: Buffer[] = [];
+        let size = 0;
+        try {
+          for await (const chunk of result.stream) {
+            const bytes = Buffer.from(chunk);
+            size += bytes.length;
+            if (size > limit) throw new Error("object_journal_object_too_large");
+            chunks.push(bytes);
+          }
+        } finally {
+          result.stream.destroy();
         }
-      } finally {
-        result.stream.destroy();
-      }
-      signal?.throwIfAborted();
-      return { bytes: Buffer.concat(chunks), etag: result.etag };
+        read?.throwIfAborted();
+        return { bytes: Buffer.concat(chunks), etag: result.etag };
+      }, read);
     }, readPriority, signal);
   }
   async function head(signal?: AbortSignal): Promise<ObjectJournalWriter | null> {

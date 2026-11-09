@@ -411,6 +411,20 @@ describePostgres("heartbeat retry module database wiring", () => {
       .toMatchObject({ outcome: "retry_exhausted", maxAttempts: 10 });
   });
 
+  it("keeps an answered interaction through a storage outage wait", async () => {
+    const { run, agent } = await fixture();
+    const snapshot = { ...run.contextSnapshot, interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+      mutation: "interaction", wakeReason: "issue_commented" };
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "storage_unavailable", contextSnapshot: snapshot })
+      .where(eq(heartbeatRuns.id, run.id)).returning();
+    expect((await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, { now })).outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor).toMatchObject({ scheduledRetryReason: "storage_unavailable_wait" });
+    expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, successor!.wakeupRequestId!));
+    expect(wake!.payload).toMatchObject({ mutation: "interaction", interactionId: "interaction-1", retryReason: "storage_unavailable_wait" });
+  });
+
   it("resolves current skills on a retry while retaining the failed attempt snapshot", async () => {
     const {run,agent}=await fixture();
     const snapshot={...run.contextSnapshot,skillVersions:{"company/review":"v1"},skillSelectionSnapshot:true,shadowedSkills:[{key:"old",shadowedBy:"company/review"}]};

@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
-import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
-import { isStorageUnavailableError } from "../storage/storage-unavailable.js";
+import { recordS3BodyFailure, withS3FailureDiagnostics } from "../storage/s3-failure.js";
+import { isStorageUnavailableError, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import {
   createObjectByteJournal,
   ObjectJournalBusyError,
@@ -71,6 +71,25 @@ const authority = async () => undefined;
 afterEach(() => vi.useRealTimers());
 
 describe("object byte journal", () => {
+  it("rereads a head whose download was cut off during a storage outage", async () => {
+    const s = storage();
+    const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/reset/log" });
+    const first = await journal.claim({ expectedOwner: null, assertAuthority: authority });
+    const get = s.provider.getObject;
+    let cut = false;
+    s.provider.getObject = async (input) => {
+      const result = await get(input);
+      if (cut || !input.objectKey.endsWith("/head.json")) return result;
+      cut = true;
+      const reset = Object.assign(new Error("aborted"), { code: "ECONNRESET" });
+      recordS3BodyFailure(reset, { $metadata: { httpStatusCode: 200 } });
+      return { ...result, stream: new Readable({ read() { this.destroy(reset); } }) };
+    };
+    const next = await waitOutStorageOutages(() => journal.claim({ expectedOwner: first.head.owner, assertAuthority: authority }));
+    expect(cut).toBe(true);
+    expect(next.head.generation).toBe(first.head.generation + 1);
+  }, 30_000);
+
   it("keeps a slow store's head write recognizable as a storage outage when its deadline expires", async () => {
     const s = storage();
     const put = s.provider.putObjectConditional!;

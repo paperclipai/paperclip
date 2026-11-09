@@ -35,6 +35,7 @@ export interface HeartbeatRunOutputInput {
   getCurrentUserRedactionOptions: () => Promise<CurrentUserRedactionOptions>;
   assertWriterAuthority?: () => Promise<void>;
   runtimeLogSecretValues?: readonly string[];
+  signal?: AbortSignal;
 }
 
 /**
@@ -133,7 +134,8 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       newRun: isNewRunLog(run),
       assertWriterAuthority: input.assertWriterAuthority,
       previousStore,
-    }));
+      signal: input.signal,
+    }), input.signal);
 
     outputSeq = handle.initialSequence ?? outputSeq;
     persistedLogBytes = handle.initialBytes ?? persistedLogBytes;
