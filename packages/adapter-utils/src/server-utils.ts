@@ -2983,6 +2983,8 @@ function renderPaperclipWakePromptBody(
         `You are waking as the active ${executionStage.wakeRole} for this issue.`,
         "Do not execute the task itself or continue executor work.",
         "Review the issue and choose one of the allowed actions above.",
+        "Record your decision on this issue with PATCH /api/issues/{issueId} and a required decision comment: approve with {\"status\":\"done\",\"comment\":\"...\"}, or request changes with {\"status\":\"in_progress\",\"comment\":\"...\"}.",
+        "A run completion report does not record the decision; record it before you report.",
         "If you request changes, the workflow routes back to the stored return assignee.",
         "",
       );

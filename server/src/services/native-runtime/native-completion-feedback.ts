@@ -163,6 +163,17 @@ export async function nativeCompletionFeedback(
       (failedActionChat ? ` Rejection fields: ${rejectionReasons}.` + " This chat turn may finish with a truthful report of the failed approved action; that does not mean the external action succeeded. Keep the failure, observed state, and unresolved work explicit in the summary. Verify the observed state factually. Use not_run with a truthful reason only for a check that could not run or complete because its dependency was unavailable. Do not change a failed check to passed or hide incomplete work. Do not automatically replay the action or request approval again to force success; report the outcome and let the user decide whether to retry." : ""),
     );
   }
+  const stage = record(issue.executionState), participant = record(stage.currentParticipant);
+  if (stage.status === "pending" && participant.type === "agent" && participant.agentId === run.agentId &&
+      issue.executionRunId === run.id && ["done", "needs_review"].includes(result.reportedWorkDisposition)) {
+    // The active review/approval participant decides the stage on the task
+    // itself. A finish report cannot record that decision, so accepting it
+    // would leave the stage pending with nobody left to decide it.
+    const stageType = typeof stage.currentStageType === "string" ? stage.currentStageType : "review";
+    throw new Error(`You are the active ${stageType} participant on this task. A finish report does not record your ${stageType} decision, so this report was not accepted. ` +
+      `Record the decision first with paperclip_call_api operationId "PATCH /api/issues/{id}" for this task: approve with {"status":"done","comment":"<your decision and the evidence you checked>"}, or request changes with {"status":"in_progress","comment":"<the changes required>"}. ` +
+      "Then report this run with paperclip_finish. If you cannot decide, report the concrete blocker with paperclip_block.");
+  }
   if (["done", "cancelled"].includes(issue.status)) {
     return `Report accepted; task is already ${issue.status}. This report will not reopen it.`;
   }
