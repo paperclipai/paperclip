@@ -171,8 +171,8 @@ export async function nativeCompletionFeedback(
     // would leave the stage pending with nobody left to decide it.
     const stageType = typeof stage.currentStageType === "string" ? stage.currentStageType : "review";
     throw new Error(`You are the active ${stageType} participant on this task. A finish report does not record your ${stageType} decision, so this report was not accepted. ` +
-      `Record the decision first with paperclip_call_api operationId "PATCH /api/issues/{id}" for this task: approve with {"status":"done","comment":"<your decision and the evidence you checked>"}, or request changes with {"status":"in_progress","comment":"<the changes required>"}. ` +
-      "Then report this run with paperclip_finish. If you cannot decide, report the concrete blocker with paperclip_block.");
+      `To approve, record the decision first with paperclip_call_api operationId "PATCH /api/issues/{id}" for this task and {"status":"done","comment":"<your decision and the evidence you checked>"}, then report this run with paperclip_finish. ` +
+      "To request changes, or if you cannot decide, report the required changes or the concrete blocker with paperclip_block.");
   }
   if (["done", "cancelled"].includes(issue.status)) {
     return `Report accepted; task is already ${issue.status}. This report will not reopen it.`;
