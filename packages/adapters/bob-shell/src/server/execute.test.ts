@@ -253,4 +253,127 @@ describe("execute", () => {
     expect(result.sessionParams).toMatchObject({ taskId: "old-task-99" });
     expect(result.summary).toBe("Resumed and done.");
   });
+
+  const okStdout = JSON.stringify({
+    type: "result",
+    status: "success",
+    stats: { task_id: "t-1" },
+    last_message: "ok",
+  });
+  const okResult = {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: okStdout,
+    stderr: "",
+    pid: 1,
+    startedAt: new Date().toISOString(),
+  };
+
+  it("runs in the task workspace resolved by the server, not the configured cwd", async () => {
+    mockRunChildProcess.mockResolvedValue(okResult);
+
+    await execute(
+      makeCtx({
+        config: { cwd: "/configured" },
+        context: { paperclipWorkspace: { cwd: "/task/worktree", source: "project_primary" } },
+      }),
+    );
+
+    expect((mockRunChildProcess.mock.calls[0][3] as Record<string, unknown>).cwd).toBe("/task/worktree");
+  });
+
+  it("falls back to the configured cwd when the task only has an agent home", async () => {
+    mockRunChildProcess.mockResolvedValue(okResult);
+
+    await execute(
+      makeCtx({
+        config: { cwd: "/configured" },
+        context: { paperclipWorkspace: { cwd: "/agent/home", source: "agent_home" } },
+      }),
+    );
+
+    expect((mockRunChildProcess.mock.calls[0][3] as Record<string, unknown>).cwd).toBe("/configured");
+  });
+
+  it("does not resume a session recorded for a different workspace", async () => {
+    mockRunChildProcess.mockResolvedValue(okResult);
+
+    await execute(
+      makeCtx({
+        context: { paperclipWorkspace: { cwd: "/task/worktree" } },
+        runtime: { sessionParams: { taskId: "old", cwd: "/somewhere/else" } },
+      }),
+    );
+
+    expect(mockRunChildProcess.mock.calls[0][2]).not.toContain("--resume");
+  });
+
+  it("delivers the task brief and the wake event in the prompt", async () => {
+    mockRunChildProcess.mockResolvedValue(okResult);
+
+    await execute(
+      makeCtx({
+        context: {
+          paperclipTaskMarkdownAssignment: "## Owned assignment\n\nRefactor the parser.",
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: { id: "issue-1", identifier: "PAP-1", title: "Parser", status: "in_progress" },
+            comments: [
+              {
+                id: "c-1",
+                body: "Please also add tests.",
+                authorType: "user",
+                authorId: "u-1",
+                createdAt: "2026-09-22T00:00:00.000Z",
+                updatedAt: "2026-09-22T00:00:00.000Z",
+                deleted: false,
+                sourceTrust: "human",
+              },
+            ],
+            commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+            fallbackFetchNeeded: false,
+          },
+        },
+      }),
+    );
+
+    const stdin = String((mockRunChildProcess.mock.calls[0][3] as Record<string, unknown>).stdin);
+    expect(stdin).toContain("Refactor the parser.");
+    expect(stdin).toContain("Please also add tests.");
+  });
+
+  it("still delivers the wake event when resuming a session", async () => {
+    mockRunChildProcess.mockResolvedValue(okResult);
+
+    await execute(
+      makeCtx({
+        context: {
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: { id: "issue-1", identifier: "PAP-1", title: "Parser", status: "in_progress" },
+            comments: [
+              {
+                id: "c-2",
+                body: "New follow-up message.",
+                authorType: "user",
+                authorId: "u-1",
+                createdAt: "2026-09-22T00:00:00.000Z",
+                updatedAt: "2026-09-22T00:00:00.000Z",
+                deleted: false,
+                sourceTrust: "human",
+              },
+            ],
+            commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+            fallbackFetchNeeded: false,
+          },
+        },
+        runtime: { sessionParams: { taskId: "old-task-1", cwd: "" } },
+      }),
+    );
+
+    expect(mockRunChildProcess.mock.calls[0][2]).toContain("--resume");
+    const stdin = String((mockRunChildProcess.mock.calls[0][3] as Record<string, unknown>).stdin);
+    expect(stdin).toContain("New follow-up message.");
+  });
 });

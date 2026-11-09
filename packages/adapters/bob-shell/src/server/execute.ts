@@ -26,6 +26,9 @@ import {
   buildPaperclipEnv,
   runChildProcess,
   renderTemplate,
+  joinPromptSections,
+  parseObject,
+  selectPaperclipPromptSections,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 
@@ -94,6 +97,7 @@ const BOB_DEFAULT_PROMPT_TEMPLATE = [
 export function buildPrompt(
   ctx: AdapterExecutionContext,
   config: Record<string, unknown>,
+  options: { resumedSession?: boolean } = {},
 ): string {
   const context = (ctx as unknown as Record<string, unknown>).context ?? {};
   const template =
@@ -149,7 +153,44 @@ export function buildPrompt(
     paperclipApiUrl,
   };
 
-  return renderTemplate(template, vars);
+  // Server-owned sections carry the assignment brief and the current wake
+  // event. They are selected per attempt so a resumed Bob session still
+  // receives the new message.
+  const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(
+    parseObject(context),
+    { resumedSession: options.resumedSession === true },
+  );
+  const resumedWithDelta =
+    options.resumedSession === true && wakePrompt.length > 0;
+
+  return joinPromptSections([
+    resumedWithDelta ? "" : renderTemplate(template, vars),
+    wakePrompt,
+    taskContextNote,
+  ]);
+}
+
+/**
+ * Working directory for a run. The server-resolved task workspace
+ * (`context.paperclipWorkspace.cwd`) wins so isolated checkouts are honored;
+ * the configured `cwd` is only used when the task has no real workspace
+ * (agent home) or none was resolved.
+ */
+export function resolveBobCwd(
+  ctx: AdapterExecutionContext,
+  config: Record<string, unknown>,
+): string {
+  const workspace = parseObject(parseObject(ctx.context).paperclipWorkspace);
+  const workspaceCwd = cfgString(workspace.cwd);
+  const configuredCwd = cfgString(config.cwd);
+  const useConfiguredInsteadOfAgentHome =
+    workspace.source === "agent_home" && configuredCwd !== undefined;
+  return (
+    (useConfiguredInsteadOfAgentHome ? undefined : workspaceCwd) ??
+    configuredCwd ??
+    cfgString(ctx.config?.workspaceDir) ??
+    process.cwd()
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -281,10 +322,7 @@ export async function execute(
   const disableMcp = cfgBoolean(config.disableMcp) === true;
   const disableSubagents = cfgBoolean(config.disableSubagents) === true;
   const extraArgs = cfgStringArray(config.extraArgs) ?? [];
-  const cwd =
-    cfgString(config.cwd) ??
-    cfgString(ctx.config?.workspaceDir) ??
-    process.cwd();
+  const cwd = resolveBobCwd(ctx, config);
 
   // ── Session management (bob --resume <task-id>) ─────────────────────────
   const runtimeParams = ctx.runtime?.sessionParams as
@@ -304,7 +342,7 @@ export async function execute(
       path.resolve(prevSessionCwd) === path.resolve(cwd));
 
   // ── Build prompt ─────────────────────────────────────────────────────────
-  const prompt = buildPrompt(ctx, config);
+  const prompt = buildPrompt(ctx, config, { resumedSession: canResume });
 
   // ── Build command args ───────────────────────────────────────────────────
   const args: string[] = [];
