@@ -1,3 +1,4 @@
+import { confirmNativeControllerStopped } from "../services/native-runtime/native-controller-host-recovery.js";
 import { reconcileAbandonedExecutionControl } from "../services/execution-control-reconciliation.js";
 import { nativeControllerAuthorityDigest } from "../services/native-runtime/native-runner-ownership.js";
 import { cancelHeartbeatNativeRun } from "../services/heartbeat/run-control.js";
@@ -1306,11 +1307,39 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       .toEqual([["native_controller_host_unverified", "board", "active"]]);
   }, 60_000);
 
-  it("finalizes the result once the board attests the unrecorded controller stopped", async () => {
+  it("finalizes the accepted result after the board confirms its actual unrecorded-controller action", async () => {
     const f = await seedAcceptedResult("ACCEPTED-OPERATOR-ATTESTED", (runner) => `${runner}:${randomUUID()}`);
-    await killedController(f, deadController("operator_attested"));
-    const { run } = await restart(f);
-    expect(run.status).toBe("succeeded");
+    await killedController(f, deadController(null));
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    try {
+      const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      const report = await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+      expect(report.kinds.find(kind => kind.kind === "native_accepted_result_lease"))
+        .toMatchObject({ settled: 0, reasons: { process_space_unrecorded: 1 } });
+      const [action] = await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      expect(action).toMatchObject({ cause: "native_controller_host_unverified", status: "active" });
+      await expect(confirmNativeControllerStopped({ db: f.db, companyId: fixture.current.companyId,
+        issueId: f.issueId, runId: f.runId, actionId: action.id, actorId: "board-user",
+        stopEvidence: "The original server container is stopped; the accepted provider result is retained." }))
+        .resolves.toEqual({ runId: f.runId, status: "queued" });
+      const [attested] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      expect(attested).toMatchObject({ phase: before.phase, resultId: before.resultId, leaseOwner: before.leaseOwner,
+        leaseExpiresAt: before.leaseExpiresAt, controllerGeneration: before.controllerGeneration,
+        attempt: before.attempt, controllerHostHash: "operator_attested" });
+      expect(await f.db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.issueId),
+        eq(issueRecoveryActions.status, "active")))).toEqual([]);
+      const { run, owner } = await restart(f);
+      expect({ status: run.status, phase: owner.phase, resultId: owner.resultId })
+        .toEqual({ status: "succeeded", phase: "committed", resultId: before.resultId });
+      const second = await restart(f);
+      expect(second.owner.resultId).toBe(before.resultId);
+      expect(await f.db.select({ id: nativeRunResults.id }).from(nativeRunResults)
+        .where(eq(nativeRunResults.runId, f.runId))).toHaveLength(1);
+      expect(await f.db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.nativeIssueId, f.issueId))).toHaveLength(1);
+      expect((await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0])
+        .toMatchObject({ status: "resolved", outcome: "restored" });
+    } finally { vi.unstubAllEnvs(); }
   }, 90_000);
 
   it("settles a dead controller's result lease in the reconciler pass when restart recovery missed it", async () => {
