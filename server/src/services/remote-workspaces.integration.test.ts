@@ -760,7 +760,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await fs.readFile(path.join(current, "runner", "state.json"), "utf8")).toBe("unchanged opaque provider state");
   }, 60_000);
 
-  it("cold restores a workspace and prepares its preserved pending repository through normal admission", async () => {
+  it.each(["pending", "needs_repair"] as const)("cold restores a workspace and prepares its preserved %s repository through normal admission", async state => {
     const original = path.join(root, "pending-original"), origin = path.join(root, "pending-origin.git");
     await fs.mkdir(original); await fs.mkdir(origin);
     await fs.writeFile(path.join(original, "saved.txt"), "saved before repository request\n");
@@ -787,7 +787,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       await db.update(issues).set({ executionWorkspaceId: local.id }).where(eq(issues.id, ids.issue));
       const [repository] = await db.insert(executionWorkspaceRepositories).values({ companyId: ids.company,
         executionWorkspaceId: local.id, requestedByIssueId: ids.issue, repoUrl, repositoryIdentity: repoUrl,
-        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"] }).returning();
+        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"],
+        state, failureCode: state === "needs_repair" ? "repository_preparation_failed" : null }).returning();
       vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
       await migrateRemoteWorkspace({ db, storage, companyId: ids.company, workspaceId: local.id, apply: true, writersStopped: true });
       expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.source).toEqual({ kind: "empty" });
