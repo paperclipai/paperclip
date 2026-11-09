@@ -105,7 +105,7 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       workspace: transient ? { kind: "transient", cwd: base, repoUrl: null, repoRef: null, branchName: null }
         : { kind: "managed", executionWorkspaceId: workspaceId },
       provider: { driverKind: "codex_app_server", identity: { kind: "codex" } }, normalizedSessionId: nativeSessionId }));
-    const files = {
+    const files: Record<string, Record<string, unknown>> = {
       "control-plane/control-plane-state.json": { schema: "paperclip.runner.durable.control-plane-state.v1", identity,
         committedEvents: [{ envelope: { payload: event } }], commands: [{ status: "pending", payload: { commandType: "tool.result" } }] },
       "runner/runner-state.json": { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "suspended", outbox: [] },
@@ -296,7 +296,7 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null })
         .where(eq(heartbeatRuns.id, f.sourceId));
       if (provider === "acpx") await writeFile(join(f.root, "runner", "acpx-provider-state.json"), JSON.stringify({
-        ...f.files["runner/acpx-provider-state.json" as keyof typeof f.files] as Record<string, unknown>,
+        ...f.files["runner/acpx-provider-state.json"],
         identity: { agentPid: mode === "provider_alive" ? process.pid : 99_999_997 } }));
       if (mode === "owner_running") await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.ownerId));
       await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined", attempt: 1,
