@@ -1,3 +1,4 @@
+import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
@@ -2147,6 +2148,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (!agent) return [];
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
+        if (isAgentAwaitingSetup(agent)) await connectionIntentService(db)
+          .requestForQueuedAgentSetup(agent.companyId, agent.id).catch(() => logger.warn({ agentId: agent.id }, "Could not attach queued agent setup connection request"));
         if (shouldCancelRunsForNonInvokableAgent(invokability)) {
           cancellationReason = `Cancelled because the agent is not invokable: ${invokability.reason}`;
         }

@@ -2908,7 +2908,8 @@ export function issueThreadInteractionService(
     ) => {
       const payload = connectionIntentPayloadSchema.parse(input.payload);
       const sameSavedSetup = (candidate: typeof payload) =>
-        candidate.savedSetup?.endpointId === payload.savedSetup?.endpointId
+        candidate.agentSetup === payload.agentSetup
+        && candidate.savedSetup?.endpointId === payload.savedSetup?.endpointId
         && candidate.savedSetup?.connectionId === payload.savedSetup?.connectionId
         && candidate.savedSetup?.action === payload.savedSetup?.action
         && Boolean(candidate.savedSetup?.credentialRotation) === Boolean(payload.savedSetup?.credentialRotation)
@@ -2978,8 +2979,14 @@ export function issueThreadInteractionService(
           return reusable;
         }
 
-        const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+        const sourceQuery = tx.select({ context: heartbeatRuns.contextSnapshot, status: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId, startedAt: heartbeatRuns.startedAt, runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns)
           .where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
+        const [sourceRun] = await (payload.agentSetup ? sourceQuery.for("no key update") : sourceQuery);
+        if (payload.agentSetup && (payload.purpose !== "ai" || sourceRun?.agentId !== payload.requestingAgentId
+          || sourceRun.status !== "queued" || sourceRun.startedAt !== null || sourceRun.runtimeMode !== "legacy")) {
+          throw conflict("Agent setup requests require an unstarted queued turn");
+        }
         if (!sourceRun) throw unprocessable("Interaction source run is unavailable");
         const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context);
         await notifyIssueReviewState(tx, { companyId: issue.companyId, issueId: issue.id });

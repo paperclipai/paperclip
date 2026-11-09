@@ -1,3 +1,5 @@
+import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
+import { readAiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
 import { assertAgentConnectionInstallAccess, connectionManagementService } from "./connection-management.js";
 import { CHAT_HUMAN_CREDENTIAL_FIELDS, chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
@@ -10,7 +12,7 @@ import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { aiConnectionBindingSchema, aiConnectionRouterBindingSchema } from "@paperclipai/shared";
 import { aiBindingForAuthRecovery, isAiAuthenticationFailure, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
-import { and, eq, desc, isNull, sql } from "drizzle-orm";
+import { and, eq, desc, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -56,7 +58,7 @@ import {
 } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { createNativeConnectorYield } from "./connection-native-yield.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { HttpError, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { issueThreadInteractionService, type InteractionResolutionMutationOptions } from "./issue-thread-interactions.js";
 import { lockToolConnectionRuntimeInputs, toolAccessService } from "./tool-access.js";
@@ -199,13 +201,15 @@ export function connectionIntentService(db: Db) {
     }
   }
 
-  async function loadRunContext(claims: ConnectionRunClaims, failedAuthRun = false) {
+  async function loadRunContext(claims: ConnectionRunClaims, mode: "active" | "failed_auth" | "queued_setup" = "active") {
     let run = await db
       .select({
         id: heartbeatRuns.id,
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+        runtimeMode: heartbeatRuns.runtimeMode,
         errorCode: heartbeatRuns.errorCode,
         resultJson: heartbeatRuns.resultJson,
         responsibleUserId: heartbeatRuns.responsibleUserId,
@@ -222,10 +226,12 @@ export function connectionIntentService(db: Db) {
       || run.agentId !== claims.sub
       || (!run.activeIdentityContextId && run.responsibleUserId !== claims.responsible_user_id)
     ) throw forbidden("Runtime tool token does not match its heartbeat run");
-    if (failedAuthRun ? run.status !== "failed" || !isAiAuthenticationRepairable(run) : run.status !== "running") {
+    if (mode === "failed_auth" ? run.status !== "failed" || !isAiAuthenticationRepairable(run)
+      : mode === "queued_setup" ? run.status !== "queued" || run.startedAt !== null || run.runtimeMode !== "legacy" || run.activeIdentityContextId !== null
+      : run.status !== "running") {
       throw forbidden("Runtime tool token is no longer active");
     }
-    if (run.activeIdentityContextId && !failedAuthRun) {
+    if (run.activeIdentityContextId && mode === "active") {
       const current = await captureRunIdentity(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id }, { readScope: "identity" });
       run = { ...run, responsibleUserId: current.run.responsibleUserId };
     }
@@ -796,7 +802,7 @@ export function connectionIntentService(db: Db) {
   async function requestWithContext(
     context: Awaited<ReturnType<typeof loadRunContext>>,
     serviceSlug: string,
-    options: { purpose?: "ai" | "channel"; selectionInteractionId?: string; targetService?: string; connectionId?: string; toolNames?: string[] } = {},
+    options: { agentSetup?: true; purpose?: "ai" | "channel"; selectionInteractionId?: string; targetService?: string; connectionId?: string; toolNames?: string[] } = {},
   ): Promise<ConnectionRequestResult> {
     const claims = { sub: context.agent.id, company_id: context.run.companyId, run_id: context.run.id, responsible_user_id: context.run.responsibleUserId! };
     const route = parseAggregatorRoute(serviceSlug);
@@ -913,6 +919,7 @@ export function connectionIntentService(db: Db) {
       {
         payload: {
           version: 1,
+          ...(options.agentSetup ? { agentSetup: true as const } : {}),
           ...(accessRequest ? { accessRequest } : {}),
           serviceSlug: app.slug,
           ...(options.purpose ? { purpose: options.purpose } : {}),
@@ -1357,8 +1364,48 @@ export function connectionIntentService(db: Db) {
     );
   }
 
+  // Controller entry point for accepted work that cannot yet reach run preparation.
+  // Runtime tokens still require a running run. No credential is read or granted.
+  async function requestForQueuedAgentSetup(companyId: string, agentId: string) {
+    const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+    if (!agent || !isAgentAwaitingSetup(agent)) return;
+    const binding = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+    if (!binding) return;
+    const candidates = await db.select({ run: heartbeatRuns }).from(heartbeatRuns).innerJoin(issues, and(
+      eq(issues.companyId, heartbeatRuns.companyId),
+      sql`${issues.id}::text = coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
+    )).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId),
+      eq(heartbeatRuns.status, "queued"), isNull(heartbeatRuns.startedAt), eq(heartbeatRuns.runtimeMode, "legacy"),
+      isNull(heartbeatRuns.activeIdentityContextId), eq(issues.assigneeAgentId, agentId),
+      notInArray(issues.status, ["done", "cancelled"]),
+    )).orderBy(desc(heartbeatRuns.createdAt)).limit(100);
+    const seen = new Set<string>();
+    for (const { run } of candidates) {
+      const issueId = text(run.contextSnapshot?.issueId) ?? text(run.contextSnapshot?.taskId);
+      if (!issueId || !run.responsibleUserId || seen.has(issueId)) continue;
+      seen.add(issueId);
+      try {
+        const context = await loadRunContext({ sub: agentId, company_id: companyId, run_id: run.id,
+          responsible_user_id: run.responsibleUserId }, "queued_setup");
+        try {
+          await aiConnectionService(db).select({ companyId, agentId, userId: run.responsibleUserId,
+            adapterType: agent.adapterType, runnerProvider: agent.adapterConfig.provider,
+            acpxAgent: agent.adapterConfig.acpxAgent, model: agent.adapterConfig.model, binding });
+        } catch (error) {
+          if (!readAiConnectionConfigurationFailure(error)) throw error;
+          await requestWithContext(context, binding.provider, { purpose: "ai", agentSetup: true });
+        }
+      } catch (error) {
+        // A task may stop or change owners during this bounded active-work pass.
+        if (!(error instanceof HttpError) || ![403, 404, 409].includes(error.status)) throw error;
+      }
+    }
+  }
+
   return {
-    validate: loadRunContext,
+    validate: (claims: ConnectionRunClaims) => loadRunContext(claims),
+    requestForQueuedAgentSetup,
     usableConnectionForAgent,
     search,
     request,
@@ -1367,7 +1414,7 @@ export function connectionIntentService(db: Db) {
     requestForRunAuthFailure: async (runId: string) => {
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
       if (!run || run.status !== "failed" || !isAiAuthenticationRepairable(run) || !run.responsibleUserId) return null;
-      const context = await loadRunContext({ sub: run.agentId, company_id: run.companyId, run_id: run.id, responsible_user_id: run.responsibleUserId }, true);
+      const context = await loadRunContext({ sub: run.agentId, company_id: run.companyId, run_id: run.id, responsible_user_id: run.responsibleUserId }, "failed_auth");
       const [latest] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, run.companyId),
         sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${context.issue.id}`,

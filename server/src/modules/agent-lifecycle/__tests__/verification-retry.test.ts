@@ -115,6 +115,28 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await current(agent.id)).lifecycleOperation).toEqual(agent.lifecycleOperation);
   });
 
+  it("does not let an in-flight failed verifier overwrite a completed connection repair", async () => {
+    const [agent] = await db.insert(agents).values({ companyId, name: "Repair while checking", status: "paused",
+      lifecycleState: "verifying", lifecycleHolds: [], lifecycleRequiredPluginIds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0, verificationFailures: 2 } }).returning();
+    const store = createLifecycleStore(db, createAgentLifecycleEffects());
+    const owner = "old-account-check";
+    const claimed = await store.claim(agent!.id, owner, new Date());
+    expect(claimed).not.toBeNull();
+    await db.transaction(async tx => {
+      expect(await requestAgentLifecycleRecheckInTransaction(tx, { companyId, agentId: agent!.id,
+        expectedVersion: agent!.lifecycleVersion, configurationRepaired: true },
+      () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle))).toBe(true);
+    });
+    await store.defer(claimed!, owner, "Old missing account", new Date(), { retryRequired: true });
+    const repaired = await current(agent!.id);
+    expect(repaired.lifecycleError).toBeNull();
+    expect(repaired.lifecycleOperation).not.toHaveProperty("retryRequired");
+    expect(repaired.lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(repaired.lifecycleOperation).not.toHaveProperty("verificationFailures");
+    expect(await store.claim(agent!.id, "new-check", new Date())).not.toBeNull();
+  });
+
   it("permits an explicit retry of the same operation and completes verification before readiness", async () => {
     const { agent, work, runHost } = await failed();
     let release!: () => void;

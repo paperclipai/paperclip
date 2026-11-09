@@ -1261,6 +1261,7 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    agentSetup: z.literal(true).optional(),
     setupAccess: z.object({
       connectionId: z.string().guid(),
       access: z.union([z.literal("all_agents"), z.object({ agentIds: z.array(z.string().guid()).max(250) }).strict()]),
@@ -1291,7 +1292,8 @@ export const connectionIntentPayloadSchema = z
     requestingAgentName: z.string().trim().min(1).max(160),
     phase: connectionIntentPhaseSchema,
   })
-  .strict();
+  .strict()
+  .refine(value => !value.agentSetup || value.purpose === "ai", "Agent setup cards require AI authentication");
 
 export const connectionIntentResultSchema = z
   .object({

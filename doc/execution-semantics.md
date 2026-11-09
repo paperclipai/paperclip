@@ -653,6 +653,11 @@ An unstarted queued turn names an agent setup or verification wait. A failed
 setup that requires explicit Retry shows **Agent setup needs attention**, while
 its saved turn remains queued. Temporary errors with automatic retries still show
 **Waiting for agent setup**.
+Queued setup failures also create the existing inline AI connection card on the
+task, addressed to its responsible user. Runtime tokens remain unavailable for
+queued runs. Completing the card rechecks verification through the lifecycle
+worker and retains the original queued turn; it does not enqueue another model
+turn. Decline, Stop, reassignment and other lifecycle holds remain effective.
 AI account selection failures use the selector's owned configuration evidence:
 missing defaults, unavailable or incompatible connections, missing responsible
 users, and credential sharing refusals park automatic host verification until
