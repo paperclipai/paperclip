@@ -637,10 +637,11 @@ export function workspaceOperationService(db: Db) {
           // Finalize attempts record the process that runs them (no I/O), so
           // the shared ownership path can settle one whose owner died mid-copyback.
           const finalizeAttempt = recordInput.phase === "workspace_finalize";
+          const localCommand = !runtimeControlAction && LOCAL_WORKSPACE_COMMAND_PHASES.includes(recordInput.phase);
           if (finalizeAttempt) {
             currentMetadata = { ...(currentMetadata ?? {}), finalizeOwner: currentControllerProcessStamp() };
             liveOwnerStampedOperationIds.add(id);
-          } else if (!runtimeControlAction && LOCAL_WORKSPACE_COMMAND_PHASES.includes(recordInput.phase)) {
+          } else if (localCommand) {
             currentMetadata = { ...(currentMetadata ?? {}), commandOwner: currentControllerProcessStamp() };
             liveOwnerStampedOperationIds.add(id);
           }
@@ -672,7 +673,7 @@ export function workspaceOperationService(db: Db) {
               updatedAt: startedAt,
             });
             const publish = async () => {
-              if (runtimeControlAction) {
+              if (runtimeControlAction || localCommand) {
                 // Wake the ownership worker (on any server) before the row it
                 // announces, so a quiet worker starts watching this owner.
                 await db.transaction(async tx => {
