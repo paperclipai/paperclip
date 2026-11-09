@@ -47,6 +47,8 @@ import { recordChatHandoff, recordAcceptedChatHandoff, lockAcceptedChatHandoffSo
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
+import { assertExternalChannelAssigneeChangeAllowed } from "./chat-channel-binding.js";
+import { assertConversationIdentityMutationAllowed } from "./conversation-identity.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
 import { documentService } from "./documents.js";
@@ -11345,14 +11347,7 @@ export function issueService(db: Db) {
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
       }
-      if (existing.conversationAgentId) {
-        if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
-          || data.assigneeUserId || data.conversationAgentId !== undefined || data.conversationUserId !== undefined
-          || data.conversationState !== undefined || data.conversationSessionGeneration !== undefined
-          || data.conversationBoundaryCommentId !== undefined || data.status === "done" || data.status === "cancelled") {
-          throw unprocessable("Conversation identity is fixed; finish the reply instead of completing or reassigning the conversation");
-        }
-      }
+      assertConversationIdentityMutationAllowed(existing, data);
 
       const {
         labelIds: nextLabelIds,
@@ -11381,31 +11376,11 @@ export function issueService(db: Db) {
       }
       // An explicit edit claims the title, even if it keeps the same text.
       if (issueData.title !== undefined) issueData.titleNeedsGeneration = false;
-      if (
-        issueData.assigneeAgentId !== undefined &&
-        issueData.assigneeAgentId !== existing.assigneeAgentId
-      ) {
-        const externalBinding = await dbOrTx
-          .select({ id: chatConversations.id })
-          .from(chatConversations)
-          .where(
-            and(
-              eq(chatConversations.companyId, existing.companyId),
-              eq(chatConversations.issueId, existing.id),
-            ),
-          )
-          .limit(1)
-          .then((rows: Array<{ id: string }>) => rows[0] ?? null);
-        if (externalBinding) {
-          throw conflict(
-            "Agent assignment cannot change while this task is bound to an external channel",
-            {
-              code: "chat_binding_agent_locked",
-              conversationId: externalBinding.id,
-            },
-          );
-        }
-      }
+      await assertExternalChannelAssigneeChangeAllowed(
+        dbOrTx,
+        existing,
+        issueData.assigneeAgentId,
+      );
       const isolatedWorkspacesEnabled = (
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;
