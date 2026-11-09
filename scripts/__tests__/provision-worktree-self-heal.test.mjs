@@ -69,8 +69,21 @@ if (cliArgs[0] === "worktree" && cliArgs[1] === "init") {
     process.exit(${initExit});
   }
   fs.mkdirSync(".paperclip", { recursive: true });
-  fs.writeFileSync(".paperclip/config.json", JSON.stringify({ $meta: { source: "fake-cli" } }));
-  fs.writeFileSync(".paperclip/.env", "PAPERCLIP_IN_WORKTREE=true\\n");
+  const configPath = process.cwd() + "/.paperclip/config.json";
+  const instanceId = cliArgs[cliArgs.indexOf("--instance") + 1];
+  const worktreeHome = process.env.PAPERCLIP_WORKTREES_DIR;
+  fs.mkdirSync(worktreeHome, { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({ $meta: { source: "fake-cli" } }));
+  fs.writeFileSync(
+    ".paperclip/.env",
+    [
+      "PAPERCLIP_HOME=" + JSON.stringify(worktreeHome),
+      "PAPERCLIP_INSTANCE_ID=" + JSON.stringify(instanceId),
+      "PAPERCLIP_CONFIG=" + JSON.stringify(configPath),
+      "PAPERCLIP_IN_WORKTREE=true",
+      "",
+    ].join("\\n"),
+  );
   process.exit(0);
 }
 if (cliArgs[0] === "worktree" && cliArgs[1] === "ensure-seeded") {
@@ -102,10 +115,20 @@ process.exit(0);
   return baseCwd;
 }
 
-function runProvision(baseCwd, { pathPrefix, setupWorktree, setupInstance, existingWorktree, env = {} } = {}) {
+function runProvision(
+  baseCwd,
+  {
+    pathPrefix,
+    publicUrl,
+    setupWorktree,
+    setupInstance,
+    existingWorktree,
+    worktreesHome = makeTempDir("paperclip-provision-home-"),
+    env = {},
+  } = {},
+) {
   const worktreeCwd = existingWorktree ?? makeTempDir("paperclip-provision-worktree-");
   setupWorktree?.(worktreeCwd);
-  const worktreesHome = makeTempDir("paperclip-provision-home-");
   const paperclipHome = makeInstanceHome();
   setupInstance?.(paperclipHome);
   const result = spawnSync("bash", [script], {
@@ -121,6 +144,7 @@ function runProvision(baseCwd, { pathPrefix, setupWorktree, setupInstance, exist
       PAPERCLIP_HOME: paperclipHome,
       PAPERCLIP_PROJECT_WORKSPACE_ID: "project-workspace-1",
       PAPERCLIP_SEED_EXPECTED_COMPANY_ID: "company-1",
+      ...(publicUrl ? { PAPERCLIP_WORKSPACE_PUBLIC_URL: publicUrl } : {}),
       ...(typeof env === "function" ? env(paperclipHome) : env),
     },
   });
@@ -167,7 +191,9 @@ function readWorktreeConfig(worktreeCwd) {
 
 test("uses the base CLI when its import graph boots", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
-  const { result, worktreeCwd } = runProvision(baseCwd);
+  const { result, worktreeCwd } = runProvision(baseCwd, {
+    publicUrl: "http://paperclip-dev:45439/",
+  });
 
   assert.equal(result.status, 0, result.stderr);
   const config = readWorktreeConfig(worktreeCwd);
@@ -183,6 +209,8 @@ test("uses the base CLI when its import graph boots", () => {
     initInvocation?.includes("--no-seed"),
     `expected --no-seed in ${JSON.stringify(initInvocation)}`,
   );
+  const env = fs.readFileSync(path.join(worktreeCwd, ".paperclip", ".env"), "utf8");
+  assert.match(env, /PAPERCLIP_PUBLIC_URL="http:\/\/paperclip-dev:45439"/);
 });
 
 for (const defaultConfigInEnv of [false, true]) {
@@ -359,6 +387,7 @@ test("isolates fallback configuration and reconciles deployment mode from the re
   );
   const env = fs.readFileSync(path.join(worktreeCwd, ".paperclip", ".env"), "utf8");
   assert.match(env, /PAPERCLIP_IN_WORKTREE=true/);
+  assert.match(env, /PAPERCLIP_PUBLIC_URL="http:\/\/paperclip-dev:45439"/);
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json"), "utf8")).state,
     "pending",
@@ -399,6 +428,35 @@ test("isolates fallback configuration and reconciles deployment mode from the re
   assert.match(second.stderr, /Reconciled isolated Paperclip worktree deployment mode/);
   assert.equal(readWorktreeConfig(worktreeCwd).server.deploymentMode, "authenticated");
   assert.equal(readWorktreeConfig(worktreeCwd).server.exposure, "private");
+});
+
+test("repairs the public URL in a reused worktree environment", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  const first = runProvision(baseCwd);
+
+  assert.equal(first.result.status, 0, first.result.stderr);
+  const envPath = path.join(first.worktreeCwd, ".paperclip", ".env");
+  fs.appendFileSync(
+    envPath,
+    "UNRELATED_SETTING=preserved\nexport PAPERCLIP_PUBLIC_URL=http://stale.example.test\n",
+  );
+
+  const second = runProvision(baseCwd, {
+    existingWorktree: first.worktreeCwd,
+    worktreesHome: first.worktreesHome,
+    publicUrl: "https://runtime.example.test/workspace/",
+  });
+
+  assert.equal(second.result.status, 0, second.result.stderr);
+  assert.match(second.result.stderr, /Reusing existing isolated Paperclip worktree config/);
+  const env = fs.readFileSync(envPath, "utf8");
+  const publicUrlLines = env
+    .split("\n")
+    .filter((line) => /^\s*(?:export\s+)?PAPERCLIP_PUBLIC_URL\s*=/.test(line));
+  assert.deepEqual(publicUrlLines, [
+    'PAPERCLIP_PUBLIC_URL="https://runtime.example.test/workspace"',
+  ]);
+  assert.match(env, /^UNRELATED_SETTING=preserved$/m);
 });
 
 test("repairs an unhealthy base install under the lock and then uses the CLI", (t) => {
