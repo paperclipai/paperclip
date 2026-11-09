@@ -4688,7 +4688,7 @@
       "chat-catalog-domains/integrator-support.ts",
       "chat-scenarios/routines.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.routine-work-failure.v2",
+    "oracleVersion": "paperclip.chat-catalog.integrator.routine-work-failure.v3",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,

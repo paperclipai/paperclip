@@ -6,7 +6,7 @@ import { fixtureWorker } from "./internal-definition.js";
 import type { BudgetOverview } from "../../../packages/shared/src/types/budget.js";
 import { prepareHistoryNotes, cleanupHistoryNotes, historyNotesPhase, historyNotesCalls, waitHistoryWork, readHistoryWork, genuineHistoryWork, routineHistoryAccountingReady, completeHistoryUsage, type HistoryWorkIdentity, type HistoryWorkSnapshot, type WorkCall } from "./routine-history-work-failure.js";
 export { routineHistoryAccountingReady } from "./routine-history-work-failure.js";
-import { groundedStatement, integratorDefinition, inspectResult, observeInternal } from "./integrator-support.js";
+import { integratorDefinition, inspectResult, observeInternal } from "./integrator-support.js";
 interface HistoryObservation extends InternalObservation { expectedProvider: string; routine: RoutineDetail; executions: RoutineRunSummary[] }
 const root = (ctx: ChatCatalogContext) => `/api/companies/${ctx.input.fixtures.company.id}`;
 async function observeHistory(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<HistoryObservation> {
@@ -20,6 +20,34 @@ function historyObservation(value: unknown): HistoryObservation | undefined {
   return observation(value) && !!o.routine && Array.isArray(o.executions) ? o : undefined;
 }
 const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Text the reply attributes to exactly one of the routine's tasks: a line (list item, table row or paragraph)
+ * that names or links one task, or, where a line names both, each sentence that names one. */
+export function taskOutcomeUnits(reply: string, tasks: Entity[]) {
+  const names = (task: Entity) => [task.identifier, task.id].filter((value): value is string => !!value);
+  const mentions = (text: string, task: Entity) => names(task).some(name => new RegExp(`(?<![\\w-])${escaped(name)}(?![\\w-])`, "i").test(text));
+  const units = new Map(tasks.map(task => [task.id, [] as string[]]));
+  for (const line of reply.split(/\n+/)) {
+    const named = tasks.filter(task => mentions(line, task));
+    if (named.length === 1) units.get(named[0]!.id)!.push(line);
+    else if (named.length > 1) for (const sentence of line.split(/(?<=[.!?;])\s+/)) {
+      const own = tasks.filter(task => mentions(sentence, task)); if (own.length === 1) units.get(own[0]!.id)!.push(sentence);
+    }
+  }
+  return units;
+}
+const negated = String.raw`(?<!(?:\b(?:not|no|never|without|nothing)|n['’]t)\s+(?:[^\s.,;:!?]+\s+){0,3})`; // negation does not reach past punctuation
+const SUCCESS = new RegExp(`${negated}\\b(?:succeed(?:ed|s)?|success(?:ful(?:ly)?)?|complete[ds]?|done|published|finished)\\b`, "i");
+const FAILURE = new RegExp(`${negated}\\b(?:fail(?:ed|s|ure)?|unsuccessful|errou?r(?:ed|s)?|blocked)\\b`, "i");
+/** Each task's outcome is paired with the status the product records (blocked task + failed invocation, done task +
+ * completed invocation): the reply must speak about each task, give it its recorded outcome, and never give it the
+ * other one. Saved status, not wording, is what makes an outcome right; the vocabulary only detects which one is claimed. */
+export function preservesRecordedOutcomes(reply: string, failedTask: Entity, completedTask: Entity) {
+  const units = taskOutcomeUnits(reply, [failedTask, completedTask]);
+  const failed = units.get(failedTask.id) ?? [], completed = units.get(completedTask.id) ?? [];
+  const blanket = reply.split(/(?<=[.!?])\s+|\n+/).some(sentence => /\b(?:all|both)\b[^.!?]{0,40}\b(?:runs?|executions?|summar(?:y|ies))\b[^.!?]{0,30}\b(?:succeeded|completed|successful(?:ly)?)\b/i.test(sentence));
+  return failed.some(unit => FAILURE.test(unit)) && completed.some(unit => SUCCESS.test(unit))
+    && !failed.some(unit => SUCCESS.test(unit)) && !completed.some(unit => FAILURE.test(unit)) && !blanket;
+}
 export function gradeIntegratorRoutineHistory(value: unknown) {
   const c = checks(); const o = historyObservation(value);
   c.add("actual-routine-and-native-execution-history", !!o, "Requires real public invocation history plus distinct actual failed work and successful execution receipts.");
@@ -48,8 +76,8 @@ export function gradeIntegratorRoutineHistory(value: unknown) {
     && o.executions.length === 2 && failedInvocation?.source === "manual" && completedInvocation?.source === "manual", "Both actual manual invocations fall inside the measured current week, with no hidden or duplicate history rows.");
   c.add("actual-failure-and-completion-linked", !!failedTask && !!completedTask && hasLink(o, "issues", failedTask) && hasLink(o, "issues", completedTask), "The answer links both real execution tasks.");
   c.add("failed-work-not-inferred-routine-completion", !!failedTask?.identifier && !!completedTask?.identifier
-    && groundedStatement(o.reply, new RegExp(escaped(failedTask.identifier), "i"), /\b(?:failed|failure|unsuccessful)\b/i, new RegExp(`${escaped(failedTask.identifier)}[^\n.!?]{0,60}\\b(?:succeeded|successfully completed)\\b`, "i"))
-    && groundedStatement(o.reply, new RegExp(escaped(completedTask.identifier), "i"), /\b(?:completed|succeeded|successful)\b/i, /\ball (?:runs|executions) (?:succeeded|completed successfully)\b/i)
+    && failedTask.status === "blocked" && failedInvocation?.status === "failed" && completedTask.status === "done" && completedInvocation?.status === "completed"
+    && preservesRecordedOutcomes(o.reply, failedTask, completedTask)
     && !o.reply.split(/(?<=[.!?])\s+|\n+/).some(sentence => /\b(?:scheduled|scheduler|automatically|automatic|on schedule)\b/i.test(sentence)
       && /\b(?:ran|executed|succeeded|completed|delivered|successful)\b/i.test(sentence)
       && !/\b(?:no|not|cannot|can't|unconfirmed|unverified|unknown|missing)\b/i.test(sentence)), "The response preserves which actual routine work failed and which invocation completed without inferring unsupported scheduled success. A truthful concise account of the actual manual runs needs no unprompted schedule-denial sentence.");
@@ -90,5 +118,5 @@ export const integratorRoutineHistoryCases = [integratorDefinition("routines", "
   const routine = state.routine as RoutineDetail;
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/routines/${routine.id}/history`, routine.title);
 }, { sourceFiles: ["chat-catalog-domains/integrator-routine-history.ts", "chat-catalog-domains/routine-history-work-failure.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/routines.yaml"],
-  oracleVersion: "paperclip.chat-catalog.integrator.routine-work-failure.v2", authentication: "human-session", cleanup: cleanupHistoryNotes, expectedRunCount: 3, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 3 } }, attemptTimeoutMs: 720_000,
+  oracleVersion: "paperclip.chat-catalog.integrator.routine-work-failure.v3", authentication: "human-session", cleanup: cleanupHistoryNotes, expectedRunCount: 3, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 3 } }, attemptTimeoutMs: 720_000,
 })];
