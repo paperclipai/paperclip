@@ -213,7 +213,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   Pick<HeartbeatRecoveryDependencies, "setRunStatus"> {
   sweepPendingCleanupLeases: ReturnType<typeof createHeartbeatRecovery>["sweepPendingCleanupLeases"];
   options: Pick<HeartbeatServiceOptions, "beforeChatControlRecoveryCheck">;
-  issuesSvc: Pick<ReturnType<typeof issueService>, "getDependencyReadiness" | "listDependencyReadiness" | "updateForCompany">;
+  issuesSvc: Pick<ReturnType<typeof issueService>, "addComment" | "getDependencyReadiness" | "listDependencyReadiness" | "updateForCompany">;
   treeControlSvc: Pick<ReturnType<typeof issueTreeControlService>, "getActivePauseHoldGate">;
   budgets: Pick<ReturnType<typeof budgetService>, "getInvocationBlock">;
   instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "getExperimental">;
@@ -3500,7 +3500,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 requestId: executionWaitRequestId }, condition, { replace: true });
               return { kind: "deferred" as const, admitted: true };
             }
-            await recordHeldTaskInputNotice(tx as unknown as Db, {
+            await recordHeldTaskInputNotice(tx as unknown as Db, issuesSvc, issueActivityPublications, {
               companyId: issue.companyId, issueId: issue.id,
               recoveryActionId: executionBlocker.recoveryActionId, nextAction: executionBlocker.nextAction,
               requestedByActorType: opts.requestedByActorType, reason,

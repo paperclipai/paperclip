@@ -387,6 +387,9 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       expect.objectContaining({ label: "Recovery action", value: hold!.id }),
       expect.objectContaining({ label: "Input", value: "check_in" }),
     ]));
+    const [noticeActivity] = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId))
+      .then(rows => rows.filter(row => row.action === "issue.comment_added"));
+    expect(noticeActivity).toMatchObject({ actorType: "system", details: expect.objectContaining({ commentId: first!.id }) });
 
     // Later input during the same hold is deferred without another notice.
     expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 30_000))).enqueued).toBe(0);

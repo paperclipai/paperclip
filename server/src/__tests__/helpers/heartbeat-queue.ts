@@ -36,6 +36,9 @@ export function createHeartbeatQueueTestDependencies(db: Db): QueueTestDependenc
     getWorktreeExecutionCutoff: vi.fn<HeartbeatQueueDependencies["getWorktreeExecutionCutoff"]>(async () => null),
     applyRunDispatchPostCommitEffects: vi.fn<HeartbeatQueueDependencies["applyRunDispatchPostCommitEffects"]>(),
     issuesSvc: {
+      addComment: vi.fn<HeartbeatQueueDependencies["issuesSvc"]["addComment"]>(async () => {
+        throw new Error("Unexpected task comment");
+      }),
       getDependencyReadiness: vi.fn<HeartbeatQueueDependencies["issuesSvc"]["getDependencyReadiness"]>(),
       listDependencyReadiness: vi.fn(async () => new Map()),
       updateForCompany: vi.fn<HeartbeatQueueDependencies["issuesSvc"]["updateForCompany"]>(async () => {
