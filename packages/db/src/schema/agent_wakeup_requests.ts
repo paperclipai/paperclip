@@ -55,6 +55,12 @@ export const agentWakeupRequests = pgTable(
     companyRequestedIdx: index(
       "agent_wakeup_requests_company_requested_idx",
     ).on(table.companyId, table.requestedAt),
+    companyPendingIssueKeyIdx: index("agent_wakeup_requests_company_pending_issue_key_idx")
+      .on(
+        sql`(coalesce(${table.payload}->>'issueId', ${table.payload}->>'taskId', ${table.payload}->'_paperclipWakeContext'->>'issueId'))`,
+        table.companyId,
+      )
+      .where(sql`${table.status} in ('queued', 'claimed', 'deferred_issue_execution')`),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(
       table.agentId,
       table.requestedAt,
