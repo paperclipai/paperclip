@@ -219,6 +219,11 @@ it("makes the genuine new blocker visible in the public task title used by bound
   expect(update).not.toHaveProperty("status"); // No task/card/native status fabricated.
   expect(JSON.stringify(update)).not.toMatch(/summari[sz]e|write|return|tool|generationIssueId|model/i);
 });
+it("allows the refresh lead one run per human message, as the four-turn case requires", async () => {
+  const { REFRESH_CARD_LEAD_TURNS } = await import("./integrator-status-cards.js");
+  const definition = integratorStatusCardsCases.find(row => row.scenarioId === "status-cards.refresh-card")!;
+  expect(REFRESH_CARD_LEAD_TURNS).toBe(definition.expectedHumanMessageCount);
+});
 it("declares factual human attachments only for the two actual missing selected referents", () => {
   for (const id of ["status-cards.explain-card", "status-cards.archive-card"]) {
     const definition = integratorStatusCardsCases.find(row => row.scenarioId === id)!;

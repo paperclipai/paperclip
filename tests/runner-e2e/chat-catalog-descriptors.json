@@ -5376,7 +5376,7 @@
       "chat-catalog-domains/integrator-support.ts",
       "chat-scenarios/status-cards.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.status-card.required-work-failure.v3",
+    "oracleVersion": "paperclip.chat-catalog.status-card.required-work-failure.v4",
     "expectedRunCount": 7,
     "expectedHumanMessageCount": 4,
     "turnTimeoutMs": 120000,
