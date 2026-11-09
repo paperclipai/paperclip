@@ -1,5 +1,6 @@
+import { readNativeRemoteExecutionOwnership } from "./native-runner-ownership.js";
 import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { confirmNativeControllerStoppedSchema } from "@paperclipai/shared";
 import { conflict } from "../../errors.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
@@ -7,12 +8,6 @@ import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { surfaceNativeControllerNamespaceAttention } from "./native-restart-recovery.js";
 import { readPendingNativeRunStop } from "./native-cancellation-request.js";
 
-/**
- * An ephemeral (multi-host) server cannot judge a native controller row saved
- * before controller_host_hash existed: its PID may name a process on another
- * host. Restart recovery leaves such a row waiting and asks the board, through
- * this recovery action, to confirm that the previous server stopped.
- */
 export const NATIVE_CONTROLLER_HOST_UNVERIFIED = "native_controller_host_unverified";
 /** controller_host_hash value written once the board confirms the stop. */
 export const OPERATOR_ATTESTED_CONTROLLER_HOST = "operator_attested";
@@ -22,7 +17,7 @@ const changed = () => conflict("The recorded controller is no longer current. Re
   { code: "native_controller_host_recovery_stale" });
 
 type Coordinator = Pick<typeof nativeRunFinalizations.$inferSelect,
-  "runId" | "companyId" | "issueId" | "controllerBootId" | "controllerPid" | "controllerProcessStartedAt">;
+  "runId" | "companyId" | "issueId" | "controllerBootId" | "controllerPid" | "controllerProcessStartedAt" | "controllerHostHash">;
 
 /** Idempotent. Another active recovery action on the task keeps precedence. */
 export async function requestNativeControllerStopConfirmation(tx: Db, coordinator: Coordinator) {
@@ -31,9 +26,10 @@ export async function requestNativeControllerStopConfirmation(tx: Db, coordinato
     status: "active", ownerType: "board", cause: NATIVE_CONTROLLER_HOST_UNVERIFIED,
     fingerprint: fingerprint(coordinator.runId), attemptCount: 1,
     evidence: { runId: coordinator.runId, controller: { bootId: coordinator.controllerBootId, pid: coordinator.controllerPid,
+      hostHash: coordinator.controllerHostHash,
       processStartedAt: coordinator.controllerProcessStartedAt?.toISOString() ?? null } },
-    nextAction: "This run's previous server was recorded before Paperclip stored which host it ran on, so Paperclip "
-      + "cannot verify that it stopped. Confirm that the previous server process has stopped (for example, its "
+    nextAction: "Paperclip cannot verify that this run's previous server stopped from the current host. "
+      + "Confirm that the previous server process has stopped (for example, its "
       + "container was replaced), then recovery checks the saved run. Controller confirmation does not confirm that its provider or tools stopped.",
   }).onConflictDoNothing();
 }
@@ -63,7 +59,7 @@ export async function confirmNativeControllerStopped(input: {
     const recorded = (action?.evidence?.controller ?? {}) as Record<string, unknown>;
     if (!task || !coordinator || !action || !run || action.cause !== NATIVE_CONTROLLER_HOST_UNVERIFIED || action.ownerType !== "board"
       || !["active", "escalated"].includes(action.status) || action.evidence?.runId !== input.runId
-      || coordinator.controllerHostHash !== null || coordinator.controllerPid !== recorded.pid
+      || coordinator.controllerHostHash !== (recorded.hostHash ?? null) || coordinator.controllerPid !== recorded.pid
       || coordinator.controllerBootId !== recorded.bootId
       || (coordinator.controllerProcessStartedAt?.toISOString() ?? null) !== recorded.processStartedAt
       || run.runtimeMode !== "native" || run.status !== "running" || coordinator.resultId !== null
@@ -93,7 +89,8 @@ export async function confirmNativeControllerStopped(input: {
     await notifyLiveRunRecovery(tx, { companyId: input.companyId, runId: input.runId, agentId: run.agentId });
     const now = new Date();
     const [updated] = await tx.update(nativeRunFinalizations).set({ controllerHostHash: OPERATOR_ATTESTED_CONTROLLER_HOST, updatedAt: now })
-      .where(and(eq(nativeRunFinalizations.runId, input.runId), isNull(nativeRunFinalizations.controllerHostHash),
+      .where(and(eq(nativeRunFinalizations.runId, input.runId), coordinator.controllerHostHash === null
+        ? isNull(nativeRunFinalizations.controllerHostHash) : eq(nativeRunFinalizations.controllerHostHash, coordinator.controllerHostHash),
         eq(nativeRunFinalizations.controllerPid, coordinator.controllerPid!),
         eq(nativeRunFinalizations.controllerBootId, coordinator.controllerBootId!),
         eq(nativeRunFinalizations.leaseOwner, coordinator.leaseOwner),
@@ -110,11 +107,8 @@ export async function confirmNativeControllerStopped(input: {
     // The controller-only action is now resolved. Publish its responsible
     // next owner in this same transaction: an observed/no-checkpoint run is
     // not necessarily admitted by any deferred recovery scanner.
-    const [plugin] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-      sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`)).limit(1);
-    await surfaceNativeControllerNamespaceAttention(tx, { run, coordinator: updated, expiryEpoch: expiry.epoch,
-      remoteProcess: run.runnerProfileJson?.nativeWorkspaceSync != null || run.runnerProfileJson?.remoteWorkspace != null || !!plugin });
+    const { remoteProcess } = await readNativeRemoteExecutionOwnership(tx, { run, issueId: task.id });
+    await surfaceNativeControllerNamespaceAttention(tx, { run, coordinator: updated, expiryEpoch: expiry.epoch, remoteProcess });
     const publication = await persistActivity(tx, { companyId: input.companyId, actorType: "user", actorId: input.actorId,
       action: "issue.native_controller_stop_confirmed", entityType: "issue", entityId: input.issueId, runId: input.runId,
       details: { recoveryActionId: input.actionId, ...proof } });

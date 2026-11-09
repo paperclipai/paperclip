@@ -261,6 +261,7 @@ import {
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
+  confirmOwnerGoneSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -1428,6 +1429,14 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  // Budget changes are board-only (assertBoard in routes/costs.ts).
+  "POST /api/companies/{companyId}/budgets/policies",
+  "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
+  "PATCH /api/companies/{companyId}/budgets",
+  "PATCH /api/agents/{agentId}/budgets",
+  // Approval decisions are board-only (assertBoard in routes/approvals.ts).
+  "POST /api/approvals/{id}/approve",
+  "POST /api/approvals/{id}/reject",
   "GET /api/agents/{id}/project-access",
   "POST /api/agents/{id}/project-access",
   "GET /api/issues/{id}/pending-questions",
@@ -1572,6 +1581,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-identity-links/request-access",
   "POST /api/chat-endpoints/{endpointId}/publications/{publicationId}/resolve",
   "POST /api/chat-endpoints/{endpointId}/actions/{actionId}/resolve",
+  "GET /api/issues/{id}/tree-control/state",
+  "POST /api/issues/{id}/tree-control/preview",
+  "GET /api/issues/{id}/tree-holds",
+  "POST /api/issues/{id}/tree-holds",
+  "GET /api/issues/{id}/tree-holds/{holdId}",
+  "POST /api/issues/{id}/tree-holds/{holdId}/release",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -2187,7 +2202,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/exports",
   tags: ["companies"],
   summary: "Export company data",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Omitting include exports only the company and agents (projects, skills and issues default to false); set include.projects and include.skills for a reusable company setup.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityExportSchema),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -2196,7 +2215,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/exports/preview",
   tags: ["companies"],
   summary: "Preview company export",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Omitting include exports only the company and agents (projects, skills and issues default to false); set include.projects and include.skills for a reusable company setup.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityExportSchema),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -2205,7 +2228,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/imports/preview",
   tags: ["companies"],
   summary: "Preview company import",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Safe import into this company only: target must be { mode: \"existing_company\", companyId } for the route company or a new company, and collisionStrategy may be \"rename\" or \"skip\" (\"replace\" is rejected, so an existing agent is never overwritten). nameOverrides maps an incoming agent, project or issue slug to the name it should get. Preview never changes the company; apply creates or reuses resources and returns them.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityPreviewSchema),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -2214,7 +2241,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/imports/apply",
   tags: ["companies"],
   summary: "Apply company import",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Safe import into this company only: target must be { mode: \"existing_company\", companyId } for the route company or a new company, and collisionStrategy may be \"rename\" or \"skip\" (\"replace\" is rejected, so an existing agent is never overwritten). nameOverrides maps an incoming agent, project or issue slug to the name it should get. Preview never changes the company; apply creates or reuses resources and returns them.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityImportSchema),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -2342,7 +2373,9 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "Create a chat endpoint",
   description:
-    "Creates one provider bot endpoint bound permanently to one Paperclip agent. Provider setup and verification happen in later calls.",
+    "Creates one provider bot endpoint bound permanently to one Paperclip agent. Provider setup and verification happen in later calls. "
+    + "Chat providers need Chat connectors, and GitHub needs GitHub review bots, turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental. "
+    + "While that setting is off, connections_search shows the provider as unavailable and this call is refused; agents cannot change it. Link that page as [Experimental settings](/<prefix>/company/settings/instance/experimental) and reply.",
   request: {
     params: z.object({ companyId: z.string().uuid() }),
     body: jsonBody(createChatEndpointSchema),
@@ -3108,6 +3141,14 @@ registry.registerPath({
 
 // ─── Teams Catalog ──────────────────────────────────────────────────────────
 
+/** Ready-made teams are found here, so these entries must match how people ask for them. */
+const TEAM_CATALOG_DESCRIPTIONS: Record<string, string> = {
+  "/api/teams/catalog":
+    "Lists Paperclip's ready-made teams: installable team packages, not agents already in a company. Each entry gives its name, description, roles (agentSlugs), project and routine counts, required skills (requiredSkills) and configuration inputs (envInputs). This catalog is the only source of ready-made teams; choose by description and roles rather than an exact name. Optional q filters by text in names, descriptions and tags. The web app has no teams catalog page; people browse it with the paperclipai teams browse CLI command.",
+  "/api/companies/{companyId}/teams/catalog/{catalogId}/preview":
+    "Shows what installing a catalog team would add to this company: planned agents, projects, routines and skills, and any name or slug conflicts with existing resources. Creates no resources, so it is also allowed in Ask and Plan modes. Company members and agents in the company can preview.",
+};
+
 for (const route of [
   ["get", "/api/teams/catalog", "List catalog teams"],
   ["get", "/api/teams/catalog/{catalogId}/files", "Get catalog team file"],
@@ -3133,8 +3174,16 @@ for (const route of [
     path: route[1],
     tags: ["teams"],
     summary: route[2],
+    ...(route[1] === "/api/teams/catalog" ? {
+      query: z.object({
+        q: z.string().optional().describe("Case-insensitive text matched against team names, descriptions and tags."),
+        kind: z.string().optional().describe("Catalog kind, such as bundled or optional."),
+        category: z.string().optional().describe("Catalog category, such as software-development."),
+      }),
+    } : {}),
+    ...(TEAM_CATALOG_DESCRIPTIONS[route[1]] ? { description: TEAM_CATALOG_DESCRIPTIONS[route[1]] } : {}),
     ...(route[1].endsWith("/install") ? {
-      description: "Imports team resources; HTTP success does not prove every required skill is ready. Read warnings for post-import failures and skillPreparations for required sources; a preparation plan is not proof of installation. Report unresolved requirements as partial completion and preserve existing resources. Use the actual returned portabilityImport agents and projects for company-scoped resource links. Before repeating an uncertain install, inspect installed teams and saved resource identities rather than creating another copy. resourceLinks provides canonical company-scoped hrefs for actual saved agents, projects and routines, including reused resources; share these links with the installation outcome.",
+      description: "Installs a catalog team into this company. Requires a board user with permission to create agents, or an agent with permission to create agents; without it, a board user can run paperclipai teams install <team id> --company-id <companyId>. Imports team resources; HTTP success does not prove every required skill is ready. Read warnings for post-import failures and skillPreparations for required sources; a preparation plan is not proof of installation. Report unresolved requirements as partial completion and preserve existing resources. Use the actual returned portabilityImport agents and projects for company-scoped resource links. Before repeating an uncertain install, inspect installed teams and saved resource identities rather than creating another copy. resourceLinks provides canonical company-scoped hrefs for actual saved agents, projects and routines, including reused resources; share these links with the installation outcome.",
       responses: { 201: r.ok(z.object({ resourceLinks: z.array(z.object({
         kind: z.enum(["agent", "project", "routine"]), id: z.string(), name: z.string(), href: z.string(),
       })) }).passthrough()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
@@ -3401,6 +3450,10 @@ registry.registerPath({
   path: "/api/companies/{companyId}/status-cards",
   tags: ["status-cards"],
   summary: "Create a status card",
+  description: "Creates a saved status card on the company's Status page: a live summary of the tasks the interestPrompt describes. "
+    + "agentId names the agent that writes its summary; without it the built-in Summarizer is used when configured. "
+    + "The response is returned before any summary exists: the card's summarizer compiles its query and writes the first summary in its own run. "
+    + "Do not wait or poll for it; reply now with the returned href as a Markdown link, which opens the card at /<prefix>/status/<cardId>.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createStatusCardSchema),
@@ -3454,6 +3507,10 @@ registerCurrentRoute({
   path: "/api/status-cards/{id}/refresh",
   tags: ["status-cards"],
   summary: "Refresh a status card",
+  description: "Queues a refresh; it does not return a new summary. The card's summarizer agent writes the update in its own generation run, after which the card's lastGeneratedAt and summary change. "
+    + "Do not sleep or poll for it: reply now that the refresh is queued, with the returned card.href as a Markdown link where the person sees the update. "
+    + "alreadyGenerating means an earlier refresh is still running. enqueued false without alreadyGenerating means this request started no run: "
+    + "if card.lastGeneratedAt is newer than before your request, a concurrent refresh already finished; otherwise the card's refresh policy deferred it, and card.state says why (such as paused_budget or paused_hours).",
   body: refreshStatusCardSchema,
 });
 
@@ -4104,11 +4161,12 @@ registry.registerPath({
   path: "/api/companies/{companyId}/adapters/{type}/models",
   tags: ["adapters"],
   summary: "List models for an adapter type and runner provider",
+  description: "Answers which models an agent's runtime can select. For a paperclip_runner agent, pass its adapterConfig.provider, its adapterConfig.acpxAgent when the provider is acpx, and its defaultEnvironmentId; the response is that runtime's own list. An OpenCode agent whose model starts with openrouter/ uses an OpenRouter key: list those choices with type opencode_local and provider=openrouter. That list is OpenRouter's public catalog, so whether a model works depends on the key's account and is not a qualification. With those inputs, these calls answer the question: report the options with that caveat and reply, rather than enumerating providers through other routes, the shell or the web.",
   request: {
     params: z.object({ companyId: z.string(), type: z.string() }),
     query: z.object({
       provider: z
-        .enum(["codex", "acpx", "opencode", "claude_managed", "aws_agentcore"])
+        .enum(["codex", "acpx", "opencode", "claude_managed", "aws_agentcore", "openrouter"])
         .optional(),
       environmentId: z.string().optional(),
       refresh: z.string().optional(),
@@ -4267,7 +4325,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use view=index for collection membership/order without task bodies or diagnostic enrichment; view=rows enriches visible rows without task bodies. These responses include listProjection and cannot stand in for a full issue. view=compact retains the board row compatibility contract. The default response remains the broad compatibility contract. All projections enforce company and task access.",
+    "Use view=index for collection membership/order without task bodies or diagnostic enrichment; view=rows enriches visible rows without task bodies. These responses include listProjection and cannot stand in for a full issue. view=compact retains the board row compatibility contract. The default response remains the broad compatibility contract. All projections enforce company and task access. Results are paged: limit defaults to 500 (maximum 1000) and offset to 0. For actors who can read the whole company's task list, every page sets X-Paperclip-Has-More (true when more results exist) and X-Paperclip-Limit; a capped page also sets X-Paperclip-Next-Offset, or X-Paperclip-Next-After-Id for sortField=id&sortDir=asc cursor paging (not with oneChildPerParent). Actors whose rows are filtered by task access, such as low-trust agents, get no pagination headers. Agent call_api results carry these as pagination.hasMore/nextOffset/nextAfterId. A page whose hasMore is true is not the complete list: repeat the request with the same filters and the next offset or afterId until hasMore is false.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
@@ -4275,6 +4333,11 @@ registry.registerPath({
       ids: z.string().optional().describe("One to 100 comma-separated task UUIDs; requires index or rows without attention."),
       parentIds: z.string().optional().describe("One to 100 comma-separated parent UUIDs; requires index or rows without attention."),
       oneChildPerParent: z.boolean().optional().describe("Return at most one readable child per parent; requires view=index and parentIds."),
+      limit: z.number().int().min(1).max(1000).optional().describe("Page size; defaults to 500, at most 1000. Check X-Paperclip-Has-More (call_api: pagination.hasMore) for more results."),
+      offset: z.number().int().min(0).optional().describe("Rows to skip; use X-Paperclip-Next-Offset (call_api: pagination.nextOffset) from the previous page."),
+      sortField: z.enum(["updated", "created", "id"]).optional(),
+      sortDir: z.enum(["asc", "desc"]).optional(),
+      afterId: z.string().uuid().optional().describe("Cursor paging: return rows after this task UUID; requires sortField=id, sortDir=asc and no offset. Use X-Paperclip-Next-After-Id (call_api: pagination.nextAfterId)."),
     }).passthrough(),
   },
   responses: {
@@ -4617,7 +4680,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "Get an exact issue document revision",
   description:
-    "Available to board users and agents with current issue read access. Returns the specified revision only when its document is linked to this issue under the given key. Document keys are trimmed and lowercased before validation. This read does not restore or modify the document.",
+    "Available to board users and agents with current issue read access. Returns the specified revision only when its document is linked to this issue under the given key. Document keys are trimmed and lowercased before validation. The response also carries the document's current latestRevisionId and latestRevisionNumber, and isLatest says whether this revision is still current; to read the current text, use GET /api/issues/{id}/documents/{key}. This read does not restore or modify the document.",
   request: {
     params: z.object({
       id: z.string(),
@@ -6014,6 +6077,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
   tags: ["costs"],
   summary: "Resolve a budget incident",
+  description: "Board only: agent credentials get 403, so an agent cannot raise a limit or resume a budget-stopped agent. A board user chooses the new amount and resumes on the Budgets page: link [Open budgets](/<prefix>/activity/budgets) with this conversation's company prefix as <prefix>, and reply.",
   request: {
     params: z.object({ companyId: z.string(), incidentId: z.string() }),
     body: jsonBody(resolveBudgetIncidentSchema),
@@ -6052,6 +6116,7 @@ registry.registerPath({
   path: "/api/agents/{agentId}/budgets",
   tags: ["costs"],
   summary: "Update agent budget",
+  description: "Board only: agent credentials get 403. A board user changes the limit on the agent's budget tab: link [Open budget](/<prefix>/agents/<agentId>/budgets) with this conversation's company prefix as <prefix>, and reply.",
   request: {
     params: z.object({ agentId: z.string() }),
     body: jsonBody(updateBudgetSchema),
@@ -7098,6 +7163,7 @@ registry.registerPath({
   path: "/api/instance/settings/experimental",
   tags: ["instance"],
   summary: "Get experimental instance settings",
+  description: "Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7106,7 +7172,7 @@ registry.registerPath({
   path: "/api/instance/settings/experimental",
   tags: ["instance"],
   summary: "Update experimental instance settings",
-  description: "Requires instance-admin access or a trusted Cloud stack admin. Operator-hidden settings and Cloud-managed feature restrictions still apply. This does not grant access to other instance administration operations.",
+  description: "Requires instance-admin access or a trusted Cloud stack admin. Operator-hidden settings and Cloud-managed feature restrictions still apply. This does not grant access to other instance administration operations. Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
@@ -7370,6 +7436,7 @@ registry.registerPath({
   path: "/api/cli-auth/me",
   tags: ["access"],
   summary: "Get current CLI auth session",
+  description: "Board-credential read used by `npx paperclipai auth whoami` in the person's own terminal. Agent API keys receive 401: an agent cannot sign a terminal in as a person. To connect someone's terminal, see POST /api/cli-auth/challenges.",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7389,7 +7456,8 @@ registry.registerPath({
   method: "post",
   path: "/api/cli-auth/challenges",
   tags: ["access"],
-  summary: "Create a CLI auth challenge",
+  summary: "Connect a person's terminal to Paperclip: create a CLI auth challenge for terminal login",
+  description: "Called by the Paperclip CLI in a person's own terminal, never by an agent on their behalf. To connect someone's terminal to Paperclip as themselves, tell them to run `npx paperclipai auth login --api-base <this Paperclip URL>` in that terminal (add `--company-id <companyId>` to name the company). The URL is the address the person already opens Paperclip at in their browser; leave it as that placeholder instead of looking it up, because addresses an agent can see (such as a runner-local API URL) may not be reachable from the person's machine. The CLI prints an approval link; they open it in a browser where they are signed in, review the requesting command, company and Board access, and approve. Only that CLI receives the resulting Board credential. `npx paperclipai auth whoami` confirms who it is signed in as and `npx paperclipai auth logout` revokes it. Agent API keys are a separate identity: never hand out an agent key, create or approve a challenge yourself, or ask for the person's password in chat.",
   request: { body: jsonBody(createCliAuthChallengeSchema) },
   responses: { 200: r.ok(), 400: r.badRequest },
 });
@@ -7399,6 +7467,7 @@ registry.registerPath({
   path: "/api/cli-auth/challenges/{id}/approve",
   tags: ["access"],
   summary: "Approve a CLI auth challenge",
+  description: "Only the signed-in person approves, from the approval page their own CLI printed; agent API keys receive 401. To connect someone's terminal, give them the `npx paperclipai auth login` command (see POST /api/cli-auth/challenges).",
   request: {
     params: z.object({ id: cliAuthChallengeIdParamSchema }),
     body: jsonBody(resolveCliAuthChallengeSchema),
@@ -7428,6 +7497,7 @@ registry.registerPath({
   path: "/api/cli-auth/revoke-current",
   tags: ["access"],
   summary: "Revoke current CLI auth session",
+  description: "Used by `npx paperclipai auth logout` with the CLI's own Board credential; it revokes only that credential and leaves agent API keys untouched.",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7525,6 +7595,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/managed-agent-profiles",
   tags: ["agents"],
   summary: "List Claude Managed Agent profiles for a company",
+  description: "Board only: agent credentials get 403. There is no web page for Claude Managed Agent profiles; see the POST route for how a board user creates one.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
@@ -7534,6 +7605,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/managed-agent-profiles",
   tags: ["agents"],
   summary: "Create or operator-attest a Claude Managed Agent profile",
+  description: "Board only: agent credentials get 403. A Claude Managed Agent runs on Anthropic's managed-agents beta. A board operator creates the company profile with an Anthropic API-key secret and a limited environment (no hosts, no packages), attests its qualification and explicitly acknowledges stateful retention before it can be enabled. There is no web page for this: the board user runs the CLI command `paperclipai managed-agent setup --company-id <companyId> --profile-key <key> --display-name <name> --api-key-secret-id <secretId> --acknowledge-retention` with ANTHROPIC_API_KEY set in their shell (add --probe for a read-only qualification check first). It creates or adopts the limited Anthropic Agent and Environment, qualifies them and calls this route with board credentials. The secret itself is added on the company Secrets page, /<prefix>/company/settings/secrets.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(
@@ -8299,6 +8371,7 @@ registry.registerPath({
   path: "/api/issues/{id}/interactions",
   tags: ["issues"],
   summary: "List issue thread interactions",
+  description: "A connection_intent interaction is a connection request card addressed to one person, its addresseeUserId. Only that person can connect or decline it; no other member, board user or agent can resolve it for them.",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -8478,6 +8551,7 @@ registry.registerPath({
   path: "/api/issues/{id}/tree-holds",
   tags: ["issues"],
   summary: "Create an issue tree hold",
+  description: "Board-only. An agent cannot pause, cancel or resume a task tree, and this denial is final for agents. A person pauses the parent task and all of its subtasks on the company-prefixed task page /{prefix}/issues/{identifier}: More task actions, then Pause subtree. The person resumes it later on the same page with Resume subtree. Link that task page. Moving tasks to backlog or changing assignees is not a tree pause.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createIssueTreeHoldSchema),
@@ -8608,6 +8682,16 @@ registry.registerPath({
   summary: "Get skill update status",
   request: { params: z.object({ companyId: z.string(), skillId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/{skillId}/update-diff",
+  tags: ["skills"],
+  summary: "Show what a pending skill source update changes (diff installed vs latest revision)",
+  description: "For a skill installed from a tracked GitHub source, compares the installed source revision (currentRef) with the latest tracked revision (latestRef) and returns each changed package file with a unified line diff: lines starting with \"-\" exist only in the installed revision and lines starting with \"+\" only in the latest one. hasUpdate is false and files is empty when the installed revision is already the latest. A file with change \"not_compared\" was left out of a revision's scan, and diffUnavailable says why a file has no diff. truncated is true when the response reached its size budget. Read-only; it does not apply the update. Use this to review an update before installing it.",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -9849,7 +9933,8 @@ registry.registerPath({
   path: "/api/instance/database-backups",
   tags: ["instance"],
   summary: "Trigger a database backup",
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  description: "Instance admins only: agent credentials receive 403, and cloud-managed instances run backups for you. Automatic gzip-compressed backups run about hourly by default; instance admins set how long they are kept in the Backup retention section of the company-prefixed /company/settings page. The web UI has no control that creates or restores a backup. For a backup now, an instance admin calls this endpoint, or an operator with shell access to the server runs `paperclipai db:backup` (add --json for metadata). The result names a gzip-compressed SQL file (backupFile) on the server host and its size. Paperclip has no restore endpoint or command: to check a backup, an operator restores the file with psql into a separate, empty PostgreSQL database, never over the live one, and then checks the restored data.",
+  responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── LLM text endpoints ───────────────────────────────────────────────────────
@@ -11041,6 +11126,15 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/recovery-actions/confirm-owner-gone",
+  tags: ["issues"],
+  summary: "Confirm that the unrecorded server holding a stuck recovery record stopped, so recovery can release it",
+  body: confirmOwnerGoneSchema,
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/recovery-actions/retry-workspace-export",
   tags: ["issues"],
   summary: "Retry only workspace export for a repaired accepted native result",
@@ -11281,11 +11375,17 @@ registerCurrentRoute({
   body: connectionRequestInputSchema,
 });
 
+const ADDRESSED_CONNECTION_REQUEST = "Person-only: a connection request card is addressed to one person, its addresseeUserId. "
+  + "Only that person, signed in to their own browser, can open its setup, connect their account or decline it. The server refuses every other member, board user and agent, so nobody can finish it for them. "
+  + "When someone else offers to finish it, tell them the addressee must connect their own account from the card on its task, linked as [<identifier>](/<prefix>/issues/<identifier>). "
+  + "Do not create another request for the addressee and do not search for another route.";
+
 registerCurrentRoute({
   method: "get",
   path: "/api/connection-intents/{interactionId}/setup-options",
   tags: ["connection-intents"],
   summary: "Get setup options for an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
 });
 
 registerCurrentRoute({
@@ -11293,6 +11393,7 @@ registerCurrentRoute({
   path: "/api/connection-intents/{interactionId}/phase",
   tags: ["connection-intents"],
   summary: "Update the setup phase for an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
   body: z
     .object({
       phase: z.enum(["requested", "authorizing", "needs_retry"]),
@@ -11314,6 +11415,7 @@ registerCurrentRoute({
   path: "/api/connection-intents/{interactionId}/complete",
   tags: ["connection-intents"],
   summary: "Complete an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
   body: completeConnectionIntentSchema,
 });
 
@@ -11339,6 +11441,7 @@ registerCurrentRoute({
   path: "/api/connection-intents/{interactionId}/decline",
   tags: ["connection-intents"],
   summary: "Decline an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
   body: declineConnectionIntentSchema,
 });
 
@@ -11470,6 +11573,11 @@ registerCurrentRoute({
 
 // --- Tool access -------------------------------------------------------------
 
+/** Where a person manages a company model service; agents relay this page instead of guessing a settings route. */
+function companyModelServiceSettingsPage(section: string, condition = "") {
+  return `People who manage connections configure, enable and test this in the ${section} section of the company-prefixed /company/settings/connections page; link it as a Markdown link to /<prefix>/company/settings/connections, not the general /company/settings page.${condition} Agent credentials cannot change or test it.`;
+}
+
 for (const [method, suffix, summary] of [
   ["get", "", "Get prompt injection settings and eligible shared OpenRouter connections; non-managers receive no settings or choices"],
   ["put", "", "Configure opt-in prompt injection model checks as a board connection manager"],
@@ -11477,7 +11585,7 @@ for (const [method, suffix, summary] of [
   ["post", "/test", "Classify two fixed billed samples using saved settings as a board connection manager; fallback is not a passing model test"],
 ] as const) registerCurrentRoute({
   method, path: `/api/companies/{companyId}/prompt-injection-prevention${suffix}`,
-  tags: ["prompt-injection-prevention"], summary,
+  tags: ["prompt-injection-prevention"], summary, description: companyModelServiceSettingsPage("Prompt Injection Prevention"),
   ...(method === "put" ? { body: updatePromptInjectionPreventionSchema } : {}),
   ...(method === "post" ? { body: z.object({}).strict() } : {}),
   ...(suffix === "/models" ? { query: z.object({ connectionId: z.string().uuid() }) } : {}),
@@ -11492,6 +11600,7 @@ for (const [method, suffix, summary] of [
   ["post", "/test", "Generate a fixed billed fast response sample"],
   ["get", "/history", "List fast response accounting and publication outcomes"],
 ] as const) registerCurrentRoute({ method, path: `/api/companies/{companyId}/fast-response${suffix}`, tags: ["fast-responses"], summary,
+  description: companyModelServiceSettingsPage("Fast response", " The section is shown only while an instance admin has fast responses turned on in /<prefix>/company/settings/instance/experimental."),
   ...(method === "put" ? { body: updateFastResponseSchema } : {}), responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable } });
 
 const observabilitySignalReceiptSchema = z.object({
@@ -11531,26 +11640,31 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Get decision settings, compatible connections, and manager capability",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "put", path: "/api/companies/{companyId}/decision-model", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Configure the company decision model as a connection manager", body: updateDecisionModelSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model/availability", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Check local decision configuration and caller authorization without contacting a provider",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "post", path: "/api/companies/{companyId}/decision-model/test", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Run the fixed billed three-question setup test as a connection manager",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model/history", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "List decision metadata and charges with authorized task links",
   query: costReportQuerySchema.extend({ limit: z.coerce.number().int().min(1).max(500).optional() }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
@@ -11575,6 +11689,9 @@ registerCurrentRoute({
     "Inspect a curated app's public MCP and OAuth metadata without credentials or registration",
 });
 
+const OWN_MCP_SERVER_KEY = "When a person's own MCP server needs an API key, the person adds it themselves on [Connect your own MCP server](/<prefix>/apps/byo): they enter its URL and type the key into that page's secure field. "
+  + "An agent cannot enter the key and must not ask for it in chat. Link that page and reply instead of creating the connection here.";
+
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
@@ -11582,6 +11699,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/apps/connect",
   tags: ["tool-access"],
   summary: "Create a draft app connection from gallery input",
+  description: OWN_MCP_SERVER_KEY,
   body: connectToolAppSchema,
   responses: {
     200: r.ok(),
@@ -11629,6 +11747,11 @@ registerCurrentRoute({
   },
 });
 
+const QUARANTINED_ACTION_REVIEW = "Catalog entries with status quarantined are new actions that a catalog refresh found and holds for a person's review. "
+  + "No agent can call a quarantined action, through this connection or any other transport, until a person who manages the connection allows it on the app's Permissions page, "
+  + "[Permissions](/<prefix>/apps/<connectionId>/permissions), with this conversation's company prefix and the connection's id. Allowing it is that person's decision, not an agent's. "
+  + "When asked to use a quarantined action, say it is waiting for review, link that page and reply; do not search for another route.";
+
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:read",
@@ -11636,6 +11759,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/apps/attention",
   tags: ["tool-access"],
   summary: "List tool apps needing attention",
+  description: QUARANTINED_ACTION_REVIEW,
 });
 
 registerCurrentRoute({
@@ -11747,6 +11871,8 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/connections",
   tags: ["tool-access"],
   summary: "Create a tool connection",
+  description: "Saves a connection as given without checking that its server answers. To connect an MCP server from its URL, use POST /api/companies/{companyId}/tools/apps/connect with link instead: it checks the server first, and a fresh setup saves no connection when the server cannot be reached. "
+    + OWN_MCP_SERVER_KEY,
   body: createToolConnectionSchema,
   responses: {
     201: r.ok(),
@@ -11851,6 +11977,7 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/review-counts",
   tags: ["tool-access"],
   summary: "Get pending action request and quarantined catalog entry counts for one connection",
+  description: QUARANTINED_ACTION_REVIEW,
 });
 
 registerCurrentRoute({
@@ -11970,6 +12097,7 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/catalog",
   tags: ["tool-access"],
   summary: "List a tool connection catalog",
+  description: QUARANTINED_ACTION_REVIEW,
 });
 
 registerCurrentRoute({
@@ -12842,9 +12970,16 @@ registerCurrentRoute({
     400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
+const ASSISTANT_CONNECTION_SETUP_PERSON_ONLY = "Person-only: a person connects their own assistant, such as Claude, ChatGPT or another MCP client, in their browser on "
+  + "[Assistant connections](/<prefix>/apps/assistant-connection), with this conversation's company prefix as <prefix>. "
+  + "That page gives the invitation and server URL to paste into the assistant; the assistant then opens a Paperclip consent screen where the person picks the company and approves access. "
+  + "The consent screen offers only access within that person's own role: a read-only member can grant read access but not writes. "
+  + "An agent cannot read this setup or approve consent for anyone: these routes accept only the person's own signed-in browser session. "
+  + "Do not search for another route; link that page, say the person approves access there themselves, and reply.";
 registerCurrentRoute({
   method: "get", path: "/api/mcp/setup", tags: ["tool-gateway"],
   summary: "Read assistant connection setup using a human browser session",
+  description: ASSISTANT_CONNECTION_SETUP_PERSON_ONLY,
   // Available while disabled; returns metadata only and never grants access.
   responses: {
     200: r.ok(z.object({ enabled: z.boolean(), serverUrl: z.string().url(), invitationUrl: z.string().url(), invitation: z.string() })),
@@ -12885,6 +13020,7 @@ for (const suffix of ["/dot-pairing/preview", "/dot-pairing"]) registerCurrentRo
 registerCurrentRoute({
   method: "post", path: "/api/mcp/requests/{id}/consent", tags: ["tool-gateway"],
   summary: "Approve or deny assistant access using a same-origin browser session",
+  description: ASSISTANT_CONNECTION_SETUP_PERSON_ONLY,
   body: mcpConsentSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
@@ -12899,14 +13035,21 @@ registerCurrentRoute({
   body: mcpConsentSchema.extend({ userCode: z.string().min(8).max(12) }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
+const ASSISTANT_CONNECTIONS_PERSON_ONLY = "Personal and person-only: only the signed-in person can list or revoke their own assistant connections, in their browser on "
+  + "[Assistant connections](/<prefix>/apps/assistant-connection), with this conversation's company prefix as <prefix>. "
+  + "An agent cannot do it for them: these routes accept only the person's own signed-in browser session, and the only other revocation is OAuth token revocation sent by the connected assistant itself with its own token. "
+  + "Do not search for another route; link that page and tell the person which connection to revoke. "
+  + "Revoking stops that assistant's further calls; tasks it already created keep their assignees and running work.";
 registerCurrentRoute({
   method: "get", path: "/api/mcp/connections", tags: ["tool-gateway"],
   summary: "List the signed-in person's assistant connections",
+  description: ASSISTANT_CONNECTIONS_PERSON_ONLY,
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 registerCurrentRoute({
   method: "delete", path: "/api/mcp/connections/{id}", tags: ["tool-gateway"],
   summary: "Revoke an assistant connection using a same-origin browser session",
+  description: ASSISTANT_CONNECTIONS_PERSON_ONLY,
   responses: { 204: { description: "Connection revoked" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 

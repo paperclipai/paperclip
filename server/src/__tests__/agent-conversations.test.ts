@@ -994,6 +994,54 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
   });
 
+  it("points chat at the teams catalog for ready-made teams and stops the search there", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Ready-made teams are installable packages in Paperclip's teams catalog");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("list the catalog with GET /api/teams/catalog");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("do not look for others in package registries, repositories or the web");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The web app has no teams catalog page, so do not link one");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("paperclipai teams install <team id> --company-id <companyId>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("When you recommend a team, name its roles (agentSlugs), every required skill (requiredSkills, by its ref) and every configuration input (envInputs)");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("GET /api/teams/catalog");
+  });
+
+  it("tells chat where a person can hire when the agent cannot", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("send the person to the hire form at /<prefix>/agents/new");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("to your own /permissions page, where they can turn on hiring for you");
+  });
+
+  it("tells chat to link the agent profile page that holds a control, including the unlisted API keys page", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<urlKey or id>/api-keys for API keys");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The API keys page is not in the profile's navigation");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>/api-keys");
+  });
+
+  it("says how to read the company link prefix from a task identifier so agent links are not guessed", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The company prefix is the part of a task identifier before its final hyphen and number: for task RUN-1 the prefix is RUN.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Never build a prefix from the company name");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("for task RUN-1 the prefix is RUN");
+  });
+
+  it("sends a task-tree pause to the person's Pause subtree control instead of imitating it with task edits", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Pausing, stopping or resuming a whole task tree (a parent task and all of its subtasks) is a person's control, not an agent action.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("chooses More task actions, then Pause subtree");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("do not change task statuses or assignees, cancel runs, pause agents, or create tasks or routines to resume it later");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Paperclip has no scheduled resume");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("[<identifier>](/<prefix>/issues/<identifier>)");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("then Pause subtree");
+  });
+
+  it("asks which record is meant before changing one of several matches", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("matches several records you can access and nothing in the conversation selects one, ask which one before changing any of them");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link each candidate");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not pick the first match, change every match");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("ask which one before changing any of them");
+  });
+
   it("preserves explicit plan approval while avoiding ritual confirmations for ordinary chat", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("When the user asks to approve a plan before handoff");
     expect(AGENT_CHAT_DIRECTIVE).toContain('interactionKind: "confirmation"');
@@ -1020,10 +1068,48 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<agentId>/runs/<runId>");
   });
 
+  it("says the task-chat lab exists only under pnpm dev in the person's own checkout", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Some developer labs, including the task-chat interaction lab at /<prefix>/dev/task-chat-lab, are registered only in a development build of the UI");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("Developer labs, such as");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the design guide and the ux-lab pages, are registered in every build");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("running pnpm dev in their own Paperclip checkout and visiting /<prefix>/dev/task-chat-lab");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/dev/task-chat-lab");
+  });
+
+  it("routes a person's own profile change to their profile settings instead of an agent write", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("only they can change them in their profile settings at /<prefix>/company/settings/instance/profile");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link that page instead of attempting the change");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/company/settings/instance/profile");
+  });
+
+  it("routes a task identifier from another company to a company switch instead of a search", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("A task identifier whose prefix differs from this conversation's prefix belongs to another company or to none");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a lookup that is not found does not mean the task does not exist");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the person can switch to its company and open a chat there");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Link the task at /<its prefix>/issues/<identifier>, taking the prefix from the identifier the person gave");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<its prefix>/issues/<identifier>");
+  });
+  it("treats a same-company task the agent cannot find as possibly private instead of searching for a way in", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("A private task is hidden from you unless you have access to it");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("it may be private rather than missing. Do not search for it further");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("share it with you from its sharing controls");
+  });
+  it("tells chat agents to keep every listed task linked, and where a long list goes", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("write each task identifier in full");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a range such as RUN-12–14 links only its first task");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>#document-<key>");
+  });
+
   it("gives chat replies a usable route for both task and approval sources", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>");
     expect(AGENT_CHAT_DIRECTIVE).toContain("For approval links, use /<prefix>/approvals/<approvalId>");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Never invent a hostname for a Paperclip link.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Write every company link as a Markdown link");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a bare path or a path in inline code is not clickable");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Start each link target with exactly one slash");
   });
 
   it.each([true, false])("preserves rejected-plan changes in task markdown (includeDescription=%s)", (includeDescription) => {

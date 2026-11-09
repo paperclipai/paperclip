@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
-  activityLog, agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns,
+  activityLog, agents, companies, createDb, environmentLeases, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns,
   issueRecoveryActions, issues, nativeRunFinalizations,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -137,5 +137,54 @@ describe("native controller rows saved before their host was recorded", () => {
         .toMatchObject({ status: "active" });
     },
   );
+
+
+
+  it("binds stop confirmation to an exact foreign-host controller and rejects changed ownership", async () => {
+    const { companyId, issueId, runId, coordinator } = await seed();
+    const owner = { ...coordinator, controllerHostHash: "previous-pid-space" };
+    await db.update(nativeRunFinalizations).set({ controllerHostHash: owner.controllerHostHash })
+      .where(eq(nativeRunFinalizations.runId, runId));
+    await requestNativeControllerStopConfirmation(db, owner);
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    const input = { db, companyId, issueId, runId, actionId: action!.id, actorId: "board-user",
+      stopEvidence: "The hosting provider confirms the exact previous container stopped." };
+    for (const patch of [{ controllerHostHash: "changed-space" }, { controllerBootId: randomUUID() },
+      { controllerPid: 1_999_999_999 }, { controllerProcessStartedAt: new Date(owner.controllerProcessStartedAt!.getTime() + 60_000) }]) {
+      await db.update(nativeRunFinalizations).set(patch).where(eq(nativeRunFinalizations.runId, runId));
+      await expect(confirmNativeControllerStopped(input)).rejects.toMatchObject({ status: 409 });
+      await db.update(nativeRunFinalizations).set({ controllerHostHash: owner.controllerHostHash,
+        controllerBootId: owner.controllerBootId, controllerPid: owner.controllerPid,
+        controllerProcessStartedAt: owner.controllerProcessStartedAt }).where(eq(nativeRunFinalizations.runId, runId));
+    }
+    await expect(confirmNativeControllerStopped(input)).resolves.toEqual({ runId, status: "queued" });
+    const [attested] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    expect(await evaluateNativeControllerTakeover({ owner: attested!, now: new Date() }))
+      .toEqual({ allowed: true, reason: "operator_attested_controller_stopped" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("running");
+  });
+  it.each(["same-task", "different-task"] as const)("binds controller follow-up to the %s runner lease", async scope => {
+    const { companyId, agentId, issueId, runId, coordinator } = await seed();
+    let leaseIssueId = issueId;
+    if (scope === "different-task") {
+      leaseIssueId = randomUUID();
+      await db.insert(issues).values({ id: leaseIssueId, companyId, title: "Another task", status: "in_progress", assigneeAgentId: agentId });
+    }
+    await db.insert(environmentLeases).values({ companyId, issueId: leaseIssueId, heartbeatRunId: runId,
+      provider: "plugin", status: "active", metadata: { runnerTaskLease: true } });
+    await requestNativeControllerStopConfirmation(db, coordinator);
+    const [original] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    await expect(confirmNativeControllerStopped({ db, companyId, issueId, runId, actionId: original.id,
+      actorId: "board-user", stopEvidence: "The original controller is stopped; provider containment remains unverified." }))
+      .resolves.toEqual({ runId, status: "queued" });
+    const [attention] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, issueId),
+      eq(issueRecoveryActions.status, "active")));
+    expect(attention.evidence.reason).toBe(scope === "same-task"
+      ? "remote_controller_process_space_unverified" : "controller_process_space_unverified");
+    if (scope === "same-task") expect(attention.evidence.controllerAuthority).toBeUndefined();
+    else expect(attention.evidence.controllerAuthority).toMatchObject({ schema: "paperclip.native-controller-authority.v1" });
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0])
+      .toMatchObject({ phase: "observed", resultId: null, leaseOwner: coordinator.leaseOwner });
+  });
 
 });

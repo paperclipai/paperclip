@@ -1,6 +1,7 @@
 import { hostname } from "node:os";
 import {
   currentControllerBootId,
+  currentControllerDeployment,
   currentControllerProcessStamp,
   currentProcessSpaceHash,
   observedProcessStartedAt,
@@ -9,7 +10,14 @@ import {
   PROCESS_START_PRECISION_MS,
   UNKNOWN_PROCESS_SPACE,
 } from "./controller-process-identity.js";
-import { currentWorkspaceWorker, type WorkspaceWorker } from "./native-runtime/native-workspace-platform-proof.js";
+import type { WorkspaceWorker } from "./native-runtime/native-workspace-platform-proof.js";
+import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
+import { proveControllerInstance, registeredControllerInstanceDb, type ControllerInstanceState } from "./controller-instance-lease.js";
+
+/** `processSpace` value written when a board operator confirmed that this exact
+ * recorded owner stopped (native-controller-host-recovery.ts). The attestation
+ * is the proof. */
+export const OPERATOR_ATTESTED_PROCESS_SPACE = "operator_attested";
 
 /**
  * The owner recorded on an in-progress durable record (plan section A).
@@ -25,6 +33,7 @@ export type LocalOwnerStamp = {
   /** Record kind or subsystem that wrote the stamp, for reports only. */
   scope: string;
   generation: number | null;
+  fenceToken?: string | null;
   /** Hostname at stamp time. Informational; `processSpace` is the proof key. */
   host: string | null;
   /** Hash of host, kernel boot and PID namespace (`currentProcessSpaceHash`). */
@@ -42,6 +51,17 @@ export type LocalOwnerStamp = {
   volumeId?: string | null;
   /** False when the owner's deployment was not volume-exclusive. Missing on older stamps. */
   exclusiveVolume?: boolean | null;
+  /**
+   * The record was saved before its kind stored a PID space (`processSpace`
+   * is null for that reason, not because the space is unknown). Such rows keep
+   * the previous local proof for one release on single-host servers only, and
+   * the proof says so (`legacyHostFallback`) so the caller can record each use.
+   * An ephemeral (multi-host) server never judges them.
+   */
+  processSpaceUnrecorded?: boolean;
+  requireRecordedProcessSpace?: boolean;
+  /** When the owned record was last written, if the caller knows (for the controller lease proof). */
+  touchedAt?: string | null;
 };
 
 export type RemoteOwnerStamp = {
@@ -55,7 +75,15 @@ export type RemoteOwnerStamp = {
 
 export type OwnerVerdict = "gone" | "alive" | "unprovable";
 
-export type OwnerProof = { verdict: OwnerVerdict; reason: OwnerProofReason };
+export type OwnerProof = {
+  verdict: OwnerVerdict;
+  reason: OwnerProofReason;
+  /** The local proof judged a row saved before its PID space was recorded. */
+  legacyHostFallback?: true;
+  /** The caller named every run this process executes, so a record of another
+   * run is not held here (`settleOwnableKind` with `currentProcessIdle`). */
+  localExecutionsKnown?: true;
+};
 
 export type OwnerProofReason =
   // gone
@@ -65,17 +93,28 @@ export type OwnerProofReason =
   | "generation_superseded"
   | "provider_stopped"
   | "deployment_replaced"
+  | "operator_attested"
+  /** The owner's server boot stopped cleanly, or a newer boot fenced it after its lease expired. */
+  | "controller_stopped"
+  | "controller_fenced"
+  /** This process owns the record and is not executing its run. Only a
+   * caller that knows this process's executions may conclude it
+   * (`settleOwnableKind` with `currentProcessIdle`); the prover never does. */
+  | "current_process_idle"
   // alive
   | "current_process"
   | "pid_alive"
   | "process_group_alive"
   | "fence_held"
+  | "controller_lease_held"
+  | "controller_lease_grace"
   | "provider_running"
   // unprovable
   | "missing_identity"
   | "unknown_process_space"
   | "different_process_space"
   | "different_host"
+  | "process_space_unrecorded"
   | "pid_start_unreadable"
   | "pid_start_inconsistent"
   | "process_group_ambiguous"
@@ -106,6 +145,10 @@ export type ProcessProbe = {
    * the platform stops every earlier deployment of the service before it
    * starts this one (a Railway service with an attached volume). */
   deployment?: { worker: WorkspaceWorker; exclusiveVolume: boolean; volumeId?: string | null } | null;
+  /** The lease state of another server boot (controller_instances), when this server can read it. */
+  controllerInstance?: (bootId: string, touchedAt: Date | null) => Promise<ControllerInstanceState | null>;
+  /** Report without changing any lease row (a read-only reconciliation pass). */
+  readOnly?: boolean;
 };
 
 function processGroupExists(processGroupId: number): boolean {
@@ -123,10 +166,7 @@ function processGroupExists(processGroupId: number): boolean {
  * the previous deployment before the new one starts, so the two never overlap.
  * A service with a volume cannot have replicas. */
 export function currentDeploymentIdentity(env: NodeJS.ProcessEnv = process.env): ProcessProbe["deployment"] {
-  const worker = currentWorkspaceWorker(env);
-  if (!worker) return null;
-  const volumeId = env.RAILWAY_VOLUME_ID?.trim() || null;
-  return { worker, exclusiveVolume: Boolean(volumeId && env.RAILWAY_VOLUME_MOUNT_PATH?.trim()), volumeId };
+  return currentControllerDeployment(env);
 }
 
 export function currentProcessProbe(): ProcessProbe {
@@ -137,6 +177,10 @@ export function currentProcessProbe(): ProcessProbe {
     processSpace: currentProcessSpaceHash(),
     pidExists: processExists,
     processGroupExists,
+    controllerInstance: async function (this: ProcessProbe, bootId, touchedAt) {
+      const db = registeredControllerInstanceDb();
+      return db ? proveControllerInstance(db, bootId, touchedAt, { readOnly: this?.readOnly === true }) : null;
+    },
     readStartedAt: async pid => {
       const startedAt = await observedProcessStartedAt(pid);
       return startedAt === null ? null : new Date(startedAt);
@@ -204,11 +248,39 @@ export async function proveOwnerGone(
 }
 
 async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe): Promise<OwnerProof> {
+  const proof = await proveLocalProcessGone(stamp, probe);
+  if (proof.verdict !== "unprovable" || (!CROSS_SPACE_REASONS.has(proof.reason) && !(stamp.requireRecordedProcessSpace && proof.reason === "process_space_unrecorded")) || !stamp.bootId || !probe.controllerInstance
+    || validPid(stamp.processGroupId ?? null)) return proof;
+  // Another host or PID space: the owner's server boot answers through its lease. Only a record the
+  // server process itself held qualifies; agent processes in a recorded group may outlive it.
+  const instance = await probe.controllerInstance(stamp.bootId, stamp.touchedAt ? new Date(stamp.touchedAt) : null);
+  if (instance === "stopped") return { verdict: "gone", reason: "controller_stopped" };
+  if (instance === "fenced") return { verdict: "gone", reason: "controller_fenced" };
+  if (instance === "live") return { verdict: "alive", reason: "controller_lease_held" };
+  // Just past its last sign of life: kept as alive so the settle watch re-checks it after the grace.
+  if (instance === "grace") return { verdict: "alive", reason: "controller_lease_grace" };
+  return proof;
+}
+
+const CROSS_SPACE_REASONS = new Set<OwnerProofReason>(["different_process_space", "different_host", "unknown_process_space"]);
+
+async function proveLocalProcessGone(stamp: LocalOwnerStamp, probe: ProcessProbe): Promise<OwnerProof> {
   if (stamp.bootId && stamp.bootId === probe.bootId) return { verdict: "alive", reason: "current_process" };
   // The platform stopped the owner's whole deployment, with every process and
   // orphaned child in it, before it started this one. Host and PID are moot.
   if (deploymentReplaced(stamp, probe.deployment)) return { verdict: "gone", reason: "deployment_replaced" };
-  if (!validPid(stamp.pid) || !stamp.processSpace) return { verdict: "unprovable", reason: "missing_identity" };
+  if (stamp.processSpace === OPERATOR_ATTESTED_PROCESS_SPACE) return { verdict: "gone", reason: "operator_attested" };
+  // A row saved before its kind stored a PID space: one-release local
+  // fallback on single-host servers; an ephemeral server cannot assume the
+  // PID was recorded here, so a board operator decides.
+  const legacy = !stamp.processSpace && stamp.processSpaceUnrecorded === true;
+  if (legacy && (stamp.requireRecordedProcessSpace || ephemeralServerEnabled())) return { verdict: "unprovable", reason: "process_space_unrecorded" };
+  if (!validPid(stamp.pid) || (!stamp.processSpace && !legacy)) return { verdict: "unprovable", reason: "missing_identity" };
+  if (legacy) {
+    const proof = await proveLocalOwnerGone({ ...stamp, processSpace: probe.processSpace, host: null,
+      processSpaceUnrecorded: false }, probe);
+    return proof.verdict === "gone" ? { ...proof, legacyHostFallback: true } : proof;
+  }
   if (stamp.processSpace === UNKNOWN_PROCESS_SPACE || probe.processSpace === UNKNOWN_PROCESS_SPACE) {
     return { verdict: "unprovable", reason: "unknown_process_space" };
   }

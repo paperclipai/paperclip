@@ -27,6 +27,12 @@ describe("stale owner completion policy", () => {
     expect(supersedeStaleOwnerCompletion(done, issue, "agent-a")).toEqual({ ...done, statusAction: "preserve",
       toStatus: "in_progress", reasonCode: "completion_owner_superseded", effects: [] });
   });
+  it("preserves status when another run of the same owner now holds the task", () => {
+    expect(supersedeStaleOwnerCompletion(done, { ...owner, executionRunId: "run-2" }, "agent-a", "run-1")).toEqual({ ...done,
+      statusAction: "preserve", toStatus: "in_progress", reasonCode: "completion_run_superseded", effects: [] });
+    expect(supersedeStaleOwnerCompletion(done, { ...owner, executionRunId: "run-1" }, "agent-a", "run-1")).toBe(done);
+    expect(supersedeStaleOwnerCompletion(done, { ...owner, executionRunId: null }, "agent-a", "run-1")).toBe(done);
+  });
   it("leaves non-terminal decisions to their existing owner checks", () => {
     const blocked: NativeStatusDecision = { ...done, statusAction: "blocked", toStatus: "blocked", reasonCode: "x" };
     expect(supersedeStaleOwnerCompletion(blocked, { ...owner, assigneeAgentId: "agent-b" }, "agent-a")).toBe(blocked);
@@ -92,6 +98,46 @@ describe.skipIf(!support.supported)("native completion after reassignment", () =
       .where(eq(heartbeatRuns.id, f.runId));
   }
 
+  /** The board's Stop, then the user's continue comment starts a new run that holds the task. */
+  async function stopAndContinue(f: Awaited<ReturnType<typeof acceptedDoneResult>>) {
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "cancelled", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+    const continuationRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: continuationRunId, companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.issueId, status: "running", runtimeMode: "native",
+      contextSnapshot: { issueId: f.issueId, source: "issue.comment" } });
+    await db.update(issues).set({ executionRunId: continuationRunId, checkoutRunId: continuationRunId })
+      .where(eq(issues.id, f.issueId));
+    return continuationRunId;
+  }
+
+  function actBeforeStatusCommit(act: () => Promise<unknown>) {
+    let acted = false;
+    const racing = new Proxy(db, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== "update") return typeof value === "function" ? value.bind(target) : value;
+        return (table: unknown) => {
+          const builder = target.update(table as typeof nativeRunFinalizations);
+          if (table !== nativeRunFinalizations || acted) return builder;
+          const set = builder.set.bind(builder);
+          return Object.assign(builder, { set: (values: Record<string, unknown>) => {
+            const next = set(values as never);
+            if (values.phase !== "arbitrating" || !("assessmentId" in values)) return next;
+            const where = next.where.bind(next);
+            return Object.assign(next, { where: (...args: Parameters<typeof where>) => {
+              const query = where(...args);
+              return { then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
+                query.then(async (result) => { acted = true; await act(); return result; }).then(resolve, reject) };
+            } });
+          } });
+        };
+      },
+    }) as Db;
+    return { racing, acted: () => acted };
+  }
+
   const issue = async (issueId: string) => (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
   const decision = async (runId: string) => {
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
@@ -154,6 +200,30 @@ describe.skipIf(!support.supported)("native completion after reassignment", () =
     expect(await issue(f.issueId)).toMatchObject({ status: "in_progress", assigneeAgentId: f.successorId });
     expect((await decision(f.runId)).row).toMatchObject({ reasonCode: "completion_owner_superseded" });
   });
+  it("does not let a stopped run's saved done result close the task a newer run is continuing", async () => {
+    const f = await acceptedDoneResult();
+    const continuationRunId = await stopAndContinue(f);
+
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: false });
+
+    expect(await issue(f.issueId)).toMatchObject({ status: "in_progress", executionRunId: continuationRunId });
+    const { coordinator, row } = await decision(f.runId);
+    expect(coordinator.phase).toBe("committed");
+    expect(row).toMatchObject({ toStatus: "in_progress", reasonCode: "completion_run_superseded" });
+  });
+
+  it("does not close the task when a newer run takes it after arbitration but before the status commit", async () => {
+    const f = await acceptedDoneResult();
+    let continuationRunId: string | null = null;
+    const { racing, acted } = actBeforeStatusCommit(async () => { continuationRunId = await stopAndContinue(f); });
+
+    await finalizeNativeRun({ db: racing, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: false });
+
+    expect(acted()).toBe(true);
+    expect(await issue(f.issueId)).toMatchObject({ status: "in_progress", executionRunId: continuationRunId });
+    expect((await decision(f.runId)).row).toMatchObject({ reasonCode: "completion_run_superseded" });
+  });
+
   async function approveEvidenceLater(f: Awaited<ReturnType<typeof acceptedDoneResult>>) {
     await db.update(issueWorkProducts).set({ reviewState: "approved", updatedAt: new Date(Date.now() + 1_000) })
       .where(eq(issueWorkProducts.id, f.workProductId));

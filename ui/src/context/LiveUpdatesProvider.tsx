@@ -1,5 +1,5 @@
 import { LiveTranscriptInterests, DISCONNECTED_TRANSCRIPT_STREAM } from "../lib/live-transcript-interests";
-import { resolveAgentAppearance } from "@paperclipai/shared";
+import { resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChangesTaskIdentity } from "@paperclipai/shared";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import {
@@ -22,6 +22,7 @@ import {
 import {
   createCoalescingQueryClient,
   createInvalidationBatcher,
+  excludingQueryKeys,
 } from "../lib/query-invalidation-batcher";
 import {
   patchRunStatusInList,
@@ -970,6 +971,96 @@ const ISSUE_TOAST_ACTIONS = new Set([
   "issue.updated",
   "issue.comment_added",
 ]);
+/**
+ * The `@task` mention pool is the 100 most recently updated tasks (one large
+ * response) and only backs a client-side picker. A chat turn emits many task
+ * events, and refetching the pool for each one re-downloads that list again
+ * and again. The pool is kept fresh this way instead:
+ *
+ * - A created, deleted, hidden, unhidden or renamed task changes what the
+ *   picker can offer, so the pool refetches at once. Authenticated sockets
+ *   send no `details`; the server sends the closed `taskIdentityChanged`
+ *   boolean instead, and full-detail events are classified the same way.
+ * - Any other event on a task already in the pool moves it to the front in
+ *   place. No request is needed: its title and identifier have not changed.
+ * - Any other event on a task outside the pool may lift it into the top 100.
+ *   The pool refetches at most once per `MENTION_POOL_REFRESH_WINDOW_MS`,
+ *   trailing, so the picker catches up within that window without a refetch
+ *   per event. Until then a task that just entered the top 100 may be missing.
+ */
+const MENTION_POOL_REFRESH_WINDOW_MS = 30_000;
+const mentionPoolRefreshes = new WeakMap<
+  object,
+  Map<string, { lastRequestedAt: number; timer: ReturnType<typeof setTimeout> | null }>
+>();
+
+function activityChangesTaskIdentity(
+  payload: Record<string, unknown>,
+  action: string | null,
+  details: Record<string, unknown> | null,
+): boolean {
+  const flag = payload[TASK_IDENTITY_CHANGED_FIELD];
+  if (typeof flag === "boolean") return flag;
+  return issueActivityChangesTaskIdentity(action, details);
+}
+
+function refreshMentionPoolForActivity(
+  queryClient: QueryClient,
+  companyId: string,
+  entityId: string | null,
+  identityChanged: boolean,
+) {
+  const queryKey = queryKeys.issues.mentionPool(companyId);
+  if (identityChanged) {
+    queryClient.invalidateQueries({ queryKey });
+    return;
+  }
+  const pool = queryClient.getQueryData<Issue[]>(queryKey);
+  if (!pool) return;
+  const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+  if (!query) return;
+  // A pending invalidation (for example a rename while the picker was closed)
+  // must survive: writing data would clear it and make the old list look fresh.
+  if (query.state.isInvalidated) return;
+  const index = entityId
+    ? pool.findIndex((issue) => issue.id === entityId || issue.identifier === entityId)
+    : -1;
+  if (query.getObserversCount() === 0) {
+    // Nobody shows the picker. A task outside the pool may now belong in it, so
+    // refetch on the next mount; a reorder alone can wait for that mount too.
+    if (index < 0) queryClient.invalidateQueries({ queryKey, refetchType: "none" });
+    return;
+  }
+  if (index >= 0) {
+    if (index > 0) {
+      // Keep the freshness clock: a reorder is not a fetch.
+      queryClient.setQueryData<Issue[]>(
+        queryKey,
+        [pool[index], ...pool.slice(0, index), ...pool.slice(index + 1)],
+        { updatedAt: query.state.dataUpdatedAt },
+      );
+    }
+    return;
+  }
+  let refresh = mentionPoolRefreshes.get(queryClient);
+  if (!refresh) {
+    refresh = new Map();
+    mentionPoolRefreshes.set(queryClient, refresh);
+  }
+  const state = refresh.get(companyId) ?? { lastRequestedAt: 0, timer: null };
+  refresh.set(companyId, state);
+  if (state.timer !== null) return;
+  // Count both the last completed fetch and the last one requested here, so a
+  // burst that arrives before the refetch finishes cannot start another.
+  const lastRefresh = Math.max(query.state.dataUpdatedAt, state.lastRequestedAt);
+  const wait = Math.max(0, lastRefresh + MENTION_POOL_REFRESH_WINDOW_MS - Date.now());
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    state.lastRequestedAt = Date.now();
+    queryClient.invalidateQueries({ queryKey });
+  }, wait);
+}
+
 const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_created",
   "issue.document_updated",
@@ -1500,7 +1591,14 @@ function invalidateActivityQueries(
     }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
+      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId)),
     });
+    refreshMentionPoolForActivity(
+      queryClient,
+      companyId,
+      entityId,
+      activityChangesTaskIdentity(payload, action, details),
+    );
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.listMineByMe(companyId),
     });
@@ -2097,6 +2195,7 @@ function closeSocketQuietly(
 }
 
 export const __liveUpdatesTestUtils = {
+  MENTION_POOL_REFRESH_WINDOW_MS,
   buildActivityToast,
   applyRunLifecycleToCompanyLiveRuns,
   buildAgentStatusToast,

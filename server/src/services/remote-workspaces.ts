@@ -38,10 +38,13 @@ import {
 import { restoreRemoteWorkspaceArchive, readRemoteWorkspaceArchiveDirectories } from "./remote-workspace-snapshot-archive.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
-import { attachPreservedRemoteWorkspaceSnapshots, retainRemoteRecoveryAttachments } from "./remote-workspace-recovery-attachments.js";
+import { attachPreservedRemoteWorkspaceSnapshots, retainRemoteRecoveryAttachments, retiredRecoveryAttachments } from "./remote-workspace-recovery-attachments.js";
 import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
+import { proveRemoteWorkspaceUnchanged, readUnchangedBaseline, UNCHANGED_BASELINE_KEY, UNCHANGED_BASELINE_SCHEMA,
+  type UnchangedBaseline } from "./remote-workspace-unchanged-proof.js";
+import { wakeWorkspaceBusyWaitersInTx } from "../modules/run-dispatch/index.js";
 
 export { readRemoteWorkspaceAuthority, type RemoteWorkspaceAuthority, type RemoteWorkspaceSource } from "@paperclipai/shared";
 export { remoteWorkspaceRepositoryPath } from "./remote-workspace-transport.js";
@@ -206,9 +209,9 @@ export async function reserveRemoteWorkspace(input: {
       selectedSharedSource = selected !== null;
     }
     const [selectedRow] = selected ? await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, selected))).for("update") : [];
-    const existing = selectedRow ?? null;
+    let existing = selectedRow ?? null;
     if (selected && !existing && !input.fresh) throw new Error("remote_workspace_missing");
-    const authority = readRemoteWorkspaceAuthority(existing?.metadata);
+    let authority = readRemoteWorkspaceAuthority(existing?.metadata);
     if (existing && !authority) throw conflict("Import this existing workspace before enabling remote storage.", { code: "remote_workspace_migration_required" });
     if (existing && authority) {
       if (["archived", "cleanup_failed"].includes(existing.status)) throw conflict("Workspace ownership changed.");
@@ -235,6 +238,12 @@ export async function reserveRemoteWorkspace(input: {
         }
         await settleUnverifiedProvision(tx as unknown as Db, operation, input.runId);
         provenProvisions.push(operation.id);
+      }
+      // An ended writer that provably changed nothing hands the workspace on
+      // at its saved version, so this run is admitted instead of waiting.
+      if (authority.dirty && authority.writerRunId && authority.writerRunId !== input.runId) {
+        const released = await releaseUnchangedRemoteWorkspaceWriter(tx, { workspace: existing, authority, wakeWaiters: false });
+        if (released) ({ workspace: existing, authority } = released);
       }
       const hold = await readRemoteWorkspaceWriterHold(tx as unknown as Db, { companyId: input.companyId, authority, runId: input.runId });
       if (hold.kind === "held") throw new RemoteWorkspaceWriterActiveError(existing.id, hold.writer);
@@ -495,7 +504,9 @@ export async function prepareRemoteWorkspace(input: {
       savedArchive: isSavedWorkspaceRepository(input.workspace, initial, repository),
       resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
   }
-  const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string }> = [];
+  const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string; retired?: true }> = [];
+  // A copy that was shown to a run that then succeeded is removed and never attached again.
+  const retiredOperationIds = await retiredRecoveryAttachments(input.db, input.workspace, input.runId);
   if (!sameAllocation) {
     // Shared and inherited workspaces retain their original source task. The
     // current writer's task owns its recovery attachments, including a child's
@@ -515,7 +526,7 @@ export async function prepareRemoteWorkspace(input: {
       const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-recovery-import-"));
       try {
         const scope = { db: input.db, companyId: input.workspace.companyId, issueId, sourceRunIds: recoverySourceRunIds,
-          cwd: scratch, storage: input.storage };
+          cwd: scratch, storage: input.storage, retiredOperationIds };
         const recovered = [
           ...await attachPreservedWorkspaceSnapshots(scope),
           ...await attachPreservedRemoteWorkspaceSnapshots({ ...scope, runId: input.runId, workspaceId: input.workspace.id }),
@@ -535,7 +546,7 @@ export async function prepareRemoteWorkspace(input: {
     }
   }
   await retainRemoteRecoveryAttachments({ db: input.db, workspace: input.workspace, runId: input.runId,
-    remoteRoot, target, recoveredFiles, assertOwned: input.assertOwned, storage: input.storage });
+    remoteRoot, target, recoveredFiles, retiredOperationIds, assertOwned: input.assertOwned, storage: input.storage });
   await input.assertOwned?.();
   const prepared = await input.db.transaction(async tx => {
     await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId);
@@ -549,6 +560,13 @@ export async function prepareRemoteWorkspace(input: {
       || current.location.remoteCwd !== remoteRoot)) throw new Error("remote_workspace_authority_changed");
     const authority: RemoteWorkspaceAuthority = { ...current, dirty: true, location: { environmentId: input.lease.environmentId!,
       leaseId: input.lease.id, providerLeaseId: input.lease.providerLeaseId!, remoteCwd: remoteRoot } };
+    // Files published here equal the saved version only when this preparation
+    // started from a clean saved version and added nothing to it. Later writes
+    // (provisioning, runner commands, saves) leave their own durable records.
+    const unchangedBaseline: UnchangedBaseline | undefined = initial.snapshotId && !initial.dirty && migration === null
+      && current.snapshotId === initial.snapshotId && recoveredFiles.length === 0
+      && ((input.source ?? initial.source).repositories ?? []).every(repository => isSavedWorkspaceRepository(input.workspace, initial, repository))
+      ? { schema: UNCHANGED_BASELINE_SCHEMA, epoch: authority.epoch, runId: input.runId, snapshotId: initial.snapshotId } : undefined;
     const [lease] = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.id, input.lease.id),
       eq(environmentLeases.companyId, workspace.companyId))).for("update");
     if (!lease || lease.status !== "active" || lease.environmentId !== input.lease.environmentId
@@ -557,9 +575,13 @@ export async function prepareRemoteWorkspace(input: {
     const [savedLease] = await tx.update(environmentLeases).set({ metadata: { ...lease.metadata, remoteCwd: remoteRoot, remoteWorkspaceId: workspace.id }, updatedAt: new Date() })
       .where(eq(environmentLeases.id, lease.id)).returning();
     const [savedWorkspace] = await tx.update(executionWorkspaces).set({ cwd: remoteRoot, providerRef: remoteRoot,
-      metadata: { ...workspace.metadata, remoteWorkspace: authority,
+      metadata: { ...workspace.metadata, remoteWorkspace: authority, [UNCHANGED_BASELINE_KEY]: unchangedBaseline,
+        // A live copy names the run it is shown to; the next preparation retires
+        // it once that run has succeeded. Retired records stay so a sandbox
+        // restored from an older save is cleaned up too.
         ...(recoveredFiles.length || workspace.metadata?.remoteWorkspaceRecoveredFiles !== undefined
-          ? { remoteWorkspaceRecoveredFiles: recoveredFiles } : {}) }, updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id)).returning();
+          ? { remoteWorkspaceRecoveredFiles: recoveredFiles.map(item => item.retired ? item : { ...item, presentedToRunId: input.runId }) } : {}) },
+      updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id)).returning();
     const runReference = reference(workspace.id, authority, "prepared");
     const issueId = await persistRunReference(tx, workspace.companyId, input.runId, runReference);
     if (restoredExport) {
@@ -694,6 +716,57 @@ async function settleSaveInvocation(input: { db: Db; workspace: Workspace; runId
   });
 }
 
+/**
+ * Hand a workspace on at its saved version when its writer ended without
+ * changing it (see proveRemoteWorkspaceUnchanged). The caller holds the
+ * workspace row lock. Returns null, changing nothing, when the proof fails or
+ * the writer run is locked by another transaction; its full save still applies.
+ */
+export async function releaseUnchangedRemoteWorkspaceWriter(tx: Transaction, input: {
+  workspace: typeof executionWorkspaces.$inferSelect; authority: RemoteWorkspaceAuthority;
+  callerOwnsWriter?: boolean; wakeWaiters?: boolean;
+}): Promise<{ workspace: typeof executionWorkspaces.$inferSelect; authority: RemoteWorkspaceAuthority } | null> {
+  const { workspace, authority } = input;
+  const runId = authority.writerRunId;
+  if (!runId || !authority.dirty || !authority.snapshotId || !readUnchangedBaseline(workspace.metadata)) return null;
+  // Never wait on a writer run another transaction holds; that owner settles it.
+  const [writer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, workspace.companyId), eq(heartbeatRuns.id, runId))).for("update", { skipLocked: true });
+  if (!writer) return null;
+  const proof = await proveRemoteWorkspaceUnchanged(tx as unknown as Db, { workspace, authority,
+    callerOwnsWriter: input.callerOwnsWriter, isSavedRepository: repository => isSavedWorkspaceRepository(workspace, authority, repository) });
+  if (!proof.proven) {
+    logger.info({ runId, workspaceId: workspace.id, reason: proof.reason }, "Remote workspace keeps its full save");
+    return null;
+  }
+  const at = new Date();
+  const released: RemoteWorkspaceAuthority = { ...authority, dirty: false, writerRunId: null };
+  const [saved] = await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspace: released,
+    [UNCHANGED_BASELINE_KEY]: { ...proof.baseline, releasedAt: at.toISOString() } }, updatedAt: at })
+    .where(eq(executionWorkspaces.id, workspace.id)).returning();
+  await persistRunReference(tx, workspace.companyId, runId, reference(workspace.id, released, "saved"));
+  await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
+  await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
+  if (input.wakeWaiters !== false) await wakeWorkspaceBusyWaitersInTx(tx as unknown as Db, { companyId: workspace.companyId,
+    runId, contextSnapshot: null, scheduledRetryReason: null, now: at });
+  await persistActivity(tx as unknown as Db, { companyId: workspace.companyId, actorType: "system", actorId: "remote-workspaces",
+    action: "workspace.snapshot_skipped_unchanged", entityType: "execution_workspace", entityId: workspace.id, runId,
+    details: { snapshotId: authority.snapshotId, epoch: authority.epoch } });
+  return { workspace: saved!, authority: released };
+}
+
+/** Locks the workspace and releases `runId` as its unchanged ended writer, if provable. */
+export async function releaseUnchangedRemoteWorkspaceWriterById(tx: Transaction, input: {
+  companyId: string; workspaceId: string; runId: string;
+}) {
+  const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId),
+    eq(executionWorkspaces.id, input.workspaceId))).for("update");
+  const authority = readRemoteWorkspaceAuthority(workspace?.metadata);
+  if (!workspace || !authority || authority.writerRunId !== input.runId) return null;
+  return releaseUnchangedRemoteWorkspaceWriter(tx, { workspace, authority });
+}
+
 export async function saveRemoteWorkspace(input: {
   db: Db; workspace: Workspace; runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
   assertOwned: () => Promise<void>; storage?: StorageService; boundary?: string;
@@ -705,11 +778,28 @@ export async function saveRemoteWorkspace(input: {
   if (!expected?.location || expected.location.providerLeaseId !== input.lease.providerLeaseId || expected.location.leaseId !== input.lease.id) throw new Error("remote_workspace_save_binding_mismatch");
   await input.assertOwned();
   const invocationId = randomUUID();
-  const operation = await input.db.transaction(async tx => {
+  const reserved = await input.db.transaction(async tx => {
     const issueId = await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId);
     const workspace = await currentWorkspace(tx, input.workspace.companyId, input.workspace.id);
     const current = readRemoteWorkspaceAuthority(workspace.metadata);
     if (!current || current.epoch !== expected.epoch || (current.writerRunId !== input.runId && current.dirty)) throw new Error("remote_workspace_authority_changed");
+    // A writer that ended without changing its files keeps its saved version.
+    // No capture runs; a repeated call returns the same version.
+    if (boundary === "final") {
+      const baseline = readUnchangedBaseline(workspace.metadata);
+      const replayed = baseline?.releasedAt && baseline.runId === input.runId && baseline.epoch === current.epoch
+        && baseline.snapshotId === current.snapshotId && !current.dirty && current.writerRunId === null;
+      const released = replayed ? { authority: current } : current.writerRunId === input.runId
+        ? await releaseUnchangedRemoteWorkspaceWriter(tx, { workspace, authority: current, callerOwnsWriter: true }) : null;
+      if (released?.authority.snapshotId) {
+        const [snapshot] = await tx.select().from(executionWorkspaceSnapshots).where(and(
+          eq(executionWorkspaceSnapshots.companyId, workspace.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id),
+          eq(executionWorkspaceSnapshots.id, released.authority.snapshotId)));
+        if (!snapshot?.sha256) throw new Error("remote_workspace_snapshot_missing");
+        return { kind: "unchanged" as const, saved: { snapshotId: snapshot.id, generation: snapshot.generation, sha256: snapshot.sha256,
+          savedAt: snapshot.updatedAt.toISOString(), unchanged: true as const } };
+      }
+    }
     const [previous] = await tx.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, workspace.companyId),
       eq(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.heartbeatRunId, input.runId),
       eq(workspaceOperations.phase, "remote_workspace_snapshot"), sql`${workspaceOperations.metadata}->>'boundary' = ${boundary}`,
@@ -723,7 +813,7 @@ export async function saveRemoteWorkspace(input: {
       const [registered] = await tx.update(workspaceOperations).set({ ...reopened, metadata: { ...previous.metadata,
         saveWork: { schema: SAVE_WORK_SCHEMA, activeIds: [...(work?.activeIds ?? []), invocationId],
           unknown: work?.unknown ?? true, quiescedAt: null } }, updatedAt: new Date() }).where(eq(workspaceOperations.id, previous.id)).returning();
-      return registered!;
+      return { kind: "registered" as const, operation: registered! };
     }
     // The workspace lock serializes generation reservations. Failed/deleted
     // snapshots still own their generation, and an operation can be committed
@@ -747,8 +837,10 @@ export async function saveRemoteWorkspace(input: {
         saveWork: { schema: SAVE_WORK_SCHEMA, activeIds: [invocationId], unknown: false, quiescedAt: null },
         exportCleanup: { ...current.location, state: "pending" } },
     }).returning();
-    return created!;
+    return { kind: "registered" as const, operation: created! };
   });
+  if (reserved.kind === "unchanged") return reserved.saved;
+  const { operation } = reserved;
   let captured: Awaited<ReturnType<typeof captureRemoteWorkspaceArchive>> | null = null;
   let publicationScratch: string | undefined;
   let failure: { code: string; cause?: string } | undefined;
@@ -803,6 +895,9 @@ export async function saveRemoteWorkspace(input: {
       if (boundary === "final") {
         await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
+        // The hold ends with this commit; runs parked behind it start now.
+        await wakeWorkspaceBusyWaitersInTx(tx as unknown as Db, { companyId: workspace.companyId, runId: input.runId,
+          contextSnapshot: null, scheduledRetryReason: null, now: at });
       }
       const receipt = object(workspace.metadata?.remoteWorkspaceSnapshotRepositories);
       const priorRepositories = receipt.snapshotId === current.snapshotId && Array.isArray(receipt.repositories)

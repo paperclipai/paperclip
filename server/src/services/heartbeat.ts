@@ -1,4 +1,7 @@
+import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
+import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
@@ -52,6 +55,7 @@ import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-wo
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { prepareAndSelectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
 import { createHeartbeatRunCompletion } from "./heartbeat/run-completion.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 export {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   parseSandboxProviderPluginNotReadyFailureMessage,
@@ -81,6 +85,7 @@ import {
   decorateHeartbeatRunRuntimeStatus,
   createHeartbeatLifecycle,
   persistHeartbeatRunProcessMetadata,
+  retryTransientRunWrite,
 } from "./heartbeat/run-lifecycle.js";
 export {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
@@ -317,6 +322,7 @@ import {
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { StaleExecutionContinuationError } from "./execution-continuation.js";
+import { deferUndeliveredCommentsOfStaleRun } from "./heartbeat/stale-comment-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -998,6 +1004,8 @@ export function heartbeatService(
   const recovery = recoveryService(db, {
     enqueueWakeup,
     liveRunExecutions,
+    // Bound at call time: the heartbeat recovery module is created below.
+    settleLostRunProcess: scope => recoverActiveExecutions(scope),
     settleExplicitContinuationRetry: releaseIssueExecutionAndPromote,
     scheduleRecoveryRetry: async (runId) => {
       const [run] = await db
@@ -1054,6 +1062,7 @@ export function heartbeatService(
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
     recoverNativeRunsAfterRestart,
+    recoverActiveExecutions,
     reapOrphanedRuns,
     sweepOrphanedActiveLeases,
     drainRunningRunsForShutdown,
@@ -1313,6 +1322,7 @@ export function heartbeatService(
     isHeartbeatRunTerminalStatus,
     liveRunExecutions,
     getSchedulingSuppression,
+    isRunAdmissionClosed: () => shutdownInProgress || isProcessRunAdmissionClosed(),
     resumeExecutionWaitComments,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
@@ -1523,6 +1533,12 @@ export function heartbeatService(
   function resumeRemoteStopComments(...args: Parameters<typeof runControl.resumeRemoteStopComments>) {
     return runControl.resumeRemoteStopComments(...args);
   }
+  // The interrupted-preparation ownership kind settles a hold, then replays the
+  // preparation through this same resume path (bounded, uncharged retry).
+  registerHeldPreparationResumer(async ({ companyId, runId }) => {
+    const run = await getRun(runId);
+    if (run && run.companyId === companyId) await resumeRemoteStopComments(run);
+  });
 
   function cancelRunInternal(...args: Parameters<typeof runControl.cancelRunInternal>) {
     return runControl.cancelRunInternal(...args);
@@ -2947,6 +2963,7 @@ export function heartbeatService(
           reserveRunBudget(db, run.companyId, run.id,
             readNonEmptyString(runLedgerScope.projectId), runLedgerScope, runOptions.nativeLeaseOwner))
           .catch(async (error: unknown) => { throw await relinquished() ? new NativeControllerDetachedForRestartError() : error; });
+        crashPoint("budget.reservation.after_hold_before_dispatch");
         let entered = false, handedOff = false;
         try {
           return await dispatchResolvedInteractionContinuationAfterAdmission((markDispatchStarted) => {
@@ -3545,13 +3562,13 @@ export function heartbeatService(
               }
               // Bind cleanup intent to this exact process generation in the
               // same commit as its host-observed PID/group/start identity.
-              return db.transaction(async transaction => {
+              return retryTransientRunWrite(() => db.transaction(async transaction => {
                 const tx = transaction as unknown as Db;
                 const persisted = await persistHeartbeatRunProcessMetadata(tx, processRunId, meta);
                 await recordLegacyCaseHandoffCleanupIntent(tx, { runId: processRunId, issueId,
                   controllerBootId: legacyControllerBootId, scratch: runScratch });
                 return persisted;
-              });
+              }));
             },
             recordCurrentHeartbeatRunRuntimeProgress,
             dispatchPendingNativeStatusWakeups,
@@ -3792,6 +3809,12 @@ export function heartbeatService(
         // The queued continuation became obsolete before adapter dispatch.
         // Use cancellation settlement so wakeup, issue ownership, agent state,
         // and notifications agree; do not retry work for the previous owner.
+        // A user's message it carried that no run read is saved first, so the
+        // release reopens the finished task for it (work-intent outbox). If
+        // this fast path fails or the closing run has not settled yet, the
+        // ownership reconciler saves it once that run settles.
+        await deferUndeliveredCommentsOfStaleRun(db, run).catch(err =>
+          logger.warn({ err, runId: run.id }, "could not save the messages of a stale continuation"));
         await cancelRunInternal(run.id, outerErr.code, {
           errorCode: outerErr.code,
           eventMessage: "stale execution continuation cancelled before dispatch",
@@ -3934,6 +3957,7 @@ export function heartbeatService(
             providerResourceDisposition: providerResourceDispositionForRun,
             nativeLifecycleTelemetry: nativeLifecycleTelemetryForRun,
           }));
+          crashPoint("environment.lease.after_release_before_runtime_services");
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           caseHandoffCleanupSettled = true;
         }
@@ -4148,8 +4172,8 @@ export function heartbeatService(
     }
   }
 
-  async function stopInvocationsForAgents(agentIds: string[], reason: string) {
-    await cancelInvocationsForAgentsInternal(agentIds, reason);
+  async function stopInvocationsForAgents(agentIds: string[], reason: string, options: StopInvocationOptions = {}) {
+    await cancelInvocationsForAgentsInternal(agentIds, reason, options);
     const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
     const leasesToRelease = await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases)
       .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))

@@ -1,8 +1,39 @@
 import { createHash } from "node:crypto";
-import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { readSystemRecovery } from "../system-recovery-state.js";
+
+type NativeRemoteExecutionScope = {
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "runnerProfileJson">;
+  issueId: string;
+};
+
+export async function readNativeRemoteExecutionOwnershipForRuns(db: Db, inputs: readonly NativeRemoteExecutionScope[]) {
+  const key = (companyId: string, issueId: string, runId: string) => `${companyId}:${issueId}:${runId}`;
+  const leases = inputs.length ? await db.select({ id: environmentLeases.id, companyId: environmentLeases.companyId,
+    issueId: environmentLeases.issueId, runId: environmentLeases.heartbeatRunId,
+    metadata: sql<Record<string, unknown>>`jsonb_build_object('runnerTaskStartup', ${environmentLeases.metadata}->'runnerTaskStartup')`,
+  }).from(environmentLeases).where(and(
+    or(...inputs.map(input => and(eq(environmentLeases.companyId, input.run.companyId),
+      eq(environmentLeases.issueId, input.issueId), eq(environmentLeases.heartbeatRunId, input.run.id)))),
+    sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
+  )).orderBy(desc(environmentLeases.createdAt)) : [];
+  const byScope = new Map<string, typeof leases[number]>();
+  for (const lease of leases) {
+    const scope = key(lease.companyId, lease.issueId!, lease.runId!);
+    if (!byScope.has(scope)) byScope.set(scope, lease);
+  }
+  return inputs.map(input => {
+    const pluginTask = byScope.get(key(input.run.companyId, input.issueId, input.run.id));
+    return { pluginTask, remoteProcess: input.run.runnerProfileJson?.nativeWorkspaceSync != null
+      || input.run.runnerProfileJson?.remoteWorkspace != null || !!pluginTask };
+  });
+}
+
+export async function readNativeRemoteExecutionOwnership(db: Db, input: NativeRemoteExecutionScope) {
+  return (await readNativeRemoteExecutionOwnershipForRuns(db, [input]))[0]!;
+}
 
 export const nativeManualAdmissionOwnerColumns = {
   runId: nativeRunFinalizations.runId, companyId: nativeRunFinalizations.companyId,

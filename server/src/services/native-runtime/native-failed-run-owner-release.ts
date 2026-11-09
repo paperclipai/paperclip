@@ -1,6 +1,6 @@
-import { currentControllerProcess, processExists, processStartsDefinitelyDiffer } from "../controller-process-identity.js";
+import { currentControllerProcess } from "../controller-process-identity.js";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
-import { nativeControllerAuthorityDigest, isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
+import { nativeControllerAuthorityDigest, readNativeRemoteExecutionOwnership, isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
 import { settleNativeTerminalWake } from "./native-run-projection.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
@@ -8,14 +8,15 @@ import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from "
 import { activityLog, environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
+import { proveOwnerGone, type LocalOwnerStamp } from "../owner-proof.js";
 import { logActivity, persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
-import { readProcessStartedAt } from "../hot-restart.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { LEGACY_WORKSPACE_RECOVERY_KEY } from "../workspace-restore-recovery-state.js";
 import { activeNativeExecutionRunIds } from "./native-active-runs.js";
-import { currentNativeControllerIdentity, isCurrentNativeControllerProcess, surfaceNativeControllerNamespaceAttention } from "./native-restart-recovery.js";
+import { currentNativeControllerIdentity, isCurrentNativeControllerProcess, surfaceNativeControllerNamespaceAttention, recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
+import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "./native-owner-stamps.js";
 
 /**
  * A native run can fail outside the native session executor: environment lease
@@ -116,51 +117,48 @@ export async function nextAbandonedNativeOwnerReleaseAt(db: Db): Promise<Date | 
   return row?.at ?? null;
 }
 
-function processAbsent(pid: number): boolean {
-  return !processExists(pid);
-}
+/** A proof that used the one-release fallback for a row saved before its PID
+ * space was recorded; each is logged once the release commits. */
+type FallbackUse = { reason: string; source: string };
 
-/** True unless the recorded process is gone or provably a different process. */
-async function recordedProcessMayBeLive(pid: number | null, startedAt: Date | null): Promise<boolean> {
-  if (!pid || processAbsent(pid)) return false;
-  if (!startedAt) return true;
-  const observed = await readProcessStartedAt(pid).catch(() => null);
-  return !processStartsDefinitelyDiffer(startedAt, observed);
+/** True unless the shared prover proves the stamped owner gone. Only a `gone`
+ * verdict releases: a live, unprovable or foreign-space owner may be live. */
+async function ownerMayBeLive(stamp: LocalOwnerStamp, source: string, fallbacks: FallbackUse[]): Promise<boolean> {
+  const proof = await proveOwnerGone(stamp);
+  if (proof.verdict !== "gone") return true;
+  if (proof.legacyHostFallback) fallbacks.push({ reason: proof.reason, source });
+  return false;
 }
 
 /**
  * The run-level process evidence `agentExecutionsHaveStopped` requires. This
- * process answers for itself from its in-memory execution registries.
+ * process answers for itself from its in-memory execution registries; a
+ * recorded adapter process (PID and group) is judged by the shared prover.
  */
-async function runProcessMayBeLive(run: Run, now: Date): Promise<boolean> {
+async function runProcessMayBeLive(run: Run, now: Date, fallbacks: FallbackUse[]): Promise<boolean> {
   if (adapterExecutionControls.has(run.id) || activeNativeExecutionRunIds.has(run.id)) return true;
   if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) return true;
-  // Same process identity rule as `agentExecutionsHaveStopped`: a recorded PID
-  // that now has another start time was recycled, and so was its own group.
-  let processAlive = Boolean(run.processPid && !processAbsent(run.processPid));
-  let groupAlive = Boolean(run.processGroupId && !processAbsent(-run.processGroupId));
-  if (processAlive && run.processStartedAt) {
-    const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
-    if (processStartsDefinitelyDiffer(run.processStartedAt, observed)) {
-      processAlive = false;
-      if (run.processGroupId === run.processPid) groupAlive = false;
-    }
-  }
-  return processAlive || groupAlive;
+  if (!run.processPid && !run.processGroupId) return false;
+  return ownerMayBeLive(runProcessOwnerStamp(run, "native_failed_run_process", { legacyFallback: true }),
+    "native_failed_run_process", fallbacks);
 }
 
 /** An expired owner's recorded controller, unless this process is that controller. */
-async function controllerMayBeLive(coordinator: Coordinator): Promise<boolean> {
+async function controllerMayBeLive(coordinator: Coordinator, fallbacks: FallbackUse[]): Promise<boolean> {
   if (isCurrentNativeControllerProcess(coordinator)) return false;
   // A previous boot of this process can share its PID, but cannot be its controller.
   if (coordinator.controllerPid === process.pid) return false;
-  return recordedProcessMayBeLive(coordinator.controllerPid, coordinator.controllerProcessStartedAt);
+  if (!coordinator.controllerPid) return false;
+  // Not this boot (checked above), so the prover must not treat its boot id as live.
+  return ownerMayBeLive({ ...nativeControllerOwnerStamp(coordinator, "native_failed_run_controller"), bootId: null },
+    "native_failed_run_controller", fallbacks);
 }
 
 async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promise<boolean> {
   const publications: ActivityPublication[] = [];
   const settled = await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    const fallbacks: FallbackUse[] = [];
     await tx.execute(sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`);
     const [binding] = await tx.select({ companyId: nativeRunFinalizations.companyId, issueId: nativeRunFinalizations.issueId })
       .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, release.runId));
@@ -247,11 +245,8 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
           if (!coordinator.leaseOwner?.startsWith("native-finalizer:") && !coordinator.leaseOwner?.startsWith("native-cleanup:")) {
             const [expiry] = await tx.select({ epoch: sql<string | null>`extract(epoch from ${nativeRunFinalizations.leaseExpiresAt})::numeric::text` })
               .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
-            const [plugin] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-              eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-              sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`)).limit(1);
-            await surfaceNativeControllerNamespaceAttention(tx, { run, coordinator, expiryEpoch: expiry?.epoch ?? null,
-              remoteProcess: run.runnerProfileJson?.nativeWorkspaceSync != null || run.runnerProfileJson?.remoteWorkspace != null || !!plugin });
+            const { remoteProcess } = await readNativeRemoteExecutionOwnership(tx, { run, issueId: coordinator.issueId });
+            await surfaceNativeControllerNamespaceAttention(tx, { run, coordinator, expiryEpoch: expiry?.epoch ?? null, remoteProcess });
           }
           return false;
         }
@@ -259,8 +254,9 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
       if (coordinator.leaseExpiresAt > now) return false;
       const [heldElsewhere] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.id, run.id), or(unsettledRunEnvironmentLease, pendingNativeStop))).limit(1);
-      if (heldElsewhere || await runProcessMayBeLive(run, now) || await controllerMayBeLive(coordinator)) return false;
-    } else if (await runProcessMayBeLive(run, now)) {
+      if (heldElsewhere || await runProcessMayBeLive(run, now, fallbacks)
+        || await controllerMayBeLive(coordinator, fallbacks)) return false;
+    } else if (await runProcessMayBeLive(run, now, fallbacks)) {
       // The claim never reached the executor, but the run may still own a local process.
       return false;
     }
@@ -330,6 +326,9 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
         agentId: run.agentId, runId: run.id, details: { recoveryActionId: release.actionId,
           authorityDigest: release.authorityDigest, replay: "not_authorized" } });
       return true;
+    }
+    for (const use of fallbacks) {
+      await recordLegacyHostFallbackProof(tx, run, { allowed: true, reason: use.reason, legacyHostFallback: true }, use.source);
     }
     await logActivity(tx, {
       companyId: run.companyId, actorType: "system", actorId: ACTOR_ID,

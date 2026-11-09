@@ -331,6 +331,35 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("tells agents managed-agent profiles are created with the CLI, not a web page", () => {
+    const route = buildOpenApiSpec().paths["/api/companies/{companyId}/managed-agent-profiles"];
+    for (const operation of [route.get, route.post]) {
+      expect(operation.description).toContain("Board only");
+      expect(operation.description).toContain("There is no web page");
+    }
+    expect(route.post.description).toContain("paperclipai managed-agent setup --company-id <companyId>");
+    expect(route.post.description).toContain("--acknowledge-retention");
+  });
+
+  it("documents the export include body so agents can request projects and skills", () => {
+    const spec = buildOpenApiSpec();
+    for (const path of ["/api/companies/{companyId}/exports", "/api/companies/{companyId}/exports/preview"]) {
+      const operation = spec.paths[path].post;
+      const body = operation.requestBody.content["application/json"].schema;
+      expect(body.properties.include.properties).toMatchObject({ projects: expect.anything(), skills: expect.anything() });
+      expect(operation.description).toMatch(/include\.projects/);
+    }
+  });
+  it("documents the safe company import body so agents can preview and resolve agent name conflicts", () => {
+    const spec = buildOpenApiSpec();
+    for (const path of ["/api/companies/{companyId}/imports/preview", "/api/companies/{companyId}/imports/apply"]) {
+      const operation = spec.paths[path].post;
+      const body = operation.requestBody.content["application/json"].schema;
+      expect(body.required).toEqual(expect.arrayContaining(["source", "target"]));
+      expect(body.properties).toMatchObject({ collisionStrategy: expect.anything(), nameOverrides: expect.anything(), include: expect.anything() });
+      expect(operation.description).toMatch(/replace/);
+    }
+  });
   it("documents generic webhook provenance headers and accepted responses without a provider-specific endpoint", () => {
     const spec = buildOpenApiSpec();
     const operation = spec.paths["/api/routine-triggers/public/{publicId}/fire"].post;
@@ -369,6 +398,26 @@ describe("openapi routes", () => {
       detail: { properties: { kind: { enum: ["questions"] } } },
     } } });
     for (const code of ["200", "400", "401", "403", "404"]) expect(operation.responses[code]).toBeDefined();
+  });
+
+  it("documents task-tree controls as board-only and names the human page", () => {
+    const spec = buildOpenApiSpec() as any;
+    const boardSecurity = [{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }];
+    for (const [path, method] of [
+      ["/api/issues/{id}/tree-control/state", "get"],
+      ["/api/issues/{id}/tree-control/preview", "post"],
+      ["/api/issues/{id}/tree-holds", "get"],
+      ["/api/issues/{id}/tree-holds", "post"],
+      ["/api/issues/{id}/tree-holds/{holdId}", "get"],
+      ["/api/issues/{id}/tree-holds/{holdId}/release", "post"],
+    ] as const) {
+      const operation = spec.paths[path][method];
+      expect(operation.security).toEqual(boardSecurity);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    }
+    const create = spec.paths["/api/issues/{id}/tree-holds"].post.description as string;
+    expect(create).toContain("Pause subtree");
+    expect(create).toContain("/{prefix}/issues/{identifier}");
   });
 
   it("documents owned conversation reads and exact revision access separately", () => {
@@ -557,12 +606,32 @@ describe("openapi routes", () => {
     expect(dismiss.description).toContain("viewers may dismiss their own");
   });
 
+  it("tells agents that Agent Chat is always on instead of advertising a retired toggle", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const experimental = res.body.paths["/api/instance/settings/experimental"];
+    for (const operation of [experimental.get, experimental.patch]) {
+      expect(operation.description).toContain("Agent Chat is always on");
+      expect(operation.description).toContain("enableAgentChat is a retired compatibility key");
+      expect(operation.description).toContain("tell them it is already on");
+    }
+  });
+
   it("tells agents that archiving keeps a status card and where a person restores it", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const patch = res.body.paths["/api/status-cards/{id}"].patch;
     expect(patch.description).toContain("it is not deleted");
     expect(patch.description).toContain("give them the returned href as a Markdown link");
     expect(patch.description).toContain("Restoring (archived: false) starts a fresh full summary");
+  });
+
+  it("tells agents that creating or refreshing a status card only queues the summarizer, so they reply now with its link", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const create = res.body.paths["/api/companies/{companyId}/status-cards"].post;
+    expect(create.description).toContain("The response is returned before any summary exists");
+    expect(create.description).toContain("reply now with the returned href as a Markdown link");
+    const refresh = res.body.paths["/api/status-cards/{id}/refresh"].post;
+    expect(refresh.description).toContain("Queues a refresh; it does not return a new summary");
+    expect(refresh.description).toContain("Do not sleep or poll for it: reply now that the refresh is queued, with the returned card.href");
   });
 
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
