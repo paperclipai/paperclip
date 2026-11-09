@@ -45,6 +45,8 @@ describe("overview observation time", () => {
     ["24-hour UTC time", "as of 15:26 UTC"],
     ["12-hour time", "at 3:25 pm UTC"],
     ["ISO timestamp", "(snapshot 2026-11-09T15:26:05Z)"],
+    ["ISO timestamp with an offset", "(snapshot 2026-11-09T10:26:05-05:00)"],
+    ["dated time without an offset", "as of 2026-11-09 15:26"],
   ])("accepts %s inside the answering run", (_name, phrase) => {
     const v = overview(); v.reply = v.reply.replace("as of 15:26 UTC", phrase); expect(failed(v)).toEqual([]);
   });
@@ -56,6 +58,10 @@ describe("overview observation time", () => {
     ["relative words only (the retained live reply's form)", "right now"],
     ["a time outside the run", "as of 11:40 UTC"],
     ["an a.m. time that is twelve hours off", "as of 3:26 am UTC"],
+    ["a 24-hour time that is twelve hours off", "as of 03:26 UTC"],
+    ["an ISO timestamp on another day", "(snapshot 2026-11-08T15:26:05Z)"],
+    ["an ISO timestamp whose offset puts it outside the run", "(snapshot 2026-11-09T15:26:05-05:00)"],
+    ["a dated time on another day", "as of 2026-11-08 15:26"],
   ])("rejects %s", (_name, phrase) => {
     const v = overview(); v.reply = v.reply.replace("as of 15:26 UTC", phrase); expect(failed(v)).toEqual(["observation-time"]);
   });
