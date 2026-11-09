@@ -22,7 +22,7 @@ import { gradeTask } from "./grader.js";
 import { checkPlanInvariants, summarizeViolations, type InvariantCheck } from "./invariants.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
-import { TaskObserver } from "./observer.js";
+import { TaskObserver, childSpeedTasksInTurn } from "./observer.js";
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
@@ -469,8 +469,7 @@ async function main(): Promise<number> {
     }
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
     const speed = await (async () => {
-      const childTasks: Awaited<ReturnType<TaskObserver["childSpeedTasks"]>> = [];
-      for (const observer of launched) childTasks.push(...await observer.childSpeedTasks());
+      const childTasks = await childSpeedTasksInTurn(launched);
       return collectWaveSpeed(api, plan.options.env, [...launched.flatMap(observer => observer.record.issueId
         ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), ...childTasks], faults);
     })().catch(error => { timeline.add("wave_speed_failed", { error: String(error) }); anyFailure = true; return null; });

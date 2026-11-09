@@ -115,7 +115,10 @@ S1 is the board's Stop button. While the task's run is running, the harness canc
 comments that it stopped the run on purpose and asks the agent to continue with an extra marker
 line. The oracle checks that the stopped run ended `cancelled`, that nothing started between the
 stop and the continue comment (recovery must not restart work the operator stopped), and that the
-finished brief has both markers. S1 is not a default workload.
+finished brief has both markers. The Stop waits for a ready server with no fault in progress. If the
+run already finished when the stop window opens, the harness records a missed Stop
+(`task_stop_missed`), skips the stop-triggered fault, still posts the continue comment, and the
+oracle checks only the continue. S1 is not a default workload.
 
 ## Code change in a real repository (R1, `--workspace-repo`)
 
@@ -306,6 +309,12 @@ re-arms the task's own triggered faults instead of using their offsets.
   `RESTART_CHAOS_ALLOW_UNSANDBOXED_ORACLE=1` is set inside a disposable VM.
 - R1 allows the workload budget plus outage time. When a Retry was needed R1 is
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
+  A task that never rested within its deadline fails R1 as `no_rest_within_budget`,
+  whatever its last status.
+- Speed: an aggregate p50/p95 row can breach only with at least 5 samples; a
+  smaller row is reported as `insufficient sample (n < 5)`. Every cold or warm run
+  over its p95 budget, and every restart recovery whose Paperclip share exceeds
+  its p95 budget, still fails the wave on its own.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
 - R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time.
