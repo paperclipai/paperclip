@@ -1,9 +1,10 @@
+import { retainSlackFormOpeningProof } from "../services/chat-channels/slack/form-opening-proof.js";
 import { readSlackFormRetainedConsumer } from "../services/chat-channels/slack/cloud-consumer.js";
-import { transferSlackFormAckReceipt } from "../services/chat-channels/slack/form-ack-work.js";
+import { parseSlackFormAckWork, transferSlackFormAckReceipt } from "../services/chat-channels/slack/form-ack-work.js";
 import { parseSlackFormFinalizedReceipt, slackFormFinalizedReceiptDigest } from "../services/chat-channels/slack/ack-receipt.js";
 import { createPaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, applyPendingMigrations, authUsers, chatActions, chatEndpoints, companies, companyMemberships,
@@ -91,6 +92,88 @@ if (process.env.SLACK_GATE_EXPECT_PRELOAD === "1" && !external) throw new Error(
     const errors = closed.flatMap(value => value.status === "rejected" ? [value.reason] : []);
     if (errors.length) throw new AggregateError(errors, "retirement auxiliary closure failure");
   });
+  // Seed retained accepted ACK custody, as in the existing GC controls; this is not a provider-delivery proof.
+  async function acceptedAckForRefresh() {
+    await acceptSlackFormRetirementLocally(db, await row(), identity, compactJws);
+    const digest = slackFormRetirementReceipt(binding, identity.environment, actorId).receiptId;
+    const retire = async (input: { operation: Record<string, unknown> }) => input.operation.refreshRetirementReceipt
+      ? { retirementReceiptJws: compactJws } : input.operation.acceptedRetirementReceipt
+        ? { acceptedRetirementDigest: digest } : { releasedRetirementDigest: digest };
+    await transferSlackFormRetirement(db, await row(), identity, retire);
+    await transferSlackFormRetirement(db, await row(), identity, retire);
+    const id = randomUUID(), operationId = "e".repeat(64), deliveryId = `slack_form_${operationId}`, now = new Date().toISOString();
+    const originalBody = JSON.stringify({ type: "block_actions", user: { id: "UTEST" } });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const original = { rawBody: Buffer.from(originalBody).toString("base64"), timestamp,
+      signature: `v0=${createHmac("sha256", "controlled-signing-secret").update(`v0:${timestamp}:${originalBody}`).digest("hex")}` };
+    const requestDigest = createHash("sha256").update(JSON.stringify([original.rawBody, original.timestamp, original.signature])).digest("hex");
+    const receipt = parseSlackFormFinalizedReceipt({ version: 1, kind: "slack_form_finalized", environment: identity.environment, binding,
+      operationId, deliveryId, appReceiptId: id, grantId: "grant", publicationId: "publication", interactionId: "interaction", userId: "UTEST",
+      viewDigest: null, terminalDigest: "d".repeat(64), outcome: "no_effect", finalizedAt: now });
+    const signAck = (kid: string) => {
+      const pair = generateKeyPairSync("ed25519"), encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+      vi.stubEnv("PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS", JSON.stringify({ keys: [{ ...pair.publicKey.export({ format: "jwk" }), kid, alg: "EdDSA", use: "sig" }] }));
+      const body = encode({ alg: "EdDSA", typ: "paperclip-connector-ack-receipt+jwt", kid }) + "." + encode({ v: 1, iss: "paperclip-cloud", aud: "paperclip-connector-ack-receipt/v1", sub: identity.instanceId, receipt });
+      return body + "." + sign(null, Buffer.from(body), pair.privateKey).toString("base64url");
+    };
+    const oldJws = signAck("ack-before-refresh");
+    await db.insert(chatActions).values({ id, companyId, endpointId, kind: "slack_form_session", providerActionId: `slack-form-session:${operationId}`,
+      status: "failed", payload: { binding, environment: identity.environment, operationId, requestDigest, userId: "UTEST", grantId: "grant", publicationId: "publication", interactionId: "interaction" },
+      result: { phase: "not_opened", terminalIntent: { version: 1, binding, operationId, deliveryId, userId: "UTEST", grantId: "grant", publicationId: "publication", interactionId: "interaction",
+        appReceiptId: id, view: null, outcome: "no_effect", submitReceiptId: null, rejectionDigest: receipt.terminalDigest, encryptedEvidence: null },
+        cloudProofAcceptance: { version: 1, binding, operationId, appReceiptId: id, outcome: "no_effect", terminalDigest: receipt.terminalDigest, acceptedAt: now },
+        formAck: { version: 1, phase: "accepted", leaseId: "exact-refresh-lease", deliveryId, receiptJws: oldJws, receipt }, nextAttemptAt: now } });
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "9".repeat(64));
+    await db.transaction(tx => retainSlackFormOpeningProof(tx, { companyId, appReceiptId: id, original,
+      operation: { version: 1, binding, grantId: "grant", id: operationId, externalId: "controlled-external-id", deliveryId, requestDigest, triggerDigest: "f".repeat(64),
+        userId: "UTEST", acceptedAt: now, triggerDeadline: now, phase: "rejected", view: null, closed: null, acknowledgement: null, rejection: null } }));
+    return { id, oldJws, currentJws: signAck("ack-after-refresh"), original };
+  }
+  for (const kind of ["retirement", "ack"] as const) for (const boundary of ["before_refresh", "after_refresh", "after_concurrent_write"] as const) {
+    it(`${kind} owner failure ${boundary} retains exact custody and durable retry without overwriting another writer`, async () => {
+      let id: string, oldJws: string, currentJws: string, original: { rawBody: string; timestamp: string; signature: string } | undefined;
+      if (kind === "retirement") {
+        await acceptSlackFormRetirementLocally(db, await row(), identity, compactJws);
+        id = actionId; oldJws = compactJws; currentJws = signCurrentReceipt("retirement-after-refresh");
+      } else ({ id, oldJws, currentJws, original } = await acceptedAckForRefresh());
+      const read = async () => (await db.select().from(chatActions).where(and(eq(chatActions.id, id), eq(chatActions.companyId, companyId))))[0]!;
+      const before = await read(), reported: string[] = [];
+      let refreshes = 0, transfers = 0, concurrent: typeof before | undefined;
+      const owner = { identity, resolveBotToken: async () => { throw new Error("retained work must not read credentials"); },
+        report: (code: string) => { reported.push(code); }, protocol: async (input: { operation: Record<string, unknown> }) => {
+          if (input.operation.refreshRetirementReceipt || input.operation.refreshAckReceipt) {
+            refreshes++;
+            if (boundary === "before_refresh") throw new Error("controlled failure before refresh");
+            return kind === "retirement" ? { retirementReceiptJws: currentJws } : { ackReceiptJws: currentJws };
+          }
+          transfers++;
+          expect(input.operation[kind === "retirement" ? "acceptedRetirementReceipt" : "acceptedAckReceipt"]).toBe(currentJws);
+          if (kind === "ack") expect(input.operation.originalOpening).toEqual(original);
+          if (boundary === "after_concurrent_write") {
+            const refreshed = await read();
+            await db.update(chatActions).set({ status: "attention", payload: { ...refreshed.payload, protectedConcurrentWriter: true },
+              result: { ...refreshed.result, nextAttemptAt: null, protectedConcurrentWriter: true }, updatedAt: new Date() }).where(eq(chatActions.id, id));
+            concurrent = await read();
+          }
+          throw new Error("controlled transfer failure after exact signature refresh");
+        } };
+      const started = Date.now(), due = await reconcilePendingSlackFormWork(db, owner), after = await read();
+      expect(refreshes).toBe(1); expect(transfers).toBe(boundary === "before_refresh" ? 0 : 1);
+      expect(reported).toEqual(["form_owner_broker_unavailable"]);
+      if (boundary === "after_concurrent_write") {
+        expect(concurrent).toBeDefined(); expect(after).toEqual(concurrent); expect(due).toBeNull();
+      } else {
+        expect(after.payload).toEqual(before.payload); expect(after.status).toBe(before.status);
+        const result = kind === "retirement" ? { ...before.result, retirementReceiptJws: boundary === "before_refresh" ? oldJws : currentJws }
+          : { ...before.result, formAck: { ...parseSlackFormAckWork(before.result?.formAck), receiptJws: boundary === "before_refresh" ? oldJws : currentJws } };
+        expect(after.result).toEqual({ ...result, attempts: 1, failureCode: "form_owner_broker_unavailable", failureReason: null, nextAttemptAt: expect.any(String) });
+        expect(due).toBe(Date.parse(String(after.result?.nextAttemptAt))); expect(due).toBeGreaterThanOrEqual(started + 5000);
+        if (due === null) throw new Error("Normal owner lost durable backoff");
+        expect(await reconcilePendingSlackFormWork(db, owner, new Date(due - 1))).toBe(due);
+        expect(refreshes).toBe(1); expect(await read()).toEqual(after);
+      }
+    }, 15000);
+  }
   it("commits original-subject acceptance before Cloud compaction and retries a lost transfer after reconstruction", async () => {
     let retireCalls = 0, cleanupCalls = 0;
     await reconcileSlackFormEnrollment(db, { actionId, identity, resolveBotToken: async () => { throw new Error("retirement must not read credentials"); }, protocol: async input => {

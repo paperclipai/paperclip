@@ -60,13 +60,14 @@ export async function stageSlackFormEnrollment(tx: Tx, input: { enrollment: Slac
   return row.id;
 }
 export async function reconcileSlackFormEnrollment(db: Db, input: { actionId: string; identity: SlackFormConnectorIdentity;
-  protocol: SlackFormProtocol; resolveBotToken(endpointId: string): Promise<string> }): Promise<void> {
+  protocol: SlackFormProtocol; resolveBotToken(endpointId: string): Promise<string>;
+  onSnapshot?(snapshot: typeof chatActions.$inferSelect): void }): Promise<void> {
   const [row] = await db.select().from(chatActions).where(and(eq(chatActions.id, input.actionId), eq(chatActions.kind, "slack_form_owner"))).limit(1);
   if (!row || row.result?.phase === "transferred") return;
   const enrollment = parseSlackFormPublicEnrollment(row.payload.enrollment), subject = row.payload.subject;
   if (enrollment.companyId !== row.companyId || enrollment.endpointId !== row.endpointId || enrollment.instanceId !== input.identity.instanceId
     || row.payload.environment !== input.identity.environment || typeof subject !== "string" || !subject) return attention("form_owner_identity_changed");
-  if (row.result?.phase === "retirement_accepted" || row.result?.phase === "retirement_gc_pending") return transferSlackFormRetirement(db, row, input.identity, input.protocol);
+  if (row.result?.phase === "retirement_accepted" || row.result?.phase === "retirement_gc_pending") return transferSlackFormRetirement(db, row, input.identity, input.protocol, input.onSnapshot);
   const [endpoint] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.id, row.endpointId), eq(chatEndpoints.companyId, row.companyId))).limit(1);
   const endpointSetup: Record<string, unknown> | undefined = endpoint ? slackFormSetupRecord(endpoint.setup) : undefined;
   const live = row.result?.desiredActive !== false && endpoint && ["active", "verifying", "attention"].includes(endpoint.status) && endpointSetup?.runtimeGeneration === enrollment.runtimeGeneration
@@ -192,11 +193,13 @@ export async function reconcilePendingSlackFormWork(db: Db, input: { identity: S
   if (!row) return null;
   const due = typeof row.result?.nextAttemptAt === "string" ? Date.parse(row.result.nextAttemptAt) : Number.NaN;
   if (Number.isFinite(due) && due > now.getTime()) return due;
+  let failureSnapshot = row;
+  const onSnapshot = (snapshot: typeof chatActions.$inferSelect) => { failureSnapshot = snapshot; };
   try {
     if (!Number.isFinite(due)) attention("form_owner_deadline_invalid");
-    if (row.kind === "slack_form_owner") await reconcileSlackFormEnrollment(db, { ...input, identity: input.identity, actionId: row.id });
+    if (row.kind === "slack_form_owner") await reconcileSlackFormEnrollment(db, { ...input, identity: input.identity, actionId: row.id, onSnapshot });
     else if (row.kind === "slack_form_grant") await publishSlackFormGrant(db, row.id, input.identity, input.protocol);
-    else await reconcileSlackFormNormalAck(db, { companyId: row.companyId, actionId: row.id, instanceId: input.identity.instanceId, connector: input.connector?.(), protocol: input.protocol });
+    else await reconcileSlackFormNormalAck(db, { companyId: row.companyId, actionId: row.id, instanceId: input.identity.instanceId, connector: input.connector?.(), protocol: input.protocol, onSnapshot });
   } catch (error) {
     const credentialAttention = error instanceof HttpError && [400, 401, 403, 404, 422].includes(error.status);
     const permanent = credentialAttention || error instanceof SlackCloudReceiptError && error.disposition !== "retry"
@@ -206,7 +209,7 @@ export async function reconcilePendingSlackFormWork(db: Db, input: { identity: S
     try {
       await db.transaction(async tx => {
         const [current] = await tx.select().from(chatActions).where(and(eq(chatActions.id, row.id), eq(chatActions.companyId, row.companyId))).for("update");
-        if (!current || !isDeepStrictEqual(current.payload, row.payload) || !isDeepStrictEqual(current.result, row.result)) return;
+        if (!current || !isDeepStrictEqual(current, failureSnapshot)) return;
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.connectionEvents);
         const attempts = typeof current.result?.attempts === "number" ? Math.min(current.result.attempts + 1, 1000000) : 1;
         await tx.update(chatActions).set({ status: permanent ? "attention" : current.status, result: { ...current.result, attempts, failureCode: code,

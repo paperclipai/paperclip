@@ -97,6 +97,7 @@ export async function acceptSlackFormAckReceipt(tx: Tx, input: { companyId: stri
   return row.id;
 }
 export async function transferSlackFormAckReceipt(db: Db, input: { companyId: string; actionId: string; instanceId: string;
+  onSnapshot?(snapshot: typeof chatActions.$inferSelect): void;
   protocol(values: { subject: string; companyId: string; operation: Record<string, unknown> }): Promise<unknown> }): Promise<void> {
   let [row] = await db.select().from(chatActions).where(and(eq(chatActions.id, input.actionId), eq(chatActions.companyId, input.companyId), eq(chatActions.kind, "slack_form_session"))).limit(1);
   if (!row) return fail("form_ack_session_missing");
@@ -116,6 +117,7 @@ export async function transferSlackFormAckReceipt(db: Db, input: { companyId: st
   const refreshed = verifyRetainedSlackAckReceipt(currentJws);
   if (!isDeepStrictEqual(refreshed, work.receipt)) return fail("form_signature_canonical_changed");
   row = await replaceSlackFormReceiptSignature(db, row, "formAck", currentJws);
+  input.onSnapshot?.(row);
   work = parseSlackFormAckWork(row.result?.formAck);
   if (!work.receipt) return fail("form_ack_acceptance_missing");
   const originals = readSlackFormOriginalProofs(row);
@@ -144,6 +146,7 @@ export async function transferSlackFormAckReceipt(db: Db, input: { companyId: st
 }
 
 export async function reconcileSlackFormNormalAck(db: Db, input: { companyId: string; actionId: string; instanceId: string; connector: unknown;
+  onSnapshot?(snapshot: typeof chatActions.$inferSelect): void;
   protocol(values: { subject: string; companyId: string; operation: Record<string, unknown> }): Promise<unknown> }): Promise<void> {
   const [row] = await db.select().from(chatActions).where(and(eq(chatActions.id, input.actionId), eq(chatActions.companyId, input.companyId), eq(chatActions.kind, "slack_form_session"))).limit(1);
   if (!row) return fail("form_ack_session_missing");

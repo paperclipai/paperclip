@@ -48,7 +48,8 @@ export async function acceptSlackFormRetirementLocally(db: Db, row: Row, identit
     if (updated.length !== 1) return retry("form_retirement_acceptance_changed");
   });
 }
-export async function transferSlackFormRetirement(db: Db, snapshot: Row, identity: SlackFormConnectorIdentity, protocol: SlackFormProtocol): Promise<void> {
+export async function transferSlackFormRetirement(db: Db, snapshot: Row, identity: SlackFormConnectorIdentity, protocol: SlackFormProtocol,
+  onSnapshot?: (snapshot: Row) => void): Promise<void> {
   let row = snapshot;
   if (row.result?.phase === "retirement_gc_pending") return releaseSlackRetirementFact(db, row, identity, protocol);
   if (row.result?.phase !== "retirement_accepted" || typeof row.result.retirementReceiptJws !== "string") return retry("form_retirement_acceptance_missing");
@@ -61,6 +62,7 @@ export async function transferSlackFormRetirement(db: Db, snapshot: Row, identit
   if (typeof compactJws !== "string" || !isDeepStrictEqual(verifyRetainedSlackFormRetirement(compactJws), receipt))
     throw new SlackCloudReceiptError("form_signature_canonical_changed", "attention");
   row = await replaceSlackFormReceiptSignature(db, row, "retirementReceiptJws", compactJws);
+  onSnapshot?.(row);
   const response = await protocol({ subject: receipt.subject, companyId: row.companyId,
     operation: { kind: "cleanup", binding: receipt.binding, acceptedRetirementReceipt: compactJws } });
   if (!response || typeof response !== "object" || Array.isArray(response) || Object.keys(response).join() !== "acceptedRetirementDigest"
