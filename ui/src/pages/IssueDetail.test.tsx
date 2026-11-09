@@ -46,6 +46,8 @@ import { taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
+  readIssueDetailBreadcrumb,
+  rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { getRecentTasksStorageKey, readRecentTasks } from "../lib/recent-tasks";
 import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
@@ -2919,9 +2921,36 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Issue detail smoke");
     expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
       { label: "Tasks", href: "/issues" },
-      { label: "Parent task visible in Properties", identifier: "PAP-0", href: "/issues/PAP-0" },
+      expect.objectContaining({ label: "Parent task visible in Properties", identifier: "PAP-0", href: "/issues/PAP-0" }),
       expect.objectContaining({ label: "Issue detail smoke" }),
     ]);
+  });
+
+  it.each(["location", "stored", "query"] as const)("preserves the %s collection context when opening the breadcrumb parent", async (source) => {
+    const state = createIssueDetailLocationState("Mine", "/issues?view=mine&status=in_progress", "inbox");
+    if (source === "location") mockLocation.state = state;
+    if (source === "stored") rememberIssueDetailLocationState("PAP-1", state);
+    if (source === "query") mockLocation.search = "?from=inbox&fromHref=%2Fissues%3Fview%3Dmine%26status%3Din_progress";
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      ancestors: [{ id: "parent-1", identifier: "PAP-0", title: "Parent task" }] as Issue["ancestors"],
+    }));
+    await act(async () => { renderIssueView(); });
+    await flushReact();
+    const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
+    expect(parentCrumb.onClick).toBeTypeOf("function");
+    parentCrumb.onClick();
+    const expected = { label: source === "query" ? "Inbox" : "Mine", href: state.issueDetailBreadcrumb!.href };
+    expect(readIssueDetailBreadcrumb("PAP-0", null)).toEqual(expected);
+
+    mockRouteParams.issueId = "PAP-0";
+    mockLocation.pathname = "/issues/PAP-0";
+    mockLocation.state = null;
+    mockLocation.search = "";
+    mockIssuesApi.get.mockResolvedValue(createIssue({ id: "parent-1", identifier: "PAP-0", title: "Parent task" }));
+    await act(async () => { renderIssueView(); });
+    await waitForAssertion(() => {
+      expect(mockSetBreadcrumbs.mock.calls.at(-1)![0][0]).toEqual(expected);
+    });
   });
 
   it("does not link to or reveal the title of a private parent in the global breadcrumbs", async () => {
@@ -2932,9 +2961,14 @@ describe("IssueDetail", () => {
     await flushReact();
     expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
       { label: "Tasks", href: "/issues" },
-      { label: "Private task", identifier: "PAP-0", href: undefined },
+      expect.objectContaining({ label: "Private task", identifier: "PAP-0", href: undefined }),
       expect.objectContaining({ label: "Issue detail smoke" }),
     ]);
+    const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
+    expect(parentCrumb.onClick).toBeUndefined();
+    await act(async () => { renderIssueView(parentCrumb.control); });
+    expect(container.querySelector('[data-testid="locked-issue-chip"]')).not.toBeNull();
+    expect(container.querySelector('a, [role="link"]')).toBeNull();
   });
 
   it("preserves hierarchy breadcrumbs and label chips when Streamlined UI is off", async () => {

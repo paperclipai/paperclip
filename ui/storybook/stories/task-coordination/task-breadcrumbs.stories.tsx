@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 import { BreadcrumbBar } from "@/components/BreadcrumbBar";
+import { LockedIssueChip } from "@/components/LockedIssueChip";
 import { StatusIcon } from "@/components/StatusIcon";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useLocation } from "@/lib/router";
@@ -29,6 +30,8 @@ function TaskBreadcrumbPreview({
         label: privateParent ? "Private task" : parentTitle,
         identifier: "PAP-120",
         href: privateParent ? undefined : "/issues/PAP-120",
+        control: privateParent ? <LockedIssueChip identifier="PAP-120" /> : undefined,
+        controlKey: privateParent ? "private-parent" : undefined,
       }] : []),
       { label: title, identifier: "PAP-121", leading: <StatusIcon status="in_progress" className="size-3" />, leadingKey: "in_progress" },
     ]);
@@ -102,6 +105,8 @@ export const PrivateParent: Story = {
   play: async ({ canvasElement }) => {
     const nav = await within(canvasElement).findByRole("navigation", { name: "breadcrumb" });
     await expect(within(nav).queryByRole("link", { name: /Prepare the product launch/ })).not.toBeInTheDocument();
+    await expect(within(nav).queryByRole("link", { name: /private/i })).not.toBeInTheDocument();
+    await expect(within(nav).getByTestId("locked-issue-chip")).toBeVisible();
     await expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
   },
 };
