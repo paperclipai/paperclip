@@ -38,6 +38,7 @@ import {
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
@@ -930,7 +931,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_workspace_unsaved_files", title: "Remote workspace unsaved-files flag", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [1, 2],
+    storage: "database", settle: settlePreparationOnlyRemoteWorkspaceEpoch, invariantChecks: [1, 2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
         metadata: executionWorkspaces.metadata, updatedAt: executionWorkspaces.updatedAt }).from(executionWorkspaces)

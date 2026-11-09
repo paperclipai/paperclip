@@ -12,6 +12,8 @@ import {
   companies,
   createDb,
   environmentLeases,
+  environments,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -34,6 +36,9 @@ import {
 } from "../services/recovery/ownership-invariant-report.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { trackRemoteWorkspaceSaveInvocationForTests } from "../services/remote-workspaces.js";
+import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
+import { preparedRemoteWorkspaceSource } from "../services/remote-workspace-lifecycle.js";
+import { readRemoteWorkspaceWriterHold } from "../services/remote-workspace-writer-hold.js";
 import { workspaceOperationService } from "../services/workspace-operations.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
@@ -146,7 +151,7 @@ describe("report-only ownership reconciliation", () => {
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
     expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
-      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "workspace_command_operation", "remote_snapshot_save", "execution_workspace_runtime_lease", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
+      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "workspace_command_operation", "remote_snapshot_save", "execution_workspace_runtime_lease", "remote_workspace_unsaved_files", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -450,6 +455,68 @@ describe("report-only ownership reconciliation", () => {
       lastFailure: { code: "remote_workspace_save_abandoned" } });
     const [liveRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs.live));
     expect(liveRun.status).toBe("running");
+  it("ends a dirty remote epoch whose writer died during preparation, and keeps every other writer's files", async () => {
+    const runs = { preparing: randomUUID(), resolved: randomUUID(), executing: randomUUID(), live: randomUUID(), saving: randomUUID() };
+    const run = (id: string, status: string, extra: Record<string, unknown> = {}) => ({ id, companyId, agentId, status,
+      invocationSource: "manual", executionStage: "preparing", ...(status === "running" ? {} : { finishedAt: minutesAgo(2), errorCode: "process_lost" }), ...extra });
+    await db.insert(heartbeatRuns).values([
+      run(runs.preparing, "failed"),
+      run(runs.resolved, "failed", { runtimeMode: "native", runtimeModeResolvedAt: minutesAgo(3) }),
+      run(runs.executing, "failed", { executionStage: "executing" }),
+      run(runs.live, "running"),
+      run(runs.saving, "failed"),
+    ]);
+    const workspaceFor = Object.fromEntries(Object.keys(runs).map(name => [name, randomUUID()])) as Record<keyof typeof runs, string>;
+    await db.insert(executionWorkspaces).values(Object.entries(runs).map(([name, writerRunId]) => ({
+      id: workspaceFor[name as keyof typeof runs], companyId, mode: "isolated_workspace", strategyType: "test", name,
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null,
+        source: { kind: "git", repoUrl: "https://example.invalid/repo.git", ref: null }, dirty: true, writerRunId,
+        location: { environmentId: randomUUID(), leaseId: randomUUID(), providerLeaseId: "sandbox-1", remoteCwd: "/workspace/root" } } },
+    })));
+    await db.insert(workspaceOperations).values({ companyId, executionWorkspaceId: workspaceFor.saving, heartbeatRunId: runs.saving,
+      phase: "remote_workspace_snapshot", status: "running", metadata: { epoch: 1, boundary: "initial" } });
+    const authorities = async () => Object.fromEntries((await db.select().from(executionWorkspaces))
+      .filter(row => Object.values(workspaceFor).includes(row.id))
+      .map(row => [row.name, readRemoteWorkspaceAuthority(row.metadata)]));
+
+    const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(kindReport(first, "remote_workspace_unsaved_files")).toMatchObject({ settled: 1 });
+    const after = await authorities();
+    expect(after.preparing).toMatchObject({ epoch: 2, dirty: false, writerRunId: null, location: null, snapshotId: null });
+    for (const kept of ["resolved", "executing", "live", "saving"] as const)
+      expect(after[kept], kept).toMatchObject({ epoch: 1, dirty: true, writerRunId: runs[kept] });
+    const [abandoned] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceFor.preparing));
+    expect(abandoned.metadata?.remoteWorkspaceAbandonedEpochs).toEqual([expect.objectContaining({ epoch: 1, runId: runs.preparing })]);
+  });
+
+  it("releases the lease and frees the workspace for the retry once a preparation-only epoch ends", async () => {
+    const runId = randomUUID(), issueId = randomUUID(), workspaceId = randomUUID(), leaseId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Remote task", status: "in_progress" });
+    const [environment] = await db.insert(environments).values({ name: `Sandbox ${randomUUID()}`, driver: "sandbox" }).returning();
+    const location = { environmentId: environment.id, leaseId, providerLeaseId: `sandbox-${randomUUID()}`, remoteCwd: "/workspace/task" };
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, status: "failed", invocationSource: "manual",
+      executionStage: "preparing", finishedAt: minutesAgo(2), errorCode: "process_lost", contextSnapshot: { issueId },
+      runnerProfileJson: { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", workspaceId, leaseId,
+        providerLeaseId: location.providerLeaseId, remoteCwd: location.remoteCwd, epoch: 1, state: "prepared", snapshotId: null } } });
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: issueId, mode: "isolated_workspace",
+      strategyType: "test", name: "Remote task workspace",
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null,
+        source: { kind: "git", repoUrl: "https://example.invalid/repo.git", ref: null }, dirty: true, writerRunId: runId, location } } });
+    const [lease] = await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId: environment.id, issueId,
+      heartbeatRunId: runId, executionWorkspaceId: workspaceId, status: "active", leasePolicy: "ephemeral", provider: "daytona",
+      providerLeaseId: location.providerLeaseId, metadata: { remoteCwd: location.remoteCwd } }).returning();
+    const authority = async () => readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, workspaceId)))[0]!.metadata)!;
+    expect(await preparedRemoteWorkspaceSource(db, lease)).not.toBeNull();
+    expect(await readRemoteWorkspaceWriterHold(db, { companyId, authority: await authority(), runId: randomUUID() }))
+      .toMatchObject({ kind: "held" });
+
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(await preparedRemoteWorkspaceSource(db, lease)).toBeNull();
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0]!.status).not.toBe("active");
+    expect(await readRemoteWorkspaceWriterHold(db, { companyId, authority: await authority(), runId: randomUUID() }))
+      .toEqual({ kind: "free" });
   });
 
   it("settles a workspace command whose process died mid-command, and keeps live or unprovable ones", async () => {
