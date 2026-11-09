@@ -1235,6 +1235,7 @@ async function consumeTurn(
       const observedDrain = drained.catch(error => {
         quarantineSession("governed_accounting_drain_failed");
         if (error instanceof NativeProviderTerminalFailure || error instanceof NativeSessionProtocolIntegrityError) throw error;
+        throw new NativeGovernedWaitSettlementPendingError({ cause: error });
       });
       try {
         await Promise.race([

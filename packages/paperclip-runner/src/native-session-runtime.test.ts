@@ -9230,7 +9230,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {}, completeRun: complete,
       async checkpointSession(value) { checkpoint = structuredClone(value); },
-      async appendEvent(event) { events.push(event); return { cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async appendEvent(event: PrpEvent) { events.push(event); return { cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
       async replayEvents(request) { return { events: events.filter(event => event.sourceInstanceId === request.sourceInstanceId && event.sourceSeq > request.afterSourceSeq), highestContiguousSourceSeq: 0 }; },
     };
     try {
@@ -9263,7 +9263,7 @@ describe("executeNativeSession recovery", () => {
     }
   }, 45_000);
 
-  it.each(["confirmed", "restart", "foreign-turn", "no-proof", "stop-failed", "timeout", "provider-failed"] as const)("settles only verified governed shutdown (%s)", async fault => {
+  it.each(["confirmed", "restart", "foreign-turn", "no-proof", "stop-failed", "timeout", "provider-failed", "terminal-write-failed"] as const)("settles only verified governed shutdown (%s)", async fault => {
     vi.useFakeTimers();
     try {
       const trigger = { ...runnerEvent(1, "item.completed", { kind: "dynamicToolCall" }), turnId: "turn-waiting" };
@@ -9296,7 +9296,7 @@ describe("executeNativeSession recovery", () => {
           yield trigger;
           yield { ...runnerEvent(2, "item.completed", { kind: "interrupt_acknowledgement" }), turnId: trigger.turnId };
           await streamClosed;
-          if (fault === "provider-failed") yield { ...runnerEvent(3, "turn.failed", { error: { code: "provider_failed" } }), turnId: trigger.turnId };
+          if (fault === "provider-failed" || fault === "terminal-write-failed") yield { ...runnerEvent(3, "turn.failed", { error: { code: "provider_failed" } }), turnId: trigger.turnId };
         },
       };
       const backend: NativeSessionBackend = {
@@ -9313,7 +9313,10 @@ describe("executeNativeSession recovery", () => {
             throw new Error("controller stopped after settlement checkpoint");
           }
         },
-        async appendEvent(event: PrpEvent) { history.push(event); return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+        async appendEvent(event: PrpEvent) {
+          if (fault === "terminal-write-failed" && event.eventType === "turn.failed") throw new Error("terminal persistence unavailable");
+          history.push(event); return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+        },
         async replayEvents(request) { return { events: history.filter(row => row.sourceInstanceId === request.sourceInstanceId && row.sourceSeq > request.afterSourceSeq), highestContiguousSourceSeq: 0 }; },
       };
       const execution = executeNativeSession({ input, backend, controlPlane: port,
@@ -9334,7 +9337,7 @@ describe("executeNativeSession recovery", () => {
       }
       confirmStop();
       await vi.advanceTimersByTimeAsync(1);
-      if (["foreign-turn", "no-proof", "stop-failed", "provider-failed"].includes(fault)) {
+      if (["foreign-turn", "no-proof", "stop-failed", "provider-failed", "terminal-write-failed"].includes(fault)) {
         await expect(execution).rejects.toMatchObject({ code: fault === "foreign-turn" ? "native_event_replay_conflict"
           : fault === "provider-failed" ? "native_provider_terminal_failed" : "native_governed_wait_settlement_pending" });
         expect(complete).not.toHaveBeenCalled();
