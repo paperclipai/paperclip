@@ -5655,6 +5655,63 @@ async function retireFinishedPerTurnRunnerdOwner(input: Parameters<typeof inspec
   return { retired: true };
 }
 
+function undeliveredAttachRotationSource(root: string, execution: NativeExecutionInput): string | null {
+  try {
+    const control = readRunnerdControlPlaneState(root);
+    const identity = record(control.identity);
+    const commands = Array.isArray(control.commands) ? control.commands.map(record) : [];
+    const history = record(control.bootstrapHistory);
+    if (!RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(control.schema)) ||
+        !durableIdentityMatchesExecution(identity, execution) ||
+        control.connectionCount !== 0 || control.ackedSourceSeq !== 0 ||
+        !Array.isArray(control.committedEvents) || control.committedEvents.length !== 0 ||
+        Object.keys(record(control.commandDeliveryCounts)).length !== 0 ||
+        control.warmTransition != null || control.completedWarmTransition != null || control.stagedRunAttachment != null ||
+        history.adopted === true || history.credentialsIssued !== 0 ||
+        commands.length !== 1 || commands[0]!.type !== "run.attach" || commands[0]!.status !== "pending" ||
+        existsSync(resolve(root, "runner", "runner-state.json"))) return null;
+    const archives = resolve(root, "authority-epochs");
+    if (!isSafeNativeStateDirectory(archives)) return null;
+    const candidates = readdirSync(archives).map(name => resolve(archives, name)).filter(epoch => {
+      const state = resolve(epoch, "control-plane", "control-plane-state.json");
+      return isSafeNativeStateDirectory(epoch) && existsSync(state) && existsSync(resolve(epoch, "runner-state.json"));
+    }).sort((left, right) => lstatSync(resolve(right, "control-plane", "control-plane-state.json")).mtimeMs
+      - lstatSync(resolve(left, "control-plane", "control-plane-state.json")).mtimeMs);
+    const latest = candidates[0];
+    if (!latest) return null;
+    const prior = record(readRunnerdControlPlaneState(latest).identity);
+    const runner = record(JSON.parse(readBoundedNativeFile(resolve(latest, "runner-state.json"),
+      NATIVE_RUNNER_STATE_MAX_BYTES, "runner_state_too_large").toString("utf8")));
+    const digest = createHash("sha256").update(JSON.stringify(prior)).digest("hex").slice(0, 24);
+    if (basename(latest) !== `epoch-${digest}` || prior.runId === identity.runId ||
+        ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].some(key => prior[key] !== identity[key]) ||
+        runner.schema !== RUNNERD_STATE_SCHEMA || runner.lifecycle !== "suspended" ||
+        ["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId"].some(key => runner[key] !== prior[key])) return null;
+    return latest;
+  } catch {
+    return null;
+  }
+}
+
+async function rollBackUndeliveredAttachRotation(root: string, execution: NativeExecutionInput,
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>): Promise<void> {
+  if (!existsSync(root) || !isSafeNativeStateDirectory(root)) return;
+  const epoch = undeliveredAttachRotationSource(root, execution);
+  if (!epoch) return;
+  const archivedAt = Date.now();
+  const breakRoot = resolve(root, "continuity-breaks", `${archivedAt}-${randomUUID()}`);
+  mkdirSync(breakRoot, { recursive: true, mode: 0o700 });
+  noteNativeRunnerEvidence(archivedAt);
+  renameSync(resolve(root, "control-plane"), resolve(breakRoot, "control-plane"));
+  mkdirSync(resolve(root, "runner"), { recursive: true, mode: 0o700 });
+  renameSync(resolve(epoch, "runner-state.json"), resolve(root, "runner", "runner-state.json"));
+  renameSync(resolve(epoch, "control-plane"), resolve(root, "control-plane"));
+  rmdirSync(epoch);
+  if (readdirSync(resolve(root, "authority-epochs")).length === 0) rmdirSync(resolve(root, "authority-epochs"));
+  await onLog?.("stdout",
+    `[paperclip-runner] Run ${execution.binding.runId} stopped before its runner received the session; resuming from the previous turn.\n`);
+}
+
 async function migrateRunnerdStateRootForExecution(input: {
   db: Db;
   execution: NativeExecutionInput;
@@ -5710,6 +5767,10 @@ async function migrateRunnerdStateRootForExecution(input: {
       return verified;
     }
     await assertCleanupActivationCommitted(input.db, scoped, input.execution);
+    if (input.restartRecovery?.kind === "resume_dead_runner" && input.restartRecovery.runId === input.execution.binding.runId
+      && (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local")) {
+      await rollBackUndeliveredAttachRotation(scoped, input.execution, input.onLog);
+    }
     const identity = readRunnerdDurableIdentity(scoped);
     if (!identity && input.restartRecovery?.kind === "bootstrap_incomplete" &&
         (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") &&
