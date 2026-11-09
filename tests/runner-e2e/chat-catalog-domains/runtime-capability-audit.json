@@ -112,7 +112,7 @@
     {
       "scenarioId": "agent-chat.chat-disabled",
       "readinessClass": "implemented",
-      "needs": "Actual allowlisted authenticated-harness boundary; disable Agent Chat itself; real Morgan route unavailable/no composer, agent settings denial, create-chat 404, usable Morgan profile and zero tasks/chats/native admissions."
+      "needs": "Actual allowlisted authenticated-harness boundary; Conference Room experiment off (Agent Chat is always on); old board-chat link lands on the working dashboard with no Conference Room nav, ordinary Chat with Morgan opens, board-chat API FEATURE_DISABLED, agent settings denial and no disguised tasks/native admissions."
     },
     {
       "scenarioId": "runs-adapters.list-model-options",

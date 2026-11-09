@@ -110,7 +110,7 @@ import { resolveRunnerE2ESource } from "./source.js";
 import { isValidNativePrpEnvelope } from "./native-event-envelope.js";
 import {
   isPublicRunnerScreenshotRoute,
-  isDisabledChatBoundaryScreenshotRoute,
+  isConferenceRoomOffBoundaryScreenshotRoute,
   PUBLIC_RUNNER_SCREENSHOT_MARKER,
 } from "./screenshot-policy.js";
 import {
@@ -749,12 +749,12 @@ for (const execution of executions) {
           api.get<{ id: string; issuePrefix: string }>(`/api/companies/${boundaryScreenshotResources.companyId}`),
           api.get<{ id: string; companyId: string }>(`/api/agents/${boundaryScreenshotResources.agentId}`),
           api.get<{ user: { id: string } }>("/api/auth/get-session"),
-          api.get<{ enableAgentChat: boolean }>("/api/instance/settings/experimental"),
+          api.get<{ enableConferenceRoomChat: boolean }>("/api/instance/settings/experimental"),
         ]);
         reviewedBoundary = company.id === boundaryScreenshotResources.companyId && agent.id === boundaryScreenshotResources.agentId
-          && isDisabledChatBoundaryScreenshotRoute(page.url(), { scenarioId: execution.task.id, origin: api.baseURL,
+          && isConferenceRoomOffBoundaryScreenshotRoute(page.url(), { scenarioId: execution.task.id, origin: api.baseURL,
             companyId: company.id, agentCompanyId: agent.companyId, issuePrefix: company.issuePrefix,
-            agentId: agent.id, authenticatedPersonId: session.user.id, agentChatEnabled: settings.enableAgentChat });
+            agentId: agent.id, authenticatedPersonId: session.user.id, conferenceRoomEnabled: settings.enableConferenceRoomChat });
       }
       if (!isReviewedFixtureScreenshotRoute() && !reviewedBoundary) {
         throw new Error(
