@@ -1,3 +1,4 @@
+import { expect } from "@playwright/test";
 import { uploadFactualQueryAttachment, verifyChatQueryAttachments, type ChatQueryAttachmentReceipt, type ChatQueryHumanComment } from "../chat-query-attachments.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { ToolConnection } from "../../../packages/shared/src/types/tool-access.js";
@@ -53,8 +54,11 @@ export const secureKeyExternalCases = [definition("connection-setup.secure-api-k
   sourceFiles: ["chat-catalog-domains/external-secure-key.ts", "chat-query-attachments.ts", "../../ui/src/App.tsx", "../../ui/src/pages/apps/app-connect-policy.ts", "../../ui/src/features/connections/ConnectionSetupFlow.tsx", "chat-catalog-domains/external-private-browser.ts", "chat-catalog-domains/external-private-browser-worker.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/external-secret-scan.ts", "run-observations.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/connection-setup.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx); const provider = fixtures.get(ctx); if (!provider) throw new Error("Secure provider fixture missing");
-    const links = await ctx.input.page.locator(`[id^="comment-"] a`).evaluateAll(anchors => anchors.map(anchor => (anchor as HTMLAnchorElement).href));
-    const target = links.find(href => { try { const url = new URL(href); return url.origin === ctx.input.api.baseURL && url.pathname === state.setupPath; } catch { return false; } });
+    // The saved reply can arrive before it renders; wait for the rendered link instead of reading anchors once.
+    const renderedTarget = async () => (await ctx.input.page.locator(`[id^="comment-"] a`).evaluateAll(anchors => anchors.map(anchor => (anchor as HTMLAnchorElement).href)))
+      .find(href => { try { const url = new URL(href); return url.origin === new URL(ctx.input.api.baseURL).origin && url.pathname === state.setupPath; } catch { return false; } });
+    let target: string | undefined;
+    await expect.poll(async () => (target = await renderedTarget()) !== undefined, { timeout: 30_000 }).toBe(true).catch(() => undefined);
     if (!target) throw new Error("The model did not link the intended secure setup entry");
     const receipt = await privateBrowserEntry({ mode: "secure-key", baseURL: ctx.input.api.baseURL, setupURL: target, providerURL: provider.url,
       credential: provider.token, cookies: await ctx.input.page.context().cookies(ctx.input.api.baseURL) });
