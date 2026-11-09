@@ -50,23 +50,73 @@ export function parseJson(rawBody: string): Record<string, unknown> {
   return value;
 }
 
+export type WebhookSecretConfigKey =
+  | "intakeWebhookSecretRef"
+  | "cashfreeWebhookSecretRef"
+  | "paddleWebhookSecretRef";
+
+interface CachedSecret {
+  secret: string;
+  refHash: string;
+  cachedAt: number;
+}
+
+const webhookSecretCache = new Map<string, CachedSecret>();
+const SECRET_CACHE_TTL_MS = 5 * 60 * 1000;
+
+export function clearWebhookSecretCache(): void {
+  webhookSecretCache.clear();
+}
+
+export async function resolveWebhookSecretCached(
+  ctx: PluginContext,
+  companyId: string,
+  configKey: WebhookSecretConfigKey,
+): Promise<string> {
+  const config = await ctx.config.get(companyId);
+  const secretRef = config[configKey];
+  if (!isSecretRef(secretRef)) {
+    throw new Error(`Company webhook secret reference is not configured: ${configKey}`);
+  }
+
+  const cacheKey = `${companyId}:${configKey}`;
+  const refHash = JSON.stringify(secretRef);
+  const now = Date.now();
+  const cached = webhookSecretCache.get(cacheKey);
+
+  if (cached && cached.refHash === refHash && now - cached.cachedAt < SECRET_CACHE_TTL_MS) {
+    return cached.secret;
+  }
+
+  const secret = await ctx.secrets.resolve(secretRef, { companyId, configPath: configKey });
+  webhookSecretCache.set(cacheKey, {
+    secret,
+    refHash,
+    cachedAt: now,
+  });
+  return secret;
+}
+
 export async function verifyCompanyWebhook(
   ctx: PluginContext,
   input: PluginWebhookInput,
   companyId: string,
-  configKey: "intakeWebhookSecretRef" | "cashfreeWebhookSecretRef" | "paddleWebhookSecretRef",
+  configKey: WebhookSecretConfigKey,
   verifyFn: (rawBody: string, timestamp: string | null, signature: string | null, secret: string) => boolean,
   timestampHeader = "x-archlead-timestamp",
   signatureHeader = "x-archlead-signature",
 ): Promise<void> {
-  const config = await ctx.config.get(companyId);
-  const secretRef = config[configKey];
-  if (!isSecretRef(secretRef)) throw new Error(`Company webhook secret reference is not configured: ${configKey}`);
-  const secret = await ctx.secrets.resolve(secretRef, { companyId, configPath: configKey });
+  const timestamp = headerValue(input.headers, timestampHeader);
+  const signature = headerValue(input.headers, signatureHeader);
+  if (!timestamp || !signature) {
+    throw new Error("Webhook signature is invalid or outside the allowed timestamp window");
+  }
+
+  const secret = await resolveWebhookSecretCached(ctx, companyId, configKey);
   const valid = verifyFn(
     input.rawBody,
-    headerValue(input.headers, timestampHeader),
-    headerValue(input.headers, signatureHeader),
+    timestamp,
+    signature,
     secret,
   );
   if (!valid) throw new Error("Webhook signature is invalid or outside the allowed timestamp window");
@@ -79,10 +129,20 @@ export async function verifyPaymentProviderWebhook(
   provider: PaymentProvider,
 ): Promise<void> {
   const configKey = provider === "cashfree" ? "cashfreeWebhookSecretRef" : "paddleWebhookSecretRef";
-  const config = await ctx.config.get(companyId);
-  const secretRef = config[configKey];
-  if (!isSecretRef(secretRef)) throw new Error(`${provider} webhook secret reference is not configured`);
-  const secret = await ctx.secrets.resolve(secretRef, { companyId, configPath: configKey });
+  if (provider === "cashfree") {
+    const timestamp = headerValue(input.headers, "x-webhook-timestamp");
+    const signature = headerValue(input.headers, "x-webhook-signature");
+    if (!timestamp || !signature) {
+      throw new Error(`${provider} webhook signature is invalid`);
+    }
+  } else {
+    const signature = headerValue(input.headers, "paddle-signature");
+    if (!signature) {
+      throw new Error(`${provider} webhook signature is invalid`);
+    }
+  }
+
+  const secret = await resolveWebhookSecretCached(ctx, companyId, configKey);
   const verified = provider === "cashfree"
     ? verifyCashfreeSignature(
       input.rawBody,

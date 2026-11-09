@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clearWebhookSecretCache } from "../src/payments.js";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
@@ -314,5 +315,48 @@ describe("ArchLead Operations payments", () => {
       "already used with a different payload",
     );
     expect(database.receipts.size).toBe(1);
+  });
+  beforeEach(() => {
+    clearWebhookSecretCache();
+  });
+
+  it("caches resolved webhook secrets so repeat unauthenticated attempts do not consume resolution budget", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: { cashfreeWebhookSecretRef: SECRET_REF },
+    });
+    paymentDatabase(harness);
+    await plugin.definition.setup(harness.ctx);
+    const resolveSpy = vi.spyOn(harness.ctx.secrets, "resolve");
+
+    const body = {
+      type: "PAYMENT_SUCCESS_WEBHOOK",
+      event_time: "2026-11-04T10:00:00.000Z",
+      data: {
+        order: {
+          order_id: "cashfree-provider-cached",
+          order_tags: buildPaymentOrderMetadata("cashfree", COMPANY_ID, "cashfree-local-cached").order_tags,
+        },
+        payment: { cf_payment_id: "cashfree-payment-cached", payment_status: "SUCCESS" },
+      },
+    };
+
+    // 1. Missing signature header rejects immediately without resolving secrets
+    const noHeaderInput = cashfreeInput(body);
+    delete (noHeaderInput.headers as Record<string, unknown>)["x-webhook-signature"];
+    await expect(plugin.definition.onWebhook?.(noHeaderInput)).rejects.toThrow("signature is invalid");
+    expect(resolveSpy).not.toHaveBeenCalled();
+
+    // 2. Unauthenticated attempt with invalid signature triggers initial resolution and caches it
+    const invalidSignature = cashfreeInput(body);
+    invalidSignature.headers["x-webhook-signature"] = `A${invalidSignature.headers["x-webhook-signature"].slice(1)}`;
+    await expect(plugin.definition.onWebhook?.(invalidSignature)).rejects.toThrow("signature is invalid");
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+
+    // 3. Repeated unauthenticated attempts use cache and DO NOT call secrets.resolve again
+    for (let i = 0; i < 5; i++) {
+      await expect(plugin.definition.onWebhook?.(invalidSignature)).rejects.toThrow("signature is invalid");
+    }
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
   });
 });
