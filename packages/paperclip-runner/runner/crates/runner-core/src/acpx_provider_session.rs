@@ -357,7 +357,8 @@ pub struct AcpxProviderSession {
     runtime_retired: bool,
     completed_turn_observed: bool,
     generation_has_run_turn: bool,
-    prepared_generation: Option<(String, u32)>,
+    restarted_after_turn_from: Option<u32>,
+    prepared_generation: Option<String>,
 }
 
 pub(crate) fn goal_is_dormant(projection: &Value) -> bool {
@@ -417,6 +418,7 @@ impl AcpxProviderSession {
             runtime_retired: false,
             completed_turn_observed: false,
             generation_has_run_turn: false,
+            restarted_after_turn_from: None,
             prepared_generation: None,
         })
     }
@@ -660,12 +662,13 @@ impl AcpxProviderSession {
         // provider turn originated a late HTTP callback. Reap the old sidecar
         // and provider before releasing its call-ID tombstones, then resume
         // the same verified persistent session in a fresh process generation.
-        let provider_restarted = self.generation_has_run_turn;
-        if provider_restarted {
+        let restart_now = self.generation_has_run_turn;
+        if restart_now {
             if let Err(error) = self.restart_idle_provider(None) {
                 return Err(self.fail_closed(error));
             }
         }
+        let provider_restarted = restart_now || self.restarted_after_turn_from.is_some();
         if rotate_turn_identity_ledger {
             if let Err(error) = self
                 .state
@@ -700,6 +703,7 @@ impl AcpxProviderSession {
             ))));
         }
         self.generation_has_run_turn = true;
+        self.restarted_after_turn_from = None;
         self.prepared_generation = None;
         let response = match self.transport.request_turn_start(
             json!({"turnId":turn_id,"message":message,"performance":performance}),
@@ -2256,6 +2260,7 @@ mod mode_tests {
             runtime_retired: false,
             completed_turn_observed: false,
             generation_has_run_turn: false,
+            restarted_after_turn_from: None,
             prepared_generation: None,
         }
     }

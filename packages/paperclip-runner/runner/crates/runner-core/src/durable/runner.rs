@@ -323,6 +323,10 @@ pub trait CommandExecutor {
         Ok(false)
     }
 
+    fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
+        Ok(())
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
     fn observe_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
@@ -2168,7 +2172,11 @@ fn poll_executor_events_after_controller_ack<E: CommandExecutor>(
     if state.acked_source_seq < sent_source_seq {
         return executor.maintain_backpressured_provider();
     }
-    poll_executor_events(state, store, config, executor)
+    poll_executor_events(state, store, config, executor)?;
+    if state.acked_source_seq >= state.highest_source_seq() {
+        executor.prepare_next_turn()?;
+    }
+    Ok(())
 }
 
 fn poll_executor_events_when_control_idle<E: CommandExecutor>(
@@ -5072,6 +5080,98 @@ mod tests {
         assert_eq!(reloaded.acked_source_seq, 128);
         assert_eq!(reloaded.outbox.len(), 1);
         assert_eq!(reloaded.outbox[0].source_seq, 129);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn turn_boundary_preparation_waits_until_the_controller_acks_the_terminal_event() {
+        struct BoundaryExecutor {
+            events: VecDeque<PolledEvent>,
+            calls: Vec<&'static str>,
+        }
+        impl CommandExecutor for BoundaryExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("the poll gate cannot execute a command")
+            }
+            fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                self.calls.push("poll");
+                Ok(self.events.iter().cloned().collect())
+            }
+            fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
+                self.events.drain(..count);
+                Ok(())
+            }
+            fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
+                self.calls.push("maintain");
+                Ok(())
+            }
+            fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
+                self.calls.push("prepare");
+                Ok(())
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-turn-boundary-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut executor = BoundaryExecutor {
+            events: VecDeque::from([PolledEvent {
+                executor_event_id: "provider-terminal".to_owned(),
+                event_type: "turn.completed".to_owned(),
+                priority: EventPriority::P0,
+                payload: json!({"status": "completed"}),
+            }]),
+            calls: Vec::new(),
+        };
+        poll_executor_events_after_controller_ack(&mut state, &store, &config, &mut executor, 0)
+            .unwrap();
+        assert_eq!(executor.calls, ["poll"]);
+        assert_eq!(state.highest_source_seq(), 1);
+        poll_executor_events_after_controller_ack(&mut state, &store, &config, &mut executor, 0)
+            .unwrap();
+        assert_eq!(
+            executor.calls,
+            ["poll", "poll"],
+            "an unsent terminal is not out"
+        );
+        poll_executor_events_after_controller_ack(&mut state, &store, &config, &mut executor, 1)
+            .unwrap();
+        assert_eq!(executor.calls[2..], ["maintain"]);
+        state.apply_ack(1, 2).unwrap();
+        store.save(&state).unwrap();
+        poll_executor_events_when_control_idle(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            1,
+            &Ok(Some(json!({"kind": "command"}))),
+        )
+        .unwrap();
+        assert_eq!(executor.calls[3..], ["maintain"], "control frames go first");
+        poll_executor_events_when_control_idle(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            1,
+            &Err(DurableRunnerError::invalid("disconnected")),
+        )
+        .unwrap();
+        assert_eq!(executor.calls.len(), 4);
+        poll_executor_events_when_control_idle(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            1,
+            &Ok(None),
+        )
+        .unwrap();
+        assert_eq!(executor.calls[4..], ["poll", "prepare"]);
         fs::remove_dir_all(directory).unwrap();
     }
 
