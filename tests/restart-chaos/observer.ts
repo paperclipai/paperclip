@@ -518,6 +518,11 @@ export class TaskObserver {
       const blocked = (children ?? []).filter(child => child.status === "blocked").map(child => child.id);
       if (!pending && blocked.length && this.childrenSettledAt === null) {
         this.timeline.add("task_child_blocked", { taskId: this.plan.taskId, childIssueIds: blocked });
+        this.record.stalledChildren = [...new Set([...(this.record.stalledChildren ?? []), ...blocked])];
+        if (await this.retryBlockedChildren(blocked, now)) {
+          this.restCandidateSince = null;
+          return;
+        }
       }
       this.childrenSettledAt = pending ? null : (this.childrenSettledAt ?? now);
       if (pending || now - this.childrenSettledAt! < CHILD_WAKE_GRACE_MS) {
@@ -540,6 +545,41 @@ export class TaskObserver {
   }
 
   /** Exactly one click, with the same body ui/src/hooks/useTaskRetry.ts sends. */
+  private async retryBlockedChildren(childIds: readonly string[], now: number): Promise<boolean> {
+    let clicked = false;
+    for (const childIssueId of childIds) {
+      if ((this.record.childRetries ?? []).some(attempt => attempt.childIssueId === childIssueId)) continue;
+      const child = await this.api.get<Json>(`/api/issues/${childIssueId}`).catch(() => null);
+      const interruption = child?.interruption as Json | null | undefined;
+      if (interruption?.canRetry !== true) continue;
+      const observedRunId = typeof interruption.observedRunId === "string" ? interruption.observedRunId : null;
+      const attempt: RetryAttempt & { childIssueId: string } = { childIssueId, at: now, observedRunId, httpStatus: null, accepted: null, error: null };
+      try {
+        const result = await this.api.post<{ accepted?: boolean }>(`/api/issues/${childIssueId}/retry`, { idempotencyKey: randomUUID(), observedRunId });
+        attempt.httpStatus = 200;
+        attempt.accepted = result?.accepted === true;
+        attempt.acceptedAt = Math.max(now, Date.now());
+      } catch (error) {
+        attempt.httpStatus = error instanceof ChaosApiError ? error.status : null;
+        attempt.error = error instanceof Error ? error.message : String(error);
+      }
+      (this.record.childRetries ??= []).push(attempt);
+      this.timeline.add("task_child_retry_clicked", { taskId: this.plan.taskId, ...attempt });
+      clicked = clicked || attempt.accepted === true;
+    }
+    if (clicked) this.childrenSettledAt = null;
+    return clicked;
+  }
+
+  private async collectStallWakes(issueId: string): Promise<NonNullable<OracleArtifacts["stallWakes"]>> {
+    const rows = await this.api.get<Json[]>(`/api/issues/${issueId}/activity`).catch(() => []);
+    return (rows ?? []).filter(row => row.action === "issue.blocker_stalled_wake").map(row => {
+      const details = (row.details ?? {}) as Json;
+      return { stalledIssueId: typeof details.stalledIssueId === "string" ? details.stalledIssueId : null,
+        recoveryActionId: typeof details.recoveryActionId === "string" ? details.recoveryActionId : null };
+    });
+  }
+
   private async retry(sample: TaskSample, now: number): Promise<RetryAttempt> {
     const observedRunId = sample.interruption?.observedRunId ?? (this.issue?.executionBlocker?.runId as string | undefined) ?? null;
     const attempt: RetryAttempt = { at: now, observedRunId, httpStatus: null, accepted: null, error: null };
@@ -770,7 +810,8 @@ export class TaskObserver {
       agentComments: (comments ?? []).filter(comment => comment.authorAgentId).map(comment => String(comment.body ?? "")),
       files, commands, workspacePath,
       ...(this.plan.workload === "B5" ? { benchProgressObserved: this.record.benchProgressSeen?.length ?? 0 } : {}),
-      ...(definition.collect.childDocuments ? { children: await this.collectChildren(issueId) } : {}),
+      ...(definition.collect.childDocuments ? { children: await this.collectChildren(issueId),
+        stalledChildren: this.record.stalledChildren ?? [], stallWakes: await this.collectStallWakes(issueId) } : {}),
       ...(this.plan.workload === "G1" ? { approvals: await this.collectApprovals(issueId) } : {}),
       ...(this.plan.workload === "H1" ? await this.finalPauseCheck(issueId) : {}),
       ...(this.record.governance ? { governance: this.record.governance } : {}),

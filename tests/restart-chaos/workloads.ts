@@ -60,6 +60,21 @@ export function parseBenchRecord(text: string | null | undefined) {
     ? { seconds: finished - started, result: fields.result } : null;
 }
 
+export function stallWakeChecks(artifacts: OracleArtifacts): OracleResult["checks"] {
+  const stalled = artifacts.stalledChildren ?? [];
+  if (!stalled.length) return [];
+  const wakes = artifacts.stallWakes ?? [];
+  const perStall = new Map<string, number>();
+  for (const wake of wakes) {
+    const key = `${wake.stalledIssueId}:${wake.recoveryActionId}`;
+    perStall.set(key, (perStall.get(key) ?? 0) + 1);
+  }
+  const unwoken = stalled.filter(child => !wakes.some(wake => wake.stalledIssueId === child));
+  const repeated = [...perStall.entries()].filter(([, count]) => count > 1).map(([key]) => key);
+  return [{ name: "parent_woken_once_per_stall", ok: !unwoken.length && !repeated.length,
+    detail: `stalled=${stalled.length} wakes=${wakes.length}${unwoken.length ? ` unwoken=${unwoken.join(",")}` : ""}${repeated.length ? ` repeated=${repeated.join(",")}` : ""}` }];
+}
+
 function result(checks: OracleResult["checks"]): OracleResult {
   return { verdict: checks.every(check => check.ok) ? "pass" : "fail", checks };
 }
@@ -205,6 +220,7 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
         { name: "part2_kept", ok: distinct && Boolean(agents) && part2[0]!.assigneeAgentId === agents!.self.id,
           detail: `assignee=${part2[0]?.assigneeAgentId ?? "none"}` },
         { name: "summary_has_both_parts", ok: summary.includes(partMarker(nonce, 1)) && summary.includes(partMarker(nonce, 2)) },
+        ...stallWakeChecks(artifacts),
       ]);
     },
   },
