@@ -137,6 +137,29 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agentId))).toEqual([]);
   });
 
+  it("makes a message owed again when dispatch cancels its accepted run at the daily limit", async () => {
+    const f = await fixture("idle");
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxDailyRuns: 1 } } }).where(eq(agents.id, f.agentId));
+    const [receipt] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", triggerDetail: "manual", reason: "issue_commented", status: "queued",
+      idempotencyKey: `conversation-comment:${f.comment.id}`, requestedByActorType: "user", requestedByActorId: "local-board",
+      payload: { issueId: f.chat.id, commentId: f.comment.id } }).returning();
+    const [queued] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "queued",
+      wakeupRequestId: receipt.id, invocationSource: "on_demand",
+      contextSnapshot: { issueId: f.chat.id, wakeCommentId: f.comment.id, wakeCommentIds: [f.comment.id] } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: queued.id }).where(eq(agentWakeupRequests.id, receipt.id));
+    expect(await f.pending()).toHaveLength(0);
+    // Another turn reaches the limit after the message was accepted.
+    await capReached(f);
+    await heartbeatService(db).resumeQueuedRunsForAgent(f.companyId, f.agentId);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id)))[0])
+      .toMatchObject({ status: "cancelled", errorCode: "heartbeat.daily_run_limit" });
+    expect((await f.pending()).map(row => row.id)).toEqual([f.comment.id]);
+    const wake = enqueue();
+    expect(await deliverConversationComments(db, f.chat, wake)).toBe("deferred");
+    expect(wake).not.toHaveBeenCalled();
+  });
+
   it("keeps unrelated admission errors visible and comments pending", async () => {
     const f = await fixture("idle");
     await expect(deliverConversationComments(db, f.chat, async () => {
