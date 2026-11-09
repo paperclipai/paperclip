@@ -1,4 +1,6 @@
+import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { OWNER_UNPROVABLE_CAUSE } from "./owner-gone-attestation.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -244,6 +246,7 @@ type RecoveryWakeupOptions = {
     statuses: string[];
     assigneeAgentId: string;
   };
+  allowRunCoalescing?: boolean;
 };
 
 type RecoveryWakeup = (
@@ -260,6 +263,7 @@ type ResolvedDependencyWakeBackstopOptions = {
   blockerIssueId?: string | null;
   issueId?: string;
   source?: ResolvedDependencyWakeBackstopSource;
+  onDeferredDeadline?: (at: number) => void;
 };
 
 const recoveryRunFields = {
@@ -3490,6 +3494,12 @@ export function recoveryService(
       issueIds: [] as string[],
     };
     for (const { action, issue } of rows) {
+      // Only the board's stop confirmation, or the resource's own release, settles this request:
+      // the reserved resource stays reserved however the task ends.
+      if (action.cause === OWNER_UNPROVABLE_CAUSE) {
+        result.skipped += 1;
+        continue;
+      }
       if (await hasUnverifiedNativeWorkspaceFinalizationOwner(db, action)) {
         result.skipped += 1;
         continue;
@@ -3628,7 +3638,11 @@ export function recoveryService(
       // longer schedules another agent-owned wake for them.
       result.skipped += 1;
     }
-    return result;
+    // A child or blocker stalled on a board-owned action: tell whoever waits on it, once per stall.
+    const stalls = await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup, { companyId: opts?.companyId });
+    // A failed delivery is reported so the recovery worker retries this pass.
+    return { ...result, blockerStallWakes: stalls.woken, blockerStallWakeFailures: stalls.failed,
+      blockerStallRetryAt: stalls.retryAt };
   }
 
   async function escalateDispositionRepair(input: {
@@ -6069,6 +6083,16 @@ export function recoveryService(
       );
     }
 
+    // A stalled child or blocker: tell whoever waits on it, once per stall
+    // (blocker-stall-wakeups.ts). This sweep visits each blocked issue, which
+    // covers a board action already resolved as "blocked".
+    if (!opts?.runId && !opts?.blockerIssueId) {
+      const stalls = await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup,
+        { companyId: opts?.companyId ?? null, issueId: opts?.issueId ?? null });
+      // Counted with the dependency wakes, so the worker retries a failed one.
+      result.enqueueFailed += stalls.failed;
+      if (stalls.retryAt !== null) opts?.onDeferredDeadline?.(stalls.retryAt);
+    }
     return result;
   }
 

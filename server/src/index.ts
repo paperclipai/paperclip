@@ -1,4 +1,5 @@
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
+import { closeProcessRunAdmission } from "./services/heartbeat/run-admission.js";
 import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
 import { bindIdleDeadlineOwner } from "./services/idle-deadline-owner.js";
 import { readIdleRetrySchedule } from "./services/heartbeat/idle-retry-schedule.js";
@@ -78,6 +79,8 @@ import { chatCompletionDeliveryService } from "./services/chat-completion-delive
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
+import { controllerInstanceLeaseEnabled, registerControllerInstanceDb, registerControllerInstanceLeaseWork,
+  stopControllerInstanceLease } from "./services/controller-instance-lease.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { setSentryRunLinkResolver } from "./sentry-links.js";
 import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
@@ -89,6 +92,7 @@ import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { deliverPendingPauseResumes } from "./services/issue-tree-resume.js";
+import { deliverBudgetResumeContinuations, type BudgetResumeDelivery } from "./services/budget-resume-continuation.js";
 import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/native-startup-cleanup.js";
@@ -945,8 +949,11 @@ async function startServerWithDatabaseTeardown(
     logger.warn({ scope: cloudQualification.scope, blockerCodes: cloudQualification.blockers.map((blocker) => blocker.code) }, "Cloud configuration and package qualification has blockers");
   }
   const idleDeadlineOwners: IdleDeadlineOwners = {};
+  // createApp fills the chat Retry callback; the continuation worker reads it.
+  const budgetResumeDelivery: BudgetResumeDelivery = {};
   const app = await createApp(db as any, {
     idleDeadlineOwners,
+    budgetResumeDelivery,
     prepareIdleDatabaseBackup: idleDatabaseBackupEnabled
       ? async () => (await runServerDatabaseBackup("idle")) !== null
       : undefined,
@@ -1096,6 +1103,13 @@ async function startServerWithDatabaseTeardown(
   } catch (err) {
     logger.error({ err }, "startup reconciliation of managed runtime control operations failed");
   }
+
+  // Records this boot owns are stamped with its boot id; the lease lets a server on
+  // another host or container prove this boot gone after it is replaced.
+  registerControllerInstanceDb(db as any);
+  const controllerInstanceLeaseWork = controllerInstanceLeaseEnabled()
+    ? registerControllerInstanceLeaseWork(db as any, deliveryWork) : null;
+  if (controllerInstanceLeaseWork) server.on("close", () => { void controllerInstanceLeaseWork.stop(); });
 
   // These jobs need not delay readiness, but their writes must finish before
   // an idle report can authorize sleep. Count the whole detached promise.
@@ -1386,13 +1400,19 @@ async function startServerWithDatabaseTeardown(
       { queue: DELIVERY_QUEUES.executionContinuation, run: async () => {
         await deliverReconciledExecutions(db, heartbeat.wakeup);
         await deliverPendingPauseResumes(db, heartbeat.wakeup);
+        await deliverBudgetResumeContinuations(db, { ...budgetResumeDelivery,
+          resumeTaskRetry: (companyId, requestId) => heartbeat.resumeTaskRetry(companyId, requestId) });
       }, next: executionSchedule.continuation },
     ] : []),
   ], () => !heartbeatSchedulerStopped);
 
   const budgetEnforcementWorker = registerBudgetEnforcementWork(db, deliveryWork, {
     cancelWorkForScope: accountingHeartbeat.cancelBudgetScopeWork,
+    deliverResumeContinuations: () => deliverBudgetResumeContinuations(db, { ...budgetResumeDelivery,
+      resumeTaskRetry: (companyId, requestId) => accountingHeartbeat.resumeTaskRetry(companyId, requestId) }),
   });
+  // Its stop also removes the run-status listener that wakes resume delivery.
+  server.on("close", () => { void budgetEnforcementWorker.stop(); });
   const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
   server.on("close", accountingWorker.stop);
   skillSourceSync.start(deliveryWork);
@@ -2035,7 +2055,7 @@ async function startServerWithDatabaseTeardown(
     liveEventsWebSocketServer.close();
     // Finish admitted HTTP requests while their services, workers and database
     // are still available. Railway must switch routing before signaling A.
-    await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger,
+    await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger, closeRunAdmission: closeProcessRunAdmission,
       drainRequests: abort => drainHttpRequestWork(app, abort) });
     const preDrain = createPreDrainShutdownBudget({ signal, log: logger });
     await preDrain.run("systemd_notify", () =>
@@ -2167,7 +2187,9 @@ async function startServerWithDatabaseTeardown(
     // Keep the finalizer's defensive listener close for partial teardown paths.
     await finalizeServerShutdown({
       signal,
-      shutdownAppServices: appShutdown,
+      shutdownAppServices: async () => {
+        try { await appShutdown?.(); } finally { await stopControllerInstanceLease(); }
+      },
       closeHttpListener: () =>
         closeHttpListenerForShutdown({ server, signal, log: logger }),
       drainPendingRunFailureReports: waitForPendingRunFailureReports,

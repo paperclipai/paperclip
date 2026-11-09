@@ -12,6 +12,7 @@ import {
   companies,
   createDb,
   environmentLeases,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issues,
@@ -32,6 +33,7 @@ import {
   type OwnershipReport,
 } from "../services/recovery/ownership-invariant-report.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
+import { workspaceOperationService } from "../services/workspace-operations.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
 
@@ -143,7 +145,7 @@ describe("report-only ownership reconciliation", () => {
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
     expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
-      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "execution_workspace_runtime_lease", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "issue_execution_lock", "issue_checkout_lock"]);
+      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "workspace_command_operation", "execution_workspace_runtime_lease", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -369,6 +371,55 @@ describe("report-only ownership reconciliation", () => {
     expect(doneRun.status).toBe("succeeded");
   });
 
+  it("settles a workspace command whose process died mid-command, and keeps live or unprovable ones", async () => {
+    const run = (id: string, status: string) => ({ id, companyId, agentId, status, invocationSource: "manual",
+      ...(status === "running" ? {} : { finishedAt: minutesAgo(2) }) });
+    const runs = { interrupted: randomUUID(), live: randomUUID() };
+    await db.insert(heartbeatRuns).values([run(runs.interrupted, "failed"), run(runs.live, "running")]);
+    const dead = { bootId: "previous-boot", pid: 4_194_303, hostHash: currentProcessSpaceHash(),
+      processStartedAt: "2026-11-09T09:00:00.000Z" };
+    const ops = { dead: randomUUID(), live: randomUUID(), foreign: randomUUID(), legacyDone: randomUUID(),
+      legacyLive: randomUUID(), unowned: randomUUID(), runtimeControl: randomUUID() };
+    const op = (id: string, runId: string | null, phase: string, metadata: Record<string, unknown>) => ({ id, companyId,
+      heartbeatRunId: runId, phase, status: "running", metadata });
+    await db.insert(workspaceOperations).values([
+      op(ops.dead, runs.interrupted, "workspace_provision", { commandOwner: dead }),
+      op(ops.live, runs.live, "worktree_prepare", { commandOwner: { bootId: currentControllerBootId(), pid: process.pid,
+        hostHash: currentProcessSpaceHash(), processStartedAt: null } }),
+      op(ops.foreign, runs.interrupted, "workspace_provision", { commandOwner: { ...dead, hostHash: "another-pid-space" } }),
+      op(ops.legacyDone, runs.interrupted, "workspace_teardown", {}),
+      op(ops.legacyLive, runs.live, "workspace_provision", {}),
+      op(ops.unowned, null, "worktree_cleanup", {}),
+      op(ops.runtimeControl, null, "workspace_runtime_provision", { runtimeControlOwner: { pid: 1 } }),
+    ]);
+    const statuses = async () => Object.fromEntries((await db.select({ id: workspaceOperations.id, status: workspaceOperations.status })
+      .from(workspaceOperations)).map(row => [Object.keys(ops).find(name => ops[name as keyof typeof ops] === row.id), row.status]));
+
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(Object.values(await statuses()).every(status => status === "running")).toBe(true);
+
+    const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(kindReport(first, "workspace_command_operation")).toMatchObject({ inProgress: 6, settled: 2 });
+    expect(await statuses()).toEqual({ dead: "failed", live: "running", foreign: "running", legacyDone: "failed",
+      legacyLive: "running", unowned: "running", runtimeControl: "running" });
+    const [settled] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, ops.dead));
+    expect(settled.metadata).toMatchObject({ abandonedCommand: { reason: "abandoned_workspace_command", proof: "pid_dead" } });
+    expect(settled.finishedAt).not.toBeNull();
+  });
+
+  it("stamps a running workspace command with the process that runs it", async () => {
+    const [{ id: runId }] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running",
+      invocationSource: "manual" }).returning({ id: heartbeatRuns.id });
+    const recorder = workspaceOperationService(db).createRecorder({ companyId, heartbeatRunId: runId });
+    let stamped: unknown;
+    await recorder.recordOperation({ phase: "workspace_provision", command: "true", run: async () => {
+      const [row] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, runId));
+      stamped = row.metadata;
+      return { status: "succeeded", exitCode: 0 };
+    } });
+    expect(stamped).toMatchObject({ commandOwner: { bootId: currentControllerBootId(), pid: process.pid } });
+  });
+
   it("writes nothing when recording is off", async () => {
     await seed();
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
@@ -456,15 +507,64 @@ describe("report-only ownership reconciliation", () => {
       body: "self", createdAt: minutesAgo(2) });
     await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "queued",
       payload: { issueId, commentId: carried.id } });
-    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false,
+      processStartedAt: minutesAgo(10) });
     expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId)).toEqual([lost.id]);
     // The young comment may still get its normal wake: a deadline, not a report.
     expect(report.nextDueAt?.getTime()).toBe(young.createdAt.getTime() + 30_000);
     // A run that started after the comment read it.
     await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", invocationSource: "manual",
       contextSnapshot: { issueId }, startedAt: minutesAgo(1), createdAt: minutesAgo(1), finishedAt: new Date() });
-    const later = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    const later = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false,
+      processStartedAt: minutesAgo(10) });
     expect(later.violations.filter(row => row.reason === "user_comment_without_wake")).toEqual([]);
+  });
+
+  it("finds at once a young user comment whose wake a restart lost after the board stopped the run", async () => {
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Stopped then continued", status: "todo", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "cancelled", invocationSource: "assignment",
+      runtimeMode: "native", contextSnapshot: { issueId }, startedAt: minutesAgo(4), createdAt: minutesAgo(4), finishedAt: minutesAgo(1) });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "user-1",
+      body: "I stopped your previous run on purpose. Please continue.", createdAt: new Date(Date.now() - 12_000) }).returning();
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false,
+      processStartedAt: new Date(Date.now() - 2_000) });
+    expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId))
+      .toEqual([comment!.id]);
+    const sameProcess = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false,
+      processStartedAt: minutesAgo(10) });
+    expect(sameProcess.violations.filter(row => row.reason === "user_comment_without_wake")).toEqual([]);
+    expect(sameProcess.nextDueAt?.getTime()).toBe(comment!.createdAt.getTime() + 30_000);
+  });
+
+  it("finds a user comment that a restart left without a wake on a task its agent then closed", async () => {
+    const closedTask = async (actorType: "agent" | "user") => {
+      const issueId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title: `Closed by ${actorType}`, status: "done", assigneeAgentId: agentId });
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", invocationSource: "manual",
+        runtimeMode: "native", contextSnapshot: { issueId }, startedAt: minutesAgo(6), createdAt: minutesAgo(6), finishedAt: minutesAgo(1) })
+        .returning();
+      const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "user-1",
+        body: "also add a follow-up line", createdAt: minutesAgo(4) }).returning();
+      await db.insert(activityLog).values({ companyId, actorType, actorId: actorType === "agent" ? agentId : "user-1",
+        action: "issue.updated", entityType: "issue", entityId: issueId, details: { toStatus: "done" }, createdAt: minutesAgo(1) });
+      return { issueId, runId: run!.id, commentId: comment!.id };
+    };
+    const lost = await closedTask("agent");
+    const steered = await closedTask("agent");
+    const goalSteered = await closedTask("agent");
+    const personClosed = await closedTask("user");
+    await db.insert(heartbeatRunEvents).values([
+      { companyId, runId: steered.runId, agentId, seq: 1, eventType: "item.completed", stream: "system", level: "info",
+        sourceEventId: randomUUID(), payload: { prpEvent: { itemId: `provider-item-9f2:steer:${steered.commentId}`,
+          payload: { kind: "steering_acknowledgement" } } } },
+      { companyId, runId: goalSteered.runId, agentId, seq: 1, eventType: "item.started", stream: "system", level: "info",
+        sourceEventId: randomUUID(), payload: { prpEvent: { itemId: "msg_provider_generated_7c1",
+          payload: { kind: "userMessage", commandId: `goal_comment_${goalSteered.commentId}` } } } },
+    ]);
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId))
+      .toEqual([lost.commentId]);
   });
 
   it("keeps a backstop deadline for a lifted pause still inside its grace window", async () => {

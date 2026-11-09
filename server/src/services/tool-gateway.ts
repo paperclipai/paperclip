@@ -22,6 +22,7 @@ import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
 import { githubAccessDeniedInstructions, githubAccessError } from "./tool-access/github-access-errors.js";
+import { githubDefaultOwnerApplies, githubDefaultOwnerArguments } from "./tool-access/github-default-owner.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
@@ -5075,7 +5076,12 @@ export function createToolGatewayService(
   ): Promise<unknown> {
     if (tool.providerType !== "mcp_remote_http" && tool.providerType !== "provider_rest") return parameters;
     const { connection, entry } = await resolveConnectedRemoteTool(session, tool);
-    return projectedConnectionToolArguments(connection, parameters, entry.toolName, entry.inputSchema ?? {});
+    const projected = projectedConnectionToolArguments(connection, parameters, entry.toolName, entry.inputSchema ?? {});
+    if (!githubDefaultOwnerApplies(connection, entry.toolName, entry.inputSchema, projected)) return projected;
+    // An unavailable credential keeps the call unchanged and fails with its own
+    // error at dispatch.
+    const grant = await resolveConnectionGrant(session, connection, false).catch(() => null);
+    return githubDefaultOwnerArguments(entry.toolName, projected, grant?.providerTenant?.github);
   }
 
   async function approvedManagedArgumentsRemainCurrent(

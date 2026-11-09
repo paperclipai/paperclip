@@ -12,6 +12,8 @@ export interface AgentLifecycleOperation {
   completedPluginIds: string[];
   leaseOwner?: string;
   leaseUntil?: string;
+  /** The controller process holding the lease; restart recovery settles it once proven gone. */
+  leaseHolder?: { bootId: string; pid: number; hostHash: string; processStartedAt: string | null };
   retryAt?: string;
   /** Healthy host verification awaits a durable external producer, not a retry timer. */
   waitingForSignal?: boolean;
@@ -23,6 +25,9 @@ export interface AgentLifecycleOperation {
   verificationFailures?: number;
   attempts: number;
   responsibleUserId?: string | null;
+  /** Why a pause started: its holds and the company's pause reason at that moment. Runs the
+   * pause stops record it, so a budget resume continues only work its own budget stopped. */
+  pauseCause?: { holds: string[]; companyPauseReason: string | null };
 }
 
 export interface AgentLifecycleRequest {

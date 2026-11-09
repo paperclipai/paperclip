@@ -110,6 +110,11 @@ export class CodexHarnessSession
     };
   }
 
+  beginRunAttachment(input: { runId: string }): boolean {
+    if (this.protocolIntegrityFailure !== null || this.turnStartPending || this.pendingRunAttachment !== null || !input.runId) return false;
+    return this.transport.beginRunAttachment?.(input) ?? false;
+  }
+
   async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;

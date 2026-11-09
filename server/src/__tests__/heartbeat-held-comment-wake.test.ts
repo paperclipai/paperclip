@@ -432,6 +432,31 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(f.commentId)).toHaveLength(1);
   }, 180_000);
 
+  it("delivers once a comment whose wake a restart lost mid-run on a task the run then closed", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", startedAt: new Date(Date.now() - 180_000),
+      createdAt: new Date(Date.now() - 180_000), finishedAt: new Date(Date.now() - 30_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(issueComments).set({ createdAt: new Date(Date.now() - 120_000), updatedAt: new Date(Date.now() - 120_000) })
+      .where(eq(issueComments.id, f.commentId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await closeByAgent(f);
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId))
+      .toEqual([f.commentId]);
+    await applyOwnershipReportBackstops(db, report);
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(eq(agentWakeupRequests.companyId, f.companyId));
+    await settle(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+    const again = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(again.violations.filter(row => row.reason === "user_comment_without_wake")).toEqual([]);
+    await applyOwnershipReportBackstops(db, again);
+    await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+  }, 180_000);
+
   // Chaos s9401/t72: a message queued its own run while the first run was
   // finishing. The first run completed the task, so the queued run was
   // cancelled as a stale continuation and the unread message was dropped.

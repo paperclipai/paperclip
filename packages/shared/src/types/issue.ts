@@ -25,6 +25,7 @@ import type {
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
   IssueRecoveryActionOwnerType,
+  IssueBlockerStallRelation,
   IssueRecoveryActionStatus,
   IssueWorkMode,
   IssueThreadInteractionContinuationPolicy,
@@ -623,6 +624,23 @@ export interface IssueUnblockDescriptor {
   action: string;
 }
 
+/** Wake context of `issue_blocker_stalled`: the stalled issue and the recovery action it waits on. */
+export interface IssueBlockerStalledWakeContext {
+  stalledIssueId: string;
+  stalledIssueIdentifier: string | null;
+  stalledIssueTitle: string;
+  stalledIssueStatus: string;
+  relation: IssueBlockerStallRelation;
+  recoveryAction: {
+    id: string;
+    kind: string;
+    cause: string;
+    status: string;
+    ownerType: string;
+    nextAction: string;
+  };
+}
+
 export interface IssueRecoveryAction {
   /** Read-only activity of the exact native run named by the wake policy. */
   nativeRunActivity?: {
@@ -974,6 +992,8 @@ export interface Issue {
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
+  /** Children and blockers stalled on a recovery action that needs the board (issue detail only). */
+  stalledDependencies?: IssueBlockerStalledWakeContext[];
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   executionBlocker?: ExecutionBlocker | null;
   interruption?: TaskInterruptionPresentation | null;

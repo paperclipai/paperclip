@@ -77,6 +77,33 @@ describe("ttft baseline statistics", () => {
       ttft: { n: 2, p50: 6_000, p95: 12_000 } });
   });
 
+  it("reports first visible activity from run creation next to first text", () => {
+    const toolFirst = run("t", "warm", [
+      reuse("reused"),
+      span("comment.to_run_created", 0, 30_000),
+      span("heartbeat.queue", 30_000, 100),
+      span("task.time_to_first_agent_activity", 0, 35_000, { anchor: "comment" }),
+      span("task.time_to_first_token", 0, 48_000, { anchor: "comment" }),
+    ], "claude");
+    expect(runMetrics(toolFirst)).toMatchObject({ inputWaitMs: 30_000, firstActivityAfterRunCreatedMs: 5_000,
+      ttftAfterRunCreatedMs: 18_000 });
+    expect(baselineRows([toolFirst])[0]).toMatchObject({ firstActivityAfterRunCreated: { p50: 5_000 },
+      ttftAfterRunCreated: { p50: 18_000 } });
+  });
+
+  it("measures first activity from run creation even when it is anchored at an earlier wake request", () => {
+    // A deferred wake accepted 30 s before the run existed; activity 5 s after run creation.
+    const deferred = run("d", "cold", [
+      reuse("fresh"),
+      span("heartbeat.queue", 0, 100),
+      span("task.time_to_first_agent_activity", -30_000, 35_000, { anchor: "wake_request" }),
+    ], "claude");
+    expect(runMetrics(deferred).firstActivityAfterRunCreatedMs).toBe(5_000);
+    const deferredText = run("e", "cold", [reuse("fresh"), span("heartbeat.queue", 0, 100),
+      span("task.time_to_first_token", -30_000, 35_000, { anchor: "wake_request" })], "claude");
+    expect(runMetrics(deferredText).ttftAfterRunCreatedMs).toBe(5_000);
+  });
+
   it("ranks pre-turn steps by p95 without cumulative wrappers", () => {
     const ranked = rankPreTurnSteps([coldRun("a"), coldRun("b", 2)]);
     expect(ranked[0]).toMatchObject({ step: "runner.process.launch", n: 2, p95: 3_000 });
@@ -92,9 +119,41 @@ describe("ttft baseline statistics", () => {
     ]);
     const silent = run("r2", "restart", []);
     expect(recoverySamples([recovered, silent], [{ kind: "K1", readyAt, runIds: ["r1", "r2", "missing"] }])).toEqual([
-      { runId: "r1", adapter: "codex", kind: "K1", disposition: "resume_dead_runner", latencyMs: 3_250 },
-      { runId: "r2", adapter: "codex", kind: "K1", disposition: "none", latencyMs: null },
+      { runId: "r1", adapter: "codex", kind: "K1", disposition: "resume_dead_runner", readyAt, latencyMs: 3_250, controlPlaneMs: 3_250, providerLoadMs: 0 },
+      { runId: "r2", adapter: "codex", kind: "K1", disposition: "none", readyAt, latencyMs: null, controlPlaneMs: null, providerLoadMs: null },
     ]);
+  });
+});
+
+describe("restart recovery split", () => {
+  // The trace starts at the epoch; the queue span is written promptly and anchors it.
+  const queue = { eventType: "run.performance.span", createdAt: at(100), payload: { span: "heartbeat.queue", startOffsetMs: 0, durationMs: 100 } };
+  const load = (writtenAt: number) => ({ eventType: "run.performance.span", createdAt: at(writtenAt),
+    payload: { span: "provider.session.load", startOffsetMs: 11_500, durationMs: 4_500 } });
+
+  it("splits a recovery at the start of the provider's session load", () => {
+    const readyAt = Date.parse(at(10_000));
+    const recovered = run("r1", "restart", [queue, load(16_000), { eventType: "session.resumed", createdAt: at(16_400) }]);
+    expect(recoverySamples([recovered], [{ kind: "K2", readyAt, runIds: ["r1"] }])).toEqual([
+      { runId: "r1", adapter: "codex", kind: "K2", disposition: "none", readyAt, latencyMs: 6_400, controlPlaneMs: 1_500, providerLoadMs: 4_900 },
+    ]);
+  });
+
+  it("uses the start the server logged even when every span row was written late", () => {
+    const readyAt = Date.parse(at(10_000));
+    // All rows deferred by 8 s, so no write time can anchor the trace.
+    const late = (span: string, offset: number, duration: number) => ({ eventType: "run.performance.span", createdAt: at(offset + duration + 8_000),
+      payload: { span, startOffsetMs: offset, durationMs: duration, wallStartedAtMs: Date.parse(at(offset)) } });
+    const recovered = run("r1", "restart", [late("heartbeat.queue", 0, 100), { eventType: "session.resumed", createdAt: at(16_400) },
+      late("provider.session.load", 11_500, 4_500)]);
+    expect(recoverySamples([recovered], [{ kind: "K2", readyAt, runIds: ["r1"] }])[0]).toMatchObject({ controlPlaneMs: 1_500, providerLoadMs: 4_900 });
+  });
+
+  it("takes the load start from the span's offset, not its (possibly deferred) write time", () => {
+    const readyAt = Date.parse(at(10_000));
+    // The load span's run-log row is written 5 s late, after the provider event.
+    const recovered = run("r1", "restart", [queue, { eventType: "session.resumed", createdAt: at(16_400) }, load(21_000)]);
+    expect(recoverySamples([recovered], [{ kind: "K2", readyAt, runIds: ["r1"] }])[0]).toMatchObject({ controlPlaneMs: 1_500, providerLoadMs: 4_900 });
   });
 });
 

@@ -1,5 +1,5 @@
 import { QueryBuilder } from "drizzle-orm/pg-core";
-import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import { chatActions, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects } from "@paperclipai/db";
 import type { NativeResponsePresentationScope } from "../native-response-presentation-notifications.js";
 
@@ -42,9 +42,11 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
       or(
         and(eq(heartbeatRuns.status, "succeeded"),
           or(sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,
-            and(eq(statusDecisions.reasonCode, "conversation_turn_finished"),
+            // An unsettled conversation turn. A held turn keeps the status its
+            // gate committed; recovery applies the live path's answered rule.
+            and(or(ne(statusDecisions.reasonCode, "conversation_turn_finished"), eq(issues.status, "in_progress")),
               eq(issues.conversationAgentId, heartbeatRuns.agentId), eq(issues.conversationUserId, heartbeatRuns.responsibleUserId),
-              eq(issues.status, "in_progress"), eq(issues.conversationState, "active"),
+              eq(issues.conversationState, "active"),
               or(isNull(issues.executionRunId), eq(issues.executionRunId, heartbeatRuns.id)),
               sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issues.id}::text`,
               sql`jsonb_typeof(${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration') = 'number'`,
@@ -65,6 +67,9 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
             and(sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,
               sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'needs_review'`,
               sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'needs_review'`),
+            and(sql`(coalesce(${issues.conversationAgentId}::text, '') <> '' and coalesce(${issues.conversationUserId}, '') <> '')`,
+              sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'yielded'`,
+              sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'yielded'`),
           )),
         and(sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'yielded'`,
           sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'yielded'`,

@@ -1,3 +1,4 @@
+import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
@@ -40,7 +41,10 @@ import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
 import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
+import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
+import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
+import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
@@ -124,6 +128,7 @@ import {
   taskRetrySchema,
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
+  confirmOwnerGoneSchema,
   runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -281,6 +286,7 @@ import {
   assertCompanyAccess,
   getAccessibleResource,
   getActorInfo,
+  issueNotFoundBody,
 } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -1442,6 +1448,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "chat_task_completed",
   "issue_assigned",
   "issue_blockers_resolved",
+  "issue_blocker_stalled",
   "issue_commented",
   "issue_comment_mentioned",
   "issue_dependencies_blocked",
@@ -5221,7 +5228,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: Parameters<typeof decideIssueAccess>[1] & { identifier?: string | null },
-    options: { allowBreakGlass?: boolean } = {},
+    options: { allowBreakGlass?: boolean; finalForAgents?: boolean } = {},
   ) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
@@ -5234,7 +5241,9 @@ export function issueRoutes(
       await recordIssueBreakGlassRead(req, issue);
       return true;
     }
-    res.status(404).json({ error: "Issue not found" });
+    // Must match the missing-task body on the same route, or the 404 would
+    // reveal that a private task exists.
+    res.status(404).json(options.finalForAgents ? issueNotFoundBody(req) : { error: "Issue not found" });
     return false;
   }
 
@@ -7632,12 +7641,14 @@ export function issueRoutes(
         ? queueState.response
         : await readQueuedInteractionResponse(input.executor as Db, input.issue.companyId, input.issue.id, wake.payload)
       : null;
-    const comments = await queueCommentsForWake(
+    // Messages the active run took into its first turn are no longer queued.
+    const claimedByFirstTurn = queueState?.state === "deferred" ? firstTurnClaimedCommentIds(input.activeRun) : new Set<string>();
+    const comments = (await queueCommentsForWake(
       input.executor,
       input.issue.id,
       wake,
       response,
-    );
+    )).filter((comment) => !claimedByFirstTurn.has(comment.id));
     const assignedAgent = input.issue.assigneeAgentId
       ? await input.executor
           .select({ adapterType: agents.adapterType })
@@ -9767,9 +9778,10 @@ export function issueRoutes(
       res,
       timing.time("lookup", () => getIssueById(req, id)),
       "Issue not found",
+      issueNotFoundBody(req),
     );
     if (!issue) return;
-    if (!(await timing.time("authorization", () => assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true })))) return;
+    if (!(await timing.time("authorization", () => assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true, finalForAgents: true })))) return;
     // Saved cards are structural conversation data. Include their local
     // projection before first paint, independently of slow recovery, workspace
     // and related-task enrichment. This never refreshes external providers.
@@ -9827,7 +9839,7 @@ export function issueRoutes(
       timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
       timing.time("created_from", () => resolveVisibleIssueCreationSource(req, issue)),
     ]);
-    const [recoveryActionsByRelationIssue, revalidatedActiveRecoveryAction, mentionedProjects] = await Promise.all([
+    const [recoveryActionsByRelationIssue, revalidatedActiveRecoveryAction, mentionedProjects, stalledDependencies] = await Promise.all([
       timing.time("relation_recovery", () => relationRecoveryActionMap(recoveryActionsSvc, issue.companyId, relations)),
       timing.time("revalidate_recovery", () => revalidateActiveSourceRecoveryForRead({
         issue,
@@ -9838,6 +9850,14 @@ export function issueRoutes(
       timing.time("mentioned_projects", () => mentionedProjectIds.length > 0
         ? projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
         : Promise.resolve([])),
+      // Children and blockers stalled on the board, shown on this page so the
+      // board can act without opening each one. Unreadable issues are omitted.
+      timing.time("stalled_dependencies", async () => {
+        const stalled = await listStalledDependencies(db, { companyId: issue.companyId, issueId: issue.id });
+        if (stalled.length === 0) return stalled;
+        const readable = await readableIssueEdgeIds(req, issue.companyId, stalled.map(entry => entry.stalledIssueId));
+        return stalled.filter(entry => readable.has(entry.stalledIssueId));
+      }),
     ]);
     const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
       relations, recoveryActionsByRelationIssue,
@@ -9864,6 +9884,8 @@ export function issueRoutes(
       interruption: await taskInterruptionPresentation(db, issue),
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
+      // Always present, so a cleared stall replaces the cached list.
+      stalledDependencies,
       blockedBy: visibleRelations.blockedBy,
       blocks: visibleRelations.blocks,
       relatedWork: visibleReferenceSummary,
@@ -10108,6 +10130,17 @@ export function issueRoutes(
     const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     const receipt = await confirmNativeControllerStopped({ db, companyId: issue.companyId, issueId: issue.id,
+      ...req.body, actorId: getActorInfo(req).actorId });
+    res.status(202).json(receipt);
+  });
+
+  router.post("/issues/:id/recovery-actions/confirm-owner-gone", validate(confirmOwnerGoneSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const receipt = await confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId: issue.companyId, issueId: issue.id,
       ...req.body, actorId: getActorInfo(req).actorId });
     res.status(202).json(receipt);
   });
@@ -10374,6 +10407,10 @@ export function issueRoutes(
 
         if (outcome === "restored" && activeRecoveryAction.cause === "native_workspace_sync_out_unsafe_archive") {
           throw conflict("Unsafe workspace export recovers automatically without another provider turn.", { code: "workspace_export_automatic_recovery" });
+        }
+
+        if ((outcome === "restored" || outcome === "false_positive") && activeRecoveryAction.cause === OWNER_UNPROVABLE_CAUSE) {
+          throw conflict("Confirm that the previous server stopped to release this resource.", { code: "ownership_owner_stop_required" });
         }
 
         if ((outcome === "restored" || outcome === "false_positive") && activeRecoveryAction.cause === NATIVE_CONTROLLER_HOST_UNVERIFIED) {
@@ -16987,10 +17024,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/admin/force-release", async (req, res) => {
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board access required" });
-      return;
-    }
+    assertBoard(req);
     if (!req.actor.userId) {
       throw forbidden("Board user context required");
     }
@@ -17239,7 +17273,7 @@ export function issueRoutes(
         }
       }
       const actor = getActorInfo(req);
-      const runToInterrupt = await db.transaction(async (tx) => {
+      const interruptPlan = await db.transaction(async (tx): Promise<{ firstTurnRunId: string } | { runToInterrupt: string | null }> => {
         const locked = await lockQueuedCommentState({
           tx, issue, actor, queueId: req.body.queueId, targetRunId: req.body.targetRunId ?? undefined,
           allowStoppedTarget: true,
@@ -17256,6 +17290,16 @@ export function issueRoutes(
         if (locked.activeRun?.status === "running" && locked.activeRun.id !== req.body.targetRunId) {
           throw conflict("The queued message targets a stale run", { code: "queued_comment_stale_target" });
         }
+        // A run that has not started its first provider turn takes these
+        // messages into that turn. Stopping it would only discard its setup.
+        if (locked.activeRun && !issue.conversationAgentId && issue.executionRunId === locked.activeRun.id &&
+            deferredWakeJoinsFirstTurn(locked.wake, locked.activeRun) &&
+            await firstTurnTakesAllQueuedComments(tx, { companyId: issue.companyId, issueId: issue.id,
+              responsibleUserId: locked.activeRun.responsibleUserId,
+              commentIds: queuedCommentIdsFromWakePayload(locked.wake.payload) }) &&
+            await runAcceptsFirstTurnQueuedInput(tx, locked.activeRun)) {
+          return { firstTurnRunId: locked.activeRun.id };
+        }
         // The click is durable fresh user intent, including when the message
         // predates a failed run's stop. Keep its content and original attribution.
         await notifyDeferredExecutionWork(tx, { companyId: issue.companyId, requestId: locked.wake.id });
@@ -17267,8 +17311,10 @@ export function issueRoutes(
           } },
           updatedAt: new Date(),
         }).where(eq(agentWakeupRequests.id, locked.wake.id));
-        return locked.activeRun?.status === "running" ? locked.activeRun.id : null;
+        return { runToInterrupt: locked.activeRun?.status === "running" ? locked.activeRun.id : null };
       });
+      const firstTurnRunId = "firstTurnRunId" in interruptPlan ? interruptPlan.firstTurnRunId : null;
+      const runToInterrupt = "runToInterrupt" in interruptPlan ? interruptPlan.runToInterrupt : null;
       // Never hold the issue lock while joining the adapter. Queue edits and
       // discards stay authoritative until the dispatcher claims the successor.
       const options = operatorInterruptCancelOptions({ issueId: issue.id, actor });
@@ -17277,18 +17323,23 @@ export function issueRoutes(
         suppressImmediateRecovery: true,
         resultJson: { ...options.resultJson, queuedCommentInterruptQueueId: req.body.queueId },
       });
-      await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
+      if (!firstTurnRunId) await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
         agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
         action: "issue.queued_comments_interrupted", entityType: "issue", entityId: issue.id,
-        details: { queueId: req.body.queueId, targetRunId: req.body.targetRunId },
+        details: { queueId: req.body.queueId, targetRunId: req.body.targetRunId,
+          ...(firstTurnRunId ? { deliveredWithFirstTurnOfRunId: firstTurnRunId } : {}) },
       });
       const currentIssue = await svc.getById(issue.id);
       const queue = await buildQueuedCommentQueue({
         executor: db, issue: currentIssue ?? issue,
         activeRun: await resolveActiveIssueRun(currentIssue ?? issue), actor,
       });
+      if (firstTurnRunId && queue.state === "deferred" && queue.entries.length > 0) {
+        queue.executionWait = { reason: "first_turn_pending",
+          message: "The agent is still starting. These messages will be included in its first turn." };
+      }
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
