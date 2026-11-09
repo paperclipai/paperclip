@@ -9,7 +9,9 @@ Paperclip CLI now supports both:
 ## Browser-approved Board authentication
 
 `npx paperclipai auth login --api-base <instance-url>` creates a ten-minute
-challenge and prints a browser approval link. Sign in to the instance, review
+challenge and prints a browser approval link. The link uses the instance's
+canonical public origin when configured, so reverse proxies do not send the
+browser to an internal upstream hostname. Sign in to the instance, review
 the requesting command and full Board access, then approve. The pending token
 cannot authenticate before approval. The CLI verifies its resulting identity
 before storing its credential in its private auth store. The default Board key
