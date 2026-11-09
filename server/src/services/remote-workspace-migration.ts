@@ -325,7 +325,7 @@ export async function inventoryRemoteWorkspaceMigration(db: Db, input: { company
 
 type MigrationInput = {
   db: Db; storage: StorageService; companyId: string; workspaceId: string; apply?: boolean; source?: RemoteWorkspaceSource;
-  writersStopped?: boolean; signal?: AbortSignal;
+  writersStopped?: boolean; signal?: AbortSignal; sourceLockWaitMs?: number;
 };
 type MigrationTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -640,7 +640,8 @@ export async function migrateRemoteWorkspace(input: MigrationInput) {
     } finally { await childVerifier?.close(); if (scratch) await removeTaskDirectoryTree(scratch); }
   };
   if (onlineSource) {
-    const result = await withWorkspaceSourceLocks(input.db, {
+    const sourceLocks = input.sourceLockWaitMs === undefined ? withWorkspaceSourceLocks : withIndependentWorkspaceSourceLocks;
+    const result = await sourceLocks(input.db, {
       companyId: input.companyId, issueIds: onlineSource.issueIds,
       projectIds: onlineSource.projectIds,
     }, async lock => {
@@ -649,7 +650,7 @@ export async function migrateRemoteWorkspace(input: MigrationInput) {
           throw new IsolatedRepositorySourceBusy("workspace_source_busy");
       }
       return migrate(lock);
-    }, true);
+    }, true, input.sourceLockWaitMs === undefined ? undefined : { waitMs: input.sourceLockWaitMs, signal: input.signal });
     if (committedPublication) publishActivity(committedPublication);
     return result;
   }
@@ -664,7 +665,7 @@ const cohortSchema = z.object({
 
 export async function migrateRemoteWorkspaceCohort(input: {
   db: Db; storage: StorageService; companyId: string; workspaceIds: readonly string[];
-  apply?: boolean; concurrency?: number; signal: AbortSignal;
+  apply?: boolean; concurrency?: number; signal: AbortSignal; sourceLockWaitMs?: number;
 }) {
   const companyId = z.string().uuid().parse(input.companyId).toLowerCase();
   const workspaceIds = z.array(z.string().uuid()).min(1).max(8).parse(input.workspaceIds).map(id => id.toLowerCase()).sort();
@@ -803,7 +804,7 @@ export async function migrateRemoteWorkspaceCohort(input: {
       if (errors.length) throw new AggregateError(failure ? [failure, ...errors] : errors, "workspace_cohort_cleanup_failed");
       if (!failure) signal.throwIfAborted();
     }
-  }, true);
+  }, true, input.sourceLockWaitMs === undefined ? undefined : { waitMs: input.sourceLockWaitMs, signal });
   for (const publication of publications) publishActivity(publication);
   return result;
 }
