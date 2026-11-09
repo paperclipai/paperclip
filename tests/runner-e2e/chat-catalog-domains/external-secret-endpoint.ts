@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, realpath, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { resolveDefaultAgentWorkspaceDir } from "../../../server/src/home-paths.js";
+import { createLocalAgentJwt } from "../../../server/src/agent-auth-jwt.js";
 import { listenOnFetchAllowedPort } from "../../e2e/fetch-allowed-port.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import {
@@ -52,12 +53,16 @@ export function validSecretScopeReceipt(
     receipt.tokenRunMatched === true &&
     receipt.identityStatus === 200 &&
     receipt.catalogStatus === 200 &&
+    // The worker's catalog also lists its model-provider credential binding;
+    // the bound key must appear exactly once, by the bound secret, and neither
+    // probed key may appear.
     Array.isArray(receipt.catalogKeys) &&
-    receipt.catalogKeys.length === 1 &&
-    receipt.catalogKeys[0] === expected.boundKey &&
     Array.isArray(receipt.secretRefs) &&
-    receipt.secretRefs.length === 1 &&
-    receipt.secretRefs[0] === expected.boundSecretId &&
+    receipt.catalogKeys.length === receipt.secretRefs.length &&
+    receipt.catalogKeys.filter(key => key === expected.boundKey).length === 1 &&
+    receipt.secretRefs[receipt.catalogKeys.indexOf(expected.boundKey)] === expected.boundSecretId &&
+    !receipt.catalogKeys.includes("unrelated-company-key") &&
+    !receipt.catalogKeys.includes("custody_probe") &&
     receipt.companyKey === "unrelated-company-key" &&
     receipt.instanceKey === "custody_probe" &&
     receipt.companyDeniedStatus === 403 &&
@@ -66,9 +71,24 @@ export function validSecretScopeReceipt(
   );
 }
 
-export async function readSecretEndpointTaskBinding(ctx: ChatCatalogContext, agentId: string, runId: string, taskId: string, cwd: string) {
+/** Native runner shells carry no Paperclip run identity (PAPERCLIP_API_KEY,
+ * PAPERCLIP_AGENT_ID and PAPERCLIP_RUN_ID are reserved), so the consumer is
+ * identified from saved server state when the bound credential arrives: the
+ * agent's one running run, on a task it owns, created from this chat, with its
+ * own execution workspace inside the attempt root. Nothing here depends on
+ * what the model copied into the command. */
+export async function readSecretEndpointConsumerRun(ctx: ChatCatalogContext, agentId: string) {
+  const companyId = ctx.input.fixtures.company.id;
+  const rows = await ctx.input.api.get<Array<{ id: string; agentId: string; status: string }>>(`/api/companies/${companyId}/heartbeat-runs?agentId=${encodeURIComponent(agentId)}&limit=20`, { timeout: 4000 });
+  const running = rows.filter(row => row.agentId === agentId && row.status === "running");
+  if (running.length !== 1) throw new Error("Secret consumer has no single active run");
+  const run = await ctx.input.api.get<{ id: string; companyId: string; agentId: string; status: string; startedAt: string | null; responsibleUserId?: string | null; contextSnapshot: { issueId?: string } | null }>(`/api/heartbeat-runs/${running[0]!.id}`, { timeout: 4000 });
+  return { run, ...(await readSecretEndpointTaskBinding(ctx, agentId, run.id, String(run.contextSnapshot?.issueId ?? ""))) };
+}
+
+export async function readSecretEndpointTaskBinding(ctx: ChatCatalogContext, agentId: string, runId: string, taskId: string) {
   const temporary = process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT;
-  if (!temporary || !taskId || !cwd || !ctx.issue()?.id) throw new Error("Actual secret consumer task context unavailable");
+  if (!temporary || !taskId || !ctx.issue()?.id) throw new Error("Actual secret consumer task context unavailable");
   const run = await ctx.input.api.get<{ id: string; companyId: string; agentId: string; status: string; startedAt: string | null; contextSnapshot: { issueId?: string } | null }>(`/api/heartbeat-runs/${runId}`, { timeout: 4000 });
   if (run.id !== runId || run.companyId !== ctx.input.fixtures.company.id || run.agentId !== agentId || run.status !== "running" || !run.startedAt || !Number.isFinite(Date.parse(run.startedAt)) || run.contextSnapshot?.issueId !== taskId)
     throw new Error("Secret consumer is not the actual active assigned run");
@@ -78,8 +98,8 @@ export async function readSecretEndpointTaskBinding(ctx: ChatCatalogContext, age
   ]);
   if (task.id !== taskId || task.companyId !== run.companyId || task.assigneeAgentId !== agentId || task.originIssueId !== ctx.issue()!.id || !task.executionWorkspaceId || view.workspace.id !== task.executionWorkspaceId || view.workspace.companyId !== run.companyId)
     throw new Error("Secret consumer task workspace binding mismatch");
-  const [owned, actual, reported] = await Promise.all([realpath(temporary), realpath(view.workspace.cwd), realpath(cwd)]);
-  if (!actual.startsWith(owned + path.sep) || reported !== actual) throw new Error("Secret consumer is outside its actual owned task cwd");
+  const [owned, actual] = await Promise.all([realpath(temporary), realpath(view.workspace.cwd)]);
+  if (!actual.startsWith(owned + path.sep)) throw new Error("Secret consumer task workspace is outside the attempt root");
   return { taskId: task.id, workspaceId: view.workspace.id, taskWorkspaceMatched: true as const };
 }
 
@@ -148,28 +168,36 @@ export async function secretTestEndpoint(
     calls.push(record);
     let ok =
       authorized &&
-      (options?.personalWorkerReceipt || (record.agentId === agentId && /^[a-f0-9-]{36}$/i.test(record.runId))) &&
+      (options?.personalWorkerReceipt || options?.taskBound || (record.agentId === agentId && /^[a-f0-9-]{36}$/i.test(record.runId))) &&
       record.method === "GET" &&
       record.pathname === "/publishing-check";
     if (options?.forbidAwsRuntimeAuthority)
       ok = ok && record.awsAuthorityAbsent === true;
     if (scopeProbe && ok) {
-      const token = String(request.headers["x-paperclip-runtime"] ?? "");
-      // Register before parsing, requests, exceptions or any parent diagnostics.
-      if (token && token.length <= 8192) {
-        ctx.input.privateSecrets?.push(token);
-        privateRuntimeValues.add(token);
-      }
       try {
-        if (!token || token.length > 8192 || !ctx.input.privateSecrets)
-          throw new Error("Private run credential unavailable");
+        if (!ctx.input.privateSecrets) throw new Error("Private run credential unavailable");
+        // The consumer is the agent's actual running run, read from the server.
+        const consumer = await readSecretEndpointConsumerRun(ctx, agentId),
+          actor = await ctx.input.api.get<{ id: string; companyId: string; adapterType: string }>(`/api/agents/${agentId}`, { timeout: 4000 });
+        record.runId = consumer.run.id;
+        // Probe with the same run-bound agent authority the native tool bridge
+        // mints for this run (createLocalAgentJwt), never a fixture identity.
+        const token = createLocalAgentJwt(agentId, ctx.input.fixtures.company.id, actor.adapterType, consumer.run.id, consumer.run.responsibleUserId ?? null) ?? "";
+        // Register before parsing, requests, exceptions or any parent diagnostics.
+        if (token && token.length <= 8192) {
+          ctx.input.privateSecrets.push(token);
+          privateRuntimeValues.add(token);
+        }
+        if (!token || token.length > 8192) throw new Error("Private run credential unavailable");
         const claims = JSON.parse(
           Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"),
         ) as { sub?: string; company_id?: string; run_id?: string };
         const tokenRunMatched =
+          actor.id === agentId &&
+          actor.companyId === ctx.input.fixtures.company.id &&
           claims.sub === agentId &&
           claims.company_id === ctx.input.fixtures.company.id &&
-          claims.run_id === record.runId;
+          claims.run_id === consumer.run.id;
         if (!tokenRunMatched)
           throw new Error("Run credential identity mismatch");
         const call = (pathname: string, method = "GET") =>
@@ -206,7 +234,7 @@ export async function secretTestEndpoint(
           listed.secrets.length > 20
         )
           throw new Error("Scoped run authority could not be verified");
-        const taskBinding = options?.taskBound ? await readSecretEndpointTaskBinding(ctx, agentId, record.runId, String(request.headers["x-paperclip-task"] ?? ""), String(request.headers["x-paperclip-cwd"] ?? "")) : undefined;
+        const taskBinding = options?.taskBound ? { taskId: consumer.taskId, workspaceId: consumer.workspaceId, taskWorkspaceMatched: consumer.taskWorkspaceMatched } : undefined;
         const denied = await Promise.all(
           [scopeProbe.unrelatedCompanyKey, scopeProbe.instanceKey].map((key) =>
             call(
@@ -262,7 +290,7 @@ export async function secretTestEndpoint(
   const port = await listenOnFetchAllowedPort(server),
     scriptPath = home ? path.join(home, `secret-endpoint-check-${ctx.input.nonce}.mjs`) : "",
     url = `http://127.0.0.1:${port}/publishing-check`;
-  const script = `const credential=process.env[${JSON.stringify(envKey)}];if(!credential){process.stdout.write(JSON.stringify({ok:false,reason:'credential unavailable'}));process.exitCode=1;}else{try{const response=await fetch(${JSON.stringify(url)},{method:'GET',redirect:'error',signal:AbortSignal.timeout(20000),headers:{authorization:'Bearer '+credential,...${options?.personalWorkerReceipt ? "{}" : "{'x-paperclip-agent':process.env.PAPERCLIP_AGENT_ID??'','x-paperclip-run':process.env.PAPERCLIP_RUN_ID??''}"},...${options?.taskBound ? "{'x-paperclip-task':process.env.PAPERCLIP_TASK_ID??'','x-paperclip-cwd':process.cwd()}" : "{}"},...${scopeProbe ? "{'x-paperclip-runtime':process.env.PAPERCLIP_API_KEY??''}" : "{}"},...${options?.forbidAwsRuntimeAuthority ? "{'x-paperclip-no-aws':String(!Object.keys(process.env).some(key=>key.startsWith('AWS_')||key.startsWith('PAPERCLIP_SECRETS_AWS_')))}" : "{}"}}});const result=await response.json();process.stdout.write(JSON.stringify({ok:result.ok===true,status:response.status,check:'publishing endpoint',...${options?.personalWorkerReceipt ? "(/^[a-f0-9]{48}$/.test(result.receiptId??''))?{receiptId:result.receiptId}:{}" : "{}"}}));if(!response.ok)process.exitCode=1;}catch{process.stdout.write(JSON.stringify({ok:false,reason:'endpoint check failed'}));process.exitCode=1;}}\n`;
+  const script = `const credential=process.env[${JSON.stringify(envKey)}];if(!credential){process.stdout.write(JSON.stringify({ok:false,reason:'credential unavailable'}));process.exitCode=1;}else{try{const response=await fetch(${JSON.stringify(url)},{method:'GET',redirect:'error',signal:AbortSignal.timeout(20000),headers:{authorization:'Bearer '+credential${options?.personalWorkerReceipt || options?.taskBound ? "" : ",...{'x-paperclip-agent':process.env.PAPERCLIP_AGENT_ID??'','x-paperclip-run':process.env.PAPERCLIP_RUN_ID??''}"},...${options?.forbidAwsRuntimeAuthority ? "{'x-paperclip-no-aws':String(!Object.keys(process.env).some(key=>key.startsWith('AWS_')||key.startsWith('PAPERCLIP_SECRETS_AWS_')))}" : "{}"}}});const result=await response.json();process.stdout.write(JSON.stringify({ok:result.ok===true,status:response.status,check:'publishing endpoint',...${options?.personalWorkerReceipt ? "(/^[a-f0-9]{48}$/.test(result.receiptId??''))?{receiptId:result.receiptId}:{}" : "{}"}}));if(!response.ok)process.exitCode=1;}catch{process.stdout.write(JSON.stringify({ok:false,reason:'endpoint check failed'}));process.exitCode=1;}}\n`;
   if (scriptPath) await writeFile(scriptPath, script, { mode: 0o600 });
   const command = scriptPath ? `node ${JSON.stringify(scriptPath)}` : `node --input-type=module -e '${script.replace(/'/g, "'\\''")}'`;
   return {
