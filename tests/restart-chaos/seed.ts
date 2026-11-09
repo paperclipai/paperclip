@@ -22,6 +22,28 @@ export interface ChaosLab {
 }
 
 /** Create the `chaos-sandbox` git repository: python CLI, one failing test, bench.sh. */
+export async function waitForAgentsReady(api: ChaosApi, agents: Partial<Record<string, { id: string }>>, timeline: Timeline,
+  timeoutMs = 4 * 60_000, pollMs = 1_000): Promise<void> {
+  const started = Date.now();
+  const pending = new Map(Object.entries(agents).flatMap(([adapter, agent]) => agent ? [[adapter, agent.id] as const] : []));
+  while (pending.size) {
+    for (const [adapter, agentId] of [...pending]) {
+      const agent = await api.get<Record<string, unknown>>(`/api/agents/${agentId}`).catch(() => null);
+      if (agent?.lifecycleState === "ready") {
+        timeline.add("seed_agent_ready", { adapter, agentId, readyAfterMs: Date.now() - started });
+        pending.delete(adapter);
+      } else if (agent?.lifecycleError) {
+        throw new Error(`Agent ${adapter} (${agentId}) failed lifecycle verification: ${String(agent.lifecycleError).slice(0, 300)}`);
+      }
+    }
+    if (!pending.size) return;
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`Agents never reached lifecycleState ready within ${Math.round(timeoutMs / 1000)} s: ${[...pending.keys()].join(", ")}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, pollMs));
+  }
+}
+
 export function cloneWorkspaceRepository(source: string, directory: string, commit?: string): string {
   const git = (...args: string[]) => execFileSync("git", args, { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   execFileSync("git", ["clone", "--quiet", "--depth", "1", "--no-hardlinks", `file://${source}`, directory], { stdio: "pipe" });
@@ -130,6 +152,8 @@ export async function seedChaosLab(input: {
   budgetCents: number;
   masks?: readonly string[];
   fixtureRoot: string;
+  waitForReadyAgents?: boolean;
+  agentReadyTimeoutMs?: number;
   workspaceRepo?: string;
   workspaceCommit?: string;
   waveId: string;
@@ -211,6 +235,7 @@ export async function seedChaosLab(input: {
     agents[adapter] = { id: created.id, name, body };
     timeline.add("seed_agent", { adapter, agentId: created.id, profile: profile.id, model: profile.model, environmentId });
   }
+  if (input.waitForReadyAgents) await waitForAgentsReady(api, agents, timeline, input.agentReadyTimeoutMs);
 
   // The project's git_worktree policy only takes effect when the instance has
   // isolated workspaces enabled (the Experimental setting users turn on, as in
