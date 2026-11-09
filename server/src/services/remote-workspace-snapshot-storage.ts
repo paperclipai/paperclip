@@ -360,6 +360,10 @@ async function snapshotKey(ref: WorkspaceSnapshotRef) {
   return wrapped;
 }
 
+export async function assertWorkspaceSnapshotKeyReadable(reference: WorkspaceSnapshotRef): Promise<void> {
+  await snapshotKey(reference);
+}
+
 /** Authentication finishes in private scratch before any plaintext is published. */
 export async function loadWorkspaceSnapshotArchive(input: {
   storage: StorageService; reference: WorkspaceSnapshotRef; targetPath: string; signal?: AbortSignal; temporaryParent?: string;

@@ -12,7 +12,7 @@ import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js
 import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import type { StorageService } from "../storage/types.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, type WorkspaceSnapshotRef } from "./remote-workspace-snapshot-storage.js";
+import { assertWorkspaceSnapshotKeyReadable, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, type WorkspaceSnapshotRef } from "./remote-workspace-snapshot-storage.js";
 import { nestedWorkspaceVerificationCheckpoint } from "./remote-workspace-verification-checkpoint.js";
 
 type ReadDb = Pick<Db, "select">;
@@ -331,10 +331,13 @@ export function createNestedWorkspaceImportVerifier(input: {
         && head.etag.replace(/^"|"$/g, "").trim() && !/^W\//i.test(head.etag) ? head.etag : null;
       const key = createHash("sha256").update(JSON.stringify([reference, children, operationId])).digest("hex");
       const previous = proofs.get(key);
-      if (previous && etag === previous.etag
-        && await previous.checked) return;
+      if (previous && etag === previous.etag && await previous.checked) {
+        await assertWorkspaceSnapshotKeyReadable(reference);
+        return;
+      }
       proofs.delete(key);
       if (etag && await checkpoint?.read({ reference, children, operationId, etag })) {
+        await assertWorkspaceSnapshotKeyReadable(reference);
         await assertOwner();
         proofs.set(key, { etag, checked: Promise.resolve(true) });
         return;

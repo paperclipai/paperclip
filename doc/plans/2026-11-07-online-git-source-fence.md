@@ -105,7 +105,9 @@ The online migration owner can checkpoint completed immutable nested-snapshot
 verification in the child snapshot ledger. This optional versioned proof binds
 the complete encrypted reference, child lineage, source operation and a known
 S3 endpoint/region/bucket/prefix/style namespace. A new process can reuse it only
-after fresh strong-ETag/length and current ledger/source-fence checks. The proof
+after fresh strong-ETag/length, current ledger/source-fence checks and canonical
+metadata-only unwrapping of each child key under the current master key. This
+key check also runs for in-memory hits; it returns no secret or payload. The proof
 is published only after canonical decryption, manifest/file restore and a stable
 post-verification HEAD. Missing or unknown proof versions, implicit provider
 endpoints and weak or changed validators require full verification. Existing

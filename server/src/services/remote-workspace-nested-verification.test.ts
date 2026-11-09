@@ -132,7 +132,7 @@ describe.skipIf(!support.supported)("bounded nested workspace verification", () 
     });
     expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, snapshot.id)))[0]).toEqual(snapshot);
   }, 10_000);
-  it.skipIf(process.platform === "win32")("resumes a killed import in a new process without repeating completed child verification", async () => {
+  it.skipIf(process.platform === "win32").each(["partial", "changed-master-key"] as const)("resumes a killed import with %s checkpoints and the current key authority", async mode => {
     const f = await imported(), repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
     const address = server.address(); if (!address || typeof address === "string") throw new Error("fixture_address_missing");
     const keys = [...f.keys], endpoint = `http://127.0.0.1:${address.port}`, temporary = path.join(home, "process-scratch");
@@ -152,34 +152,38 @@ describe.skipIf(!support.supported)("bounded nested workspace verification", () 
           if(input.pauseKey===key)await new Promise(()=>{});
           if(input.keys.includes(key))process.send?.({read:key});
           return local.getObject(companyId,key,options);
+        },async putFile(value){
+          if(input.pauseParentPut)await new Promise(()=>{});
+          return local.putFile(value);
         }};
       try{const result=await migrateRemoteWorkspace({db,storage,companyId:input.companyId,workspaceId:input.workspaceId,
         apply:true,signal:AbortSignal.timeout(30000)});process.send?.({result});}
       catch(error){process.send?.({failed:true,message:error.message});process.exitCode=1;}
       finally{await closeRegisteredClients();process.exit(process.exitCode??0);}
     `;
-    const launch = (pauseKey: string | null) => {
-      const reads: string[] = [], results: unknown[] = [];
+    const launch = (pauseKey: string | null, pauseParentPut = false, masterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY) => {
+      const reads: string[] = [], results: unknown[] = [], failures: string[] = [];
       const child = spawn(process.execPath, ["--import", path.join(repoRoot, "cli/node_modules/tsx/dist/loader.mjs"),
         "--input-type=module", "--eval", body], { cwd: path.join(repoRoot, "server"), detached: true,
-        env: { ...process.env, TMPDIR: temporary, DATABASE_URL: database.connectionString, IMPORT_FIXTURE: JSON.stringify({
-          companyId: f.companyId, workspaceId: f.parent.id, objects: path.join(home, "objects"), endpoint, keys, pauseKey }) },
+        env: { ...process.env, PAPERCLIP_SECRETS_MASTER_KEY: masterKey, TMPDIR: temporary, DATABASE_URL: database.connectionString, IMPORT_FIXTURE: JSON.stringify({
+          companyId: f.companyId, workspaceId: f.parent.id, objects: path.join(home, "objects"), endpoint, keys, pauseKey, pauseParentPut }) },
         stdio: ["ignore", "pipe", "pipe", "ipc"] });
       let stderr = ""; child.stderr!.on("data", bytes => { stderr += bytes; });
-      child.stdout!.resume(); child.on("message", (message: { read?: string; result?: unknown }) => {
+      child.stdout!.resume(); child.on("message", (message: { read?: string; result?: unknown; failed?: boolean; message?: string }) => {
         if (message.read) reads.push(message.read); if (message.result) results.push(message.result);
+        if (message.failed && message.message) failures.push(message.message);
       });
       const closed = new Promise<{ code: number | null; signal: string | null }>((resolve, reject) => {
         child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal }));
       });
-      return { child, reads, results, closed, error: () => stderr };
+      return { child, reads, results, failures, closed, error: () => stderr };
     };
-    const first = launch(keys[1]);
+    const first = mode === "partial" ? launch(keys[1]) : launch(null, true);
     try {
       await Promise.race([vi.waitFor(async () => {
         const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.snapshots[0].id));
         const completed = (await db.select().from(executionWorkspaceSnapshots)).filter(row => row.metadata?.nestedImportVerification);
-        expect(completed).toHaveLength(1); expect(snapshot).toBeDefined();
+        expect(completed).toHaveLength(mode === "partial" ? 1 : keys.length); expect(snapshot).toBeDefined();
       }, { timeout: 15_000, interval: 25 }), first.closed.then(result => { throw new Error(`import_ended_before_checkpoint:${result.code}:${first.error()}`); })]);
       process.kill(-first.child.pid!, "SIGKILL");
       expect(await first.closed).toMatchObject({ signal: "SIGKILL" });
@@ -190,13 +194,41 @@ describe.skipIf(!support.supported)("bounded nested workspace verification", () 
     expect(before.status).toBe("running");
     const [beforeSnapshot] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.executionWorkspaceId, f.parent.id));
     await fs.rm(temporary, { recursive: true, force: true }); await fs.mkdir(temporary);
-    const second = launch(null), result = await second.closed;
+    const snapshotsBefore = await db.select().from(executionWorkspaceSnapshots);
+    const second = launch(null, false, mode === "changed-master-key" ? "62".repeat(32) : undefined), result = await second.closed;
+    if (mode === "changed-master-key") {
+      expect(result, second.error()).toMatchObject({ code: 1, signal: null });
+      expect(second.failures).toEqual([expect.stringContaining("Secret decryption failed")]);
+      expect(second.reads).toEqual([]); expect(second.results).toEqual([]);
+      expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.parent.id)))[0]).toEqual(before);
+      expect(await db.select().from(executionWorkspaceSnapshots)).toEqual(snapshotsBefore);
+      expect(readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.parent.id)))[0].metadata)).toBeNull();
+      expect((await db.select().from(activityLog)).filter(row => row.action === "workspace.remote_storage_migrated" && row.entityId === f.parent.id)).toHaveLength(0);
+      return;
+    }
     expect(result, second.error()).toMatchObject({ code: 0, signal: null });
     expect(second.results).toEqual([expect.objectContaining({ applied: true, snapshotId: beforeSnapshot.id })]);
     expect([...first.reads, ...second.reads].sort()).toEqual([...keys].sort());
     const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.parent.id));
     expect(operations).toHaveLength(1); expect(operations[0]).toMatchObject({ id: before.id, status: "succeeded" });
     expect((await db.select().from(activityLog)).filter(row => row.action === "workspace.remote_storage_migrated" && row.entityId === f.parent.id)).toHaveLength(1);
+  }, 60_000);
+  it("rechecks the current master key before reusing an in-memory child proof", async () => {
+    const f = await imported(), get = storage.getObject.bind(storage), counts = new Map<string, number>();
+    vi.spyOn(storage, "getObject").mockImplementation(async (...args) => {
+      if (f.keys.has(args[1])) counts.set(args[1], (counts.get(args[1]) ?? 0) + 1);
+      return get(...args);
+    });
+    const capture = workspaceArchive.captureRemoteWorkspaceDirectory; let parentCaptures = 0;
+    vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory").mockImplementation(async input => {
+      const result = await capture(input);
+      if (input.cwd === f.root && ++parentCaptures === 2) vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "62".repeat(32));
+      return result;
+    });
+    await expect(parent(f)).rejects.toThrow("Secret decryption failed");
+    expect(parentCaptures).toBe(2); expect([...counts.values()]).toEqual([1, 1]);
+    expect(readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.parent.id)))[0].metadata)).toBeNull();
+    expect((await db.select().from(activityLog)).filter(row => row.action === "workspace.remote_storage_migrated" && row.entityId === f.parent.id)).toHaveLength(0);
   }, 60_000);
   it("resumes completed immutable child checks after losing the process and scratch", async () => {
     const f = await imported(), get = storage.getObject.bind(storage), counts = new Map<string, number>();
