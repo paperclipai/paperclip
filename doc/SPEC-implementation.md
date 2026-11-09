@@ -1531,7 +1531,7 @@ controls on the linked task: the run's Stop or Interrupt, or More task actions,
 then Pause subtree on the parent. The lock-holding run, board users, and paths
 that stop the run themselves (cancelling the task, reassigning it, and completing
 through `PATCH` a task whose Runner goal is paused first) are unaffected. The write
-is conditional on the lock the check saw; a lock acquired in between returns `409`
+is conditional on the lock the check saw; a run that acquires the lock in between returns `409`
 `issue_execution_lock_changed`.
 
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.

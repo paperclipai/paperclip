@@ -11220,8 +11220,9 @@ export function issueService(db: Db) {
         expectedStatusVersion?: number;
         /**
          * The execution lock the caller checked before allowing a status change
-         * that releases it. A different lock under the row lock (for example a
-         * checkout that landed after the check) is rejected instead of released.
+         * that releases it. A run holding the lock under the row lock that the
+         * caller did not check (for example a checkout that landed after the
+         * check) is rejected instead of released; a lock released meanwhile is fine.
          */
         expectedExecutionLock?: { executionRunId: string | null; checkoutRunId: string | null };
         /** Defaults to `flatten` for parent changes. Board-user routes pass `allow_nested`. */
@@ -11591,9 +11592,11 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        // Only a run the caller did not check is protected. A lock released in
+        // between (for example by the route's own confirmed Stop) is fine.
         if (expectedExecutionLock && (
-          (receiptExisting.executionRunId ?? null) !== expectedExecutionLock.executionRunId ||
-          (receiptExisting.checkoutRunId ?? null) !== expectedExecutionLock.checkoutRunId
+          (receiptExisting.executionRunId && receiptExisting.executionRunId !== expectedExecutionLock.executionRunId) ||
+          (receiptExisting.checkoutRunId && receiptExisting.checkoutRunId !== expectedExecutionLock.checkoutRunId)
         )) {
           throw conflict("The task's execution changed while this status change was checked. Read the task again and retry.", {
             code: "issue_execution_lock_changed",

@@ -677,5 +677,14 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
     expect(row).toEqual({ status: "in_progress", checkoutRunId: currentRunId, executionRunId: currentRunId });
+
+    // A lock that was released after the check (the route's own confirmed Stop)
+    // does not block the write.
+    await db.update(issues).set({ checkoutRunId: null, executionRunId: null }).where(eq(issues.id, issueId));
+    const updated = await issueService(db).update(issueId, {
+      status: "backlog",
+      expectedExecutionLock: { executionRunId: currentRunId, checkoutRunId: currentRunId },
+    });
+    expect(updated?.status).toBe("backlog");
   });
 });
