@@ -32,7 +32,7 @@ import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native
 import { currentControllerBootId, currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass, settleOwnableKind, type OwnershipReport } from "../services/recovery/ownership-invariant-report.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
-import { registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
+import { reconcileNativeFinalizations, registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { currentProcessProbe, proveOwnerGone } from "../services/owner-proof.js";
 
@@ -340,6 +340,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     const next = heartbeatService(f.db, { nativeSessionBackendFactory: providerDispatch });
     try {
       await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      await reconcileNativeFinalizations(f.db, [f.runId]);
     } finally { await next.drainActiveRunExecutions(); }
     expect(providerDispatch).not.toHaveBeenCalled();
 
@@ -388,8 +389,10 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
   async function restart(f: Awaited<ReturnType<typeof seedAcceptedResult>>) {
     const providerDispatch = vi.fn(() => { throw new Error("an accepted result must not open another provider turn"); });
     const next = heartbeatService(f.db, { nativeSessionBackendFactory: providerDispatch });
-    try { await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]); }
-    finally { await next.drainActiveRunExecutions(); }
+    try {
+      await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      await reconcileNativeFinalizations(f.db, [f.runId]);
+    } finally { await next.drainActiveRunExecutions(); }
     expect(providerDispatch).not.toHaveBeenCalled();
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));

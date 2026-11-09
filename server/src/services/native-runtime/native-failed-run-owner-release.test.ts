@@ -194,8 +194,8 @@ describe("failed native run owner release", () => {
       }
       return originalKill(pid, signal);
     });
-    const identity = mode === "unknown-current" ? vi.spyOn(controllerProcess, "currentControllerProcess")
-      .mockResolvedValue({ ...actual, hostHash: "unknown" }) : null;
+    const identity = mode === "unknown-current" ? vi.spyOn(controllerProcess, "currentProcessSpaceHash")
+      .mockReturnValue("unknown") : null;
     try {
       expect(await releaseAbandonedNativeOwners(db)).toBe(0);
       expect(probes).toEqual([]);
@@ -214,15 +214,80 @@ describe("failed native run owner release", () => {
     } finally { identity?.mockRestore(); probe.mockRestore(); }
   });
 
-  it.each(["timed_out", "interrupted"] as const)("publishes the same quiet operator attention for an already %s owner", async status => {
+  it.each(["timed_out", "interrupted"] as const)("publishes quiet operator attention after an already %s owner expires", async status => {
     const { runId, issueId } = await nativeRun({ status, coordinator: { leaseOwner: `foreign:${randomUUID()}`,
-      controllerBootId: randomUUID(), controllerHostHash: null, leaseExpiresAt: new Date(Date.now() + 60_000) } });
+      controllerBootId: randomUUID(), controllerHostHash: null, leaseExpiresAt: new Date(0) } });
     expect(await releaseAbandonedNativeOwners(db)).toBe(0);
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
     expect(action).toMatchObject({ ownerType: "board", cause: "native_restart_recovery_blocked", attemptCount: 0,
       evidence: { runId, reason: "controller_process_space_unverified", controllerAuthority: { digest: expect.any(String) } } });
     expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
     expect(await coordinator(runId)).toMatchObject({ phase: "observed", leaseOwner: expect.any(String) });
+  });
+
+  it("keeps empty deadline and release scans from stamping controller ownership", async () => {
+    const stamped = vi.fn();
+    const unsubscribe = controllerProcess.onControllerStamp(stamped);
+    try {
+      expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+      expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+      expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+      expect(stamped).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
+  it("retains a foreign owner's original deadline until its returned unstarted claim settles", async () => {
+    const leaseExpiresAt = new Date(Date.now() + 60_000);
+    const leaseOwner = `default:resume:${randomUUID()}`;
+    // This dispatched claim returned before the executor took an attempt. Its
+    // exact returned token/attempt, not the PID or lease age, authorizes release.
+    const { runId, issueId } = await nativeRun({ status: "failed", errorCode: "setup_failed",
+      coordinator: { leaseOwner, leaseExpiresAt, controllerBootId: randomUUID(),
+        controllerHostHash: `foreign:${currentProcessSpaceHash()}` } });
+    const before = await coordinator(runId);
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(leaseExpiresAt.getTime());
+    expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+    expect(await coordinator(runId)).toEqual(before);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+    expect(await settleUnstartedNativeSessionResume(db, { runId, leaseOwner, attempt: before.attempt })).toBe(true);
+    expect(await coordinator(runId)).toMatchObject({ phase: "terminal_failure", leaseOwner: null });
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+  });
+
+  it("surfaces a foreign owner only at its original expiry without stamping or probing it", async () => {
+    const leaseExpiresAt = new Date(Date.now() + 60_000);
+    const recordedPid = 2_000_000_001;
+    const { runId, issueId } = await nativeRun({ status: "failed", coordinator: {
+      leaseOwner: `foreign:${randomUUID()}`, leaseExpiresAt, controllerBootId: randomUUID(),
+      controllerPid: recordedPid, controllerHostHash: null } });
+    const before = await coordinator(runId);
+    const stamped = vi.fn();
+    const unsubscribe = controllerProcess.onControllerStamp(stamped);
+    const kill = process.kill.bind(process);
+    const probes: number[] = [];
+    const probe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (Math.abs(pid) === recordedPid && signal === 0) {
+        probes.push(pid);
+        throw Object.assign(new Error("foreign PID is not local stop evidence"), { code: "ESRCH" });
+      }
+      return kill(pid, signal);
+    });
+    try {
+      expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(leaseExpiresAt.getTime());
+      expect(await releaseAbandonedNativeOwners(db, new Date(leaseExpiresAt.getTime() - 1))).toBe(0);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+      expect(await releaseAbandonedNativeOwners(db, leaseExpiresAt)).toBe(0);
+      const [attention] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      expect(attention).toMatchObject({ status: "active", ownerType: "board", attemptCount: 0,
+        wakePolicy: null, monitorPolicy: null, evidence: { runId, reason: "controller_process_space_unverified" } });
+      expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+      expect(await releaseAbandonedNativeOwners(db, leaseExpiresAt)).toBe(0);
+      expect(await coordinator(runId)).toEqual(before);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([attention]);
+      expect(probes).toEqual([]);
+      expect(stamped).not.toHaveBeenCalled();
+    } finally { probe.mockRestore(); unsubscribe(); }
   });
 
   it("finishes each requested namespace inspection pass and preserves the original local deadline", async () => {

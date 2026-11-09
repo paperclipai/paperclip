@@ -1,4 +1,4 @@
-import { currentControllerProcess } from "../controller-process-identity.js";
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import { nativeControllerAuthorityDigest, readNativeRemoteExecutionOwnership, isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
@@ -79,13 +79,14 @@ function abandonedOwnerCondition() {
   )!;
 }
 
-/** Only local evidence can drive an automatic release deadline. Namespace
- * holds are surfaced by the initial/mutation pass, then owned by the board. */
+/** Local owners retain their release deadline. Foreign owners retain the same
+ * original deadline until expiry surfaces attention owned by the board. */
 async function localOwnerSpaceCondition() {
-  const [processSpace, native] = await Promise.all([currentControllerProcess(), currentNativeControllerIdentity()]);
+  const processSpace = currentProcessSpaceHash();
+  const native = await currentNativeControllerIdentity();
   return or(
     and(eq(nativeRunFinalizations.controllerBootId, native.bootId), eq(nativeRunFinalizations.controllerPid, native.pid)),
-    processSpace.hostHash !== "unknown" ? eq(nativeRunFinalizations.controllerHostHash, processSpace.hostHash) : sql`false`,
+    processSpace !== "unknown" ? eq(nativeRunFinalizations.controllerHostHash, processSpace) : sql`false`,
   )!;
 }
 
@@ -97,7 +98,7 @@ export async function nextAbandonedNativeOwnerReleaseAt(db: Db): Promise<Date | 
   // Notifications can coalesce while a partial page advances. A lower-sorting
   // arrival without any active attention remains durable inspection work, so
   // completing the higher pages cannot consume its only wake.
-  const [unattended] = await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+  const [unattended] = await db.select({ at: nativeRunFinalizations.leaseExpiresAt }).from(nativeRunFinalizations)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
       eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
     .where(and(abandonedOwnerCondition(), sql`not coalesce(${local}, false)`,
@@ -107,14 +108,15 @@ export async function nextAbandonedNativeOwnerReleaseAt(db: Db): Promise<Date | 
         where attention.company_id = ${nativeRunFinalizations.companyId}
           and attention.source_issue_id = ${nativeRunFinalizations.issueId}
           and attention.status in ('active', 'escalated'))`,
-    )).limit(1);
-  if (unattended) return new Date();
+    )).orderBy(asc(nativeRunFinalizations.leaseExpiresAt)).limit(1);
   const [row] = await db.select({ at: nativeRunFinalizations.leaseExpiresAt }).from(nativeRunFinalizations)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
       eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
     .where(and(abandonedOwnerCondition(), sql`coalesce(${local}, false)`))
     .orderBy(asc(nativeRunFinalizations.leaseExpiresAt)).limit(1);
-  return row?.at ?? null;
+  if (!unattended?.at) return row?.at ?? null;
+  if (!row?.at) return unattended.at;
+  return unattended.at < row.at ? unattended.at : row.at;
 }
 
 /** A proof that used the one-release fallback for a row saved before its PID
@@ -235,13 +237,14 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
       // meaningless local PID observation only in this exact authority branch.
     } else if (release.kind === "expired_owner") {
       if (!coordinator.leaseExpiresAt || coordinator.controllerGeneration !== release.controllerGeneration
-        || run.resultJson?.[LEGACY_WORKSPACE_RECOVERY_KEY] != null) return false;
+        || run.resultJson?.[LEGACY_WORKSPACE_RECOVERY_KEY] != null
+        || coordinator.leaseExpiresAt > now) return false;
       // An expired lease does not make foreign PID numbers local evidence.
       // Keep this boot's exact owner semantics; every other owner needs the
       // same known kernel/PID space before either recorded-process probe.
       if (!isCurrentNativeControllerProcess(coordinator)) {
-        const current = await currentControllerProcess();
-        if (current.hostHash === "unknown" || coordinator.controllerHostHash !== current.hostHash) {
+        const current = currentProcessSpaceHash();
+        if (current === "unknown" || coordinator.controllerHostHash !== current) {
           if (!coordinator.leaseOwner?.startsWith("native-finalizer:") && !coordinator.leaseOwner?.startsWith("native-cleanup:")) {
             const [expiry] = await tx.select({ epoch: sql<string | null>`extract(epoch from ${nativeRunFinalizations.leaseExpiresAt})::numeric::text` })
               .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
@@ -251,7 +254,6 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
           return false;
         }
       }
-      if (coordinator.leaseExpiresAt > now) return false;
       const [heldElsewhere] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.id, run.id), or(unsettledRunEnvironmentLease, pendingNativeStop))).limit(1);
       if (heldElsewhere || await runProcessMayBeLive(run, now, fallbacks)
@@ -377,7 +379,6 @@ export async function releaseAbandonedNativeOwners(db: Db, now = new Date(), pag
   // One bounded page per pass. The cursor rotates across passes, so rows that a
   // live process still holds cannot starve stopped owners behind them; any
   // remaining expired row keeps the finalization deadline due for the next pass.
-  const local = await localOwnerSpaceCondition();
   const page = (after: string | null) => db.select({
     runId: nativeRunFinalizations.runId,
     leaseOwner: nativeRunFinalizations.leaseOwner,
@@ -386,7 +387,7 @@ export async function releaseAbandonedNativeOwners(db: Db, now = new Date(), pag
   }).from(nativeRunFinalizations)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
       eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
-    .where(and(abandonedOwnerCondition(), or(lte(nativeRunFinalizations.leaseExpiresAt, now), sql`not coalesce(${local}, false)`),
+    .where(and(abandonedOwnerCondition(), lte(nativeRunFinalizations.leaseExpiresAt, now),
       after ? gt(nativeRunFinalizations.runId, after) : undefined))
     .orderBy(asc(nativeRunFinalizations.runId))
     .limit(pageSize + 1);
