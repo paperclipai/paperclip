@@ -151,6 +151,15 @@ export async function hasDeliverableBudgetResume(db: Db, now = new Date()) {
   return Boolean(row);
 }
 
+/** When the earliest claimed, undelivered claim goes stale and becomes
+ * deliverable again, so a worker can wake for it without another signal. */
+export async function nextBudgetResumeClaimExpiryAt(db: Db): Promise<number | null> {
+  const [row] = await db.select({ at: sql<Date | null>`min(${budgetResumeClaims.claimedAt})` }).from(budgetResumeClaims)
+    .where(and(eq(budgetResumeClaims.state, "pending"), sql`${budgetResumeClaims.claimedAt} is not null`));
+  const claimedAt = row?.at ? new Date(row.at).getTime() : null;
+  return claimedAt === null ? null : claimedAt + BUDGET_RESUME_CLAIM_STALE_MS;
+}
+
 type PendingRow = {
   id: string; companyId: string; agentId: string; status: string; createdAt: Date;
   issueId: string | null; claim: BudgetResumeClaim | null;

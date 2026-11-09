@@ -17,7 +17,9 @@ vi.mock("../services/budgets.js", () => ({
   flushBudgetEvaluationWorkPage: work.evaluate,
 }));
 vi.mock("../services/budget-evaluation-work.js", () => ({ hasPendingBudgetEvaluation: work.evaluationPending }));
-vi.mock("../services/budget-resume-continuation.js", () => ({ hasDeliverableBudgetResume: vi.fn(async () => false) }));
+const resumeWork = vi.hoisted(() => ({ expiry: vi.fn(async (): Promise<number | null> => null) }));
+vi.mock("../services/budget-resume-continuation.js", () => ({ hasDeliverableBudgetResume: vi.fn(async () => false),
+  nextBudgetResumeClaimExpiryAt: resumeWork.expiry }));
 vi.mock("../services/run-cost-accounting.js", () => ({ readCostAccountingWork: work.accounting }));
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -59,6 +61,19 @@ describe("budget accounting delivery", () => {
     const deliverResumeContinuations = vi.fn(async () => { order.push("continuations"); });
     await registerBudgetEnforcementWork(s.db, s.coordinator, { deliverResumeContinuations }).ready;
     expect(order).toEqual(["stops", "continuations"]);
+  });
+
+  it("wakes when a failed dispatcher's resume claim goes stale", async () => {
+    const s = setup();
+    const expiry = Date.now() + 60_000;
+    resumeWork.expiry.mockResolvedValue(expiry);
+    const deliverResumeContinuations = vi.fn(async () => undefined);
+    await registerBudgetEnforcementWork(s.db, s.coordinator, { deliverResumeContinuations }).ready;
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(1);
+    expect(s.coordinator.nextWakeAt()).toBe(expiry);
+    resumeWork.expiry.mockResolvedValue(null);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(2);
   });
 
   it("continues cancellation delivery and retries a failed startup reconciliation", async () => {
