@@ -773,13 +773,16 @@ export async function migrateRemoteWorkspaceCohort(input: {
       if (!await tryAcquireExecutionWorkspaceLifecycleLock(lock, workspaceId)) throw new IsolatedRepositorySourceBusy("workspace_source_busy");
     }
     await preflight(input.db);
-    const plans: MigrationPlan[] = [];
-    for (const member of members) {
+    const reservations = await Promise.allSettled(members.map(async member => {
       const reserved = await reserveMigration(member.input, member.onlineSource, cohort,
         fingerprint(initial.find(workspace => workspace.id === member.input.workspaceId)!));
       if (reserved.authority) throw new Error("workspace_cohort_membership_changed");
-      plans.push({ ...member, reserved });
-    }
+      return { ...member, reserved };
+    }));
+    const plans: MigrationPlan[] = reservations.map(reservation => {
+      if (reservation.status === "rejected") throw reservation.reason;
+      return reservation.value;
+    });
     await lockMigrationRecovery(lock, plans, cohort);
     const captures: Array<CapturedMigration | undefined> = Array(plans.length);
     const childVerifier = createMigrationChildVerifier(plans[0].input, plans[0].onlineSource, lock);

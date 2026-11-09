@@ -313,10 +313,10 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect.soft(await db.select().from(workspaceOperations)).toHaveLength(1);
     await assertLocal(f);
   });
-  it.each(["preflight", "recovery"] as const)("joins concurrent %s validation readers before releasing the fence", async phase => {
+  it.each(["preflight", "reservation", "recovery"] as const)("joins concurrent %s validation readers before releasing the fence", async phase => {
     const f = await fixture(), held = await recoverable(f), inspect = onlineWorkspaceSource.inspectOnlineWorkspaceSource;
     const counts = new Map<string, number>(), selected = new Set(f.leaves.map(row => row.id));
-    const phaseCall = phase === "preflight" ? 2 : 4;
+    const phaseCall = phase === "preflight" ? 2 : phase === "reservation" ? 3 : 4;
     let entered = 0, settled = false, bothEntered!: () => void, release!: () => void, firstFailed!: () => void;
     const both = new Promise<void>(resolve => { bothEntered = resolve; }), peer = new Promise<void>(resolve => { release = resolve; });
     const failed = new Promise<void>(resolve => { firstFailed = resolve; }), timer = setTimeout(() => bothEntered(), 5000);
@@ -344,7 +344,8 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     await expect(withWorkspaceSourceLocks(db, { companyId: f.companyId, projectIds: [f.projectId] }, async () => true, true)).resolves.toBe(true);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, held.runId)))[0]).toEqual(held.owner);
     await assertLocal(f);
-    expect(await db.select().from(workspaceOperations)).toHaveLength(phase === "preflight" ? 0 : 2);
+    expect(await db.select().from(workspaceOperations)).toHaveLength(phase === "preflight" ? 0 : phase === "reservation" ? 1 : 2);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
     expect(await db.select().from(activityLog)).toHaveLength(0);
   });
   it.each(["failure", "cancel"] as const)("joins active capture peers and keeps the fence on %s", async mode => {
