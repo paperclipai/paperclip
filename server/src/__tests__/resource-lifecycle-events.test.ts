@@ -495,6 +495,9 @@ describePostgres("Resource lifecycle events", () => {
     expect(await inbox.list(companyId, 2, undefined, [...all])).toEqual((await inbox.list(companyId, 100, undefined, [...all])).slice(0, 2));
     expect((await inbox.list(companyId, 100, String(gap[0].id), [...all])).map(e => Number(e.id))).toEqual([lateCreate.id, projectArchive.id]);
     expect(await pluginLifecycleInbox(db, other.id).list(companyId, 100, undefined, ["agent_runtime"])).toEqual([]);
+    expect(await pluginLifecycleInbox(db, other.id).hasPending(companyId, ["agent_runtime"])).toBe(false);
+    expect(await inbox.hasPending(companyId, ["agent_runtime"])).toBe(true);
+    expect(await inbox.hasPending(companyId)).toBe(true);
     expect(await inbox.list(decoyCompanyId, 100, undefined, [...all])).toEqual([expect.objectContaining({ companyId: decoyCompanyId })]);
     const [head] = await inbox.list(companyId, 1, undefined, ["project"]);
     expect(head).toEqual({ id: String(gap[0].id), companyId, resourceType: "project", resourceId: gapId, action: "update", createdAt: gap[0].createdAt.toISOString() });

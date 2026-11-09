@@ -1,6 +1,6 @@
 // Compares the plugin lifecycle inbox page query before and after a change.
 // Usage: pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-plugin-lifecycle-inbox.ts \
-//   --baseline-ref=<sha> [--agents=40] [--per-agent=2500] [--acked=2000] [--samples=5]
+//   --baseline-ref=<sha> [--agents=40] [--per-agent=2500] [--acked=2000] [--samples=5] [--treatment-only]
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -19,6 +19,8 @@ const perAgent = Number(arg("per-agent", "2500"));
 const acked = Number(arg("acked", "2000"));
 const sampleCount = Number(arg("samples", "5"));
 const timeoutMs = Number(arg("timeout-ms", "600000"));
+// The baseline is quadratic; at large fixtures time only the treatment.
+const treatmentOnly = process.argv.includes("--treatment-only");
 // Resolve database drivers through the db package; the scripts folder has no own dependencies.
 const dbRequire = createRequire(new URL("../packages/db/package.json", import.meta.url));
 const postgres = (await import(pathToFileURL(dbRequire.resolve("postgres")).href)).default as typeof import("postgres").default;
@@ -79,13 +81,17 @@ try {
 
   const cases = [
     { name: "page-100-all-types", limit: 100, types: ["agent", "project", "agent_runtime"] },
-    { name: "probe-1-all-types", limit: 1, types: ["agent", "project", "agent_runtime"] },
     { name: "page-100-agent-project", limit: 100, types: ["agent", "project"] },
+    // Idle-sleep check: baseline read one listed event; the treatment asks only whether one exists.
+    { name: "idle-probe-all-types", limit: 1, types: ["agent", "project", "agent_runtime"], probe: true },
   ] as const;
   async function run(inbox: Inbox, c: (typeof cases)[number]) {
     recorded = [];
     const start = performance.now();
-    const rows = await inbox(db, plugin.id).list(companyId, c.limit, undefined, [...c.types]);
+    const service = inbox(db, plugin.id) as ReturnType<Inbox>;
+    const rows = "probe" in c
+      ? [("hasPending" in service ? await service.hasPending(companyId, [...c.types]) : (await service.list(companyId, 1, undefined, [...c.types])).length > 0)]
+      : await service.list(companyId, c.limit, undefined, [...c.types]);
     const ms = performance.now() - start;
     const query = recorded.find(q => q.sql.includes('"resource_lifecycle_events"'));
     return { ms, rows, query };
@@ -97,17 +103,17 @@ try {
     // One warmup each, then alternate order per sample to limit cache bias.
     for (let n = 0; n <= sampleCount; n++) {
       const order = n % 2 === 0 ? (["baseline", "treatment"] as const) : (["treatment", "baseline"] as const);
-      for (const which of order) {
+      for (const which of order.filter(w => !treatmentOnly || w === "treatment")) {
         const r = await run(which === "baseline" ? baseline : current.pluginLifecycleInbox, c);
         if (n > 0) samples[which].push(r.ms);
         if (which === "baseline") { baseRows = r.rows; baseQuery = r.query; } else { treatRows = r.rows; treatQuery = r.query; }
       }
     }
-    assert.deepEqual(treatRows, baseRows, `${c.name}: results differ`);
+    if (!treatmentOnly) assert.deepEqual(treatRows, baseRows, `${c.name}: results differ`);
     const explain = async (q?: Query) => q ? (await client!.unsafe(`EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) ${q.sql}`, q.params as never[])).map(r => r["QUERY PLAN"]).join("\n") : "";
     const stats = (s: number[]) => { const v = [...s].sort((a, b) => a - b); return { median: v[Math.floor(v.length / 2)], min: v[0], max: v.at(-1), samples: s.map(x => Math.round(x * 10) / 10) }; };
-    const b = stats(samples.baseline), t = stats(samples.treatment);
-    results.push({ case: c.name, rows: (treatRows as unknown[]).length, equal: true, baselineMs: b, treatmentMs: t, speedup: Math.round(b.median / t.median * 10) / 10,
+    const b = treatmentOnly ? undefined : stats(samples.baseline), t = stats(samples.treatment);
+    results.push({ case: c.name, rows: (treatRows as unknown[]).length, equal: !treatmentOnly, baselineMs: b, treatmentMs: t, speedup: b ? Math.round(b.median / t.median * 10) / 10 : undefined,
       baselinePlan: await explain(baseQuery), treatmentPlan: await explain(treatQuery) });
   }
   // Control: the agent runtime revision read (plugin-agent-runtime-state.ts, agent-file-store.ts) is unchanged.
