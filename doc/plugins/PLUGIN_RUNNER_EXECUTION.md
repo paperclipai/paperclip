@@ -350,7 +350,9 @@ call `onEnvironmentReleaseLease`. Core still calls it when the release did not
 complete a dispatched task, and the cleanup retry calls it after any failure.
 When `onEnvironmentResumeLease` returns no provider lease, Core sends `status`
 first. It sends `stop` only when that `status` does not report
-`executionStopped: true`. A driver must release task-scoped resources in its
+`executionStopped: true` and any required `preparationStopped: true` proof.
+An old warm-start preparation marker does not force a repeated stop when both
+proofs are present. A driver must release task-scoped resources in its
 `status` or `complete` handling, not only in `onEnvironmentReleaseLease`.
 
 Termination receipts cover all run leases that owned the retired physical task.
