@@ -146,40 +146,37 @@ it("rejects wrong run/unchanged bytes or reversed chronology", () => { const o =
 it("rejects exposing private work", () => { const wrong = timeline(); wrong.reply += " Secret acquisition."; expect(gradeWorkTimeline(wrong).passed).toBe(false); });
 it("rejects fabricated prior-week dates", () => { const o = timeline(); o.timelineEvents[0]!.createdAt = "2026-10-19T03:00:00Z"; expect(gradeWorkTimeline(o).passed).toBe(false); });
 function partial() {
-  const o = base("inbox-search.archive-partial-failure"); const originals = ["one", "two", "three"].map(id => ({ id, title: `Delivery ${id}`, status: "done" })); const transport = originals.map((row, index) => ({ requestId: row.id, sequence: index + 1, taskId: row.id, phase: "initial" as "initial" | "retry", requestSha256: "sha", runId: "initial", forwarded: index < 2, status: index < 2 ? 200 : undefined, completedAt: "2026-10-26T01:00:00Z" }));
-  const items = originals.map((row, index) => ({ ...row, archivedAt: index < 2 ? "2026-10-26T01:00:00Z" : null, archivedByActorType: "agent", archivedByAgentId: "ceo", archivedByRunId: "initial" })); const events = originals.slice(0, 2).map(row => ({ id: row.id, entityId: row.id, action: "issue.inbox_archived", agentId: "ceo", details: { userId: "person" } }));
-  Object.assign(o.state, { originalTasks: originals, personId: "person" }); o.tasks = structuredClone(originals); o.activity = structuredClone(events); o.runs = [{ id: "initial", status: "succeeded", agentId: "ceo" }]; o.reply = "Archived two items; Delivery three failed and remains in your inbox.";
-  const first = { ...structuredClone(o), ownerItems: structuredClone(items), transport: structuredClone(transport), phaseReply: o.reply }; o.state.firstPartial = first;
-  items[2]!.archivedAt = "2026-10-26T02:00:00Z"; items[2]!.archivedByRunId = "retry"; o.activity.push({ id: "third", entityId: "three", action: "issue.inbox_archived", agentId: "ceo", details: { userId: "person" } });
-  transport.push({ ...transport[2]!, requestId: "retry", sequence: 4, phase: "retry", runId: "retry", forwarded: true, status: 200 }); o.runs.push({ id: "retry", status: "succeeded", agentId: "ceo" });
-  return { ...o, ownerItems: items, transport, phaseReply: "The two previous items were already archived; I archived the remaining item now." };
+  const o = base("inbox-search.archive-partial-failure"); const originals = ["one", "two", "three"].map(id => ({ id, identifier: `RUN-${id}`, title: `Delivery ${id}`, status: "done" }));
+  const items = originals.map((row, index) => ({ ...row, archivedAt: index < 2 ? "2026-10-26T01:00:00Z" : null, archivedByActorType: index < 2 ? "agent" : undefined, archivedByAgentId: index < 2 ? "ceo" : undefined, archivedByRunId: index < 2 ? "initial" : undefined })); const events = originals.slice(0, 2).map(row => ({ id: row.id, entityId: row.id, action: "issue.inbox_archived", agentId: "ceo", details: { userId: "person" } }));
+  Object.assign(o.state, { originalTasks: originals, personId: "person", injectedFailures: { one: 0, two: 0, three: 1 } }); o.tasks = structuredClone(originals); o.activity = structuredClone(events); o.runs = [{ id: "initial", status: "succeeded", agentId: "ceo" }];
+  o.reply = "I archived [RUN-one](/RUN/issues/RUN-one) and [RUN-two](/RUN/issues/RUN-two). Archiving [RUN-three](/RUN/issues/RUN-three) failed with a server error, so it is still in your inbox."; o.links = ["/RUN/issues/RUN-one", "/RUN/issues/RUN-two", "/RUN/issues/RUN-three"];
+  const first = { ...structuredClone(o), ownerItems: structuredClone(items), phaseReply: o.reply }; o.state.firstPartial = first;
+  Object.assign(items[2]!, { archivedAt: "2026-10-26T02:00:00Z", archivedByActorType: "agent", archivedByAgentId: "ceo", archivedByRunId: "retry" }); o.activity.push({ id: "third", entityId: "three", action: "issue.inbox_archived", agentId: "ceo", details: { userId: "person" } });
+  o.runs.push({ id: "retry", status: "succeeded", agentId: "ceo" });
+  return { ...o, ownerItems: items, phaseReply: "The other two were already archived; I archived [RUN-three](/RUN/issues/RUN-three) now." };
 }
-it("accepts two actual archives, a real pre-admission drop and one reconciled retry", () => expect(gradeArchivePartial(partial()).passed).toBe(true));
-it("accepts natural partial failure wording", () => { const o = partial(); (o.state.firstPartial as any).reply = "Two confirmed archives. Delivery three could not be archived; it remains outstanding."; expect(gradeArchivePartial(o).passed).toBe(true); });
-it("rejects a forwarded fake failure or a drop before both successes", () => { const o = partial(); (o.state.firstPartial as any).transport[2].forwarded = true; expect(gradeArchivePartial(o).passed).toBe(false); const wrong = partial(); (wrong.state.firstPartial as any).transport[2].sequence = 1; expect(gradeArchivePartial(wrong).passed).toBe(false); });
-it("rejects clearing all items in the first reply or repeating successful writes on retry", () => { const o = partial(); (o.state.firstPartial as any).reply += " Your inbox is clear."; expect(gradeArchivePartial(o).passed).toBe(false); const wrong = partial(); wrong.transport.push({ ...wrong.transport[3]!, taskId: "one" }); expect(gradeArchivePartial(wrong).passed).toBe(false); });
-it("rejects wrong-person audit, edited completion, or refreshed first archive timestamps", () => { const o = partial(); o.activity[0].details.userId = "another"; expect(gradeArchivePartial(o).passed).toBe(false); const wrong = partial(); wrong.tasks[0].status = "cancelled"; expect(gradeArchivePartial(wrong).passed).toBe(false); const repeated = partial(); repeated.ownerItems[0]!.archivedAt = "2026-10-26T02:00:00Z"; expect(gradeArchivePartial(repeated).passed).toBe(false); });
+const firstOf = (o: ReturnType<typeof partial>) => o.state.firstPartial as ReturnType<typeof partial>;
+it("accepts two saved archives, a real storage failure on the third and a retry that writes only the third", () => expect(gradeArchivePartial(partial()).passed).toBe(true));
+it("does not grade reply wording: reworded or terse valid replies with the same saved outcome pass", () => {
+  for (const reply of ["Done with two of them. [RUN-three](/RUN/issues/RUN-three) hit an error and wasn't archived; it's still there.", "[RUN-three](/RUN/issues/RUN-three) could not be archived. The other two completed items are out of your inbox."]) {
+    const o = partial(); firstOf(o).reply = reply; expect(gradeArchivePartial(o).passed, reply).toBe(true);
+  }
+  const o = partial(); o.phaseReply = "Finished: [RUN-three](/RUN/issues/RUN-three) is archived too."; expect(gradeArchivePartial(o).passed).toBe(true);
+});
+it("rejects the retained broken run where the fault never fired and all three archived in the first turn", () => {
+  const o = partial(), first = firstOf(o);
+  Object.assign(first.ownerItems[2]!, { archivedAt: "2026-10-26T01:00:00Z", archivedByActorType: "agent", archivedByAgentId: "ceo", archivedByRunId: "initial" }); first.activity.push({ id: "third", entityId: "three", action: "issue.inbox_archived", agentId: "ceo", details: { userId: "person" } });
+  first.state.injectedFailures = { one: 0, two: 0, three: 0 }; expect(gradeArchivePartial(o).passed).toBe(false);
+});
+it("rejects a failure the storage fault did not cause or that hit an archived item", () => {
+  const silent = partial(); firstOf(silent).state.injectedFailures = { one: 0, two: 0, three: 0 }; expect(gradeArchivePartial(silent).passed).toBe(false);
+  const wrong = partial(); firstOf(wrong).state.injectedFailures = { one: 1, two: 0, three: 1 }; expect(gradeArchivePartial(wrong).passed).toBe(false);
+});
+it("rejects a first reply that does not point the person to the item that failed", () => { const o = partial(); firstOf(o).links = ["/RUN/issues/RUN-one", "/RUN/issues/RUN-two"]; expect(gradeArchivePartial(o).passed).toBe(false); });
+it("rejects repeating successful writes, unarchiving, or leaving the failed item on retry", () => {
+  const repeated = partial(); repeated.ownerItems[0]!.archivedAt = "2026-10-26T02:00:00Z"; repeated.ownerItems[0]!.archivedByRunId = "retry"; repeated.activity.push({ id: "again", entityId: "one", action: "issue.inbox_archived", agentId: "ceo", details: { userId: "person" } }); expect(gradeArchivePartial(repeated).passed).toBe(false);
+  const undone = partial(); undone.activity.push({ id: "undo", entityId: "one", action: "issue.inbox_unarchived", agentId: "ceo", details: { userId: "person" } }); expect(gradeArchivePartial(undone).passed).toBe(false);
+  const left = partial(); Object.assign(left.ownerItems[2]!, { archivedAt: null, archivedByRunId: undefined }); left.activity.pop(); expect(gradeArchivePartial(left).passed).toBe(false);
+});
+it("rejects wrong-person audit or edited completion", () => { const o = partial(); o.activity[0].details.userId = "another"; expect(gradeArchivePartial(o).passed).toBe(false); const wrong = partial(); wrong.tasks[0].status = "cancelled"; expect(gradeArchivePartial(wrong).passed).toBe(false); });
 it("never passes missing evidence", () => { for (const grade of [gradeProjectDefaults, gradeRoutineAudit, gradeWorkTimeline, gradeArchivePartial]) expect(grade(undefined).passed).toBe(false); });
-
-it("rejects reversed or contradictory partial counts even when the failed item is named", () => {
-  for (const reply of ["One archived; two failed, including Delivery three.", "Two archived, but only one was archived; Delivery three failed.", "Two archived; I could not archive two items, including Delivery three."]) {
-    const o = partial(); (o.state.firstPartial as any).reply = reply; expect(gradeArchivePartial(o).passed, reply).toBe(false);
-  }
-});
-it("accepts grounded natural two-success wording and locally negated inbox-clear claims", () => {
-  for (const reply of ["Two are archived; Delivery three failed, so I cannot say the inbox is clear.", "Archived Delivery one and Delivery two. Delivery three failed and remains outstanding.", "Two of the three tasks were successfully archived; Delivery three could not be archived.", "Two archive calls succeeded; Delivery three failed. Not all three tasks were archived."]) {
-    const o = partial(); (o.state.firstPartial as any).reply = reply; expect(gradeArchivePartial(o).passed, reply).toBe(true);
-  }
-  const o = partial(), first = o.state.firstPartial as any;
-  for (const row of [o.state.originalTasks, o.tasks, first.state.originalTasks, first.tasks]) (row as any[])[2].title = "Delivered launch checklist";
-  first.reply = "Two are archived; the checklist failed, so I cannot say the inbox is clear.";
-  expect(gradeArchivePartial(o).passed).toBe(true);
-});
-it("rejects invented additional retry counts while accepting truthful total-three states", () => {
-  for (const reply of ["I archived two more items on retry.", "Three additional items were archived now.", "I newly archived all three items now.", "I archived three remaining items now.", "I archived two items in total; the remaining task is archived now."]) {
-    const o = partial(); o.phaseReply = reply; expect(gradeArchivePartial(o).passed, reply).toBe(false);
-  }
-  for (const reply of ["The remaining item is now archived. All three are now archived.", "Three tasks are archived in total; the previously failed item was archived on retry.", "I archived one remaining item; two were already archived.", "I archived all three in total; the retry added only the remaining one."]) {
-    const o = partial(); o.phaseReply = reply; expect(gradeArchivePartial(o).passed, reply).toBe(true);
-  }
-});

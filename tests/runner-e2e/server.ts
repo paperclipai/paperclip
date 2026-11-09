@@ -8,7 +8,6 @@ import { publishInvitationSourceProof, invitationSourceProofPath } from "./chat-
 import { readSelectedVaultServerEnvironment } from "./chat-vault-private-server.js";
 import { readValidatedPublicOriginReceipt, publicOriginServerOverrides, PUBLIC_ORIGIN_RECEIPT_ENV, PUBLIC_ORIGIN_CONTROL_ENV } from "./chat-public-origin.js";
 import { dockerDatabaseSupervisorEnvironment } from "./docker-postgres.js";
-import { archiveServerEnvironment } from "./chat-archive-fault-control.js";
 import { CHAT_INSTALL_PLAN, refreshInstalledChatPins, publishInstalledChatReceipt } from "./chat-installed-lane.js";
 import { resolveRunnerE2ESource } from "./source.js";
 import { readRestartRequest, type RestartRequest } from "./server-restart-request.js";
@@ -78,16 +77,15 @@ const workspaceStorage = remoteWorkspaceStorageServerEnvironment({
 });
 const servingArtifacts = new WeakMap<ChildProcess, ServingArtifact>();
 const dockerEnvironment = await dockerDatabaseSupervisorEnvironment({ temporaryRoot, env: process.env });
-const archiveEnvironment = await archiveServerEnvironment({ selected: executionIds, temporaryRoot, backendOrigin: `http://127.0.0.1:${port}`, env: dockerEnvironment.source });
+const sourceEnvironment = { ...dockerEnvironment.source };
 const publicOriginReceipt = process.env[PUBLIC_ORIGIN_RECEIPT_ENV] ? await readValidatedPublicOriginReceipt({ receiptPath: required(PUBLIC_ORIGIN_RECEIPT_ENV), executionId: executionIds.length === 1 ? executionIds[0]! : "", attemptId: required("PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID"), backendOrigin: `http://127.0.0.1:${port}` }) : undefined;
 if (publicOriginReceipt && process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP !== "1") throw new Error("Owned public origin requires the exact authenticated selected case");
-for (const key of [PUBLIC_ORIGIN_RECEIPT_ENV, PUBLIC_ORIGIN_CONTROL_ENV, "PAPERCLIP_PUBLIC_URL", "PAPERCLIP_AUTH_PUBLIC_BASE_URL", "PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL", "PAPERCLIP_ALLOWED_HOSTNAMES"]) delete archiveEnvironment.source[key];
+for (const key of [PUBLIC_ORIGIN_RECEIPT_ENV, PUBLIC_ORIGIN_CONTROL_ENV, "PAPERCLIP_PUBLIC_URL", "PAPERCLIP_AUTH_PUBLIC_BASE_URL", "PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL", "PAPERCLIP_ALLOWED_HOSTNAMES"]) delete sourceEnvironment[key];
 const vaultEnvironment = await readSelectedVaultServerEnvironment({ executionIds, temporaryRoot, backendOrigin: `http://127.0.0.1:${port}`, env: process.env });
 const teamCatalogEnvironment = await teamRuntimeCatalogServerEnvironment({ executionIds, temporaryRoot, repositoryRoot });
 const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
-  ? installedReleaseEnvironment(archiveEnvironment.source, repositoryRoot, path.join(temporaryRoot, "provider-bin"))
-  : archiveEnvironment.source, {
-  ...archiveEnvironment.overrides,
+  ? installedReleaseEnvironment(sourceEnvironment, repositoryRoot, path.join(temporaryRoot, "provider-bin"))
+  : sourceEnvironment, {
   NODE_ENV: "test",
   PORT: port,
   // Keep provider caches attempt-private without changing Playwright's browser
