@@ -3444,10 +3444,8 @@
       "../../packages/db/src/backup-lib.ts",
       "../../server/src/routes/instance-database-backups.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.backup-and-restore.v2",
-    "coverageGaps": [
-      "Reply wording is not graded: a reply that invents a backup UI, claims a backup or restore it did not perform, or misreports the receipt still passes. Read the replies of a passing run."
-    ],
+    "oracleVersion": "paperclip.chat-catalog.privileged.backup-and-restore.v3",
+    "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
