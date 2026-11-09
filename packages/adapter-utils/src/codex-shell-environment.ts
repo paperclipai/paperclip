@@ -26,6 +26,10 @@ export function codexShellEnvironmentKeys(
     .map(([key]) => key));
   return [...new Set([
     "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
+    // ACP adds inherited host context after building this allowlist. Windows
+    // shells still need these names: without SystemRoot, even loopback curl
+    // requests fail and PowerShell cannot initialize. No host values are read here.
+    "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
     ...Object.keys(environment).filter(key => ENVIRONMENT_NAME.test(key) && !PROVIDER_ONLY_KEYS.has(key.toUpperCase())
       && (key === "PAPERCLIP_API_KEY" || configuredSecrets.has(key) || !SECRET_NAME.test(key))),
     ...GITHUB_LAUNCHER_KEYS.filter(key => environment[key]),

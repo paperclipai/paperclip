@@ -9,6 +9,15 @@ For the adapter-author guide see
 [`docs/adapters/creating-an-adapter.md`](../../docs/adapters/creating-an-adapter.md)
 and the in-repo notes at [`packages/adapters/AUTHORING.md`](../adapters/AUTHORING.md).
 
+## Codex shell environment on Windows
+
+The Codex shell allowlist retains standard Windows process context, including
+`SYSTEMROOT`, even when ACP merges inherited host variables after constructing
+the allowlist. Without it, Windows commands can report connection refused for a
+healthy local Paperclip API, and PowerShell can fail to initialize. Both Codex
+CLI and ACP use this helper. This preserves required OS context without changing
+secret filtering, sandbox permissions, or the remote host-environment boundary.
+
 ## Sandbox bridge deadlines
 
 Command-managed bridge control operations (queue reads, input delivery, setup,
