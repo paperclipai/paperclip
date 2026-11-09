@@ -1,0 +1,44 @@
+name: papermarketing verify
+
+on:
+  push:
+    branches: [feat/marketing-foundation, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: papermarketing-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  foundation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PAPERCLIP_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - run: git fetch --depth=1 origin d69631b01b9c658f80bf8bed389863dce82643e1
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/ensure-plugin-build-deps.mjs
+      - run: pnpm --filter @paperclipai/shared typecheck
+      - run: pnpm --dir packages/shared exec vitest run src/marketing-agents.test.ts
+      - run: pnpm --dir ui exec vitest run src/components/new-agent/MarketingAgentFields.test.tsx src/components/WorkspaceOnboarding.test.tsx src/components/NewAgentDialog.test.tsx src/components/OnboardingWizardVariant.test.tsx src/pages/NewAgent.test.tsx
+      - run: pnpm --dir ui exec vitest run src/components/SidebarCompanyMenu.test.tsx src/pages/Companies.test.tsx src/pages/CompanySettings.test.tsx src/pages/CompanySettingsArchive.test.tsx src/pages/CompanySettingsRenameHint.test.tsx src/components/CompanySettingsSidebar.test.tsx src/context/BreadcrumbContext.test.tsx
+      - run: pnpm --dir server exec vitest run src/__tests__/agent-skills-routes.test.ts --hookTimeout 120000
+      - run: node scripts/check-papermarketing-tokens.mjs
+      - run: node scripts/check-maps.mjs
+      - run: pnpm --filter @paperclipai/ui build
+      - name: Validate self-hosting configuration without starting services
+        run: |
+          node docker/papermarketing/init-env.mjs
+          docker compose --env-file docker/papermarketing/.env -f docker/papermarketing/compose.yaml config --quiet

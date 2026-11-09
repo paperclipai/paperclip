@@ -1,5 +1,15 @@
 # Paperclip — Product Definition
 
+## papermarketing fork
+
+For this fork, a company is presented as a workspace, the sole administrative
+boundary. New workspace setup does not create an agent or start work. The agent
+form requires one of the twelve marketing types and an editable profile before
+account setup. Runtime, model and account remain independent of that profile.
+See [the fork increment](plans/2026-11-09-papermarketing-foundation.md) for scope
+and remaining qualification work. Upstream product behavior below is retained
+where this fork addendum does not replace it.
+
 Reusable workflows stay inside the Cases experiment. A workflow is a company-shared
 name and Markdown prompt; a case may adopt, leave and revisit workflows without
 changing its primary task. The task's workflow document is the effective copy,

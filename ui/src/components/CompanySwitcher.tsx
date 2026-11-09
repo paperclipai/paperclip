@@ -50,14 +50,14 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
               <span className={`h-2 w-2 rounded-full shrink-0 ${statusDotColor(selectedCompany.status)}`} />
             )}
             <span className="text-sm font-medium truncate">
-              {selectedCompany?.name ?? "Select organization"}
+              {selectedCompany?.name ?? "Select workspace"}
             </span>
           </div>
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-(--sz-220px)">
-        <DropdownMenuLabel>Organizations</DropdownMenuLabel>
+        <DropdownMenuLabel>Workspaces</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {sidebarCompanies.map((company) => (
           <DropdownMenuItem
@@ -75,7 +75,7 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           // give the customer the way out, since nothing else in the app does.
           companyListUnavailable ? (
             <>
-              <DropdownMenuItem disabled>Couldn't load organizations</DropdownMenuItem>
+              <DropdownMenuItem disabled>Couldn't load workspaces</DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={(event) => {
                   // Keep the menu open so the result of the retry is visible.
@@ -88,7 +88,7 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
               </DropdownMenuItem>
             </>
           ) : (
-            <DropdownMenuItem disabled>No organizations</DropdownMenuItem>
+            <DropdownMenuItem disabled>No workspaces</DropdownMenuItem>
           )
         )}
         <DropdownMenuSeparator />
@@ -101,7 +101,7 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
         <DropdownMenuItem asChild>
           <Link to="/companies" className="no-underline text-inherit">
             <Plus className="h-4 w-4 mr-2" />
-            Manage Organizations
+            Manage Workspaces
           </Link>
         </DropdownMenuItem>
       </DropdownMenuContent>

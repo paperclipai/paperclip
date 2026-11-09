@@ -8,6 +8,13 @@ An operator can start an instance, create a company, configure its first agent, 
 
 Feature ID: `onboarding`.
 
+papermarketing replaces the default web wizard with `WorkspaceOnboarding`.
+It creates a workspace without hiring an agent or starting a task, then opens
+the marketing agent form. A workspace that the current account cannot access
+must not be recreated implicitly. Component coverage is in
+`ui/src/components/WorkspaceOnboarding.test.tsx`. Historical upstream CLI and
+onboarding recipes below remain reference material, not proof of this fork's UI.
+
 Implementation: [web wizard](../../ui/src/components/OnboardingWizard.tsx), [CLI setup](../../cli/src/commands/onboard.ts).
 
 Agent access: [companion](../agent-access-map/onboarding.md).

@@ -1,5 +1,15 @@
 # Paperclip V1 Implementation Spec
 
+## papermarketing fork contract
+
+The fork maps the administrative workspace to existing `companyId` boundaries.
+`metadata.marketingAgent` stores a validated, per-agent profile snapshot with
+stable type ID and template version. New visual hires require this profile;
+legacy agents and imports stay compatible. Completing a setup retains the
+profile and materializes its instructions through the existing managed bundle
+service. Existing explicit bundles are not overwritten by catalog changes.
+See [the fork increment](plans/2026-11-09-papermarketing-foundation.md).
+
 Status: Implementation contract for first release (V1)
 Date: 2026-04-28
 Audience: Product, engineering, and agent-integration authors

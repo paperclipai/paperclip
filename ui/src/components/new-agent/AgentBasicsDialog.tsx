@@ -5,6 +5,8 @@ import { AdapterMark } from "../AdapterMark";
 import { AgentCharacter } from "../AgentCharacter";
 import { useEffect, useId, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
+import { MARKETING_AGENT_TEMPLATES, marketingAgentProfileSchema, marketingAgentRole, readMarketingAgentProfile, type MarketingAgentProfile } from "@paperclipai/shared";
+import { MarketingAgentFields } from "./MarketingAgentFields";
 import { agentsApi } from "@/api/agents";
 import { buildNewAgentRuntimeConfig } from "@/lib/new-agent-runtime-config";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -77,6 +79,23 @@ export function AgentBasicsDialog({
     retry: false,
   });
   const [name, setName] = useState(initialName);
+  const [marketingProfile, setMarketingProfile] = useState<MarketingAgentProfile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(Boolean(setupAgentId));
+  useEffect(() => {
+    if (!setupAgentId || !companyId) return;
+    let cancelled = false;
+    setProfileLoading(true);
+    void agentsApi.get(setupAgentId, companyId).then(agent => {
+      if (cancelled) return;
+      saved.current = agent;
+      const profile = readMarketingAgentProfile(agent.metadata);
+      setMarketingProfile(profile);
+      if (!profile) setStep("name");
+    }).catch(cause => {
+      if (!cancelled) setSaveError(cause instanceof Error ? cause.message : "Não foi possível carregar o agente.");
+    }).finally(() => { if (!cancelled) setProfileLoading(false); });
+    return () => { cancelled = true; };
+  }, [setupAgentId, companyId]);
   const [adapterType, setAdapterType] = useState(initialAdapter);
   const [runnerProvider, setRunnerProvider] = useState("codex");
   const [step, setStep] = useState<"name" | "adapter">(setupAgentId ? "adapter" : "name");
@@ -108,12 +127,15 @@ export function AgentBasicsDialog({
   const validAdapter = choices.some((adapter) => adapter.type === adapterType)
     || (experimentalRunnerAvailable && adapterType === "paperclip_runner");
   async function submit() {
-    if (busy.current || !name.trim() || (step === "adapter" && !validAdapter)) return;
+    if (busy.current || profileLoading || !name.trim() || !marketingAgentProfileSchema.safeParse(marketingProfile).success
+      || (step === "adapter" && !validAdapter)) return;
     busy.current = true;
     setSaving(true);
     setSaveError(null);
     try {
-      if (!companyId) throw new Error("Select an organization to create an agent.");
+      if (!companyId) throw new Error("Selecione um workspace para criar um agente.");
+      const profile = marketingAgentProfileSchema.parse(marketingProfile);
+      const template = MARKETING_AGENT_TEMPLATES.find(item => item.id === profile.typeId)!;
       let agent = saved.current;
       if (!agent && setupAgentId) agent = await agentsApi.get(setupId.current, companyId);
       const creatingRecord = !agent;
@@ -126,10 +148,11 @@ export function AgentBasicsDialog({
         // This adapter is provisional; the setup hold prevents execution.
         agent = await agentsApi.create(companyId, {
           setupId: setupId.current, name: name.trim(), appearance: appearanceDraft.appearance,
-          role: existing.length ? "general" : "ceo", ...(leader ? { reportsTo: leader.id } : {}),
+          role: marketingAgentRole(profile.typeId, Boolean(leader)), ...(leader ? { reportsTo: leader.id } : {}),
+          title: template.label, capabilities: profile.responsibilities,
           adapterType: provisionalAdapter === "copilot_runtime" ? "paperclip_runner" : provisionalAdapter,
           ...(provisionalAdapter === "copilot_runtime" ? { adapterConfig: { provider: "acpx", acpxAgent: "copilot" } } : {}),
-          metadata: { setupAdapterPending: true },
+          metadata: { setupAdapterPending: true, marketingAgent: profile },
           runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
         });
         if (active.current) setName(agent.name);
@@ -137,9 +160,14 @@ export function AgentBasicsDialog({
       saved.current = agent;
       const nextAdapter = ["openai_dot", "copilot_runtime"].includes(adapterType) ? "paperclip_runner" : adapterType;
       const nextProvider = adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? runnerProvider : "codex";
-      if (step === "adapter" || (!creatingRecord && agent.name !== name.trim())) {
+      if (step === "adapter" || !creatingRecord) {
+        const coordinator = (await agentsApi.list(companyId)).some(item => item.id !== agent!.id && item.role === "ceo" && item.status !== "terminated");
         agent = await agentsApi.update(agent.id, {
           name: name.trim(),
+          title: template.label, capabilities: profile.responsibilities,
+          role: marketingAgentRole(profile.typeId, coordinator),
+          metadata: { ...agent.metadata, marketingAgent: profile,
+            ...(step === "adapter" ? { setupAdapterPending: false } : {}) },
           ...(step === "adapter" ? {
             adapterType: nextAdapter, runner: "auto" as const,
             adapterConfig: nextAdapter === "paperclip_runner" ? {
@@ -147,7 +175,6 @@ export function AgentBasicsDialog({
               ...(["claude", "grok", "copilot"].includes(nextProvider) ? { acpxAgent: nextProvider } : {}),
               ...(nextProvider === "grok" ? { model: "grok-4.7" } : {}),
             } : {},
-            metadata: { ...agent.metadata, setupAdapterPending: false },
           } : {}),
         }, companyId);
         saved.current = agent;
@@ -185,7 +212,7 @@ export function AgentBasicsDialog({
           <span
             className={cn(step === "name" && "font-medium text-foreground")}
           >
-            1. Name
+            1. Tipo e perfil
           </span>
           <ChevronRight className="size-3" />
           <span
@@ -207,27 +234,28 @@ export function AgentBasicsDialog({
               <div className="space-y-2">
                 <DialogTitle className="text-3xl font-semibold tracking-tight">
                   {step === "name"
-                    ? "Meet your next agent"
+                    ? "Crie seu agente de marketing"
                     : "Choose an adapter"}
                 </DialogTitle>
                 <DialogDescription className="text-base">
                   {step === "name"
-                    ? "Start with a name. Make them your own."
+                    ? "Escolha o cargo, personalize o perfil e depois configure o modelo."
                     : `How should ${name.trim()} work?`}
                 </DialogDescription>
               </div>
             </div>
             {step === "name" ? (
-              <div className="space-y-2">
+              <div className="space-y-4">
+                <MarketingAgentFields value={marketingProfile} onChange={setMarketingProfile} disabled={saving || profileLoading} />
                 <label htmlFor={id} className="text-sm font-medium">
-                  Agent name
+                  Nome do agente
                 </label>
                 <Input
                   id={id}
                   autoFocus
                   disabled={saving}
                   maxLength={100}
-                  placeholder="e.g. Darnold"
+                  placeholder="Ex.: Sofia — Estratégia"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   className="h-12 text-base"
@@ -329,7 +357,7 @@ export function AgentBasicsDialog({
             </Button>
             <Button
               type="submit"
-              disabled={saving || !name.trim() || (step === "adapter" && !validAdapter)}
+              disabled={saving || profileLoading || !name.trim() || !marketingAgentProfileSchema.safeParse(marketingProfile).success || (step === "adapter" && !validAdapter)}
             >
               {saving ? "Saving…" : step === "name" ? "Choose adapter" : "Configure agent"}
               <ArrowRight className="size-4" />

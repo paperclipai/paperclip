@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "@/lib/queryKeys";
 import { NewAgent } from "./NewAgent";
 import { ApiError } from "@/api/client";
+import { createMarketingAgentProfile, marketingAgentRole } from "@paperclipai/shared/marketing-agents";
 
 const api = vi.hoisted(() => ({
   create: vi.fn(),
@@ -128,10 +129,26 @@ async function fill(label: string, value: string) {
   });
 }
 async function render(adapter = "pi_local", runnerProvider = "codex") {
+  // Runtime tests start after the separately tested type/profile dialog.
+  // This is fixture setup, not evidence that the page creates the record.
+  const existing = await api.list("company-1");
+  const leader = existing.find((agent: { role: string; status: string }) => agent.role === "ceo" && agent.status !== "terminated");
+  const profile = createMarketingAgentProfile("cmo");
+  const draft = await api.create("company-1", {
+    setupId: crypto.randomUUID(), name: "Atlas", adapterType: adapter,
+    role: marketingAgentRole("cmo", Boolean(leader)), ...(leader ? { reportsTo: leader.id } : {}),
+    title: "CMO", capabilities: profile.responsibilities, metadata: { marketingAgent: profile },
+    adapterConfig: adapter === "paperclip_runner" ? {
+      provider: ["claude", "grok", "copilot", "pi"].includes(runnerProvider) ? "acpx" : runnerProvider,
+      ...(["claude", "grok", "copilot", "pi"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
+    } : {}, runtimeConfig: { heartbeat: { enabled: false } },
+  });
   state.params = new URLSearchParams({
     name: "Atlas",
     adapterType: adapter,
     runnerProvider,
+    runner: adapter === "paperclip_runner" ? "paperclip" : "auto",
+    setupAgentId: draft.id,
   });
   await renderCurrentParams();
 }

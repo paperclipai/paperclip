@@ -1,7 +1,7 @@
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, MARKETING_AGENT_TEMPLATES, readMarketingAgentProfile, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { agentDisplayAdapterType, getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -30,6 +30,8 @@ function PropertyRow({ label, children }: { label: string; children: React.React
 export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const lastErrorIsActive = agent.status === "error";
+  const marketingProfile = readMarketingAgentProfile(agent.metadata);
+  const marketingType = MARKETING_AGENT_TEMPLATES.find(item => item.id === marketingProfile?.typeId);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -52,9 +54,12 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
             </span>
           </PropertyRow>
         )}
-        <PropertyRow label="Role">
-          <span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span>
+        <PropertyRow label={marketingType ? "Tipo" : "Role"}>
+          <span className="text-sm">{marketingType?.label ?? roleLabels[agent.role] ?? agent.role}</span>
         </PropertyRow>
+        {marketingProfile?.specialization && <PropertyRow label="Especialização">
+          <span className="text-sm">{marketingProfile.specialization}</span>
+        </PropertyRow>}
         {agent.title && (
           <PropertyRow label="Title">
             <span className="text-sm">{agent.title}</span>

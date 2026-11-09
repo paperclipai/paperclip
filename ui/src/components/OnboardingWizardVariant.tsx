@@ -4,12 +4,10 @@ import { useLocation } from "../lib/router";
 import { isOnboardingPath } from "../lib/onboarding-route";
 import { DeferredOverlay } from "./DeferredOverlay";
 
-const OnboardingWizard = lazy(() => import("./OnboardingWizard").then((module) => ({ default: module.OnboardingWizard })));
+const WorkspaceOnboarding = lazy(() => import("./WorkspaceOnboarding").then((module) => ({ default: module.WorkspaceOnboarding })));
 
 /**
- * Default onboarding wizard. Conference-room chat is now the only surface left
- * behind `enableConferenceRoomChat`; onboarding stays available without that
- * experimental flag.
+ * Workspace onboarding remains available independently of experimental chat.
  */
 export function OnboardingWizardVariant() {
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
@@ -19,8 +17,11 @@ export function OnboardingWizardVariant() {
     setOnboardingRouteDismissed(false);
   }, [pathname, setOnboardingRouteDismissed]);
   const requested = onboardingOpen || (isOnboardingPath(pathname) && !onboardingRouteDismissed);
-  return <DeferredOverlay requested={requested} title="Setup" onClose={() => {
+  const close = () => {
     closeOnboarding();
     if (isOnboardingPath(pathname)) setOnboardingRouteDismissed(true);
-  }}><OnboardingWizard /></DeferredOverlay>;
+  };
+  return <DeferredOverlay requested={requested} title="Workspace" onClose={close}>
+    <WorkspaceOnboarding key={pathname} open={requested} onClose={close} />
+  </DeferredOverlay>;
 }

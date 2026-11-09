@@ -4,6 +4,11 @@ Product map: [Hiring, agent configuration, and organization](../feature-map/agen
 
 Feature ID: `agents`.
 
+papermarketing keeps the existing scoped create/hire/update APIs. The optional
+`metadata.marketingAgent` extension is validated on writes. Its absence remains
+valid for legacy/imported agents; the visual marketing form requires a type.
+It does not change actor permissions, tool grants, model or connection authority.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).

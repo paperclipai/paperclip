@@ -4,6 +4,10 @@ Product map: [Onboarding and first work](../feature-map/onboarding.md).
 
 Feature ID: `onboarding`.
 
+papermarketing's workspace wizard delegates to existing company creation and
+access checks. It does not hire an agent or execute work as a side effect.
+Company-scoped APIs retain their upstream authorization and internal names.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.

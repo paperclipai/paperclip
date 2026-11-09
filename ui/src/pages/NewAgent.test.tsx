@@ -3,6 +3,7 @@ import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { ApiError } from "@/api/client";
+import { createMarketingAgentProfile } from "@paperclipai/shared/marketing-agents";
 import {
   api, envApi, settings, secrets, state, managedApi, adapterApi,
   root, container, cache, settle, click, fill, render, connect, pass,
@@ -10,12 +11,12 @@ import {
 } from "./NewAgent.test-support";
 
 describe("New agent setup", () => {
-  it("creates an inactive record before connecting and finishes that same agent", async () => {
+  it("connects and finishes the reviewed marketing draft without creating another agent", async () => {
     await render("codex_local");
     expect(api.create).toHaveBeenCalledTimes(1);
     const setupId = api.create.mock.calls[0][1].setupId;
     expect(api.create.mock.calls[0][1]).toMatchObject({ name: "Atlas", runtimeConfig: { heartbeat: { enabled: false } } });
-    expect(state.navigate).toHaveBeenCalledWith(expect.stringContaining(`setupAgentId=${setupId}`), { replace: true });
+    expect(state.navigate).not.toHaveBeenCalled();
     expect(api.hire).not.toHaveBeenCalled();
     expect(api.testEnvironment).not.toHaveBeenCalled();
     await click("OpenAIAPI key");
@@ -30,7 +31,7 @@ describe("New agent setup", () => {
   it("resumes a name-only draft at adapter selection without creating another record", async () => {
     const setupId = "00000000-0000-4000-8000-000000000091";
     state.params = new URLSearchParams({ name: "Atlas", adapterType: "process", setupAgentId: setupId });
-    api.get.mockResolvedValue({ id: setupId, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: { setupAdapterPending: true }, pauseReason: "setup", status: "paused" });
+    api.get.mockResolvedValue({ id: setupId, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: { setupAdapterPending: true, marketingAgent: createMarketingAgentProfile("cmo") }, pauseReason: "setup", status: "paused" });
     await renderCurrentParams();
     await settle();
     expect(document.body.textContent).toContain("Choose an adapter");
@@ -39,20 +40,17 @@ describe("New agent setup", () => {
     await act(async () => document.querySelector<HTMLInputElement>('input[name="new-agent-adapter"][value="codex_local"]')!.click());
     await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Configure agent")!.click());
     await settle();
-    expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ adapterType: "codex_local", metadata: { setupAdapterPending: false } }), "company-1");
+    expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ adapterType: "codex_local", metadata: expect.objectContaining({ setupAdapterPending: false, marketingAgent: expect.objectContaining({ typeId: "cmo" }) }) }), "company-1");
     expect(state.navigate).toHaveBeenLastCalledWith(expect.stringContaining(`setupAgentId=${setupId}`), { replace: true });
     expect(api.create).not.toHaveBeenCalled();
   });
 
-  it("retries early creation with the same identity before offering authentication", async () => {
-    api.create.mockRejectedValueOnce(new Error("Creation unavailable"));
-    await render("codex_local");
-    expect(container.textContent).toContain("Creation unavailable");
-    expect(container.textContent).not.toContain("Complete subscription login");
-    await click("Retry");
-    expect(api.create).toHaveBeenCalledTimes(2);
-    expect(api.create.mock.calls[1][1].setupId).toBe(api.create.mock.calls[0][1].setupId);
-    expect(container.textContent).toContain("Connect a model");
+  it("requires explicit type selection before creating an agent from a direct URL", async () => {
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local" });
+    await renderCurrentParams();
+    expect(document.body.textContent).toContain("Tipo de agente");
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
   });
 
   it("resumes a saved setup record and its configuration after navigation", async () => {
@@ -1059,23 +1057,12 @@ describe("New agent setup", () => {
     if (runner === "auto") expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
   });
 
-  it("retains automatic OpenCode selection while the first draft request is in flight", async () => {
-    let release!: () => void;
-    const originalCreate = api.create.getMockImplementation()!;
-    api.create.mockImplementation(async (...args) => {
-      await new Promise<void>(resolve => { release = resolve; });
-      return originalCreate(...args);
-    });
-    await render("opencode_local");
-    const url = state.navigate.mock.calls[0][0] as string;
-    state.params = new URLSearchParams(url.split("?")[1]);
-    expect(state.params.get("runner")).toBe("auto");
+  it("does not recreate an unavailable setup record", async () => {
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "opencode_local", setupAgentId: "missing-agent" });
     await renderCurrentParams();
-    expect(api.create).toHaveBeenCalledOnce();
-    await act(async () => release());
-    await settle();
-    expect(api.create.mock.calls[0][1].runner).toBe("auto");
-    expect(api.create).toHaveBeenCalledOnce();
+    expect(document.body.textContent).toContain("Could not load the created agent");
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
   });
 
   it.each(["opencode_local", "paperclip_runner"])("resumes OpenCode's saved %s setup after a default change", async adapterType => {
@@ -1268,9 +1255,9 @@ describe("New agent setup", () => {
     expect(api.hire).not.toHaveBeenCalled();
   });
   it("keeps pending agents behind approval and disables task assignment", async () => {
-    api.hire.mockResolvedValue({
-      agent: { id: "new-agent", name: "Atlas", status: "pending_approval" },
-    });
+    api.hire.mockImplementation(async (_company, input) => ({
+      agent: { ...input, id: input.setupAgentId, name: "Atlas", status: "pending_approval" },
+    }));
     await render();
     await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
     await click("Finish setup");

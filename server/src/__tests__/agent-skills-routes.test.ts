@@ -2,6 +2,7 @@ import express from "express";
 import { readFile } from "node:fs/promises";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createMarketingAgentProfile, marketingAgentInstructions } from "@paperclipai/shared";
 
 const runnerTarget = vi.hoisted(() => ({ driver: "local", platform: "linux", architecture: "x64" }));
 vi.mock("../services/agent-runner-selection.js", async (importOriginal) => {
@@ -1152,6 +1153,31 @@ describe("agent skill routes", () => {
     expect(returnedAgent.adapterConfig).not.toHaveProperty("promptTemplate");
   });
 
+  it.each(["agents", "agent-hires"])("materializes the reviewed marketing profile via %s", async (route) => {
+    const profile = createMarketingAgentProfile("copywriter");
+    profile.instructions = "Use the workspace's approved brand voice and cite research.";
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post(`/api/companies/company-1/${route}`)
+      .send({
+        name: "Marketing Copywriter",
+        role: "general",
+        adapterType: "claude_local",
+        runner: "legacy",
+        adapterConfig: {},
+        metadata: { marketingAgent: profile },
+        onboardingFirstAgent: true,
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const returnedAgent = route === "agents" ? res.body : res.body.agent;
+    expect(returnedAgent.metadata.marketingAgent).toEqual(profile);
+    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: returnedAgent.id }),
+      { "AGENTS.md": marketingAgentInstructions(profile) },
+      { entryFile: "AGENTS.md", replaceExisting: false },
+    );
+  });
+
   it("materializes minimal default instructions for non-CEO agents with no prompt template", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
@@ -1173,7 +1199,7 @@ describe("agent skill routes", () => {
           adapterType: "claude_local",
         }),
         expect.objectContaining({
-          "AGENTS.md": "You are an agent in a Paperclip company.\n",
+          "AGENTS.md": expect.stringMatching(/^You are an agent in a Paperclip company\.\r?\n$/),
         }),
         { entryFile: "AGENTS.md", replaceExisting: false },
       );

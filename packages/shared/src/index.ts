@@ -2841,3 +2841,4 @@ export * from "./prompt-injection-prevention.js";
 
 export * from "./workspace-provider.js";
 export * from "./workflows.js";
+export * from "./marketing-agents.js";

@@ -1,3 +1,4 @@
+import { marketingAgentInstructions, readMarketingAgentProfile } from "@paperclipai/shared";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
@@ -2408,6 +2409,7 @@ export function agentRoutes(
     role: string;
     adapterType: string;
     adapterConfig: unknown;
+    metadata?: unknown;
   }>(
     agent: T,
     input?: { files: Record<string, string>; entryFile?: string },
@@ -2438,8 +2440,10 @@ export function agentRoutes(
       return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
     }
 
+    const marketingProfile = readMarketingAgentProfile(agent.metadata);
     const files = input?.files
-      ?? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role));
+      ?? (marketingProfile ? { "AGENTS.md": marketingAgentInstructions(marketingProfile) }
+        : await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role)));
     const materialized = await instructions.materializeManagedBundle(
       agent,
       files,
@@ -4336,6 +4340,10 @@ export function agentRoutes(
       const setupAgent = await svc.getById(setupAgentId);
       if (!setupAgent || setupAgent.companyId !== companyId) throw notFound("Agent setup not found");
       await assertCanConfigureAgentSetup(req, setupAgent, true);
+      // Completing runtime setup must preserve the reviewed marketing snapshot.
+      if (hireInput.metadata === undefined && setupAgent.metadata) {
+        hireInput.metadata = setupAgent.metadata;
+      }
       if (!setupAgent.lifecycleHolds.includes("setup")) {
         if (!(await assertAgentReadAllowed(req, res, setupAgent))) return;
         await assertCanReadConfigurations(req, companyId);
@@ -4559,7 +4567,7 @@ export function agentRoutes(
       });
       const agent = await materializeDefaultInstructionsBundleForNewAgent(
         createdAgent,
-        onboardingFirstAgentBundle ?? instructionsBundle,
+        readMarketingAgentProfile(createdAgent.metadata) ? instructionsBundle : onboardingFirstAgentBundle ?? instructionsBundle,
       );
 
       let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
@@ -4837,7 +4845,7 @@ export function agentRoutes(
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(
       createdAgent,
-      onboardingFirstAgentBundle ?? instructionsBundle,
+      readMarketingAgentProfile(createdAgent.metadata) ? instructionsBundle : onboardingFirstAgentBundle ?? instructionsBundle,
     );
 
     const actor = getActorInfo(req);

@@ -10,8 +10,8 @@ const mount = vi.hoisted(() => vi.fn());
 const setDismissed = vi.hoisted(() => vi.fn());
 vi.mock("../context/DialogContext", () => ({ useDialogState: () => state, useDialogActions: () => ({ closeOnboarding: vi.fn(), setOnboardingRouteDismissed: setDismissed }) }));
 vi.mock("../lib/router", () => ({ useLocation: () => state }));
-vi.mock("./OnboardingWizard", () => ({
-  OnboardingWizard: () => { mount(); return <div data-testid="wizard-capsule" />; },
+vi.mock("./WorkspaceOnboarding", () => ({
+  WorkspaceOnboarding: () => { mount(); return <div data-testid="wizard-capsule" />; },
 }));
 
 describe("OnboardingWizardVariant", () => {

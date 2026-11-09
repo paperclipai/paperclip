@@ -11,6 +11,7 @@ import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { marketingAgentProfileSchema } from "../marketing-agents.js";
 
 export const agentPermissionsSchema = z.object({
   // No schema default: the server derives the default (enabled unless the
@@ -101,7 +102,9 @@ export const createAgentSchema = z.object({
   defaultEnvironmentId: z.string().guid().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
-  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  // Optional for existing/imported Paperclip agents; new marketing UI requires it.
+  metadata: z.object({ marketingAgent: marketingAgentProfileSchema.optional() })
+    .catchall(z.unknown()).optional().nullable(),
   // The optional stored-session claim from a completed Claude login session. It
   // is the non-secret `storedSessionId`; it carries no token. The agent-create
   // transaction consumes it as the one-time stored-session claim.

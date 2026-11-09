@@ -88,7 +88,11 @@ afterEach(async () => {
   container.remove();
 });
 async function name(value = "Ada & Co") {
-  const input = document.querySelector("input")!;
+  if (!document.querySelector('textarea')) {
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Tipo de agente"]')!.click());
+    await click("CMO");
+  }
+  const input = document.querySelector('input[placeholder="Ex.: Sofia — Estratégia"]')!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(
       HTMLInputElement.prototype,
@@ -100,7 +104,7 @@ async function name(value = "Ada & Co") {
 }
 it("requires a name and an enabled adapter before navigating", async () => {
   await click("Choose adapter");
-  expect(document.body.textContent).toContain("Agent name");
+  expect(document.body.textContent).toContain("Nome do agente");
   await name();
   expect(document.querySelector('input[value="claude_local"]')).toBeNull();
   await click("Configure agent");
@@ -129,7 +133,7 @@ it("saves identity on name submission before an adapter is selected", async () =
   await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
   await click("Configure agent");
   expect(agents.create).toHaveBeenCalledTimes(1);
-  expect(agents.update).toHaveBeenCalledWith(input.setupId, expect.objectContaining({ adapterType: "codex_local", metadata: { setupAdapterPending: false } }), "company-1");
+  expect(agents.update).toHaveBeenCalledWith(input.setupId, expect.objectContaining({ adapterType: "codex_local", metadata: expect.objectContaining({ setupAdapterPending: false, marketingAgent: expect.objectContaining({ typeId: "cmo" }) }) }), "company-1");
   const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
   expect(query.get("setupAgentId")).toBe(input.setupId);
   expect(query.get("runner")).toBe("auto");
@@ -209,7 +213,7 @@ it("renames a numbered draft only after the user edits its name", async () => {
   await click("Back");
   await name("Grace");
   expect(agents.create).toHaveBeenCalledTimes(1);
-  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, { name: "Grace" }, "company-1");
+  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, expect.objectContaining({ name: "Grace" }), "company-1");
   expect(document.body.textContent).toContain("How should Grace work?");
 });
 it("offers one Codex harness without a runner/provider tile", async () => {
