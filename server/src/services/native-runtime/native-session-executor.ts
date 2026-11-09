@@ -5808,7 +5808,7 @@ async function migrateRunnerdStateRootForExecution(input: {
       if (result.kind !== "state") throw new Error("Plugin Runner checkpoint unavailable");
       savePluginRunnerCheckpoint(scoped, result.state, identity);
     }
-    if (input.restartRecovery?.kind === "bootstrap_incomplete") {
+    if (input.restartRecovery?.kind === "bootstrap_incomplete" && identity.runId === input.execution.binding.runId) {
       // A local runner's process ids belong to this host, so a fresh provider
       // session it opened before any turn can be proven gone here.
       const localProcesses = !input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local";
@@ -5883,7 +5883,8 @@ async function migrateRunnerdStateRootForExecution(input: {
       // Name the failed retirement proof: the shared error otherwise hides
       // which of several independent fences held the follow-up.
       let retirementRefusal = "";
-      if (verification === "terminal_state_indeterminate" && !input.restartRecovery && !input.retainedWarmOwnerRunId) {
+      if (verification === "terminal_state_indeterminate" && !input.retainedWarmOwnerRunId
+        && (!input.restartRecovery || input.restartRecovery.kind === "bootstrap_incomplete")) {
         const retirement = await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity });
         if (retirement.retired) return;
         if (retirement.refused !== "lifecycle_not_per_turn") retirementRefusal = `; retirement_refused=${retirement.refused}`;
@@ -15673,6 +15674,15 @@ async function createRunnerdBackendWithinSessionClaim(
                       // lease was not provider-confirmed lost. Never silently create a new
                       // provider session from that ambiguous state.
                       throw new Error("runner_harness_state_mismatch: backup_without_reusable_lease");
+                    } else if (state.incompleteReason === "not_suspended"
+                      && input.restartRecovery?.kind === "bootstrap_incomplete"
+                      && state.notSuspendedRunId === input.execution.binding.runId
+                      && hasRemoteBootstrapRestartProof(input.execution.binding.runId)) {
+                      if (!(await moveInterruptedBootstrapSessionAside()
+                        && takeRemoteBootstrapRestartProof(input.execution.binding.runId)
+                        && await claimUntouchedRemoteSession())) {
+                        throw new Error("runner_harness_state_mismatch: created_not_suspended");
+                      }
                     }
                   }
                 } else if (remoteTarget && remoteCommandRunner) {

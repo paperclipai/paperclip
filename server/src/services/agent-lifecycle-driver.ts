@@ -1,6 +1,7 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { CANCELLABLE_HEARTBEAT_RUN_STATUSES } from "./heartbeat/recovery.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
-import { agents, environments, plugins, pluginCompanySettings, type Db } from "@paperclipai/db";
+import { agents, companies, environments, heartbeatRuns, plugins, pluginCompanySettings, type Db } from "@paperclipai/db";
 import { instanceSettingsService } from "./instance-settings.js";
 import { pluginHasAgentEnvironments, pluginServesAgentEnvironment } from "./plugin-environment-driver.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -62,6 +63,18 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
             await db.select().from(agents).where(eq(agents.companyId, agent.companyId)))];
         const reason = agent.lifecycleHolds?.includes("company_archived")
           ? "Cancelled because the company was archived" : "Agent lifecycle stop requested";
+        // A pause records why it stopped each run (pauseStop). It marks the
+        // stop as a pause, not termination or cleanup, which share this reason.
+        if (agent.lifecycleState === "pausing") {
+          const pauseStop = sql`jsonb_build_object('pauseStop', jsonb_build_object(
+            'holds', ${JSON.stringify(agent.lifecycleHolds ?? [])}::jsonb,
+            'companyPauseReason', (select ${companies.pauseReason} from ${companies} where ${companies.id} = ${agent.companyId})))`;
+          await db.update(heartbeatRuns).set({
+            resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${pauseStop}`,
+          }).where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+            inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+            sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ? 'pauseStop')`));
+        }
         if (!await heartbeat.stopInvocationsForAgents(ids, reason,
           { preservePauseDeferred: agent.lifecycleState === "pausing" })) return "pending";
       }

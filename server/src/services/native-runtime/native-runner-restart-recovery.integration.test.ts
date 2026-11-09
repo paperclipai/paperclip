@@ -2690,6 +2690,34 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     return fixture;
   }
 
+  it.each([
+    { label: "restarts a remote follow-up", identityRecorded: false, inherited: true },
+    { label: "restarts a first remote run", identityRecorded: false, inherited: false },
+    { label: "keeps a recorded runner process held instead of restarting", identityRecorded: true, inherited: true },
+  ])("$label whose controller never sent its runner a command", async ({ identityRecorded, inherited }) => {
+    const fixture = await seedUnlaunchedRemoteClaim(`NEVER-COMMANDED-${identityRecorded}-${inherited}`,
+      { event: { eventType: "native.process_start_requested" } });
+    const [seeded] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    if (inherited) await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { ...seeded.runnerProfileJson, sessionCheckpoint: {
+      driverKind: "codex_app_server", backendKind: "runner", sessionId: "inherited-thread", cursor: null,
+      identity: { companyId, issueId: fixture.issueId, runId: fixture.runId, agentId, sessionId: fixture.native.normalizedSessionId },
+      providerSessionId: "inherited-thread", activeTurnId: null, terminal: null, terminalTurns: [], semanticResult: null,
+      pendingRuntimeRequests: [], lineage: [],
+    } } }).where(eq(heartbeatRuns.id, fixture.runId));
+    if (identityRecorded) await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq: 901,
+      stream: "system", level: "info", eventType: "native.process_identity_recorded" });
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    if (identityRecorded) {
+      expect(claim).not.toMatchObject({ kind: "bootstrap_incomplete" });
+      return;
+    }
+    expect(claim).toMatchObject({ kind: "bootstrap_incomplete", runId: fixture.runId, controllerGeneration: 2 });
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_runner_never_received_commands" });
+  });
+
   it("restarts a remote bootstrap retry that shutdown cut before any runner was requested", async () => {
     const fixture = await seedUnlaunchedRemoteClaim("BOOTSTRAP-RETRY", { bootstrapRetry: true });
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
@@ -2865,8 +2893,6 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
   });
 
   it.each<[string, Parameters<typeof seedUnlaunchedRemoteClaim>[1], { kind: string; reason: string }]>([
-    ["a runner process start was requested", { event: { eventType: "native.process_start_requested" } },
-      { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
     ["a runner process identity was recorded", { event: { eventType: "native.process_identity_recorded" } },
       { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
     ["the adapter was invoked", { event: { eventType: "adapter.invoke" } },

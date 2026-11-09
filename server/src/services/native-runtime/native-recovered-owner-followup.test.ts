@@ -202,8 +202,10 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const remoteExecute = vi.fn(async (_request: unknown): Promise<{ exitCode: number; timedOut: boolean; stdout: string; stderr: string }> => {
       throw new Error("admission must not reach the sandbox");
     });
-    const start = (outcome: "created" | "replacement" | "resumed" = "created") => createRunnerdBackend({
+    const start = (outcome: "created" | "replacement" | "resumed" = "created",
+      restartRecovery?: Parameters<typeof createRunnerdBackend>[0]["restartRecovery"]) => createRunnerdBackend({
       db, execution, runnerInstanceId: next.runnerInstanceId, onLog: async (_stream, chunk) => { logs.push(chunk); },
+      ...(restartRecovery ? { restartRecovery } : {}),
       runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId,
         leaseId, remoteCwd: "/workspace", reusableLeaseConfigured: true,
         runner: { execute: remoteExecute },
@@ -656,6 +658,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const prior = await seedRecoveredPriorRun(control);
     const followUp = await admitFollowUp(prior);
     expect(await followUp.start()).toBe(outcome);
+  }, 60_000);
+
+  it("starts a follow-up whose own bootstrap never reached its root from the previous owner's settled root", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = await restoreHeldRoot(prior, followUp);
+    expect(await followUp.start("created", { kind: "bootstrap_incomplete", runId: followUp.runId, leaseOwner: "successor",
+      controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null } as never)).toBe(ADMITTED);
+    expect(await quarantined()).toEqual([]);
+    expect(await archivedOwners(root)).toEqual([prior.runId]);
   }, 60_000);
 
   it("admits again when a retry rebuilds the same projection from the database", async () => {
