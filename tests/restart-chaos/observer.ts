@@ -15,6 +15,7 @@ import type {
 import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
 import type { UiRetryClick } from "./board-ui.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
+import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
 
@@ -692,20 +693,13 @@ export class TaskObserver {
 
   private async remoteWorkspaceFile(issueId: string, relative: string): Promise<string | null> {
     const captured = this.record.remoteFiles?.[relative];
-    if (typeof captured === "string") return captured;
-    return await this.api.getText(`/api/issues/${issueId}/file-resources/content?path=${encodeURIComponent(relative)}&download=true`, 15_000)
-      .catch(() => null);
+    return typeof captured === "string" ? captured : await readRemoteWorkspaceFile(this.api, issueId, relative);
   }
 
   private async captureRemoteFilesAtDone(sample: TaskSample): Promise<void> {
     const wanted = this.definition.collect.files(this.plan.nonce);
     if (!wanted.length || this.lab.environmentKind === "local" || sample.issueStatus !== "done" || !this.record.issueId) return;
-    const captured = this.record.remoteFiles ??= {};
-    for (const relative of wanted) {
-      if (typeof captured[relative] === "string") continue;
-      captured[relative] = await this.api.getText(`/api/issues/${this.record.issueId}/file-resources/content?path=${encodeURIComponent(relative)}&download=true`, 15_000)
-        .catch(() => null);
-    }
+    await captureRemoteWorkspaceFiles(this.api, this.record.issueId, wanted, this.record.remoteFiles ??= {});
   }
 
   async workspacePath(): Promise<string | null> {
