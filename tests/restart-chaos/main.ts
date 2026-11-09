@@ -543,7 +543,8 @@ async function main(): Promise<number> {
       }
       if (cleanup.errors.length) remoteCleanupPending = true;
       if (cleanup.errors.length) harnessError ??= new Error(`Daytona cleanup incomplete: ${cleanup.errors.join("; ")}`);
-      await writeFile(path.join(waveDir, "sandbox-sweep.json"), `${JSON.stringify({ sweep: sandboxSweep, cleanup }, null, 2)}\n`, { mode: 0o600 });
+      await writeFile(path.join(waveDir, "sandbox-sweep.json"), `${JSON.stringify({ sweep: sandboxSweep, cleanup }, null, 2)}\n`, { mode: 0o600 })
+        .catch(error => timeline.add("sandbox_sweep_write_failed", { error: String(error) }));
     } catch (error) {
       harnessError ??= error;
       remoteCleanupPending = true;

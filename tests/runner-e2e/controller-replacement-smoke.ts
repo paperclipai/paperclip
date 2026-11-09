@@ -197,9 +197,12 @@ try {
   report.cleanupConfirmed = cleanupErrors.length === 0;
   if (cleanupErrors.length) { report.cleanupErrors = cleanupErrors; report.passed = false; }
   await new Promise<void>(resolve => log.end(resolve));
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
-  await releaseInstance(temporaryRoot, { keep: false, stopFailed: !report.cleanupConfirmed, owner: "controller-replacement-smoke",
-    retain: entry => entry === path.basename(reportPath) || entry.endsWith(".log") }).catch(error => console.warn(`Temporary root cleanup failed at ${temporaryRoot}: ${String(error)}`));
+  try {
+    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+  } finally {
+    await releaseInstance(temporaryRoot, { keep: false, stopFailed: !report.cleanupConfirmed, owner: "controller-replacement-smoke",
+      retain: entry => entry === path.basename(reportPath) || entry.endsWith(".log") }).catch(error => console.warn(`Temporary root cleanup failed at ${temporaryRoot}: ${String(error)}`));
+  }
   console.info(JSON.stringify({ passed: report.passed, evidence: reportPath, cleanupConfirmed: report.cleanupConfirmed }));
 }
 if (failure) throw failure;

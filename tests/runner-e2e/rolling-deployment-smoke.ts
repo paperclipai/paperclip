@@ -306,9 +306,12 @@ try {
   report.cleanupConfirmed = cleanupErrors.length === 0;
   if (cleanupErrors.length) report.cleanupErrors = cleanupErrors;
   report.passed = !report.error && checks.length > 0 && checks.every(item => item.passed) && report.cleanupConfirmed;
-  await saveReport();
-  await releaseInstance(root, { keep: false, stopFailed: !report.cleanupConfirmed, owner: "rolling-deployment-smoke", retain: entry => entry === path.basename(reportPath) || /\.(log|png)$/.test(entry) })
-    .catch(error => console.warn(`Temporary root cleanup failed at ${root}: ${String(error)}`));
+  try {
+    await saveReport();
+  } finally {
+    await releaseInstance(root, { keep: false, stopFailed: !report.cleanupConfirmed, owner: "rolling-deployment-smoke", retain: entry => entry === path.basename(reportPath) || /\.(log|png)$/.test(entry) })
+      .catch(error => console.warn(`Temporary root cleanup failed at ${root}: ${String(error)}`));
+  }
   console.info(JSON.stringify({ passed: report.passed, checks, evidence: reportPath, cleanupConfirmed: report.cleanupConfirmed }));
 }
 if (!report.passed) process.exitCode = 1;
