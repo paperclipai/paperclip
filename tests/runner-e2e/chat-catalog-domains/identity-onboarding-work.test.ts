@@ -17,7 +17,7 @@ function website() {
   o.runs = [{ id: "worker-run", companyId: "acorn", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "website" } }];
   o.state = { worker: { id: "morgan" }, sourceId: "chat", beforeSourceHumanComments: 0, beforeSourceRuns: 0, sourceStillConversation: true, reviewedAttachmentId: "html",
     websites: [{ attachment: { id: "html", issueId: "website", companyId: "acorn", sha256: "bytes", createdByAgentId: "morgan", originatingRunId: "worker-run" }, sha256: "bytes", body: "<html><body><h1>Acorn Notes</h1><p>Research notes for science teams.</p></body></html>" }],
-    visibleArtifactName: true, renderedBusinessHeading: true, renderedBusinessDescription: true, renderedBytesMatch: true, renderedWithoutScriptExecution: true }; return o;
+    visibleArtifactName: true, renderedHeading: true, renderedBusinessName: true, renderedBusinessDescription: true, renderedBytesMatch: true, renderedWithoutScriptExecution: true }; return o;
 }
 describe("human company creation and genuine first completed website", () => {
   it("validates an actual human-created separate company with a real CEO", () => { expect(gradeNewCompany(company()).passed).toBe(true); expect(gradeNewCompany(undefined).passed).toBe(false); });
@@ -26,5 +26,15 @@ describe("human company creation and genuine first completed website", () => {
   it("validates the actual run-bound delivered and rendered website", () => { expect(gradeFirstWork(website()).passed).toBe(true); expect(gradeFirstWork(undefined).passed).toBe(false); });
   it("rejects empty task creation even with a finished website reply", () => { const o = website(); o.reply = "The website is complete."; o.state.websites = []; expect(gradeFirstWork(o).passed).toBe(false); });
   it("rejects artifact createdByRunId fiction instead of immutable originatingRunId", () => { const o = website(); const file = (o.state.websites as Array<{ attachment: Record<string, unknown> }>)[0]!; file.attachment.createdByRunId = "worker-run"; delete file.attachment.originatingRunId; expect(gradeFirstWork(o).passed).toBe(false); });
+  it("accepts a reworded task title and a business name placed in the brand link rather than the hero heading", () => {
+    const o = website(); Object.assign(o.tasks[0]!, { title: "Build the launch page", description: "One static page from the Launch brief." });
+    const file = (o.state.websites as Array<{ body: string }>)[0]!; file.body = "<html><body><header><a class=\"brand\">Acorn Notes</a></header><h1>Capture every observation</h1><p>A notebook for small science teams.</p></body></html>";
+    expect(gradeFirstWork(o).passed).toBe(true);
+  });
+  it("rejects a rendered page without a visible heading or without the business name", () => {
+    const heading = website(); heading.state.renderedHeading = false; expect(gradeFirstWork(heading).passed).toBe(false);
+    const name = website(); name.state.renderedBusinessName = false; expect(gradeFirstWork(name).passed).toBe(false);
+    const bytes = website(); (bytes.state.websites as Array<{ body: string }>)[0]!.body = "<html><body><h1>Our company</h1><p>Research notes for science teams.</p></body></html>"; expect(gradeFirstWork(bytes).passed).toBe(false);
+  });
   it("rejects rendered fixture bytes that differ from the actual authorized download", () => { const o = website(); o.state.renderedBytesMatch = false; expect(gradeFirstWork(o).passed).toBe(false); });
 });

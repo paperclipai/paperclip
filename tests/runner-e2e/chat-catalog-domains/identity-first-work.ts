@@ -30,18 +30,17 @@ export function gradeFirstWork(value: unknown) {
   c.add("actual-first-request-context", o.state.beforeSourceHumanComments === 0 && o.state.beforeSourceRuns === 0 && o.humanQueries.length === 1
     && o.humanQueries[0]?.trim() === "Make me a simple website introducing our business.", "The canonical request is the first real human instruction in this ready company's conversation.");
   c.add("separate-requested-ordinary-work", o.tasks.length === 1 && work?.companyId === o.companyId && work.assigneeAgentId === worker.id && work.id !== o.state.sourceId && work.parentId == null
-    && work.status === "done" && hasLink(o, "issues", work) && /website|landing.page|web site/i.test(`${work.title} ${work.description}`)
-    && /Acorn Notes/i.test(`${work.title} ${work.description}`) && o.state.sourceStillConversation === true
-    && o.activity.some(row => row.action === "issue.created" && row.entityId === work.id && row.agentId === o.leadId), "The first chat captures the actual known business in one linked ordinary completed task; its standing conversation stays separate.");
+    && work.status === "done" && hasLink(o, "issues", work) && o.state.sourceStillConversation === true
+    && o.activity.some(row => row.action === "issue.created" && row.entityId === work.id && row.agentId === o.leadId), "The first chat creates one linked ordinary completed task; its standing conversation stays separate. Its delivered HTML (graded below), not its model-written title, proves it is the business website.");
   c.add("actual-run-attributed-website", !!work && !!website && website.attachment.issueId === work.id && website.attachment.companyId === o.companyId
     && website.sha256 === website.attachment.sha256 && website.attachment.createdByAgentId === worker.id
     && o.runs.some(run => run.id === website.attachment.originatingRunId && run.agentId === worker.id && run.status === "succeeded"
       && (run.contextSnapshot?.issueId === work.id || (run as unknown as { nativeIssueId?: string }).nativeIssueId === work.id))
     && /<html\b/i.test(website.body) && /<body\b/i.test(website.body) && /<h[1-6]\b/i.test(website.body)
     && /Acorn Notes/i.test(website.body) && /research|science/i.test(website.body), "Authorized exact HTML bytes match the immutable actual upload hash and originating worker run, introducing the real business rather than an empty onboarding task.");
-  c.add("actual-review-and-usable-rendering", o.state.visibleArtifactName === true && o.state.renderedBusinessHeading === true && o.state.renderedBusinessDescription === true
+  c.add("actual-review-and-usable-rendering", o.state.visibleArtifactName === true && o.state.renderedHeading === true && o.state.renderedBusinessName === true && o.state.renderedBusinessDescription === true
     && o.state.renderedBytesMatch === true && o.state.renderedWithoutScriptExecution === true,
-    "The real task link exposes its delivered file, and the exact downloaded HTML renders a visible business heading/description in an isolated browser with scripts disabled.");
+    "The real task link exposes its delivered file, and the exact downloaded HTML renders a visible heading, the business name and its description in an isolated browser with scripts disabled. The name may sit in a brand link rather than the hero heading.");
   return c.result();
 }
 export const firstWorkIdentityCases: readonly ChatCatalogCase[] = [identityDefinition("onboarding.first-work", async ctx => {
@@ -50,7 +49,7 @@ export const firstWorkIdentityCases: readonly ChatCatalogCase[] = [identityDefin
   const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${source.id}/comments`);
   return { sourceId: source.id, worker, project: p, beforeSourceHumanComments: comments.filter(comment => comment.authorUserId).length, beforeSourceRuns: (await ctx.allRuns()).length };
 }, gradeFirstWork, {
-  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 600_000,
+  oracleVersion: "paperclip.chat-catalog.identity.first-work.v2", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 600_000,
   sourceFiles: ["chat-catalog-domains/identity-first-work.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/onboarding.yaml"],
   async act(ctx, state) {
     const o = await pollUntil({ label: "first real completed website and delivered HTML", deadlineAt: Date.now() + 360_000,
@@ -71,11 +70,14 @@ export const firstWorkIdentityCases: readonly ChatCatalogCase[] = [identityDefin
       // No rewrite, fabricated server, or script execution: inspect the exact
       // authorized delivered artifact bytes through the browser's file loader.
       await isolated.route(/^https?:\/\//, route => route.abort()); const page = await isolated.newPage(); await page.goto(pathToFileURL(filename).href);
-      await expect(page.getByRole("heading", { name: /Acorn Notes/i }).first()).toBeVisible(); state.renderedBusinessHeading = true;
-      await expect(page.getByText(/research|science/i).first()).toBeVisible(); state.renderedBusinessDescription = true; state.renderedWithoutScriptExecution = true;
+      // The business name is the setup's literal; where the page places it
+      // (hero heading, brand link, title banner) is the worker's design choice.
+      await expect(page.getByRole("heading").filter({ visible: true }).first()).toBeVisible(); state.renderedHeading = true;
+      await expect(page.locator("body").getByText(/Acorn Notes/i).filter({ visible: true }).first()).toBeVisible(); state.renderedBusinessName = true;
+      await expect(page.locator("body").getByText(/research|science/i).filter({ visible: true }).first()).toBeVisible(); state.renderedBusinessDescription = true; state.renderedWithoutScriptExecution = true;
     } finally { await isolated.close(); }
     await ctx.input.evidence("identity-real-first-website.json", { taskId: work.id, attachmentId: file.attachment.id, originatingRunId: file.attachment.originatingRunId,
-      sha256: file.sha256, visibleArtifactName: state.visibleArtifactName, renderedBusinessHeading: state.renderedBusinessHeading, renderedBusinessDescription: state.renderedBusinessDescription,
+      sha256: file.sha256, visibleArtifactName: state.visibleArtifactName, renderedHeading: state.renderedHeading, renderedBusinessName: state.renderedBusinessName, renderedBusinessDescription: state.renderedBusinessDescription,
       artifactBytesRewritten: false, scriptsExecuted: false, externallyPublished: false });
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   },
