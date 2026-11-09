@@ -3471,6 +3471,11 @@ export function recoveryService(
   }
 
   async function reconcileActiveRecoveryActions(opts?: { companyId?: string }) {
+    // A blocked subtask that an older release bound to a relative's held
+    // workspace moves to its own workspace and continues (its board escalation
+    // is an active recovery action, so this company-scoped sweep reaches it).
+    await rehomeStrandedLegacyWorkspaceTasks(db, deps.enqueueWakeup, { companyId: opts?.companyId })
+      .catch(error => logger.warn({ err: error }, "Legacy shared-workspace rehome deferred to the next sweep"));
     const rows = await db
       .select({
         action: issueRecoveryActions,
@@ -4541,11 +4546,6 @@ export function recoveryService(
           ))),
         ),
       );
-    // Blocked subtasks that an older release bound to a relative's held
-    // workspace move to their own workspace. They are read after this pass's
-    // candidates, so the wake the move sends is their only wake.
-    await rehomeStrandedLegacyWorkspaceTasks(db, deps.enqueueWakeup, { companyId: opts?.companyId, issueId: opts?.issueId })
-      .catch(error => logger.warn({ err: error }, "Legacy shared-workspace rehome deferred to the next sweep"));
 
     const result = {
       assignmentDispatched: 0,

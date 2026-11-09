@@ -10,6 +10,8 @@ import { registerServerAdapter, unregisterServerAdapter } from "../adapters/inde
 import { heartbeatService } from "../services/heartbeat.js";
 import { REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../services/remote-workspace-writer-hold.js";
 import { LEGACY_WORKSPACE_REHOME_OUTCOME, rehomeStrandedLegacyWorkspaceTasks } from "../services/recovery/legacy-workspace-rehome.js";
+import { recoveryActionSweepCondition } from "../services/recovery/blocker-stall-wakeups.js";
+import { recoveryService } from "../services/recovery/service.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
@@ -105,6 +107,16 @@ describePostgres("stranded subtasks bound to a parent's held workspace", () => {
     return { companyId, agentId, workspaceId: workspace.id, parent, hero, pricing, writer, strand };
   }
 
+  /** The pass the scheduled issue-recovery worker runs for a company with active recovery actions. */
+  async function scheduledRecoveryPass(companyId: string) {
+    const [selected] = await db.selectDistinct({ companyId: issueRecoveryActions.companyId }).from(issueRecoveryActions)
+      .where(and(recoveryActionSweepCondition(), eq(issueRecoveryActions.companyId, companyId)));
+    if (!selected) return false;
+    await recoveryService(db, { enqueueWakeup: (agentId, options) => heartbeat.wakeup(agentId, options as never) })
+      .reconcileActiveRecoveryActions({ companyId });
+    return true;
+  }
+
   const issue = async (id: string) => (await db.select().from(issues).where(eq(issues.id, id)))[0]!;
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
 
@@ -113,7 +125,7 @@ describePostgres("stranded subtasks bound to a parent's held workspace", () => {
     const hero = await f.strand(f.hero.id), pricing = await f.strand(f.pricing.id);
     const workspaceBefore = (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0];
 
-    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+    expect(await scheduledRecoveryPass(f.companyId)).toBe(true);
 
     for (const [child, stranded] of [[f.hero, hero], [f.pricing, pricing]] as const) {
       const moved = await issue(child.id);
@@ -154,11 +166,40 @@ describePostgres("stranded subtasks bound to a parent's held workspace", () => {
     expect((await issue(f.hero.id)).executionWorkspaceId).not.toBe(f.workspaceId);
   }, 60_000);
 
+  it("delivers a move's wake that a crash left pending", async () => {
+    const f = await seedSharedFamily();
+    const hero = await f.strand(f.hero.id);
+    // The move commits, then the process stops before it wakes the assignee.
+    expect(await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).toEqual([f.hero.id]);
+    expect((await action(hero.actionId)).evidence).toMatchObject({ legacyWorkspaceRehome: { wake: "pending" } });
+    expect(await issue(f.hero.id)).toMatchObject({ status: "todo", executionWorkspaceId: null });
+
+    // The scheduled worker still selects the company and delivers the owed wake once.
+    expect(await scheduledRecoveryPass(f.companyId)).toBe(true);
+    await heartbeat.drainActiveRunExecutions();
+    expect((await action(hero.actionId)).evidence).toMatchObject({ legacyWorkspaceRehome: { wake: "delivered" } });
+    expect(dispatched.filter(turn => turn.issueId === f.hero.id)).toHaveLength(1);
+    expect((await issue(f.hero.id)).status).toBe("done");
+  }, 60_000);
+
+  it("keeps a stranded child whose dependency still forbids work", async () => {
+    const f = await seedSharedFamily();
+    const stranded = await f.strand(f.hero.id);
+    const [cancelled] = await db.insert(issues).values({ companyId: f.companyId, title: "Cancelled prerequisite", status: "cancelled",
+      issueNumber: 9 }).returning();
+    await db.insert(issueRelations).values({ companyId: f.companyId, issueId: cancelled.id, relatedIssueId: f.hero.id, type: "blocks" });
+
+    await scheduledRecoveryPass(f.companyId);
+
+    expect(await issue(f.hero.id)).toMatchObject({ status: "blocked", executionWorkspaceId: f.workspaceId });
+    expect(await action(stranded.actionId)).toMatchObject({ status: "active", ownerType: "board" });
+  }, 60_000);
+
   it("keeps a stranded child whose setup failed for another reason", async () => {
     const f = await seedSharedFamily();
     const other = await f.strand(f.hero.id, "Project access denied");
 
-    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+    expect(await scheduledRecoveryPass(f.companyId)).toBe(true);
 
     expect(await issue(f.hero.id)).toMatchObject({ status: "blocked", executionWorkspaceId: f.workspaceId });
     expect(await action(other.actionId)).toMatchObject({ status: "active", ownerType: "board" });
@@ -170,7 +211,7 @@ describePostgres("stranded subtasks bound to a parent's held workspace", () => {
     const own = await f.strand(f.parent.id);
     await db.delete(issueRelations).where(eq(issueRelations.relatedIssueId, f.parent.id));
 
-    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+    expect(await scheduledRecoveryPass(f.companyId)).toBe(true);
 
     expect(await issue(f.parent.id)).toMatchObject({ status: "blocked", executionWorkspaceId: f.workspaceId });
     expect(await action(own.actionId)).toMatchObject({ status: "active" });

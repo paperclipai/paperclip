@@ -91,6 +91,9 @@ export function recoveryActionSweepCondition() {
       eq(issueRecoveryActions.ownerType, "board"),
       sql`exists (select 1 from ${issues} stalled where stalled.id = ${issueRecoveryActions.sourceIssueId}
         and stalled.company_id = ${issueRecoveryActions.companyId} and stalled.status = 'blocked')`),
+    // A legacy subtask moved to its own workspace whose wake is still owed.
+    and(eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`),
   )!;
 }
 

@@ -1,8 +1,9 @@
-import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
-import { heartbeatRuns, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { releaseAncestorWorkspaceBinding } from "../execution-workspaces.js";
+import { issueService } from "../issues.js";
 import { REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../remote-workspace-writer-hold.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 
@@ -31,9 +32,9 @@ type RehomeWakeup = (agentId: string, options: {
  * belongs to the legacy binding, which the next admission would release anyway
  * (#19860). This pass does the release now, in one transaction: the task gets
  * its own workspace from the project base, the board escalation resolves with
- * a named outcome, and the task returns to `todo`. After commit its assignee
- * is woken once, like a board restore. A lost wake leaves an assigned `todo`
- * task, which the stranded-work sweep dispatches. The parent and the shared
+ * a named outcome, the task returns to `todo`, and a pending wake is recorded.
+ * After commit the assignee is woken once, like a board restore; a wake lost
+ * to a crash stays pending and the next pass delivers it. The parent and the shared
  * workspace are never changed. Bounded and idempotent: a resolved escalation
  * is never revisited, and a failed guard leaves the task as it is.
  * Returns the IDs of the tasks that were moved.
@@ -64,19 +65,46 @@ export async function rehomeStrandedLegacyWorkspaceTasks(db: Db, wake: RehomeWak
     if (!moved) continue;
     rehomed.push(candidate.issueId);
     try { publishActivity(moved.activity.publication); } catch { logger.warn({ issueId: candidate.issueId }, "Recovery activity delivery deferred"); }
-    if (!wake) continue;
-    await wake(moved.agentId, {
-      source: "automation", triggerDetail: "system", reason: "issue_recovery_action_restored",
-      payload: { issueId: candidate.issueId, recoveryActionId: candidate.actionId, mutation: "recovery_action_resolution" },
-      requestedByActorType: "system", requestedByActorId: "legacy-workspace-rehome",
-      // A session saved in the shared workspace never resumes in the new one.
-      contextSnapshot: { issueId: candidate.issueId, taskId: candidate.issueId, wakeReason: "issue_recovery_action_restored",
-        source: "issue.recovery_action_resolution", recoveryActionId: candidate.actionId, forceFreshSession: true },
-      issueStateGuard: { statuses: ["todo"], assigneeAgentId: moved.agentId },
-    }).catch(error => logger.warn({ err: error, issueId: candidate.issueId },
-      "Moved task wake deferred; the stranded-work sweep dispatches it"));
   }
+  // The move records its wake as pending in the same transaction. Deliver every
+  // pending wake, including one that a crash after an earlier commit left behind.
+  if (wake) await deliverPendingRehomeWakes(db, wake, scope);
   return rehomed;
+}
+
+async function deliverPendingRehomeWakes(db: Db, wake: RehomeWakeup, scope: { companyId?: string; issueId?: string }) {
+  const pending = await db.select({ actionId: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId,
+    issueId: issueRecoveryActions.sourceIssueId, agentId: issues.assigneeAgentId }).from(issueRecoveryActions)
+    .innerJoin(issues, and(eq(issues.companyId, issueRecoveryActions.companyId), eq(issues.id, issueRecoveryActions.sourceIssueId)))
+    .where(and(
+      scope.companyId ? eq(issueRecoveryActions.companyId, scope.companyId) : undefined,
+      scope.issueId ? eq(issueRecoveryActions.sourceIssueId, scope.issueId) : undefined,
+      eq(issueRecoveryActions.kind, STRANDED_KIND), eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`,
+    )).limit(25);
+  for (const row of pending) {
+    // A task that changed since the move no longer owes this wake.
+    const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
+      .where(and(eq(issues.companyId, row.companyId), eq(issues.id, row.issueId)));
+    const owed = task?.status === "todo" && Boolean(task.assigneeAgentId) && task.assigneeAgentId === row.agentId;
+    try {
+      if (owed) await wake(row.agentId!, {
+        source: "automation", triggerDetail: "system", reason: "issue_recovery_action_restored",
+        payload: { issueId: row.issueId, recoveryActionId: row.actionId, mutation: "recovery_action_resolution" },
+        requestedByActorType: "system", requestedByActorId: "legacy-workspace-rehome",
+        // A session saved in the shared workspace never resumes in the new one.
+        contextSnapshot: { issueId: row.issueId, taskId: row.issueId, wakeReason: "issue_recovery_action_restored",
+          source: "issue.recovery_action_resolution", recoveryActionId: row.actionId, forceFreshSession: true },
+        issueStateGuard: { statuses: ["todo"], assigneeAgentId: row.agentId! },
+      });
+      await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+        '{legacyWorkspaceRehome,wake}', ${JSON.stringify(owed ? "delivered" : "not_owed")}::jsonb)` }).where(and(
+        eq(issueRecoveryActions.companyId, row.companyId), eq(issueRecoveryActions.id, row.actionId),
+        sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`));
+    } catch (error) {
+      logger.warn({ err: error, issueId: row.issueId }, "Moved task wake stays pending for the next sweep");
+    }
+  }
 }
 
 async function rehomeOne(tx: Db, input: { actionId: string; companyId: string; issueId: string }) {
@@ -100,11 +128,9 @@ async function rehomeOne(tx: Db, input: { actionId: string; companyId: string; i
   const blockedAt = issue.blockedTransitionAt?.getTime();
   if (blockedAt === undefined || !run.finishedAt || blockedAt < run.finishedAt.getTime() - 1_000
     || blockedAt > action.updatedAt.getTime() + BLOCK_OWNERSHIP_SLACK_MS || issue.lastStatusDecisionId !== null) return null;
-  const [blocker] = await tx.select({ id: issues.id }).from(issueRelations).innerJoin(issues, and(
-    eq(issues.companyId, issueRelations.companyId), eq(issues.id, issueRelations.issueId))).where(and(
-    eq(issueRelations.companyId, input.companyId), eq(issueRelations.relatedIssueId, issue.id), eq(issueRelations.type, "blocks"),
-    notInArray(issues.status, ["done", "cancelled"]))).limit(1);
-  if (blocker) return null;
+  // The shared dependency rule: any blocker that still forbids work keeps the task blocked.
+  const readiness = await issueService(tx).listDependencyReadiness(input.companyId, [issue.id], tx);
+  if (readiness.get(issue.id)?.isDependencyReady !== true) return null;
   const previousExecutionWorkspaceId = issue.executionWorkspaceId;
   if (!await releaseAncestorWorkspaceBinding(tx as never, { companyId: input.companyId, issueId: issue.id })) return null;
   const now = new Date();
@@ -112,7 +138,7 @@ async function rehomeOne(tx: Db, input: { actionId: string; companyId: string; i
     ownerType: "system", ownerAgentId: null, ownerUserId: null, returnOwnerAgentId: issue.assigneeAgentId,
     resolutionNote: LEGACY_WORKSPACE_REHOME_OUTCOME, nextAction: LEGACY_WORKSPACE_REHOME_NOTE, wakePolicy: null, monitorPolicy: null,
     evidence: { ...action.evidence, legacyWorkspaceRehome: { schema: LEGACY_WORKSPACE_REHOME_SCHEMA, previousExecutionWorkspaceId,
-      runId: run.id, recordedAt: now.toISOString() } },
+      runId: run.id, recordedAt: now.toISOString(), wake: "pending" } },
   }).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, action.id)));
   await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
     blockedOwnerNotifiedAt: null, updatedAt: now }).where(and(eq(issues.companyId, input.companyId), eq(issues.id, issue.id)));
