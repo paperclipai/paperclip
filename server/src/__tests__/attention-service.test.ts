@@ -2552,7 +2552,7 @@ describeEmbeddedPostgres("attention service", () => {
       .get(`/api/companies/${companyId}/attention?sort=oldest`)
       .expect(400, { error: "sort must be 'activity' or 'decide'" });
     await request(app(agent)).get(`/api/companies/${companyId}/attention`).expect(403);
-  }, 90_000);
+  });
 
   it("omits private issue review items for a non-member board user", async () => {
     const { companyId } = await seedCompany("ATP");
