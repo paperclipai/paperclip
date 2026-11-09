@@ -1,4 +1,5 @@
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
+import { isGovernancePauseStop } from "../governance-pause-stop.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
@@ -11581,9 +11582,14 @@ async function executePaperclipNativeSessionWithinScope(
       }
       trace.activate(taskSettleScope);
       liveQuestions.close();
+      const activeAtFailure = activeNativeSessions.get(input.execution.binding.runId);
       activeNativeSessions.delete(input.execution.binding.runId);
       clearSteeringDeliveries(input.execution.binding.runId);
       clearNativeRuntimeRequestResolutions(input.execution.binding.runId);
+      // A Stop interrupts the provider before it saves its acknowledgement.
+      // When the interrupted turn ends first, wait for that Stop to settle, so
+      // the checks below judge its saved receipt, not a failure.
+      if (activeAtFailure?.cancelRequested) await activeAtFailure.cancellationSettled?.catch(() => undefined);
       // Stop before paperclip_finish is normal. Bounded provider teardown has
       // finished; a missing result must not overwrite cancellation or trigger
       // another turn to perform completion bookkeeping.
@@ -11608,7 +11614,14 @@ async function executePaperclipNativeSessionWithinScope(
           stopIntent.scope === "run" &&
           typeof stopIntent.intentAuditId === "string" && stopIntent.intentAuditId.length > 0 &&
           ["pending", "acknowledged"].includes(String(stopIntent.dispatchState));
+        // A governance pause (budget, company or agent pause) Stop is the same
+        // kind of intentional stop. The fence records its cancellation before
+        // dispatch, so judge it whether or not the terminal write has landed;
+        // resume continues it (budget-resume-continuation.ts).
+        const governancePauseStop = !!stoppedRun && hasAcknowledgedNativeRunStopReceipt(stoppedRun)
+          && isGovernancePauseStop({ status: "cancelled", resultJson: stoppedRun.resultJson });
         if (stoppedRun && (pendingStartupStop || hasAcknowledgedNativeStopIntent(stoppedRun) || hasAcknowledgedNativeReassignmentStopIntent(stoppedRun)
+          || governancePauseStop
           || (error instanceof NativeCancellationPendingRecoveryError && hasAcknowledgedNativeRunStopReceipt(stoppedRun)))) {
           const [settled] = await writeExecutionControl(input.db, [DELIVERY_QUEUES.executionFinalization, DELIVERY_QUEUES.accounting], tx => tx.update(nativeRunFinalizations).set({
             phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null,
