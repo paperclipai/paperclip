@@ -4708,7 +4708,7 @@ export async function runChildProcess(
         }
         const child = spawn(job?.command ?? target.command, job?.args ?? target.args, {
           cwd: target.cwd ?? opts.cwd,
-          env: childEnv,
+          env: job?.env ?? childEnv,
           detached: process.platform !== "win32",
           shell: false,
           windowsHide: true,

@@ -1,10 +1,11 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { runChildProcess, runningProcesses, signalRunningProcess } from "./server-utils.js";
-import { hasStoppedWindowsProcessJob, recordWindowsProcessJobIdentity, settleWindowsProcessJob, spawnWindowsProcessJob } from "./windows-process-job.js";
+import { hasStoppedWindowsProcessJob, prepareWindowsProcessJob, recordWindowsProcessJobIdentity, settleWindowsProcessJob, spawnWindowsProcessJob } from "./windows-process-job.js";
 
 type ProcessIdentity = { processPid: number; processStartedAt: Date };
 const released = (identity: ProcessIdentity) => hasStoppedWindowsProcessJob(identity.processPid, identity.processStartedAt);
@@ -48,6 +49,38 @@ describe.skipIf(process.platform !== "win32")("Windows process handoff settlemen
       expect(result.exitCode, result.stderr).toBe(0);
       expect(result.stdout.trim()).toBe("hello world");
     } finally { await rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+  });
+
+  it("rejects a receipt forged by the contained agent before the supervisor exits", async () => {
+    const attack = "if(process.env.PAPERCLIP_PROCESS_JOB_SECRET)throw Error('Settlement secret leaked');const fs=require('node:fs');const p=process.argv[1];if(p)fs.writeFileSync(p,process.argv[2]);console.log('forged');setInterval(()=>{},1000)";
+    const job = await prepareWindowsProcessJob(process.execPath, ["-e", attack]);
+    const args = [...job.args, job.args[2], job.args[3]];
+    const child = spawn(job.command, args, { env: { ...process.env, ...job.env }, stdio: ["ignore", "pipe", "pipe"] });
+    const identity = { processPid: child.pid!, processStartedAt: new Date() };
+    job.attach(child, identity.processStartedAt.toISOString());
+    try {
+      await new Promise<void>((resolve, reject) => { child.stdout!.once("data", () => resolve()); child.once("error", reject); child.once("exit", () => reject(new Error("Agent exited before forging receipt"))); });
+      expect(released(identity)).toBe(false);
+      const closed = new Promise(resolve => child.once("close", resolve));
+      process.kill(child.pid!);
+      await closed;
+      await job.settle();
+      expect(released(identity)).toBe(false);
+      await job.settle();
+      expect(released(identity)).toBe(false);
+    } finally { try { child.kill(); } catch {} await job.settle(); }
+  });
+
+  it.each([0, 7])("authenticates settlement independently of provider exit code %i", async code => {
+    const child = await spawnWindowsProcessJob(process.execPath, ["-e", `process.exit(${code})`], { stdio: "ignore" });
+    const identity = { processPid: child.pid!, processStartedAt: new Date() };
+    recordWindowsProcessJobIdentity(child, identity.processStartedAt.toISOString());
+    await new Promise(resolve => child.once("close", resolve));
+    await settleWindowsProcessJob(child);
+    expect(child.exitCode).toBe(code);
+    expect(released(identity)).toBe(true);
+    await settleWindowsProcessJob(child);
+    expect(released(identity)).toBe(true);
   });
 
   it("does not grant release when the supervisor is killed before its kernel receipt", async () => {

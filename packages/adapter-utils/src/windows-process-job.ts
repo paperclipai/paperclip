@@ -1,4 +1,5 @@
 import { execFile, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { createServer, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -46,15 +47,42 @@ export async function prepareWindowsProcessJob(command: string, args: string[], 
   if (!resolved) throw new Error(`Command not found in PATH: "${command}"`);
   const target = windowsCommandTarget(resolved, args, env);
   const executable = await prepareSupervisor();
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-process-job-"));
-  const receipt = path.join(dir, "settled");
+  const pipe = `\\\\.\\pipe\\paperclip-process-job-${randomUUID()}`;
   const token = randomUUID();
   const event = `Local\\paperclip-stop-${randomUUID()}`;
+  let received: string | undefined;
+  let finishReceipt!: () => void;
+  const receiptReady = new Promise<void>(resolve => { finishReceipt = resolve; });
+  const sockets = new Set<Socket>();
+  const server = createServer(socket => {
+    if (sockets.size >= 8) { socket.destroy(); return; }
+    sockets.add(socket);
+    let data = "";
+    socket.setEncoding("utf8");
+    socket.on("data", chunk => {
+      data += chunk;
+      if (data.length > 128) socket.destroy();
+    });
+    socket.on("error", () => {});
+    socket.on("close", () => { sockets.delete(socket); });
+    socket.on("end", () => {
+      if (data.startsWith(`${token}:`)) { received = data; finishReceipt(); }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(pipe, () => { server.removeListener("error", reject); resolve(); });
+  });
+  server.on("error", () => { finishReceipt(); });
+  server.unref();
   let pid: number | undefined;
   let owned: OwnedJob | undefined;
+  let settling: Promise<void> | undefined;
   return {
     command: executable,
-    args: ["run", event, receipt, token, target.command, ...target.args],
+    args: ["run", event, pipe, "", target.command, ...target.args],
+    // Only the supervisor receives this secret; it erases it before creating the provider.
+    env: { ...env, PAPERCLIP_PROCESS_JOB_SECRET: token },
     attach(child: ChildProcess, startedAt: string) {
       const processPid = child.pid;
       if (!processPid) return;
@@ -74,16 +102,26 @@ export async function prepareWindowsProcessJob(command: string, args: string[], 
       };
       ownedJobs.set(pid, owned);
     },
-    async settle() {
-      if (owned) {
-        if (owned.stopTimer) clearTimeout(owned.stopTimer);
-        owned.stopTimer = undefined;
-        owned.settled = await fs.readFile(receipt, "utf8").then(value => value === token, () => false);
-        owned.closed = true;
-        owned.child = undefined;
-        owned.forceKill = undefined;
-      }
-      await fs.rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    settle() {
+      return settling ??= (async () => {
+        if (owned) {
+          if (owned.stopTimer) clearTimeout(owned.stopTimer);
+          owned.stopTimer = undefined;
+          const child = owned.child;
+          let timer: NodeJS.Timeout | undefined;
+          if (child?.exitCode !== null && child?.exitCode !== undefined && child.signalCode === null) {
+            await Promise.race([receiptReady, new Promise<void>(resolve => { timer = setTimeout(resolve, 1000); })]);
+          }
+          if (timer) clearTimeout(timer);
+          owned.settled = Boolean(child && child.exitCode !== null && child.signalCode === null
+            && received === `${token}:${child.exitCode >>> 0}`);
+          owned.closed = true;
+          owned.child = undefined;
+          owned.forceKill = undefined;
+        }
+        for (const socket of sockets) socket.destroy();
+        if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+      })();
     },
   };
 }
@@ -126,7 +164,7 @@ export function hasStoppedWindowsProcessJob(pid: number, startedAt: Date): boole
 
 export async function spawnWindowsProcessJob(command: string, args: string[], options: SpawnOptions): Promise<ChildProcess> {
   const job = await prepareWindowsProcessJob(command, args, String(options.cwd ?? process.cwd()), options.env ?? process.env);
-  const child = spawn(job.command, job.args, { ...options, shell: false, windowsHide: true });
+  const child = spawn(job.command, job.args, { ...options, env: job.env, shell: false, windowsHide: true });
   if (child.pid) job.attach(child, new Date().toISOString());
   const kill = child.kill.bind(child);
   child.kill = signal => {

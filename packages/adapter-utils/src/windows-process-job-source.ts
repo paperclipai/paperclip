@@ -3,6 +3,7 @@ export const WINDOWS_PROCESS_JOB_SOURCE = String.raw`
 using System;
 using System.ComponentModel;
 using System.IO;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -69,6 +70,9 @@ public static class PaperclipProcessJob {
     } catch (Exception error) { Console.Error.WriteLine("Paperclip process job: " + error.Message); return 1; }
   }
   static int Run(string[] args) {
+    string secret = Environment.GetEnvironmentVariable("PAPERCLIP_PROCESS_JOB_SECRET");
+    Environment.SetEnvironmentVariable("PAPERCLIP_PROCESS_JOB_SECRET", null);
+    if (String.IsNullOrEmpty(secret)) throw new InvalidOperationException("Missing settlement authentication");
     IntPtr job = CreateJobObject(IntPtr.Zero, null), port = IntPtr.Zero; ProcessInfo child = new ProcessInfo();
     if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
     try {
@@ -101,7 +105,12 @@ public static class PaperclipProcessJob {
         Accounting accounting;
         Require(QueryInformationJobObject(job, 1, out accounting, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero));
         if (accounting.Active != 0) throw new InvalidOperationException("Process job has not settled");
-        File.WriteAllText(args[2], args[3]);
+        using (var receipt = new NamedPipeClientStream(".", args[2].Substring(9), PipeDirection.Out, PipeOptions.None)) {
+          receipt.Connect(1000);
+          byte[] proof = Encoding.UTF8.GetBytes(secret + ":" + code.ToString(System.Globalization.CultureInfo.InvariantCulture));
+          receipt.Write(proof, 0, proof.Length);
+          receipt.Flush();
+        }
         return unchecked((int)code);
       }
     } finally {

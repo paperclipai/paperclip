@@ -697,10 +697,13 @@ describe("Grok runner migration", () => {
 });
 
 describe("Codex creation runner contract", () => {
-  it("offers the qualified native Windows Codex runner without admitting other Windows harnesses", () => {
+  it("keeps Windows Codex on Legacy by default while allowing explicit native selection", () => {
     const windows = { driver: "local", platform: "win32", architecture: "x64" };
     expect(paperclipRunnerSupportsPlatform("codex_local", "win32", "x64")).toBe(true);
-    expect(agentRunnerAvailability("codex_local", windows)).toEqual({ supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" });
+    expect(agentRunnerAvailability("codex_local", windows)).toEqual({ supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" });
+    for (const runner of [undefined, "auto"] as const) {
+      expect(resolveNewAgentRunner({ adapterType: "codex_local", target: windows, runner }).adapterType).toBe("codex_local");
+    }
     const config = { model: "gpt-6.1-sol", dangerouslyBypassApprovalsAndSandbox: true };
     expect(resolveNewAgentRunner({ adapterType: "codex_local", adapterConfig: config, target: windows, runner: "paperclip" }))
       .toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" } });
