@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeInterruption } from "./runtime-interruption.js";
+import { deliveryRevisionBound, gradeInterruption } from "./runtime-interruption.js";
 function valid() {
   return { scenarioId: "steering.interrupt-with-direction", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "", tasks: [{ id: "website", status: "done" }], activity: [],
     runs: [{ id: "old", status: "cancelled" }, { id: "source", status: "succeeded" }, { id: "new", status: "succeeded" }],
@@ -29,3 +29,18 @@ it("rejects rewriting the accepted plan after the interruption", () => { const o
 it("rejects a friendly completion with no real simpler page", () => { const o = valid(); o.state.actualSimplePage = false; expect(gradeInterruption(o).passed).toBe(false); });
 it("rejects lost original run history", () => { const o = valid(); o.state.oldEvidenceRetained = false; expect(gradeInterruption(o).passed).toBe(false); });
 it("rejects missing actual interruption evidence", () => expect(gradeInterruption(undefined).passed).toBe(false));
+// Shaped like run 42592781763: the successor saved website-delivery in its own
+// words, without the plan's setup marker.
+function delivery() {
+  return { documents: [{ id: "plan-doc", key: "plan", issueId: "website", latestRevisionId: "plan-r1" }, { id: "brief-doc", key: "website-brief", issueId: "website", latestRevisionId: "brief-r1" }, { id: "delivery-doc", key: "website-delivery", issueId: "website", latestRevisionId: "delivery-r1" }],
+    revisions: [{ id: "plan-r1", documentId: "plan-doc", createdByRunId: null, createdByAgentId: null, body: "# Approved simpler website direction\nSimpler layout nonce-1" },
+      { id: "brief-r1", documentId: "brief-doc", createdByRunId: "new", createdByAgentId: "morgan", body: "# Website brief" },
+      { id: "delivery-r1", documentId: "delivery-doc", createdByRunId: "new", createdByAgentId: "morgan", body: "# Website delivery\n- Deliverable: website.html, single semantic page." }] };
+}
+it("binds the successor's own current website-delivery revision without a copied setup marker", () => expect(deliveryRevisionBound(delivery(), "website", "new", "morgan")).toBe(true));
+it("accepts reworded delivery prose", () => { const o = delivery(); (o.revisions[2] as { body: string }).body = "Shipped the one-page Acorn Notes site."; expect(deliveryRevisionBound(o, "website", "new", "morgan")).toBe(true); });
+it("rejects a delivery document written by the stopped attempt", () => { const o = delivery(); o.revisions[2]!.createdByRunId = "old"; expect(deliveryRevisionBound(o, "website", "new", "morgan")).toBe(false); });
+it("rejects a delivery written by another agent", () => { const o = delivery(); o.revisions[2]!.createdByAgentId = "ceo"; expect(deliveryRevisionBound(o, "website", "new", "morgan")).toBe(false); });
+it("rejects a superseded successor revision", () => { const o = delivery(); o.documents[2]!.latestRevisionId = "later"; expect(deliveryRevisionBound(o, "website", "new", "morgan")).toBe(false); });
+it("rejects only some other successor document", () => { const o = delivery(); o.documents.pop(); expect(deliveryRevisionBound(o, "website", "new", "morgan")).toBe(false); });
+it("rejects a delivery document on a different task", () => { const o = delivery(); o.documents[2]!.issueId = "other"; expect(deliveryRevisionBound(o, "website", "new", "morgan")).toBe(false); });

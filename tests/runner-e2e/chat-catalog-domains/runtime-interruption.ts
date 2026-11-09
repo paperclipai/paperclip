@@ -18,6 +18,16 @@ import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime
 function issueApiPaths(task: Entity, suffix: string) {
   return new Set([task.id, (task as { identifier?: string | null }).identifier].filter((key): key is string => !!key).map(key => `/api/issues/${encodeURIComponent(key)}${suffix}`));
 }
+// The plan asks for a task document keyed website-delivery. The successor's
+// own revision must be that document's current content on the original task;
+// its prose is free-form, so no setup literal has to be copied into it. The
+// delivered page itself is graded separately from the registered website.html.
+type DeliveryDocument = { id?: string; key?: string | null; issueId?: string | null; latestRevisionId?: string | null };
+type DeliveryRevision = { id?: string; documentId?: string | null; createdByRunId?: string | null; createdByAgentId?: string | null };
+export function deliveryRevisionBound(o: { documents: DeliveryDocument[]; revisions: DeliveryRevision[] }, taskId: string, successorRunId: string, workerId: string) {
+  return o.documents.some(doc => doc.key === "website-delivery" && doc.issueId === taskId && !!doc.latestRevisionId
+    && o.revisions.some(row => row.id === doc.latestRevisionId && row.documentId === doc.id && row.createdByRunId === successorRunId && row.createdByAgentId === workerId));
+}
 export function gradeInterruption(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("actual-fresh-direction-native-interruption-evidence", !!o, "A genuine native active owner, saved accepted plan direction, supported human Interrupt and one eligible successor are required."); if (!o) return c.result();
@@ -41,7 +51,7 @@ export function gradeInterruption(value: unknown) {
 }
 export const runtimeInterruptionCases = [runtimeDefinition("steering.interrupt-with-direction", async ctx => {
   const state: Record<string, unknown> = await busyRuntimeWorker(ctx), task = state.task as Entity, source = ctx.input.page.url();
-  const marker = `Simpler layout ${ctx.input.nonce}`, body = `# Approved simpler website direction\n${marker}\nReplace the complex multi-panel dashboard layout with one semantic HTML page. Include a visible Acorn Notes heading, one short product paragraph and one labelled signup action. No tabs or multi-page navigation. Register the actual website.html file and save a website-delivery task document with this reference. This applies only to the next eligible attempt; do not start another owner while the current execution remains active.\n`;
+  const marker = `Simpler layout ${ctx.input.nonce}`, body = `# Approved simpler website direction\n${marker}\nReplace the complex multi-panel dashboard layout with one semantic HTML page. Include a visible Acorn Notes heading, one short product paragraph and one labelled signup action. No tabs or multi-page navigation. Register the actual website.html file and save a task document with key website-delivery that records the delivery. This applies only to the next eligible attempt; do not start another owner while the current execution remains active.\n`;
   const plan = await ctx.input.api.putSensitive<Entity>(`/api/issues/${task.id}/documents/plan`, { title: "Simpler Website direction", format: "markdown", body, baseRevisionId: null });
   if (!plan.id || !plan.latestRevisionId || !plan.latestRevisionNumber) throw new Error("The real human-authored simpler plan has no retained revision identity");
   const confirmation = await ctx.input.api.post<IssueThreadInteraction>(`/api/issues/${task.id}/interactions`, createIssueThreadInteractionSchema.parse({ kind: "request_confirmation",
@@ -63,7 +73,7 @@ export const runtimeInterruptionCases = [runtimeDefinition("steering.interrupt-w
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { ...state, marker, plan, planBody: body, approvedDirection: approved, directionQueue: queue, planApprovedByHuman: approved.status === "accepted" && approved.resolvedByUserId === session.user.id && !approved.resolvedByAgentId, interruptControlEnabled: true };
 }, gradeInterruption, {
-  oracleVersion: "paperclip.chat-catalog.runtime.interrupt-with-direction.v4", authentication: "human-session", expectedRunCount: 3, attemptTimeoutMs: 900_000,
+  oracleVersion: "paperclip.chat-catalog.runtime.interrupt-with-direction.v5", authentication: "human-session", expectedRunCount: 3, attemptTimeoutMs: 900_000,
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 2 } },
   sourceFiles: ["chat-catalog-domains/runtime-interruption.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],
@@ -117,7 +127,7 @@ export const runtimeInterruptionCases = [runtimeDefinition("steering.interrupt-w
     const revisions = await ctx.input.api.get<Entity[]>(`/api/issues/${task.id}/documents/plan/revisions`); state.planRevisionRetained = revisions.some(row => row.id === plan.latestRevisionId && row.body === state.planBody);
     if (state.successorRunId) { const [artifact] = await readRegisteredArtifacts(ctx.input.api, task.id, String(state.successorRunId), ["website.html"]);
       state.actualSimplePage = artifact?.contentVerified === true && hasSimplerWebsite(await renderRuntimeArtifact(ctx, artifact.content));
-      state.deliveryRevisionBound = o.revisions.some(row => row.createdByRunId === state.successorRunId && row.createdByAgentId === (state.worker as Entity).id && (row.body ?? "").includes(String(state.marker)) && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id)); }
+      state.deliveryRevisionBound = deliveryRevisionBound(o, task.id, String(state.successorRunId), (state.worker as Entity).id); }
     return o; },
   async verifyResult(ctx, state) { const source = ctx.input.page.url(), task = state.task as Entity;
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" }); await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
