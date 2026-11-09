@@ -119,6 +119,12 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
   try {
     await input.evidence("chat-catalog-definition.json", { scenarioId: scenario.id, ...fingerprint,
       suiteDefinitionHash: input.execution.suiteDefinitionHash, journeyKind: implementation.journeyKind ?? "agent-chat" });
+    // Setup turns (prerequisite chat messages, worker runs) spend before the query. Fund the company and
+    // lead first: the fixture's default policy blocks unpriced usage, so one unpriced setup turn would
+    // otherwise budget-pause the lead before the standard funding below is applied.
+    if (implementation.setupPolicy?.funding !== "preserve-scenario") for (const scope of [{ scopeType: "company", scopeId: input.fixtures.company.id },
+      { scopeType: "agent", scopeId: input.fixtures.agent.id }]) await input.api.post(`/api/companies/${input.fixtures.company.id}/budgets/policies`, { ...scope, amount: 500,
+      hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
     state = await implementation.setup(context);
     const query = await resolveChatCatalogQuery(context, implementation.queryBindings, state);
     renderedQuery = query.renderedQuery;

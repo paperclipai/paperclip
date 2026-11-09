@@ -16,7 +16,11 @@ it("rejects missing real preview evidence", () => expect(gradePreview(undefined)
 it("rejects a service record without HTTP content readiness", () => { const o = valid(); o.state.initialHttpStatus = 503; expect(gradePreview(o).passed).toBe(false); });
 it("rejects serving another website's bytes", () => { const o = valid(); o.state.initialHttpBody = "Other website"; expect(gradePreview(o).passed).toBe(false); });
 it("rejects a similarly named service from another workspace", () => { const o = valid(); o.state.healthyService.executionWorkspaceId = "other"; expect(gradePreview(o).passed).toBe(false); });
-it("rejects a preview product from an unrelated run", () => { const o = valid(); o.state.previewProducts[0]!.createdByRunId = "foreign"; expect(gradePreview(o).passed).toBe(false); });
+it("rejects a lead preview product that names another endpoint", () => { const o = valid(); o.state.previewProducts[0]!.url = "http://127.0.0.1:1/"; expect(gradePreview(o).passed).toBe(false); });
+it("accepts a linked ready endpoint without an optional preview work product", () => { const o = valid(); o.state.previewProducts = []; expect(gradePreview(o).passed).toBe(true); });
+it("rejects a reply that never links the ready endpoint", () => { const o = valid(); o.state.queryLinks = []; expect(gradePreview(o).passed).toBe(false); });
+it("accepts an API-started failed restart attributed by the restart turn's window", () => { const o = valid(); (o.state.failureOperation as { heartbeatRunId: string | null }).heartbeatRunId = null; (o.state as Record<string, unknown>).failureOperationRunId = "restart"; expect(gradePreview(o).passed).toBe(true); });
+it("rejects an unattributed failed operation", () => { const o = valid(); (o.state.failureOperation as { heartbeatRunId: string | null }).heartbeatRunId = null; expect(gradePreview(o).passed).toBe(false); });
 it("rejects a restart turn that left no chat answer", () => { const o = valid(); o.state.failureReply = ""; expect(gradePreview(o).passed).toBe(false); });
 it("rejects an endpoint that still answers after the supposed startup failure", () => { const o = valid(); o.state.failedHttpReachable = true; expect(gradePreview(o).passed).toBe(false); });
 it("rejects a restart that never recorded a failed operation", () => { const o = valid(); o.state.failureOperation.status = "succeeded"; expect(gradePreview(o).passed).toBe(false); });
