@@ -45,7 +45,21 @@ describe("wave speed grade", () => {
     const recovered: BaselineRun = { runId: "r", adapter: "claude", environment: "local", phase: "cold",
       events: [{ eventType: "turn.started", createdAt: new Date(10_000 + 30_000).toISOString() }] };
     const speed = gradeWaveSpeed("local", [recovered], [{ kind: "K1", readyAt: 10_000, runIds: ["r"] }], 0);
-    expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ adapter: "claude", breaches: ["p50", "p95"] });
+    // Nothing reloaded, so the whole latency is Paperclip's share and is judged.
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ adapter: "claude", breaches: ["p50", "p95"] });
+    expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ budget: null, breaches: [], measured: { p50: 30_000 } });
+  });
+
+  it("judges Paperclip's share of a recovery and only reports the provider's session load", () => {
+    const loadEnd = 10_000 + 1_500 + 9_000;
+    const recovered: BaselineRun = { runId: "r", adapter: "codex", environment: "local", phase: "cold", events: [
+      { eventType: "run.performance.span", createdAt: new Date(loadEnd).toISOString(), payload: { span: "provider.session.load", durationMs: 9_000 } },
+      { eventType: "session.resumed", createdAt: new Date(loadEnd + 300).toISOString() }] };
+    const speed = gradeWaveSpeed("local", [recovered], [{ kind: "K2", readyAt: 10_000, runIds: ["r"] }], 0);
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { p50: 1_500 }, breaches: [] });
+    expect(speed.rows.find(row => row.metric === "restart_provider_load")).toMatchObject({ measured: { p50: 9_300 }, budget: null, breaches: [] });
+    expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ measured: { p50: 10_800 }, budget: null });
+    expect(speed.breaches).toBe(0);
   });
 
   it("removes a later outage from restart recovery", () => {
@@ -54,7 +68,7 @@ describe("wave speed grade", () => {
     const windows = outageWindows([{ startedAt: 12_000, readyAt: 312_000 } as FaultReceipt]);
     const speed = gradeWaveSpeed("local", [recovered], [{ kind: "K1", readyAt: 10_000, runIds: ["r"] }], 0, [],
       { adjusted: 0, removedMs: 0, windows });
-    expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ measured: { p50: 2_000 }, breaches: [] });
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { p50: 2_000 }, breaches: [] });
   });
 
   it("has no budget for remote environments or unbudgeted adapters", () => {

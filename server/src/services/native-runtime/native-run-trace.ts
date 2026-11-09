@@ -262,6 +262,9 @@ function safeAttributes(
  * seams inherit that context. The persisted run-event copy retains the same
  * semantic parent name for developer installs without an OTLP collector.
  */
+/** The runner span for the provider loading its saved session on resume. */
+const PROVIDER_SESSION_LOAD_SPAN = "provider.session.load";
+
 export function createNativeRunTrace(input: {
   runId: string;
   startedAtMs?: number;
@@ -279,6 +282,8 @@ export function createNativeRunTrace(input: {
   const tracing =
     input.traceContext ?? getStartupTraceContext("paperclip.native-runner");
   const traceStartedAtMs = finiteMs(input.startedAtMs ?? Date.now());
+  /** Start times of the provider's saved-session loads (restart recovery split). */
+  const providerLoadStartsMs: number[] = [];
   const runIdHash = hashedId(input.runId);
   let rootSpan: SpanHandle;
   try {
@@ -447,6 +452,7 @@ export function createNativeRunTrace(input: {
     } = {},
   ): NativeRunSpanScope => {
     const startedAtMs = finiteMs(options.startedAtMs ?? Date.now());
+    if (name === PROVIDER_SESSION_LOAD_SPAN) providerLoadStartsMs.push(startedAtMs);
     const attributes = safeAttributes(options.attributes);
     const parent = parentFor(options.parentName);
     let span: SpanHandle;
@@ -636,7 +642,11 @@ export function createNativeRunTrace(input: {
   const finish = async (outcome: NativeRunSpanOutcome): Promise<void> => {
     if (ended) return;
     // Settled diagnostics can defer more (a budget breach after a deferred
-    // measurement), so drain until none remain.
+    // measurement), so drain until none remain. Judge restart recovery after
+    // the first drain, so a deferred provider span is counted, then drain its
+    // breach report.
+    while (pendingDiagnostics.size > 0) await Promise.all([...pendingDiagnostics]);
+    judgeRestartRecovery();
     while (pendingDiagnostics.size > 0) await Promise.all([...pendingDiagnostics]);
     if (ended) return;
     ended = true;
@@ -666,8 +676,25 @@ export function createNativeRunTrace(input: {
   };
 
   /** Restart recovery latency: control plane ready to the recovered run's
-   * next provider event, checked once per run. */
+   * next provider event, checked once per run. Only Paperclip's share is
+   * judged: ready to the start of the provider's session load (or to the
+   * event when nothing reloads). The provider span can be committed after the
+   * event, so the judgement waits for the run to finish. */
   let recoveryChecked = false;
+  let pendingRecovery: RestartRecoveryMeasurement | null = null;
+  const judgeRestartRecovery = (): void => {
+    const measurement = pendingRecovery;
+    pendingRecovery = null;
+    if (!input.budget || !measurement || measurement.readyAtMs === null) return;
+    const readyAtMs = measurement.readyAtMs;
+    const loads = providerLoadStartsMs.filter(at => at >= readyAtMs && at <= measurement.committedAtMs);
+    const loadStartedAtMs = loads.length ? Math.min(...loads) : null;
+    const totalMs = measurement.committedAtMs - readyAtMs;
+    reportBudgetBreach(evaluateSpeedBudget({ adapter: input.budget.adapter, environment: input.budget.environment,
+      metric: "restart_recovery_control_plane", start: null, measuredMs: (loadStartedAtMs ?? measurement.committedAtMs) - readyAtMs,
+      disposition: measurement.disposition, restartTotalMs: totalMs,
+      providerLoadMs: loadStartedAtMs === null ? 0 : measurement.committedAtMs - loadStartedAtMs }));
+  };
   const checkRestartRecovery = (measurement: RestartRecoveryMeasurement): void => {
     if (!input.budget || recoveryChecked || measurement.readyAtMs === null) return;
     // An event emitted before ready (buffered by a surviving runner and
@@ -676,9 +703,7 @@ export function createNativeRunTrace(input: {
     if (measurement.emittedAtMs !== null && measurement.emittedAtMs < measurement.readyAtMs) return;
     if (measurement.committedAtMs < measurement.readyAtMs) return;
     recoveryChecked = true;
-    reportBudgetBreach(evaluateSpeedBudget({ adapter: input.budget.adapter, environment: input.budget.environment,
-      metric: "restart_recovery", start: null, measuredMs: measurement.committedAtMs - measurement.readyAtMs,
-      disposition: measurement.disposition }));
+    pendingRecovery = measurement;
   };
 
   return {

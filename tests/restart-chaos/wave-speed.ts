@@ -11,7 +11,8 @@ type Json = Record<string, unknown>;
 export interface WaveSpeedTask { issueId: string | null; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }
 
 export interface SpeedRow {
-  adapter: string; metric: "time_to_first_activity" | "ttft" | "agent_boot" | "workspace_provision" | "restart_recovery"; start: "cold" | "warm" | "restart";
+  adapter: string; metric: "time_to_first_activity" | "ttft" | "agent_boot" | "workspace_provision" | "restart_recovery"
+    | "restart_recovery_control_plane" | "restart_provider_load"; start: "cold" | "warm" | "restart";
   measured: Distribution; budget: SpeedBudget | null; breaches: Array<"p50" | "p95">;
 }
 
@@ -33,9 +34,11 @@ export function budgetFor(environment: EnvironmentKind, adapter: string, metric:
   start: SpeedRow["start"]): SpeedBudget | null {
   const key = BUDGET_ADAPTER[adapter as AdapterId];
   if (environment !== "local" || !key) return null;
-  if (metric === "ttft" || metric === "workspace_provision") return null;
+  // Reported without a budget: the full recovery and the provider's session load
+  // grow with session size and simultaneous resumes; Paperclip's share is judged.
+  if (metric === "ttft" || metric === "workspace_provision" || metric === "restart_recovery" || metric === "restart_provider_load") return null;
   const budgets = LOCAL_SPEED_BUDGETS[key] as unknown as Record<string, Record<"cold" | "warm", SpeedBudget> | SpeedBudget>;
-  if (metric === "restart_recovery") return budgets.restart_recovery as SpeedBudget;
+  if (metric === "restart_recovery_control_plane") return budgets.restart_recovery_control_plane as SpeedBudget;
   const byStart = (metric === "time_to_first_activity" ? budgets.time_to_first_activity ?? budgets.ttft : budgets[metric]) as
     Record<"cold" | "warm", SpeedBudget>;
   return byStart[start === "warm" ? "warm" : "cold"];
@@ -180,12 +183,24 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
     }
   }
   const clock = outageFreeClock(outage.windows ?? []);
-  const samples = recoverySamples(runs, faults).map(sample => sample.latencyMs === null ? sample
-    : { ...sample, latencyMs: Math.max(0, clock(sample.readyAt + sample.latencyMs) - clock(sample.readyAt)) });
+  const outageFree = (readyAt: number, ms: number | null) => ms === null ? null : Math.max(0, clock(readyAt + ms) - clock(readyAt));
+  const samples = recoverySamples(runs, faults).map(sample => sample.latencyMs === null ? sample : {
+    ...sample, latencyMs: outageFree(sample.readyAt, sample.latencyMs),
+    controlPlaneMs: outageFree(sample.readyAt, sample.controlPlaneMs),
+    providerLoadMs: sample.providerLoadMs === null || sample.controlPlaneMs === null ? sample.providerLoadMs
+      : Math.max(0, clock(sample.readyAt + sample.controlPlaneMs + sample.providerLoadMs) - clock(sample.readyAt + sample.controlPlaneMs)),
+  });
   for (const adapter of [...new Set(samples.map(sample => sample.adapter))].sort()) {
-    const measured = distribution(samples.flatMap(sample => sample.adapter === adapter && sample.latencyMs !== null ? [sample.latencyMs] : []));
-    const budget = budgetFor(environment, adapter, "restart_recovery", "restart");
-    rows.push({ adapter, metric: "restart_recovery", start: "restart", measured, budget, breaches: breachesOf(measured, budget) });
+    for (const [metric, pick] of [["restart_recovery", (sample: typeof samples[number]) => sample.latencyMs],
+      ["restart_recovery_control_plane", (sample: typeof samples[number]) => sample.controlPlaneMs],
+      ["restart_provider_load", (sample: typeof samples[number]) => sample.providerLoadMs]] as const) {
+      const measured = distribution(samples.flatMap(sample => {
+        const value = sample.adapter === adapter ? pick(sample) : null;
+        return value === null ? [] : [value];
+      }));
+      const budget = budgetFor(environment, adapter, metric, "restart");
+      rows.push({ adapter, metric, start: "restart", measured, budget, breaches: breachesOf(measured, budget) });
+    }
   }
   const singleRunBreaches = runs.filter(run => run.phase !== "restart" && run.phase !== "verify").filter(run => {
     const start = runWarmth(run);

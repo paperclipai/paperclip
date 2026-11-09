@@ -132,7 +132,12 @@ export function runMetrics(run: BaselineRun): RunMetrics {
 const PROVIDER_EVENT_TYPES = new Set(["turn.submitted", "turn.started", "turn.accepted", "item.started", "item.delta",
   "item.completed", "tool.execution.started", "tool.execution.progressed", "tool.execution.completed", "session.resumed"]);
 
-export interface RecoverySample { runId: string; adapter: string; kind: string; disposition: string; readyAt: number; latencyMs: number | null }
+export interface RecoverySample { runId: string; adapter: string; kind: string; disposition: string; readyAt: number; latencyMs: number | null;
+  /** Paperclip's share: ready to the start of the provider's session load (`provider.session.load`), or the whole
+   * latency when nothing reloads. The judged row. */
+  controlPlaneMs: number | null;
+  /** The provider's share: session load start to the next provider event. Reported. */
+  providerLoadMs: number | null }
 
 /** Control plane ready → the recovered run's next provider event, keyed by runner disposition. */
 export function recoverySamples(runs: readonly BaselineRun[], faults: readonly BaselineFault[]): RecoverySample[] {
@@ -146,9 +151,19 @@ export function recoverySamples(runs: readonly BaselineRun[], faults: readonly B
       const transition = after.find(event => event.eventType === "native.recovery.transition"
         && Date.parse(event.createdAt) >= fault.readyAt - 60_000);
       const next = run.events.find(event => PROVIDER_EVENT_TYPES.has(event.eventType) && Date.parse(event.createdAt) >= fault.readyAt);
+      const nextAt = next ? Date.parse(next.createdAt) : null;
+      // A span event is written when the span ends; its start is the write time minus its duration.
+      const loadStarts = nextAt === null ? [] : run.events.flatMap(event => {
+        if (event.eventType !== "run.performance.span" || event.payload?.span !== "provider.session.load") return [];
+        const start = Date.parse(event.createdAt) - Number(event.payload?.durationMs);
+        return Number.isFinite(start) && start >= fault.readyAt && start <= nextAt ? [start] : [];
+      });
+      const loadStart = loadStarts.length ? Math.min(...loadStarts) : null;
       samples.push({ runId, adapter: run.adapter, kind: fault.kind, readyAt: fault.readyAt,
         disposition: String(transition?.payload?.runnerDisposition ?? "none"),
-        latencyMs: next ? Date.parse(next.createdAt) - fault.readyAt : null });
+        latencyMs: nextAt === null ? null : nextAt - fault.readyAt,
+        controlPlaneMs: nextAt === null ? null : (loadStart ?? nextAt) - fault.readyAt,
+        providerLoadMs: nextAt === null ? null : loadStart === null ? 0 : nextAt - loadStart });
     }
   }
   return samples;

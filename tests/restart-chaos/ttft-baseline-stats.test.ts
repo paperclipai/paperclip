@@ -119,8 +119,22 @@ describe("ttft baseline statistics", () => {
     ]);
     const silent = run("r2", "restart", []);
     expect(recoverySamples([recovered, silent], [{ kind: "K1", readyAt, runIds: ["r1", "r2", "missing"] }])).toEqual([
-      { runId: "r1", adapter: "codex", kind: "K1", disposition: "resume_dead_runner", readyAt, latencyMs: 3_250 },
-      { runId: "r2", adapter: "codex", kind: "K1", disposition: "none", readyAt, latencyMs: null },
+      { runId: "r1", adapter: "codex", kind: "K1", disposition: "resume_dead_runner", readyAt, latencyMs: 3_250, controlPlaneMs: 3_250, providerLoadMs: 0 },
+      { runId: "r2", adapter: "codex", kind: "K1", disposition: "none", readyAt, latencyMs: null, controlPlaneMs: null, providerLoadMs: null },
+    ]);
+  });
+});
+
+describe("restart recovery split", () => {
+  it("splits a recovery at the start of the provider's session load", () => {
+    const readyAt = Date.parse(at(10_000));
+    const recovered = run("r1", "restart", [
+      // provider.session.load ran 11.5 s → 16.0 s after the epoch; its event is written when it ends.
+      { eventType: "run.performance.span", createdAt: at(16_000), payload: { span: "provider.session.load", durationMs: 4_500 } },
+      { eventType: "session.resumed", createdAt: at(16_400) },
+    ]);
+    expect(recoverySamples([recovered], [{ kind: "K2", readyAt, runIds: ["r1"] }])).toEqual([
+      { runId: "r1", adapter: "codex", kind: "K2", disposition: "none", readyAt, latencyMs: 6_400, controlPlaneMs: 1_500, providerLoadMs: 4_900 },
     ]);
   });
 });
