@@ -147,15 +147,14 @@ export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgre
       .returning({ id: workspaceOperations.id });
     if (!row) return { settled: false, reason: "attempt_no_longer_in_progress" };
     if (operation.executionWorkspaceId) {
-      const rearmed = await tx.update(issueRecoveryActions).set({
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
+      await tx.update(issueRecoveryActions).set({
         evidence: sql`${issueRecoveryActions.evidence} - ${RETAINED_SOURCE_FALLBACK_CHECK_KEY}::text`,
       }).where(and(eq(issueRecoveryActions.companyId, operation.companyId), inArray(issueRecoveryActions.status, ["active", "escalated"]),
         sql`${issueRecoveryActions.evidence}->${RETAINED_SOURCE_FALLBACK_CHECK_KEY}->>'reason' = 'workspace_operation_running'`,
         sql`exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
           and source.id::text = ${issueRecoveryActions.evidence}->>'runId'
-          and source.runner_profile_json#>>'{remoteWorkspace,workspaceId}' = ${operation.executionWorkspaceId})`))
-        .returning({ id: issueRecoveryActions.id });
-      if (rearmed.length) await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
+          and source.runner_profile_json#>>'{remoteWorkspace,workspaceId}' = ${operation.executionWorkspaceId})`));
     }
     const activity = await persistActivity(tx, {
       companyId: operation.companyId, actorType: "system", actorId: "ownership-reconciler",
