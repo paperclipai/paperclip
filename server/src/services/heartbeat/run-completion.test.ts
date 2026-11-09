@@ -33,6 +33,7 @@ import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error
 import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
 import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
@@ -784,6 +785,30 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     else await f.completion.failRun(f.failure(error));
     expect(await read(f.run.id)).toMatchObject({ status: "failed", error: "PRP command session.open failed",
       resultJson: { providerFailure } });
+  });
+
+  it("waits a minute and suppresses rapid recovery when a run fails because storage is unavailable (storage chaos ST1)", async () => {
+    const f = await fixture();
+    const outage = Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable",
+      $fault: "server", $metadata: { httpStatusCode: 503, attempts: 3 } });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled", run: { id: "wait" } } as never);
+    await f.completion.failRun(f.failure(outage));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE, error: STORAGE_UNAVAILABLE_MESSAGE });
+    expect(failed.error).not.toContain("Injected storage outage");
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: true }));
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it("keeps an ordinary adapter failure on the normal recovery path", async () => {
+    const f = await fixture();
+    await f.completion.failRun(f.failure(new Error("adapter crashed")));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed" });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: false }));
   });
 
   it("still records failure and releases issue ownership when log finalization and progress flushing fail", async () => {
