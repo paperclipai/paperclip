@@ -23,9 +23,6 @@ describe("OpenCode runnerd proxy event boundary", () => {
   });
 
   it("keeps per-token deltas runnerd discards from queueing ahead of a tool call", () => {
-    // One provider step: streamed reasoning and tool output, a completed
-    // reasoning item, then the tool call request. runnerd pays a durable state
-    // save for every frame it reads, in order, before it reaches the request.
     const framesBeforeToolCall = (tokens: number) => {
       vi.useFakeTimers();
       try {
