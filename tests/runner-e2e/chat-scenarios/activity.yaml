@@ -45,7 +45,8 @@ scenarios:
       - activity/routine-audit
       - routines/history
     context: >-
-      The daily routine was edited yesterday but did not successfully execute this morning.
+      The daily routine's instructions were edited shortly before this morning's scheduled run, and that run
+      did not successfully execute.
     query: >-
       Did the daily launch routine actually do anything this morning?
     expected_outcome: >-

@@ -1116,6 +1116,12 @@
             "The current public grant-management route rejects agent membership principals. Required users:* agent authority cannot be established through the supported API; the actual intended mutation and human acceptance/reuse callbacks are authored but remain unqualified until this setup capability is available."
           ],
           "current": []
+        },
+        {
+          "key": "activity.routine-audit",
+          "field": "originalContext",
+          "previous": "The daily routine was edited yesterday but did not successfully execute this morning.",
+          "current": "The daily routine's instructions were edited shortly before this morning's scheduled run, and that run did not successfully execute."
         }
       ],
       "candidateDescriptorSnapshot": "fixtures/chat-repair-candidate-descriptors.json",
@@ -2601,7 +2607,7 @@
       "installedSource": null,
       "originalQuery": "Did the daily launch routine actually do anything this morning?",
       "expectedOutcome": "The agent inspects execution activity and resulting tasks, separate from definition-edit history. It reports missing, failed or completed work using evidence and links. A routine update event or enabled schedule does not count as proof of a successful run.",
-      "originalContext": "The daily routine was edited yesterday but did not successfully execute this morning.",
+      "originalContext": "The daily routine's instructions were edited shortly before this morning's scheduled run, and that run did not successfully execute.",
       "capabilities": [
         "activity/routine-audit",
         "routines/history"

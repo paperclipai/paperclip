@@ -396,6 +396,11 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "access.manage-membership",
     "coverageGaps"
+  ],
+  // Real same-morning routine history instead of unproducible prior-day provenance (activity.routine-audit).
+  [
+    "activity.routine-audit",
+    "originalContext"
   ]
 ]);
   for (const change of repair.changedFields) {
