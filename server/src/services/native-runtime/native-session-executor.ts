@@ -5429,7 +5429,7 @@ type SettledRunnerdProjection = { bytes: string; refused?: never } | { bytes?: n
 const LOCAL_RUNNER_LIFECYCLE_COMMANDS = new Set(["runner.suspend", "runner.drain", "runner.shutdown"]);
 
 function readSettledRunnerdProjection(root: string, identity: Record<string, string>,
-  options: { localRunner?: boolean; controlBytes?: string } = {}): SettledRunnerdProjection {
+  options: { localRunner?: boolean; controlBytes?: string; remoteRunnerGone?: boolean } = {}): SettledRunnerdProjection {
   const refuse = (refused: string): SettledRunnerdProjection => ({ refused });
   try {
     if (!isSafeNativeStateDirectory(root)) return refuse("root_unsafe");
@@ -5449,7 +5449,7 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
     const control = record(JSON.parse(bytes));
     const commands = (Array.isArray(control.commands) ? control.commands : []).map(record);
     // A stopped local Runner can no longer act on its own lifecycle commands.
-    const settledCommands = options.localRunner && lifecycle === "not_suspended" && Array.isArray(control.commands)
+    const settledCommands = ((options.localRunner && lifecycle === "not_suspended") || options.remoteRunnerGone) && Array.isArray(control.commands)
       ? commands.filter(command => !LOCAL_RUNNER_LIFECYCLE_COMMANDS.has(String(command.type)) || command.status === "completed")
       : commands;
     const settledControl = settledCommands === commands ? control : { ...control, commands: settledCommands };
@@ -5553,11 +5553,16 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
   let originalBytes: string;
   try { originalBytes = readBoundedNativeFile(statePath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8"); }
   catch { return refuse("journal_unreadable"); }
-  const projectionOptions = { localRunner, controlBytes: input.projectedControlBytes };
+  const { binding } = input.execution;
+  const remoteRunnerGone = !localRunner && await priorRemoteSandboxLeasesEnded(input.db, {
+    companyId: binding.companyId, runId: identity.runId,
+    currentProviderLeaseId: target?.kind === "remote" && target.transport === "sandbox"
+      ? target.sandboxLeaseAcquisition?.providerLeaseId : undefined,
+  });
+  const projectionOptions = { localRunner, controlBytes: input.projectedControlBytes, remoteRunnerGone };
   const projection = readSettledRunnerdProjection(input.root, identity, projectionOptions);
   if (projection.refused !== undefined) return refuse(projection.refused);
   const controlBytes = projection.bytes;
-  const { binding } = input.execution;
   let prior: { run: typeof heartbeatRuns.$inferSelect; owner: typeof nativeRunFinalizations.$inferSelect } | undefined;
   try {
     [prior] = await input.db.select({ run: heartbeatRuns, owner: nativeRunFinalizations }).from(heartbeatRuns)
@@ -5619,7 +5624,7 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
     for (const name of readdirSync(quarantine)) {
       if (!name.startsWith(`${basename(input.root)}.`)) continue;
       if (quarantinedBootstrapOfOwnerHeldNoProviderWork(resolve(quarantine, name), identity, localRunner)) continue;
-      const copy = readSettledRunnerdProjection(resolve(quarantine, name), identity, { localRunner });
+      const copy = readSettledRunnerdProjection(resolve(quarantine, name), identity, { localRunner, remoteRunnerGone });
       if (copy.refused !== undefined) return refuse(`quarantine_${copy.refused}`);
     }
   }
@@ -5641,6 +5646,20 @@ export function quarantinedBootstrapOfOwnerHeldNoProviderWork(root: string, iden
   if (!copied || Object.entries(identity).some(([key, value]) => copied[key] !== value)) return false;
   return runnerdStateProvesIncompleteBootstrap(root, { localProcesses: localRunner })
     || (!localRunner && runnerdStateProvesNoRemoteProviderTurn(root));
+}
+
+async function priorRemoteSandboxLeasesEnded(db: Db, input: {
+  companyId: string; runId: string; currentProviderLeaseId?: string;
+}): Promise<boolean> {
+  try {
+    const leases = await db.select({ status: environmentLeases.status, releasedAt: environmentLeases.releasedAt,
+      providerLeaseId: environmentLeases.providerLeaseId }).from(environmentLeases)
+      .where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.runId)));
+    return leases.length > 0 && leases.every(lease => (lease.status === "released" || lease.status === "expired")
+      && lease.releasedAt !== null && lease.providerLeaseId !== input.currentProviderLeaseId);
+  } catch {
+    return false;
+  }
 }
 
 async function retireFinishedPerTurnRunnerdOwner(input: Parameters<typeof inspectFinishedPerTurnRunnerdOwner>[0])

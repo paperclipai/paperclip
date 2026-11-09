@@ -670,6 +670,27 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(await archivedOwners(root)).toEqual([prior.runId]);
   }, 60_000);
 
+  it.each([
+    { label: "ended on another sandbox", status: "expired", sameSandbox: false, recorded: true, outcome: ADMITTED },
+    { label: "released on another sandbox", status: "released", sameSandbox: false, recorded: true, outcome: ADMITTED },
+    { label: "still retained", status: "retained", sameSandbox: false, recorded: true,
+      outcome: stranded("journal_commands_unsettled(runner.suspend.pending)") },
+    { label: "ended on this sandbox", status: "expired", sameSandbox: true, recorded: true,
+      outcome: stranded("journal_commands_unsettled(runner.suspend.pending)") },
+    { label: "not recorded", status: "expired", sameSandbox: false, recorded: false,
+      outcome: stranded("journal_commands_unsettled(runner.suspend.pending)") },
+  ])("retires a finished remote owner whose suspend never finished when its sandbox lease is $label", async ({ status, sameSandbox, recorded, outcome }) => {
+    const prior = await seedRecoveredPriorRun("pending-command");
+    const followUp = await admitFollowUp(prior);
+    if (recorded) {
+      await db.insert(environments).values({ id: followUp.environmentId, name: `ended-${followUp.environmentId}`, driver: "sandbox" });
+      await db.insert(environmentLeases).values({ companyId, environmentId: followUp.environmentId, issueId: prior.issueId,
+        heartbeatRunId: prior.runId, provider: "daytona", providerLeaseId: sameSandbox ? followUp.providerLeaseId : `sandbox-${prior.runId}`,
+        status, releasedAt: status === "retained" ? null : new Date(), metadata: { remoteCwd: "/workspace" } });
+    }
+    expect(await followUp.start()).toBe(outcome);
+  }, 60_000);
+
   it("admits again when a retry rebuilds the same projection from the database", async () => {
     const prior = await seedRecoveredPriorRun();
     const followUp = await admitFollowUp(prior);
