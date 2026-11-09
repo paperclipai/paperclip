@@ -330,6 +330,38 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     if (changed) expect(await readFile(join(canonical, "memory.txt"), "utf8")).toBe("Synthetic changed memory.\n");
   }, 45_000);
 
+  it.each([true, false])("records which earlier run a follow-up's process identity came from (prior identity: %s)", async priorIdentity => {
+    const { input, run, agent, issue } = await fixture();
+    const sessionId = randomUUID();
+    const prior = await selectHeartbeatRuntime(db, input);
+    if (!prior.selected || !prior.nativeExecution) throw new Error("Expected prior native selection");
+    const priorInput = { ...prior.nativeExecution, session: { ...prior.nativeExecution.session, normalizedSessionId: sessionId } };
+    const priorProfile = (await read(run.id)).runnerProfileJson;
+    const processStartedAt = new Date(Date.now() - 60_000);
+    await db.update(heartbeatRuns).set({ status: "succeeded", nativeSessionId: sessionId,
+      ...(priorIdentity ? { processPid: 11_356, processGroupId: 11_356, processStartedAt } : {}),
+      runnerProfileJson: { ...priorProfile, nativeExecutionInput: priorInput, sessionCheckpoint: {
+        backendKind: "runner", driverKind: "codex_app_server", sessionId: "retained-provider-thread",
+        providerSessionId: "retained-provider-thread", identity: { ...priorInput.binding, sessionId },
+      } },
+    }).where(eq(heartbeatRuns.id, run.id));
+    const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: agent.companyId, agentId: agent.id,
+      issueId: issue.id, scopeKind: "issue", status: "running", nativeSessionId: sessionId,
+      createdAt: new Date(run.createdAt.getTime() + 1000),
+    }).returning();
+    input.run = nextRun!;
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected) throw new Error("Expected follow-up native selection");
+    const saved = await read(nextRun!.id);
+    if (priorIdentity) {
+      expect(saved).toMatchObject({ processPid: 11_356, processGroupId: 11_356 });
+      expect(saved.runnerProfileJson?.inheritedProcessIdentityRunId).toBe(run.id);
+    } else {
+      expect(saved.processPid).toBeNull();
+      expect(saved.runnerProfileJson?.inheritedProcessIdentityRunId).toBeUndefined();
+    }
+  });
+
   it.each(["matching", "different-session", "absent"])("persists the migrated logical cwd only for the receipt's exact session: %s", async receipt => {
     const sameSession = receipt === "matching";
     const { input, run, agent, issue } = await fixture();

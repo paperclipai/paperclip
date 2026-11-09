@@ -104,18 +104,11 @@ const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
  * failure, instead of holding company work. A usage recorder binds every run
  * with an empty fence map; only a replaced receipt source (a non-empty map)
  * shows that provider work began. */
-const inheritedProcessIdentityOnly = sql`not exists (select 1 from ${heartbeatRunEvents} own_process
+const inheritedProcessIdentityOnly = sql`${heartbeatRuns.runnerProfileJson}->>'inheritedProcessIdentityRunId' is not null
+  and not exists (select 1 from ${heartbeatRunEvents} own_process
     where own_process.company_id = ${heartbeatRuns.companyId} and own_process.run_id = ${heartbeatRuns.id}
       and own_process.source_event_id is null
-      and own_process.event_type in ('native.process_start_requested', 'native.process_identity_recorded'))
-  and exists (select 1 from ${heartbeatRuns} predecessor
-    where predecessor.company_id = ${heartbeatRuns.companyId}
-      and predecessor.native_session_id = ${heartbeatRuns.nativeSessionId}
-      and predecessor.id <> ${heartbeatRuns.id}
-      and predecessor.created_at < ${heartbeatRuns.createdAt}
-      and predecessor.process_pid is not distinct from ${heartbeatRuns.processPid}
-      and predecessor.process_group_id is not distinct from ${heartbeatRuns.processGroupId}
-      and predecessor.process_started_at = ${heartbeatRuns.processStartedAt})`;
+      and own_process.event_type in ('native.process_start_requested', 'native.process_identity_recorded'))`;
 
 const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
