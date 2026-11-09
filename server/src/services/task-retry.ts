@@ -282,7 +282,7 @@ function admitTaskRetry(input: TaskRetryRequest) {
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
     if (["done", "cancelled"].includes(issue.status) || !issue.assigneeAgentId || !latest ||
         latest.agentId !== issue.assigneeAgentId || input.observedRunId !== latest.id) {
-      return { requestId: null, accepted: false, stale: true, observedRunId: latest?.id ?? null };
+      return { requestId: null, accepted: false, stale: true, observedRunId: latest?.id ?? null, chatActionId: undefined };
     }
     let active = (await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, issue.assigneeAgentId),

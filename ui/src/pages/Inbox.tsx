@@ -1956,6 +1956,8 @@ function StreamlinedInbox({
         const notStarted = taskRetryNotStartedReason(result);
         if (notStarted) {
           retryRequestKeys.current.delete(run.id);
+          await Promise.all([queryKeys.issues.listMineByMe(run.companyId), queryKeys.heartbeats(run.companyId),
+            queryKeys.heartbeats(run.companyId, run.agentId)].map(queryKey => queryClient.invalidateQueries({ queryKey })));
           throw new Error(notStarted);
         }
         return { newRun: { runId: null, issueId }, originalRun: run };
