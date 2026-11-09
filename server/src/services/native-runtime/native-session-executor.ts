@@ -15674,6 +15674,15 @@ async function createRunnerdBackendWithinSessionClaim(
                       // lease was not provider-confirmed lost. Never silently create a new
                       // provider session from that ambiguous state.
                       throw new Error("runner_harness_state_mismatch: backup_without_reusable_lease");
+                    } else if (state.incompleteReason === "not_suspended"
+                      && input.restartRecovery?.kind === "bootstrap_incomplete"
+                      && state.notSuspendedRunId === input.execution.binding.runId
+                      && hasRemoteBootstrapRestartProof(input.execution.binding.runId)) {
+                      if (!(await moveInterruptedBootstrapSessionAside()
+                        && takeRemoteBootstrapRestartProof(input.execution.binding.runId)
+                        && await claimUntouchedRemoteSession())) {
+                        throw new Error("runner_harness_state_mismatch: created_not_suspended");
+                      }
                     }
                   }
                 } else if (remoteTarget && remoteCommandRunner) {
