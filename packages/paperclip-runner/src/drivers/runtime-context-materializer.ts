@@ -371,17 +371,30 @@ export function codexCustomProviders(
     return empty;
   }
   if (!isRecord(parsed) || !isRecord(parsed.providers)) return empty;
+  const selected = typeof parsed.model_provider === "string" ? parsed.model_provider.trim() : "";
   const providers: Record<string, unknown> = {};
   const keys = new Map<string, string>();
   for (const [providerId, entry] of Object.entries(parsed.providers)) {
     if (!isRecord(entry) || providerId.trim().length === 0) continue;
+    // Codex has no proxy in this path, so every header value it accepts is
+    // written into the agent-readable `config.toml`. `env_http_headers` would
+    // name a variable the sanitized child does not keep. An unselected provider
+    // can be skipped quietly, but the selected one must fail loudly: clearing
+    // `model_provider` would silently fall back to the managed provider or
+    // Codex's default and route the launch somewhere the caller did not choose.
+    // Check the raw entry so a `{env:...}` header (which field resolution strips
+    // later) is still rejected for the selected provider.
+    if (
+      providerId === selected
+      && (isRecord(entry.http_headers) || isRecord(entry.env_http_headers))
+    ) {
+      throw new Error(
+        `PAPERCLIP_CODEX_PROVIDERS provider "${providerId}" declares http_headers or env_http_headers, which cannot be written safely into the isolated Codex config; remove the headers or select a provider without them.`,
+      );
+    }
     const resolved = resolveProviderFields(entry, environment);
     if (!resolved) continue;
     if (typeof resolved.base_url !== "string" || resolved.base_url.trim().length === 0) continue;
-    // Codex has no proxy in this path, so every header value it accepts is
-    // written into the agent-readable `config.toml`. `env_http_headers` would
-    // name a variable the sanitized child does not keep. Both forms are skipped
-    // rather than shipped either broken or in the clear.
     if (isRecord(resolved.http_headers) || isRecord(resolved.env_http_headers)) continue;
     const envKey = typeof entry.env_key === "string" ? entry.env_key.trim() : "";
     const key = envKey ? environment?.[envKey] : undefined;
@@ -392,7 +405,6 @@ export function codexCustomProviders(
     providers[providerId] = resolved;
   }
   if (Object.keys(providers).length === 0) return empty;
-  const selected = typeof parsed.model_provider === "string" ? parsed.model_provider.trim() : "";
   const modelProvider = selected && selected in providers ? selected : null;
   return { providers, modelProvider, providerKey: modelProvider ? keys.get(modelProvider) ?? null : null };
 }
