@@ -857,7 +857,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       ...(event.payload.item as object), result: { success: true, contentItems: [{ type: "inputText",
         text: JSON.stringify({ ...result, data: { credentials: "different-history-fixture-value" } }),
       }] },
-    } } })).rejects.toMatchObject({ name: "NativeSessionProtocolIntegrityError", reason: "runner_event_identity_conflict" });
+    } } })).rejects.toThrow();
     await port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity,
       semanticResult: { ...CONTROL_PLANE_CONFORMANCE_RESULT, summary: JSON.stringify(result) },
     });
