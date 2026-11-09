@@ -19,7 +19,7 @@ import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
-import { releaseInstance, sweepExpiredKeptInstances } from "./instance-retention.js";
+import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { checkPlanInvariants, summarizeViolations, type InvariantCheck } from "./invariants.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
@@ -175,8 +175,6 @@ async function main(): Promise<number> {
   const crashPoints = crashPoint ? crashPoint.split(",") : [];
   const batchSize = crashPoints.length ? Math.max(1, Math.floor(plan.tasks.length / crashPoints.length)) : 0;
   if (crashPoint && plan.tasks.length !== batchSize * crashPoints.length) throw new Error(`--tasks must be a multiple of the ${crashPoints.length} crash point(s)`);
-  const swept = await sweepExpiredKeptInstances().catch(error => { timeline.add("kept_instance_sweep_failed", { error: String(error) }); return []; });
-  if (swept.length) timeline.add("kept_instances_expired", { removed: swept });
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline,
     ...(plan.options.upgradeFrom ? { upgradeFrom: plan.options.upgradeFrom } : {}) });
   // Crash-point suite: one booted server, one point at a time. Each point gets
@@ -560,7 +558,7 @@ async function main(): Promise<number> {
       await writeFile(path.join(waveDir, "SUMMARY.md"), speedSection ? `${summary}\n${speedSection}` : summary, { mode: 0o600 });
       console.info(`\n${summary}`);
     }
-    const retention = await releaseInstance(supervisor.paths.temporaryRoot, { keep, stopFailed, waveId: plan.waveId })
+    const retention = await releaseInstance(supervisor.paths.temporaryRoot, { keep, stopFailed, owner: plan.waveId })
       .catch(error => { timeline.add("instance_cleanup_failed", { error: String(error) }); return null; });
     if (retention?.kept) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot, reason: retention.reason });
   }

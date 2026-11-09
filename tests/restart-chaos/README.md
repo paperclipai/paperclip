@@ -30,7 +30,7 @@ Each wave's temporary instance (embedded Postgres, workspaces, often 5–13 GB) 
 deleted when the wave ends, pass or fail, including after an interrupt. Evidence
 is already copied into `results/`. Use `--keep` to inspect the instance itself.
 A kept instance, or one whose processes could not be stopped, gets a
-`.restart-chaos-kept.json` marker; the next wave removes marked instances older
+`.paperclip-runner-e2e-kept.json` marker; creating the next runner E2E or chaos instance removes marked instances older
 than 6 hours whose Postgres is no longer running. Unmarked directories are never
 removed.
 

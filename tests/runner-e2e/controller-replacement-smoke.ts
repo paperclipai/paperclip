@@ -17,6 +17,7 @@ import { paperclipConfigSchema } from "../../packages/shared/src/config-schema.j
 import { configuredControllerOutage, validControllerOutageReceipt, type ControllerOutage } from "./controller-outage.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
 import { reserveRunnerE2EServerPort } from "./ports.js";
+import { releaseInstance } from "./instance-retention.js";
 import { createRunnerE2ETemporaryRoot, prepareRunnerE2EServerConfig } from "./server-config.js";
 import { createRunnerE2EServerStopper } from "./server-stop.js";
 import { cleanupControllerSmokeDatabase } from "./controller-smoke-cleanup.js";
@@ -197,6 +198,8 @@ try {
   if (cleanupErrors.length) { report.cleanupErrors = cleanupErrors; report.passed = false; }
   await new Promise<void>(resolve => log.end(resolve));
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+  await releaseInstance(temporaryRoot, { keep: false, stopFailed: !report.cleanupConfirmed, owner: "controller-replacement-smoke",
+    retain: [path.basename(reportPath), "wrapper.log", "server.log"] }).catch(error => console.warn(`Temporary root cleanup failed at ${temporaryRoot}: ${String(error)}`));
   console.info(JSON.stringify({ passed: report.passed, evidence: reportPath, cleanupConfirmed: report.cleanupConfirmed }));
 }
 if (failure) throw failure;
