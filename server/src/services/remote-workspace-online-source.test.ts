@@ -794,7 +794,7 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     const selected = await stored(f.child.id), debug = db.$client.options.debug;
     const scans: string[] = [];
     db.$client.options.debug = (_connection, query) => {
-      if (query.includes('from "heartbeat_runs"') && query.includes("nativeWorkspaceSync,workspaceId")) scans.push(query);
+      if (query.includes('from "heartbeat_runs"') && query.includes("->'nativeWorkspaceSync'->>'workspaceId'")) scans.push(query);
     };
     try {
       const scope = await inspectOnlineWorkspaceSource(db, selected);
