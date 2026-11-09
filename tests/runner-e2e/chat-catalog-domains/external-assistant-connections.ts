@@ -110,7 +110,10 @@ export const assistantConnectionExternalCases = [
       );
       const request = await beginConnection(true);
       requests.set(ctx, request);
-      ctx.input.privateSecrets!.push(request.verifier, request.state);
+      // OAuth state is a CSRF nonce the server must store to echo on the
+      // redirect (mcp_oauth_requests.state), not a credential. Keep it out of
+      // the persisted-state secret scan; the verifier is never sent or stored.
+      ctx.input.privateSecrets!.push(request.verifier);
       await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
       return {
         otherGrantId: before[0]?.id,
