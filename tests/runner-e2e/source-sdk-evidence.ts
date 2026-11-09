@@ -136,6 +136,12 @@ export async function copyRetainedSourceSdk(root: string, executionId: string, s
   const { files } = await verifyRetainedSourceSdk(root, executionId, sourceRevision, knownSecrets, repositoryRoot);
   const destination = path.join(uploadDir, SOURCE_SDK_DIAGNOSTICS); await mkdir(destination, { recursive: true, mode: 0o700 });
   for (const file of files) {
+    // Verification proved every secret-shaped span in these bytes is a public
+    // schema type, but the private result sealer scans packaged text for key
+    // shapes without that proof (e.g. `OPENROUTER_API_KEY: z.ZodOptional` in
+    // validators/agent.d.ts) and rejects the whole attempt. Keep such files out
+    // of the upload; the retained receipt still records their size and hash.
+    if (file.file !== "receipt.json" && findSecretLeak(file.bytes, [])) continue;
     const filename = path.join(destination, retainedPath(file.file)); await mkdir(path.dirname(filename), { recursive: true, mode: 0o700 });
     await writeFile(filename, file.bytes, { flag: "wx", mode: 0o600 }); await chmod(filename, 0o600);
     if (hash(await readFile(filename)) !== file.sha256) throw new Error("Source SDK published bytes changed");
