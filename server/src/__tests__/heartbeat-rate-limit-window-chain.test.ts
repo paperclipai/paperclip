@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agentTaskSessions,
@@ -9,6 +9,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueComments,
   issueRecoveryActions,
   issues,
 } from "@paperclipai/db";
@@ -16,7 +17,10 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
-import { PROVIDER_RATE_LIMIT_WINDOW_RETRY_JITTER_MS } from "../services/execution-recovery-attempt.ts";
+import {
+  PROVIDER_RATE_LIMIT_WINDOW_RETRY_JITTER_MS,
+  PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS,
+} from "../services/execution-recovery-attempt.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -81,7 +85,7 @@ describeEmbeddedPostgres("a Databricks rate-limit window through run completion 
     await tempDb?.cleanup();
   });
 
-  it("runs the original and four retries on one session, then hands the issue to the board", async () => {
+  it("runs the original and every retry on one session, then hands the issue to the board", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const prefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     await db.insert(companies).values({
@@ -117,7 +121,7 @@ describeEmbeddedPostgres("a Databricks rate-limit window through run completion 
     ).toEqual([expect.objectContaining({ sessionDisplayId: "session-1", lastRunId: finished.id })]);
     expect(received[0]).toMatchObject({ sessionId: null });
 
-    for (const attempt of [1, 2, 3, 4]) {
+    for (let attempt = 1; attempt <= PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS; attempt += 1) {
       const failedId = finished.id;
       // Completion schedules the retry after it marks the run failed.
       await expect.poll(
@@ -131,7 +135,13 @@ describeEmbeddedPostgres("a Databricks rate-limit window through run completion 
       expect(dueAt).toBeGreaterThanOrEqual(notBefore);
       expect(dueAt).toBeLessThan(notBefore + PROVIDER_RATE_LIMIT_WINDOW_RETRY_JITTER_MS);
 
-      expect(await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 2 * QUARTER_HOUR_MS)))
+      // The retry starts after the window: move the failed run's window into the
+      // past so the provider-limit hold before dispatch sees it passed.
+      const passed = new Date(Date.now() - 1_000).toISOString();
+      await db.update(heartbeatRuns).set({
+        resultJson: { ...finished.resultJson, retryNotBefore: passed, providerQuotaRetryNotBefore: passed },
+      }).where(eq(heartbeatRuns.id, failedId));
+      expect(await heartbeat.promoteDueScheduledRetries(new Date(dueAt + 1_000)))
         .toEqual({ promoted: 1, runIds: [retry!.id] });
       await heartbeat.resumeQueuedRuns();
       finished = await waitForRunToFinish(heartbeat, retry!.id);
@@ -139,12 +149,13 @@ describeEmbeddedPostgres("a Databricks rate-limit window through run completion 
       expect(received[attempt]).toMatchObject({ sessionId: "session-1" });
     }
 
-    // The fifth failure is the last: no sixth run is scheduled and no quota monitor waits.
+    // The last retry's failure ends the chain: nothing more is scheduled and no quota monitor waits.
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, finished.id))).toHaveLength(0);
     await heartbeat.reconcileStrandedAssignedIssues();
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(5);
-    expect(received).toHaveLength(5);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .toHaveLength(PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS + 1);
+    expect(received).toHaveLength(PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS + 1);
 
     // The issue stays in_progress, with an active board-owned recovery action that says what waits.
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
@@ -157,6 +168,13 @@ describeEmbeddedPostgres("a Databricks rate-limit window through run completion 
         nextAction: expect.stringContaining("rate limit rejected this run again on every scheduled retry"),
       }),
     ]);
+    // The board sees one notice that names the rate limit and the last run.
+    const notices = await db.select().from(issueComments)
+      .where(and(eq(issueComments.issueId, issueId), eq(issueComments.authorType, "system")));
+    expect(notices).toEqual([expect.objectContaining({
+      presentation: expect.objectContaining({ title: "Error: model rate limit reached" }),
+      metadata: expect.objectContaining({ sourceRunId: finished.id }),
+    })]);
 
   }, 90_000);
 });

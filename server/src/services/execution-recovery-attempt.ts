@@ -117,9 +117,10 @@ export function accountingForScheduledRetry(run: RetryRun, reason: string, attem
  * Failure retries of a run the adapter marked as rejected by a provider
  * rate-limit window (`resultJson.rateLimitWindow`). The window reopens on its
  * own, so such a run waits for `retryNotBefore` and tries again more often than
- * the bounded default allows.
+ * the bounded default allows: with quarter-hour windows the cap covers about
+ * three hours of waiting before the board is asked.
  */
-export const PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS = 4;
+export const PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS = 12;
 
 /**
  * Agents on one model hit its limit together; a random delay up to this long

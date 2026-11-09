@@ -43,6 +43,7 @@ import { deliverReconciledExecutions, markExecutionReconciliation } from "../ser
 import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive } from "../services/workspace-operations.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS } from "../services/execution-recovery-attempt.js";
 import { issueService } from "../services/issues.js";
 import { caseHandoffService } from "../services/case-handoffs.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -1228,7 +1229,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: coderId,
       invocationSource: "manual",
       status: "failed",
-      scheduledRetryAttempt: 4,
+      scheduledRetryAttempt: PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS,
       scheduledRetryReason: "transient_failure",
       resultJson: {
         errorFamily: "provider_quota",
@@ -1241,7 +1242,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       finishedAt: new Date("2026-07-15T20:01:00.000Z"),
       contextSnapshot: {
         issueId: sourceIssueId,
-        executionRetryAccounting: { version: 1, failureRetries: 4, maxTurnContinuations: 0 },
+        executionRetryAccounting: { version: 1, failureRetries: PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS, maxTurnContinuations: 0 },
       },
     });
     const enqueueWakeup = vi.fn(async () => null);
@@ -1268,7 +1269,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: coderId,
       invocationSource: "manual",
       status: "failed",
-      scheduledRetryAttempt: 3,
+      scheduledRetryAttempt: PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS - 1,
       scheduledRetryReason: "transient_failure",
       resultJson: { errorFamily: "provider_quota", rateLimitWindow: true },
       error: "User defined rate limit(s) exceeded for 'endpoint'. Tokens-per-hour (TPH) rate limit exceeded for default user",
@@ -1277,7 +1278,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       finishedAt: new Date("2026-07-15T20:01:00.000Z"),
       contextSnapshot: {
         issueId: sourceIssueId,
-        executionRetryAccounting: { version: 1, failureRetries: 3, maxTurnContinuations: 0 },
+        executionRetryAccounting: { version: 1, failureRetries: PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS - 1, maxTurnContinuations: 0 },
       },
     });
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });

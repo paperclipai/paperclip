@@ -19,7 +19,9 @@ import { claimedAdapterType, hasConversationContinuationPolicy } from "./convers
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, getTableColumns, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { buildStrandedRecoveryEscalationNotice, RATE_LIMIT_WINDOW_NOTICE_TITLE } from "./recovery/stranded-notice.js";
+import { redactSensitiveText } from "../redaction.js";
 import { executionStartedEventPredicate, isPreDispatchResourceWait } from "./pre-dispatch-execution-evidence.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -314,7 +316,7 @@ export async function terminalizeLegacyExecution(input: {
           ),
         )).limit(1);
       if (reconciled) return updated;
-      await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
+      const action = await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
         companyId: run.companyId,
         sourceIssueId: task.id,
         kind: "active_run_watchdog",
@@ -342,9 +344,51 @@ export async function terminalizeLegacyExecution(input: {
         wakePolicy: null,
         supersedeOnIdentityChange: true,
       });
+      if (isProviderRateLimitWindowRun(updated)) {
+        await postRateLimitWindowNotice(tx as unknown as Db, { issueId: task.id, run: updated, recoveryActionId: action.id });
+      }
     }
     return updated;
   });
+}
+
+/** One board notice per exhausted rate-limit window run; a later sweep finds it and posts none. */
+async function postRateLimitWindowNotice(
+  db: Db,
+  input: { issueId: string; run: Run; recoveryActionId: string },
+) {
+  const [posted] = await db.select({ id: issueComments.id }).from(issueComments).where(and(
+    eq(issueComments.companyId, input.run.companyId),
+    eq(issueComments.issueId, input.issueId),
+    eq(issueComments.authorType, "system"),
+    sql`${issueComments.metadata}->>'sourceRunId' = ${input.run.id}`,
+  )).limit(1);
+  if (posted) return;
+  const notice = buildStrandedRecoveryEscalationNotice({
+    seed: {
+      title: RATE_LIMIT_WINDOW_NOTICE_TITLE,
+      tone: "danger",
+      body: "The model's rate limit rejected this run on every scheduled retry, so Paperclip stopped retrying. "
+        + "The agent's saved session is kept.",
+      nextAction: "Wait for the rate limit to reopen, or have it raised, then resume the issue",
+    },
+    recoveryCause: LEGACY_RECOVERY_CAUSE,
+    recoveryActionId: input.recoveryActionId,
+    recoveryOwner: null,
+    sourceRun: {
+      id: input.run.id,
+      agentId: input.run.agentId,
+      status: input.run.status,
+      errorCode: input.run.errorCode,
+      errorSummary: input.run.error ? redactSensitiveText(input.run.error) : null,
+      rateLimitWindow: true,
+    },
+  });
+  await issueService(db).addComment(input.issueId, notice.body, {}, {
+    authorType: "system",
+    presentation: notice.presentation,
+    metadata: notice.metadata,
+  }, db);
 }
 
 export async function settleInterruptedNativeBootstrap(

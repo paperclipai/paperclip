@@ -52,7 +52,7 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
   acpx_auth_required: "Error: agent login required",
 };
 
-const RATE_LIMIT_WINDOW_NOTICE_TITLE = "Error: model rate limit reached";
+export const RATE_LIMIT_WINDOW_NOTICE_TITLE = "Error: model rate limit reached";
 
 const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
   workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },

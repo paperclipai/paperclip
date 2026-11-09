@@ -45,8 +45,8 @@ function accounting(failureRetries: number) {
 }
 
 describe("the retry budget of a provider rate-limit window", () => {
-  it("is its own count, 4 here, for the marked run alone", () => {
-    expect(PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS).toBe(4);
+  it("is its own count, above the bounded default, for the marked run alone", () => {
+    expect(PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS).toBeGreaterThan(BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS);
     expect(boundedRetryMaxAttemptsForRun(rateLimitWindowRun as unknown as Run)).toBe(PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS);
     for (const other of [subscriptionQuotaRun, transientRun, { errorCode: "adapter_failed", resultJson: null }]) {
       expect(boundedRetryMaxAttemptsForRun(other as unknown as Run)).toBe(BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS);
@@ -62,10 +62,12 @@ describe("the retry budget of a provider rate-limit window", () => {
   });
 
   it("is spent after the last attempt and not before", () => {
-    for (const used of [0, 1, 2, 3]) {
+    for (let used = 0; used < PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS; used += 1) {
       expect(providerRateLimitWindowRetriesSpent({ ...rateLimitWindowRun, contextSnapshot: accounting(used) })).toBe(false);
     }
-    expect(providerRateLimitWindowRetriesSpent({ ...rateLimitWindowRun, contextSnapshot: accounting(4) })).toBe(true);
+    expect(providerRateLimitWindowRetriesSpent({
+      ...rateLimitWindowRun, contextSnapshot: accounting(PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS),
+    })).toBe(true);
     expect(providerRateLimitWindowRetriesSpent({ ...subscriptionQuotaRun, contextSnapshot: accounting(9) })).toBe(false);
   });
 });
@@ -76,8 +78,10 @@ describe("what recovery does with a failed rate-limit window", () => {
   }) as unknown as Parameters<typeof legacyExecutionNeedsReconciliation>[0];
 
   it("lets the retry run until the last attempt has failed, and holds the issue for reconciliation then", () => {
-    for (const used of [0, 1, 2, 3]) expect(legacyExecutionNeedsReconciliation(failed(rateLimitWindowRun, used))).toBe(false);
-    expect(legacyExecutionNeedsReconciliation(failed(rateLimitWindowRun, 4))).toBe(true);
+    for (let used = 0; used < PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS; used += 1) {
+      expect(legacyExecutionNeedsReconciliation(failed(rateLimitWindowRun, used))).toBe(false);
+    }
+    expect(legacyExecutionNeedsReconciliation(failed(rateLimitWindowRun, PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS))).toBe(true);
   });
 
   it("holds a rate-limit window that left a background task behind", () => {
@@ -106,9 +110,10 @@ describe("what recovery does with a failed rate-limit window", () => {
       errorCode: "provider_quota", error: "rate limit", contextSnapshot: accounting(failureRetries),
       resultJson: { ...rateLimitWindowRun.resultJson, retryNotBefore: retryAt },
     });
-    expect(classifyAdapterFailureForRecovery(run(3), now)).toMatchObject({ kind: "provider_quota", retryAt: new Date(retryAt) });
-    expect(classifyAdapterFailureForRecovery(run(4), now)).toBeNull();
-    expect(classifyAdapterFailureForRecovery({ ...run(4), resultJson: { errorFamily: "provider_quota", retryNotBefore: retryAt } }, now))
+    const last = PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS;
+    expect(classifyAdapterFailureForRecovery(run(last - 1), now)).toMatchObject({ kind: "provider_quota", retryAt: new Date(retryAt) });
+    expect(classifyAdapterFailureForRecovery(run(last), now)).toBeNull();
+    expect(classifyAdapterFailureForRecovery({ ...run(last), resultJson: { errorFamily: "provider_quota", retryNotBefore: retryAt } }, now))
       .toMatchObject({ kind: "provider_quota" });
   });
 });
@@ -156,7 +161,7 @@ function failedRun(shape: { errorCode: string; resultJson: Record<string, unknow
 describe("scheduling the last attempt of a rate-limit window", () => {
   // The exhaustion branch records the event and reads no row.
   it.each([
-    ["a rate-limit window", rateLimitWindowRun, 4, PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS],
+    ["a rate-limit window", rateLimitWindowRun, PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS, PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS],
     ["a Claude subscription quota", subscriptionQuotaRun, 2, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS],
     ["a transient upstream failure", transientRun, 2, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS],
   ])("stops %s at its own budget", async (_name, shape, used, budget) => {
@@ -260,12 +265,14 @@ describePostgres("scheduling a retry for a rate-limit window", () => {
     }
   });
 
-  it("gives up after the fourth attempt and queues nothing", async () => {
-    const { run, agent, companyId } = await failedRunWithRetries(4, {
+  it("gives up after the last attempt and queues nothing", async () => {
+    const { run, agent, companyId } = await failedRunWithRetries(PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS, {
       errorCode: "provider_quota", resultJson: windowResult(new Date(now.getTime() + QUARTER_HOUR_MS)),
     });
     expect(await boundRetries().scheduleBoundedRetryForRun(run, agent, { now })).toEqual({
-      outcome: "retry_exhausted", attempt: 5, maxAttempts: 4,
+      outcome: "retry_exhausted",
+      attempt: PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS + 1,
+      maxAttempts: PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS,
     });
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, run.id)))).toHaveLength(0);
   });
