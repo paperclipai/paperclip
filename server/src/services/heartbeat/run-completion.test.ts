@@ -16,7 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, approvals, issueApprovals, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, approvals, issueApprovals, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issues, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -481,6 +481,10 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     { hold: "finished turn", reasonCode: "conversation_turn_finished", replies: true },
     { hold: "own question card", reasonCode: "governed_response_waiting", replies: false },
     { hold: "execution stage and own question card", reasonCode: "governed_response_waiting", replies: false },
+    // A card the board addressed to someone else holds the task, but this run
+    // did not create it, so it cannot be the turn's response.
+    { hold: "someone else's confirmation card", reasonCode: "governed_response_waiting", replies: true },
+    { hold: "earlier turn's question card", reasonCode: "governed_response_waiting", replies: true },
   ] as const)("posts a waiting conversation turn's accepted answer: $hold", async ({ hold, reasonCode, replies }) => {
     const f = await fixture({ runtimeMode: "native" }, `CNV${randomUUID().slice(0, 6)}`);
     const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Chat with CEO",
@@ -500,6 +504,22 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
         continuationPolicy: "wake_assignee", payload: { version: 1, questions: [{ id: "model", prompt: "Which model?",
           selectionMode: "single", required: true, options: [{ id: "flash", label: "Flash" }] }] } },
         { agentId: f.agent.id, runId: f.run.id });
+    }
+    if (hold === "someone else's confirmation card") {
+      // Saved as the board's create route saves it: no source run.
+      await db.insert(issueThreadInteractions).values({ companyId: f.run.companyId, issueId: issue.id,
+        kind: "request_confirmation", status: "pending", continuationPolicy: "none", title: "Riley's website proposal",
+        requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only", resolverPolicyProvenance: "explicit",
+        addresseeUserId: "riley", createdByUserId: "local-board",
+        payload: { version: 1, prompt: "Riley: approve creating the website implementation task?" } });
+    }
+    if (hold === "earlier turn's question card") {
+      const [earlier] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
+        status: "succeeded", runtimeMode: "native", responsibleUserId: "local-board" }).returning();
+      await issueThreadInteractionService(db).create(issue, { kind: "request_confirmation", sourceRunId: earlier.id,
+        resolverPolicy: "human_only", continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Create the website implementation task?" } },
+        { agentId: f.agent.id, runId: earlier.id });
     }
     const answer = "Resubmitted the hire with the cheaper model. [Review the pending approval](/CNV/approvals/a1).";
     f.input.issueId = issue.id;
@@ -528,6 +548,9 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect((await read(f.run.id)).resultJson).toMatchObject({ presentationDecision: replies
       ? { chosenSource: "final_agent_message", commentAction: "create", commentId: posted[0]?.id }
       : { chosenSource: "none", commentAction: "none" } });
+    // The posted answer (or the run's own card) is the turn's response: the
+    // conversation waits for the person.
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].conversationState).toBe("waiting");
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("settles the accepted native exact rate-card price without replacing it with zero", async () => {
