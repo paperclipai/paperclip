@@ -22,15 +22,16 @@ export interface ChaosLab {
 }
 
 /** Create the `chaos-sandbox` git repository: python CLI, one failing test, bench.sh. */
-export async function waitForAgentsReady(api: ChaosApi, agents: Partial<Record<string, { id: string }>>, timeline: Timeline,
-  timeoutMs = 4 * 60_000, pollMs = 1_000): Promise<void> {
+export async function waitForAgentsReady(api: ChaosApi, agents: Partial<Record<string, { id: string; createdAt?: number }>>, timeline: Timeline,
+  timeoutMs = 4 * 60_000, pollMs = 1_000, cancelled: () => boolean = () => false): Promise<void> {
   const started = Date.now();
-  const pending = new Map(Object.entries(agents).flatMap(([adapter, agent]) => agent ? [[adapter, agent.id] as const] : []));
+  const pending = new Map(Object.entries(agents).flatMap(([adapter, agent]) => agent ? [[adapter, agent] as const] : []));
   while (pending.size) {
-    for (const [adapter, agentId] of [...pending]) {
+    if (cancelled()) throw new Error("Harness interrupted while waiting for agents to finish verification");
+    for (const [adapter, { id: agentId, createdAt }] of [...pending]) {
       const agent = await api.get<Record<string, unknown>>(`/api/agents/${agentId}`).catch(() => null);
       if (agent?.lifecycleState === "ready") {
-        timeline.add("seed_agent_ready", { adapter, agentId, readyAfterMs: Date.now() - started });
+        timeline.add("seed_agent_ready", { adapter, agentId, readyAfterMs: Date.now() - (createdAt ?? started) });
         pending.delete(adapter);
       } else if (agent?.lifecycleError) {
         throw new Error(`Agent ${adapter} (${agentId}) failed lifecycle verification: ${String(agent.lifecycleError).slice(0, 300)}`);
@@ -153,6 +154,7 @@ export async function seedChaosLab(input: {
   masks?: readonly string[];
   fixtureRoot: string;
   waitForReadyAgents?: boolean;
+  cancelled?: () => boolean;
   agentReadyTimeoutMs?: number;
   workspaceRepo?: string;
   workspaceCommit?: string;
@@ -214,6 +216,7 @@ export async function seedChaosLab(input: {
   }
 
   const agents = {} as ChaosLab["agents"];
+  const agentCreatedAt = new Map<string, number>();
   for (const adapter of input.adapters) {
     const profile = runnerProfiles.find(candidate => candidate.id === PROFILE_FOR_ADAPTER[adapter]);
     if (!profile) throw new Error(`runner-e2e catalog has no profile ${PROFILE_FOR_ADAPTER[adapter]}`);
@@ -233,9 +236,13 @@ export async function seedChaosLab(input: {
     };
     const created = await api.post<{ id: string; name: string }>(`/api/companies/${company.id}/agents`, body);
     agents[adapter] = { id: created.id, name, body };
+    agentCreatedAt.set(adapter, Date.now());
     timeline.add("seed_agent", { adapter, agentId: created.id, profile: profile.id, model: profile.model, environmentId });
   }
-  if (input.waitForReadyAgents) await waitForAgentsReady(api, agents, timeline, input.agentReadyTimeoutMs);
+  if (input.waitForReadyAgents) {
+    await waitForAgentsReady(api, Object.fromEntries(Object.entries(agents).map(([adapter, agent]) =>
+      [adapter, { id: agent.id, createdAt: agentCreatedAt.get(adapter) }])), timeline, input.agentReadyTimeoutMs, 1_000, input.cancelled);
+  }
 
   // The project's git_worktree policy only takes effect when the instance has
   // isolated workspaces enabled (the Experimental setting users turn on, as in

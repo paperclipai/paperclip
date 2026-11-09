@@ -138,6 +138,20 @@ describe("waitForAgentsReady", () => {
     expect(timeline.entries.find(entry => entry.kind === "seed_agent_ready")).toMatchObject({ adapter: "codex", agentId: "a1" });
   });
 
+  it("measures each agent's verification from its own creation and stops waiting when the harness is interrupted", async () => {
+    const api = { get: async () => ({ lifecycleState: "ready" }) } as unknown as ChaosApi;
+    const timeline = new Timeline(null);
+    const now = Date.now();
+    await waitForAgentsReady(api, { codex: { id: "a1", createdAt: now - 9_000 }, claude: { id: "a2", createdAt: now - 1_000 } }, timeline, 5_000, 1);
+    const ready = Object.fromEntries(timeline.entries.filter(entry => entry.kind === "seed_agent_ready").map(entry => [entry.adapter, entry.readyAfterMs as number]));
+    expect(ready.codex).toBeGreaterThanOrEqual(9_000);
+    expect(ready.claude).toBeGreaterThanOrEqual(1_000);
+    expect(ready.claude).toBeLessThan(9_000);
+    const stuck = { get: async () => ({ lifecycleState: "verifying" }) } as unknown as ChaosApi;
+    let polls = 0;
+    await expect(waitForAgentsReady(stuck, { codex: { id: "a3" } }, new Timeline(null), 60_000, 1, () => ++polls > 2)).rejects.toThrow(/interrupted/);
+  });
+
   it("fails the wave when an agent fails verification or never becomes ready", async () => {
     const failed = { get: async () => ({ lifecycleState: "verifying", lifecycleError: "hello probe failed" }) } as unknown as ChaosApi;
     await expect(waitForAgentsReady(failed, { claude: { id: "a2" } }, new Timeline(null), 5_000, 1)).rejects.toThrow(/hello probe failed/);
