@@ -1596,6 +1596,18 @@ Lifecycle polls can page past failed resources using the last returned event id 
 cursor, never a persisted high-water mark. This retries failures and includes
 transactions that commit later with lower ids.
 
+A lifecycle page reads the company's unacknowledged events for the requested
+types once. It keeps one head for each resource: the unacknowledged creation,
+else the oldest unacknowledged event. Then it applies `afterId`, id order and
+the limit. Cost grows with the company's journal size, not with pending events
+times acknowledged history. The idle-sleep check only asks whether any
+unacknowledged event exists, because each such resource has a head. No index
+or migration is needed.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-plugin-lifecycle-inbox.ts --baseline-ref=02bfe71a6b
+```
+
 ## Legacy controller ownership
 
 Legacy run claims atomically record `controller_boot_id`, a database-clock
