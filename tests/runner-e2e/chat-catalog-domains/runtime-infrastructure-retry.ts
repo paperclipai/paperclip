@@ -35,7 +35,10 @@ export function gradeInfrastructureRetry(value: unknown) {
   c.add("actual-closed-gate-prevents-new-execution", s.budgetHeldBeforeRetry === true && [200, 202, 409].includes(Number(s.heldRetryStatus))
     && s.noAdmissionUnderBudget === true && s.failedRunVisibleWhileHeld === true && s.heldReplyAttributed === true && s.heldRecoveryRead === true,
   "The first real Retry cannot start under the independently saved budget hold, retains failure visibly, and its own subsequent chat run reads the task's actual runs before replying.");
-  c.add("one-accepted-eligible-retry-preserves-original-failure", s.budgetRestoredByHuman === true && s.eligibleRetryStatus === 202 && s.retryBoundToOriginal === true && s.retryRunCount === 1
+  // The one accepted Retry is the held one: the product saves it and starts it
+  // once the gate clears. No second Retry exists, and none is offered.
+  c.add("one-accepted-eligible-retry-preserves-original-failure", s.budgetRestoredByHuman === true && Number(s.heldRetryStatus) === 202 && s.noDuplicateRetryWhileHeld === true
+    && s.retryBoundToOriginal === true && s.retryRunCount === 1
     && s.retryAdmissionAfterGateClear === true && s.originalFailureRetained === true && s.actualRetryResult === true
     && o.tasks.length === 1 && o.tasks[0]?.id === (s.task as Entity).id && o.tasks[0]?.status === "done"
     && o.runs.length === 5 && o.runs.filter(row => row.status === "failed").length === 1 && o.runs.filter(row => row.status === "succeeded").length === 4,
@@ -72,11 +75,18 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     state.budgetHeldBeforeRetry = held.lifecycleHolds?.includes("budget") === true;
     const rejected = ctx.input.page.waitForResponse(r => isHumanRetryRequest(r.request(), task.id, worker.id));
     await retry.click(); state.heldRetryStatus = (await rejected).status();
-    // Wait on the open page as a person would: an accepted Retry shows as
-    // starting briefly, then the task shows its kept failure, the named wait
-    // and Retry again by itself. No reload.
-    await expect(humanRetryControl(ctx.input.page)).toBeVisible({ timeout: 60_000 }); state.failedRunVisibleWhileHeld = true;
-    state.noAdmissionUnderBudget = (await ctx.allRuns()).length === 2;
+    // The worker's runs other than the exhausted one. None may exist while held.
+    const workerRetryRuns = async () => (await ctx.allRuns()).filter(row => row.agentId === worker.id && row.id !== state.workerRunId).length;
+    const holdSamples = [await workerRetryRuns()];
+    // Wait on the open page as a person would, without reloading: the task
+    // keeps the failure and names the budget wait. The saved Retry starts by
+    // itself later, so no second Retry control is offered.
+    const waiting = ctx.input.page.getByTestId("task-execution-waiting");
+    await expect(waiting).toBeVisible({ timeout: 60_000 });
+    const waitingText = await waiting.textContent() ?? "";
+    state.failedRunVisibleWhileHeld = waitingText.includes("Couldn’t finish this attempt") && /budget/i.test(waitingText);
+    state.noDuplicateRetryWhileHeld = await humanRetryControl(ctx.input.page).count() === 0;
+    holdSamples.push(await workerRetryRuns());
     await ctx.input.capture("actual-retry-gate-held", "Original native failure remains visible when current budget prevents Retry admission", "runtime-retry-budget-held.png");
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
     const heldQuery = `I tried the supported Retry on Website ${task.identifier ?? task.id} while Morgan's actual budget is held. Did a new attempt start, and what current gate is stopping it?`;
@@ -93,15 +103,18 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     const heldReply = await phaseReply(heldQuery, heldRun.id); state.heldReply = heldReply.body; state.heldReplyAttributed = heldReply.attributed;
     state.queryRecoveryRead = await controllerReadRecovery(ctx, initial.runs.find(row => row.agentId === ctx.input.fixtures.agent.id)?.id, task.id, String(state.workerRunId));
     state.heldRecoveryRead = await controllerReadRecovery(ctx, heldRun.id, task.id, String(state.workerRunId));
+    // Sampled at the click, on the waiting page, and after the held chat phase.
+    holdSamples.push(await workerRetryRuns()); state.heldWorkerRetryRunSamples = holdSamples;
+    state.noAdmissionUnderBudget = holdSamples.every(count => count === 0);
+    // The brief is ready before the gate clears, so the released Retry can use it.
+    await writeFile((state.gate as { gate: string }).gate, `The authorized human has restored the execution gate. Use the preserved task context and save a non-plan website-delivery document with the exact reference Retry website ${ctx.input.nonce}, a semantic single-page Acorn website outline and an accessible signup action, then complete this original task normally. Do not create more tasks or external effects.`, "utf8");
+    state.gatesClearedAt = Date.now();
     await ctx.input.api.post(`${root}/budgets/policies`, { scopeType: "agent", scopeId: worker.id, amount: 500, isActive: true, hardStopEnabled: true, unpricedUsagePolicy: "allow" });
     let restored = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`);
     if (restored.status === "error") { await ctx.input.api.post(`/api/agents/${worker.id}/clear-error`, {}); restored = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`); }
-    state.budgetRestoredByHuman = !restored.lifecycleHolds?.includes("budget"); state.gatesClearedAt = Date.now();
-    await writeFile((state.gate as { gate: string }).gate, `The authorized human has restored the execution gate. Use the preserved task context and save a non-plan website-delivery document with the exact reference Retry website ${ctx.input.nonce}, a semantic single-page Acorn website outline and an accessible signup action, then complete this original task normally. Do not create more tasks or external effects.`, "utf8");
-    await ctx.input.page.goto(taskURL, { waitUntil: "domcontentloaded" }); await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
-    const accepted = ctx.input.page.waitForResponse(r => isHumanRetryRequest(r.request(), task.id, worker.id));
-    await humanRetryControl(ctx.input.page).click(); const acceptedResponse = await accepted; state.eligibleRetryStatus = acceptedResponse.status();
-    const completed = await pollUntil({ label: "One eligible ordinary native Retry after actual gate restoration", deadlineAt: Date.now() + 240_000,
+    state.budgetRestoredByHuman = !restored.lifecycleHolds?.includes("budget");
+    // No second click: the held Retry is the one accepted Retry.
+    const completed = await pollUntil({ label: "The held Retry starts once, by itself, after actual gate restoration", deadlineAt: Date.now() + 240_000,
       load: async () => ({ task: await ctx.input.api.get<Issue>(`/api/issues/${task.id}`), runs: await ctx.allRuns() }),
       accept: v => v.task.status === "done" && v.runs.length === 4 && v.runs.filter(row => row.id !== state.workerRunId).every(row => row.status === "succeeded"),
       reject: v => v.runs.length > 4 || v.runs.some(row => row.id !== state.workerRunId && ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Eligible Retry failed or duplicated native work" : undefined });
