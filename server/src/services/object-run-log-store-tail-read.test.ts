@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
-import { clearObjectJournalReadCache } from "./object-byte-journal.js";
+import { clearObjectJournalReadCache, objectJournalReadCacheBytes } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 
 // A live run flushes its log in many small segments, so the task page's tail
@@ -61,23 +61,28 @@ function countingStorage(getLatencyMs: number | ((objectKey: string) => number) 
 function holdObjectGets(provider: StorageProvider) {
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
-  const keys: string[] = [];
-  const signals: Array<AbortSignal | undefined> = [];
+  const gate = { keys: [] as string[], signals: [] as Array<AbortSignal | undefined>, headReads: 0, release: () => release() };
   const getObject = provider.getObject.bind(provider);
   provider.getObject = async (input) => {
     if (input.objectKey.includes("/objects/")) {
-      keys.push(input.objectKey);
-      signals.push(input.signal);
+      gate.keys.push(input.objectKey);
+      gate.signals.push(input.signal);
       await held;
     }
-    return getObject(input);
+    const result = await getObject(input);
+    if (input.objectKey.endsWith("/head.json")) gate.headReads++;
+    return result;
   };
-  return { keys, signals, release: () => release() };
+  return gate;
 }
 
 const TAIL_BYTES = 32_000;
 
-async function writeManySegmentLog(provider: StorageProvider, records: number) {
+async function writeManySegmentLog(
+  provider: StorageProvider,
+  records: number,
+  chunk = (seq: number) => `line ${seq} ${"x".repeat(240)}\n`,
+) {
   const store = createObjectRunLogStore({
     provider,
     keyPrefix: "logs",
@@ -88,7 +93,7 @@ async function writeManySegmentLog(provider: StorageProvider, records: number) {
     // One append is one flushed segment, like a live run's frequent flushes.
     void store.enqueue!(handle, {
       stream: "stdout",
-      chunk: `line ${seq} ${"x".repeat(240)}\n`,
+      chunk: chunk(seq),
       ts: "2026-11-09T00:00:00Z",
       seq,
     });
@@ -155,49 +160,31 @@ describe("object run log tail reads", () => {
     expect(tail.content).toContain("newest line");
   });
 
-  it("finishes a reader that shares an object fetch with a reader who navigated away", async () => {
-    clearObjectJournalReadCache();
-    const { provider } = countingStorage(5);
-    const { store, handle, full } = await writeManySegmentLog(provider, 60);
-    clearObjectJournalReadCache();
-    const offset = full.length - TAIL_BYTES / 2;
-    const leaving = new AbortController();
-
-    const abandoned = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true, signal: leaving.signal });
-    const staying = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true });
-    setTimeout(() => leaving.abort(new Error("navigated away")), 8);
-
-    await expect(abandoned).rejects.toThrow();
-    const tail = await staying;
-    const recordStart = full.lastIndexOf(10, offset - 1) + 1;
-    expect(Buffer.from(tail.content)).toEqual(full.subarray(recordStart));
-  });
-
   it("stops a reader that navigates away while it waits on another reader's fetch", async () => {
     clearObjectJournalReadCache();
-    // Content-addressed objects (segments and index nodes) are slow; the
-    // mutable head is fast, so the second reader joins the first one's fetch.
-    const { provider, stats } = countingStorage((key) => (/[0-9a-f]{64}/.test(key) ? 60 : 0));
+    const { provider } = countingStorage();
     const { store, handle, full } = await writeManySegmentLog(provider, 60);
     clearObjectJournalReadCache();
+    const gets = holdObjectGets(provider);
     const offset = full.length - TAIL_BYTES / 2;
     const leaving = new AbortController();
 
     const staying = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true });
-    await delay(10);
-    const completedBeforeJoin = stats.completed;
-    let completedWhenAborted = -1;
-    const joining = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true, signal: leaving.signal })
-      .catch((error: unknown) => { completedWhenAborted = stats.completed; throw error; });
-    setTimeout(() => leaving.abort(new Error("navigated away")), 10);
+    await vi.waitFor(() => expect(gets.keys.length).toBeGreaterThan(0));
+    const joining = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true, signal: leaving.signal });
+    // Let the joining reader read the head and reach the held shared fetch.
+    await vi.waitFor(() => expect(gets.headReads).toBe(2));
+    await new Promise((resolve) => setImmediate(resolve));
+    leaving.abort(new Error("navigated away"));
 
+    // Every object GET is still held, so only the reader's own abort can end it.
     await expect(joining).rejects.toThrow("navigated away");
-    // The joining reader stops on its own abort. It does not wait for the
-    // shared fetch: only the fast head read finished since it joined.
-    expect(completedWhenAborted - completedBeforeJoin).toBeLessThanOrEqual(1);
+    expect(gets.signals.every((signal) => !signal?.aborted)).toBe(true);
+    gets.release();
     const tail = await staying;
     const recordStart = full.lastIndexOf(10, offset - 1) + 1;
     expect(Buffer.from(tail.content)).toEqual(full.subarray(recordStart));
+    expect(new Set(gets.keys).size).toBe(gets.keys.length);
   });
 
   it("keeps one fetch per object when the reader that started it navigates away", async () => {
@@ -212,7 +199,9 @@ describe("object run log tail reads", () => {
     const first = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true, signal: leaving.signal });
     await vi.waitFor(() => expect(gets.keys.length).toBeGreaterThan(0));
     const joining = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true });
-    await delay(20);
+    // Let the joining reader read the head and reach the held shared fetch.
+    await vi.waitFor(() => expect(gets.headReads).toBe(2));
+    await new Promise((resolve) => setImmediate(resolve));
     leaving.abort(new Error("navigated away"));
     await expect(first).rejects.toThrow("navigated away");
     // The remaining reader still waits on the started fetch, so it stays open.
@@ -241,6 +230,46 @@ describe("object run log tail reads", () => {
     await expect(read).rejects.toThrow("navigated away");
     expect(gets.signals[0]?.aborted).toBe(true);
     gets.release();
+  });
+
+  it.each([
+    ["just over the first lookback window", 6_000],
+    ["across several backward windows", 90_000],
+  ])("aligns a tail that starts inside a record %s", async (_label, recordBytes) => {
+    clearObjectJournalReadCache();
+    const { provider } = countingStorage();
+    const { store, handle, full } = await writeManySegmentLog(provider, 6, (seq) =>
+      seq === 5 ? `long ${"y".repeat(recordBytes)}\n` : `line ${seq}\n`);
+    const longStart = full.indexOf("long ");
+    const longEnd = full.indexOf(10, longStart);
+    // Start near the end of the long record, so the 4 KB lookback has no newline.
+    const offset = longEnd - 100;
+    expect(offset - longStart).toBeGreaterThan(4096);
+    const recordStart = full.lastIndexOf(10, offset - 1) + 1;
+    clearObjectJournalReadCache();
+
+    const tail = await store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true });
+
+    expect(Buffer.from(tail.content)).toEqual(full.subarray(recordStart));
+    expect(tail.nextOffset).toBe(full.length);
+  });
+
+  it("counts per-entry overhead against the cache budget, not only the object bytes", async () => {
+    clearObjectJournalReadCache();
+    const { provider, objects } = countingStorage();
+    const { store, handle, full } = await writeManySegmentLog(provider, 100);
+    clearObjectJournalReadCache();
+    const gets = holdObjectGets(provider);
+    gets.release();
+
+    await store.read(handle, { offset: Math.max(0, full.length - TAIL_BYTES), limitBytes: TAIL_BYTES });
+
+    const cached = [...new Set(gets.keys)];
+    const payload = cached.reduce((sum, key) => sum + objects.get(key)!.length, 0);
+    // Many small segments: the bookkeeping per entry is a real part of memory.
+    expect(objectJournalReadCacheBytes()).toBeGreaterThanOrEqual(payload + cached.length * 256);
+    clearObjectJournalReadCache();
+    expect(objectJournalReadCacheBytes()).toBe(0);
   });
 
   it("does not serve one store's cached objects to a reader of another store", async () => {

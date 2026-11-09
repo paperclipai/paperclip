@@ -259,8 +259,8 @@ async function objectIO<T>(
 // of the object's bytes, and load() verifies that digest. Their bytes cannot
 // change, so repeated reads of a run's tail (live polling, reopening a task)
 // reuse them instead of paying one object-store round trip per object. Only the
-// mutable head is read again. The cache is bounded by total bytes and evicts the
-// least recently used objects first. Readers authorize before any read.
+// mutable head is read again. The cache is bounded by total bytes (payload plus
+// per-entry overhead) and evicts the least recently used objects first. Readers authorize before any read.
 // Entries are scoped to the storage provider instance, so a different store
 // (or a test's fresh store) never sees objects that another store returned.
 const READ_CACHE_MAX_BYTES = 32 * 1024 * 1024;
@@ -292,15 +292,24 @@ function cachedObject(key: string) {
   }
   return bytes;
 }
+// The budget counts each entry's key and a fixed bookkeeping overhead with its
+// bytes, so many small segments cannot hold much more memory than the cap.
+const READ_CACHE_ENTRY_OVERHEAD_BYTES = 256;
+const readCacheEntryCost = (key: string, bytes: Buffer) =>
+  bytes.length + key.length * 2 + READ_CACHE_ENTRY_OVERHEAD_BYTES;
 function cacheObject(key: string, bytes: Buffer) {
   if (bytes.length > READ_CACHE_MAX_OBJECT_BYTES || readCache.has(key)) return;
   readCache.set(key, bytes);
-  readCacheBytes += bytes.length;
+  readCacheBytes += readCacheEntryCost(key, bytes);
   for (const [oldestKey, oldest] of readCache) {
     if (readCacheBytes <= READ_CACHE_MAX_BYTES) break;
     readCache.delete(oldestKey);
-    readCacheBytes -= oldest.length;
+    readCacheBytes -= readCacheEntryCost(oldestKey, oldest);
   }
+}
+/** Bytes the read cache counts against its budget, including entry overhead. */
+export function objectJournalReadCacheBytes() {
+  return readCacheBytes;
 }
 export function clearObjectJournalReadCache() {
   readCache.clear();
