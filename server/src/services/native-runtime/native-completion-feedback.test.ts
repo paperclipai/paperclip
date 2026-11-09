@@ -43,6 +43,24 @@ describe("native final-response feedback", () => {
     } }) as { downloadPath: string };
     return { ...done, evidence: [{ ref: `${receipt.downloadPath}#download` }] };
   }
+  it("sends the active review participant to record its stage decision before reporting", async () => {
+    const value = await fixture(), stageId = randomUUID(), otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId: value.companyId, name: "Implementer", adapterType: "paperclip_runner", status: "active" });
+    const pending = { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: value.agentId }, returnAssignee: { type: "agent", agentId: otherAgentId },
+      completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null };
+    await db.update(issues).set({ status: "in_review", executionState: pending }).where(eq(issues.id, value.issueId));
+    // The retained failure: the reviewer's finish was accepted while its own
+    // stage stayed pending, and nothing it could call afterwards decided it.
+    await expect(nativeCompletionFeedback(db, value.runId, done)).rejects.toThrow(/active review participant[\s\S]*PATCH \/api\/issues\/\{id\}/);
+    await expect(nativeCompletionFeedback(db, value.runId, { ...done, reportedWorkDisposition: "needs_review" })).rejects.toThrow("does not record your review decision");
+    // Someone else's pending stage is still explained, not attributed to this run.
+    await db.update(issues).set({ executionState: { ...pending, currentParticipant: { type: "agent", agentId: otherAgentId } } }).where(eq(issues.id, value.issueId));
+    await expect(nativeCompletionFeedback(db, value.runId, done)).resolves.toContain("configured review stage is still pending");
+    // Once the participant's approval is recorded, its report is accepted.
+    await db.update(issues).set({ executionState: { ...pending, status: "completed", completedStageIds: [stageId], lastDecisionId: randomUUID(), lastDecisionOutcome: "approved" } }).where(eq(issues.id, value.issueId));
+    await expect(nativeCompletionFeedback(db, value.runId, done)).resolves.not.toContain("review stage");
+  });
   it("rejects a duplicate approval report for the exact pending tool-action card", async () => {
     const value = await fixture(), interactionId = randomUUID();
     await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: value.companyId, issueId: value.issueId,

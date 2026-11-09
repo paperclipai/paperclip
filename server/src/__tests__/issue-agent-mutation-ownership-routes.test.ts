@@ -3135,6 +3135,72 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     });
 
+    describe("as the active review participant", () => {
+      const reviewStage = (id: string) => ({ id, type: "review", approvalsNeeded: 1,
+        participants: [{ id: `${id.slice(0, -1)}f`, type: "agent", agentId: ownerAgentId, userId: null }] });
+      const reviewIssue = (stageIds: string[]) => makeIssue({
+        status: "in_review", executionRunId: ownerRunId, checkoutRunId: ownerRunId,
+        executionPolicy: { mode: "normal", commentRequired: true, stages: stageIds.map(reviewStage) },
+        executionState: {
+          status: "pending", currentStageId: stageIds[0], currentStageIndex: 0, currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: ownerAgentId },
+          returnAssignee: { type: "agent", agentId: peerAgentId },
+          completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+        },
+      });
+      const finalStage = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", laterStage = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+      it("records its final-stage approval and leaves the final status to its finish report", async () => {
+        const issue = reviewIssue([finalStage]);
+        mockIssueService.getById.mockResolvedValue(issue);
+        mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch }));
+        const db = createRunContextDb();
+
+        const res = await request(createApp(runActor(), db)).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved: verified the heading and signup action." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+        // No status in the write: the service would otherwise release this
+        // run's execution lock before paperclip_finish reports the outcome.
+        expect(patch).not.toHaveProperty("status");
+        expect(patch.executionState).toMatchObject({ status: "completed", lastDecisionOutcome: "approved", lastDecisionId: expect.any(String) });
+        expect(db.insert).toHaveBeenCalled();
+      });
+
+      it("still requires the decision comment", async () => {
+        mockIssueService.getById.mockResolvedValue(reviewIssue([finalStage]));
+
+        const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(422);
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      });
+
+      it("keeps refusing an intermediate approval that would hand the task to the next participant", async () => {
+        mockIssueService.getById.mockResolvedValue(reviewIssue([finalStage, laterStage]));
+
+        const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(409);
+        expect(res.body.details).toMatchObject({ code: "native_run_status_reported_by_finish", requestedStatus: "done" });
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      });
+
+      it("keeps refusing the approval when this run is not the active participant", async () => {
+        const issue = reviewIssue([finalStage]);
+        mockIssueService.getById.mockResolvedValue({ ...issue,
+          executionState: { ...issue.executionState, currentParticipant: { type: "agent", agentId: peerAgentId } } });
+
+        const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(409);
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      });
+    });
+
     it("still lets the run edit other fields of its task", async () => {
       const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ title: "Renamed by its run" });
 
