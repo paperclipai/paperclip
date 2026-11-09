@@ -3158,6 +3158,13 @@
       "when": 1794205579544,
       "tag": "0452_secret_proposal_secret_cascade",
       "breakpoints": true
+    },
+    {
+      "idx": 454,
+      "version": "7",
+      "when": 1794224960339,
+      "tag": "0454_burly_guardsmen",
+      "breakpoints": true
     }
   ]
 }

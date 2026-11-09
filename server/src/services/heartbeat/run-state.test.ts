@@ -10,7 +10,7 @@ import {
   heartbeatRuns,
   issues,
 } from "@paperclipai/db";
-import { eq, sql, type SQL } from "drizzle-orm";
+import { eq, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -170,6 +170,24 @@ describePostgres("heartbeat run state database wiring", () => {
     }).returning();
     const [issue] = await db.insert(issues).values({ companyId, title: "Session task", assigneeAgentId: agent.id }).returning();
     return { companyId, agent, issue, state: extracted.createHeartbeatRunState(db) };
+  }
+
+  function listRunsReading(serverEncoding: string) {
+    const queries: SQLWrapper[] = [];
+    const reader = new Proxy(db, {
+      get: (target, key, receiver) => {
+        if (key === "execute") return async () => [{ server_encoding: serverEncoding }];
+        if (key !== "select") return Reflect.get(target, key, receiver);
+        return (fields: Parameters<Db["select"]>[0]) => ({
+          from: (table: typeof heartbeatRuns) => {
+            const query = target.select(fields!).from(table);
+            queries.push(query);
+            return query;
+          },
+        });
+      },
+    });
+    return { state: extracted.createHeartbeatRunState(reader), queries };
   }
 
   it("reads current execution-wait evidence without transferring saved input or output", async () => {
@@ -420,6 +438,58 @@ describePostgres("heartbeat run state database wiring", () => {
         expect(actual.contextSnapshot ?? {}).not.toHaveProperty("secret");
         expect(actual.contextSnapshot ?? {}).not.toHaveProperty("prompt");
       }
+    }
+  });
+
+  it("reads result fields and cost exactly as the per-key result_json reads did", async () => {
+    const { companyId, agent, state } = await fixture();
+    const results: unknown[] = [null, [{ summary: "array item", total_cost_usd: 1 }], "legacy", 3, true, {}, {
+      summary: "s".repeat(700), result: { nested: [1, "two"] }, message: 42, error: false,
+      total_cost_usd: 0.5, cost_usd: "0.25", costUsd: 1.125, stdout: randomBytes(96 * 1024).toString("hex"),
+    }, { summary: "héllo\nwörld \u00e9", total_cost_usd: 0.75 }, { cost_usd: 2, error: "e".repeat(600) },
+    { result: null, message: "", costUsd: null, cost_usd: null, total_cost_usd: null }];
+    const legacy = listRunsReading("SQL_ASCII").state;
+    for (const resultJson of results) {
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId, agentId: agent.id, resultJson: resultJson as Record<string, unknown>,
+      }).returning();
+      const [expected] = await db.execute(sql`select
+        left(result_json->>'summary', 500) as "summary", left(result_json->>'result', 500) as "result",
+        left(result_json->>'message', 500) as "message", left(result_json->>'error', 500) as "error",
+        result_json->>'total_cost_usd' as "totalCostUsd", result_json->>'cost_usd' as "costUsd",
+        result_json->>'costUsd' as "costUsdCamel",
+        coalesce((result_json->>'costUsd')::numeric, (result_json->>'cost_usd')::numeric,
+          (result_json->>'total_cost_usd')::numeric) as "cost"
+        from heartbeat_runs where id = ${run.id}::uuid`) as unknown as Array<Record<string, string | null>>;
+      const full = (await state.listRuns(companyId, agent.id, 100)).find(row => row.id === run.id)!;
+      expect(full.resultJson).toEqual(extracted.summarizeHeartbeatRunListResultJson({
+        summary: expected.summary, result: expected.result, message: expected.message, error: expected.error,
+        totalCostUsd: expected.totalCostUsd, costUsd: expected.costUsd, costUsdCamel: expected.costUsdCamel,
+      }));
+      for (const [reader, options] of [[state, {}], [state, { summary: true }], [legacy, {}]] as const) {
+        const row = (await reader.listRuns(companyId, agent.id, 100, options)).find(item => item.id === run.id)!;
+        expect(row.costUsd ?? null).toEqual(expected.cost);
+      }
+    }
+  });
+
+  it("reads result_json once per listed run and walks an index in created_at order", async () => {
+    const { companyId, agent } = await fixture();
+    const [other] = await db.insert(agents).values({ companyId, name: "Other agent", adapterType: "codex_local" }).returning();
+    await db.execute(sql`insert into heartbeat_runs (company_id, agent_id, created_at)
+      select ${companyId}::uuid, case when n % 10 = 0 then ${agent.id}::uuid else ${other.id}::uuid end,
+        '2026-01-01'::timestamptz + n * interval '1 second'
+      from generate_series(1, 10000) n`);
+    await db.execute(sql`analyze heartbeat_runs`);
+    for (const [encoding, agentId, options] of [
+      ["UTF8", agent.id, {}], ["UTF8", agent.id, { summary: true }], ["SQL_ASCII", agent.id, {}], ["UTF8", undefined, {}],
+    ] as const) {
+      const { state, queries } = listRunsReading(encoding);
+      expect(await state.listRuns(companyId, agentId, 200, options)).toHaveLength(200);
+      expect(new PgDialect().sqlToQuery(queries[0].getSQL()).sql.split('"result_json"')).toHaveLength(2);
+      const plan = (await db.execute(sql`explain ${queries[0]}`)).map(row => Object.values(row)[0]).join("\n");
+      expect(plan).not.toContain("Sort");
+      if (agentId) expect(plan).toContain("heartbeat_runs_company_agent_created_idx");
     }
   });
 
