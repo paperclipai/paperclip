@@ -168,3 +168,40 @@ describe("explicit task-document output", () => {
     expect(explicitlyRequestsTaskDocumentOutput(objective)).toBe(false);
   });
 });
+
+describe("deliverable labels that name files", () => {
+  // The delegated brief from a real first-website run: the worker finished with
+  // index.html and styles.css only in its workspace and the gate did not ask it
+  // to publish them.
+  const delegatedBrief = [
+    "Build a simple, polished static marketing website that introduces the business, Acorn Notes.",
+    "",
+    "Deliverable:",
+    "- A self-contained static website in this task's workspace: index.html plus a stylesheet (for example styles.css). Plain HTML/CSS, no build step.",
+    "- Sections: a hero with the value proposition and a contact call to action.",
+    "",
+    "Constraints:",
+    "- Do not publish or deploy externally; no hosting, DNS, analytics, or third-party services.",
+  ].join("\n");
+  it.each([
+    delegatedBrief,
+    "Deliverables: index.html and styles.css",
+    "## Deliverables\n- `index.html`\n- `styles.css`",
+    "**Deliverable:** report.pdf",
+    "Requested deliverable:\n1. summary.csv with one row per team",
+  ])("requires publication for a labelled file output: %s", objective => {
+    expect(explicitlyRequestsFileOutput(objective)).toBe(true);
+  });
+  it.each([
+    "Build a simple website introducing the business.",
+    "A self-contained static website in this task's workspace: index.html plus a stylesheet.",
+    "Deliverable: a short answer in chat.",
+    "Deliverables:\n- A summary of input.csv in the reply",
+    "Deliverable: a pull request that updates index.html",
+    "Deliverables:\n- Repository change to styles.css",
+    "Deliverable:\n\nindex.html is mentioned after the list ended.",
+    "Deliverable quality matters more than speed for index.html.",
+  ])("does not treat this as a labelled file output: %s", objective => {
+    expect(explicitlyRequestsFileOutput(objective)).toBe(false);
+  });
+});

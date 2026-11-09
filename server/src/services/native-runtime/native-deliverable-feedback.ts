@@ -99,6 +99,36 @@ async function hasCurrentPublicationReceipt(db: Db, companyId: string, receipts:
  * an output requirement or erase a user's request for a file.
  */
 export function explicitlyRequestsFileOutput(objective: string): boolean {
+  return deliverableLabelNamesFile(objective) || explicitlyRequestsFileOutputBySentence(objective);
+}
+
+/** A brief that labels its output ("Deliverable:", "## Deliverables") and names
+ * a file there has stated the requested result as plainly as a creation verb.
+ * Delegated briefs often take this form, so a worker cannot finish with that
+ * file left only in its workspace. Web page files count here: the label makes
+ * them the output, not a repository file being edited in passing.
+ */
+function deliverableLabelNamesFile(objective: string): boolean {
+  const lines = objective.replaceAll("\\_", "_").split(/\r?\n/u);
+  const named = /(?:^|[\s(`'"*:])([^\s/()`'"*:]+\.(?:html?|css|md|txt|json|pdf|docx?|xlsx?|csv|pptx?|png|jpe?g|svg|zip))\b/giu;
+  // A repository change names files it edits; it is delivered as a PR or commit.
+  const namesFile = (text: string) => !/\b(?:[Rr]epo(?:sitory)?|[Pp]ull [Rr]equest|PR|[Cc]ommit|[Bb]ranch)\b/u.test(text) && [...text.matchAll(named)].some(match =>
+    !/\b(?:of|about|from|using|reading|no|without)\s+(?:(?:the|a|an|this|that)\s+)?[`'"*]*$/iu.test(text.slice(0, match.index! + match[0].indexOf(match[1]!))));
+  for (let index = 0; index < lines.length; index += 1) {
+    const label = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?(?:requested\s+)?deliverables?(?:\*\*|__)?\s*(?::(?:\*\*|__)?\s*(.*)|(?:\*\*|__)?\s*)$/iu.exec(lines[index]!);
+    if (!label) continue;
+    if (namesFile(label[1] ?? "")) return true;
+    // The label's own list: consecutive bullet or numbered items below it.
+    for (let item = index + 1; item < lines.length; item += 1) {
+      const bullet = /^\s*(?:[-*+]|\d+[.)])\s+(.*)$/u.exec(lines[item]!);
+      if (!bullet) break;
+      if (namesFile(bullet[1]!)) return true;
+    }
+  }
+  return false;
+}
+
+function explicitlyRequestsFileOutputBySentence(objective: string): boolean {
   const sentences = objective.replaceAll("\\_", "_").split(/(?:[.!?](?:\s|$)|\n)/iu);
   let precedingFileOutput = false;
   return sentences.some((sentence, index) => {
