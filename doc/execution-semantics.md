@@ -2536,6 +2536,30 @@ recovery worker discovers these holds itself, so holds saved by earlier releases
 take the same path after deploy. An exhausted hold whose run's files a sibling
 recovery action already saved settles as recovered.
 
+An exhausted save whose last failure was `agent_stop_unconfirmed` is not a
+refusal of the saved files: its recovery window ran out before the agent's stop
+could be proven. This applies to every workspace recovery the worker owns,
+export holds and restore holds alike. Once the source run is provably over (its
+run is terminal, no local execution remains, and neither its controller lease
+nor its finalizer lease is live), the recovery worker re-arms it with a new
+bounded system generation. A live lease defers the re-arm to that lease's
+expiry; the worker is not woken earlier. The new generation repeats the strict
+stop proof (a provider stop receipt for every allocation of the run) and the
+save, then settles the hold exactly like any completed recovery, so other tasks
+on the workspace can start. Re-arms are bounded: at most four, the first at once
+and the next ones 30 minutes, 2 hours and 8 hours after the previous re-arm,
+each recorded in the action's `stopProofRecovery` marker and as
+`issue.workspace_recovery_rearmed` system activity. When every re-arm of an
+export hold is spent and the stop still cannot be proven, the hold takes the
+retained-source fallback above: the unsaved files are attached to the task,
+unapplied, and the task continues from the last save. A fallback whose bounded
+checks are spent is reconsidered once whenever an allocation of the source run
+changes afterwards, for example when a late provider stop receipt arrives.
+While a re-arm remains, the hold names the wait and says that Paperclip tries
+again automatically; after that it names Retry. Holds exhausted by earlier
+releases carry no marker and are re-armed on the worker's first pass after
+deploy, with no migration.
+
 An exhausted workspace export records the exact Blocked status version it
 creates, bound to its source run, result, contract and identity. Recovery may
 restore the accepted passive wait only while that receipt still owns the task
@@ -3397,7 +3421,8 @@ Recorded system recovery failures retain their original attempt and intent.
 When system workspace recovery exhausts its bounded attempts or deadline, the
 recovery action stays active and its owner changes from system to board. Its
 next action names the attempt count and last failure code and tells the board to
-use **Retry recovery**. The task blocker shows that same text. Retry starts one
+use **Retry recovery**. An unproven agent stop (`agent_stop_unconfirmed`) instead
+names the automatic re-arm described above; Retry remains available. The task blocker shows that same text. Retry starts one
 new bounded system generation and returns ownership to the system. A sweep that
 finds an action already exhausted and still system-owned applies the same handoff
 as bookkeeping only; it grants no attempt. Exhaustion never submits a provider

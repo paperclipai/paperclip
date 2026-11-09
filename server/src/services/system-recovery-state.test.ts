@@ -82,6 +82,17 @@ describe("durable system recovery budget", () => {
     expect(exhaustedSystemRecoveryAction({ ...once, attempts: 6 })).toContain("stopped after 6 attempts");
   });
 
+  it("promises an automatic retry for an unproven stop only while a re-arm remains", () => {
+    const stop = { ...failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
+      new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence"), { now: 0 }), state: "exhausted" as const };
+    const marker = (rearms: number) => ({ stopProofRecovery: { schema: "paperclip.stop-proof-recovery.v1", rearms, nextRearmAt: null } });
+    expect(exhaustedSystemRecoveryAction(stop, {})).toMatch(/tries again automatically/);
+    expect(exhaustedSystemRecoveryAction(stop, marker(3))).toMatch(/tries again automatically/);
+    // Spent re-arms, or no evidence to judge them, keep the Retry text.
+    expect(exhaustedSystemRecoveryAction(stop, marker(4))).toContain("Retry to try again");
+    expect(exhaustedSystemRecoveryAction(stop)).toContain("Retry to try again");
+  });
+
   it("names the last failure and its cause in the board handoff", () => {
     const state = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;
     const withCause = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
