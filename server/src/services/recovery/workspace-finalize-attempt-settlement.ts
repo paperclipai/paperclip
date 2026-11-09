@@ -3,7 +3,7 @@ import { heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } fro
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import type { OwnerProof } from "../owner-proof.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
-import { readSaveWork } from "../remote-workspaces.js";
+import { isRemoteWorkspaceSaveInvocationLive, readSaveWork } from "../remote-workspaces.js";
 import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
 import { RETAINED_SOURCE_FALLBACK_CHECK_KEY } from "../workspace-recovery-fallback-discovery.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, isOwnerStampedWorkspaceOperationLive } from "../workspace-operations.js";
@@ -121,10 +121,22 @@ export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgre
     if (!operation) return { settled: false, reason: "attempt_no_longer_in_progress" };
     const metadata = operation.metadata ?? {};
     const work = readSaveWork(metadata);
-    if (!work || work.unknown || work.activeIds.length > 0 || !work.quiescedAt) return { settled: false, reason: "save_work_unsettled" };
-    const [run] = operation.heartbeatRunId ? await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, operation.heartbeatRunId), inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES))) : [];
-    if (!run) return { settled: false, reason: "owner_run_active" };
+    if (!work || work.unknown || (!work.activeIds.length && !work.quiescedAt)) return { settled: false, reason: "save_work_unsettled" };
+    const owners = work.owners ?? {};
+    if (work.activeIds.some(isRemoteWorkspaceSaveInvocationLive)) return { settled: false, reason: "attempt_live_in_this_process" };
+    if (record.owner.kind === "process") {
+      const { bootId, pid } = record.owner.stamp;
+      if (!work.activeIds.length || work.activeIds.some(id => owners[id]?.bootId !== bootId || owners[id]?.pid !== pid)) {
+        return { settled: false, reason: "owner_changed_since_proof" };
+      }
+    } else if (record.owner.kind === "run") {
+      if (work.activeIds.some(id => owners[id] !== undefined)) return { settled: false, reason: "owner_changed_since_proof" };
+      const [run] = operation.heartbeatRunId ? await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, operation.heartbeatRunId), inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES))) : [];
+      if (!run) return { settled: false, reason: "owner_run_active" };
+    } else {
+      return { settled: false, reason: "owner_not_provable" };
+    }
     const now = context.now;
     const provenance = {
       schema: "paperclip.remote-snapshot-save-abandonment.v1",
@@ -133,6 +145,7 @@ export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgre
       previousStatus: operation.status,
       runId: operation.heartbeatRunId,
       quiescedAt: work.quiescedAt,
+      abandonedInvocationIds: work.activeIds,
       reconciledAt: now.toISOString(),
     };
     const workKey = operation.executionWorkspaceId ? `workspace:${operation.executionWorkspaceId}`
@@ -140,8 +153,9 @@ export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgre
     if (workKey) await notifyTerminalWorkspaceWork(tx, workKey);
     const [row] = await tx.update(workspaceOperations).set({
       status: "failed", exitCode: 1, finishedAt: now, updatedAt: now,
-      stderrExcerpt: `${operation.stderrExcerpt ?? ""}The workspace save stopped without finishing, and its run has ended.\n`.slice(-4096),
+      stderrExcerpt: `${operation.stderrExcerpt ?? ""}The workspace save stopped without finishing; the process that ran it is gone.\n`.slice(-4096),
       metadata: { ...metadata, abandonedSave: provenance,
+        saveWork: { ...work, activeIds: [], owners: {}, quiescedAt: work.quiescedAt ?? now.toISOString() },
         lastFailure: { code: "remote_workspace_save_abandoned", at: now.toISOString() } },
     }).where(and(eq(workspaceOperations.id, operation.id), eq(workspaceOperations.status, operation.status)))
       .returning({ id: workspaceOperations.id });

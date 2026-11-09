@@ -520,6 +520,18 @@ function controllerStamp(value: unknown, scope: string): RecordOwner {
 // ----------------------------------------------------------------------------
 // workspace_operations
 
+function remoteSnapshotSaveOwner(row: OperationRow): RecordOwner {
+  const work = json(json(row.metadata).saveWork);
+  const active = Array.isArray(work.activeIds) ? work.activeIds.filter((id): id is string => typeof id === "string") : [];
+  if (!active.length) return runOwner(row.heartbeatRunId);
+  const owners = json(work.owners);
+  const stamps = active.map(id => readControllerProcess(owners[id]));
+  if (stamps.every(stamp => stamp === null) && !active.some(id => owners[id] !== undefined)) return runOwner(row.heartbeatRunId);
+  const [first] = stamps;
+  if (!first || stamps.some(stamp => !stamp || stamp.bootId !== first.bootId || stamp.pid !== first.pid)) return { kind: "none" };
+  return controllerStamp(owners[active[0]!], "remote_snapshot_save");
+}
+
 type OperationRow = Pick<typeof workspaceOperations.$inferSelect, "id" | "companyId" | "heartbeatRunId" | "issueId"
   | "metadata" | "updatedAt">;
 
@@ -876,7 +888,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     row => runOwner(row.heartbeatRunId)),
   { ...operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_snapshot"), inArray(workspaceOperations.status, ["running", "pending"])),
-    row => runOwner(row.heartbeatRunId)), settle: settleAbandonedRemoteSnapshotSave },
+    remoteSnapshotSaveOwner), settle: settleAbandonedRemoteSnapshotSave },
   operationKind("remote_workspace_migration", "Remote workspace migration op", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_migration"), eq(workspaceOperations.status, "running")),
     () => ({ kind: "none" })),

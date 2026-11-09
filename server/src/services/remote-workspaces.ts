@@ -1,4 +1,5 @@
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { currentControllerProcessStamp, type ControllerProcess } from "./controller-process-identity.js";
 import { workspaceAllocationFiles } from "./remote-workspace-allocation.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -68,7 +69,12 @@ type RemoteWorkspaceSaveTiming = RemoteWorkspaceSavePhaseTiming & {
   storage?: WorkspaceSnapshotStorageTiming;
 };
 const RETIRED_SAVE_SCHEMA = "paperclip.remote-workspace-retired-save.v1";
-type SaveWork = { schema: typeof SAVE_WORK_SCHEMA; activeIds: string[]; unknown: boolean; quiescedAt: string | null };
+type SaveWork = { schema: typeof SAVE_WORK_SCHEMA; activeIds: string[]; unknown: boolean; quiescedAt: string | null;
+  owners?: Record<string, ControllerProcess> };
+const liveSaveInvocationIds = new Set<string>();
+export function isRemoteWorkspaceSaveInvocationLive(invocationId: string) {
+  return liveSaveInvocationIds.has(invocationId);
+}
 export function readSaveWork(metadata: Record<string, unknown> | null | undefined): SaveWork | null {
   const work = object(metadata?.saveWork);
   return work.schema === SAVE_WORK_SCHEMA && Array.isArray(work.activeIds)
@@ -705,6 +711,7 @@ async function settleSaveInvocation(input: { db: Db; workspace: Workspace; runId
     const work = readSaveWork(operation?.metadata);
     if (!operation || !work || !work.activeIds.includes(input.invocationId)) return false;
     const activeIds = work.activeIds.filter(id => id !== input.invocationId);
+    const owners = Object.fromEntries(Object.entries(work.owners ?? {}).filter(([id]) => id !== input.invocationId));
     if (!activeIds.length && !work.unknown) await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
     const now = new Date();
     // The last settled invocation of a failed save ends the operation. A later
@@ -712,7 +719,7 @@ async function settleSaveInvocation(input: { db: Db; workspace: Workspace; runId
     const failure = input.failure;
     const failed = Boolean(failure) && operation.status === "running" && !activeIds.length && !work.unknown;
     await tx.update(workspaceOperations).set({ metadata: { ...operation.metadata,
-      saveWork: { ...work, activeIds, quiescedAt: activeIds.length ? null : now.toISOString() },
+      saveWork: { ...work, activeIds, owners, quiescedAt: activeIds.length ? null : now.toISOString() },
       ...(input.timing ? { saveTiming: saveTimingRecord(input.timing, input.failure ? "failed" : "succeeded", now) } : {}),
       ...(failed && failure ? { lastFailure: { ...failure, at: now.toISOString() } } : {}) },
       ...(failed && failure ? { status: "failed", exitCode: 1, finishedAt: now,
@@ -786,6 +793,8 @@ export async function saveRemoteWorkspace(input: {
   if (!expected?.location || expected.location.providerLeaseId !== input.lease.providerLeaseId || expected.location.leaseId !== input.lease.id) throw new Error("remote_workspace_save_binding_mismatch");
   await input.assertOwned();
   const invocationId = randomUUID();
+  const owner = { [invocationId]: currentControllerProcessStamp() };
+  liveSaveInvocationIds.add(invocationId);
   const reserved = await input.db.transaction(async tx => {
     const issueId = await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId);
     const workspace = await currentWorkspace(tx, input.workspace.companyId, input.workspace.id);
@@ -820,7 +829,8 @@ export async function saveRemoteWorkspace(input: {
       const reopened = previous.status === "failed" ? { status: "running", finishedAt: null, exitCode: null } : {};
       const [registered] = await tx.update(workspaceOperations).set({ ...reopened, metadata: { ...previous.metadata,
         saveWork: { schema: SAVE_WORK_SCHEMA, activeIds: [...(work?.activeIds ?? []), invocationId],
-          unknown: work?.unknown ?? true, quiescedAt: null } }, updatedAt: new Date() }).where(eq(workspaceOperations.id, previous.id)).returning();
+          unknown: work?.unknown ?? true, quiescedAt: null, owners: { ...(work?.owners ?? {}), ...owner } } }, updatedAt: new Date() })
+        .where(eq(workspaceOperations.id, previous.id)).returning();
       return { kind: "registered" as const, operation: registered! };
     }
     // The workspace lock serializes generation reservations. Failed/deleted
@@ -842,12 +852,12 @@ export async function saveRemoteWorkspace(input: {
     const [created] = await tx.insert(workspaceOperations).values({ companyId: workspace.companyId, executionWorkspaceId: workspace.id,
       heartbeatRunId: input.runId, issueId, phase: "remote_workspace_snapshot", status: "running",
       metadata: { boundary, epoch: current.epoch, parentSnapshotId: current.snapshotId, generation,
-        saveWork: { schema: SAVE_WORK_SCHEMA, activeIds: [invocationId], unknown: false, quiescedAt: null },
+        saveWork: { schema: SAVE_WORK_SCHEMA, activeIds: [invocationId], unknown: false, quiescedAt: null, owners: owner },
         exportCleanup: { ...current.location, state: "pending" } },
     }).returning();
     return { kind: "registered" as const, operation: created! };
-  });
-  if (reserved.kind === "unchanged") return reserved.saved;
+  }).catch(error => { liveSaveInvocationIds.delete(invocationId); throw error; });
+  if (reserved.kind === "unchanged") { liveSaveInvocationIds.delete(invocationId); return reserved.saved; }
   const { operation } = reserved;
   let captured: Awaited<ReturnType<typeof captureRemoteWorkspaceArchive>> | null = null;
   let publicationScratch: string | undefined;
@@ -947,6 +957,7 @@ export async function saveRemoteWorkspace(input: {
           location: expected.location, target, assertOwned: input.assertOwned });
       }
     } catch { logger.warn({ runId: input.runId, operationId: operation.id }, "Remote workspace save settlement or export cleanup remains pending"); }
+    liveSaveInvocationIds.delete(invocationId);
   }
 }
 

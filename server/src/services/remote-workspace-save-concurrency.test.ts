@@ -18,8 +18,9 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
 import {
   createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspaceAuthority,
-  provisionRemoteWorkspace, reserveRemoteWorkspace, saveRemoteWorkspace,
+  isRemoteWorkspaceSaveInvocationLive, provisionRemoteWorkspace, reserveRemoteWorkspace, saveRemoteWorkspace,
 } from "./remote-workspaces.js";
+import { currentControllerBootId } from "./controller-process-identity.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 
@@ -485,6 +486,31 @@ describe.skipIf(!support.supported)("remote workspace save parent lock order", (
     expect((await f.storage.headObject(f.companyId, uploaded[0].objectKey!)).exists).toBe(true);
     expect(snapshots.filter(snapshot => snapshot.status === "committed")).toHaveLength(1);
     expect(await readFile(path.join(authority.location!.remoteCwd, "saved.txt"), "utf8")).toBe("one preserved result\n");
+  }, 30_000);
+
+  it("stamps each save invocation with the process that runs it and clears the stamp when it settles", async () => {
+    const f = await preparedFailure();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const paused: AdapterSandboxExecutionTarget = { ...f.target, runner: { ...f.target.runner!,
+      execute: async input => { entered(); await gate; return f.target.runner!.execute(input); } } };
+    const saving = saveRemoteWorkspace({ db, storage: f.storage, workspace: f.workspace, runId: f.runId, lease: f.lease,
+      target: paused, assertOwned: async () => undefined });
+    await started;
+    const snapshotOperation = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
+      sql`${workspaceOperations.metadata}->>'boundary' = 'final'`)))[0]!;
+    const running = await snapshotOperation();
+    const work = running.metadata!.saveWork as { activeIds: string[]; owners: Record<string, { bootId: string; pid: number }> };
+    expect(work.activeIds).toHaveLength(1);
+    expect(work.owners[work.activeIds[0]!]).toMatchObject({ bootId: currentControllerBootId(), pid: process.pid });
+    expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(true);
+    release();
+    await saving;
+    expect((await snapshotOperation()).metadata).toMatchObject({ saveWork: { activeIds: [], owners: {} } });
+    expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(false);
   }, 30_000);
 
   it("ends a failed save operation with its redacted cause and reopens it for the retry", async () => {
