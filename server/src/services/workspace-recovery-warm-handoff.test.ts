@@ -189,8 +189,8 @@ describe("automatic retained workspace recovery", () => {
   it.each([1, 2])("recovers saved work after %s warm handoffs that began with another task in the same workspace", async hops => {
     const f = await warmHandoffSource(hops, undefined, { firstOwnerInSharedWorkspace: true });
     const [first] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.priorLeaseId));
-    expect(first).toMatchObject({ issueId: f.firstOwnerIssueId, executionWorkspaceId: f.firstOwnerIssueId, status: "expired" });
-    expect(f.firstOwnerIssueId).not.toBe(f.issueId);
+    expect(first).toMatchObject({ issueId: f.firstOwnerIssueId, executionWorkspaceId: f.executionWorkspaceId, status: "expired" });
+    expect(new Set([f.firstOwnerIssueId, f.issueId, f.executionWorkspaceId]).size).toBe(3);
     await recoverRetainedWorkspace(f.input);
     const state = readSystemRecovery((await action(f.actionId)).evidence)!;
     expect(state.failure?.code ?? null).toBeNull();
@@ -199,13 +199,19 @@ describe("automatic retained workspace recovery", () => {
     expect(await readFile(path.join(f.host, "after-warm-stop.txt"), "utf8")).toBe("stopped turn work\n");
   }, 30_000);
 
-  it.each(["lease_task", "unshared_workspace"])(
+  it.each(["lease_task", "unshared_workspace", "other_workspace"])(
     "keeps a cross-task predecessor fenced unless its own records prove the shared workspace: %s", async fault => {
       const f = await warmHandoffSource(1, undefined, { firstOwnerInSharedWorkspace: true });
       const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "Unrelated task" }).returning();
       if (fault === "lease_task") await db.update(environmentLeases).set({ issueId: other.id }).where(eq(environmentLeases.id, f.priorLeaseId));
       if (fault === "unshared_workspace") await db.update(environmentLeases).set({ executionWorkspaceId: null })
         .where(eq(environmentLeases.id, f.priorLeaseId));
+      if (fault === "other_workspace") {
+        const [otherWorkspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, mode: "isolated_workspace",
+          strategyType: "test", name: "Other workspace" }).returning();
+        await db.update(environmentLeases).set({ issueId: f.issueId, executionWorkspaceId: otherWorkspace.id })
+          .where(eq(environmentLeases.id, f.priorLeaseId));
+      }
       expect(await inspectWorkspaceSource(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, actionId: f.actionId }))
         .toMatchObject({ status: "blocked", failureCode: "allocation_ownership_ambiguous" });
       await expect(readFile(path.join(f.host, "after-warm-stop.txt"))).rejects.toMatchObject({ code: "ENOENT" });

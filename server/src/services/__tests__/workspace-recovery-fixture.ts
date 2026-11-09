@@ -115,7 +115,8 @@ export function useWorkspaceRecoveryFixture(executionTargets: Map<string, Adapte
   });
 }
 
-export async function seed(mode = "native", nativeDescriptor = true, resourceDisposition: "destroy" | "keep_running" = "destroy", reusable = false, ephemeral = false) {
+export async function seed(mode = "native", nativeDescriptor = true, resourceDisposition: "destroy" | "keep_running" = "destroy", reusable = false, ephemeral = false,
+  descriptorWorkspaceId?: string) {
   const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), actionId: string = randomUUID();
   await db.insert(companies).values({ id: companyId, name: "Workspace recovery", defaultResponsibleUserId: "board", issuePrefix: `R${companyId.slice(0, 6)}` });
   fixtureCompanyIds.add(companyId);
@@ -147,7 +148,7 @@ export async function seed(mode = "native", nativeDescriptor = true, resourceDis
     }) } };
   targets.set(lease.id, target);
   if (nativeDescriptor) {
-    const prepared = await prepareNativeWorkspaceSync({ db, companyId, workspaceId: issueId, workspaceLocalDir: host,
+    const prepared = await prepareNativeWorkspaceSync({ db, companyId, workspaceId: descriptorWorkspaceId ?? issueId, workspaceLocalDir: host,
       runId, lease: lease as EnvironmentLease, target, resourceDisposition });
     expect(prepared).not.toBeNull();
   } else {
@@ -397,10 +398,12 @@ export async function stoppedWorkspaceWorker(f: { runId: string }) {
 
 export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof environmentLeases.$inferSelect) => Promise<void>,
   options: { firstOwnerInSharedWorkspace?: boolean } = {}) {
-  const prior = await seed("native", true, "keep_running", true), source = await run(prior.runId);
+  const sharedWorkspaceId = options.firstOwnerInSharedWorkspace ? randomUUID() : undefined;
+  const prior = await seed("native", true, "keep_running", true, false, sharedWorkspaceId), source = await run(prior.runId);
+  const descriptorWorkspaceId = sharedWorkspaceId ?? prior.issueId;
   let executionWorkspaceId: string | null = null, taskId: string = prior.issueId;
-  if (options.firstOwnerInSharedWorkspace) {
-    const [workspace] = await db.insert(executionWorkspaces).values({ id: prior.issueId, companyId: prior.companyId,
+  if (sharedWorkspaceId) {
+    const [workspace] = await db.insert(executionWorkspaces).values({ id: sharedWorkspaceId, companyId: prior.companyId,
       mode: "isolated_workspace", strategyType: "test", name: "Shared task workspace" }).returning();
     const [later] = await db.insert(issues).values({ companyId: prior.companyId, assigneeAgentId: source.agentId,
       status: "blocked", title: "Later task in the same workspace" }).returning();
@@ -429,7 +432,7 @@ export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof en
     [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, acquired.id));
     const target = { ...previousTarget, leaseId: lease.id, sandboxLeaseAcquisition: { outcome: "resumed" as const, providerLeaseId: prior.providerLeaseId } };
     targets.set(lease.id, target);
-    expect(await prepareNativeWorkspaceSync({ db, companyId: prior.companyId, workspaceId: prior.issueId,
+    expect(await prepareNativeWorkspaceSync({ db, companyId: prior.companyId, workspaceId: descriptorWorkspaceId,
       workspaceLocalDir: prior.host, runId: current.id, lease: lease as EnvironmentLease, target, resourceDisposition: "keep_running" })).not.toBeNull();
     leaseIds.push(lease.id); previousRunId = current.id; previousLeaseId = lease.id; previousTarget = target;
   }
@@ -444,7 +447,7 @@ export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof en
   expect(stopping).not.toBeNull();
   expect(await settleStopOnlyCleanup(db, stopping!, { attemptId: String(stopping!.metadata!.pendingCleanupAttemptId),
     receipt: { providerLeaseId: prior.providerLeaseId, state: "stopped" } })).not.toBeNull();
-  return { ...prior, issueId: taskId, priorRunId: prior.runId, priorLeaseId: prior.lease.id, firstOwnerIssueId: prior.issueId,
+  return { ...prior, issueId: taskId, priorRunId: prior.runId, priorLeaseId: prior.lease.id, firstOwnerIssueId: prior.issueId, executionWorkspaceId,
     leaseIds, runId: current.id, lease, actionId: action.id, input: { ...prior.input, issueId: taskId, runId: current.id, actionId: action.id } };
 }
 

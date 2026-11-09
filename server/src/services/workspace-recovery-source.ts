@@ -202,9 +202,7 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
         : priorRemote?.state === "saved" && Boolean(priorRemote.snapshotId) && Boolean(remoteDescriptor)
           && priorRemote.epoch < remoteDescriptor!.epoch;
       const priorOwner = priorOwners.find(item => item.runId === predecessor.heartbeatRunId);
-      const sameTask = predecessor.issueId === input.issueId;
       if (!prior || prior.runtimeMode !== "native" || prior.agentId !== run.agentId ||
-          (!sameTask && (!lease.executionWorkspaceId || predecessor.executionWorkspaceId !== lease.executionWorkspaceId)) ||
           !predecessor.issueId || prior.nativeIssueId !== predecessor.issueId || priorOwner?.issueId !== predecessor.issueId ||
           !terminalWorkspaceRunStates.includes(prior.status) || adapterExecutionControls.has(prior.id) ||
           (prior.controllerLeaseExpiresAt && prior.controllerLeaseExpiresAt > new Date()) ||
