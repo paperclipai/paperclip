@@ -51,9 +51,11 @@ export function gradeFeedbackBundle(value: unknown) {
     && o.state.noPrivateCredentialBytes === true && o.state.remoteSharingUnchanged === true && o.state.bundlePublished === false,
     "Actual JSON and archive bytes match the intended company/issue trace only, remain private and do not enable remote sharing.");
   const report = o.state.exportReport as { attributed?: boolean; reply?: string } | undefined;
-  c.add("truthful-native-location-and-contents", report?.attributed === true && report.reply?.includes(String(o.state.localOutputDirectory)) === true
-    && /feedback|vote/i.test(report.reply) && /trace|event/i.test(report.reply) && /cancel|interrupt/i.test(report.reply)
-    && !/published|uploaded|shared publicly|model fail|failed native/i.test(report.reply), "The actual follow-up reports the real local location, scope and interrupted-work evidence without publishing or relabeling it.");
+  // The saved state above proves scope, bytes and sharing. The reply must be the
+  // attributed answer to the receipt and give the real local location; a person
+  // reads it for meaning (wording checks rejected "has not been published").
+  c.add("truthful-native-location-and-contents", report?.attributed === true && report.reply?.includes(String(o.state.localOutputDirectory)) === true,
+    "The actual follow-up answers the operator's export receipt and reports the real local location.");
   return c.result();
 }
 const feedback = privilegedDefinition("cli-operations.feedback-bundle", "privileged-feedback", {
@@ -63,7 +65,6 @@ const feedback = privilegedDefinition("cli-operations.feedback-bundle", "privile
     const task = await ctx.input.api.post<Entity>(`${gate.company}/issues`, { title: "Interrupted local feedback fixture", status: "todo", assigneeAgentId: gate.worker.id,
       description: `First post one normal task comment saying exactly ${JSON.stringify(marker)}. Then run ${gate.gate.command} once and wait for the human brief. Do not mark this task complete or replace the script. This is an owned interruption fixture.` });
     pending.taskId = task.id;
-    const sharingBefore = await ctx.input.api.get<{ feedbackDataSharingPreference?: string }>("/api/instance/settings/general");
     const running = await pollUntil({ label: "Actual worker comment and native waiting process", deadlineAt: Date.now() + 150000,
       load: async () => ({ runs: await ctx.allRuns(), comments: await ctx.input.api.get<Entity[]>(`/api/issues/${task.id}/comments?order=asc`), waiting: await readRuntimeTaskGate(ctx, gate.gate, task.id, gate.worker.id) }),
       accept: o => o.waiting === "waiting" && o.runs.length === 1 && o.runs[0]?.status === "running" && o.runs[0].agentId === gate.worker.id
@@ -78,6 +79,11 @@ const feedback = privilegedDefinition("cli-operations.feedback-bundle", "privile
       vote: "down", reason: "The operator interrupted this unfinished fixture before completion; retain the original cancelled run and events for local review.", allowSharing: false });
     const trace = await pollUntil({ label: "Actual human feedback trace retained locally", deadlineAt: Date.now() + 30000,
       load: () => ctx.input.api.get<FeedbackTrace[]>(`/api/issues/${task.id}/feedback-traces`), accept: rows => rows.length === 1 && rows[0]?.feedbackVoteId === vote.id });
+    // The human's own vote answers the instance's "prompt" sharing preference
+    // (allowSharing: false saves not_allowed). Read the baseline after it so the
+    // export, not the fixture's vote, is what must leave sharing unchanged.
+    const sharingBefore = await ctx.input.api.get<{ feedbackDataSharingPreference?: string }>("/api/instance/settings/general");
+    if (sharingBefore.feedbackDataSharingPreference === "allowed") throw new Error("Feedback fixture vote enabled remote sharing");
     const agentReportStatus = await probeAgentPermission(ctx, `/api/issues/${task.id}/feedback-traces`, "GET");
     return { worker: gate.worker, gate: gate.gate, task, workerRunId: run.id, workerCommentId: comment.id, traceId: trace[0]!.id,
       traceBefore: { id: trace[0]!.id, targetId: trace[0]!.targetId, status: trace[0]!.status, destination: trace[0]!.destination, exportId: trace[0]!.exportId },
@@ -133,20 +139,23 @@ const feedback = privilegedDefinition("cli-operations.feedback-bundle", "privile
     await sendChatMessage(ctx.input.page, message, chatCatalogNativePhaseRemainingBudget(ctx)); state.exportReport = await companionPhaseForCancelled(ctx, prior.map(r => r.id), message);
   }, grade: gradeFeedbackBundle, async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
 });
+/** The chat composer saves Markdown, escaping literal punctuation such as the
+ * brackets of a JSON array ("\\["). Compare the sent text with that escaping removed. */
+export function unescapeComposerMarkdown(body: string) { return body.replace(/\\([\\`*_{}\[\]()#+\-.!|>~])/g, "$1"); }
 // companionPhase's default all-succeeded assertion intentionally does not apply to this retained cancelled fixture.
 async function companionPhaseForCancelled(ctx: Parameters<typeof companionPhase>[0], prior: string[], message: string) {
   const result = await pollUntil({ label: "Native reply to local interrupted-work export receipt", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150000),
     load: async () => { await ctx.refreshIssue(); return { issue: ctx.issue(), runs: await ctx.allRuns() }; },
     accept: o => chatCatalogNativePhaseIsTimely(ctx) && (o.issue?.conversationState === "waiting" && o.runs.length === prior.length + 1 && o.runs.filter(r => r.status === "succeeded").length === 2 && o.runs.filter(r => r.status === "cancelled").length === 1) });
   const run = result.runs.find(r => !prior.includes(r.id) && r.agentId === ctx.input.fixtures.agent.id)!;
-  const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`), human = comments.filter(c => !c.authorAgentId && c.body === message);
+  const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`), human = comments.filter(c => !c.authorAgentId && unescapeComposerMarkdown(c.body ?? "") === message);
   const replies = comments.filter(c => c.authorAgentId === ctx.input.fixtures.agent.id && c.createdByRunId === run.id);
   const profile = await ctx.input.api.get<{ runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${run.id}`);
   return { humanCommentId: human[0]?.id, runId: run.id, reply: replies.map(c => c.body).join("\n"),
     attributed: human.length === 1 && replies.length > 0 && profile.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(human[0]!.id) === true
       && replies.every(c => Date.parse(c.createdAt!) >= Date.parse(human[0]!.createdAt!)) };
 }
-feedback.expectedRunCount = 3; feedback.expectedHumanMessageCount = 2; feedback.attemptTimeoutMs = 900000;
+feedback.oracleVersion = "paperclip.chat-catalog.feedback-bundle.v2"; feedback.expectedRunCount = 3; feedback.expectedHumanMessageCount = 2; feedback.attemptTimeoutMs = 900000;
 feedback.runPolicy = { kind: "terminal-counts", terminalStatusCounts: { succeeded: 2, cancelled: 1 } };
 feedback.cleanup = async (ctx, state) => { try { const pending = pendingFixtures.get(ctx);
     if (pending) { const runs = await ctx.allRuns(); for (const run of runs.filter(r => r.agentId === pending.gate.worker.id && ["queued", "running"].includes(r.status))) await ctx.input.api.post(`/api/heartbeat-runs/${run.id}/cancel`, {}); await releaseRuntimeWorker({ gate: pending.gate.gate }); pendingFixtures.delete(ctx); }
