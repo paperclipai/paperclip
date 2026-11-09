@@ -648,6 +648,28 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(await quarantined()).toHaveLength(1);
   }, 60_000);
 
+  it.each([
+    { label: "an interrupted bootstrap that never opened its session", turnIssued: false },
+    { label: "a bootstrap copy that already issued a turn", turnIssued: true },
+  ])("retires a finished owner past its own quarantined earlier bootstrap: $label", async ({ turnIssued }) => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    expect(await followUp.start()).toBe(stranded("owner_observed"));
+    const [copy] = await quarantined();
+    const copyRoot = join(stateDirectory, "quarantine", copy!);
+    const path = join(copyRoot, "control-plane", "control-plane-state.json");
+    const state = JSON.parse(await readFile(path, "utf8"));
+    const bootstrap = state.commands.filter((command: { type: string }) => command.type === "run.prepare" || command.type === "session.open"
+      || (turnIssued && command.type === "turn.start"));
+    for (const command of bootstrap) command.status = command.type === "run.prepare" ? "completed" : "pending";
+    await writeFile(path, JSON.stringify({ ...state, commands: bootstrap, committedEvents: [], ackedSourceSeq: 0 }));
+    await rm(join(copyRoot, "runner"), { recursive: true, force: true });
+    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    expect(await followUp.start()).toBe(turnIssued
+      ? stranded("quarantine_journal_commands_unsettled(session.open.pending,turn.start.pending)") : ADMITTED);
+  }, 60_000);
+
   it("keeps an unsuspended Runner receipt decisive after a retry rebuilds the root", async () => {
     const prior = await seedRecoveredPriorRun();
     const followUp = await admitFollowUp(prior);

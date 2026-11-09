@@ -5612,6 +5612,7 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
     if (!isSafeNativeStateDirectory(quarantine)) return refuse("quarantine_unsafe");
     for (const name of readdirSync(quarantine)) {
       if (!name.startsWith(`${basename(input.root)}.`)) continue;
+      if (quarantinedBootstrapOfOwnerHeldNoProviderWork(resolve(quarantine, name), identity, localRunner)) continue;
       const copy = readSettledRunnerdProjection(resolve(quarantine, name), identity, { localRunner });
       if (copy.refused !== undefined) return refuse(`quarantine_${copy.refused}`);
     }
@@ -5625,6 +5626,14 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
     return null;
   };
   return { finished: true, run: prior.run, recheck };
+}
+
+function quarantinedBootstrapOfOwnerHeldNoProviderWork(root: string, identity: Record<string, string>,
+  localRunner: boolean): boolean {
+  if (!isSafeNativeStateDirectory(root)) return false;
+  const copied = readRunnerdDurableIdentity(root);
+  if (!copied || Object.entries(identity).some(([key, value]) => copied[key] !== value)) return false;
+  return runnerdStateProvesIncompleteBootstrap(root, { localProcesses: localRunner });
 }
 
 async function retireFinishedPerTurnRunnerdOwner(input: Parameters<typeof inspectFinishedPerTurnRunnerdOwner>[0])
