@@ -5,6 +5,8 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
+import { ThemeProvider } from "@/context/ThemeContext";
+import { MemoryRouter } from "@/lib/router";
 import {
   reorderQueuedMessageEntries,
   TaskChatQueuedMessages,
@@ -76,7 +78,7 @@ describe("TaskChatQueuedMessages", () => {
       onDiscard: vi.fn().mockResolvedValue(undefined),
       ...overrides,
     };
-    flushSync(() => root.render(<TaskChatQueuedMessages {...props} />));
+    flushSync(() => root.render(<MemoryRouter><ThemeProvider><TaskChatQueuedMessages {...props} /></ThemeProvider></MemoryRouter>));
     return props;
   }
 
@@ -114,6 +116,28 @@ describe("TaskChatQueuedMessages", () => {
     ).toHaveLength(2);
     expect(container.textContent).toContain("First queued message");
     expect(container.textContent).toContain("Second queued message");
+  });
+
+  it("renders queued Markdown and screenshot thumbnails without showing image syntax", () => {
+    const body = "Check **mobile** and *desktop* with `pnpm verify`.\n\n![mobile.png](/api/attachments/mobile/content)\n![desktop.png](/api/attachments/desktop/content)";
+    render({ queue: { ...queue, entries: [{ ...queue.entries[0], comment: { ...queue.entries[0].comment, body } }] } });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')!;
+    expect(row.querySelector("strong")?.textContent).toBe("mobile");
+    expect(row.querySelector("em")?.textContent).toBe("desktop");
+    expect(row.querySelector("code")?.textContent).toBe("pnpm verify");
+    expect([...row.querySelectorAll("img")].map(img => [img.alt, img.getAttribute("src")])).toEqual([
+      ["mobile.png", "/api/attachments/mobile/content"],
+      ["desktop.png", "/api/attachments/desktop/content"],
+    ]);
+    expect(row.textContent).not.toContain("![");
+    expect(row.textContent).not.toContain("/api/attachments");
+  });
+
+  it("shows a thumbnail for an image-only queued message", () => {
+    const body = "![screen.png](/api/attachments/screen/content)";
+    render({ queue: { ...queue, entries: [{ ...queue.entries[0], comment: { ...queue.entries[0].comment, body } }] } });
+    expect(container.querySelector('img[alt="screen.png"]')?.getAttribute("src")).toBe("/api/attachments/screen/content");
+    expect(container.textContent).not.toContain(body);
   });
 
   it.each(["legacy", "native", "native-plan"] as const)("shows a read-only response and sends it only on click for %s", async (runtime) => {
