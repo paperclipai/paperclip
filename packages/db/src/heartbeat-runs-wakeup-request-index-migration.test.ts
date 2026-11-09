@@ -14,16 +14,12 @@ const migrationFile = "0451_heartbeat_runs_wakeup_request_index.sql";
     const database = await startEmbeddedPostgresTestDatabase("heartbeat-wakeup-index-");
     const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
     try {
-      // A concurrent build cannot run inside the migration transaction, so this
-      // row also proves the migration runs through the top-level statement path.
       const [built] = await sql`SELECT indisvalid, indisunique, pg_get_indexdef(indexrelid) definition
         FROM pg_index WHERE indexrelid=${indexName}::regclass`;
       expect(built!.indisvalid).toBe(true);
       expect(built!.indisunique).toBe(false);
       expect(built!.definition).toContain("ON public.heartbeat_runs USING btree (wakeup_request_id)");
 
-      // Operators work around the missing index by creating it by hand. A
-      // replay over that index must still record exactly one history receipt.
       const content = await readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
       const hash = createHash("sha256").update(content).digest("hex");
       await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash=${hash}`;
