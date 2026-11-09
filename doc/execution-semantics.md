@@ -569,7 +569,24 @@ writer, measured from the time the writer ended. After the cutoff, preparation
 fails with the unfinished-writer error and leaves the held files unchanged.
 This wait is also one parked retry, for example after a reassignment stops the
 writer. It is re-checked every minute while the ended writer's hold settles, is
-admitted once the hold releases, and stops parking at the same cutoff.
+admitted once the hold releases, and stops parking at the same cutoff. The
+writer's final save commit and an unchanged release (below) make these waiters
+due immediately instead of at the next re-check.
+
+A writer that ended (failed, cancelled, interrupted or timed out) without
+changing its files releases the hold at once, with no snapshot. Its workspace
+keeps the saved version it started from. Preparation records that starting
+point only when it began from a clean saved version and added nothing to it:
+no recovered attachments, no repository outside the saved version and no
+workspace migration. The release requires durable evidence that nothing ran
+after that point: no execution or provider event, process, runner checkpoint,
+native result or provider turn in a checkpoint for that run; no workspace
+operation other than a restore; and no task repository outside the saved
+version. The writer's owner fence must also be clear. Any missing or ambiguous evidence,
+including a writer prepared by an earlier release without that starting point,
+keeps the full save. The next run's reservation, cancelled-workspace
+preservation and a later final save each apply this release. A repeated save
+returns the same version.
 
 A writer stopped mid-run, for example by reassignment, keeps its unsaved files
 in its stopped sandbox. When the run used a reusable (warm) sandbox, the stop
