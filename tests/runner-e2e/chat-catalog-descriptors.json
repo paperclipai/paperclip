@@ -2696,7 +2696,7 @@
       "../../ui/src/pages/NotFound.tsx",
       "chat-query-attachments.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.gated-lab.v2",
+    "oracleVersion": "paperclip.chat-catalog.privileged.gated-lab.v3",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,

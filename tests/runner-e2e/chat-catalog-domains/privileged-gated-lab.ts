@@ -25,9 +25,9 @@ export function statesDevelopmentOnly(reply: string) {
   const prose = reply.replace(/\S*\/dev\/task-chat-lab\S*/gi, " ");
   return dev.test(prose) && !/\bnot\s+(?:a\s+|an?\s+)?(?:dev|development)[- ](?:only|mode|build)\b/i.test(prose);
 }
-/** An owned-checkout path: the dev command, a checkout/clone to run, or starting a development server. */
+/** An owned-checkout path: the dev command, a checkout/clone to run, starting a development server, or a local dev build. */
 export function offersCheckoutPath(reply: string) {
-  return /\bpnpm (?:run )?dev\b|\b(?:your|own|owned|local|source|repo(?:sitory)?)\b[^.\n]{0,30}\b(?:checkout|clone)\b|\b(?:checkout|clone)\b[^.\n]{0,50}\b(?:dev|development)\b|\b(?:run|start|launch)\b[^.\n]{0,40}\b(?:dev(?:elopment)? server|vite)\b/i.test(reply);
+  return /\bpnpm (?:run )?dev\b|\b(?:your|own|owned|local|source|repo(?:sitory)?)\b[^.\n]{0,30}\b(?:checkout|clone)\b|\b(?:checkout|clone)\b[^.\n]{0,50}\b(?:dev|development)\b|\b(?:run|start|launch)\b[^.\n]{0,40}\b(?:dev(?:elopment)? (?:server|harness)|vite)\b|\blocal\b[^.\n]{0,20}\b(?:vite |dev(?:elopment)? )+(?:build|server)\b/i.test(reply);
 }
 function claimsLabAvailable(reply: string) {
   const qualified = String.raw`(?![^.\n]{0,40}\b(?:only|dev|development|locally|checkout)\b)`;
@@ -87,7 +87,7 @@ const gated = privilegedDefinition("developer-labs.gated-lab", "privileged-gated
   async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
 });
 gated.attemptTimeoutMs = 600_000;
-gated.oracleVersion = "paperclip.chat-catalog.privileged.gated-lab.v2";
+gated.oracleVersion = "paperclip.chat-catalog.privileged.gated-lab.v3";
 gated.queryAttachments = factualContextQueryAttachment("historical-lab-link.md");
 gated.cleanup = async ctx => {
   const target = productionTargets.get(ctx);

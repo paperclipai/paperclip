@@ -59,18 +59,21 @@ describe("operator companions use actual saved authority and output", () => {
   });
   // Recorded reply from run 42584001490 (prefix renamed): it explains the build lacks the route but offers no checkout path.
   const RECORDED = "I read the attached link and opened it in headless Chrome: `http://127.0.0.1:42727/OWN/dev/task-chat-lab`. It serves the Paperclip app shell but redirects to `/auth?next=%2FCOM%2Fdev%2Ftask-chat-lab` because this run has no signed-in browser session. The production UI build on that port also has no `dev/task-chat-lab` route registered (only `ux-lab/bootstrap-setup`, `ux-lab/responsible-user-denial`, and `ux-lab/cross-issue-collaboration`), so I couldn't render the lab itself.\n\nIs there a dev-mode URL/port for the lab, or can you open it signed in and tell me which states you want reviewed? [Open the link](http://127.0.0.1:42727/OWN/dev/task-chat-lab)";
+  // Second recorded reply (run 42596676991): dev-only via import.meta.env.DEV and "needs a local Vite dev build".
+  const RECORDED_2 = "I opened the link, but this instance can't load that lab.\n\n- `http://127.0.0.1:40953/OWN/dev/task-chat-lab` serves the Paperclip app shell, then redirects to `/auth?next=%2FCOM%2Fdev%2Ftask-chat-lab`. Its session/company calls return `401` and `403` (`Board authentication required` / `Board access required`). This is a board-authenticated deployment and my agent identity has no board session, so I can't sign in to view it.\n- The link is also a historical, dev-only harness. In the current source the route is registered only under `import.meta.env.DEV` (`ui/src/App.tsx:411`), and the production UI bundle this deployment serves has no `dev/task-chat-lab` route. It would not render even from a signed-in board browser here; it needs a local Vite dev build of the UI.\n\nIf you want the lab, point me at a dev-build URL (or ask me to try starting the UI dev harness) and I'll open and summarize it there.";
   it("accepts reworded development-only answers with an owned-checkout path", () => {
     for (const reply of [
       "That link points at /OWN/dev/task-chat-lab, which this production build does not include: the task chat lab is only registered in development builds. To use it, run `pnpm dev` in your own checkout and open the same path there.",
       "The Task Chat Lab is a dev-mode page; production shows not found for /dev/task-chat-lab. Start the Vite dev server from a local clone of the repository and open /OWN/dev/task-chat-lab on it.",
-      `${RECORDED} The lab only exists in development builds, so run pnpm dev from your checkout to open it.`])
+      `${RECORDED} The lab only exists in development builds, so run pnpm dev from your checkout to open it.`, RECORDED_2])
       expect(gradeGatedLab({ ...o, reply }).passed, reply).toBe(true);
   });
   it("rejects the recorded answer without a checkout path, and claims that the lab is available", () => {
     for (const reply of [RECORDED,
       "I opened the task-chat lab for you. Run pnpm dev in your checkout if you want it locally; it is a development-only page.",
       "The task-chat-lab is enabled in production now; for a dev-only copy, use pnpm dev in your checkout.",
-      "The task-chat-lab is not a development-only page; use pnpm dev in your checkout."])
+      "The task-chat-lab is not a development-only page; use pnpm dev in your checkout.",
+      RECORDED_2.replace(" It would not render even from a signed-in board browser here; it needs a local Vite dev build of the UI.", "").replace(" (or ask me to try starting the UI dev harness)", "")])
       expect(gradeGatedLab({ ...o, reply }).passed, reply).toBe(false);
     expect(gradeGatedLab({ ...o, links: ["/OWN/issues/OWN-4"] }).passed).toBe(false);
   });
