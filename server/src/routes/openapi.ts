@@ -11655,6 +11655,9 @@ registerCurrentRoute({
     "Inspect a curated app's public MCP and OAuth metadata without credentials or registration",
 });
 
+const OWN_MCP_SERVER_KEY = "When a person's own MCP server needs an API key, the person adds it themselves on [Connect your own MCP server](/<prefix>/apps/byo): they enter its URL and type the key into that page's secure field. "
+  + "An agent cannot enter the key and must not ask for it in chat. Link that page and reply instead of creating the connection here.";
+
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
@@ -11662,6 +11665,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/apps/connect",
   tags: ["tool-access"],
   summary: "Create a draft app connection from gallery input",
+  description: OWN_MCP_SERVER_KEY,
   body: connectToolAppSchema,
   responses: {
     200: r.ok(),
@@ -11833,6 +11837,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/connections",
   tags: ["tool-access"],
   summary: "Create a tool connection",
+  description: OWN_MCP_SERVER_KEY,
   body: createToolConnectionSchema,
   responses: {
     201: r.ok(),
