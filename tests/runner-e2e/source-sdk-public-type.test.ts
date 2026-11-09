@@ -52,6 +52,20 @@ it("classifies varied genuinely public schema types while retaining the raw obse
     const audit = await scanner.audit(); expect(audit.suppressedFindings).toBe(0); expect(audit.observations).toHaveLength(1); expect(audit.observations[0]!.classification).toBe("public_schema_type");
   }
 });
+it("classifies the shipped agent env schema declaration and keeps a literal at that position strict", async () => {
+  // Plugin cells retain packages/shared/dist/validators/agent.d.ts, whose
+  // `OPENROUTER_API_KEY: z.ZodOptional<z.ZodString>` matches the OpenRouter key
+  // shape. Stale default pins left it unresolved and blocked web-server startup.
+  const repository = await realpath(originalRoot), agentFile = "packages/shared/dist/validators/agent.d.ts";
+  const shipped = 'import { z } from "zod";\nexport declare const env: z.ZodObject<{\n    OPENROUTER_API_KEY: z.ZodOptional<z.ZodString>;\n}>;\n';
+  const scanner = createSdkArtifactScanner(repository, []); expect(await scanner.scan(agentFile, Buffer.from(shipped))).toBe(true);
+  expect((await scanner.audit()).observations.map(row => row.classification)).toEqual(["public_schema_type"]);
+  for (const value of ['"syntheticCredentialValue123456789"', "syntheticCredentialValue123456789", 'z.ZodOptional<z.ZodString> | "syntheticCredential1"']) {
+    const strict = createSdkArtifactScanner(repository, []);
+    expect(await strict.scan(agentFile, Buffer.from(shipped.replace("z.ZodOptional<z.ZodString>", value)))).toBe(false);
+    expect((await strict.audit()).observations.map(row => row.classification)).toContain("unresolved_context");
+  }
+});
 it("protects an exact private value even when equal to a public schema symbol", async () => {
   const scanner = createSdkArtifactScanner(root, ["ZodString"], await fixture()); expect(await scanner.scan(file, Buffer.from(declaration))).toBe(false);
   expect((await scanner.audit()).observations[0]!.classification).toBe("private_exact");
