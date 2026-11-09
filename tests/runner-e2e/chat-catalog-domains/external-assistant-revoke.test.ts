@@ -29,6 +29,10 @@ it("accepts any wording once the saved outcome is right, since reply text is not
  for(const reply of ["Only you can do this from Assistant connections. Revoke Old test assistant there; the website task keeps running.","I can't disconnect assistants for you. Use the page linked here; Morgan's website work stays assigned."]){const o=valid();o.reply=reply;o.phaseReplies=[{runId:"ceo-run",body:reply}];expect(gradePersonalRevoke(o).passed).toBe(true);}
  expect(gradePersonalRevoke(undefined).passed).toBe(false);
 });
+it("accepts the native status committer's done transition from the same worker run",()=>{
+ const o=valid();o.activity[0]={entityId:"website",action:"issue.updated",actorType:"system",agentId:null,runId:"worker-run",details:{source:"native_status_decision",toStatus:"done"}} as never;expect(gradePersonalRevoke(o).passed).toBe(true);
+ const p=valid();p.activity[0]={entityId:"website",action:"issue.updated",actorType:"system",agentId:null,runId:"replacement-run",details:{source:"native_status_decision",toStatus:"done"}} as never;expect(gradePersonalRevoke(p).passed).toBe(false);
+});
 it("rejects unsafe optional client labels before any OAuth/provider operation",async()=>{
  await expect(beginConnection(true,undefined,false,"Old test assistant\nInjected")).rejects.toThrow("label");
  await expect(beginConnection(true,undefined,false,"")).rejects.toThrow("label");
