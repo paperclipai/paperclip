@@ -6,6 +6,7 @@ import { notFound, unprocessable } from '../errors.js';
 import { assertSkillSnapshotPath, snapshotFile, skillFileBytes } from './skill-snapshot.js';
 import { indexSkillPackagePaths, inspectSkillPackage } from './skill-package-inspection.js';
 import { auditSkillSnapshot, classifyInventoryKind } from './company-skills.js';
+import { skillRepositoryDependencies } from './skill-repository-dependencies.js';
 
 import type { GitSkillSnapshot, GitSkillSnapshotOptions, GitSkillTreeEntry as TreeEntry } from './skill-source-git-snapshot.js';
 
@@ -14,9 +15,10 @@ export interface GitHubRead {
   withScan?: <T>(operation: () => Promise<T>) => Promise<T>;
   openSnapshot: (input: { repositoryUrl: string; ref: string; commitSha?: string }, options?: GitSkillSnapshotOptions) => Promise<GitSkillSnapshot>;
   readonly connectionId?: string | null;
+  readonly grantId?: string | null;
 }
 export type DiscoveredSkill = SkillSourceCandidate & { files: CompanySkillVersionFileInventoryEntry[] };
-export type ScannedSkillSource = SkillSourceDiscovery & { skills: DiscoveredSkill[]; defaultBranch: string; repositoryFiles?: CompanySkillVersionFileInventoryEntry[] };
+export type ScannedSkillSource = SkillSourceDiscovery & { skills: DiscoveredSkill[]; defaultBranch: string; treeSha?: string; downloadBytes?: number; scanBytes?: number; repositoryFiles?: CompanySkillVersionFileInventoryEntry[]; repositorySubset?: boolean };
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_SCAN_BYTES = 100 * 1024 * 1024;
 const MAX_SCAN_PACKAGES = 1_000;
@@ -33,6 +35,7 @@ export interface SkillScanOptions {
   onProgress?: (event: SkillSourceScanUpdate) => void | Promise<void>;
   /** Discovery needs audited manifests, not the full contents retained for import. */
   retainFiles?: boolean;
+  repositorySubset?: boolean;
 }
 
 type SkillScanInput = { packageMode?: 'skills' | 'repository'; repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string };
@@ -40,6 +43,23 @@ type SkillScanInput = { packageMode?: 'skills' | 'repository'; repositoryUrl: st
 export function scanGitHubSkills(input: SkillScanInput, providerRead: GitHubRead, options: SkillScanOptions = {}): Promise<ScannedSkillSource> {
   const scan = () => scanRepository(input, providerRead, options);
   return providerRead.withScan ? providerRead.withScan(scan) : scan();
+}
+
+/** Oversized repositories may still contain valid, bounded skill packages. */
+export async function scanGitHubSkillsWithPackageFallback(input: SkillScanInput, providerRead: GitHubRead, options: SkillScanOptions = {}): Promise<ScannedSkillSource> {
+  try { return await scanGitHubSkills(input, providerRead, options); }
+  catch (error) {
+    if (input.packageMode !== 'repository' || !(error instanceof Error) || !/^Repository package exceeds/.test(error.message)) throw error;
+    options.signal?.throwIfAborted();
+    try {
+      return await scanGitHubSkills(input, providerRead, { ...options, repositorySubset: true });
+    } catch (subsetError) {
+      if (!(subsetError instanceof Error) || !/^Repository package exceeds/.test(subsetError.message)) throw subsetError;
+      const scan = await scanGitHubSkills({ ...input, packageMode: 'skills' }, providerRead, options);
+      scan.warnings.push('Only skill folders were included because the repository and its referenced files exceed the supported package size. Missing references are listed below.');
+      return scan;
+    }
+  }
 }
 
 async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, options: SkillScanOptions): Promise<ScannedSkillSource> {
@@ -128,12 +148,32 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
       if (declaredBytes > MAX_SCAN_BYTES) throw unprocessable('Skill packages exceed the 100 MB scan limit.');
     }
     const warnings = entries.filter(e => e.mode === '120000' || e.type === 'commit').map(e => `${e.path} — ${e.mode === '120000' ? 'Symlink' : 'Submodule'} couldn’t be included.`);
-    const repositoryInventory = input.packageMode === 'repository' ? entries.filter(entry => entry.type !== 'tree') : null;
+    const dependencyBlobs = new Map<string, Buffer>();
+    let dependencyBytes = 0;
+    const repositoryInventory = input.packageMode !== 'repository' ? null : options.repositorySubset
+      ? await skillRepositoryDependencies(entries, [...inventories.values()].flat(), selectedDirectories, async entry => {
+        if ((entry.size ?? 0) > MAX_FILE_BYTES) return null;
+        options.signal?.throwIfAborted();
+        const bytes = dependencyBlobs.get(entry.sha) ?? await snapshot.readBlob(entry, options.signal);
+        if (bytes.length > MAX_FILE_BYTES) return null;
+        dependencyBytes += bytes.length;
+        if (dependencyBytes > MAX_REPOSITORY_BYTES) throw unprocessable('Repository package exceeds the 61 MB runtime limit.');
+        dependencyBlobs.set(entry.sha, bytes);
+        return bytes;
+      }, snapshot.readBlobs ? async pending => {
+        options.signal?.throwIfAborted();
+        const unread = pending.filter(entry => !dependencyBlobs.has(entry.sha) && (entry.size ?? 0) <= MAX_FILE_BYTES);
+        if (unread.length) for (const [sha, bytes] of await snapshot.readBlobs!(unread, options.signal)) dependencyBlobs.set(sha, bytes);
+      } : undefined) : entries.filter(entry => entry.type !== 'tree');
     if (repositoryInventory && repositoryInventory.length > MAX_REPOSITORY_FILES) throw unprocessable('Repository package exceeds the 9,990 file limit.');
     const readable = repositoryInventory?.filter(entry => entry.type === 'blob' && ['100644', '100755'].includes(entry.mode) && (entry.size ?? 0) <= MAX_FILE_BYTES);
     if (readable && readable.reduce((sum, entry) => sum + (entry.size ?? 0), 0) > MAX_REPOSITORY_BYTES) throw unprocessable('Repository package exceeds the 61 MB runtime limit.');
     // A single bounded batch supplies both skill manifests and support files.
-    const blobs = readable && snapshot.readBlobs ? await snapshot.readBlobs(readable, options.signal) : new Map<string, Buffer>();
+    const blobs = dependencyBlobs;
+    if (readable && snapshot.readBlobs) {
+      const remaining = readable.filter(entry => !blobs.has(entry.sha));
+      if (remaining.length) for (const [sha, bytes] of await snapshot.readBlobs(remaining, options.signal)) blobs.set(sha, bytes);
+    }
     let totalBytes = 0;
     const readBlob = async (entry: TreeEntry) => {
       if ((entry.size ?? 0) > MAX_FILE_BYTES) return null;
@@ -194,6 +234,7 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
       const inventory = repositoryInventory!;
       repositoryFiles = [];
       const packageWarnings = [...warnings];
+      if (options.repositorySubset) packageWarnings.push('Only skill folders and referenced files were included because the repository exceeds the supported package size.');
       totalBytes = 0;
       Object.assign(progress, { currentPath: null, checkedFiles: 0, totalFiles: inventory.length });
       for (const entry of inventory) {
@@ -249,7 +290,9 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
         if (skill.inspection) skill.inspection.references = skill.inspection.references.filter(ref => !included.has(ref.resolvedPath));
       }
     }
-    return { ...(input.packageMode ? { packageMode: input.packageMode } : {}), ...(repositoryPackage ? { repositoryPackage } : {}),
+    return { treeSha: snapshot.treeSha, downloadBytes: snapshot.downloadBytes, ...(options.repositorySubset ? { repositorySubset: true } : {}),
+      scanBytes: Math.min(MAX_SCAN_BYTES, snapshot.entries.reduce((sum, entry) => sum + (entry.type === 'blob' ? entry.size ?? MAX_SCAN_BYTES : 0), 0)),
+      ...(input.packageMode ? { packageMode: input.packageMode } : {}), ...(repositoryPackage ? { repositoryPackage } : {}),
       ...(repositoryFiles && options.retainFiles !== false ? { repositoryFiles } : {}),
       connectionId: providerRead.connectionId ?? null, repositoryId: String(repo.id), repositoryUrl: `https://github.com/${repo.full_name.toLowerCase()}`, fullName: repo.full_name, trackingRef, commitSha: commit.sha,
       defaultBranch: repo.default_branch, candidates: skills.map(({ files: _files, ...candidate }) => candidate), warnings, skills };
@@ -258,7 +301,7 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
 
 /** Reauthorize the caller and re-audit the selected package; never trust a client-supplied manifest. */
 export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, read: GitHubRead): Promise<SkillSourceFilePreview> {
-  const scan = await scanGitHubSkills({ ...input, onlySkillPath: input.skillPath }, read);
+  const scan = await scanGitHubSkillsWithPackageFallback({ ...input, onlySkillPath: input.skillPath }, read);
   if (scan.commitSha.toLowerCase() !== input.commitSha.toLowerCase()) throw unprocessable('The preview commit did not match the requested snapshot.');
   const skill = scan.skills.find(candidate => candidate.path === input.skillPath);
   if (!skill) throw notFound('Skill package not found at this commit.');

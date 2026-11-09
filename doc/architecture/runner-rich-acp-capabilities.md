@@ -1,6 +1,41 @@
 # Rich ACP integration and qualification report
 
-## Current integration — 2026-10-08
+## Current source integration — 2026-10-19
+
+The composed Claude source declares **Pi profile 27**
+(`sha256:b1b75a1ae3ac498eb07b95b96bebf4da86227b83d09276076dd5c222e3964dba`)
+and **Copilot profile 23**, still pending qualification
+(`sha256:6ca1e2c9efa23887ba6f08d89980c91d13114640ac8a1a79f00f27aa8cd39d63`).
+These identities bind the shared Claude effort and lifecycle changes plus
+master's OpenRouter attribution. Copilot's shared bridge binding also includes
+Claude-only essential tool metadata; its own tool catalog is unchanged. Provider executable closures, model/effort
+options and qualification boundaries are unchanged. Current package and source
+checks remain separate from retained provider execution results, which keep
+their literal profile/source identities. Earlier immutable fixtures remain
+historical; they are not accepted as the current source identity.
+
+## Historical source integration — 2026-10-14
+
+Pi profile 25 (`sha256:dd67387487dadb08da76534c057dc0aa059f7698d1779cbd5fc452813828167a`)
+advances the shared sandbox source attestation after Claude settings initialization
+moved behind provider lifetime ownership. Profile 23 remains an immutable
+historical identity. Pi's provider executable closures, model/effort options and
+platform qualification are unchanged; retained live evidence keeps its literal
+profile/source identity. Copilot remains pending at profile 19. Current package
+and source controls are separate from those retained provider execution results.
+
+The actual Codex squash `adb69e8f09852c772d9901ae270e5b2d66e39c77`
+already owns Copilot profile 18 for the Grok descriptor schema. Its immutable
+fixture is retained. The combined Claude effort sources use profile 19
+(`sha256:a4c7e955df18bf2448224ecce2120b43ede8054fe00e7b33b4044b8bd284b321`),
+with executable, permission policy and pending qualification unchanged. The
+prior unmerged Claude profile-18 attestation is retained separately as
+`copilot-profile-v18-claude-qualification-identity.json`; earlier evidence keeps
+its literal source. Pi profile 25 and its source digest remain unchanged by
+this reconciliation. Existing settings and effort/session admission still need
+final packaged and real-provider qualification on the composed Claude source.
+
+## Historical integration — 2026-10-08
 
 The experimental Runner admits **Pi profile 22** (`sha256:e92078bee3c23bec4100aa589013a44613d054cd686826534025d8019e9f39a9`) and
 **Cursor profile 15**. Copilot remains pending at **profile 17**. Legacy

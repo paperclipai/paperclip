@@ -34,7 +34,9 @@ it("retries a failed step once while pending and removes the failure after recov
   try {
     await act(async () => root.render(<AgentLifecycleStatus agent={agent} onRetry={retry} retryPending={false} />));
     expect(container.textContent).toContain(agent.lifecycleError);
-    expect(container.textContent).toContain("Termination is not complete");
+    expect(container.textContent).toContain("Agent cleanup failed");
+    expect(container.textContent).toContain("Paperclip retries automatically");
+    expect(container.textContent).not.toContain("Required resources are being removed");
     await act(async () => container.querySelector("button")!.click());
     expect(retry).toHaveBeenCalledOnce();
     await act(async () => root.render(<AgentLifecycleStatus agent={agent} onRetry={retry} retryPending />));

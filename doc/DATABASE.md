@@ -2,6 +2,146 @@
 
 Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/). There are three ways to run the database, from simplest to most production-ready.
 
+### Persistent case handoffs
+
+Standalone `cases` add a nullable unique `work_issue_id`, a descriptive `phase`,
+and an integer `handoff_version`. Historical passive records have no primary task;
+native `create_case` requires kickoff plus explicit workflow text and creates its primary task atomically. This is
+separate from `pipeline_cases`.
+
+First-task `initialDocuments` use ordinary `documents`, `document_revisions`
+and `issue_documents` in the case kickoff transaction. No case document copies,
+pending seeds or new tables are introduced. Case read surfaces join accessible
+linked task documents; historical `case_documents` records remain unchanged.
+Required `workflow_document_text` uses the same tables, under ordinary task key
+`workflow`. It is committed before delivery and contributes to the idempotency
+fingerprint. Existing cases and tasks receive no inferred workflow or backfill.
+Authoring guidance recommends both a Mermaid `stateDiagram-v2` map and prose
+defining each transition. Neither representation is parsed into database states.
+
+`case_handoffs` retains the task/agent identities, principal-scoped idempotency
+key and request fingerprint, observed/applied bigint task status revisions,
+instructions/comment, source run, and stable wakeup receipt. Partial unique
+indexes permit only one pending handoff per task and case. The pending-attempt
+index and expiring lease support bounded delivery across controller restarts.
+The ledger states distinguish release waiting, assignment applied but admission
+pending, queue acceptance, and cancellation. Provider execution remains in the
+ordinary heartbeat tables.
+
+`actor_context` retains a versioned, server-derived authorization context for
+delayed assignment. It contains no credentials and is omitted from public
+handoff responses. Applying a delayed transfer rechecks the original caller's
+current assignment permissions. Historical pending transfers without this
+context fail closed; an operator can cancel them and request a new handoff.
+
+Terminal handoffs have `destination_kind = 'done'`, a null destination agent,
+and states `awaiting_completion` / `completed` with `completed_at`. They share
+pending task/case uniqueness with agent transfers but do not enter the delivery
+lease index or wake queue. Accepted ordinary task completion and terminal case
+closure commit together. No terminal intent is inferred from a case's status.
+
+`case_access_sources` stores retained logical issue/project identities without
+deletion cascades from those sources. A missing source denies access. The case
+is readable only when every source's existing permissions allow it; unlinking a
+task or changing presentation metadata cannot widen that set. The case handoff
+migration backfills historical project and linked-task sources conservatively
+and leaves all existing cases passive. Source identities are not grants.
+
+### Task query performance
+
+Run-context lookups use expression indexes for both `context_snapshot.issueId`
+and `context_snapshot.paperclipIssue.id`. Task creation provenance has its own
+company-scoped expression index that follows the query's native issue ID and
+legacy `issueId`/`taskId`/`taskKey` precedence. Migration 0345 builds the two new
+indexes concurrently and can resume an interrupted build without blocking run
+writes for the full build. The indexes add storage and run-write overhead; they
+do not change task visibility or secret redaction.
+
+The chat wake-notice sweep compares UUID columns directly against guarded,
+canonical lowercase UUID payload values. Malformed and noncanonical payloads
+still match nothing. The query can use existing primary keys without adding a
+wakeup-history index.
+
+To compare all three queries on the same disposable local PostgreSQL fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-slow-queries.ts --baseline-ref=origin/master
+```
+
+Use a revision before these fixes for `--baseline-ref` after they merge. The
+benchmark loads that revision's chat query, uses synthetic data only, compares
+complete returned rows, and prints timings and `EXPLAIN (ANALYZE, BUFFERS)` plans.
+Local results measure query execution, not staging request latency.
+
+Run history defaults to 200 rows and permits at most 1,000 rows, including
+direct service calls. The UI client requests 200 rows when its caller omits a
+limit. Context summaries expand the stored JSON once per returned row, retaining
+legacy text conversion and the first-class issue binding. Authorization and
+secret redaction still run on the bounded result set.
+Agent detail links fetch an older selected run by ID when it is outside the
+history page, and verify that it belongs to the current company and agent.
+
+Saved-run policy and parent-report lookups read only the `executionPolicy`
+value or the legacy `issueId` and `taskId` values from a run context. PostgreSQL projects
+those JSON values before it sends the row to the controller. Unused prompt and
+launch context does not travel with each policy or parent-report check. JSON
+types, task-key precedence, and company and agent identity checks are preserved.
+Each decision still reads current data; this is not an authorization cache.
+
+Filesystem preparation uses current task/run and selected-configuration checks.
+Historical root-reader authorization has been retired; no retained-reader batch is
+loaded at admission or publication. Workspace-record disclosure still uses task
+privacy checks, independently of filesystem access.
+
+The initial agent JWT run lookup reads only the cancellation state and
+conversation flag from saved run JSON. It does not transfer the full context or
+result. Run status, responsible-user identity, company and agent boundaries,
+and the cancellation response remain unchanged. Later identity refreshes keep
+their existing transaction and data reads.
+
+To measure authentication query responses on disposable synthetic data:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-agent-authentication.ts --baseline-ref=06689c1b3410000bcd65ff40cb469e600209c4db
+```
+
+This compares the current query with the original query in that revision. It
+checks the complete authentication decision and reports returned JSON bytes,
+local query timings, and execution plans. It does not measure request latency
+or fleet-wide savings.
+
+To compare the real summary and full history queries with an earlier revision:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-run-history.ts --baseline-ref=1e731520bb
+```
+
+The fixture has 1,400 synthetic runs with 192 KiB contexts. Both queries return
+the same 200 complete rows. This benchmark excludes HTTP and redaction latency.
+
+Workspace reads also compare retained task IDs as guarded, canonical UUIDs.
+This lets PostgreSQL check each source task by primary key before it evaluates
+task privacy. Casting the indexed task ID to text can instead evaluate privacy
+across company history for each workspace. These predicates protect workspace-record disclosure and operation metadata;
+repository admission does not use them to authorize filesystem contents. Missing, malformed, noncanonical, and foreign-company source
+IDs still deny access.
+
+The subsequent source-task enumeration also keeps `issues.id` as a UUID. Its
+OR predicate combines the workspace binding index with the task primary key.
+Casting that ID to text forces another scan of company history even after the
+workspace privacy query has passed. The workspace authorization regression
+suite checks both plans and verifies the attached and retained source results.
+
+To compare this query on a disposable fixture with 13,429 tasks:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-authorization.ts --baseline-ref=5c7a025032
+```
+
+The benchmark loads the baseline authorization module with current dependencies,
+compares complete workspace rows, and prints five warm samples and query plans.
+It measures SQL execution, not the full repository admission or agent startup.
+
 ## 1. Embedded PostgreSQL — zero config
 
 If you don't set `DATABASE_URL`, the server automatically starts an embedded PostgreSQL instance and manages a local data directory.
@@ -203,6 +343,31 @@ completed lookups and the separate liveness backfill are not replayed. Projectio
 callers that use a transaction retain single-attempt reads. The opt-in is only
 for a pooled database handle outside a transaction.
 
+The heartbeat run read check uses the same bounded retries. Routes call it with
+the pooled database handle. Its issue existence lookup and its `issue:read`
+authorization decision retry separately, so a disconnect in the decision does not
+replay the completed lookup. Both steps only read. Missing issues, denied
+decisions, and other errors keep their usual behavior.
+
+## Tool profile reads
+
+Tool profile list, detail, and new-tool review queries select only the catalog
+identity, selector, and review fields that they use. They do not load tool input
+or output schemas, annotations, or provider metadata. Application and connection
+lookups for these paths read only IDs and display names. Profile entries,
+bindings, counts, review descriptions, and company filters retain their existing
+behavior. The full catalog and tool execution paths still read their schemas.
+Attention counts use the same catalog projection and read only invocation IDs
+and connection IDs to associate pending requests. Summary queries also omit
+review titles and descriptions; the separate review query still returns them.
+
+Internal effective-tool assignment lookups use the same catalog projection.
+Run preparation, native runtime setup, and connection policy checks need tool
+IDs and names, not complete tool definitions. They still resolve current profile
+bindings, selectors, exclusions, and installed connections on every call. The
+public effective-profile response continues to include complete tool schemas
+and annotations.
+
 ## Execution identity row locks
 
 Identity initialization, credential acquisition, and steering reconciliation lock
@@ -225,6 +390,14 @@ The database mode is controlled by `DATABASE_URL`:
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
 ## Migration authoring checklist
+
+Older embedded databases can use `SQL_ASCII`. Test encoding-sensitive SQL on
+both `SQL_ASCII` and UTF-8 databases. Migration `0355` constructs its whitespace
+pattern from UTF-8 bytes so legacy databases can compile it, and matches whole
+characters instead of trimming individual bytes. Its shipped hash remains a
+valid migration receipt; otherwise an upgrade could replay its older connector
+triggers over the replacements from `0356`. The encoding migration regression
+checks both selector behavior and preservation of that later trigger definition.
 
 The 0126 issue comment attribution backfill showed the failure mode this checklist is meant to prevent: each batch looked for the next rows with an unindexed predicate, so PostgreSQL repeatedly scanned the same table and the migration became O(n²) as the table grew.
 
@@ -279,13 +452,18 @@ keep the application fully active. A failed database check fails startup.
 
 An empty unclaimed application keeps its HTTP server and sandbox plugins ready,
 but skips recurring database work: chat/email delivery, plugin jobs, browser
-cleanup, feedback export, import cleanup, execution reconciliation, heartbeat
+cleanup, feedback export, import cleanup, execution reconciliation, Muse maintenance, heartbeat
 schedules, and automatic backups. Startup migrations, plugin installation, and
 other one-time preparation still run. Normal anonymous health probes return
 `warmStandby: true` without SQL or session lookups. This is application liveness,
 not a current database connectivity check. Other API requests and WebSocket upgrades return 503 until
 the signed claim succeeds. Page and asset requests serve only the static UI
 router, bypassing session, bearer-key, tenant, and other dynamic handlers.
+
+Muse defers its startup qualification-evidence update and recurring database
+sweeps until standby ends. The first enabled sweep marks interrupted evidence
+before it reconciles qualification deadlines or terminal assignments. Claimed
+workspaces retain ordinary Muse maintenance even when idle task drain is active.
 
 The existing signed claim on `GET /api/health` writes the identity durably before
 normal requests and polling resume. No polling discovers claims and no process
@@ -300,6 +478,14 @@ restart with stale provider variables on an isolated warm application first.
 Rollback by setting the marker to `0` and restarting. No schema changes are
 required. This mechanism does not sleep claimed workspaces or replace a durable
 scheduler for their background work.
+
+## Feedback history and idle sleep
+
+Automatic idle checks treat private, unshared feedback as saved data. A sent
+feedback export is history only when its completion timestamp exists and its
+failure reason is clear. Pending, failed, unknown, and inconsistent exports
+still keep the instance awake. These checks do not delete history or change
+feedback sharing and retry behavior.
 
 ## Resource membership tables
 
@@ -370,10 +556,13 @@ is unique, so retries return the original accepted action. Provider source
 ordering fences duplicate and stale updates, and a cleared projection retains
 its revision/cursor tombstone so an older provider event cannot resurrect it.
 
-Issue `status_version` advances only when `status` changes. The JavaScript backup
-path includes user-defined functions and triggers so a restored database keeps
-that invariant. Removing or disabling a future native rollout flag must not
-delete these records; persisted experimental runs remain available for recovery
+Issue `status_version` advances when `status`, `assignee_agent_id`, or
+`assignee_user_id` changes. A combined status and assignment write advances it
+once. Writing the same assignee alone does not advance it. A new blocking
+decision can also advance the revision. The assignment trigger has its own name so replay of the historical status migration cannot remove it. The
+JavaScript backup path includes user-defined functions and triggers so a restored
+database keeps that invariant. Removing or disabling a future native rollout
+flag must not delete these records; persisted experimental runs remain available for recovery
 and inspection.
 
 `native_run_finalizations` also stores restart ownership and recovery state.
@@ -635,6 +824,13 @@ limits and the operator override.
 Project `privacy_owner_user_id` records who may manage its audience independently of project read membership. Creation assigns the authenticated user or run responsible user; migration recovers legacy ownership from creation audit evidence. Missing evidence leaves management with administrators.
 ## Internal agent commentary
 
+The Audit viewer uses the existing company/kind/created index.
+List reads select bounded previews; details load a single full body. Both reads
+and list counts apply company and source-task visibility. The viewer requires
+no experimental toggle. A permission-only migration grants `commentary:view` to
+existing active human company members, including viewers, without changing
+existing grants or the commentary schema.
+
 `agent_commentary` stores company-scoped, attributed complaints and suggestions
 as free-form text in the instance database. Legacy agents use the default
 `complain` and `suggestion-box` runtime skills; native runs use dedicated tools
@@ -701,10 +897,22 @@ this non-secret binding for this namespace; Slack bot installation does not use
 PKCE. Removal and manual recovery invalidate outstanding attempts under the same
 credential-mutation lease used by configuration.
 
+### Slack manager workspace grants
+
+`chat_slack_manager_grants` stores a personal workspace authorization, scoped by
+company, Paperclip user, Slack user, workspace and manager app. Access/refresh
+credentials are references to user-scoped vault entries, never plaintext columns.
+Revision fencing protects reauthorization from concurrent revocation. Per-method
+rate-limit deadlines retain Slack's Retry-After across setup retries.
+
+`chat_slack_registrations.manager_grant_id` is optional, with a composite company
+foreign key. Existing registrations remain customer owned with a null reference.
+Deleting one endpoint removes its registration credentials and attempts, but does
+not revoke grants used by other bots. See [Slack setup](connections/slack-setup.md).
 
 ## Transaction-aware delivery work signals
 
-Five existing delivery queues use process-local work signals to avoid empty
+Durable delivery queues, including plugin resource lifecycle events, use process-local work signals to avoid empty
 polling. Register work **before** writing a queue row, on that row's transaction:
 
 ```ts
@@ -743,3 +951,182 @@ Use the same root client for in-process writers. New queue insertion paths must
 register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
+
+### Project repository skill synchronization
+
+`project_skill_sources` stores durable workspace import jobs and originating project
+access provenance. Active bindings track their repository/ref; inactive bindings retain
+access to installed versions. Project deletion removes bindings, but retained skills
+with `access_source_id` stay restricted when no originating project remains.
+Removing a project source hides tracking using `company_skill_sources.removed_at`
+while retaining its access identity for editable copies and forks. Bindings become
+inactive and refresh leases are invalidated transactionally. Reattachment preserves
+removal; explicit adoption creates or joins an active source with a separate identity.
+Migration 0341 limits repository/ref uniqueness to active sources. Removed sources
+retain their original project audience; editable forks capture independent retained
+provenance so later attachments cannot expose their local edits. Membership and
+project visibility are still evaluated dynamically.
+
+`company_skill_sources` stores automatic-update and future-import preferences, setup
+user/agent and connection/grant IDs, next-check time, failure count and existing refresh
+leases. Existing sources default to automatic updates with their selection preserved.
+Credential values remain in the connection secret system. No project membership lists
+are copied into skills. Background publication uses normal immutable versions and
+transactional activity attribution. Setup agent and connection identifiers remain after
+those identities are deleted. Refresh then requires explicit repair; deletion cannot
+silently substitute board authority or another connection. Execution snapshots keep
+only the delivered skill keys and their immutable version IDs. New executions resolve
+the latest installed versions without an upstream fetch.
+
+Project-derived sources retain `HEAD` for an unspecified repository ref. It follows
+GitHub's current default branch. An explicitly configured branch has a separate
+source identity even if it currently resolves to that default branch. API-key
+agents without an authenticated run may attach repositories; their durable import
+jobs have no setup person and require adoption by an authorized person.
+
+Independent sources can change their tracked branch or revision through source
+settings, including `HEAD` to follow the default branch. Validate the repository
+identity and the requested commit read
+before changing the ref; preserve installed skill IDs, versions and selection. Active
+project bindings must change their ref through the project configuration. `HEAD`
+remains the default-branch alias after refresh, including for independent sources.
+Branch changes use the source revision and lease fence, reject duplicate repository/ref
+sources, keep installed version rows unchanged, and enqueue the normal refresh path.
+Branch listing uses the caller's authorized connection, not the stored setup identity.
+
+### Task workspace records (2026-10-09)
+
+Migration [0336_big_crystal.sql](../packages/db/src/migrations/0336_big_crystal.sql) makes `execution_workspaces.project_id` nullable and changes its project reference to `ON DELETE RESTRICT`: source-project policy cannot disappear while a workspace still depends on it. `issues.execution_workspace_id` remains the sole active task binding. Versioned selection/pending-selection JSON and a binding revision record intent and protect transitions; they are not additional active bindings. Accepting a new pending choice advances the revision without changing the active folder. Its receipt retains the original request revision, so current-choice retries are idempotent and superseded retries fail the revision check.
+
+`execution_workspace_repositories` is company-scoped inventory beneath an execution workspace. It records repository identity, contained relative path, requested ref, pinned commit, preparation state and idempotency receipts. Credentials are resolved at use and are never stored in this inventory. Connection/destination `execution_defaults` JSON contains optional typed project/workspace choices, never arbitrary host paths or commands.
+
+The physical-root tables introduced by migrations
+[0337_exotic_proemial_gods.sql](../packages/db/src/migrations/0337_exotic_proemial_gods.sql)
+and [0338_absurd_vengeance.sql](../packages/db/src/migrations/0338_absurd_vengeance.sql)
+are legacy: `execution_workspace_repository_roots` and
+`execution_workspace_repository_access` remain in the schema with their existing
+data, but runtime services neither read nor write them. There is no backfill,
+cleanup job, startup DDL, or schema migration for this retirement. Historical
+`anonymous_only` / `managed` classifications and source/reader identities have no
+effect on new operations.
+
+`execution_workspace_repositories` remains active and records actual repository
+requests, pins, preparation state, and idempotency. Shared publication recovery
+uses the current receipt and the exact receipt named by the checkout's bounded
+ownership marker, with company, origin, ref, path, and pin integrity checks.
+
+The disposable preparation benchmark compares a pinned pre-removal commit with
+the checked-out implementation using 8,500 workspaces, 4,800 shared-root records,
+5,300 retained sources, and 50 readers. It reports two warmups and five measured
+samples, phase medians/ranges, SQL fingerprints, and canonicalization counts.
+Both retired-table query counts must remain zero, and increasing peer history
+must not increase preparation authorization or path checks. Record the exact
+treatment commit and measured improvement in the change's verification report.
+These service measurements exclude network acquisition, copying, environment
+acquisition, and provider startup. Reproduce with:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-preparation-history.ts --baseline-ref=df80616d98119cbf5abd40549794d9980a5fabf6
+```
+
+Workspace-record and workspace-operation `_issuePrivacySources` /
+`_runPrivacySources` metadata and their migration 0313 triggers remain app-data
+privacy controls. They do not authorize filesystem access. Current run identity,
+selected project policy, acquisition/credential authority, concrete copy identity,
+path containment, and lifecycle serialization remain enforced. Low-trust execution
+still suppresses controller provisioning according to the selected environment.
+
+No migration scans or copies existing agent home directories. Keep admitted native descriptors and recovery references until compatible controllers finish their persistence obligations. See [the architecture rollout contract](plans/2026-10-09-task-workspaces.md).
+
+Migration 0341 stores the last scanned Git tree and a durable automatic-refresh
+work allowance. The allowance starts at 512 MiB, refills at 512 MiB/hour, and
+reserves the existing 128 MiB upper bound before automatic downloads. Completed
+small scans refund unused capacity; interrupted/failed work keeps its bounded
+reservation. These internal fields do not appear in source responses.
+
+Automatic initial repository imports reserve durable company work credits before
+provider reads: 512 MiB capacity, refilling 512 MiB per hour, with a 128 MiB
+reservation per attempt. Failed downloads and package fallback keep the full
+reservation. Successfully linked small imports refund unused measured work.
+Completed bindings do not reset company credits; waiting jobs retry on refill.
+The company_skill_import_budgets table stores no credentials or source contents.
+
+### Execution recovery query performance
+
+Conversation recovery keeps indexed run and task UUID columns as UUIDs. Saved
+JSON identifiers pass a canonical lowercase UUID guard before conversion.
+Malformed, uppercase, numeric and cross-company values retain their old behavior.
+Ownership candidate reads split native and legacy issue bindings so existing
+indexes can filter candidates before reading large contexts. Native bindings
+continue to override legacy context IDs. No new index or migration is needed.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-recovery-queries.ts --baseline-ref=1e731520bb
+```
+
+This disposable fixture compares the real ownership, recovery-action and status
+delivery queries, including complete positional results and database plans.
+All data is synthetic. Query timings exclude process liveness probes, HTTP and
+provider work.
+
+### Agent runtime synchronization journal
+
+Migration 0347 adds the opt-in `agent_runtime` resource stream. Database triggers
+record content-free configuration invalidations and managed file audit events in
+`resource_lifecycle_events`. They share the mutation transaction and fail the
+mutation if journal insertion fails. An INSERT trigger sends an empty PostgreSQL
+notification on `paperclip_plugin_lifecycle` after commit. The host subscribes
+only when a ready runtime subscriber is installed. This feature requires a
+session-compatible database connection; do not enable it through a transaction
+pooler. Reconnection scans the durable journal. Existing process-local work
+signals continue to serve other delivery queues. See
+[the plugin contract](plugins/AGENT_RUNTIME_SYNC.md).
+
+Migration 0354 extends this stream to standing connection assignments. Statement
+triggers compare the fields returned by the assignment snapshot and coalesce
+company invalidation within the mutation transaction. Agent runtime journaling
+uses ordered `FOR NO KEY UPDATE` locks, which remain compatible with foreign-key
+references while excluding runtime readers' `FOR SHARE` locks. Connector feature
+switches use the same journal; process-start overlays receive a delivery baseline.
+
+Migration 0355 extends connector invalidation to tool definitions and
+configuration. Statement triggers cover applications, connections, catalogs,
+profiles and entries, bindings, policies, and MCP gateways. They ignore health
+bookkeeping and trust-rule usage counters. Profile creation alone does not change
+an agent's runtime; its assignment does. Entry changes resolve standing profile
+bindings; policies resolve old and new agent selectors. Both retain scoped
+recipients. Credential-only fields remain outside this migration's coverage.
+
+Migration 0356 adds access, referenced credentials and vaults, and chat/email
+endpoint configuration to connector runtime invalidation. Grant and membership
+changes retain company scope. Agent secret bindings and new personal delegations
+use agent scope. Credential values remain outside the journal. Endpoint activity,
+vault health, and other bookkeeping fields remain excluded.
+
+## Retired Pipelines storage
+
+The Pipelines experiment has been removed from the application, API, CLI, and
+experimental settings. Its `pipelines` and `pipeline_*` tables, schema definitions,
+and migration history remain so existing records, documents, and links are preserved
+and future schema generation does not drop them. No removal migration or data
+cleanup runs. These tables remain part of normal database backups; the separate
+Cases feature is unaffected.
+
+### Prompt injection classification
+
+`company_prompt_injection_prevention` stores optional shared connection/model
+preferences without backfilling existing companies. `prompt_injection_invocations`
+stores content-free classification verdicts, provider receipts and archival
+identity references. Budget reservations have a distinct classifier invocation
+source, and cost events accept `prompt_injection`. Unknown charges retain their
+holds through agent deletion attempts and settle through billing correction.
+See [service behavior](prompt-injection-prevention.md).
+
+### Deferred conversation requests
+
+`issue_thread_interactions.dismissed_at` and `dismissed_by_user_id` record a
+human's decision to leave a pending request in history. They are independent of
+`status`, `result`, and `resolved_at`: dismissal is neither an answer nor approval.
+The board-only dismissal path locks the task then interaction, checks audience,
+and never enqueues a continuation. Ordinary deferred requests are excluded from
+completion arbitration; protected authorization gates remain active.

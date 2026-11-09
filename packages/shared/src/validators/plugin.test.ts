@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PLUGIN_CAPABILITIES } from "../constants.js";
 import { resolveDeclaredSandboxCapabilities } from "../environment-support.js";
-import { pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
+import { pluginApiRouteDeclarationSchema, pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
 
 function buildSandboxProviderManifest(driver: Record<string, unknown>) {
   return {
@@ -37,6 +37,15 @@ describe("plugin manifest validators", () => {
     const manifest = { id: "example.lifecycle", apiVersion: 1, version: "0.1.0", displayName: "Lifecycle", description: "Lifecycle tests", author: "Tests", categories: ["automation"], entrypoints: { worker: "worker.js" }, agentLifecycle: true };
     expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["agents.read"] }).success).toBe(false);
     expect(pluginManifestV1Schema.parse({ ...manifest, capabilities: ["agents.lifecycle.manage"] }).agentLifecycle).toBe(true);
+  });
+
+  it("requires subscription authority and known resource types for durable delivery", () => {
+    const manifest = { id: "example.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Lifecycle tests", author: "Tests", categories: ["automation"], entrypoints: { worker: "worker.js" }, resourceLifecycle: ["project"] };
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["projects.read"] }).success).toBe(false);
+    expect(pluginManifestV1Schema.parse({ ...manifest, capabilities: ["events.subscribe"] }).resourceLifecycle).toEqual(["project"]);
+    for (const resourceLifecycle of [[], ["issue"]]) {
+      expect(pluginManifestV1Schema.safeParse({ ...manifest, resourceLifecycle, capabilities: ["events.subscribe"] }).success).toBe(false);
+    }
   });
 
   it("requires routing authority for native pooled connector declarations without a custom UI bundle", () => {
@@ -449,5 +458,24 @@ describe("login pty transport capability and legacy alias", () => {
     );
 
     expect(rejected.success).toBe(false);
+  });
+});
+
+describe("plugin WebSocket company resolution", () => {
+  const route = { routeKey: "channel.connect", method: "GET", path: "/channels/:channelId", auth: "board", capability: "api.routes.register" };
+
+  it("rejects body resolution only for WebSocket routes", () => {
+    const companyResolution = { from: "body", key: "companyId" };
+    expect(pluginApiRouteDeclarationSchema.safeParse({ ...route, companyResolution }).success).toBe(true);
+    expect(pluginApiRouteDeclarationSchema.safeParse({ ...route, companyResolution, transport: "websocket" }).success).toBe(false);
+  });
+
+  it.each([
+    undefined,
+    { from: "query", key: "companyId" },
+    { from: "issue", param: "issueId" },
+    { from: "agent", param: "agentId" },
+  ])("accepts body-free resolution %j", (companyResolution) => {
+    expect(pluginApiRouteDeclarationSchema.safeParse({ ...route, companyResolution, transport: "websocket" }).success).toBe(true);
   });
 });

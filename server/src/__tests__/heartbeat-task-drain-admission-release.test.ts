@@ -5,9 +5,11 @@ import {
   costEvents,
   activityLog,
   agents,
+  authUsers,
   agentRuntimeState,
   agentWakeupRequests,
   companies,
+  companyMemberships,
   companySkills,
   createDb,
   heartbeatRunEvents,
@@ -37,6 +39,8 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-task-drain-admission-release-");
     db = createDb(tempDb.connectionString);
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Drain fixture sponsor",
+      email: "drain-sponsor@example.test", createdAt: new Date(), updatedAt: new Date() });
   }, 60_000);
 
   function isHeartbeatRunDependentFkError(error: unknown) {
@@ -70,6 +74,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -88,6 +93,8 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user",
+      membershipRole: "operator", status: "active" });
 
     await db.insert(agents).values({
       id: agentId,

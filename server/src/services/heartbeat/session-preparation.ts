@@ -34,7 +34,8 @@ export interface HeartbeatSessionPreparationInput {
     context: Record<string, unknown>;
     issueRef: Pick<typeof issues.$inferSelect, "id"> | null;
     issueContext: Pick<typeof issues.$inferSelect, "updatedAt"> | null;
-    projectContext: Pick<typeof projects.$inferSelect, "updatedAt" | "env"> | null;
+    taskProjectContext: Pick<typeof projects.$inferSelect, "env"> | null;
+    workspaceProjectContext: Pick<typeof projects.$inferSelect, "updatedAt"> | null;
     wakeCommentId: string | null;
     acceptedPlanContinuationWake: boolean;
     acceptedPlanWakeRoutingDecision: unknown;
@@ -73,7 +74,7 @@ function readNonEmptyString(value: unknown): string | null {
 /** Selects a resumable session before workspace preparation; acquires no runtime resources. */
 export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPreparationInput) {
   const { run, agent, getLatestAgentConfigRevision } = input;
-  const { context, issueRef, issueContext, projectContext, wakeCommentId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision } = input.task;
+  const { context, issueRef, issueContext, taskProjectContext, workspaceProjectContext, wakeCommentId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision } = input.task;
   const { taskSession, taskSessionDecodedParams, explicitResumeSessionParams, explicitResumeSessionDisplayId, sessionCodec } = input.session;
   const { runtimeConfig, agentIdentity, issueAssigneeOverrides, originalAiIssueOverrides, managedAiRuntime, aiBinding, requestedAiBinding, secretManifest, runtimeSkillEntries, routineEnvContext } = input.config;
   const { requestedExecutionWorkspaceMode, effectiveExecutionWorkspaceMode, projectExecutionWorkspacePolicy, issueExecutionWorkspaceSettings, executionPolicy, requestedReusableExecutionWorkspaceConfig, reusableExistingExecutionWorkspace } = input.workspace;
@@ -97,9 +98,9 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
             ? issueContext.updatedAt.toISOString()
             : (issueContext?.updatedAt ?? null),
         projectConfigRevisionAt:
-          projectContext?.updatedAt instanceof Date
-            ? projectContext.updatedAt.toISOString()
-            : (projectContext?.updatedAt ?? null),
+          workspaceProjectContext?.updatedAt instanceof Date
+            ? workspaceProjectContext.updatedAt.toISOString()
+            : (workspaceProjectContext?.updatedAt ?? null),
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
         reusableExecutionWorkspaceConfig:
@@ -135,7 +136,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
         executionPolicy,
       },
       environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
-      projectEnv: projectContext?.env ?? null,
+      projectEnv: taskProjectContext?.env ?? null,
       routineEnv: routineEnvContext.env,
       secretManifest,
       runtimeSkills: runtimeSkillEntries,
@@ -185,7 +186,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
       acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision && !agentIdentity,
   });
   const resetTaskSession =
-    shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
+    context.workspaceSelectionChanged === true || shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
   const sessionResetReason =
     sessionConfigFreshness.reasons.join("; ") || null;
   const taskSessionForRun = resetTaskSession ? null : taskSession;

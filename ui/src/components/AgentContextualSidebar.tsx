@@ -14,6 +14,7 @@ import {
   Sparkles,
   Wrench,
 } from "lucide-react";
+import { usePluginSlots } from "@/plugins/slots";
 import { agentsApi } from "@/api/agents";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -66,6 +67,7 @@ export function AgentContextualSidebar({
     enabled: shouldResolveAgent && Boolean(agentRef && selectedCompanyId),
   });
   const resolvedId = agentId ?? resolvedAgent?.id;
+  const { slots: pluginTabs } = usePluginSlots({ slotTypes: ["detailTab"], entityType: "agent", companyId: resolvedAgent?.companyId ?? selectedCompanyId, enabled: Boolean(resolvedId) });
   const resolvedName = agentName ?? resolvedAgent?.name ?? "Agent";
 
   return (
@@ -110,6 +112,12 @@ export function AgentContextualSidebar({
           </div>
         ))}
 
+        {pluginTabs.length > 0 && <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
+          <p className={contextualSidebarStyles.sectionLabel}>Apps</p>
+          <div className={contextualSidebarStyles.group}>
+            {pluginTabs.map(slot => <SidebarNavItem key={`${slot.pluginKey}:${slot.id}`} to={`/agents/${encodeURIComponent(agentRef)}/${encodeURIComponent(`plugin:${slot.pluginKey}:${slot.id}`)}`} label={slot.displayName} icon={Wrench} />)}
+          </div>
+        </div>}
         <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
           <p
             data-slot="contextual-sidebar-section-label"

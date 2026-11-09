@@ -25,7 +25,6 @@
     "tests/e2e/nux-phase4-screenshots.spec.ts": 18776,
     "tests/e2e/onboarding.spec.ts": 21295,
     "tests/e2e/paused-composer.spec.ts": 33211,
-    "tests/e2e/pipelines-tutorial-flow.spec.ts": 30545,
     "tests/e2e/planning-mode-visual-verification.spec.ts": 26193,
     "tests/e2e/project-repositories.spec.ts": 21634,
     "tests/e2e/runner-e2e-dashboard.spec.ts": 2028,

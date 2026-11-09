@@ -30,6 +30,48 @@ describe("Paperclip Runner native provider configuration", () => {
     expect(resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server",
       adapterConfig: { provider: "codex", model }, codexCliVersion })).toMatchObject({ model });
   });
+  it.each(["claude"])("admits preconfigured ACPX %s without changing the permission setting", acpxAgent => {
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime",
+      adapterConfig: { provider: "acpx", acpxAgent, model: acpxAgent === "codex" ? "gpt-5.6-sol" : "claude-sonnet-5", homeMode: "preconfigured" },
+    })).toMatchObject({ homeMode: "preconfigured", acpxPermissionMode: "approve-all" });
+  });
+  it("rejects preconfigured ACPX Codex until Runner-state protection is qualified", () => {
+    expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime",
+      adapterConfig: { provider: "acpx", acpxAgent: "codex", model: "gpt-6.1-sol", homeMode: "preconfigured" },
+    })).toThrow("cannot protect Runner state");
+  });
+  it.each(["approve-reads", "approve-paperclip", "deny-all"])("rejects unqualified preconfigured Runner policy %s before launch", acpxPermissionMode => {
+    expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime",
+      adapterConfig: { provider: "acpx", acpxAgent: "codex", model: "gpt-6.1-sol", homeMode: "preconfigured", acpxPermissionMode },
+    })).toThrow("currently requires ACPX approve-all");
+  });
+  it("limits the initial mode to qualified native Codex and ACPX Claude providers", () => {
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server",
+      adapterConfig: { provider: "codex", homeMode: "preconfigured" },
+    })).toMatchObject({ homeMode: "preconfigured", codexApprovalPolicy: "never" });
+    for (const config of [{ provider: "acpx", acpxAgent: "grok" }, { provider: "opencode", model: "provider/model" }]) {
+      expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server",
+        adapterConfig: { ...config, homeMode: "preconfigured" },
+      })).toThrow("Preconfigured home supports");
+    }
+  });
+  it.each([undefined, "0.156.0", "0.159.0"])(
+    "keeps the exact Copilot model independent of Codex CLI version %s",
+    (codexCliVersion) => {
+      const adapterConfig = {
+        provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna",
+        acpxPermissionMode: "approve-paperclip",
+      };
+      expect(resolvePaperclipRunnerNativeProviderInput({
+        backend: "acpx_runtime", adapterConfig, codexCliVersion,
+      })).toEqual({
+        provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna",
+        acpxPermissionMode: "approve-paperclip",
+      });
+      expect(adapterConfig.model).toBe("gpt-5.6-luna");
+    },
+  );
+
   it.each([undefined, "approve-all", "approve-paperclip", "approve-reads", "deny-all"])(
     "passes Grok's full-auto default or explicit %s policy to the native runner",
     (acpxPermissionMode) => {
@@ -89,6 +131,16 @@ describe("Paperclip Runner native provider configuration", () => {
     })).toEqual({ provider: "codex", model: "gpt-6-luna", codexApprovalPolicy: "never" });
     expect(projectPaperclipRunnerTaskConfig("codex_app_server", base, { modelReasoningEffort: "high" }))
       .toMatchObject({ provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "high" });
+  });
+
+  it.each([true, false])("carries Claude task effort while retaining provider and permissions (explicit agent: %s)", explicitAgent => {
+    const base = { provider: "acpx", ...(explicitAgent ? { acpxAgent: "claude" } : {}), model: "claude-opus-5-5", modelReasoningEffort: "medium", acpxPermissionMode: "deny-all" };
+    const projected = projectPaperclipRunnerTaskConfig("acpx_runtime", base, { effort: "xhigh", provider: "codex", acpxAgent: "pi", acpxPermissionMode: "approve-all" });
+    expect(projected).toEqual({ ...base, modelReasoningEffort: "xhigh" });
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: projected })).toMatchObject({ provider: "acpx", acpxAgent: "claude", claudeEffort: "xhigh", acpxPermissionMode: "deny-all" });
+    const changedModel = projectPaperclipRunnerTaskConfig("acpx_runtime", base, { model: "claude-sonnet-5" });
+    expect(changedModel).not.toHaveProperty("modelReasoningEffort");
+    expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: { ...base, chrome: true } })).toThrow("Legacy runner");
   });
 
   it("uses an OpenCode task model without changing the Runner provider", () => {

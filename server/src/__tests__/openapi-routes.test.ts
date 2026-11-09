@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
+import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
@@ -12,8 +13,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTES_DIR = path.resolve(__dirname, "../routes");
 
 const apiPrefixes: Record<string, string> = {
-  "pipelines.ts": "/api",
   "cases.ts": "/api",
+  "case-handoffs.ts": "/api",
+  "workflows.ts": "/api",
   "smoke-lab.ts": "/api",
   "access.ts": "/api",
   "activity.ts": "/api",
@@ -25,7 +27,9 @@ const apiPrefixes: Record<string, string> = {
   "announcements.ts": "/api",
   "ai-connections.ts": "/api",
   "decision-models.ts": "/api",
+  "agent-observability.ts": "/api",
   "fast-responses.ts": "/api",
+  "prompt-injection-prevention.ts": "/api",
   "attention.ts": "/api",
   "approvals.ts": "/api",
   "assets.ts": "/api",
@@ -45,15 +49,20 @@ const apiPrefixes: Record<string, string> = {
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "dot-runner.ts": "/api",
+  "muse.ts": "/api",
+  "muse-qualification.ts": "/api",
+  "grok-bot.ts": "/api",
   "decision-queues.ts": "/api",
   "decisions.ts": "/api",
   "decision-training.ts": "/api",
   "environments.ts": "/api",
   "execution-workspaces.ts": "/api",
+  "task-workspaces.ts": "/api",
   "file-resources.ts": "/api",
   "folders.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
+  "liveness.ts": "/api/liveness",
   "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
   "instance-database-backups.ts": "/api",
@@ -86,9 +95,9 @@ const apiPrefixes: Record<string, string> = {
 };
 
 const ROUTE_LITERAL_PATTERN =
-  /router\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/g;
-const ROUTE_ARRAY_PATTERN = /router\.(get|post|put|patch|delete)\(\s*\[([^\]]+)\]/g;
-const ROUTER_METHOD_PATTERN = /router\.(get|post|put|patch|delete)\(/;
+  /router\.(get|head|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/g;
+const ROUTE_ARRAY_PATTERN = /router\.(get|head|post|put|patch|delete)\(\s*\[([^\]]+)\]/g;
+const ROUTER_METHOD_PATTERN = /router\.(get|head|post|put|patch|delete)\(/;
 const HTTP_METHODS = new Set([
   "get",
   "put",
@@ -102,6 +111,10 @@ const HTTP_METHODS = new Set([
 const explicitOpenApiCoverageExclusions = new Set<string>();
 
 const explicitOpenApiOperationCoverageExclusions = new Set([
+  // Muse uses its closed, versioned receiver protocol and dedicated credentials,
+  // documented in doc/muse-personal-agent.md and the shared protocol contract.
+  // Board connection/qualification management remains in this OpenAPI document.
+  ...MUSE_PUBLIC_ROUTES.map(route => `${route.method} ${route.path}`),
   // Inspection uses its own versioned Cloud-permit/managed-run protocol,
   // documented in CUSTOMER-SUCCESS-INSPECTION.md and the shared contract.
   // Ordinary board sessions and agent API keys cannot invoke these endpoints.
@@ -182,7 +195,7 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
   ) {
     return routePath;
   }
-  if ((file === "companies.ts" || file === "health.ts") && routePath === "/") {
+  if ((file === "companies.ts" || file === "health.ts" || file === "liveness.ts") && routePath === "/") {
     return prefix;
   }
   if (file === "companies.ts" || file === "health.ts") {
@@ -245,15 +258,20 @@ function loadActualRoutes() {
         }
       }
     }
-    if (file === "dot-runner.ts") {
-      for (const name of ["path", "invitePath"]) {
-        const basePath = new RegExp(`const ${name} = "([^"]+)"`).exec(source)?.[1];
-        if (!basePath) throw new Error(`Dot ${name} route prefix is missing`);
-        const methods = new RegExp(`router\\.(get|post|delete)\\(${name}(?: \\+ "([^"]+)")?`, "g");
-        for (const match of source.matchAll(methods)) {
-          routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + basePath + (match[2] ?? ""))}`);
-        }
+    const variablePaths = file === "dot-runner.ts" ? ["path", "invitePath"]
+      : file === "grok-bot.ts" ? ["path"]
+      : file === "muse.ts" ? ["path", "invite"]
+      : file === "muse-qualification.ts" ? ["path"] : [];
+    for (const name of variablePaths) {
+      const basePath = new RegExp(`\\b${name}\\s*=\\s*"([^"]+)"`).exec(source)?.[1];
+      if (!basePath) throw new Error(`${file} ${name} route prefix is missing`);
+      const methods = new RegExp(`router\\.(get|post|put|delete)\\(\\s*${name}(?:\\s*\\+\\s*"([^"]+)")?\\s*,`, "g");
+      for (const match of source.matchAll(methods)) {
+        routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + basePath + (match[2] ?? ""))}`);
       }
+    }
+    if (file === "muse.ts" && /for\s*\(const route of MUSE_PUBLIC_ROUTES\)/.test(source)) {
+      for (const route of MUSE_PUBLIC_ROUTES) excludedRoutes.add(`${route.method} ${route.path}`);
     }
 
     if (
@@ -295,6 +313,34 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("removes Pipelines discovery while retaining Cases and Routines", () => {
+    const spec = buildOpenApiSpec() as any;
+    const paths = Object.keys(spec.paths);
+    expect(paths.filter((path) => /pipelines|review-cases|case-events/.test(path))).toEqual([]);
+    // Standalone handoffs also use caseId; that parameter name no longer
+    // identifies a removed Pipeline operation. Retain only their live paths.
+    expect(paths.filter((path) => path.startsWith("/api/cases/{caseId}")).sort()).toEqual([
+      "/api/cases/{caseId}/handoffs",
+      "/api/cases/{caseId}/handoffs/{handoffId}/cancel",
+      "/api/cases/{caseId}/handoffs/{handoffId}/retry",
+    ]);
+    expect(spec.paths["/api/companies/{companyId}/cases"].post).toBeDefined();
+    expect(spec.paths["/api/companies/{companyId}/case-handoffs"].post).toBeDefined();
+    expect(spec.paths["/api/cases/{id}"].get).toBeDefined();
+    expect(spec.paths["/api/routines/{id}/run"].post).toBeDefined();
+  });
+
+  it("documents anonymous liveness separately from database readiness", () => {
+    const spec = buildOpenApiSpec() as any;
+    for (const method of ["get", "head"]) {
+      const operation = spec.paths["/api/liveness"][method];
+      expect(operation.security).toEqual([]);
+      expect(operation.responses[503]).toBeDefined();
+    }
+    expect(Object.keys(spec.paths["/api/liveness"].get.responses[200].content["application/json"].schema.properties))
+      .toEqual(["status", "commit"]);
+    expect(spec.paths["/api/health"].get.responses[503]).toBeDefined();
+  });
   it("documents only writable agent update fields and lifecycle status requests", () => {
     const document = buildOpenApiSpec() as any;
     const properties = document.paths["/api/agents/{id}"].patch.requestBody.content["application/json"].schema.properties;
@@ -330,10 +376,19 @@ describe("openapi routes", () => {
     expect(operation.responses["404"]).toBeDefined();
   });
 
-  it("documents strict run-attributed feedback without a read endpoint", () => {
+  it("documents strict run-attributed feedback and board-only commentary reads", () => {
     const { spec } = loadSpecRoutes();
     const path = spec.paths["/api/companies/{companyId}/agent-commentary"];
-    expect(Object.keys(path)).toEqual(["post"]);
+    expect(Object.keys(path)).toEqual(["get", "post"]);
+    const detail = spec.paths["/api/companies/{companyId}/agent-commentary/{id}"].get;
+    for (const read of [path.get, detail]) {
+      expect(read.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(read.responses["403"]).toBeDefined();
+      expect(read.responses["404"]).toBeDefined();
+    }
+    expect(path.get.parameters.map((parameter: { name: string }) => parameter.name)).toEqual(
+      expect.arrayContaining(["agentId", "kind", "q", "limit", "offset"]),
+    );
     const operation = path.post;
     expect(operation.security).toEqual([{ AgentBearerAuth: [] }]);
     expect(operation["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true });
@@ -367,6 +422,19 @@ describe("openapi routes", () => {
     expect(Object.keys(remove.responses)).toEqual(expect.arrayContaining(["200", "400", "401", "403", "404", "409"]));
   });
 
+  it("documents masked board-only agent export settings and revision-checked writes", () => {
+    const { spec } = loadSpecRoutes();
+    const settings = spec.paths["/api/companies/{companyId}/observability"];
+    const test = spec.paths["/api/companies/{companyId}/observability/test"].post;
+    for (const operation of [settings.get, settings.put, settings.delete, test]) {
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    }
+    expect(settings.delete.requestBody.content["application/json"].schema).toMatchObject({ required: ["expectedRevision"], additionalProperties: false });
+    expect(test.responses["409"]).toBeDefined();
+    expect(JSON.stringify(settings.get.responses)).not.toMatch(/credentialsSecretId|ciphertext|apiKey/);
+    expect(test.responses["200"].content["application/json"].schema.properties.source).toMatchObject({ enum: ["control_plane"] });
+  });
+
   it("documents personal board-only announcements and private responses", () => {
     const { spec } = loadSpecRoutes();
     const current = spec.paths["/api/announcements/current"].get;
@@ -397,6 +465,14 @@ describe("openapi routes", () => {
     expect(wake.responses["202"]).toBeDefined();
     expect(wake.responses["409"]).toBeDefined();
     expect(wake.description).toContain("durable queued/deferred receipt");
+  });
+  it("advertises the guarded prepared-task promotion contract to API clients", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const patch = res.body.paths["/api/issues/{id}"].patch;
+    expect(patch.requestBody.content["application/json"].schema.properties.expectedStatusVersion)
+      .toMatchObject({ type: "integer", minimum: 0 });
+    expect(patch.responses["409"]).toBeDefined();
+    expect(patch.description).toContain("send exactly status=todo and expectedStatusVersion");
   });
   it("serves the generated OpenAPI document", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
@@ -865,6 +941,21 @@ describe("openapi routes", () => {
     expect(decision.requestBody.content["application/json"].schema.required).toEqual(expect.arrayContaining(["approve", "approvalCode"]));
   });
 
+  it("documents board-only prompt injection settings and fixed-sample testing", () => {
+    const { spec } = loadSpecRoutes();
+    const base = "/api/companies/{companyId}/prompt-injection-prevention";
+    for (const [method, suffix] of [["get", ""], ["put", ""], ["get", "/models"], ["post", "/test"]]) {
+      expect(spec.paths[base + suffix][method]["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(spec.paths[base + suffix][method].security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    }
+    expect(spec.paths[base].put.requestBody.content["application/json"].schema).toMatchObject({
+      additionalProperties: false, required: ["enabled", "connectionId", "grantId", "model"],
+    });
+    expect(spec.paths[base + "/test"].post.requestBody.content["application/json"].schema).toMatchObject({
+      type: "object", additionalProperties: false, properties: {},
+    });
+  });
+
   it("covers the mounted server routes exactly", () => {
     const {
       routes: actualRoutes,
@@ -912,6 +1003,34 @@ describe("openapi routes", () => {
       properties: { primaryAgentId: { type: "string", format: "uuid" } },
     });
     expect(path.put.responses["422"]).toBeDefined();
+  });
+
+  it("documents Muse operator management separately from receiver credentials", () => {
+    const { spec } = loadSpecRoutes();
+    const base = "/api/companies/{companyId}/agents/{agentId}/muse-binding";
+    const operations = [
+      ["get", "/api/companies/{companyId}/muse-invitations"],
+      ["post", "/api/companies/{companyId}/muse-invitations"],
+      ["get", base], ["post", base], ["post", `${base}/verify`],
+      ["post", `${base}/revoke`], ["post", `${base}/attest-stop`],
+      ["post", `${base}/attest-detector-cleanup`],
+      ["get", `${base}/qualification`], ["post", `${base}/qualification`], ["delete", `${base}/qualification`],
+    ];
+    for (const [method, routePath] of operations) {
+      const operation = spec.paths[routePath][method];
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.responses["403"]).toBeDefined();
+    }
+    expect(spec.paths[base].post.responses["201"]).toBeDefined();
+    expect(spec.paths[base].post.responses["201"].content["application/json"].schema.properties.assetVersion.enum).toEqual([MUSE_ASSET_VERSION]);
+    expect(spec.paths[`${base}/revoke`].post.responses["204"]).toBeDefined();
+    expect(spec.paths[`${base}/qualification`].delete.responses["204"]).toBeDefined();
+    expect(spec.paths[`${base}/qualification`].get.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "bindingId", in: "query", required: true }),
+      expect.objectContaining({ name: "qualificationId", in: "query", required: true }),
+    ]));
+    for (const route of MUSE_PUBLIC_ROUTES) expect(spec.paths[route.path]).toBeUndefined();
   });
 
   it("documents operator Dot invitations and current pairing and event-test fields", () => {

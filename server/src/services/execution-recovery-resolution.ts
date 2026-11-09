@@ -1,5 +1,8 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 import { claimedAdapterType, conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
@@ -24,6 +27,7 @@ import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { readSystemRecovery } from "./system-recovery-state.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
@@ -65,13 +69,15 @@ export async function validateExecutionReconciliation(input: {
     review.currentParticipant.agentId === run?.agentId;
   const retainedWorkspace = hasRequiredWorkspaceRecovery(run?.resultJson);
   const repairOnly = input.workspaceRepairOnly === true && retainedWorkspace;
+  const terminalRepairSource = ["failed", "interrupted", "timed_out", "cancelled"].includes(run?.status ?? "") ||
+    (repairOnly && run?.runtimeMode === "legacy" && run.status === "succeeded");
   if (
     (input.workspaceRepairOnly && !retainedWorkspace) ||
     !run ||
     !task ||
     (!repairOnly && (task.assigneeAgentId !== agentId || (run.agentId !== agentId && !isCurrentReviewer))) ||
     (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== issueId ||
-    !["failed", "interrupted", "timed_out", "cancelled"].includes(run.status)
+    !terminalRepairSource
   ) {
     throw conflict(
       "The recovery source or task owner changed. Inspect the current execution before continuing.",
@@ -197,38 +203,43 @@ export async function markExecutionReconciliation(
       throw conflict("The authorized chat retry owner is no longer valid.");
     }
   }
-  await db
-    .update(nativeRunFinalizations)
-    .set({
-      failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) || ${JSON.stringify({ replacementDenied: "operator_reconciled" })}::jsonb`,
-    })
-    .where(
-      and(
-        eq(nativeRunFinalizations.companyId, action.companyId),
-        eq(nativeRunFinalizations.runId, decision.runId),
-      ),
-    );
-  await db
-    .update(issueRecoveryActions)
-    .set({
-      evidence: {
-        ...action.evidence,
-        automaticRecovery: undefined,
-        executionReconciliation: {
-          ...decision,
-          actorId,
-          recordedAt: new Date().toISOString(),
+  await db.transaction(async tx => {
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
+    await tx
+      .update(nativeRunFinalizations)
+      .set({
+        failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) || ${JSON.stringify({ replacementDenied: "operator_reconciled" })}::jsonb`,
+      })
+      .where(
+        and(
+          eq(nativeRunFinalizations.companyId, action.companyId),
+          eq(nativeRunFinalizations.runId, decision.runId),
+        ),
+      );
+    await tx
+      .update(issueRecoveryActions)
+      .set({
+        evidence: {
+          ...action.evidence,
+          automaticRecovery: undefined,
+          executionReconciliation: {
+            ...decision,
+            actorId,
+            recordedAt: new Date().toISOString(),
+          },
+          continuationDelivery: options?.workspaceRepairOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
+          ...(deliveryOwner ? { continuationDeliveryOwner: deliveryOwner } : {}),
         },
-        continuationDelivery: options?.workspaceRepairOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
-        ...(deliveryOwner ? { continuationDeliveryOwner: deliveryOwner } : {}),
-      },
-    })
-    .where(
-      and(
-        eq(issueRecoveryActions.companyId, action.companyId),
-        eq(issueRecoveryActions.id, action.id),
-      ),
-    );
+      })
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, action.companyId),
+          eq(issueRecoveryActions.id, action.id),
+        ),
+      );
+  });
 }
 
 export async function deliverReconciledExecutions(
@@ -333,6 +344,68 @@ export async function deliverReconciledExecutions(
   }
 }
 
+export function unresolvedExecutionDispositions(db: Db, limit: number) {
+  return db
+    .select({ action: issueRecoveryActions })
+    .from(issueRecoveryActions)
+    .innerJoin(
+      heartbeatRuns,
+      and(
+        eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
+        eq(heartbeatRuns.id, canonicalExecutionUuid(sql`${issueRecoveryActions.evidence}->>'runId'`)),
+        or(
+          eq(heartbeatRuns.nativeIssueId, issueRecoveryActions.sourceIssueId),
+          and(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text`),
+        ),
+      ),
+    )
+    .leftJoin(
+      nativeRunFinalizations,
+      and(
+        eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+        eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+      ),
+    )
+    .where(
+      and(
+        not(conversationRecoveryActionPredicate()!),
+        sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
+        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        eq(issueRecoveryActions.kind, "active_run_watchdog"),
+        inArray(issueRecoveryActions.cause, [
+          ...EXECUTION_RECONCILIATION_CAUSES,
+        ]),
+        inArray(heartbeatRuns.status, [
+          "failed",
+          "timed_out",
+          "interrupted",
+          "cancelled",
+        ]),
+        isNull(nativeRunFinalizations.leaseOwner),
+        isNull(nativeRunFinalizations.resultId),
+        or(
+          isNull(nativeRunFinalizations.runId),
+          eq(nativeRunFinalizations.phase, "terminal_failure"),
+        ),
+        sql`coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = ''`,
+        sql`(${heartbeatRuns.runtimeMode} <> 'native' or coalesce(${nativeRunFinalizations.failureCode}, '') <> 'native_provider_terminal_failed'
+        or coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') <> '')`,
+      ),
+    )
+    .limit(limit);
+}
+
+export function obsoleteExecutionConversationHold() {
+  return and(
+    conversationRecoveryActionPredicate(),
+    sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
+    or(
+      inArray(issueRecoveryActions.status, ["active", "escalated"]),
+      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+    ),
+  );
+}
+
 /**
  * Failed execution is a system responsibility, not a user questionnaire. After
  * automatic recovery is ruled out, preserve evidence and stop without replay.
@@ -346,13 +419,7 @@ export async function settleUnrecoverableExecutions(
 ) {
   // Fold obsolete conversation holds without waking historical work on upgrade.
   // Keep their evidence and record the policy change in the task's activity log.
-  const obsoleteConversationHold = and(
-    conversationRecoveryActionPredicate(),
-    or(
-      inArray(issueRecoveryActions.status, ["active", "escalated"]),
-      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
-    ),
-  );
+  const obsoleteConversationHold = obsoleteExecutionConversationHold();
   await db.transaction(async tx => {
     const foldable = await tx.select().from(issueRecoveryActions).where(obsoleteConversationHold)
       .limit(25).for("update", { skipLocked: true });
@@ -385,50 +452,7 @@ export async function settleUnrecoverableExecutions(
   });
   // Filter eligibility before applying the batch limit. A queue of sessions
   // awaiting replacement must not starve settled incidents behind it.
-  const candidates = await db
-    .select({ action: issueRecoveryActions })
-    .from(issueRecoveryActions)
-    .innerJoin(
-      heartbeatRuns,
-      and(
-        eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
-        sql`${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'`,
-        sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text`,
-      ),
-    )
-    .leftJoin(
-      nativeRunFinalizations,
-      and(
-        eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
-        eq(nativeRunFinalizations.runId, heartbeatRuns.id),
-      ),
-    )
-    .where(
-      and(
-        not(conversationRecoveryActionPredicate()!),
-        inArray(issueRecoveryActions.status, ["active", "escalated"]),
-        eq(issueRecoveryActions.kind, "active_run_watchdog"),
-        inArray(issueRecoveryActions.cause, [
-          ...EXECUTION_RECONCILIATION_CAUSES,
-        ]),
-        inArray(heartbeatRuns.status, [
-          "failed",
-          "timed_out",
-          "interrupted",
-          "cancelled",
-        ]),
-        isNull(nativeRunFinalizations.leaseOwner),
-        isNull(nativeRunFinalizations.resultId),
-        or(
-          isNull(nativeRunFinalizations.runId),
-          eq(nativeRunFinalizations.phase, "terminal_failure"),
-        ),
-        sql`coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = ''`,
-        sql`(${heartbeatRuns.runtimeMode} <> 'native' or coalesce(${nativeRunFinalizations.failureCode}, '') <> 'native_provider_terminal_failed'
-        or coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') <> '')`,
-      ),
-    )
-    .limit(25);
+  const candidates = await unresolvedExecutionDispositions(db, 25);
   for (const { action: candidate } of candidates) {
     const runId = candidate.evidence.runId;
     if (typeof runId !== "string") continue;
@@ -488,6 +512,10 @@ export async function settleUnrecoverableExecutions(
           )
         )
           return;
+        // Adoption transfers maintenance to the retained-workspace owner.
+        // This compatibility resolver must not close its hold or relabel it
+        // as a user repair merely because old return-owner metadata is absent.
+        if (readSystemRecovery(action.evidence)) return;
         // Give durable native recovery its chance; never preempt a resume,
         // replacement, result finalizer, or still-owned execution.
         if (
@@ -573,6 +601,7 @@ export async function settleUnrecoverableExecutions(
             replay: "not_authorized",
           },
         });
+        await notifyExecutionRunWork(tx);
         await tx
           .update(heartbeatRuns)
           .set({ executionStatusDeliveryId: randomUUID() })

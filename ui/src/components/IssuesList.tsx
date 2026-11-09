@@ -1,3 +1,6 @@
+import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
+import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
+import { includeIssueHierarchyContext } from "../lib/issue-hierarchy-context";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
@@ -495,7 +498,7 @@ interface IssuesListProps {
    * tokens + wall-clock runtime for every run in the tree.
    */
   parentIssueIdForCostSummary?: string;
-  enableRoutineVisibilityFilter?: boolean;
+  enableAgentCreatedVisibilityFilter?: boolean;
   hasMoreIssues?: boolean;
   isLoadingMoreIssues?: boolean;
   mutedIssueIds?: Set<string>;
@@ -735,7 +738,7 @@ function StreamlinedIssuesList({
   defaultSortField,
   showProgressSummary = false,
   parentIssueIdForCostSummary,
-  enableRoutineVisibilityFilter = false,
+  enableAgentCreatedVisibilityFilter = false,
   hasMoreIssues = false,
   isLoadingMoreIssues = false,
   mutedIssueIds,
@@ -822,10 +825,17 @@ function StreamlinedIssuesList({
       initialStatuses,
     ),
   );
+  const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
+  useEffect(() => {
+    if (!enableAgentCreatedVisibilityFilter) return;
+    setViewState((previous) => previous.showAgentCreatedTasks === showAgentCreatedTasks
+      ? previous : { ...previous, showAgentCreatedTasks });
+  }, [enableAgentCreatedVisibilityFilter, showAgentCreatedTasks]);
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
   const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
+  const [hierarchyRowBudget, setHierarchyRowBudget] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(initialPreferences.columns);
   const renderedIssueIdsRef = useRef("");
   const initialServerFillRequestedRef = useRef(false);
@@ -895,6 +905,8 @@ function StreamlinedIssuesList({
   // Deleted or reassigned issues leave orphan IDs in localStorage; this keeps
   // the stored array bounded to only current parent IDs.
   useEffect(() => {
+    // Contextual children are loaded separately from independent results.
+    if (enableAgentCreatedVisibilityFilter) return;
     const parentIds = new Set(issues.map((i) => i.parentId).filter(Boolean) as string[]);
     const pruned = viewState.collapsedParents.filter((id) => parentIds.has(id));
     if (pruned.length !== viewState.collapsedParents.length) {
@@ -909,7 +921,8 @@ function StreamlinedIssuesList({
       searchFilters ?? {},
       "compact",
       ISSUE_SEARCH_RESULT_LIMIT,
-      enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+      enableAgentCreatedVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+        enableAgentCreatedVisibilityFilter ? viewState.showAgentCreatedTasks : undefined,
     ],
     queryFn: ({ signal }) =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -917,7 +930,7 @@ function StreamlinedIssuesList({
         projectId,
         limit: ISSUE_SEARCH_RESULT_LIMIT,
         ...searchFilters,
-        ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+        ...(enableAgentCreatedVisibilityFilter ? { includeRoutineExecutions: true, includeAgentCreatedTasks: viewState.showAgentCreatedTasks } : {}),
       }, { signal }).then((rows) => rows as Issue[]),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
     placeholderData: (previousData) => previousData,
@@ -933,7 +946,8 @@ function StreamlinedIssuesList({
         searchFilters ?? {},
         "compact",
         ISSUE_BOARD_COLUMN_RESULT_LIMIT,
-        enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+        enableAgentCreatedVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+        enableAgentCreatedVisibilityFilter ? viewState.showAgentCreatedTasks : undefined,
       ],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         issuesApi.listCompact(selectedCompanyId!, {
@@ -942,7 +956,7 @@ function StreamlinedIssuesList({
           projectId,
           status,
           limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT,
-          ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+          ...(enableAgentCreatedVisibilityFilter ? { includeRoutineExecutions: true, includeAgentCreatedTasks: viewState.showAgentCreatedTasks } : {}),
         }, { signal }).then((rows) => rows as Issue[]),
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
       placeholderData: (previousData: Issue[] | undefined) => previousData,
@@ -1202,7 +1216,7 @@ function StreamlinedIssuesList({
       searchScopedIssues,
       viewState,
       currentUserId,
-      enableRoutineVisibilityFilter,
+      enableAgentCreatedVisibilityFilter,
       liveIssueIds,
       issueFilterContext,
     );
@@ -1211,7 +1225,7 @@ function StreamlinedIssuesList({
     searchScopedIssues,
     viewState,
     currentUserId,
-    enableRoutineVisibilityFilter,
+    enableAgentCreatedVisibilityFilter,
     liveIssueIds,
     issueFilterContext,
   ]);
@@ -1269,7 +1283,7 @@ function StreamlinedIssuesList({
     enabled: !!selectedCompanyId,
   });
 
-  const activeFilterCount = countActiveIssueFilters(viewState, enableRoutineVisibilityFilter);
+  const activeFilterCount = countActiveIssueFilters(viewState, enableAgentCreatedVisibilityFilter);
   const boardHighVolume = viewState.viewMode === "board" && filtered.length > KANBAN_BOARD_HIGH_VOLUME_THRESHOLD;
   const boardCompactCards =
     viewState.boardCardDensity === "compact"
@@ -1287,7 +1301,13 @@ function StreamlinedIssuesList({
     || viewState.boardColdLaneMode !== "auto"
     || viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 
-  const groupedContent = useMemo(() => {
+  const hierarchyEnabled = enableAgentCreatedVisibilityFilter && !viewState.showAgentCreatedTasks && viewState.nestingEnabled && viewState.viewMode === "list";
+  const hierarchy = useIssueHierarchyContext(
+    selectedCompanyId, filtered.slice(0, renderedIssueRowLimit), viewState.collapsedParents,
+    hierarchyEnabled,
+    hierarchyRowBudget,
+  );
+  const baseGroupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
       return [{ key: "__all", label: null as string | null, items: filtered }];
     }
@@ -1379,6 +1399,14 @@ function StreamlinedIssuesList({
     companyUserLabelMap,
     projectById,
   ]);
+  const groupedContent = useMemo(() => baseGroupedContent.map((group) => ({
+    ...group,
+    items: enableAgentCreatedVisibilityFilter && !viewState.showAgentCreatedTasks && viewState.nestingEnabled && viewState.viewMode === "list"
+      ? includeIssueHierarchyContext(group.items, [...issues, ...hierarchy.issues])
+      : group.items,
+  })), [baseGroupedContent, hierarchy.issues, issues, enableAgentCreatedVisibilityFilter, viewState.showAgentCreatedTasks, viewState.nestingEnabled, viewState.viewMode]);
+  const visibleListRowCount = groupedContent.reduce((total, group) => total + group.items.length, 0);
+
 
   // Flattened visible order (group headers, then tree DFS per group —
   // collapsed groups keep their header entry but skip their rows) — must
@@ -1568,31 +1596,41 @@ function StreamlinedIssuesList({
     const previousIssueIds = renderedIssueIdsRef.current;
     renderedIssueIdsRef.current = nextIssueIds;
 
+    const sameResultsOrAppend = previousIssueIds.length > 0 && nextIssueIds.startsWith(previousIssueIds);
+    if (!sameResultsOrAppend) setHierarchyRowBudget(INITIAL_ISSUE_ROW_RENDER_LIMIT);
     setRenderedIssueRowLimit((current) => {
-      const nextInitialLimit = Math.min(filtered.length, INITIAL_ISSUE_ROW_RENDER_LIMIT);
-      const listAppended = previousIssueIds.length > 0
-        && nextIssueIds.startsWith(previousIssueIds)
-        && filtered.length >= current;
-      if (listAppended) return Math.min(filtered.length, Math.max(current, nextInitialLimit));
+      const nextInitialLimit = Math.min(visibleListRowCount, INITIAL_ISSUE_ROW_RENDER_LIMIT);
+      // Context arrives asynchronously and must not undo a reveal request.
+      if (hierarchyEnabled && sameResultsOrAppend) return Math.max(current, nextInitialLimit);
+      const listAppended = sameResultsOrAppend && visibleListRowCount >= current;
+      if (listAppended) return Math.min(visibleListRowCount, Math.max(current, nextInitialLimit));
       return nextInitialLimit;
     });
-  }, [filtered, viewState.viewMode]);
+  }, [filtered, visibleListRowCount, viewState.viewMode, hierarchyEnabled]);
 
-  const hasMoreRenderedRows = viewState.viewMode === "list" && renderedIssueRowLimit < filtered.length;
-  const remainingIssueRowCount = Math.max(filtered.length - renderedIssueRowLimit, 0);
+  const hasMoreHierarchyRows = hierarchyEnabled && hierarchy.hasMore;
+  const hasMoreRenderedRows = viewState.viewMode === "list" && renderedIssueRowLimit < visibleListRowCount;
+  const remainingIssueRowCount = Math.max(visibleListRowCount - renderedIssueRowLimit, 0);
   const loadMoreIssueRows = useCallback(() => {
     if (viewState.viewMode !== "list") return;
+    if (hasMoreHierarchyRows && !hierarchy.isFetching) {
+      setHierarchyRowBudget((current) => current + ISSUE_ROW_RENDER_BATCH_SIZE);
+      setRenderedIssueRowLimit((current) => current + ISSUE_ROW_RENDER_BATCH_SIZE);
+      return;
+    }
     if (hasMoreRenderedRows) {
-      setRenderedIssueRowLimit((current) => Math.min(filtered.length, current + ISSUE_ROW_RENDER_BATCH_SIZE));
+      setRenderedIssueRowLimit((current) => Math.min(visibleListRowCount, current + ISSUE_ROW_RENDER_BATCH_SIZE));
       return;
     }
     if (hasMoreIssues && !isLoadingMoreIssues) {
       onLoadMoreIssues?.();
     }
   }, [
-    filtered.length,
+    visibleListRowCount,
     hasMoreIssues,
     hasMoreRenderedRows,
+    hasMoreHierarchyRows,
+    hierarchy.isFetching,
     isLoadingMoreIssues,
     onLoadMoreIssues,
     viewState.viewMode,
@@ -1600,7 +1638,7 @@ function StreamlinedIssuesList({
 
   const canLoadMoreIssues = viewState.viewMode === "list"
     && !isLoading
-    && (hasMoreRenderedRows || (hasMoreIssues && !isLoadingMoreIssues));
+    && (hasMoreRenderedRows || (hasMoreHierarchyRows && !hierarchy.isFetching) || (hasMoreIssues && !isLoadingMoreIssues));
 
   useEffect(() => {
     if (!canLoadMoreIssues) return;
@@ -1911,7 +1949,7 @@ function StreamlinedIssuesList({
             labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
             currentUserId={currentUserId}
             enableExternalObjectFilters={externalObjectsEnabled}
-            enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
+            enableAgentCreatedVisibilityFilter={enableAgentCreatedVisibilityFilter}
             iconOnly
             presentation={rowPresentation === "task" ? "streamlined" : "legacy"}
           />
@@ -2016,7 +2054,8 @@ function StreamlinedIssuesList({
           Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
         </p>
       )}
-      {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
+      {hierarchy.error ? <p className="text-sm text-destructive">Failed to load task hierarchy: {hierarchy.error.message}</p> : null}
+      {!isLoading && !externalObjectFilterLoading && visibleListRowCount === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
           message="No tasks match the current filters or search."
@@ -2513,13 +2552,13 @@ function StreamlinedIssuesList({
           </Collapsible>
           );
           })}
-          {(remainingIssueRowCount > 0 || hasMoreIssues || isLoadingMoreIssues) && (
+          {(remainingIssueRowCount > 0 || hasMoreHierarchyRows || hasMoreIssues || isLoadingMoreIssues) && (
             <div className="py-2" data-testid="issues-load-more-sentinel">
               <p className="text-xs text-muted-foreground">
-                {isLoadingMoreIssues
+                {isLoadingMoreIssues || (hierarchyEnabled && hierarchy.isFetching)
                   ? "Loading more tasks..."
                   : remainingIssueRowCount > 0
-                    ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} tasks`
+                    ? `Rendering ${Math.min(renderedIssueRowLimit, visibleListRowCount)} of ${visibleListRowCount} tasks`
                     : "Scroll to load more tasks"}
               </p>
             </div>

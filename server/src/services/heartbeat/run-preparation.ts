@@ -1,9 +1,13 @@
+import { skillAccessService } from "../skill-access.js";
+import type { AuthorizationActor } from "../authorization.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubConfiguredInstructionSources } from "../chat-github-review-policy.js";
+import { resolveGitHubReviewInstructions } from "../chat-channels/github/review-instructions.js";
 import { CONFIGURED_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { ASSIGNED_MCP_SERVER_NAME } from "../mcp-tool-names.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
+import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { explicitOperatorRunIdentity } from "../run-identity.js";
 import {
@@ -727,6 +731,7 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
   companyId: string;
   issueId: string | null;
   commentIds?: string[];
+  actor?: AuthorizationActor;
 }): Promise<string[]> {
   if (!input.issueId) return [];
 
@@ -801,6 +806,14 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
         inArray(companySkillsTable.id, mentionedSkillIds),
       ),
     );
+  for (const skillId of mentionedSkillIds) {
+    try { await skillAccessService(input.db, input.actor).assertSkill(input.companyId, skillId); }
+    catch {
+      throw new ConfigurationIncompleteFailure("A referenced skill is unavailable or you do not have project access. Update the task's skill reference or project access.", {
+        configurationIncomplete: { reason: "skill_unavailable", companyId: input.companyId, actionUrl: "/skills" },
+      });
+    }
+  }
   const skillKeyById = new Map(skillRows.map((row) => [row.id, row.key]));
   return mentionedSkillIds
     .map((skillId) => skillKeyById.get(skillId) ?? null)
@@ -809,12 +822,16 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
 
 
 export interface WakeupOptions {
+  /** Internal durable case assignment receipt. Never accepted from public wake payloads. */
+  durableCaseHandoffRequest?: { handoffId: string; wakeupRequestId: string; issueId: string; expectedIssueStatusVersion: number };
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
   /** Internal resume of a queue with persisted board interruption intent. */
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
   queuedCommentRequestId?: string;
+  /** Internal delivery of the authenticated task-level Retry receipt. */
+  taskRetryRequestId?: string;
   /** Exact failed run selected by an authenticated board Retry request. */
   failedRunId?: string | null;
   durableChatRequest?: DurableChatWakeupRequest;
@@ -827,6 +844,12 @@ export interface WakeupOptions {
     requestId: string;
     idempotencyKey: string;
     requestedAt: Date;
+  };
+  /** Server-owned Muse admission receipt; never accepted from API payloads. */
+  durableMuseRequest?: NonNullable<WakeupOptions["durableDotRequest"]> & {
+    bindingId: string;
+    bindingGeneration: number;
+    requestDigest: string;
   };
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -842,6 +865,8 @@ export interface WakeupOptions {
     statusVersion?: number;
     monitorNextCheckAt?: string;
     monitorWakeRequestedAt?: string;
+    /** Internal diagnostic only; the callback cannot grant admission. */
+    onExecutionDeferred?: (blockerCause: string) => void;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
@@ -912,13 +937,13 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   expectedAssignmentDigest?: string | null;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
-  const effective = await access.getEffectiveProfilesForAgent(
+  const effective = await access.getEffectiveToolAssignmentsForAgent(
     input.agent.companyId,
     input.agent.id,
   );
   const [runIdentity] = await input.db
     .select({
-      contextSnapshot: heartbeatRuns.contextSnapshot,
+      issueId: boundRunIssueIdSql(),
       responsibleUserId: heartbeatRuns.responsibleUserId,
       activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
     })
@@ -981,7 +1006,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         companyId: input.agent.companyId,
         agentId: input.agent.id,
         runId: input.runId,
-        issueId: readNonEmptyString(runIdentity?.contextSnapshot?.issueId ?? runIdentity?.contextSnapshot?.taskId),
+        issueId: runIdentity?.issueId ?? null,
         identityContextId: runIdentity?.activeIdentityContextId,
       })).map(tool => tool.connectionId))
     : new Set<string>();
@@ -2236,6 +2261,7 @@ export async function buildPaperclipWakePayload(input: {
     priority: string;
     workMode: string;
     projectId?: string | null;
+    originKind?: string | null;
     executionPolicy?: unknown;
   } | null;
   exposeLowTrustRaw?: boolean;
@@ -2267,6 +2293,7 @@ export async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            originKind: issues.originKind,
           })
           .from(issues)
           .where(
@@ -2638,6 +2665,10 @@ export async function buildPaperclipWakePayload(input: {
     chatCompletionUpdates: input.contextSnapshot.chatCompletionUpdates ?? null,
     attachmentOmissions,
     externalChatProvider,
+    githubReviewConfigurations: (externalChatProvider === "github" || issueSummary?.originKind === "chat_channel") && issueId && input.agentId
+      ? await resolveGitHubReviewInstructions({ db: input.db, companyId: input.companyId, agentId: input.agentId, issueId,
+          commentIds: externalChatProvider === "github" ? commentIds : [] })
+      : [],
     recovery:
       recoveryStillActive
         ? {

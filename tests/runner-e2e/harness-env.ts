@@ -1,6 +1,6 @@
 import { installedDaytonaPluginKeys } from "./installed-daytona-plugin.js";
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
-import { installedCliKeys } from "./installed-cli.js";
+import { assertInstalledCliSelection, installedCliKeys, usesInstalledCli } from "./installed-cli.js";
 import path from "node:path";
 import { chatNeedsApiTools, isManagedHiringCase } from "./chat-cases.js";
 import { CREDENTIAL_NAMES } from "./types.js";
@@ -107,6 +107,8 @@ export function buildRunnerE2EProcessEnvironment(
   source: NodeJS.ProcessEnv,
   executions: readonly MatrixExecution[],
 ): NodeJS.ProcessEnv {
+  const installed = usesInstalledCli(source);
+  if (installed) assertInstalledCliSelection(source, executions);
   const result = { ...source };
   // Announcements are unrelated to the scenarios and obscure screenshot evidence.
   result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = "false";
@@ -123,7 +125,7 @@ export function buildRunnerE2EProcessEnvironment(
       || (execution.suite.id === "pi-native" && agent === "pi")
       || (execution.suite.id === "pi-controls" && agent === "pi")
       || (["cursor-native", "native-provider-loss"].includes(execution.suite.id) && agent === "cursor")
-      || (execution.suite.id === "copilot-protection" && agent === "copilot")
+      || (["copilot-protection", "copilot-provider-death"].includes(execution.suite.id) && agent === "copilot")
       || (execution.suite.id === "native-active-stop" && (agent === "cursor" || agent === "copilot"));
     if (!admittedSuite || !execution.suite.manualOnly) {
       throw new Error("Candidate qualification requires an explicit provider qualification suite");
@@ -135,7 +137,8 @@ export function buildRunnerE2EProcessEnvironment(
     if (prior !== undefined && prior !== execution.profile.model) throw new Error("Conflicting candidate models");
     candidates.set(agent, execution.profile.model);
   }
-  if (candidates.size > 0) {
+  // Installed lanes must prove normal production admission without candidate overrides.
+  if (candidates.size > 0 && !installed) {
     result.PAPERCLIP_RUNNER_ACPX_QUALIFICATION = JSON.stringify(
       [...candidates].map(([agent, model]) => ({ agent, model })),
     );

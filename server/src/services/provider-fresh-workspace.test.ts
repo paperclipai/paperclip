@@ -1,0 +1,41 @@
+import { createHash, randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Db } from "@paperclipai/db";
+import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
+const state = vi.hoisted(() => ({ getObject: vi.fn() }));
+vi.mock("../storage/index.js", () => ({ getStorageService: () => ({ getObject: state.getObject }) }));
+let home: string | undefined;
+afterEach(async () => { vi.unstubAllEnvs(); state.getObject.mockReset(); if (home) await rm(home, { recursive: true, force: true }); });
+describe("fresh provider recovery transfer staging", () => {
+  it("verifies immutable transfer files and reuses stable descriptors after interruption", async () => {
+    home = await mkdtemp(path.join(tmpdir(), "provider-recovery-")); vi.stubEnv("PAPERCLIP_HOME", home);
+    const companyId = randomUUID(), sourceRunId = randomUUID(), leaseId = randomUUID(), operationId = randomUUID();
+    const archive = Buffer.from("verified archive"), manifest = Buffer.from("verified manifest");
+    const stored = (bytes: Buffer, extension: string) => { const sha256 = createHash("sha256").update(bytes).digest("hex");
+      return { objectKey: `${companyId}/workspace-recovery/${sourceRunId}/${leaseId}/${sha256}.${extension}`, sha256, byteSize: bytes.length }; };
+    const metadata = { schema: "paperclip.workspace-recovery-snapshot.v1", recoveryActionId: randomUUID(), leaseId,
+      providerLeaseId: "retained-task", archive: stored(archive, "tar"), manifest: stored(manifest, "jsonl") };
+    const db = { execute: async () => [{ id: sourceRunId }], select: () => ({ from: () => ({ where: async () => [{ id: operationId, metadata }] }) }) } as unknown as Db;
+    state.getObject.mockImplementation(async (_companyId, key) => ({ stream: Readable.from([key.endsWith(".tar") ? archive : manifest]) }));
+    const input = { db, companyId, issueId: randomUUID(), sourceRunId, attemptId: randomUUID(), previousWorkspaceId: randomUUID() };
+    const first = await stageProviderFreshWorkspace(input);
+    expect(first.recoverySnapshots).toHaveLength(1);
+    expect(await readFile(first.recoverySnapshots[0].archive.path)).toEqual(archive);
+    expect(await stageProviderFreshWorkspace({ ...input, existing: first })).toEqual(first);
+    await rm(first.recoverySnapshots[0].archive.path);
+    expect(await stageProviderFreshWorkspace({ ...input, existing: first })).toEqual(first);
+    expect(state.getObject).toHaveBeenCalledTimes(3);
+    await releaseProviderRecoveryTransfers(companyId, first);
+    await expect(readFile(first.recoverySnapshots[0].archive.path)).rejects.toThrow();
+    expect(await stageProviderFreshWorkspace({ ...input, existing: first })).toEqual(first);
+    expect(state.getObject).toHaveBeenCalledTimes(5);
+    await chmod(first.recoverySnapshots[0].archive.path, 0o600);
+    await writeFile(first.recoverySnapshots[0].archive.path, "corrupt");
+    await expect(stageProviderFreshWorkspace(input)).rejects.toThrow();
+    expect(state.getObject).toHaveBeenCalledTimes(5);
+  });
+});

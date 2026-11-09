@@ -1,3 +1,4 @@
+import { StringDecoder } from "node:string_decoder";
 // Metadata only. Supply an explicit token; this closed protocol client never prompts.
 // Usage: node discover-copilot-acp.mjs <verified-pack> <safe-output.json> [exact-model-id]
 import assert from "node:assert/strict";
@@ -24,6 +25,7 @@ export async function withDiscoveryWorkspace(install, callback, filesystem = { m
 }
 
 export function createDiscoveryRpc(child, { deadlineMs = 25_000, maxBytes = 2_097_152 } = {}) {
+  const decoder = new StringDecoder("utf8");
   const pending = new Map(), observedMethods = {};
   let nextId = 0, buffer = "", bytes = 0, failure;
   function fail(code) {
@@ -39,7 +41,7 @@ export function createDiscoveryRpc(child, { deadlineMs = 25_000, maxBytes = 2_09
   child.stdout.on("data", chunk => {
     bytes += chunk.length;
     if (bytes > maxBytes) { fatal("provider_wire_limit"); return; }
-    buffer += chunk.toString();
+    buffer += decoder.write(chunk);
     while (buffer.includes("\n")) {
       const end = buffer.indexOf("\n"), line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
       if (!line.trim()) continue;

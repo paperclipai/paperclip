@@ -12,6 +12,7 @@ interface TaskChatComposerDockProps {
 export function TaskChatComposerDock({ children, mobile, streamlined, concealed = false }: TaskChatComposerDockProps) {
   return <div
     data-testid="task-chat-composer-dock"
+    data-conversation-typography=""
     inert={concealed}
     aria-hidden={concealed || undefined}
     className={cn(

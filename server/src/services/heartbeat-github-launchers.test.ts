@@ -11,6 +11,16 @@ import { prepareHeartbeatGitHubLaunchers } from "./heartbeat-github-launchers.js
 const target = { kind: "remote" as const, transport: "sandbox" as const, providerKey: "daytona", remoteCwd: "/workspace" };
 
 describe("heartbeat GitHub launcher lifetime", () => {
+  it("leaves a task provider's runtime untouched", async () => {
+    const prepare = vi.fn(), mint = vi.fn();
+    const env = { OPENAI_API_KEY: "selected-credential" };
+    const result = await prepareHeartbeatGitHubLaunchers({ native: true, githubConfigured: true, agentId: "agent",
+      runId: "run", target: { ...target, runnerTask: async () => ({}) }, cwd: "/core/workspace",
+      env, brokerUrl: "https://paperclip.test", createBrokerToken: mint }, prepare);
+    expect(result).toEqual({ env, cleanupLocation: null });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(mint).not.toHaveBeenCalled();
+  });
   it.each([target, null])("defers native managed authorization/staging to the session owner (%j)", async (target) => {
     const prepare = vi.fn();
     const mint = vi.fn();

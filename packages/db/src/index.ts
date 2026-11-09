@@ -1,6 +1,8 @@
 export {
   createDb,
   withDedicatedDbConnection,
+  livenessDb,
+  closeLivenessDb,
   closeRegisteredClients,
   getPostgresDataDirectory,
   ensurePostgresDatabase,

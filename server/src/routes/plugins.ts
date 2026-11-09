@@ -22,6 +22,9 @@
 import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { pluginApiUpgrade, proxyPluginApiWebSocket } from "../realtime/plugin-api-ws.js";
+import { trustedBoardMutationOrigin } from "../middleware/board-mutation-guard.js";
+import { authorizationService } from "../services/authorization.js";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -72,6 +75,7 @@ import {
   assertCompanyAccess,
   assertInstanceAdmin,
   getActorInfo,
+  hasCompanyAccess,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import {
@@ -466,6 +470,7 @@ interface PluginScopedApiRequest {
 }
 
 interface PluginScopedApiResponse {
+  websocket?: { url: string; headers?: Record<string, string> };
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
@@ -625,6 +630,17 @@ export function pluginRoutes(
     if (resolution.from === "query") {
       const value = req.query[resolution.key ?? ""];
       return typeof value === "string" ? value : null;
+    }
+
+    if (resolution.from === "agent") {
+      const id = params[resolution.param];
+      if (!id) return null;
+      const [agent] = await db.select({ id: agents.id, companyId: agents.companyId }).from(agents).where(eq(agents.id, id)).limit(1);
+      if (!agent || !hasCompanyAccess(req, agent.companyId)) throw notFound("Agent not found");
+      assertCompanyAccess(req, agent.companyId);
+      const decision = await authorizationService(db).decide({ actor: req.actor, action: "agent:read", resource: { type: "agent", companyId: agent.companyId, agentId: agent.id } });
+      if (!decision.allowed) throw notFound("Agent not found");
+      return agent.companyId;
     }
 
     const issueId = params[resolution.param ?? ""];
@@ -1869,6 +1885,20 @@ export function pluginRoutes(
     }
 
     try {
+      const upgrade = (req as Request & { [pluginApiUpgrade]?: unknown })[pluginApiUpgrade];
+      if (match.route.transport === "websocket") {
+        if (!upgrade || req.method !== "GET" || match.route.auth !== "board" || !plugin.manifestJson.capabilities.includes("http.outbound")) {
+          res.status(426).json({ error: "Browser WebSocket required" });
+          return;
+        }
+        if (!req.header("origin") || trustedBoardMutationOrigin(req) !== req.header("origin")?.toLowerCase()) {
+          res.status(403).json({ error: "Trusted browser origin required" });
+          return;
+        }
+      } else if (upgrade) {
+        res.status(400).json({ error: "Route does not accept WebSockets" });
+        return;
+      }
       assertScopedApiAuth(req, match.route);
       const companyId = await resolveScopedApiCompanyId(match.route, match.params, req);
       if (!companyId) {
@@ -1912,6 +1942,14 @@ export function pluginRoutes(
         "handleApiRequest",
         input,
       ) as PluginScopedApiResponse;
+      if (match.route.transport === "websocket") {
+        if (result.websocket) {
+          proxyPluginApiWebSocket(req, res, result.websocket, () => bridgeDeps.workerManager.isRunning(plugin.id));
+        } else {
+          res.status(result.status && result.status >= 400 && result.status <= 599 ? result.status : 502).json({ error: "Plugin connection unavailable" });
+        }
+        return;
+      }
       const status = Number.isInteger(result.status) && Number(result.status) >= 200 && Number(result.status) <= 599
         ? Number(result.status)
         : 200;

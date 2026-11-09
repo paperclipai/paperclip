@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PropertiesPanel } from "./PropertiesPanel";
 
+const mockSandbox = vi.hoisted(() => ({ enabled: false }));
+vi.mock("@/context/DesignSandboxContext", () => ({ useDesignSandbox: () => mockSandbox.enabled }));
+
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
@@ -81,6 +84,7 @@ describe("PropertiesPanel", () => {
     mockSetPanelVisible.mockClear();
     mockClearPanelMaximizeRequest.mockClear();
     mockPanelState.panelMaximizeRequested = false;
+    mockSandbox.enabled = false;
   });
 
   afterEach(() => {
@@ -91,6 +95,7 @@ describe("PropertiesPanel", () => {
     container.remove();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
     vi.clearAllMocks();
+    document.documentElement.style.removeProperty("--design-page-aside-width");
   });
 
   describe("classic task interface on (legacy panel)", () => {
@@ -141,6 +146,28 @@ describe("PropertiesPanel", () => {
       expect(aside!.querySelector("header")?.className).toContain(
         "h-(--side-panel-header-height)",
       );
+    });
+
+    it("uses the proposal width token and resets only the sandbox's saved width", async () => {
+      mockSandbox.enabled = true;
+      document.documentElement.style.setProperty("--design-page-aside-width", "320px");
+      window.localStorage.setItem("taskChatRedesign.taskDetailPropertiesPaneWidth", "434");
+      window.localStorage.setItem("paperclip.design-proposal.properties-pane-width.task-detail", "480");
+      await renderPanel({ taskDetailLayout: true });
+      const aside = container.querySelector("aside")!;
+      expect(aside.style.width).toBe("480px");
+      const grip = aside.querySelector('[aria-label="Resize panel"]')!;
+      grip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      await flushReact();
+      expect(aside.style.width).toBe("320px");
+      expect(window.localStorage.getItem("paperclip.design-proposal.properties-pane-width.task-detail")).toBeNull();
+      expect(window.localStorage.getItem("taskChatRedesign.taskDetailPropertiesPaneWidth")).toBe("434");
+
+      // Reset reads the current token, including subsequent foundation tuning.
+      document.documentElement.style.setProperty("--design-page-aside-width", "360px");
+      grip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      await flushReact();
+      expect(aside.style.width).toBe("360px");
     });
 
     it("removes the left divider only while the sidebar is maximized", async () => {

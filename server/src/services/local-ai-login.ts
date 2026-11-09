@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -120,6 +121,7 @@ export function localAiLoginService(db: Db) {
       const expiresAt = new Date(Date.now() + ATTEMPT_DURATION_MS);
       await prepareHome(id, intent.provider);
       try {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.localLoginCleanup);
         await tx.insert(adapterAuthSessions).values({
           id, publicSessionId: id, companyId, environmentId: environment.id,
           adapterType,
@@ -220,7 +222,7 @@ export function localAiLoginService(db: Db) {
       // Nested transaction is a savepoint on this same connection. Holding the
       // attempt lock makes completion/cancellation/restart retries idempotent.
       const saved = await aiConnectionService(tx as unknown as Db)
-        .save(companyId, userId, intent, credential, id, session.createdAt);
+        .save(companyId, userId, intent, credential, { id }, session.createdAt);
       await tx.update(adapterAuthSessions).set({
         status: "authenticated", connectionMethod: LOCAL_LOGIN_METHOD,
         finishedAt: new Date(), updatedAt: new Date(),

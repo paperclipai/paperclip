@@ -1,11 +1,11 @@
 import fs from "node:fs";
+import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import { createRequire } from "node:module";
 import type { AddressInfo, Server as NetServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Server as TlsServer } from "node:tls";
 
-import { removeTestHome } from "./remove-test-home.js";
 
 type SupertestServer = NetServer & {
   address(): ReturnType<NetServer["address"]>;
@@ -27,13 +27,13 @@ type SupertestTestConstructor = {
 process.env.PAPERCLIP_TEST_HOST_HOME ??= process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip");
 
 // Receipt-spool recovery must never scan a developer's instance during tests.
-const paperclipTestHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-home-"));
+const { home: paperclipTestHome, cleanup: cleanupPaperclipTestHome } = createIsolatedTestHome();
 process.env.PAPERCLIP_HOME = paperclipTestHome;
+process.env.PAPERCLIP_CONFIG = path.join(paperclipTestHome, "config.json");
+process.env.PAPERCLIP_INSTANCE_ID = `vt-${process.pid}`;
 // Setup-file afterAll hooks run before suites drain asynchronous heartbeats.
 // Cleanup at worker exit, after all suite teardown, avoids deleting live state.
-// A run still finishing at exit can leave a read-only runtime-context bundle
-// under this home, which a plain recursive rm cannot remove.
-process.once("exit", () => removeTestHome(paperclipTestHome));
+process.once("exit", cleanupPaperclipTestHome);
 
 const require = createRequire(import.meta.url);
 const SupertestTest = require("supertest/lib/test.js") as SupertestTestConstructor;

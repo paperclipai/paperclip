@@ -131,6 +131,7 @@ describe("fast response provider", () => {
     });
     const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expectAttribution(url, init);
     const body = JSON.parse(String(init.body));
     expect(body).toMatchObject({
       model: "test-model",
@@ -185,6 +186,7 @@ describe("fast response provider", () => {
         RequestInit,
       ];
       expect(url).toBe(expectedUrl);
+      expectAttribution(url, init);
       expect(new Headers(init.headers).get("authorization")).toBe(auth);
     },
   );
@@ -461,3 +463,11 @@ describe("fast response provider", () => {
     });
   });
 });
+
+function expectAttribution(url: string, init: RequestInit) {
+  const headers = new Headers(init.headers);
+  const expected = new URL(url).hostname === "openrouter.ai";
+  expect(headers.get("http-referer")).toBe(expected ? "https://paperclip.ing" : null);
+  expect(headers.get("x-openrouter-title")).toBe(expected ? "Paperclip" : null);
+  expect(headers.get("x-openrouter-categories")).toBe(expected ? "cloud-agent,programming-app" : null);
+}

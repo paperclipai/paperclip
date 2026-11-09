@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // Prove two things about the target image's server directory, in order:
 //
-// 1. The production `CMD` can still find its ECMAScript module loader,
-//    `server/node_modules/tsx/dist/loader.mjs`. That path is a symbolic
-//    link into the workspace pnpm store, and the `cloud` stage's Sentry
-//    copy writes into the same `server/node_modules` directory. A copy
-//    that removes or shadows the link stops the container from booting.
+// 1. The tsx loader, `server/node_modules/tsx/dist/loader.mjs`, still
+//    resolves. Workers that load workspace TypeScript on demand use it (the
+//    production `CMD` itself starts the runtime bundle with plain node). That
+//    path is a symbolic link into the workspace pnpm store, and the `cloud`
+//    stage's Sentry copy writes into the same `server/node_modules`
+//    directory, so a copy that removes or shadows the link breaks them.
 // 2. The installed `@sentry/node` package resolves, the same way the
 //    server's own peer-version gate does
 //    (server/src/peer-version-check.ts). Then print its version.
@@ -27,19 +28,14 @@ import { fileURLToPath } from "node:url";
 
 const serverDir = dirname(fileURLToPath(import.meta.url));
 
-// The production `CMD` boots the server through this exact path, resolved
-// as a plain relative file path from the container's `/app` working
-// directory (`./server/node_modules/tsx/dist/loader.mjs`), so it bypasses
-// package-export checks and only needs the file to exist once symbolic
-// links resolve. Follow the link the same way Node's own module loader
-// does, so a broken or missing link fails this probe before it fails a
-// live container.
+// Follow the link the same way Node's own module loader does, so a broken
+// or missing link fails this probe before it fails a live container.
 const tsxLoaderPath = join(serverDir, "node_modules", "tsx", "dist", "loader.mjs");
 try {
   realpathSync(tsxLoaderPath);
 } catch (error) {
   console.error(
-    `could not resolve ${tsxLoaderPath}: the production CMD boots through this path and the server cannot start without it (${error.message})`,
+    `could not resolve ${tsxLoaderPath}: workers that load workspace TypeScript need this loader (${error.message})`,
   );
   process.exit(1);
 }

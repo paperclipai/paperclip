@@ -16,6 +16,13 @@ const SENSITIVE_KEYS = new Set<string>([
   // material under `credentials`. Redact the whole subtree instead of trying
   // to keep an ever-changing allowlist of provider-specific field names in
   // sync with every connector.
+  "sealed",
+  "handoff",
+  "claim",
+  "claimid",
+  "claim_id",
+  "managertoken",
+  "manager_token",
   "configurationtoken",
   "configuration_token",
   "credential",
@@ -69,6 +76,8 @@ const SENSITIVE_KEYS = new Set<string>([
   "signingsecret",
   "webhook_secret",
   "webhooksecret",
+  "webhookkey",
+  "webhookurl",
   "paperclip_capability",
   // The Claude setup-token login fields. `browserCode` carries the one-time
   // sign-in code and `authorization_code` carries the OAuth code; neither may

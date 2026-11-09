@@ -53,7 +53,8 @@ a permission denial is not authorization to widen access.
 0. **Locate the target and scope.** Find the project-local verification skill
    (usually `.agents/skills/verify-*/`). Several candidates: ask which; none:
    point to `/create-verification-skill`. Honor a requested narrower audit.
-   Record the source commit and the last review for affected map entries.
+   Use Git diff/history to identify affected sources. Record the source revision
+   and review evidence in the PR or evidence report, not a shared map ledger.
 
 1. **Check both indexes.** Pair same-named feature and agent files, then match
    stable sub-feature IDs. Fix orphan/missing entries and broken references.
@@ -81,7 +82,10 @@ a permission denial is not authorization to widen access.
    any existing request/result handoff; an unresolved delegation question stays
    visible. Split broad baselines into per-operation records before marking
    them operation-reviewed. Add newly discovered capabilities only with concrete
-   source; add their companion at the same time.
+   source; add their companion at the same time. Each feature recipe carries its
+   own navigation metadata. Discovery generates the feature and access indexes;
+   do not register new areas in shared READMEs or commit generated output. Keep
+   durable Storybook verification routes in the affected feature recipe.
 
 4. **Live pass.** Required for a verification maintenance pass even if source
    looks clean. The coordinator owns serial driving, using the target skill's
@@ -109,7 +113,8 @@ a permission denial is not authorization to widen access.
    recipe or mark an access exception to bless a failure. Map evidence states
    remain source-only/not-run unless an actual proof supports the named operation
    and surface. Keep run artifacts/results in the evidence location or issue;
-   `maps/feature-map/coverage.json` remains documentation scope.
+   the generated `maps/generated/coverage.json` is a page-reference inventory,
+   not passing test evidence.
 
 6. **Review corrections.** Re-read changed files, check paired IDs/references and
    run the smallest relevant validation. Report outcome and source/live coverage

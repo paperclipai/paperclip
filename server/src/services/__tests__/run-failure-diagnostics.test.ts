@@ -1,6 +1,7 @@
 import { captureEnvironmentAcquisitionDiagnostic } from "../environment-acquisition-diagnostics.js";
 import { describe, expect, it } from "vitest";
 import type { heartbeatRuns } from "@paperclipai/db";
+import { attachRemoteRunnerRecoveryDiagnostic, RemoteRunnerRecoveryError } from "../native-runtime/remote-runner-recovery-diagnostics.js";
 import { collectRunFailureDiagnostics, collectRunFailureSecretValues, redactRunFailureSecretValues, sanitizeRunFailureDiagnostics, sanitizeRunFailureText } from "../run-failure-diagnostics.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
@@ -8,6 +9,20 @@ const run = (overrides: Partial<Run> = {}) => ({ resultJson: null, ...overrides 
 const collect = (error: unknown) => collectRunFailureDiagnostics(run(), { error });
 
 describe("run failure diagnostics", () => {
+  it("selects the saved provider configuration and gateway error code without reading credentials or tool schemas", () => {
+    const failure = Object.assign(new Error('Tool collision: "calendar.search"'), {
+      reasonCode: "tool_name_collision", details: { token: "private-token" },
+    });
+    const diagnostic = collectRunFailureDiagnostics(run({
+      startedAt: new Date("2026-10-14T00:00:00Z"), finishedAt: new Date("2026-10-14T00:00:01Z"),
+      runnerProfileJson: { nativeExecutionInput: { provider: { kind: "codex", model: "saved-model", env: { TOKEN: "private-token" } } } },
+      resultJson: { originalFailureCode: "tool_name_collision" },
+    }), { error: failure });
+    expect(diagnostic.execution).toMatchObject({ providerKind: "codex", model: "saved-model", durationMs: 1000,
+      originalFailureCode: "tool_name_collision", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:01.000Z" });
+    expect(diagnostic.exceptions[0]).toMatchObject({ code: "tool_name_collision" });
+    expect(JSON.stringify(diagnostic)).not.toContain("private-token");
+  });
   it("reports only private acquisition observations for the exact failed setup run", () => {
     const scope = { companyId: "company-fixture", environmentId: "environment-fixture", runId: "run-fixture" };
     const diagnostic = { phase: "workspace", elapsedMs: 100, budgetMs: 2_000 } as const;
@@ -176,6 +191,115 @@ describe("run failure diagnostics", () => {
     }
   });
 
+  it("exports only the closed vocabulary of an unclassified native turn failure", () => {
+    const diagnostic = { provider: "codex", category: "turn_failed", codexErrorInfo: "responseStreamDisconnected", httpStatus: 502 };
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      nativeTurnFailure: { ...diagnostic, runnerFailureCode: "private_prompt_slug", message: "private-provider-response" },
+    } }), {}));
+    expect(result.provider).toEqual({ ...diagnostic, runnerFailureCode: "unrecognized" });
+    expect(JSON.stringify(result)).not.toContain("rivate");
+    for (const value of [null, [], { ...diagnostic, codexErrorInfo: "private-kind" },
+      Object.defineProperty({}, "provider", { get() { throw new Error("private"); } })]) {
+      expect(collectRunFailureDiagnostics(run({ resultJson: { nativeTurnFailure: value } }), {}).provider).toEqual({});
+    }
+  });
+
+  it("exports only the saved remote recovery stage and reason", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({
+      errorCode: "runner_remote_process_identity_unavailable", resultJson: {
+        remoteRunnerRecovery: { stage: "identity_marker", reason: "fingerprint_missing",
+          path: "private-path", pid: 123, nonce: "private-nonce", stderr: "private-stderr" },
+      },
+    }), {}));
+    expect(result.execution).toEqual({ remoteRunnerRecoveryStage: "identity_marker", remoteRunnerRecoveryReason: "fingerprint_missing" });
+    expect(result.exceptions).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain("private");
+    for (const value of [null, { stage: "private-stage", reason: "marker_missing" },
+      { stage: "identity_marker", reason: "private-reason" },
+      Object.defineProperty({}, "stage", { get() { throw new Error("private"); } })]) {
+      expect(collectRunFailureDiagnostics(run({ errorCode: "runner_remote_process_identity_unavailable",
+        resultJson: { remoteRunnerRecovery: value } }), {}).execution).toEqual({});
+    }
+    expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), {}).execution).toEqual({});
+  });
+
+  it("exports the remote recovery stage and reason from an error thrown before the result was saved", () => {
+    const thrown = Object.assign(new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" }),
+      { path: "private-path", pid: 123 });
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), { error: thrown }));
+    expect(result.execution).toEqual({ remoteRunnerRecoveryStage: "process_verification", remoteRunnerRecoveryReason: "process_not_running" });
+    expect(result.exceptions).toMatchObject([{ code: "runner_remote_process_identity_unavailable" }]);
+    expect(JSON.stringify(result)).not.toContain("private");
+
+    const transport = attachRemoteRunnerRecoveryDiagnostic(new Error("socket closed"),
+      { stage: "identity_marker", reason: "probe_transport_failed" });
+    expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), { error: new Error("wrapped", { cause: transport }) }).execution)
+      .toEqual({ remoteRunnerRecoveryStage: "identity_marker", remoteRunnerRecoveryReason: "probe_transport_failed" });
+
+    const saved = collectRunFailureDiagnostics(run({ errorCode: "runner_remote_process_identity_unavailable",
+      resultJson: { remoteRunnerRecovery: { stage: "identity_marker", reason: "marker_missing" } } }), { error: thrown });
+    expect(saved.execution).toEqual({ remoteRunnerRecoveryStage: "identity_marker", remoteRunnerRecoveryReason: "marker_missing" });
+    expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), {
+      error: Object.assign(new Error("runner_remote_process_identity_unavailable"), { code: "runner_remote_process_identity_unavailable",
+        remoteRunnerRecovery: { stage: "private-stage", reason: "marker_missing" } }),
+    }).execution).toEqual({});
+  });
+
+  it("exports which native close barrier failed without tool identities or provider text", () => {
+    const closeFailure = (settlement: unknown) => Object.assign(
+      new Error("provider_transport_failed: runner did not durably suspend before checkpoint"),
+      { code: "native_session_close_unrecoverable", settlement },
+    );
+    const settlement = {
+      runnerSuspended: false,
+      providerDrained: true,
+      suspensionState: { commandStatus: "pending", runnerLifecycle: "ready", runnerIdentityMatches: true },
+      semanticTools: {
+        persistenceFailed: false,
+        failures: [{ callId: "private-call", operationId: "private-operation", stage: "persist", code: "private-code" }],
+        pending: [{ sourceEventId: "private-event", callId: "private-call", inputDigest: "private-digest" }],
+        deliveries: [{ commandId: "private-command", status: "pending" }, { commandId: "private-command-2", status: "indeterminate" }],
+      },
+      finalProviderState: { pendingEventCount: 128, activeProviderTurnId: "private-turn", providerSettled: false },
+    };
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run(), { nativeCloseFailure: closeFailure(settlement) }));
+    expect(result.execution).toEqual({
+      closeRunnerSuspended: false, closeProviderDrained: true,
+      closeSuspendCommandStatus: "pending", closeRunnerLifecycle: "ready", closeRunnerIdentityMatches: true,
+      closeProviderState: "unsettled", closeProviderPendingEventCount: 128, closeProviderTurnActive: true,
+      closeSemanticResultPersistenceFailed: false,
+      closeSemanticToolsPending: 1, closeSemanticToolDeliveriesOpen: 2, closeSemanticResultFailures: 1,
+    });
+    expect(result.exceptions).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain("private");
+    expect(JSON.stringify(result)).not.toContain("durably suspend");
+
+    const unobserved = collectRunFailureDiagnostics(run(), { nativeCloseFailure: new Error("wrapped", { cause: closeFailure({
+      runnerSuspended: true, providerDrained: false, suspensionState: null, finalProviderState: null,
+    }) }) }).execution;
+    expect(unobserved).toEqual({ closeRunnerSuspended: true, closeProviderDrained: false, closeProviderState: "not_local" });
+    expect(collectRunFailureDiagnostics(run(), { nativeCloseFailure: closeFailure({
+      suspensionState: { commandStatus: null, runnerLifecycle: null, runnerIdentityMatches: null },
+      finalProviderState: "unreadable",
+    }) }).execution).toEqual({ closeSuspendCommandStatus: "not_queued", closeRunnerLifecycle: "unobserved", closeProviderState: "unreadable" });
+  });
+
+  it("ignores unrelated errors and unknown or hostile native close settlement values", () => {
+    expect(collectRunFailureDiagnostics(run(), { nativeCloseFailure: Object.assign(new Error("x"), {
+      code: "provider_transport_failed", settlement: { runnerSuspended: false },
+    }) }).execution).toEqual({});
+    const hostile = Object.assign(new Error("x"), { code: "native_session_close_unrecoverable", settlement: {
+      runnerSuspended: "private", providerDrained: 1,
+      suspensionState: { commandStatus: "private-status", runnerLifecycle: "private-lifecycle", runnerIdentityMatches: "yes" },
+      finalProviderState: { pendingEventCount: -1, activeProviderTurnId: 7, providerSettled: "private" },
+      semanticTools: Object.defineProperty({ pending: Number.POSITIVE_INFINITY }, "persistenceFailed", { get() { throw new Error("private"); } }),
+    } });
+    expect(collectRunFailureDiagnostics(run(), { nativeCloseFailure: hostile }).execution).toEqual({});
+    expect(collectRunFailureDiagnostics(run(), { nativeCloseFailure: Object.assign(new Error("x"), {
+      code: "native_session_close_unrecoverable",
+    }) }).execution).toEqual({});
+  });
+
   it("selects bounded lock-owner evidence from a caught timeout cause", () => {
     const error = new Error("outer", { cause: Object.assign(new Error("lock timeout"), {
       code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT",
@@ -334,6 +458,27 @@ describe("run failure diagnostics", () => {
     });
   });
 
+  it("includes the stalled tool's closed kind label, silent time and permission evidence", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      acpStalledToolKind: "other", acpStalledToolSilentMs: 1_800_000, acpStalledToolTitle: "private lookup",
+      acpStalledToolPermissionRequested: false, acpPendingToolPermissionRequestedCount: 3,
+      acpSettledSameKindToolCount: 30, acpSettledSameKindToolPermissionRequestedCount: 29,
+    } }), {}));
+    expect(result.execution).toEqual({
+      acpStalledToolKind: "other", acpStalledToolSilentMs: 1_800_000,
+      acpStalledToolPermissionRequested: false, acpPendingToolPermissionRequestedCount: 3,
+      acpSettledSameKindToolCount: 30, acpSettledSameKindToolPermissionRequestedCount: 29,
+    });
+    expect(JSON.stringify(result)).not.toContain("private");
+  });
+
+  it.each(["other,execute", "private lookup", "", "Other", ["other"], 1])(
+    "omits a stalled tool kind that is not one closed label (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: { acpStalledToolKind: value } }), {});
+      expect(result.execution).toEqual({});
+    },
+  );
+
   it.each(["execute,private command", "", "execute,", "Execute", ["execute"], 1])(
     "omits pending tool kinds that are not closed labels (%j)", (value) => {
       const result = collectRunFailureDiagnostics(run({ resultJson: { acpPendingToolKinds: value } }), {});
@@ -346,6 +491,9 @@ describe("run failure diagnostics", () => {
       const result = collectRunFailureDiagnostics(run({ resultJson: {
         acpLastEventAgeMs: value, acpObservedEventCount: value, acpPendingToolCount: value,
         acpToolInventoryComplete: value, acpLastEventAgeAtStopMs: value, acpOldestPendingToolAgeAtStopMs: value,
+        acpStalledToolSilentMs: value, acpStalledToolPermissionRequested: value,
+        acpPendingToolPermissionRequestedCount: value, acpSettledSameKindToolCount: value,
+        acpSettledSameKindToolPermissionRequestedCount: value,
       } }), {});
       expect(result.execution).toEqual({});
     },

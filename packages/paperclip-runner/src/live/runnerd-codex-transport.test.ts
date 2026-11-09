@@ -1,4 +1,4 @@
-import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
+import { bindRunnerLaunchResources, createRunnerProviderLaunch, runnerLaunchRequirementsDigest, type PreparedRunnerProviderLaunch, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
 import { coldAdmissionTimeoutMs, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import {
   chmod,
@@ -10,6 +10,7 @@ import {
   readFile,
   readdir,
   readlink,
+  realpath,
   rename,
   rm,
   stat,
@@ -19,6 +20,8 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { bindAcpxAgentFiles } from "../drivers/acpx/agent-files-binding.js";
+import { resolveRunnerProviderAssetsRoot } from "../drivers/acpx/provider-assets-root.js";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -26,7 +29,6 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 import type { ControlPlanePort } from "../contracts/control-plane-port.js";
-import { bindAcpxAgentFiles } from "../drivers/acpx/agent-files-binding.js";
 import type { NativeExecutionInputV1 } from "../contracts/native-execution.js";
 import type {
   NativeSession,
@@ -69,9 +71,11 @@ import {
   codexSemanticToolSpecs,
 } from "../drivers/codex/codex-app-server-driver.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-context-materializer.js";
+import * as runtimeMaterializer from "../drivers/runtime-context-materializer.js";
 import { RUNNERD_CANONICAL_ITEM } from "../drivers/codex/codex-driver-values.js";
 
 import {
+  probeNativeRunnerEnvironment,
   parseAcpxTurnControlCapabilities,
   authorizedToolSetForProvider,
   createCapabilityRunnerdCodexTransport,
@@ -287,6 +291,125 @@ it("replaces an owned v1 runner with fresh v2 authorization before warm attachme
   }
 }, 30_000);
 
+it.each(["resolved", "rejected"] as const)(
+  "retains a live authenticated runner when remote supervision is %s without exit proof",
+  async outcome => {
+    const directory = await mkdtemp(join(tmpdir(), "runnerd-uncertain-health-"));
+    const children: ReturnType<typeof spawn>[] = [];
+    const exits: Promise<void>[] = [];
+    const probeError = new Error("remote health probe unavailable");
+    let failObservation!: () => void;
+    const bundle = createCapabilityRunnerdCodexTransport({
+      runnerBinary: defaultCapabilityRunnerdBinary(),
+      codexCommand: fakeCodex,
+      codexArgs: fakeCodexArgs(directory),
+      stateDirectory: directory,
+      lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+      runnerReconnectGraceMs: 1_000,
+      runnerProcessLauncher: spec => {
+        const child = spawn(spec.command, [...spec.args], {
+          cwd: spec.cwd, env: spec.environment, stdio: "ignore",
+        });
+        children.push(child);
+        exits.push(new Promise(resolveExit => child.once("exit", () => resolveExit())));
+        const completion = new Promise<durableControlPlane.RunnerProcessResult>((resolveObservation, rejectObservation) => {
+          child.once("error", rejectObservation);
+          failObservation = () => {
+            if (outcome === "rejected") rejectObservation(probeError);
+            else resolveObservation({ code: null, signal: null, stdout: "", stderr: "remote health probe unavailable" });
+          };
+        });
+        return { child, completion, isExitConfirmed: () => false };
+      },
+    });
+    try {
+      await bundle.transport.request("thread/start", { cwd: directory });
+      const notifications = (async () => {
+        for await (const _event of bundle.transport.notifications()) {}
+      })();
+      const failure = notifications.catch(error => error as Error);
+      failObservation();
+      const error = await failure;
+      expect(error).toMatchObject({ message: expect.stringContaining("runner_process_termination_unconfirmed") });
+      if (outcome === "rejected") expect(error).toHaveProperty("cause", probeError);
+      expect(children).toHaveLength(1);
+      expect(bundle.transport.processInfo()).toMatchObject({ exited: false });
+      expect(() => process.kill(children[0]!.pid!, 0)).not.toThrow();
+    } finally {
+      const providerPid = bundle.evidence().codexPid;
+      if (providerPid) {
+        try { process.kill(providerPid, "SIGKILL"); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+      await bundle.transport.detachControllerForRestart!();
+      for (const child of children) child.kill("SIGKILL");
+      await Promise.all(exits);
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  15_000,
+);
+
+it("preserves the cause when a replacement runner's health cannot be verified", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-replacement-health-"));
+  const probeError = Object.assign(new Error("remote recovery process_verification: probe_timeout"), {
+    code: "runner_remote_process_identity_unavailable",
+    remoteRunnerRecovery: { stage: "process_verification", reason: "probe_timeout" },
+  });
+  let child: ReturnType<typeof spawn> | undefined;
+  let exited: Promise<void> | undefined;
+  const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+    if (child) return {
+      child: { pid: 42, exitCode: null, kill: () => false },
+      completion: Promise.reject(probeError),
+      isExitConfirmed: () => false,
+    };
+    child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+    const ownedChild = child;
+    exited = new Promise(resolveExit => ownedChild.once("exit", () => resolveExit()));
+    return {
+      child: ownedChild,
+      completion: new Promise<durableControlPlane.RunnerProcessResult>((resolveExit, rejectExit) => {
+        ownedChild.once("error", rejectExit);
+        ownedChild.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" }));
+      }),
+      isExitConfirmed: () => ownedChild.exitCode !== null || ownedChild.signalCode !== null,
+    };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory), stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 1_000, runnerProcessLauncher: launch,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: directory });
+    const failed = (async () => {
+      for await (const _event of bundle.transport.notifications()) {}
+    })().catch(error => error as Error);
+    child!.kill("SIGKILL");
+    const error = await failed;
+    expect(error).toMatchObject({
+      message: expect.stringContaining("runner_process_termination_unconfirmed"), cause: probeError,
+    });
+    expect(error).toHaveProperty("message", expect.stringContaining("probe_timeout"));
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(bundle.transport.processInfo()).toMatchObject({ exited: false });
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) {
+      try { process.kill(providerPid, "SIGKILL"); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    await bundle.transport.detachControllerForRestart!();
+    child?.kill("SIGKILL");
+    await exited;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);
+
 // The retained-settlement maintenance family ("settles only retained control
 // authority without starting another provider turn") lives in
 // runnerd-codex-transport-settlement.test.ts so vitest can run its ~160s of
@@ -394,6 +517,8 @@ it("publishes spawned runner ownership before waiting for provider startup", asy
   });
   const opening = bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: codexSemanticToolSpecs() });
   try {
+    await expect(bundle.transport.request("thread/read", { threadId: "rejected-duplicate" }))
+      .rejects.toThrow("PRP provider thread is already started");
     await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
     expect(onSpawn).toHaveBeenCalledWith({ pid: expect.any(Number), processGroupId: expect.any(Number), startedAt: expect.any(String) });
     expect(bundle.transport.processInfo?.().pid).toBeGreaterThan(0);
@@ -401,13 +526,17 @@ it("publishes spawned runner ownership before waiting for provider startup", asy
     releaseOwnership();
     await opening;
     expect(activate).toHaveBeenCalledOnce();
+    const turnStarted = expectTurnStarted(bundle.transport.notifications()[Symbol.asyncIterator]());
+    void turnStarted.catch(() => undefined);
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Verify fixture turn delivery." }] });
+    await turnStarted;
   } finally {
     releaseOwnership();
     await opening.catch(() => undefined);
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 it("launches runnerd with its production durable outbox limits", () => {
   expect(runnerdLaunchProfileInternals.maxOutboxBytes).toBe(16 * 1024 * 1024);
@@ -528,6 +657,69 @@ it("carries the provider attachment seed across consecutive authority rotations"
     workspace: { cwd: "/workspace" },
   });
 });
+
+it("projects a warm Copilot grant onto the remote runner filesystem", () => {
+  const runtimeContext = assignedRuntimeContext("/controller/skills", "/controller/instructions");
+  runtimeContext.instructions.workingCopy = { kind: "agent_files", rootPath: "/remote/registered-agent", entryPath: "AGENTS.md" };
+  const grant = { runtimeContext, instructions: "Read-only instruction sibling root: /controller/instructions" };
+  const projected = runnerdRecoveryInternals.projectCopilotRunGrant(grant, "/remote/session/filesystem");
+  expect(projected.runtimeContext?.instructions.bundle.rootPath).toBe("/remote/session/filesystem/context/instructions");
+  expect(projected.runtimeContext?.skills[0]?.bundle.rootPath).toBe(`/remote/session/filesystem/context/skills/0-${runtimeContext.skills[0]!.bundle.digest.slice(0, 12)}`);
+  expect(projected.runtimeContext?.instructions.workingCopy).toEqual(runtimeContext.instructions.workingCopy);
+  expect(projected.runtimeContext?.aggregateDigest).toBe(runtimeContext.aggregateDigest);
+  expect(projected.instructions).toBe("Read-only instruction sibling root: /remote/session/filesystem/context/instructions");
+  expect(grant.runtimeContext.instructions.bundle.rootPath).toBe("/controller/instructions");
+  expect(runnerdRecoveryInternals.projectCopilotRunGrant(grant)).toEqual(grant);
+});
+
+it("reopens Copilot with the current registered files after collecting the previous run copy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "copilot-current-attachment-"));
+  const previousRoot = join(root, "previous-agent");
+  const currentRoot = join(root, "current-agent");
+  try {
+    await mkdir(previousRoot);
+    await mkdir(currentRoot);
+    await writeFile(join(currentRoot, "AGENTS.md"), "Current instructions.\n");
+    const previousContext = assignedRuntimeContext("/skills", "/bundle");
+    previousContext.instructions.workingCopy = { kind: "agent_files", rootPath: previousRoot, entryPath: "AGENTS.md" };
+    const currentContext = structuredClone(previousContext);
+    currentContext.instructions.workingCopy!.rootPath = currentRoot;
+    const seed = {
+      provider: { kind: "acpx", agent: "copilot", runId: "prior-run", normalizedSessionId: "same-session",
+        instructions: "Previous instructions.", runtimeContext: previousContext, commandDigest: "unchanged", model: "selected-model" },
+    };
+    await rm(previousRoot, { recursive: true });
+    const attached = runnerdRecoveryInternals.rotatedRunAttachPayload(
+      { runAttachTemplate: seed },
+      { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "current-run", normalizedSessionId: "same-session", turnId: "turn", itemId: "item" },
+      null, undefined,
+      currentContext, { text: "Current instructions.", context: currentContext },
+    );
+    const provider = attached.provider as typeof seed.provider;
+    const files = bindAcpxAgentFiles(provider.runtimeContext, []);
+    expect(files?.root).toBe(await realpath(currentRoot));
+    files?.assertHeld();
+    expect(provider).toMatchObject({ instructions: "Current instructions.", commandDigest: "unchanged", model: "selected-model", normalizedSessionId: "same-session" });
+    expect(seed.provider.runtimeContext).toEqual(previousContext);
+    expect(seed.provider.instructions).toBe("Previous instructions.");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it.each(["claude", "codex", "cursor", "pi", "copilot"])("keeps %s's pinned grants on same-run recovery", (agent) => {
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "same-run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+  const provider = { kind: "acpx", agent, runId: identity.runId, instructions: "Pinned instructions.", runtimeContext: assignedRuntimeContext("/skills", "/pinned") };
+  const payload = runnerdRecoveryInternals.rotatedRunAttachPayload({ runAttachTemplate: { provider } }, identity, null, undefined,
+    undefined);
+  expect(payload.provider).toMatchObject(provider);
+});
+
+it.each(["claude", "codex", "cursor", "pi"])("preserves %s's cross-run context when no new grant is supplied", (agent) => {
+  const provider = { kind: "acpx", agent, runId: "prior-run", instructions: "Pinned instructions.", runtimeContext: assignedRuntimeContext("/skills", "/pinned") };
+  const payload = runnerdRecoveryInternals.rotatedRunAttachPayload({ runAttachTemplate: { provider } },
+    { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "new-run", normalizedSessionId: "session", turnId: "turn", itemId: "item" }, null, undefined,
+    undefined);
+  expect(payload.provider).toMatchObject({ ...provider, runId: "new-run" });
+  });
 
 it("restores ACPX with the current registered copy after the old run copy is collected", async () => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-acpx-context-rotation-"));
@@ -1397,6 +1589,61 @@ it("reserves a bounded suspension window after close preparation", () => {
 });
 
 it.each([
+  { existingCommand: false, rejectLateRead: false },
+  { existingCommand: false, rejectLateRead: true },
+  { existingCommand: true, rejectLateRead: false },
+  { existingCommand: true, rejectLateRead: true },
+])("returns unconfirmed suspension at its deadline while a remote state read is still pending ($existingCommand, $rejectLateRead)", async ({ existingCommand, rejectLateRead }) => {
+  vi.useFakeTimers();
+  const commands: { commandId: string; type: string; status: string }[] = existingCommand
+    ? [{ commandId: "exact-suspend", type: "runner.suspend", status: "completed" }]
+    : [];
+  const readRunnerState = vi.fn(async () => {
+    await new Promise<void>(resolveRead => setTimeout(resolveRead, 10_000));
+    if (rejectLateRead) throw new Error("remote state unavailable after its own timeout");
+    return { lifecycle: "suspended" };
+  });
+  const unhandled = vi.fn();
+  process.on("unhandledRejection", unhandled);
+  const queueSuspend = vi.fn((commandId: string) => commands.push({ commandId, type: "runner.suspend", status: "completed" }));
+  const release = vi.fn();
+  let settled = false;
+  let suspended: boolean | undefined;
+  const result = runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend,
+    readRunnerState,
+    runnerHasExited: async () => true,
+    pump: () => undefined,
+    deadline: Date.now() + 2_500,
+    pollIntervalMs: 0,
+  }).then(value => {
+    settled = true;
+    suspended = value;
+    if (value) release();
+    return value;
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(readRunnerState).toHaveBeenCalledOnce();
+    expect(settled).toBe(true);
+    expect(suspended).toBe(false);
+    expect(queueSuspend).toHaveBeenCalledTimes(existingCommand ? 0 : 1);
+    expect(release).not.toHaveBeenCalled();
+  } finally {
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(result).resolves.toBe(false);
+      expect(release).not.toHaveBeenCalled();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+      vi.useRealTimers();
+    }
+  }
+});
+
+it.each([
   { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: undefined, drained: true },
   { provider: "codex" as const, acpxAgent: undefined, closeGraceMs: undefined, drained: false },
   { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: 400, drained: false },
@@ -1406,9 +1653,11 @@ it.each([
     const { preparationDeadline, closeDeadline } = runnerdRecoveryInternals.runnerCloseDeadlines(
       Date.now(), runnerdRecoveryInternals.runnerCloseGraceMs(options),
     );
-    // The retained restart failure spent 5.2s stopping idle Pi before its
-    // remote drain acknowledgement crossed the next command round trip.
-    await vi.advanceTimersByTimeAsync(5_200);
+    // Native Pi allows thirty seconds for snapshot cleanup and five seconds
+    // for its lifetime fence before the drain acknowledgement round trip.
+    const stopMs = options.provider === "acpx" && options.acpxAgent === "pi"
+      && options.closeGraceMs === undefined ? 35_200 : 5_200;
+    await vi.advanceTimersByTimeAsync(stopMs);
     const commands: { commandId: string; status: string; result?: unknown }[] = [];
     const result = runnerdRecoveryInternals.awaitProviderDrainBarrier({
       readProviderState: () => null,
@@ -1428,7 +1677,7 @@ it.each([
     await vi.advanceTimersByTimeAsync(5_000);
     expect(await result).toBe(drained);
     expect(closeDeadline - preparationDeadline).toBeLessThanOrEqual(2_500);
-    expect(runnerdRecoveryInternals.runnerCloseGraceMs(options)).toBeLessThanOrEqual(15_000);
+    expect(runnerdRecoveryInternals.runnerCloseGraceMs(options)).toBeLessThanOrEqual(45_000);
   } finally { vi.useRealTimers(); }
 });
 
@@ -1645,10 +1894,40 @@ it.each([false, true])("binds a vendored source server to its pnpm dependency ro
     expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
       join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"),
     )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
+    expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+      join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, "pi",
+    )).toEqual({ root: server, manifest: join(server, "package.json") });
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
 });
+it.each((["copilot", "pi"] as const).flatMap(agent =>
+  ["source", "scoped-npm", "deployment"].map(layout => ({ agent, layout }))))(
+  "admits the controller-selected $agent package authority in a $layout layout",
+  async ({ agent, layout }) => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "copilot-package-authority-")));
+    const runnerRoot = layout === "source"
+      ? join(directory, "packages/paperclip-runner")
+      : layout === "scoped-npm"
+        ? join(directory, "node_modules/@paperclipai/paperclip-runner")
+        : directory;
+    await mkdir(join(runnerRoot, "dist/cli"), { recursive: true });
+    await writeFile(join(runnerRoot, "package.json"), JSON.stringify({ name: "@paperclipai/paperclip-runner" }));
+    try {
+      const authority = runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+        join(runnerRoot, "dist/cli/acpx-runtime-sidecar.cjs"), runnerRoot, agent,
+      );
+      expect(authority).toEqual({ root: runnerRoot, manifest: join(runnerRoot, "package.json") });
+      vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", authority.root);
+      vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", authority.manifest);
+      expect(resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", agent))
+        .toBe(join(runnerRoot, `provider-assets/${agent}`));
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 it("keeps a self-rooted pnpm deployment inside its dependency authority", async () => {
   const deploymentRoot = await mkdtemp(
@@ -2120,6 +2399,16 @@ it("allows trusted package-manager runtime roots without exposing HOME paths", (
   ).toEqual(["/opt/homebrew", "/usr/local"]);
 });
 
+it("trusts a preconfigured workspace through launch flags without editing the user config", () => {
+  const args = createRunnerdCodexAppServerArgs({
+    environment: { HOME: "/home/executor", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" },
+    codexHome: "/home/executor/.codex", workingDirectory: "/work/task",
+  });
+  expect(args.join("\n")).toContain('projects={"/work/task"={trust_level="trusted"}}');
+  expect(args.join("\n")).toContain('HOME="/home/executor"');
+  expect(args.join("\n")).not.toContain('"/home/executor"="none"');
+});
+
 it("denies the isolated Codex home without denying a remote execution workspace", () => {
   const args = createRunnerdCodexAppServerArgs({
     environment: {
@@ -2132,6 +2421,7 @@ it("denies the isolated Codex home without denying a remote execution workspace"
     readOnlyRoots: ["/usr/local"],
   });
   const serialized = args.join("\n");
+  expect(args).not.toContain("project_doc_max_bytes=0");
 
   expect(serialized).toContain(
     '"/workspaces/task/.paperclip-runtime/paperclip-runner/sessions/session/filesystem/codex-home"="none"',
@@ -2171,6 +2461,344 @@ it.each(["installed", "explicit"] as const)("records the selected %s Codex comma
   } finally {
     resolver.mockRestore();
     await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "omitted-context", "close-attachment", "timeout-attachment"] as const)("runs an environment-prepared descriptor without Core filesystem preparation (%s)", async mode => {
+  const root = await mkdtemp(join(tmpdir(), "runner-environment-launch-"));
+  const binary = defaultCapabilityRunnerdBinary();
+  const artifact = { version: "0.3.0", digest: `sha256:${createHash("sha256").update(await readFile(binary)).digest("hex")}` };
+  const context = assignedRuntimeContext("/controller-only/skill", "/controller-only/instructions");
+  const coreInstructions = composeNativeSystemInstructions(context, mode === "large-instructions" ? "x".repeat(200_000) : "Agent instructions");
+  const resolved = structuredClone(context);
+  resolved.instructions.bundle.rootPath = "/guest/.agents";
+  resolved.skills[0]!.bundle.rootPath = "/guest/.agents/skills/assigned";
+  const materialize = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockRejectedValue(new Error("unexpected Core materialization"));
+  const discover = vi.spyOn(codexCommandRuntime, "resolveCodexCommand").mockImplementation(() => { throw new Error("unexpected Core discovery"); });
+  let configuration: Record<string, unknown> | undefined;
+  let recovered = false;
+  let requestedRun = "";
+  let requestedInstructions = "";
+  let requestedContext: NativeRuntimeContextSnapshot | null | undefined;
+  const registered = new WeakSet<object>();
+  let enterPreparation!: () => void;
+  let finishPreparation!: () => void;
+  const preparationStarted = new Promise<void>(resolve => { enterPreparation = resolve; });
+  const preparationGate = new Promise<void>(resolve => { finishPreparation = resolve; });
+  const checkpoint = vi.fn();
+  const releaseRoute = vi.fn();
+  let currentRun = () => "";
+  const create = (closeGraceMs = 5_000, runId = "run-prepared") => createCapabilityRunnerdCodexTransport({ provider: "codex", runnerArtifact: artifact,
+    closeGraceMs,
+    stateDirectory: root, runtimeContext: runId === "run-prepared" ? context
+      : mode === "removed-context" ? null : mode === "omitted-context" ? undefined : context,
+    ...(mode === "rotated-recovery" || mode === "removed-context" || mode === "omitted-context" ? {
+      readRunnerState: async () => JSON.parse(await readFile(join(root, "runner/runner-state.json"), "utf8")),
+      prepareExternalRunnerState: async () => undefined,
+      archiveExternalRunnerState: async () => {
+        const path = join(root, "runner/runner-state.json");
+        const prior = JSON.parse(await readFile(path, "utf8"));
+        await rename(path, join(root, "prior-runner-state.json"));
+        return prior;
+      },
+    } : {}),
+    prpIdentity: { runnerInstanceId: "runner-prepared", environmentLeaseId: "lease-prepared", runId,
+      normalizedSessionId: "session-prepared", turnId: "turn-prepared", itemId: "item-prepared" },
+    prepareLaunch: async (requirements, recovery) => {
+      requestedRun = requirements.identity.runId;
+      requestedInstructions = requirements.instructions;
+      requestedContext = requirements.runtimeContext;
+      if (requirements.identity.runId === "run-prepared-next" && (mode === "close-attachment" || mode === "timeout-attachment")) {
+        enterPreparation();
+        await preparationGate;
+      }
+      if (recovery) { recovered = true; return recovery; }
+      return { configurationId: `owned-${requirements.identity.runId}`,
+      requirementsDigest: runnerLaunchRequirementsDigest(requirements),
+      provider: createRunnerProviderLaunch(requirements.runtimeContext === null ? requirements : bindRunnerLaunchResources(requirements, resolved), {
+        options: { codexArgs: fakeCodexArgs(root) }, root, cwd: root, codexHome: "/guest/.codex",
+        codexCommand: fakeCodex, providerNodeCommand: process.execPath,
+        opencodeProxyPath: "", acpxSidecarPath: "",
+      }),
+    }; },
+    controlPlaneRegistration: async authority => {
+      configuration = authority.store.state.runAttachTemplate;
+      currentRun = () => authority.store.state.identity.runId;
+      if (!registered.has(authority)) {
+        await authority.start();
+        registered.add(authority);
+      }
+      return { release: releaseRoute, checkpoint };
+    },
+    runnerProcessLauncher: spec => {
+      const child = spawn(binary, [...spec.args], { env: spec.environment, stdio: "ignore" });
+      return { child, completion: new Promise((resolveExit, reject) => {
+        child.once("error", reject);
+        child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" }));
+      }) };
+    },
+  });
+  const { transport } = create();
+  try {
+    const opened = await transport.request("thread/start", { cwd: "/controller-only/workspace", model: "selected-model",
+      baseInstructions: coreInstructions, dynamicTools: codexSemanticToolSpecs() });
+    expect(opened.thread).toHaveProperty("id");
+    expect(configuration).toMatchObject({ provider: { command: fakeCodex, cwd: root,
+      runtimeContext: { instructions: { bundle: { rootPath: "/guest/.agents" } } } } });
+    expect(configuration).not.toHaveProperty("preparedLaunch");
+    expect(configuration).not.toHaveProperty("launchRequirements");
+    expect(JSON.parse(await readFile(join(root, "launch-preparation.json"), "utf8")))
+      .toMatchObject({ entries: [{ prepared: { configurationId: "owned-run-prepared" },
+        requirements: { instructions: coreInstructions } }] });
+    expect(JSON.stringify(configuration?.provider)).not.toContain("/controller-only/");
+    expect(materialize).not.toHaveBeenCalled();
+    expect(discover).not.toHaveBeenCalled();
+    await expect(stat(join(root, "codex-home"))).rejects.toHaveProperty("code", "ENOENT");
+    await expect(stat(join(root, "runtime-context.json"))).rejects.toHaveProperty("code", "ENOENT");
+    await transport.close();
+    if (mode === "removed-context") {
+      const rotated = create(5_000, "run-prepared-removed");
+      try {
+        await expect(rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id }))
+          .rejects.toThrow("cannot change the durable Codex provider profile");
+        expect(requestedContext).toBeNull();
+        expect(requestedInstructions).toContain("Agent instructions");
+        expect(requestedInstructions).not.toContain("Read-only instruction sibling root:");
+        expect(requestedInstructions).not.toContain("/controller-only/");
+        expect(configuration).toHaveProperty("provider.runtimeContext", null);
+        const saved = JSON.parse(await readFile(join(root, "launch-preparation.json"), "utf8"));
+        expect(saved.entries[0]).toMatchObject({ requirements: { runtimeContext: null },
+          prepared: { provider: { runtimeContext: null } } });
+      } finally { await rotated.transport.close(); }
+      return;
+    }
+    if (mode === "rotated-recovery" || mode === "omitted-context") {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const rotated = create(5_000, "run-prepared-rotated");
+        try {
+          await rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
+          expect(requestedRun).toBe("run-prepared-rotated");
+          expect(requestedContext).toEqual(context);
+          expect(requestedInstructions).toBe(coreInstructions);
+          expect(recovered).toBe(attempt > 0);
+        } finally { await rotated.transport.close(); }
+      }
+      return;
+    }
+    const resumed = create(mode === "timeout-attachment" ? 500 : 5_000);
+    try {
+      await resumed.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
+      expect(recovered).toBe(true);
+      checkpoint.mockClear();
+      releaseRoute.mockClear();
+      const attaching = resumed.transport.attachRun!({
+        runId: "run-prepared-next", turnId: "turn-prepared-next", itemId: "item-prepared-next",
+      });
+      void attaching.catch(() => undefined);
+      if (mode === "close-attachment" || mode === "timeout-attachment") {
+        await preparationStarted;
+        await expect(resumed.transport.attachRun!({
+          runId: "overlapping-run", turnId: "overlapping-turn", itemId: "overlapping-item",
+        })).rejects.toThrow("native_runner_run_attachment_in_progress");
+        let closed = false;
+        const closing = resumed.transport.close().finally(() => { closed = true; });
+        void closing.catch(() => undefined);
+        if (mode === "timeout-attachment") {
+          await expect(closing).rejects.toThrow();
+          expect(checkpoint).toHaveBeenCalledExactlyOnceWith("unsettled");
+          expect((await stat(root)).isDirectory()).toBe(true);
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 300));
+          expect(closed).toBe(false);
+          expect(releaseRoute).not.toHaveBeenCalled();
+          expect(checkpoint).not.toHaveBeenCalled();
+        }
+        finishPreparation();
+        await expect(attaching).rejects.toThrow(/closed/);
+        if (mode === "close-attachment") {
+          await closing;
+          expect(checkpoint).toHaveBeenCalledExactlyOnceWith("settled");
+        }
+        expect(currentRun()).toBe("run-prepared");
+        return;
+      }
+      await attaching;
+      expect(requestedRun).toBe("run-prepared-next");
+      expect(requestedInstructions).toBe(coreInstructions);
+      await expect(resumed.transport.attachRun!({
+        runId: "run-prepared-changed", turnId: "turn-prepared-changed", itemId: "item-prepared-changed",
+        currentRunGrant: { runtimeContext: context, instructions: composeNativeSystemInstructions(context, "Next run instructions") },
+      })).rejects.toThrow("cannot change the durable Codex provider profile");
+      expect(requestedRun).toBe("run-prepared-changed");
+      expect(requestedInstructions).toContain("Next run instructions");
+    } finally {
+      finishPreparation();
+      if (mode === "timeout-attachment") await resumed.transport.close().catch(() => undefined);
+      else await resumed.transport.close();
+    }
+  } finally {
+    finishPreparation();
+    await transport.close();
+    materialize.mockRestore(); discover.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("rejects an environment-prepared policy change before registration or process launch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runner-environment-policy-"));
+  const registration = vi.fn();
+  const launch = vi.fn();
+  const { transport } = createCapabilityRunnerdCodexTransport({ provider: "codex", stateDirectory: root,
+    runnerArtifact: { version: "fixture", digest: `sha256:${"a".repeat(64)}` },
+    runnerProcessLauncher: launch, controlPlaneRegistration: registration,
+    prepareLaunch: async requirements => ({ configurationId: "wrong-policy",
+      requirementsDigest: runnerLaunchRequirementsDigest(requirements),
+      provider: { kind: "codex", model: requirements.model, approvalPolicy: "never", readOnly: false },
+    }),
+  });
+  try {
+    await expect(transport.request("thread/start", { model: "selected", approvalPolicy: "on-request", dynamicTools: [] }))
+      .rejects.toThrow("runner_prepared_launch_requirements_mismatch");
+    expect(registration).not.toHaveBeenCalled(); expect(launch).not.toHaveBeenCalled();
+  } finally { await transport.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+it("joins delayed environment preparation before close and prevents a late launch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runner-environment-cancel-"));
+  let started!: () => void;
+  const preparationStarted = new Promise<void>(resolve => { started = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>(resolve => { release = resolve; });
+  const registration = vi.fn(); const launch = vi.fn();
+  const { transport } = createCapabilityRunnerdCodexTransport({ provider: "codex", stateDirectory: root,
+    runnerArtifact: { version: "fixture", digest: `sha256:${"a".repeat(64)}` },
+    runnerProcessLauncher: launch, controlPlaneRegistration: registration,
+    prepareLaunch: async requirements => {
+      started(); await released;
+      return { configurationId: "cancelled-preparation", requirementsDigest: runnerLaunchRequirementsDigest(requirements),
+        provider: createRunnerProviderLaunch(requirements, { options: { codexArgs: [] }, root, cwd: root,
+          codexHome: root, providerNodeCommand: "", codexCommand: "/unused/codex", opencodeProxyPath: "", acpxSidecarPath: "" }) };
+    },
+  });
+  const opening = transport.request("thread/start", { model: "selected", dynamicTools: [] });
+  void opening.catch(() => undefined);
+  let closed = false;
+  try {
+    await preparationStarted;
+    const closing = transport.close().then(() => { closed = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(closed).toBe(false);
+    release();
+    await expect(opening).rejects.toThrow(/closed/);
+    await closing;
+    expect(registration).not.toHaveBeenCalled(); expect(launch).not.toHaveBeenCalled();
+  } finally { release(); await opening.catch(() => undefined); await transport.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+it("does not invoke deferred startup preparation after immediate close", async () => {
+  const prepare = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockResolvedValue(undefined);
+  const registration = vi.fn(async () => ({ connectUrl: "ws://127.0.0.1:1", release: () => undefined }));
+  const launch = vi.fn(() => { throw new Error("unexpected launch"); });
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    runnerBinary: resolve(import.meta.dirname, "../../package.json"), codexCommand: "/unused-fixture-command", sourceCodexHome: "",
+    controlPlaneRegistration: registration, runnerProcessLauncher: launch,
+  });
+  const opening = transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+  void opening.catch(() => undefined);
+  try {
+    await transport.close();
+    await expect(opening).rejects.toThrow(/closed/);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(registration).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    await opening.catch(() => undefined);
+    await transport.close().catch(() => undefined);
+    prepare.mockRestore();
+  }
+});
+
+it("owns blocked Codex home preparation through driver abort without later registration or launch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-blocked-home-preparation-"));
+  const runnerBinary = join(root, "runnerd");
+  const command = join(root, "codex");
+  await writeFile(runnerBinary, "unexecuted fixture artifact", { mode: 0o700 });
+  await writeFile(command, "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+  let releasePreparation!: () => void;
+  const preparationReleased = new Promise<void>(resolve => { releasePreparation = resolve; });
+  let markPreparationStarted!: () => void;
+  const preparationStarted = new Promise<void>(resolve => { markPreparationStarted = resolve; });
+  let closeSettled = false;
+  let preparationContinuedAfterClose = false;
+  const prepare = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockImplementation(async input => {
+    markPreparationStarted();
+    await preparationReleased;
+    preparationContinuedAfterClose = closeSettled;
+    await mkdir(input.codexHome, { mode: 0o700 });
+    await writeFile(join(input.codexHome, "preparation-marker"), "fixture preparation drained\n", { mode: 0o600 });
+  });
+  const registration = vi.fn(async () => ({
+    connection: { mode: "connect" as const, connectUrl: "ws://127.0.0.1:1/fixture-never-connected" },
+    release: () => undefined,
+  }));
+  const launch = vi.fn(() => { throw new Error("fixture_stop_before_runner_launch"); });
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    provider: "codex", runnerBinary, codexCommand: command, stateDirectory: root,
+    sourceCodexHome: "", environment: {}, controlPlaneRegistration: registration, runnerProcessLauncher: launch,
+  });
+  const request = transport.request.bind(transport);
+  let bootstrapOperation: Promise<Record<string, unknown>> | undefined;
+  const requestSpy = vi.spyOn(transport, "request").mockImplementation((method, params) => {
+    const operation = request(method, params);
+    if (method === "thread/start") bootstrapOperation = operation;
+    return operation;
+  });
+  const closeTransport = transport.close.bind(transport);
+  let closeOperation: Promise<void> | undefined;
+  const closeSpy = vi.spyOn(transport, "close").mockImplementation(reason => {
+    closeOperation ??= closeTransport(reason).then(() => { closeSettled = true; });
+    return closeOperation;
+  });
+  const controller = new AbortController();
+  const cancelled = new Error("fixture Codex bootstrap cancelled");
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: {
+      schema: "paperclip.skillless_task.v1", objective: "Credential-free bootstrap ownership fixture.",
+      completionContract: { revision: "blocked-preparation-v1", criteria: [] },
+      constraints: [], expectedResultSchema: "paperclip.run_result.v1",
+    },
+    conversationMode: "direct", environment: {}, transportFactory: () => transport,
+  });
+  let openingSettled = false;
+  const opening = driver.openSession({ runId: "fixture-blocked-home", normalizedSessionId: "fixture-blocked-home", workingDirectory: root, signal: controller.signal })
+    .then(value => { openingSettled = true; return { value }; }, error => { openingSettled = true; return { error }; });
+  try {
+    await preparationStarted;
+    await expect(transport.request("thread/start", { cwd: root, dynamicTools: [] }))
+      .rejects.toThrow("PRP provider thread is already started");
+    controller.abort(cancelled);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect.soft(closeOperation).toBeDefined();
+    expect.soft(closeSettled).toBe(false);
+    expect.soft(openingSettled).toBe(false);
+    releasePreparation();
+    const outcome = await opening;
+    await closeOperation;
+    await bootstrapOperation?.catch(() => undefined);
+    expect.soft(preparationContinuedAfterClose).toBe(false);
+    expect.soft(registration.mock.calls.length).toBe(0);
+    expect.soft(launch.mock.calls.length).toBe(0);
+    expect.soft(outcome).toHaveProperty("error");
+    expect.soft(outcome).toHaveProperty("error", cancelled);
+  } finally {
+    releasePreparation();
+    await opening;
+    await bootstrapOperation?.catch(() => undefined);
+    await transport.close().catch(() => undefined);
+    requestSpy.mockRestore();
+    closeSpy.mockRestore();
+    prepare.mockRestore();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -2715,6 +3343,103 @@ const fakeCodex = resolve(
   "../../runner/target/debug/fake-codex-app-server",
 );
 
+it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooperative-release", "launch-failure", "launch-failure-sandbox", "launch-failure-unsandboxed"] as const)(
+  "bounds setup registration teardown and retains unconfirmed state (%s)",
+  async mode => {
+    const root = await mkdtemp(join(tmpdir(), "runnerd-setup-registration-"));
+    const runtimeDirectory = join(root, "native-state");
+    await mkdir(runtimeDirectory, { mode: 0o700 });
+    const launchFailure = mode.startsWith("launch-failure");
+    let template: Record<string, unknown> | null = null;
+    let registrationStarted!: () => void;
+    const started = new Promise<void>(resolve => { registrationStarted = resolve; });
+    let returnRegistration!: (registration: { connection: { mode: "listen"; listenAddress: string; listenPort: number; listenPath: string }; release: () => Promise<void> }) => void;
+    const registration = new Promise<Parameters<typeof returnRegistration>[0]>(resolve => { returnRegistration = resolve; });
+    let finishRelease!: () => void;
+    const releasing = new Promise<void>(resolve => { finishRelease = resolve; });
+    const releaseError = new Error("setup registration release failed");
+    const release = vi.fn(async () => {
+      if (mode === "stuck-release") await releasing;
+      if (mode === "late-release-error") throw releaseError;
+    });
+    const registered = {
+      connection: { mode: "listen" as const, listenAddress: "127.0.0.1", listenPort: 43127, listenPath: "/setup-probe" },
+      release,
+    };
+    let registrationSignal: AbortSignal | undefined;
+    const cleanup = vi.fn(async () => { await rm(runtimeDirectory, { recursive: true, force: true }); });
+    const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+      expect(spec.environment.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX).toBeUndefined();
+      throw new Error("owned launcher failed before execution");
+    });
+    let settled = false;
+    vi.useFakeTimers();
+    const result = probeNativeRunnerEnvironment({
+      runtimeDirectory, provider: "codex", model: "gpt-test", timeoutMs: 1_000,
+      environment: { PATH: "", OPENAI_API_KEY: "inert-test-key", PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "true" },
+      transportOptions: {
+        ...(mode === "launch-failure-sandbox" ? { externallySandboxed: true } : mode === "launch-failure-unsandboxed" ? { externallySandboxed: false } : {}),
+        runnerBinary: resolve(import.meta.dirname, "../../package.json"),
+        codexCommand: resolve(import.meta.dirname, "../../package.json"),
+        sourceCodexHome: "", runnerProcessLauncher: launch,
+        controlPlaneRegistration: async (_authority, _identity, signal) => {
+          template = structuredClone(_authority.store.state.runAttachTemplate!);
+          registrationSignal = signal;
+          if (mode === "cooperative-release") signal?.addEventListener("abort", () => returnRegistration(registered), { once: true });
+          registrationStarted();
+          return registration;
+        },
+      },
+      onCleanupConfirmed: cleanup,
+    }).then(value => { settled = true; return value; }, (error: unknown) => { settled = true; return error; });
+    try {
+      await started;
+      if (launchFailure) returnRegistration(registered);
+      await vi.advanceTimersByTimeAsync(1_000);
+      if (mode === "late-release" || mode === "late-release-error" || mode === "stuck-release") returnRegistration(registered);
+      await vi.advanceTimersByTimeAsync(10_000);
+      if (mode === "late-release" || mode === "cooperative-release" || launchFailure) await result;
+      expect(settled).toBe(true);
+      expect(registrationSignal?.aborted).toBe(true);
+      const failure = await result;
+      expect(template).toMatchObject({ provider: { externallySandboxed: mode === "launch-failure-sandbox", readOnly: true, approvalPolicy: "never", collaborationMode: "plan" } });
+      const args = (template!.provider as Record<string, unknown>).args as string[];
+      expect(args).toContain("project_doc_max_bytes=0");
+      expect(args[args.indexOf("project_doc_max_bytes=0") - 1]).toBe("-c");
+      expect(args.indexOf("project_doc_max_bytes=0")).toBeLessThan(args.indexOf("app-server"));
+      expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+      expect(args).toContain('permissions.paperclip-runner-workspace-read-only.network.enabled=false');
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain(launchFailure ? "owned launcher failed before execution" : "Native provider hello probe timed out.");
+      if (mode === "stuck" || mode === "stuck-release" || mode === "late-release-error") {
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect((failure as AggregateError).cause).toMatchObject({ message: "Native provider hello probe timed out." });
+        expect(cleanup).not.toHaveBeenCalled();
+        expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
+        if (mode === "late-release-error") expect((failure as AggregateError).errors).toContain(releaseError);
+        returnRegistration(registered);
+        finishRelease();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(release).toHaveBeenCalledOnce();
+        expect(cleanup).not.toHaveBeenCalled();
+      } else {
+        expect(release).toHaveBeenCalledOnce();
+        expect(cleanup).toHaveBeenCalledOnce();
+        await expect(stat(runtimeDirectory)).rejects.toThrow();
+      }
+      expect(launch).toHaveBeenCalledTimes(launchFailure ? 1 : 0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      returnRegistration(registered);
+      finishRelease();
+      await vi.advanceTimersByTimeAsync(0);
+      await result;
+      vi.useRealTimers();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
 function fakeCodexArgs(stateDirectory: string, ...args: string[]): string[] {
   return [
     "--state-file",
@@ -2722,6 +3447,249 @@ function fakeCodexArgs(stateDirectory: string, ...args: string[]): string[] {
     ...args,
   ];
 }
+
+it("joins owned credential preparation before close returns and never launches after close", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-owned-startup-"));
+  const artifact = join(root, "unexecuted-runner-artifact");
+  await writeFile(artifact, "fixture artifact bytes; never executed");
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const preparation = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockImplementation(async ({ codexHome }) => {
+    entered();
+    await gate;
+    await mkdir(codexHome, { recursive: true });
+    await writeFile(join(codexHome, "owned-write.txt"), "completed owned preparation");
+  });
+  const registration = vi.fn(async () => ({ connectUrl: "ws://127.0.0.1:1", release: async () => {} }));
+  const launch = vi.fn(() => { throw new Error("unexecuted late launch"); });
+  const bundle = createCapabilityRunnerdCodexTransport({ stateDirectory: root, runnerBinary: artifact, codexCommand: artifact, provider: "codex", closeGraceMs: 1000,
+    controlPlaneRegistration: registration, runnerProcessLauncher: launch });
+  let opening: Promise<unknown> | undefined;
+  let closing: Promise<void> | undefined;
+  try {
+    opening = bundle.transport.request("thread/start", { cwd: root, model: "gpt-test", dynamicTools: [] });
+    void opening.catch(() => {});
+    await started;
+    let closeReturned = false;
+    closing = bundle.transport.close("owned preparation test");
+    void closing.then(() => { closeReturned = true; }, () => {});
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(closeReturned).toBe(false);
+    release();
+    await expect(opening).rejects.toThrow(/closed/);
+    await closing;
+    expect(await readFile(join(root, "codex-home", "owned-write.txt"), "utf8")).toBe("completed owned preparation");
+    expect(registration).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    release();
+    await Promise.allSettled([opening, closing]);
+    preparation.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("retains owned state when credential preparation outlives bounded close", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-retained-startup-"));
+  const artifact = join(root, "unexecuted-artifact");
+  await writeFile(artifact, "never executed");
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const preparation = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockImplementation(async () => { entered(); await gate; });
+  const registration = vi.fn(async () => ({ connectUrl: "ws://127.0.0.1:1", release: async () => {} }));
+  const launch = vi.fn(() => { throw new Error("unexpected launch"); });
+  const bundle = createCapabilityRunnerdCodexTransport({ stateDirectory: root, runnerBinary: artifact, codexCommand: artifact, provider: "codex", closeGraceMs: 100,
+    controlPlaneRegistration: registration, runnerProcessLauncher: launch });
+  const opening = bundle.transport.request("thread/start", { cwd: root, model: "gpt-test", dynamicTools: [] });
+  void opening.catch(() => {});
+  try {
+    await started;
+    await expect(bundle.transport.close("bounded preparation")).rejects.toThrow("startup cleanup is unconfirmed");
+    expect((await stat(root)).isDirectory()).toBe(true);
+    release();
+    await expect(opening).rejects.toThrow(/closed/);
+    expect(registration).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    release(); await opening.catch(() => {}); preparation.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it.each(["settled", "late", "late-release-error"] as const)("retires owned startup registration without post-close launch (%s)", async mode => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-startup-registration-"));
+  const artifact = join(root, "unexecuted-artifact");
+  await writeFile(artifact, "never executed");
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const registered = new Promise<void>(resolve => { entered = resolve; });
+  const preparation = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockResolvedValue(undefined);
+  const retire = vi.fn(async () => { if (mode === "late-release-error") throw new Error("owned registration release failed"); });
+  const registration = vi.fn(async () => { entered(); await gate; return { connectUrl: "ws://127.0.0.1:1", release: retire }; });
+  const launch = vi.fn(() => { throw new Error("unexpected launch"); });
+  const bundle = createCapabilityRunnerdCodexTransport({ stateDirectory: root, runnerBinary: artifact, codexCommand: artifact, provider: "codex", closeGraceMs: mode === "settled" ? 1000 : 100,
+    controlPlaneRegistration: registration, runnerProcessLauncher: launch });
+  const opening = bundle.transport.request("thread/start", { cwd: root, model: "gpt-test", dynamicTools: [] });
+  void opening.catch(() => {});
+  let closing: Promise<void> | undefined;
+  try {
+    await registered;
+    let closeReturned = false;
+    closing = bundle.transport.close("owned registration");
+    void closing.then(() => { closeReturned = true; }, () => {});
+    if (mode === "settled") {
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(closeReturned).toBe(false);
+    } else {
+      await expect(closing).rejects.toThrow("startup cleanup is unconfirmed");
+      expect((await stat(root)).isDirectory()).toBe(true);
+    }
+    release();
+    await expect(opening).rejects.toThrow(mode === "late-release-error" ? "owned registration release failed" : /closed/);
+    if (mode === "settled") await closing;
+    expect(retire).toHaveBeenCalledTimes(1);
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    release(); await Promise.allSettled([opening, closing]); preparation.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("does not certify probe cleanup while owned credential preparation is unconfirmed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-probe-owned-preparation-"));
+  const artifact = join(root, "unexecuted-artifact");
+  await writeFile(artifact, "never executed");
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const preparation = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockImplementation(async () => { entered(); await gate; });
+  const cleanup = vi.fn(async () => {});
+  const launch = vi.fn(() => { throw new Error("unexpected launch"); });
+  const probe = probeNativeRunnerEnvironment({ runtimeDirectory: root, provider: "codex", model: "gpt-test", timeoutMs: 100,
+    environment: { OPENAI_API_KEY: "fixture" }, onCleanupConfirmed: cleanup,
+    transportOptions: { runnerBinary: artifact, codexCommand: artifact, runnerProcessLauncher: launch,
+      controlPlaneRegistration: async () => ({ connectUrl: "ws://127.0.0.1:1", release: async () => {} }) },
+  });
+  const result = probe.catch(error => error);
+  try {
+    await started;
+    const error = await result;
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.message).toContain("hello probe timed out");
+    expect(error.message).toContain("startup cleanup is unconfirmed");
+    expect((await stat(root)).isDirectory()).toBe(true);
+    release();
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    release(); await result; preparation.mockRestore();
+    await new Promise(resolve => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
+it.each(["complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-native-setup-"));
+  const runtimeDirectory = join(root, "native-state");
+  await mkdir(runtimeDirectory, { mode: 0o700 });
+  const calls = join(root, "calls.jsonl");
+  const sourceHome = join(root, "bound-account");
+  await mkdir(sourceHome, { mode: 0o700 });
+  await writeFile(join(sourceHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: mode === "api-key" ? "unrelated-login" : "selected-account" }), { mode: 0o600 });
+  if (mode === "api-key") await writeFile(join(sourceHome, "config.toml"), 'model = "ambient-model"\n[mcp_servers.ambient]\ncommand = "untrusted-ambient-command"\n', { mode: 0o600 });
+  const remote = mode.startsWith("remote-") || mode.startsWith("late-remote-");
+  const remoteRoot = join(root, "assigned-remote-filesystem");
+  const remoteFilesystem = join(remoteRoot, "filesystem");
+  const remoteWorkspace = join(remoteFilesystem, "workspace");
+  let registrationReleased = false;
+  let refreshed = false;
+  let cleanupConfirmed = false;
+  try {
+    const probe = probeNativeRunnerEnvironment({
+      runtimeDirectory, provider: "codex", model: mode === "default-model" ? null : "gpt-6.1-sol", reasoningEffort: "low",
+      environment: { PATH: process.env.PATH, OPENAI_API_KEY: mode === "api-key" ? "selected-account" : "", HOME: "/unrelated/home" },
+      timeoutMs: mode.startsWith("late-remote-") ? 800 : mode === "late-bootstrap" ? 100 : mode === "missing-completion" ? 1_000 : 10_000,
+      ...(remote ? { workingDirectory: remoteWorkspace } : {}),
+      transportOptions: {
+        ...(remote ? {
+          runnerFilesystemRoot: remoteFilesystem, runnerStateDirectory: join(remoteRoot, "runner"),
+          readRunnerState: async () => JSON.parse(await readFile(join(remoteRoot, "runner", "runner-state.json"), "utf8")),
+          controlPlaneRegistration: async authority => {
+            await mkdir(remoteWorkspace, { recursive: true, mode: 0o700 });
+            const remoteHome = join(remoteFilesystem, "codex-home");
+            await mkdir(remoteHome, { mode: 0o700 });
+            for (const name of ["auth.json", "config.toml"] as const) await cp(join(runtimeDirectory, "codex-home", name), join(remoteHome, name));
+            if (mode.startsWith("late-remote-")) await new Promise(resolve => setTimeout(resolve, 1000));
+            await authority.start();
+            return { connectUrl: authority.connectUrl, release: async () => { registrationReleased = true; await authority.stop(); if (mode === "late-remote-release-error") throw new Error("PRP registration release failed"); } };
+          },
+        } : {}),
+        runnerBinary: mode === "missing-runtime" ? join(root, "missing-runner") : resolve("runner/target/debug/paperclip-runnerd"),
+        codexCommand: fakeCodex, codexArgs: fakeCodexArgs(root, "--request-log", calls,
+          ...(mode === "missing-completion" ? ["--hold-turn"] : []),
+          ...(mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" ? ["--returned-model", "another-model"] : []),
+          ...(mode === "missing-model" ? ["--returned-model", ""] : []),
+          ...(mode === "late-bootstrap" ? ["--thread-start-delay-ms", "1000"] : [])),
+        sourceCodexHome: sourceHome,
+      },
+      onCodexCredentialRefresh: async filename => {
+        expect(filename).toBe(join(remote ? remoteFilesystem : runtimeDirectory, "codex-home", "auth.json"));
+        expect(JSON.parse(await readFile(filename, "utf8"))).toEqual({ OPENAI_API_KEY: "selected-account" });
+        if (mode === "api-key") {
+          const config = await readFile(join(runtimeDirectory, "codex-home", "config.toml"), "utf8");
+          expect(config).not.toContain("ambient-model"); expect(config).not.toContain("untrusted-ambient-command");
+          expect((await stat(filename)).mode & 0o777).toBe(0o600);
+        }
+        refreshed = true;
+        if (mode === "model-refresh-error") throw new Error("credential refresh failed after the native model error");
+      },
+      onCleanupConfirmed: async () => {
+        cleanupConfirmed = true;
+        expect(refreshed || mode === "missing-runtime" || mode === "late-bootstrap" || mode.startsWith("late-remote-")).toBe(true);
+        if (mode === "model-cleanup-error") throw new Error("owned temporary state cleanup failed");
+        await rm(runtimeDirectory, { recursive: true, force: true });
+      },
+    });
+    if (mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
+      const observedModel = mode === "default-model" ? "gpt-test" : "gpt-6.1-sol";
+      await expect(probe).resolves.toEqual({ provider: "codex", providerDriver: "codex_app_server", effectiveModel: observedModel, helloProbePassed: true });
+      expect(refreshed).toBe(true);
+      if (remote) expect(registrationReleased).toBe(true);
+      expect(cleanupConfirmed).toBe(true);
+      await expect(stat(runtimeDirectory)).rejects.toThrow();
+      const requests = (await readFile(calls, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      expect(requests.find(value => value.method === "thread/start").params).toMatchObject({ ...(remote ? { cwd: remoteWorkspace } : {}), permissions: "paperclip-runner-workspace-read-only", dynamicTools: [] });
+      expect(requests.find(value => value.method === "turn/start").params).toMatchObject({ effort: "low", permissions: "paperclip-runner-workspace-read-only" });
+    } else {
+      await expect(probe).rejects.toThrow(mode === "missing-runtime" ? /ENOENT|unavailable|cleanup/i : mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" ? /observed model|mismatched provider model/i : /timed out|cleanup|suspension/i);
+      if (mode === "late-remote-release-error") {
+        expect(registrationReleased).toBe(true); expect(cleanupConfirmed).toBe(false);
+        expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
+      }
+      if (mode === "model-refresh-error") {
+        expect(refreshed).toBe(true);
+        expect(cleanupConfirmed).toBe(false);
+        expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
+      }
+      if (mode === "model-cleanup-error") {
+        expect(cleanupConfirmed).toBe(true);
+        expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
+      }
+      if (mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "missing-model") {
+        expect(cleanupConfirmed).toBe(true);
+        await expect(stat(runtimeDirectory)).rejects.toThrow();
+      }
+      if (mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" || mode === "late-bootstrap" || mode.startsWith("late-remote-")) {
+        const requests = (await readFile(calls, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+        expect(requests.some(value => value.method === "turn/start")).toBe(false);
+      }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 20_000);
 
 function assignedRuntimeContext(
   skillRoot: string,
@@ -2829,58 +3797,6 @@ it("expands coalesced canonical items without dropping strict bindings", () => {
     },
   ]);
 });
-
-it("keeps a quiet active Codex turn in the same process across connection lease expiry", async () => {
-  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-renew-active-"));
-  const callsPath = join(stateDirectory, "calls.log");
-  const cores: DurablePrpControlPlane[] = [];
-  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
-  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane")
-    .mockImplementation(function(options: ConstructorParameters<typeof OriginalCore>[0]) {
-      const core = new OriginalCore({ ...options, connectionLeaseTtlMs: 60_000 });
-      cores.push(core);
-      return core;
-    } as unknown as typeof OriginalCore);
-  const bundle = createCapabilityRunnerdCodexTransport({
-    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory, "--hold-turn", "--record-process-start", "--call-log", callsPath),
-    stateDirectory, runnerReconnectGraceMs: 5_000,
-  });
-  try {
-    const opened = await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
-    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Keep working quietly." }] });
-    const runnerPid = bundle.evidence().runnerPid;
-    const codexPid = bundle.evidence().codexPid;
-    expect(runnerPid).toBeGreaterThan(0);
-    expect(codexPid).toBeGreaterThan(0);
-    const core = cores[0]!;
-    const original = structuredClone(Object.values(core.store.state.leases)[0]!);
-    await vi.waitFor(() => {
-      expect(Date.now()).toBeGreaterThan(original.expiresAtUnixMs + 1_000);
-    }, { timeout: 75_000, interval: 1_000 });
-    const current = Object.values(core.store.state.leases)[0]!;
-    expect(current.expiresAtUnixMs).toBeGreaterThan(original.expiresAtUnixMs);
-    expect(current.leaseId).toBe(original.leaseId);
-    expect(core.store.state.connectionCount).toBe(1);
-    expect(bundle.evidence().runnerPid).toBe(runnerPid);
-    expect(bundle.evidence().codexPid).toBe(codexPid);
-    process.kill(runnerPid!, 0);
-    process.kill(codexPid!, 0);
-    const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/);
-    expect(calls.filter(call => call === "process-start")).toHaveLength(1);
-    expect(calls.filter(call => call === "thread/start")).toHaveLength(1);
-    expect(calls.filter(call => call === "turn/start")).toHaveLength(1);
-    expect(calls).not.toContain("turn/interrupt");
-    expect(calls).not.toContain("thread/resume");
-    const state = JSON.parse(await readFile(join(stateDirectory, "fake-codex-state.json"), "utf8"));
-    expect(state.threadId).toBe(opened.thread.id);
-    expect(state.activeTurnId).toBe("provider-turn-1");
-  } finally {
-    await bundle.transport.close();
-    coreSpy.mockRestore();
-    await rm(stateDirectory, { recursive: true, force: true });
-  }
-}, 90_000);
 
 it("runs the lab provider boundary through authenticated durable PRP", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-lab-provider-"));
@@ -5409,6 +6325,15 @@ it.each([
         },
       ]
     : []),
+  ...["before-result", "after-result", "after-activation", "after-confirmation"].map(lossPoint => ({
+    lossPoint, routed: true, recoveryFault: "none", executionPrepared: true,
+  })),
+  {
+    lossPoint: "after-result",
+    routed: true,
+    recoveryFault: "none",
+    externalArtifact: true,
+  },
   {
     lossPoint: "after-confirmation",
     routed: true,
@@ -5428,9 +6353,12 @@ it.each([
     ordinaryFollowup,
   })),
 ])(
-  "recovers a warm attachment with a fresh controller and runner ($lossPoint, routed=$routed, fault=$recoveryFault, followup=$ordinaryFollowup)",
+  "recovers a warm attachment with a fresh controller and runner ($lossPoint, routed=$routed, fault=$recoveryFault, followup=$ordinaryFollowup, external=$externalArtifact, prepared=$executionPrepared)",
   async (testCase) => {
     const { lossPoint, routed, recoveryFault } = testCase;
+    const externalArtifact = "externalArtifact" in testCase && testCase.externalArtifact;
+    const executionPrepared = "executionPrepared" in testCase && testCase.executionPrepared;
+    const configurations = new Map<string, { requirements: RunnerProviderLaunchRequirements; prepared: PreparedRunnerProviderLaunch }>();
     const ordinaryFollowup =
       "ordinaryFollowup" in testCase && testCase.ordinaryFollowup;
     const snapshotFault =
@@ -5452,6 +6380,10 @@ it.each([
     let recoveryFenceActive = true;
     const completionSnapshotIds: string[] = [];
     let rejectHeldCompletion: ((error: Error) => void) | undefined;
+    let markHeldCompletionEntered!: () => void;
+    const heldCompletionEntered = new Promise<void>((resolve) => {
+      markHeldCompletionEntered = resolve;
+    });
     let snapshotObserverSpy: ReturnType<typeof vi.spyOn> | undefined;
     const routeServer = createServer((_request, response) =>
       response.writeHead(404).end(),
@@ -5549,7 +6481,10 @@ it.each([
     const launchSpy = vi
       .spyOn(durableControlPlane, "spawnRunner")
       .mockImplementation((options) => {
-        const handle = launch(options);
+        const handle = launch({ ...options,
+          ...(executionPrepared ? { processLauncher: undefined } : {}),
+          ...(externalArtifact && recovering ? { runnerBinaryPath: defaultCapabilityRunnerdBinary() } : {}),
+        });
         handles.push(handle);
         return handle;
       });
@@ -5666,6 +6601,30 @@ it.each([
             warmTransitionRegistrationMode: "routed_connect" as const,
           }
         : {}),
+      ...(executionPrepared ? {
+        runnerArtifact: readRunnerdArtifactBinding(defaultCapabilityRunnerdBinary()),
+        readRunnerState: async () => JSON.parse(await readFile(join(stateDirectory, "runner/runner-state.json"), "utf8")),
+        // The fixture's spawn spy supplies the real local process owner.
+        runnerProcessLauncher: () => { throw new Error("fixture process owner was bypassed"); },
+        prepareLaunch: async (requirements: RunnerProviderLaunchRequirements, recovery?: PreparedRunnerProviderLaunch) => {
+          const existing = configurations.get(requirements.identity.runId);
+          if (existing) {
+            expect(requirements).toEqual(existing.requirements);
+            if (recovering) expect(recovery).toEqual(existing.prepared);
+            return existing.prepared;
+          }
+          const prepared = { configurationId: `prepared-${requirements.identity.runId}`,
+            requirementsDigest: runnerLaunchRequirementsDigest(requirements),
+            provider: createRunnerProviderLaunch(requirements, {
+              options: { codexArgs: fakeCodexArgs(stateDirectory, "--call-log", callsPath, "--record-process-start") },
+              root: stateDirectory, cwd: tmpdir(), codexHome: join(stateDirectory, "codex-home"),
+              codexCommand: fakeCodex, providerNodeCommand: process.execPath, opencodeProxyPath: "", acpxSidecarPath: "",
+            }),
+          };
+          configurations.set(requirements.identity.runId, { requirements: structuredClone(requirements), prepared });
+          return prepared;
+        },
+      } : {}),
     };
     const first = createCapabilityRunnerdCodexTransport(options);
     let resumed:
@@ -5988,6 +6947,10 @@ it.each([
         recoveryFault === "none" ? null : await fingerprintTree(stateDirectory);
       const authorizationStages: string[] = [];
       let releaseHeldAuthorization: (() => void) | undefined;
+      let markHeldAuthorizationEntered!: () => void;
+      const heldAuthorizationEntered = new Promise<void>((resolve) => {
+        markHeldAuthorizationEntered = resolve;
+      });
       const authorizationFault = recoveryFault.startsWith("authorize_");
       const failedAuthorizationStage = recoveryFault.slice("authorize_".length);
       const beforeProviderBytes = await readFile(
@@ -5995,6 +6958,10 @@ it.each([
       );
       resumed = createCapabilityRunnerdCodexTransport({
         ...options,
+        ...(externalArtifact ? {
+          runnerBinary: "/controller-missing-runner",
+          runnerArtifact: readRunnerdArtifactBinding(options.runnerBinary),
+        } : {}),
         ...(ordinaryFollowup
           ? {
               authorizeWarmTransitionRecovery: async () => {
@@ -6030,6 +6997,7 @@ it.each([
                 ) {
                   return new Promise<void>((_resolve, reject) => {
                     rejectHeldCompletion = reject;
+                    markHeldCompletionEntered();
                   });
                 }
                 recoveryFenceActive = false;
@@ -6046,6 +7014,7 @@ it.each([
                 ) {
                   await new Promise<void>((resolveGate) => {
                     releaseHeldAuthorization = resolveGate;
+                    markHeldAuthorizationEntered();
                   });
                 }
                 if (stage === failedAuthorizationStage)
@@ -6078,9 +7047,13 @@ it.each([
           authorizationFault &&
           failedAuthorizationStage === "before_bootstrap"
         ) {
-          await vi.waitFor(() =>
-            expect(releaseHeldAuthorization).toBeTypeOf("function"),
-          );
+          await within(Promise.race([
+            heldAuthorizationEntered,
+            recoveryRequest.then(() => {
+              throw new Error("warm restart authorization callback was not entered");
+            }),
+          ]));
+          expect(releaseHeldAuthorization).toBeTypeOf("function");
           const queuedBefore = cores[1]!.store.state.commands.map(
             (command) => command.commandId,
           );
@@ -6185,9 +7158,13 @@ it.each([
         const firstRead = within(resumed.transport.request("thread/read", {}));
         void firstRead.catch(() => undefined);
         if (ordinaryFollowup === "callback_async_failure") {
-          await vi.waitFor(() =>
-            expect(rejectHeldCompletion).toBeTypeOf("function"),
-          );
+          await within(Promise.race([
+            heldCompletionEntered,
+            firstRead.then(() => {
+              throw new Error("warm restart completion callback was not entered");
+            }),
+          ]));
+          expect(rejectHeldCompletion).toBeTypeOf("function");
           try {
             expect(recoveryFenceActive).toBe(true);
             const queuedBefore = cores[1]!.store.state.commands.map(
@@ -6475,81 +7452,6 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);
-
-it("reopens Pi after a completed turn within its cold admission budget during warm attachment", async () => {
-  const root = await mkdtemp(join(tmpdir(), "runnerd-pi-warm-admission-"));
-  const providerNode = process.platform === "linux" ? join(root, "node") : process.execPath;
-  if (process.platform === "linux") {
-    await cp(process.execPath, providerNode, { dereference: true });
-    await chmod(providerNode, 0o500);
-    expect((await stat(providerNode)).mode & 0o777).toBe(0o500);
-  }
-  const cliRoot = join(root, "dist/cli");
-  await mkdir(cliRoot, { recursive: true, mode: 0o700 });
-  const sidecarPath = join(cliRoot, "acpx-runtime-sidecar.cjs");
-  const journal = join(root, "commands.ndjson");
-  const fixture = await readFile(fileURLToPath(new URL("./fixtures/fake-pi-warm-sidecar.cjs", import.meta.url)), "utf8");
-  await writeFile(sidecarPath, fixture.replace("/* fixture-config */ null", JSON.stringify({ journal, resumeDelayMs: 32_000, commandDigest: QUALIFIED_ACPX_PROFILES.pi.commandDigest })), { mode: 0o600 });
-  const digest = (path: string) => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
-  const bundle = createCapabilityRunnerdCodexTransport({
-    provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", acpxPermissionMode: "deny-all",
-    runnerBinary: defaultCapabilityRunnerdBinary(), stateDirectory: root, runnerFilesystemRoot: root,
-    providerNodeCommand: providerNode, providerNodeCommandSha256: digest(providerNode),
-    acpxSidecarPath: sidecarPath, acpxSidecarSha256: digest(sidecarPath),
-    providerPackAuthorityDigest: `sha256:${"d".repeat(64)}`,
-    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
-    environment: { PATH: "/usr/bin:/bin" },
-  });
-  bundle.transport.setServerRequestHandler(async () => ({
-    success: true,
-    contentItems: [{ type: "inputText", text: "Completion report accepted." }],
-  }));
-  let failure: unknown;
-  try {
-    await bundle.transport.request("initialize", {});
-    await bundle.transport.request("thread/start", {
-      cwd: root, model: "openrouter/deepseek/deepseek-v4-flash-0731",
-      dynamicTools: codexSemanticToolSpecs(),
-      completionContract: { revision: "warm-pi-contract", criterionIds: [] },
-    });
-    const runnerPid = bundle.evidence().runnerPid;
-    const notifications = bundle.transport.notifications()[Symbol.asyncIterator]();
-    const completeTurn = async () => {
-      await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Complete the fixture turn." }] });
-      for (let index = 0; index < 64; index += 1) {
-        const next = await Promise.race([
-          notifications.next(),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Fixture completion timed out")), 5_000)),
-        ]);
-        if (next.value?.method === "turn/completed") return;
-      }
-      throw new Error("Fixture turn did not complete");
-    };
-    await completeTurn();
-    const started = Date.now();
-    await bundle.transport.attachRun!({ runId: "run-pi-warm-second", turnId: "turn-pi-warm-second", itemId: "item-pi-warm-second" });
-    expect(Date.now() - started).toBeGreaterThan(30_000);
-    await completeTurn();
-    expect(bundle.evidence()).toMatchObject({ runnerPid, runnerExited: false });
-    const commands = (await readFile(journal, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    expect(commands.filter((entry) => entry.event === "spawn")).toHaveLength(2);
-    expect(commands.filter((entry) => entry.command === "session.open")).toHaveLength(2);
-    expect(commands.filter((entry) => entry.resumed)).toHaveLength(1);
-    expect(commands.filter((entry) => entry.command === "turn.start")).toHaveLength(2);
-    expect(commands.filter((entry) => entry.command === "session.close")).toHaveLength(1);
-  } catch (error) {
-    failure = error;
-    throw error;
-  } finally {
-    try {
-      await bundle.transport.close();
-    } catch (cleanupError) {
-      if (failure) throw new AggregateError([failure, cleanupError], "Warm attachment and strict cleanup failed");
-      throw cleanupError;
-    }
-    await rm(root, { recursive: true, force: true });
-  }
-}, 75_000);
 
 it("waits for a warm runner to re-authenticate before probing attachment readiness", async () => {
   const stateDirectory = await mkdtemp(
@@ -7677,6 +8579,41 @@ it("keeps an adopted runner alive when the detached controller finalizer closes"
 
 it("adopts an opening session without a checkpoint instead of bootstrapping a duplicate provider", () => verifyLiveRunnerAdoption(false, false, false, false, true), 30_000);
 
+it("cancels startup readiness before releasing the route that settles its ready callback", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-ready-release-cycle-"));
+  let releaseReady!: () => void;
+  const readyReleased = new Promise<void>(resolve => { releaseReady = resolve; });
+  let markReadyStarted!: () => void;
+  const readyStarted = new Promise<void>(resolve => { markReadyStarted = resolve; });
+  const release = vi.fn(async () => { releaseReady(); });
+  let core!: DurablePrpControlPlane;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(root), stateDirectory: root, sourceCodexHome: "", environment: {}, closeGraceMs: 2_000,
+    controlPlaneRegistration: async authority => {
+      core = authority;
+      await authority.start();
+      return { ready: () => { markReadyStarted(); return readyReleased; }, release };
+    },
+  });
+  const opening = bundle.transport.request("thread/start", { cwd: root, dynamicTools: [] });
+  void opening.catch(() => undefined);
+  try {
+    await readyStarted;
+    await vi.waitFor(() => expect(core.store.state.commands.find(command => command.type === "session.open")?.status).toBe("completed"));
+    await expect(bundle.transport.close("cancel pending ingress authentication")).resolves.toBeUndefined();
+    await expect(opening).rejects.toThrow(/closed/);
+    expect(release).toHaveBeenCalledOnce();
+    expect(bundle.evidence().runnerExited).toBe(true);
+    expect(bundle.evidence().diagnostics.join("\n")).not.toContain("startup cleanup is unconfirmed");
+  } finally {
+    releaseReady();
+    await opening.catch(() => undefined);
+    await bundle.transport.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("surfaces a runner exit while provider-ingress readiness is still pending", async () => {
   const neverReady = new Promise<void>(() => undefined);
   const bundle = createCapabilityRunnerdCodexTransport({
@@ -8059,6 +8996,7 @@ it.each([
         events.push(event);
         if (event.eventType === "turn.completed") break;
       }
+      expect(events.find(event => event.eventType === "session.started")?.payload.context).toMatchObject({ model });
       expect(completionCalls).toBe(2);
       expect(events.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
       const sessionRoots = (await readdir(runtime, { withFileTypes: true })).filter((entry) => entry.isDirectory());
@@ -8165,3 +9103,30 @@ it("aborts startup promptly on close while allowing the owned cleanup command to
     await drain;
   } finally { vi.useRealTimers(); }
 });
+it("launches and closes native Codex without materializing or editing the preconfigured home", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runner-preconfigured-launch-"));
+  const home = join(root, "user-home");
+  const codexHome = join(home, ".codex");
+  const stateDirectory = join(root, "session");
+  await mkdir(codexHome, { recursive: true });
+  await mkdir(stateDirectory);
+  const config = 'approval_policy = "never"\n';
+  const auth = '{"user_owned":true}';
+  await writeFile(join(codexHome, "config.toml"), config);
+  await writeFile(join(codexHome, "auth.json"), auth);
+  const bundle = createCapabilityRunnerdCodexTransport({
+    homeMode: "preconfigured", environment: { ...process.env, HOME: home, CODEX_HOME: codexHome },
+    runnerBinary: resolve(import.meta.dirname, "../../runner/target/debug/paperclip-runnerd"),
+    codexCommand: fakeCodex, codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: stateDirectory, model: "gpt-5.6-sol", dynamicTools: [] });
+    await bundle.transport.close();
+    expect(await readFile(join(codexHome, "config.toml"), "utf8")).toBe(config);
+    expect(await readFile(join(codexHome, "auth.json"), "utf8")).toBe(auth);
+    await expect(stat(join(stateDirectory, "codex-home"))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    await rm(root, { force: true, recursive: true });
+  }
+}, 30_000);

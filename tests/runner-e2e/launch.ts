@@ -42,6 +42,7 @@ import {
   isEphemeralCodexRuntimeAuthFile,
   isEphemeralPostgresScanFile,
   normalizedSecrets,
+  secretScanFailureEvidence,
   sanitizeJson,
 } from "./redaction.js";
 import {
@@ -522,13 +523,14 @@ async function runAttempt(input: {
     const decisionSigningSecret = secret(48);
     const toolActionSigningSecret = secret(48);
     const betterAuthSecret = secret(48);
-    const credentials = normalizedSecrets([
-      ...CREDENTIAL_NAMES.map((name) => process.env[name]),
-      agentJwtSecret,
-      decisionSigningSecret,
-      toolActionSigningSecret,
-      betterAuthSecret,
-    ]);
+    const credentialSources = {
+      ...Object.fromEntries(CREDENTIAL_NAMES.map((name) => [name, process.env[name]])),
+      PAPERCLIP_AGENT_JWT_SECRET: agentJwtSecret,
+      PAPERCLIP_DECISION_SIGNING_SECRET: decisionSigningSecret,
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: toolActionSigningSecret,
+      BETTER_AUTH_SECRET: betterAuthSecret,
+    };
+    const credentials = normalizedSecrets(Object.values(credentialSources));
     attemptSecrets = credentials;
     if (installedCli) await writeFile(path.join(privateDir, "installed-cli-admission.json"), `${JSON.stringify(installedCli, null, 2)}\n`, { mode: 0o600 });
     if (installedPlugin) await writeFile(path.join(privateDir, "installed-daytona-plugin-admission.json"), `${JSON.stringify(installedPlugin, null, 2)}\n`, { mode: 0o600 });
@@ -663,6 +665,7 @@ async function runAttempt(input: {
       isolationError = error;
     }
     let persistedStateError: unknown;
+    let persistedStateFinding: { file: string; stateArea: string; reason: string; matchCategory?: string } | undefined;
     // Onboarding evaluates behavior; credential persistence belongs to a separate layer.
     // Keep artifact redaction/publication checks independent of this filesystem scan.
     const persistenceCheckedExecutions = executions.filter(
@@ -680,6 +683,7 @@ async function runAttempt(input: {
             // fixtures with fake `sk-*` strings. Reject exact campaign credentials.
             const leak = await findSecretLeakInDirectory(directory, credentials, {
               includeShapes: false,
+              sources: credentialSources,
               ignoreFile: (file) => expectedEphemeralCredentials.has(file),
               allowDisappearedFile: (file) =>
                 label === "Paperclip home" &&
@@ -699,9 +703,8 @@ async function runAttempt(input: {
                 continue;
               }
             }
-            throw new Error(
-              `Secret leak in persisted ${label} state at ${path.relative(temporaryRoot, leak.file)}: ${leak.reason}`,
-            );
+            persistedStateFinding = { ...leak, stateArea: label, file: path.relative(temporaryRoot, leak.file) };
+            throw new Error(`Secret leak in persisted ${label} state at ${persistedStateFinding.file}: ${leak.reason}${leak.matchCategory ? ` (${leak.matchCategory})` : ""}`);
           }
         }
       } catch (error) {
@@ -776,6 +779,16 @@ async function runAttempt(input: {
       );
       await mkdir(casePrivateDir, { recursive: true });
       await copySharedEvidence(privateDir, casePrivateDir);
+      if (persistedStateError && persistenceCheckedExecutions.includes(candidate)) {
+        const snapshots = path.join(casePrivateDir, "snapshots");
+        await mkdir(snapshots, { recursive: true });
+        const original = results[index];
+        await writeFile(path.join(snapshots, "persisted-state-scan.json"), `${JSON.stringify(secretScanFailureEvidence({
+          scanError: persistedStateError instanceof Error ? persistedStateError.message : String(persistedStateError),
+          finding: persistedStateFinding,
+          originalResult: { status: original.status, failureClass: original.failureClass, error: original.error },
+        }, credentials), null, 2)}\n`, { mode: 0o600 });
+      }
       await writeFile(
         resultPath,
         `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,

@@ -76,8 +76,8 @@ describe("server image init", () => {
     for (const line of lines) {
       expect(
         line,
-        "node must not inherit PID 1: wrap the entrypoint in tini so adopted orphans are reaped",
-      ).toBe('ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]');
+        "node must not inherit PID 1: wrap the entrypoint in tini (as a subreaper) so adopted orphans are reaped",
+      ).toBe('ENTRYPOINT ["/usr/bin/tini", "-s", "--", "docker-entrypoint.sh"]');
     }
   });
 

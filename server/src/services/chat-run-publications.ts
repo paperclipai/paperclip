@@ -35,6 +35,7 @@ import { safeChatTaskUrl } from "./chat-task-url.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON } from "./heartbeat-run-summary.js";
 import { resolveChatOriginPublicationBindings } from "./issues.js";
+import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { authorizeNativeChatReviewPresentation } from "./native-runtime/native-chat-review-presentation.js";
 import {
   SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
@@ -250,13 +251,13 @@ export function safeMilestoneText(input: {
 }): string {
   if (input.milestone === "queued") return `${input.agentName} is queued.`;
   if (input.milestone === "working") return `${input.agentName} is working…`;
-  if (input.milestone === "completed")
-    return `${input.agentName} completed this turn.`;
   if (input.errorCode === "slack_session_stopped")
     return `${input.agentName} stopped at your request.`;
   const taskUrl = safeChatTaskUrl(input.publicBaseUrl, input.issueId);
   const recovery =
-    input.milestone === "waiting_for_input"
+    input.milestone === "completed"
+      ? `${input.agentName} has no final response to show yet.`
+      : input.milestone === "waiting_for_input"
       ? `${input.agentName} needs a Paperclip admin to safely recover this turn before more work can start.`
       : input.errorCode === "low_trust_isolation_unavailable"
         ? `${input.agentName} couldn't safely start this turn because this task was started for an unlinked external guest and isolated guest execution isn't available. Ask a Paperclip admin to create a private identity link for this account or enable isolated guest execution, then start a new task.`
@@ -291,7 +292,7 @@ async function enqueueSafeNativeChatProgress(
     heartbeatRunEvents,
     "safe_native_progress_later_event",
   );
-  const issueIdFromContext = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+  const issueIdFromContext = boundRunIssueIdSql();
   let inserted = 0;
   let cursor: {
     eventCreatedAt: Date;
@@ -331,7 +332,7 @@ async function enqueueSafeNativeChatProgress(
         chatConversations,
         and(
           eq(chatConversations.companyId, heartbeatRuns.companyId),
-          sql`${issueIdFromContext} = ${chatConversations.issueId}::text`,
+          sql`coalesce(${heartbeatRuns.issueId}::text, ${issueIdFromContext}) = ${chatConversations.issueId}::text`,
           inArray(chatConversations.state, ["active", "waiting"]),
         ),
       )
@@ -667,7 +668,7 @@ export async function enqueueChatRunMilestones(
 ): Promise<number> {
   const since = input.since ?? new Date(Date.now() - 24 * 60 * 60_000);
   const limit = Math.max(1, Math.min(input.limit ?? 200, 1_000));
-  const issueIdFromContext = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+  const issueIdFromContext = boundRunIssueIdSql();
   const explicitlyAuthoredCommentReason = sql<boolean>`(
     ${issueComments.metadata} ->> 'authorizationReason' = 'paperclip_runner_protocol'
     or left(coalesce(${issueComments.metadata} ->> 'authorizationReason', ''), 6) = 'allow_'
@@ -735,6 +736,30 @@ export async function enqueueChatRunMilestones(
           and interaction.status in ('accepted', 'rejected', 'cancelled')
         )
       )
+  )`;
+  const hasMonitorContinuation = sql<boolean>`(
+    ${heartbeatRuns.contextSnapshot}->>'source' = 'issue.monitor' and exists (
+      select 1 from agent_wakeup_requests monitor_wake
+      where monitor_wake.company_id = ${heartbeatRuns.companyId}
+        and monitor_wake.run_id = ${heartbeatRuns.id}
+        and monitor_wake.agent_id = ${heartbeatRuns.agentId}
+        and monitor_wake.reason = 'issue_monitor_due'
+        and monitor_wake.status <> 'skipped'
+        and monitor_wake.payload->>'issueId' = ${issueIdFromContext}
+    )
+  )`;
+  // This is only a candidate prefilter. The origin resolver below requires the
+  // committed decision/effect ledger before selecting any conversation.
+  const hasTaskContinuation = sql<boolean>`(
+    ${heartbeatRuns.contextSnapshot}->>'source' = 'native_status_decision' and exists (
+      select 1 from agent_wakeup_requests continuation_wake
+      where continuation_wake.company_id = ${heartbeatRuns.companyId}
+        and continuation_wake.run_id = ${heartbeatRuns.id}
+        and continuation_wake.agent_id = ${heartbeatRuns.agentId}
+        and continuation_wake.reason = 'issue_status_changed'
+        and continuation_wake.status in ('queued', 'claimed', 'completed', 'coalesced')
+        and continuation_wake.payload->>'issueId' = ${issueIdFromContext}
+    )
   )`;
   let inserted = 0;
   let cursor: {
@@ -822,6 +847,8 @@ export async function enqueueChatRunMilestones(
               hasDirectInteractionContinuation,
             ),
             hasQuestionContinuationTarget,
+            hasMonitorContinuation,
+            hasTaskContinuation,
           ),
           // Heartbeat marks a run succeeded before the presentation resolver
           // finishes. Waiting for its durable decision prevents a generic
@@ -830,6 +857,11 @@ export async function enqueueChatRunMilestones(
             ${heartbeatRuns.status} <> 'succeeded'
             or ${heartbeatRuns.resultJson} -> 'presentationDecision' is not null
           )`,
+          sql`(${heartbeatRuns.status} <> 'succeeded' or coalesce(
+            ${heartbeatRuns.resultJson}->'nativeResult'->>'reportedWorkDisposition',
+            ${heartbeatRuns.resultJson}->'acceptedResult'->>'reportedWorkDisposition',
+            ${heartbeatRuns.resultJson}->'semanticResult'->'result'->>'reportedWorkDisposition', ''
+          ) <> 'yielded')`,
           // A successful or interrupted run's selected final remains its
           // authoritative response. Filter it before LIMIT so a page of settled
           // runs cannot starve later milestones.
@@ -865,6 +897,8 @@ export async function enqueueChatRunMilestones(
             ),
           ),
           or(
+            hasMonitorContinuation,
+            hasTaskContinuation,
             sql`exists (
               select 1
               from ${chatMessageLinks}

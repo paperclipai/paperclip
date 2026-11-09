@@ -1,9 +1,9 @@
+import { assertCopilotCredentials, classifyCopilotFailure } from "./copilot-profile.js";
+import { verifyCopilotInstallation } from "./copilot-installation.js";
 import { verifyCursorInstallation } from "./cursor-installation.js";
 import { assertCursorWorkspacePolicy } from "./cursor-launch-policy.js";
 import { resolveQualifiedAcpxProfile, type QualifiedAcpxAgent, type QualifiedAcpxProfile } from "./qualified-profiles.js";
 import { verifyPiInstallation } from "./pi-installation.js";
-import { assertCopilotCredentials, classifyCopilotFailure } from "./copilot-profile.js";
-import { verifyCopilotInstallation } from "./copilot-installation.js";
 import { verifyQualifiedAcpxInstallation, type VerifiedAcpxInstallation } from "./installation-integrity.js";
 
 /** Closed build-owned registry. Provider branches add their pinned installations here. */
@@ -63,5 +63,10 @@ export function classifyAcpxProfileError(agent: QualifiedAcpxAgent, error: unkno
 /** Probe trusted installed bytes without credentials or a billable prompt. */
 export async function probeAcpxCursorInstallation(model: string): Promise<void> {
   const installation = await verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("cursor", model));
+  await (await installation.openCommand()).close();
+}
+
+export async function probeAcpxPiInstallation(model: string): Promise<void> {
+  const installation = await verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("pi", model));
   await (await installation.openCommand()).close();
 }

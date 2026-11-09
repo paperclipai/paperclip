@@ -1,3 +1,4 @@
+import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
 import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
@@ -10,6 +11,7 @@ import {
 } from "@paperclipai/db";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { hasLiveLegacyController } from "./legacy-controller-lease.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 
@@ -151,6 +153,13 @@ export async function reconcileAbandonedExecutionControl(
               .where(eq(nativeRunFinalizations.runId, run.id));
             return true;
           }
+          if (await hasLiveLegacyController(tx as unknown as Db, run)) {
+            await tx
+              .update(heartbeatRuns)
+              .set({ executionControlDeadlineAt: run.controllerLeaseExpiresAt })
+              .where(eq(heartbeatRuns.id, run.id));
+            return false;
+          }
           const cause = "execution_finalization_deadline_exceeded";
           const nextAction =
             "Inspect the failed run and verify its provider has stopped. Reconcile any uncertain external action before explicitly continuing this task.";
@@ -173,6 +182,7 @@ export async function reconcileAbandonedExecutionControl(
                 updatedAt: now,
               })
               .where(eq(nativeRunFinalizations.runId, run.id));
+          await notifyExecutionRunWork(tx);
           const [updatedRun] = await tx
             .update(heartbeatRuns)
             .set({

@@ -19,7 +19,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
-import { createAgentLifecycle, configureAgentLifecycle } from "../../../services/agent-lifecycle.js";
+import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } from "../../../services/agent-lifecycle.js";
+import { projectCompanyHolds } from "../adapters/company-policy.js";
 import { createLifecycleStore as createStore } from "../adapters/postgres.js";
 import { transition } from "../domain/policy.js";
 import type { LifecycleAgent } from "../application/ports.js";
@@ -47,6 +48,15 @@ const support = await getEmbeddedPostgresTestSupport();
   async function hire(status = "idle") { return createAgentLifecycle(db).requestHire(companyId, { name: "Agent", status, adapterType: "process" }); }
   async function current(id: string) { return (await db.select().from(agents).where(eq(agents.id, id)))[0]!; }
 
+  it("rejects an outdated configuration snapshot under the write lock", async () => {
+    const agent = await hire();
+    const snapshot = await current(agent.id);
+    const expectedConfiguration = { adapterType: snapshot.adapterType, adapterConfig: snapshot.adapterConfig, runtimeConfig: snapshot.runtimeConfig, defaultEnvironmentId: snapshot.defaultEnvironmentId };
+    await createAgentLifecycle(db).updateConfiguration(agent.id, { runtimeConfig: { heartbeat: { intervalSec: 42 } } });
+    await expect(createAgentLifecycle(db).updateConfiguration(agent.id, { runtimeConfig: { aiConnection: {} } }, { expectedConfiguration })).rejects.toThrow("configuration changed while saving");
+    expect((await current(agent.id)).runtimeConfig).toEqual({ heartbeat: { intervalSec: 42 } });
+  });
+
   it("maps existing states without starting setup or clearing pause reasons", async () => {
     const rows = await db.insert(agents).values(["idle", "running", "error", "paused", "pending_approval", "terminated"].map(status => ({
       companyId, name: status, status, pauseReason: status === "paused" ? "budget" : null,
@@ -62,6 +72,36 @@ const support = await getEmbeddedPostgresTestSupport();
     }
   });
 
+  it("records the human creator from options and ignores a creator in the insert data", async () => {
+    const lifecycle = createAgentLifecycle(db);
+    const created = await lifecycle.requestHire(companyId, { name: "Created by member", createdByUserId: "spoofed-user" }, { createdByUserId: "member-1" });
+    expect(created.createdByUserId).toBe("member-1");
+    expect((await current(created.id)).createdByUserId).toBe("member-1");
+    const system = await lifecycle.requestHire(companyId, { name: "System hire", createdByUserId: "spoofed-user" });
+    expect((await current(system.id)).createdByUserId).toBeNull();
+  });
+
+  it("backfills the creator from the earliest user creation activity in the same company", async () => {
+    const [byUser, byAgent, foreign] = await db.insert(agents).values(["By user", "By agent", "Foreign log"].map(name => ({ companyId, name }))).returning();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.slice(0, 7)}` });
+    await db.insert(activityLog).values([
+      { companyId, actorType: "user", actorId: "first-user", action: "agent.hire_created", entityType: "agent", entityId: byUser.id, createdAt: new Date("2026-01-01T00:00:00Z") },
+      { companyId, actorType: "user", actorId: "later-user", action: "agent.created", entityType: "agent", entityId: byUser.id, createdAt: new Date("2026-01-02T00:00:00Z") },
+      { companyId, actorType: "agent", actorId: randomUUID(), action: "agent.hire_created", entityType: "agent", entityId: byAgent.id },
+      { companyId: otherCompanyId, actorType: "user", actorId: "foreign-user", action: "agent.created", entityType: "agent", entityId: foreign.id },
+    ]);
+    const migration = readFileSync(new URL("../../../../../packages/db/src/migrations/0343_new_mentor.sql", import.meta.url), "utf8");
+    for (let pass = 0; pass < 2; pass++) {
+      for (const statement of migration.split("--> statement-breakpoint")) {
+        await db.execute(sql.raw(statement));
+      }
+    }
+    expect((await current(byUser.id)).createdByUserId).toBe("first-user");
+    expect((await current(byAgent.id)).createdByUserId).toBeNull();
+    expect((await current(foreign.id)).createdByUserId).toBeNull();
+  });
+
   it("commits the record before preparation and verifies before admission", async () => {
     const observed: string[] = [];
     const work = worker(async agent => {
@@ -74,6 +114,190 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(observed).toEqual(["preparing", "verifying"]);
     expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle" });
     expect(agent).not.toHaveProperty("lifecycleOperation");
+  });
+
+  it("keeps early setup inactive and completes the same record without renaming it", async () => {
+    const runHost = vi.fn(async () => "complete" as const);
+    const work = worker(runHost);
+    const lifecycle = createAgentLifecycle(db);
+    const id = randomUUID();
+    const input = { id, name: "Early agent", adapterType: "process" };
+    const first = await lifecycle.requestHire(companyId, input, { setupOnly: true });
+    const retry = await lifecycle.requestHire(companyId, input, { setupOnly: true });
+    expect(first.id).toBe(id);
+    expect(retry.id).toBe(id);
+    await work.process(id);
+    expect(runHost).not.toHaveBeenCalled();
+    expect(await current(id)).toMatchObject({ status: "paused", lifecycleState: "paused", lifecycleHolds: ["setup"] });
+    expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, id))).toHaveLength(0);
+    await expect(agentConfiguration(db).createApiKey(id, "Incomplete setup")).rejects.toThrow("Finish agent setup");
+    await expect(lifecycle.resumeAgent(id)).rejects.toThrow("Finish agent setup");
+    const finished = await lifecycle.requestHire(companyId, { id, name: "Early agent", adapterType: "process", status: "idle" }, { setupAgentId: id });
+    expect(finished).toMatchObject({ id, name: "Early agent" });
+    await work.process(id);
+    expect(await current(id)).toMatchObject({ status: "idle", lifecycleState: "ready", lifecycleHolds: [] });
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(1);
+    await expect(lifecycle.requestHire(companyId, { id, name: "Early agent" }, { setupAgentId: id })).rejects.toThrow("no longer available");
+  });
+
+  it("freezes the final setup configuration for hire approval", async () => {
+    const lifecycle = createAgentLifecycle(db);
+    const id = randomUUID();
+    await lifecycle.requestHire(companyId, { id, name: "Approval setup", status: "paused", pauseReason: "setup", adapterType: "process" }, { setupOnly: true });
+    await lifecycle.requestHire(companyId, { id, name: "Approval setup", status: "pending_approval", adapterType: "process", adapterConfig: { command: "verified-command" } }, { setupAgentId: id });
+    expect(await current(id)).toMatchObject({ lifecycleState: "pending_approval", lifecycleHolds: [], adapterConfig: { command: "verified-command" } });
+    await expect(lifecycle.updateConfiguration(id, { adapterConfig: { command: "changed" } })).rejects.toThrow("cannot be changed before board approval");
+  });
+
+  it("rejects completing a foreign setup or adopting an ordinary paused agent", async () => {
+    const lifecycle = createAgentLifecycle(db);
+    const setup = await lifecycle.requestHire(companyId, { name: "Scoped setup", status: "paused", pauseReason: "setup" }, { setupOnly: true });
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: `S${otherCompanyId.slice(0, 7)}` });
+    await expect(lifecycle.requestHire(otherCompanyId, { name: "Foreign" }, { setupAgentId: setup.id })).rejects.toThrow("no longer available");
+    const paused = await hire("paused");
+    await expect(lifecycle.requestHire(companyId, { name: "Paused" }, { setupAgentId: paused.id })).rejects.toThrow("no longer available");
+    expect((await current(setup.id)).lifecycleHolds).toEqual(["setup"]);
+  });
+
+  it("creates a board-owned setup before requesting approval for its final configuration", async () => {
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, companyId));
+    await db.insert(companyMemberships).values(["board", "other-creator"].map(principalId => ({ companyId, principalType: "user", principalId, membershipRole: "member" })));
+    await db.insert(principalPermissionGrants).values(["board", "other-creator"].map(principalId => ({ companyId, principalType: "user", principalId, permissionKey: "agents:create" })));
+    function app(actor: Express.Request["actor"]) {
+      const value = express(); value.use(express.json());
+      value.use((req, _res, next) => { req.actor = actor; next(); });
+      value.use("/api", agentRoutes(db)); value.use(errorHandler); return value;
+    }
+    const board: Express.Request["actor"] = { type: "board", source: "session", userId: "board", companyIds: [companyId],
+      memberships: [{ companyId, membershipRole: "member", status: "active" }] };
+    const setupId = randomUUID();
+    const body = { setupId, name: "Wizard agent", adapterType: "process" };
+    const url = `/api/companies/${companyId}/agents`;
+    const attempts = await Promise.all(Array.from({ length: 4 }, () => request(app(board)).post(url).send(body)));
+    for (const attempt of attempts) {
+      expect(attempt.status, JSON.stringify(attempt.body)).toBe(201);
+      expect(attempt.body).toMatchObject({ id: setupId, pauseReason: "setup", lifecycleState: "paused" });
+    }
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(1);
+    expect(await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "agent")))).toHaveLength(0);
+    await request(app({ ...board, userId: "other-creator" })).post(url).send(body).expect(404);
+    const other = await createAgentLifecycle(db).requestHire(companyId, {
+      name: "Other creator", adapterType: "process", status: "paused", adapterConfig: { command: "private-command" },
+      runtimeConfig: { privateSetting: "private-value" },
+    }, { createdByUserId: "other-creator" });
+    const configProbe = await request(app(board)).post(url).send({ ...body, setupId: other.id });
+    expect(configProbe.status).toBe(404);
+    expect(configProbe.body).not.toHaveProperty("adapterConfig");
+    expect(configProbe.body).not.toHaveProperty("runtimeConfig");
+    expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(0);
+    const saved = await request(app(board)).patch(`/api/agents/${setupId}`).send({ adapterConfig: { command: "draft-command", env: { SETUP_LABEL: { type: "plain", value: "saved-value" } } } });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    const probe = vi.spyOn(requireServerAdapter("process"), "testEnvironment").mockResolvedValue({ adapterType: "process", status: "pass", checks: [], testedAt: new Date().toISOString() });
+    try {
+      const probeBody = { agentId: setupId, adapterConfig: saved.body.adapterConfig };
+      const testUrl = `/api/companies/${companyId}/adapters/process/test-environment`;
+      const tested = await request(app(board)).post(testUrl).send(probeBody);
+      expect(tested.status, JSON.stringify(tested.body)).toBe(200);
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ config: expect.objectContaining({ env: { SETUP_LABEL: "saved-value" } }) }));
+      await request(app({ ...board, userId: "other-creator" })).post(testUrl).send(probeBody).expect(403);
+      expect(probe).toHaveBeenCalledTimes(1);
+    } finally { probe.mockRestore(); }
+    await request(app({ ...board, userId: "other-creator" })).patch(`/api/agents/${setupId}`).send({ adapterConfig: { command: "foreign-command" } }).expect(403);
+    const denied = await request(app({ ...board, companyIds: [], memberships: [] })).post(url).send({ ...body, setupId: randomUUID() });
+    expect([403, 404]).toContain(denied.status);
+    await request(app({ type: "agent", source: "agent_key", companyId, agentId: setupId })).post(url).send({ ...body, setupId: randomUUID() }).expect(403);
+    const finished = await request(app(board)).post(`/api/companies/${companyId}/agent-hires`).send({
+      setupAgentId: setupId, name: "Wizard agent", adapterType: "process", adapterConfig: { command: "verified-command", env: { SETUP_LABEL: { type: "plain", value: "***REDACTED***" } } },
+    });
+    expect(finished.status, JSON.stringify(finished.body)).toBe(201);
+    expect(finished.body.agent).toMatchObject({ id: setupId, name: "Wizard agent", lifecycleState: "pending_approval" });
+    expect(finished.body.approval.payload).toMatchObject({ agentId: setupId, adapterConfig: { command: "verified-command" } });
+    expect((await current(setupId)).adapterConfig.env).toEqual({ SETUP_LABEL: { type: "plain", value: "saved-value" } });
+    expect(await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, setupId)))).toHaveLength(1);
+    const finishBody = { setupAgentId: setupId, name: "Changed on retry", adapterType: "process", adapterConfig: { command: "unapproved-command" } };
+    const hireUrl = `/api/companies/${companyId}/agent-hires`;
+    const retries = await Promise.all(Array.from({ length: 3 }, () => request(app(board)).post(hireUrl).send(finishBody)));
+    for (const retry of retries) {
+      expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+      expect(retry.body.agent).toMatchObject({ id: setupId, name: "Wizard agent", adapterConfig: { command: "verified-command" } });
+      expect(retry.body.approval.id).toBe(finished.body.approval.id);
+    }
+    await request(app({ ...board, userId: "other-creator" })).post(hireUrl).send(finishBody).expect(403);
+    const reopened = await request(app(board)).post(url).send(body);
+    expect(reopened.status).toBe(201);
+    expect(reopened.body).toMatchObject({ id: setupId, status: "pending_approval" });
+    await request(app({ ...board, userId: "other-creator" })).post(url).send(body).expect(404);
+    await db.delete(approvals).where(eq(approvals.id, finished.body.approval.id));
+    const recovered = await request(app(board)).post(hireUrl).send(finishBody);
+    expect(recovered.status, JSON.stringify(recovered.body)).toBe(200);
+    expect(recovered.body.approval.payload).toMatchObject({ name: "Wizard agent", adapterConfig: { command: "verified-command" } });
+    await approvalService(db).approve(recovered.body.approval.id, "board");
+    const approvedRetry = await request(app(board)).post(hireUrl).send(finishBody);
+    expect(approvedRetry.status).toBe(200);
+    expect(approvedRetry.body.approval.status).toBe("approved");
+    expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(1);
+  });
+
+  it("restores hidden setup values when a native Codex record uses the Codex onboarding choice", async () => {
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "owner" });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "board", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const setupId = randomUUID();
+    const created = await request(app).post(`/api/companies/${companyId}/agents`).send({ setupId, name: "Native saved setup",
+      adapterType: "paperclip_runner", adapterConfig: { provider: "codex", env: { SETUP_LABEL: { type: "plain", value: "saved-native-value" } } },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.adapterConfig.env.SETUP_LABEL).toEqual({ type: "plain", value: "***REDACTED***" });
+    const probe = vi.spyOn(requireServerAdapter("paperclip_runner"), "testEnvironment").mockResolvedValue({ adapterType: "paperclip_runner", status: "pass", checks: [], testedAt: new Date().toISOString() });
+    try {
+      const tested = await request(app).post(`/api/companies/${companyId}/adapters/codex_local/test-environment`).send({
+        agentId: setupId, runner: "paperclip", adapterConfig: created.body.adapterConfig,
+      });
+      expect(tested.status, JSON.stringify(tested.body)).toBe(200);
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ config: expect.objectContaining({ env: { SETUP_LABEL: "saved-native-value" } }) }));
+    } finally { probe.mockRestore(); }
+    const finished = await request(app).post(`/api/companies/${companyId}/agent-hires`).send({ setupAgentId: setupId, name: "Native saved setup",
+      adapterType: "codex_local", runner: "paperclip", adapterConfig: created.body.adapterConfig,
+    });
+    expect(finished.status, JSON.stringify(finished.body)).toBe(201);
+    expect((await current(setupId)).adapterConfig.env).toEqual({ SETUP_LABEL: { type: "plain", value: "saved-native-value" } });
+  });
+
+  it("holds an incomplete Copilot setup but still requires a model at final hire", async () => {
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "owner" });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "board", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const setupId = randomUUID();
+    const body = { name: "Copilot setup", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot" } };
+    const created = await request(app).post(`/api/companies/${companyId}/agents`).send({ ...body, setupId });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body).toMatchObject({ id: setupId, pauseReason: "setup", lifecycleState: "paused" });
+    const finished = await request(app).post(`/api/companies/${companyId}/agent-hires`).send({ ...body, setupAgentId: setupId });
+    expect(finished.status, JSON.stringify(finished.body)).toBe(422);
+    expect(finished.body.details?.code ?? finished.body.code).toBe("paperclip_runner_acpx_model_required");
+    expect((await current(setupId)).lifecycleHolds).toContain("setup");
+    await request(app).post(`/api/companies/${companyId}/agents`).send(body).expect(422);
+  });
+
+  it("lets a held name-only record choose Copilot before connecting an account", async () => {
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "owner" });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "board", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const setupId = randomUUID();
+    await request(app).post(`/api/companies/${companyId}/agents`).send({ setupId, name: "Name-only Copilot", adapterType: "process", metadata: { setupAdapterPending: true } }).expect(201);
+    const config = { provider: "acpx", acpxAgent: "copilot" };
+    const saved = await request(app).patch(`/api/agents/${setupId}`).send({ adapterType: "paperclip_runner", adapterConfig: config, metadata: { setupAdapterPending: false } });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject({ id: setupId, pauseReason: "setup", adapterConfig: config });
+    expect(saved.body.runtimeConfig.aiConnection).toBeUndefined();
+    const finished = await request(app).post(`/api/companies/${companyId}/agent-hires`).send({ setupAgentId: setupId, name: "Name-only Copilot", adapterType: "paperclip_runner", adapterConfig: { ...config, model: "gpt-5.6-luna" } });
+    expect(finished.status, JSON.stringify(finished.body)).toBe(422);
+    expect(finished.body.error).toMatch(/connection|account/i);
+    expect((await current(setupId)).lifecycleHolds).toContain("setup");
   });
 
   it("rolls back a hire and its grants when hire initialization fails", async () => {
@@ -106,11 +330,11 @@ const support = await getEmbeddedPostgresTestSupport();
     const probe = vi.spyOn(adapter, "testEnvironment").mockResolvedValue({ adapterType, status: "warn",
       testedAt: new Date().toISOString(), checks: [{ code: `${adapterType.split("_")[0]}_hello_probe_auth_required`, level: "warn", message: "Login required" }] });
     try {
-      const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Login test", adapterType });
+      const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Login test", adapterType, runner: "legacy" });
       const work = worker(createLifecycleDriver(db, {} as never).runHost);
       await work.process(agent.id);
       expect(probe).toHaveBeenCalled();
-      expect(await current(agent.id)).toMatchObject({ lifecycleState: "verifying", lifecycleError: "The lifecycle step failed. Retry the operation." });
+      expect(await current(agent.id)).toMatchObject({ lifecycleState: "verifying", lifecycleError: expect.stringContaining("Execution configuration check failed. Authentication failed.") });
     } finally { probe.mockRestore(); }
   });
 
@@ -178,6 +402,25 @@ const support = await getEmbeddedPostgresTestSupport();
     await deleteCompany(db, companyId);
     expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
     expect(await db.select().from(companies).where(eq(companies.id, companyId))).toHaveLength(0);
+  });
+
+  it("awaits only the deleted company's agents when a coordinator owns lifecycle wakeups", async () => {
+    const agent = await hire();
+    const [otherCompany] = await db.insert(companies).values({ name: "Unaffected", issuePrefix: `U${companyId.slice(0, 7)}` }).returning();
+    const [otherAgent] = await db.insert(agents).values({ companyId: otherCompany.id, name: "Pending elsewhere",
+      lifecycleState: "preparing", lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 } }).returning();
+    const phases: string[] = [];
+    const work = startAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete",
+      runHost: async snapshot => { expect(snapshot.id).toBe(agent.id); phases.push(snapshot.lifecycleState); return "complete"; } }, () => true);
+    const wake = vi.fn();
+    work.setWake(wake);
+    try {
+      await deleteCompany(db, companyId);
+      expect(phases).toEqual(["terminating", "cleaning_up"]);
+      expect(wake).toHaveBeenCalled();
+      expect(await db.select().from(companies).where(eq(companies.id, companyId))).toHaveLength(0);
+      expect((await current(otherAgent.id)).lifecycleState).toBe("preparing");
+    } finally { await work.stop(); }
   });
 
   it("requires a transaction for the company deletion integration", async () => {
@@ -389,16 +632,17 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
     if (command === "updateConfiguration") await lifecycle.updateConfiguration(one.id, { budgetMonthlyCents: 1000 });
     else await lifecycle.updateAndTransition(one.id, "pause", { budgetMonthlyCents: 1000 });
-    expect((await current(one.id)).lifecycleHolds).toContain("company_paused");
+    // Company state blocks admission; its inherited holds project separately.
+    expect((await current(one.id)).lifecycleHolds).not.toContain("company_paused");
     expect((await current(two.id)).lifecycleHolds).toEqual([]);
   });
 
-  it("limits invocation policy checks to the requested agent", async () => {
+  it("blocks invocation without synchronously projecting inherited company holds", async () => {
     const one = await hire();
     const two = await createAgentLifecycle(db).requestHire(companyId, { name: "Another agent" });
     await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
-    await budgetService(db).getInvocationBlock(companyId, one.id);
-    expect((await current(one.id)).lifecycleHolds).toContain("company_paused");
+    expect(await budgetService(db).getInvocationBlock(companyId, one.id)).not.toBeNull();
+    expect((await current(one.id)).lifecycleHolds).toEqual([]);
     expect((await current(two.id)).lifecycleHolds).toEqual([]);
   });
 
@@ -406,9 +650,9 @@ const support = await getEmbeddedPostgresTestSupport();
     const work = worker(); const lifecycle = createAgentLifecycle(db); const agent = await hire(); await work.process(agent.id);
     await lifecycle.pauseAgent(agent.id); await work.process(agent.id);
     await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
-    await createAgentLifecycle(db).reconcilePolicyHolds(companyId); await work.process(agent.id);
+    await projectCompanyHolds(db, createAgentLifecycleEffects(), companyId); await work.process(agent.id);
     await db.update(companies).set({ status: "active" }).where(eq(companies.id, companyId));
-    await createAgentLifecycle(db).reconcilePolicyHolds(companyId); await work.process(agent.id);
+    await projectCompanyHolds(db, createAgentLifecycleEffects(), companyId); await work.process(agent.id);
     expect(await current(agent.id)).toMatchObject({ lifecycleState: "paused", lifecycleHolds: ["manual"] });
     await lifecycle.resumeAgent(agent.id); await work.process(agent.id);
     expect((await current(agent.id)).lifecycleState).toBe("ready");
@@ -481,7 +725,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(pluginCompanySettings).set({ enabled: true }).where(eq(pluginCompanySettings.pluginId, pluginId));
     expect(await driver.runPlugin(snapshot, pluginId)).toBe("complete");
     expect(call).toHaveBeenCalledWith(pluginId, "agentLifecycle", { companyId, agentId: agent.id,
-      operationId: snapshot.lifecycleOperation!.id, version: snapshot.lifecycleVersion, phase: "paused" }, 30_000);
+      operationId: snapshot.lifecycleOperation!.id, version: snapshot.lifecycleVersion, phase: "paused", instanceSecrets: {} }, 30_000);
     call.mockResolvedValueOnce({ operationId: "stale", version: snapshot.lifecycleVersion, status: "complete" });
     await expect(driver.runPlugin(snapshot, pluginId)).rejects.toThrow("Invalid lifecycle result");
   });

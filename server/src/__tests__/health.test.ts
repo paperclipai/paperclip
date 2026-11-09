@@ -136,6 +136,29 @@ describe("GET /health", () => {
     expect(Object.prototype.hasOwnProperty.call(res.body, "hiddenSettings")).toBe(false);
   });
 
+  it("reveals staging experiments while retaining other Cloud settings restrictions", async () => {
+    const env = {
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
+      PAPERCLIP_PRIMARY_HOST: "team.paperclip.app",
+      PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.experimental,instance.experimental.*",
+    };
+    const app = createApp(undefined, testServerInfo, undefined, env);
+    const production = await request(app).get("/health");
+    expect(production.body.hiddenSettings).toContain("instance.experimental");
+    expect(production.body.hiddenSettings).toContain("instance.experimental.enableChatConnectors");
+
+    env.PAPERCLIP_PRIMARY_HOST = "team.staging.paperclip.app";
+    const staging = await request(app).get("/health");
+    expect(staging.body.hiddenSettings).toContain("instance.plugins");
+    expect(staging.body.hiddenSettings).toContain("instance.experimental.enableManagedSandboxOnly");
+    expect(staging.body.hiddenSettings).toContain("instance.experimental.enableOwnerInstanceAdmin");
+    expect(staging.body.hiddenSettings).not.toContain("instance.experimental");
+    expect(staging.body.hiddenSettings).not.toContain("instance.experimental.enableChatConnectors");
+
+    env.PAPERCLIP_PRIMARY_HOST = "team.paperclip.app";
+    expect((await request(app).get("/health")).body.hiddenSettings).toEqual(production.body.hiddenSettings);
+  });
+
   it("publishes concrete wildcard restrictions to the UI and refreshes changed exceptions", async () => {
     const env = { PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.experimental.*,!instance.experimental.enableEnvironments" };
     const app = createApp(undefined, testServerInfo, undefined, env);

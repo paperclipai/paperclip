@@ -1,3 +1,4 @@
+import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -463,6 +464,39 @@ export function aiConnectionService(db: Db) {
     }
     return { ...row, provider };
   }
+  async function selectPromptInjectionPrevention(input: {
+    companyId: string; connectionId: string; grantId: string;
+    userId: string | null; agentId?: string | null; sponsoredBackground?: boolean;
+  }) {
+    const [row] = await db.select({ connection: toolConnections, grant: connectionGrants })
+      .from(toolConnections).innerJoin(connectionGrants, and(
+        eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.companyId, toolConnections.companyId),
+      )).where(and(eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId),
+        eq(connectionGrants.id, input.grantId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
+    if (!row || row.grant.kind !== "organization") throw unprocessable("Shared AI connection unavailable", { code: "connection_unavailable" });
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    const provider = metadata.success && decisionProviderForConnection(metadata.data) === "openrouter" ? "openrouter" as const : null;
+    if (!provider) throw unprocessable("Connection does not support prompt injection checks", { code: "incompatible_connection" });
+    if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" || row.connection.healthStatus !== "ok")
+      throw unprocessable("Reconnect or enable this connection", { code: "connection_unavailable" });
+    // Only internal prompt injection checks may sponsor background use; ordinary AI selection never bypasses an audience.
+    if (!input.sponsoredBackground) {
+      if (!(await membership(input.companyId, input.userId))) throw forbidden("Active responsible user required");
+      const audience = await db.select().from(connectionGrantMembers).where(and(
+        eq(connectionGrantMembers.companyId, input.companyId), eq(connectionGrantMembers.grantId, input.grantId),
+      ));
+      if (!canUseCredential(row.grant, input.userId, audience)) throw forbidden("Connection is not shared with this user");
+    } else if (input.userId) throw forbidden("Background sponsorship cannot replace caller permissions");
+    if (input.agentId) {
+      const [install] = await db.select({ id: toolConnectionInstalls.id }).from(toolConnectionInstalls).where(and(
+        eq(toolConnectionInstalls.companyId, input.companyId), eq(toolConnectionInstalls.connectionId, input.connectionId),
+        or(and(eq(toolConnectionInstalls.targetType, "company"), eq(toolConnectionInstalls.targetId, input.companyId)),
+          and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, input.agentId))),
+      )).limit(1);
+      if (!install) throw forbidden("Connection is not permitted for this agent");
+    }
+    return { ...row, provider };
+  }
   async function credential(row: Pick<Awaited<ReturnType<typeof select>>, "connection" | "grant">, retry = 0, audit?: { responsibleUserId: string | null; actorType: "user" | "agent" | "system"; actorId: string; issueId?: string | null; heartbeatRunId?: string | null }): Promise<string> {
     const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
     if (metadata.routing?.auth === "none") return "";
@@ -536,7 +570,7 @@ export function aiConnectionService(db: Db) {
     userId: string,
     input: CreateAiConnection | AiConnectionLoginIntent,
     verifiedCredential: string,
-    sessionId?: string,
+    loginSession?: { id: string; complete?: (tx: Db) => Promise<void> },
     attemptStartedAt = new Date(),
   ) {
     const routing = "routing" in input ? input.routing : undefined;
@@ -577,15 +611,13 @@ export function aiConnectionService(db: Db) {
     const grantId = reconnect?.grant.id ?? randomUUID();
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
       const secrets = secretService(tx);
-      if (sessionId) {
+      if (loginSession) {
         const [session] = await tx
           .select()
           .from(adapterAuthSessions)
           .where(
             and(
-              input.provider === "anthropic"
-                ? eq(adapterAuthSessions.publicSessionId, sessionId)
-                : eq(adapterAuthSessions.id, sessionId),
+              eq(adapterAuthSessions.id, loginSession.id),
               eq(adapterAuthSessions.companyId, companyId),
               eq(adapterAuthSessions.startedByUserId, userId),
             ),
@@ -855,22 +887,19 @@ export function aiConnectionService(db: Db) {
               })),
             );
       }
-      if (sessionId)
+      if (loginSession) await notifyLoginSessionChanged(tx);
+      if (loginSession)
         await tx
           .update(adapterAuthSessions)
           .set({
             connectionId: id,
             connectionGrantId: grantId,
             connectionMethod: input.method,
-            ...(input.provider === "anthropic"
-              ? { status: "stored" as const }
-              : {}),
           })
           .where(
-            input.provider === "anthropic"
-              ? eq(adapterAuthSessions.publicSessionId, sessionId)
-              : eq(adapterAuthSessions.id, sessionId),
+            eq(adapterAuthSessions.id, loginSession.id),
           );
+      await loginSession?.complete?.(tx as unknown as Db);
       await logActivity(tx as unknown as Db, {
         companyId,
         actorType: "user",
@@ -1128,5 +1157,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
 }

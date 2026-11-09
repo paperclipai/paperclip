@@ -92,4 +92,27 @@ describe("GitHub grant metadata", () => {
       details: expect.objectContaining({ code: "github_access_check_failed" }),
     });
   });
+
+  it.each([
+    [401, "oauth_reauthorization_required"],
+    [503, "github_access_check_failed"],
+  ])("preserves the retry decision for HTTP %s without reflecting provider text", async (status, code) => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response("private provider detail", { status }));
+    await expect(loadGitHubGrantMetadata("ghu_secret", request)).rejects.toMatchObject({
+      status: 422,
+      message: "GitHub could not verify this account's installation access",
+      details: { code },
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an empty next page before reporting an incomplete access snapshot", async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ id: 42, login: "octocat" }))
+      .mockResolvedValueOnce(json({ installations: [] }, true));
+    await expect(loadGitHubGrantMetadata("ghu_secret", request)).rejects.toMatchObject({
+      details: { code: "github_bad_response" },
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
 });

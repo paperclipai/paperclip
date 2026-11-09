@@ -425,17 +425,7 @@ export function shouldResetInboxWorkspaceGrouping(
   return experimentalSettingsLoaded && groupBy === "workspace" && !isolatedWorkspacesEnabled;
 }
 
-export function shouldIncludeRoutineExecutionIssue(
-  issue: Pick<Issue, "originKind">,
-  hideRoutineExecutions: boolean,
-): boolean {
-  return !hideRoutineExecutions || issue.originKind !== "routine_execution";
-}
 
-export function filterInboxIssues(issues: Issue[], hideRoutineExecutions: boolean): Issue[] {
-  if (!hideRoutineExecutions) return issues;
-  return issues.filter((issue) => shouldIncludeRoutineExecutionIssue(issue, hideRoutineExecutions));
-}
 
 export function matchesInboxIssueSearch(
   issue: Pick<Issue, "title" | "identifier" | "description" | "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
@@ -505,7 +495,7 @@ export function getInboxSearchSupplementIssues({
   remoteIssues,
   issueFilters,
   currentUserId,
-  enableRoutineVisibilityFilter = false,
+  enableAgentCreatedVisibilityFilter = false,
   liveIssueIds,
   issueFilterContext = {},
 }: {
@@ -515,7 +505,7 @@ export function getInboxSearchSupplementIssues({
   remoteIssues: Issue[];
   issueFilters: IssueFilterState;
   currentUserId?: string | null;
-  enableRoutineVisibilityFilter?: boolean;
+  enableAgentCreatedVisibilityFilter?: boolean;
   liveIssueIds?: ReadonlySet<string>;
   issueFilterContext?: IssueFilterWorkspaceContext;
 }): Issue[] {
@@ -531,7 +521,7 @@ export function getInboxSearchSupplementIssues({
     remoteIssues,
     issueFilters,
     currentUserId,
-    enableRoutineVisibilityFilter,
+    enableAgentCreatedVisibilityFilter,
     liveIssueIds,
     issueFilterContext,
   )

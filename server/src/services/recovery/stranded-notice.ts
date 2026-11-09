@@ -121,6 +121,30 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "shared_realization_unsupported") {
+    if (configurationIncomplete?.holderStale === true) {
+      return {
+        title: "Shared workspace still held",
+        body: "Paperclip stopped before the agent started because another run still holds this task's shared workspace but has produced no output for more than an hour, and this execution environment cannot place concurrent agents in one physical shared folder.",
+        nextAction: "Check whether the other run is still working and stop it if it is stuck, or select an isolated task workspace, then retry the task.",
+        tone: "danger",
+      };
+    }
+    return {
+      title: "Shared workspace unavailable",
+      body: "Paperclip stopped before the agent started because this task allows concurrent agents in a shared workspace that another live run is using, and this execution environment cannot place concurrent agents in one physical shared folder.",
+      nextAction: "Select an isolated task workspace, use a local or SSH environment, or change shared workspace concurrency from `allow` so the task waits for the other run.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_source_restricted") {
+    return {
+      title: "Task couldn’t start",
+      body: "The task couldn’t start.",
+      nextAction: "Retry the task.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
     return {
       title: "AI connection needs attention",
@@ -240,6 +264,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     presentation: systemNoticePresentation({ tone: seed?.tone ?? "danger", title }),
     metadata: {
       version: 1,
+      recoveryResponsibility: input.recoveryCause === "configuration_incomplete" ||
+        ["provider_quota", "claude_auth_required", "acpx_auth_required"].includes(input.sourceRun?.errorCode ?? "")
+        ? "user" : "system",
       sourceRunId: input.sourceRun?.id ?? null,
       sections,
     },

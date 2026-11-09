@@ -92,6 +92,7 @@ export function prepareHeartbeatRuntimeServiceIntents(input: {
 export async function startHeartbeatRuntimeServices(db: Db, input: RuntimeServiceContext & {
   persistedExecutionWorkspace: { id: string } | null;
   hostExecutionWorkspaceConfig: Record<string, unknown>;
+  skipHostProvision?: boolean;
   adapterEnv: RuntimeInput["adapterEnv"];
   workspaceOperationRecorder: RuntimeInput["recorder"];
 }) {
@@ -112,6 +113,7 @@ export async function startHeartbeatRuntimeServices(db: Db, input: RuntimeServic
       issueRef?.executionWorkspaceId ??
       null,
     config: hostExecutionWorkspaceConfig,
+    skipHostProvision: input.skipHostProvision,
     adapterEnv,
     onLog,
     recorder: workspaceOperationRecorder,

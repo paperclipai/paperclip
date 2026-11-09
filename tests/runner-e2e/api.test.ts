@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { APIRequestContext, APIResponse } from "@playwright/test";
-import { RunnerApi, RunnerApiHttpError } from "./api.js";
+import { pollUntil, RunnerApi, RunnerApiHttpError } from "./api.js";
 const response = (status: number, data: unknown = {}): APIResponse => ({
   ok: () => status >= 200 && status < 300, status: () => status,
   json: async () => data, text: async () => JSON.stringify(data), url: () => "http://fixture.invalid/instructions",
@@ -50,4 +50,20 @@ it("preserves GET HTTP status separately from diagnostic text", async () => {
   expect(error).toBeInstanceOf(RunnerApiHttpError);
   if (!(error instanceof RunnerApiHttpError)) throw new Error("Expected typed HTTP error");
   expect(error.status).toBe(503);
+});
+
+
+it("a strict observation cannot pass after first observing invalid evidence", async () => {
+  const load = vi.fn().mockRejectedValueOnce(new Error("invalid evidence")).mockResolvedValue(true);
+  await expect(pollUntil({ label: "strict proof", deadlineAt: Date.now() + 1000,
+    load, accept: Boolean, intervalMs: 1, retryOnError: () => false })).rejects.toThrow("invalid evidence");
+  expect(load).toHaveBeenCalledTimes(1);
+});
+
+
+it("keeps existing polling retries when the strict error policy is absent", async () => {
+  const load = vi.fn().mockRejectedValueOnce(new Error("temporary transport failure")).mockResolvedValue(true);
+  await expect(pollUntil({ label: "ordinary state", deadlineAt: Date.now() + 1000,
+    load, accept: Boolean, intervalMs: 1 })).resolves.toBe(true);
+  expect(load).toHaveBeenCalledTimes(2);
 });

@@ -19,6 +19,9 @@ use paperclip_runner_core::provider_bridge::{
 use paperclip_runner_core::provider_events::normalize_codex_notification;
 use serde_json::{json, Value};
 
+#[path = "support/codex_assigned_tool_validation.rs"]
+mod assigned_tool_validation;
+
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 static RECEIPT_LIMIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -65,6 +68,7 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
         instructions: "Stay inside the test workspace.".to_owned(),
         approval_policy: "never".to_owned(),
         externally_sandboxed: false,
+        read_only: false,
         include_skill_instructions: None,
         conversation_mode: None,
     }
@@ -543,6 +547,102 @@ fn saturate_provider_tool_receipts(directory: &Path) {
     persisted["toolBridge"] = serde_json::to_value(bridge).unwrap();
     fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap())
         .expect("write saturated provider state");
+}
+
+fn read_receipt_limit_state(directory: &Path) -> Value {
+    serde_json::from_slice(
+        &fs::read(directory.join("codex-provider-state.json")).expect("read receipt-limit state"),
+    )
+    .expect("parse receipt-limit state")
+}
+
+fn seed_pending_receipt_limit_retry(directory: &Path) {
+    let original = read_receipt_limit_state(directory);
+    assert!(!original["activeProviderTurnId"].is_null());
+    assert_eq!(original["receiptLimitDiagnosticEmitted"], false);
+    assert_eq!(original["receiptLimitInterruptPending"], false);
+    assert_eq!(original["receiptLimitInterruptAccepted"], false);
+    assert_eq!(original["receiptLimitInterruptAttempts"], 0);
+    assert!(original["receiptLimitInterruptDeadlineUnixMs"].is_null());
+    let mut seeded = original.clone();
+    seeded["receiptLimitDiagnosticEmitted"] = json!(true);
+    seeded["receiptLimitInterruptPending"] = json!(true);
+    seeded["receiptLimitInterruptDeadlineUnixMs"] = json!(u64::MAX);
+    let mut reverse = seeded.clone();
+    for field in [
+        "receiptLimitDiagnosticEmitted",
+        "receiptLimitInterruptPending",
+        "receiptLimitInterruptDeadlineUnixMs",
+    ] {
+        reverse[field] = original[field].clone();
+    }
+    assert!(
+        reverse == original,
+        "only the explicit pending-stop fixture fields may change"
+    );
+    fs::write(
+        directory.join("codex-provider-state.json"),
+        serde_json::to_vec_pretty(&seeded).unwrap(),
+    )
+    .expect("write synthetic pending-stop retry fixture");
+}
+
+fn assert_at_capacity_receipts_preserved_by_stop(actual: &Value, saturated: &Value) {
+    let completed = saturated["completed"]
+        .as_object()
+        .expect("fixture completed receipts");
+    assert_eq!(completed.len(), 4096);
+    assert!(saturated["pending"].as_object().unwrap().is_empty());
+    assert!(saturated["settledResults"].as_object().unwrap().is_empty());
+    assert!(saturated["settledCallIds"].as_array().unwrap().is_empty());
+    let mut expected_ids = completed.keys().cloned().collect::<Vec<_>>();
+    expected_ids.sort();
+    assert!(actual["completed"].as_object().unwrap().is_empty());
+    assert_eq!(actual["settledResults"].as_object().unwrap().len(), 4096);
+    assert_eq!(actual["settledCallIds"].as_array().unwrap().len(), 4096);
+    assert!(
+        actual["settledResults"] == saturated["completed"],
+        "all4096 retained receipt IDs, inputs and result bodies must remain exact"
+    );
+    assert!(
+        actual["settledCallIds"] == json!(expected_ids),
+        "all4096 exact receipt identities must remain in settlement order"
+    );
+    assert!(actual["pending"].as_object().unwrap().is_empty());
+    for field in ["authorized", "catalogOperations", "catalogDigest"] {
+        assert!(
+            actual[field] == saturated[field],
+            "tool authority must remain exact"
+        );
+    }
+    let mut expected = saturated.clone();
+    expected["completed"] = json!({});
+    expected["settledResults"] = saturated["completed"].clone();
+    expected["settledCallIds"] = json!(expected_ids);
+    expected["turnClosed"] = json!(true);
+    assert!(
+        actual == &expected,
+        "the full bridge must match only the documented pre-RPC settlement transition"
+    );
+}
+
+fn wait_for_executor_event_batch(
+    executor: &mut CodexCommandExecutor,
+    expected_event_type: &str,
+) -> Vec<PolledEvent> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut retained = Vec::new();
+    while std::time::Instant::now() < deadline {
+        retained.extend(poll_and_ack(executor).expect("poll and retain the entire event batch"));
+        if retained
+            .iter()
+            .any(|event| event.event_type == expected_event_type)
+        {
+            return retained;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    panic!("did not observe Codex {expected_event_type} event before the deadline");
 }
 
 #[test]
@@ -5005,7 +5105,7 @@ fn provider_exit_preserves_and_reconciles_the_active_turn() {
 }
 
 #[test]
-fn receipt_limit_rejects_the_call_and_keeps_polling_when_interrupt_fails() {
+fn receipt_limit_retries_at_capacity_pending_stop_through_authoritative_terminal() {
     let _receipt_limit_test = lock_receipt_limit_test();
     let directory = temporary_directory("receipt-limit-interrupt-failure");
     let config = provider_config(
@@ -5039,29 +5139,84 @@ fn receipt_limit_rejects_the_call_and_keeps_polling_when_interrupt_fails() {
             "turn",
             3,
             "turn.start",
-            json!({"text": "Hold this saturated turn for recovery."}),
+            json!({"text": "Advance an at-capacity pending receipt-limit interruption."}),
         ))
         .expect("start held provider turn");
     drop(first);
 
     saturate_provider_tool_receipts(&directory);
+    let saturated_bridge = read_receipt_limit_state(&directory)["toolBridge"].clone();
+    seed_pending_receipt_limit_retry(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let resumed = wait_for_executor_event(&mut recovered, "session.resumed");
-    assert_eq!(resumed.payload["provider"], "codex");
-    let diagnostic = wait_for_executor_event(&mut recovered, "harness.diagnostic");
-    assert_eq!(
-        diagnostic.payload["code"],
-        "semantic_tool_turn_receipt_limit"
-    );
+    let mut emitted = wait_for_executor_event_batch(&mut recovered, "session.resumed");
+    assert!(emitted.iter().any(|event| {
+        event.event_type == "session.resumed" && event.payload["provider"] == "codex"
+    }));
     assert_eq!(call_count(&directory, "tool-response:failure"), 1);
     assert_eq!(call_count(&directory, "turn/interrupt"), 1);
-    let interrupted = wait_for_executor_event(&mut recovered, "turn.interrupted");
+    let failed_attempt = read_receipt_limit_state(&directory);
+    assert_at_capacity_receipts_preserved_by_stop(&failed_attempt["toolBridge"], &saturated_bridge);
+    assert_eq!(failed_attempt["receiptLimitInterruptPending"], true);
+    assert_eq!(failed_attempt["receiptLimitInterruptAccepted"], false);
+    assert_eq!(failed_attempt["receiptLimitInterruptAttempts"], 1);
     assert_eq!(
-        interrupted.payload["provider"], "codex",
-        "the retry must settle the receipt-exhausted turn"
+        failed_attempt["receiptLimitInterruptDeadlineUnixMs"],
+        json!(u64::MAX)
     );
+    let process_generation = failed_attempt["providerProcessGeneration"].clone();
+    let resumed_calls = call_count(&directory, "thread/resume");
+
+    emitted.extend(poll_and_ack(&mut recovered).expect("retry the first failed interrupt"));
+    assert_eq!(call_count(&directory, "turn/interrupt"), 2);
+    let accepted_attempt = read_receipt_limit_state(&directory);
+    assert_eq!(call_count(&directory, "tool-response:failure"), 1);
+    assert_at_capacity_receipts_preserved_by_stop(
+        &accepted_attempt["toolBridge"],
+        &saturated_bridge,
+    );
+    assert_eq!(accepted_attempt["receiptLimitInterruptPending"], true);
+    assert_eq!(accepted_attempt["receiptLimitInterruptAccepted"], true);
+    assert_eq!(accepted_attempt["receiptLimitInterruptAttempts"], 2);
+    assert_eq!(
+        accepted_attempt["receiptLimitInterruptDeadlineUnixMs"],
+        json!(u64::MAX)
+    );
+    assert_eq!(
+        accepted_attempt["providerProcessGeneration"],
+        process_generation
+    );
+    assert!(!emitted.iter().any(|event| {
+        event.event_type == "turn.interrupted" || event.event_type == "turn.failed"
+    }));
+
+    emitted.extend(wait_for_executor_event_batch(
+        &mut recovered,
+        "turn.interrupted",
+    ));
+    let interrupted = emitted
+        .iter()
+        .find(|event| event.event_type == "turn.interrupted")
+        .expect("the third actual RPC must produce its authoritative terminal");
+    assert_eq!(interrupted.payload["provider"], "codex");
+    assert_ne!(
+        interrupted.payload["code"],
+        "semantic_tool_turn_receipt_limit_interrupt_deadline"
+    );
+    assert!(!emitted
+        .iter()
+        .any(|event| event.event_type == "turn.failed"));
     assert_eq!(call_count(&directory, "turn/interrupt"), 3);
+    assert_eq!(call_count(&directory, "tool-response:failure"), 1);
+    assert_eq!(call_count(&directory, "thread/resume"), resumed_calls);
+    let settled = read_receipt_limit_state(&directory);
+    assert_eq!(settled["providerProcessGeneration"], process_generation);
+    assert_eq!(settled["lifecycle"], "session_open");
+    assert!(settled["activeProviderTurnId"].is_null());
+    assert_eq!(settled["receiptLimitInterruptPending"], false);
+    assert_eq!(settled["receiptLimitInterruptAccepted"], false);
+    assert_eq!(settled["receiptLimitInterruptAttempts"], 0);
+    assert!(settled["receiptLimitInterruptDeadlineUnixMs"].is_null());
 
     recovered.shutdown().expect("stop recovered provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
@@ -5101,22 +5256,31 @@ fn receipt_limit_retry_preserves_a_turn_settled_during_provider_recovery() {
             "turn",
             3,
             "turn.start",
-            json!({"text": "Recover a provider-settled receipt-limited turn."}),
+            json!({"text": "Recover an at-capacity pending stop settled by its provider."}),
         ))
         .expect("start held provider turn");
     drop(first);
 
     saturate_provider_tool_receipts(&directory);
+    let saturated_bridge = read_receipt_limit_state(&directory)["toolBridge"].clone();
+    seed_pending_receipt_limit_retry(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let resumed = wait_for_executor_event(&mut recovered, "session.resumed");
-    assert_eq!(resumed.payload["provider"], "codex");
-    let diagnostic = wait_for_executor_event(&mut recovered, "harness.diagnostic");
-    assert_eq!(
-        diagnostic.payload["code"],
-        "semantic_tool_turn_receipt_limit"
-    );
+    let mut emitted = wait_for_executor_event_batch(&mut recovered, "session.resumed");
+    assert!(emitted.iter().any(|event| {
+        event.event_type == "session.resumed" && event.payload["provider"] == "codex"
+    }));
+    assert_eq!(call_count(&directory, "tool-response:failure"), 1);
     assert_eq!(call_count(&directory, "turn/interrupt"), 1);
+    let pending = read_receipt_limit_state(&directory);
+    assert_at_capacity_receipts_preserved_by_stop(&pending["toolBridge"], &saturated_bridge);
+    assert_eq!(pending["receiptLimitInterruptPending"], true);
+    assert_eq!(pending["receiptLimitInterruptAccepted"], false);
+    assert_eq!(pending["receiptLimitInterruptAttempts"], 1);
+    assert_eq!(
+        pending["receiptLimitInterruptDeadlineUnixMs"],
+        json!(u64::MAX)
+    );
 
     // Lose the live transport while retaining its durable interruption retry,
     // then model the provider settling the turn before runnerd reconnects.
@@ -5134,9 +5298,11 @@ fn receipt_limit_retry_preserves_a_turn_settled_during_provider_recovery() {
     )
     .expect("settle the fake provider turn before recovery");
 
-    let events = poll_and_ack(&mut recovered)
-        .expect("an already-settled retry must preserve the recovered terminal state");
-    assert!(events.iter().any(|event| {
+    emitted.extend(
+        poll_and_ack(&mut recovered)
+            .expect("an already-settled retry must preserve the recovered terminal state"),
+    );
+    assert!(emitted.iter().any(|event| {
         event.event_type == "session.reconciled" && event.payload["activeProviderTurnId"].is_null()
     }));
     assert_eq!(
@@ -5157,6 +5323,111 @@ fn receipt_limit_retry_preserves_a_turn_settled_during_provider_recovery() {
     assert!(persisted["receiptLimitInterruptDeadlineUnixMs"].is_null());
 
     recovered.shutdown().expect("stop recovered provider");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn receipt_limit_recovers_at_capacity_pending_stop_after_expired_unaccepted_checkpoint() {
+    let _receipt_limit_test = lock_receipt_limit_test();
+    let directory = temporary_directory("receipt-limit-expired-unaccepted");
+    let config = provider_config(
+        &directory,
+        &[
+            "--require-dynamic-tool",
+            "--hold-turn",
+            "--emit-tool-call-on-resume",
+            "--fail-first-interrupt",
+        ],
+    );
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({
+                "provider": config, "authorizedTools": task_context_tool_set(),
+            }),
+        ))
+        .expect("prepare Codex provider");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open Codex session");
+    first
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Recover an at-capacity pending stop, then expire its unaccepted interruption."}),
+        ))
+        .expect("start held provider turn");
+    drop(first);
+    saturate_provider_tool_receipts(&directory);
+    let saturated_bridge = read_receipt_limit_state(&directory)["toolBridge"].clone();
+    seed_pending_receipt_limit_retry(&directory);
+
+    let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let mut emitted = wait_for_executor_event_batch(&mut recovered, "session.resumed");
+    assert_eq!(call_count(&directory, "tool-response:failure"), 1);
+    assert_eq!(call_count(&directory, "turn/interrupt"), 1);
+    let pending = read_receipt_limit_state(&directory);
+    assert_at_capacity_receipts_preserved_by_stop(&pending["toolBridge"], &saturated_bridge);
+    assert_eq!(pending["receiptLimitInterruptPending"], true);
+    assert_eq!(pending["receiptLimitInterruptAccepted"], false);
+    assert_eq!(pending["receiptLimitInterruptAttempts"], 1);
+    assert_eq!(
+        pending["receiptLimitInterruptDeadlineUnixMs"],
+        json!(u64::MAX)
+    );
+    recovered
+        .shutdown()
+        .expect("stop the transport before explicitly expiring its deadline");
+    drop(recovered);
+    let before_edit = read_receipt_limit_state(&directory);
+    assert!(
+        before_edit == pending,
+        "shutdown must preserve the pending checkpoint"
+    );
+    let mut expired = before_edit.clone();
+    expired["receiptLimitInterruptDeadlineUnixMs"] = json!(1);
+    let mut reverse = expired.clone();
+    reverse["receiptLimitInterruptDeadlineUnixMs"] =
+        before_edit["receiptLimitInterruptDeadlineUnixMs"].clone();
+    assert!(
+        reverse == before_edit,
+        "expiry must change only the existing deadline field"
+    );
+    fs::write(
+        directory.join("codex-provider-state.json"),
+        serde_json::to_vec_pretty(&expired).unwrap(),
+    )
+    .expect("write explicitly expired unaccepted checkpoint");
+
+    let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    emitted.extend(wait_for_executor_event_batch(&mut recovered, "turn.failed"));
+    let failed = emitted
+        .iter()
+        .find(|event| event.event_type == "turn.failed")
+        .expect("the expired unaccepted stop must fail conservatively");
+    assert_eq!(
+        failed.payload["code"],
+        "semantic_tool_turn_receipt_limit_interrupt_unconfirmed"
+    );
+    assert_eq!(failed.payload["interruptAccepted"], false);
+    assert_eq!(failed.payload["providerTerminalObserved"], false);
+    assert!(!emitted
+        .iter()
+        .any(|event| event.event_type == "turn.interrupted"));
+    assert_eq!(call_count(&directory, "turn/interrupt"), 1);
+    let settled = read_receipt_limit_state(&directory);
+    assert_eq!(settled["lifecycle"], "closed");
+    assert!(settled["activeProviderTurnId"].is_null());
+    assert_eq!(settled["receiptLimitInterruptPending"], false);
+    assert_eq!(settled["receiptLimitInterruptAccepted"], false);
+    assert_eq!(settled["receiptLimitInterruptAttempts"], 0);
+    assert!(settled["receiptLimitInterruptDeadlineUnixMs"].is_null());
+    recovered.shutdown().expect("stop closed provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 

@@ -64,9 +64,9 @@ vi.mock("@chat-adapter/discord", () => ({
 }));
 
 vi.mock("@chat-adapter/slack", () => ({
-  createSlackAdapter: (config: Record<string, unknown>) => {
-    captures.slackConfigs.push(config);
-    return { name: "slack" };
+  SlackAdapter: class {
+    name = "slack";
+    constructor(config: Record<string, unknown>) { captures.slackConfigs.push(config); }
   },
 }));
 

@@ -179,6 +179,28 @@ describe("TaskSidePanel", () => {
     );
   }
 
+  it("keeps the upload slot mounted and inert when switching away from Artifacts", async () => {
+    await render(panel({ streamlinedTabs: true, artifactsOpenRequestId: 1 }));
+    const slot = container.querySelector<HTMLElement>("[data-artifact-upload-slot]");
+    expect(slot).not.toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-artifacts")?.click());
+    expect(slot?.getAttribute("aria-hidden")).toBe("false");
+    expect(slot?.hasAttribute("inert")).toBe(false);
+    expect(slot?.className).not.toContain("invisible");
+
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    expect(container.querySelector("[data-artifact-upload-slot]")).toBe(slot);
+    expect(slot?.getAttribute("aria-hidden")).toBe("true");
+    expect(slot?.hasAttribute("inert")).toBe(true);
+    expect(slot?.className).toContain("invisible");
+
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-artifacts")?.click());
+    expect(container.querySelector("[data-artifact-upload-slot]")).toBe(slot);
+    expect(slot?.hasAttribute("inert")).toBe(false);
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Artifacts"]')?.click());
+    expect(container.querySelector("[data-artifact-upload-slot]")).toBeNull();
+  });
+
   it("opens, deduplicates, switches and closes text attachment tabs", async () => {
     const onAttachmentOpened = vi.fn();
     await render(panel({ openAttachment: { id: "file-1", title: "AGENTS.md", requestId: 1 }, onAttachmentOpened }));
@@ -440,9 +462,9 @@ describe("TaskSidePanel", () => {
     const propertiesTab = container.querySelector<HTMLElement>('[data-side-panel-tab-target="properties"]');
     expect(propertiesTab?.className).toContain("text-sm");
     expect(propertiesTab?.querySelector("svg")).toBeNull();
-    expect(container.querySelector('[data-side-panel-tab-wrapper="properties"]')?.className).toContain("mx-1.5");
+    expect(container.querySelector('[data-side-panel-tab-wrapper="properties"]')?.parentElement?.className).toContain("mx-0.75");
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Close Properties"]')?.className)
-      .toContain("opacity-0");
+      .toContain("opacity-100");
     const addButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]');
     expect(addButton?.className).toContain("h-(--side-panel-tab-height)");
     expect(addButton?.className).toContain("w-(--side-panel-tab-height)");

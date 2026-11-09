@@ -495,6 +495,11 @@ export function agentInstructionsService(db?: Db) {
       eq(agentInstructionHeads.agentId, agent.id), eq(agentInstructionHeads.entryFile, entryFile)));
     if (head) throw unprocessable("This entry has revision history. Use the instruction content API with its baseRevisionId to update it.", { code: "INSTRUCTION_REVISION_REQUIRED" });
   }
+  async function getBundleLocation(agent: AgentLike): Promise<{ rootPath: string | null; entryFile: string }> {
+    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    if (state.rootPath) await assertInstructionPathSafe(state.rootPath, state.entryFile);
+    return { rootPath: state.rootPath, entryFile: state.entryFile };
+  }
   async function getBundle(agent: AgentLike): Promise<AgentInstructionsBundle> {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     if (!state.rootPath) return toBundle(agent, state, []);
@@ -818,6 +823,7 @@ export function agentInstructionsService(db?: Db) {
   }
 
   return {
+    getBundleLocation,
     getBundle,
     readFile,
     updateBundle,

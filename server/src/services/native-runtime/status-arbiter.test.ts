@@ -44,6 +44,18 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("preserves an open task after an accepted case handoff even if the departing model claims done", () => {
+    expect(arbitrate({ caseHandoffAuthorized: true })).toMatchObject({
+      statusAction: "preserve", toStatus: "in_progress", reasonCode: "case_handoff_waiting_for_release",
+      effects: [{ kind: "release_checkout" }],
+    });
+  });
+
+  it("keeps workspace repair ahead of an accepted case handoff", () => {
+    expect(arbitrate({ caseHandoffAuthorized: true, workspaceFinalizeStatus: "failed" })).toMatchObject({
+      statusAction: "preserve", reasonCode: "finalization_failed_claim_preserved",
+    });
+  });
   it("keeps a verified accepted Cursor plan passive without completing or replaying work", () => {
     const passive = assessment({ reportedDisposition: "yielded", objectiveSatisfied: false,
       allCriteriaSatisfied: false, hasBlockingRemainingWork: true,

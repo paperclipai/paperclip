@@ -9,6 +9,7 @@ import { agents, companies, connectionGrants, issueThreadInteractions, toolConne
 import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
+  isConnectorFeatureEnabled,
   isMemoryConnectorId,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
@@ -819,7 +820,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         ? await options.paperclipCloudConnector.getCapabilities()
         : [];
     const vercelConnect = vercelConnectIntegrationStatus();
-    const { enableMemoryConnectors } = await instanceSettingsService(db).getExperimental();
+    const settings = await instanceSettingsService(db).getExperimental();
     let oauthCallbackUrl: string | undefined;
     try {
       // Setup must display the callback used by its initiating POST. Provider
@@ -850,7 +851,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
             : "Vercel Connect setup is disabled on this Paperclip instance.",
         },
       },
-      apps: [...APP_STORE_DEFINITIONS.filter((app) => (enableMemoryConnectors || !isMemoryConnectorId(app.slug))).map((app) =>
+      apps: [...APP_STORE_DEFINITIONS.filter((app) => (settings.enableMemoryConnectors || !isMemoryConnectorId(app.slug))
+        && isConnectorFeatureEnabled(app, settings)).map((app) =>
         appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
       ), ...await aiConnectionRouterService(db).catalog()],
     });
@@ -922,6 +924,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
           const personalSubjectUserId = req.body.grantKind === "user" ? req.actor.userId ?? null : null;
           const dedicatedSubjectAgentId = req.body.grantKind === "agent" ? req.body.subjectAgentId ?? null : null;
           const start = await svc.startOAuth(companyId, result.connectionId, {
+            workspaceServices: req.body.workspaceServices,
             redirectUri: oauthRedirectUri(req),
             actor: getActorInfo(req),
             ...(personalSubjectUserId ? { subjectUserId: personalSubjectUserId } : {}),
@@ -1008,6 +1011,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       await assertToolConnectionConfigureAccess(req, existing);
     }
     const result = await svc.startOAuth(existing.companyId, existing.id, {
+      workspaceServices: req.body.workspaceServices,
       redirectUri: oauthRedirectUri(req),
       actor: getActorInfo(req),
       returnTo: oauthBrowserOrigin(req) ?? undefined,
@@ -2281,7 +2285,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     assertBoard(req);
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId) });
+    res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId, getActorInfo(req)) });
   });
 
   router.get("/tool-connections/:connectionId/activity", async (req, res) => {

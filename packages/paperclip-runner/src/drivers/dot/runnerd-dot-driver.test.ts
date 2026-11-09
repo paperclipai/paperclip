@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { expect, it, vi } from "vitest";
-import { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./runnerd-dot-driver.js";
+import { describe, expect, it, vi } from "vitest";
+import { RunnerdDotDriver, externalRunnerExitMessage, type RunnerdDotDriverOptions } from "./runnerd-dot-driver.js";
 import { describeRunnerdNativeSessionBackend } from "../../backends/codex-native-backend.js";
 import { createNativeSessionBackend } from "../../backends/native-backend-factory.js";
 import * as controlPlane from "../../control-plane/durable-prp-control-plane.js";
@@ -13,7 +13,7 @@ import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecuti
 import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION,
   nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest } from "../../contracts/runtime-context.js";
 
-function execution(root: string): NativeExecutionInputV6 {
+function execution(root: string, provider: "openai_dot" | "grok_bot" = "openai_dot"): NativeExecutionInputV6 {
   const companyId = randomUUID(), agentId = randomUUID();
   const digest = "0".repeat(64);
   const context = {
@@ -25,10 +25,10 @@ function execution(root: string): NativeExecutionInputV6 {
     schema: "paperclip.native-execution-input.v6",
     binding: { companyId, agentId, runId: randomUUID(), issueId: randomUUID(), executionWorkspaceId: randomUUID() },
     task: { identifier: "DOT-1", title: "Synthetic bridge recovery", description: null, prompt: "Read the synthetic counter.", workMode: "standard" },
-    provider: { kind: "openai_dot", model: null, binding: { companyId, agentId, bindingId: randomUUID(), bindingGeneration: 1,
+    provider: { kind: provider, model: null, binding: { companyId, agentId, bindingId: randomUUID(), bindingGeneration: 1,
       acceptByUnixMs: Date.now() + 600_000, expiresAtUnixMs: Date.now() + 7_200_000 } },
     workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },
-    session: { normalizedSessionId: randomUUID(), driverKind: "openai_dot_mcp", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+    session: { normalizedSessionId: randomUUID(), driverKind: provider === "grok_bot" ? "grok_bot_mcp" : "openai_dot_mcp", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
     executionMode: "default", planningContext: null,
     completionContract: { id: randomUUID(), sha256: "sha256:" + digest, schemaVersion: "paperclip.completion-contract.v1",
       contract: { revision: "1", objective: "Read the counter", criteria: [{ id: "objective", requirement: "Read the counter" }] } },
@@ -36,8 +36,8 @@ function execution(root: string): NativeExecutionInputV6 {
   }) as NativeExecutionInputV6;
 }
 
-it("v6 closes Dot identity, workspace, model and credential fields", () => {
-  const input = execution("/synthetic/pinned-instructions");
+it.each(["openai_dot", "grok_bot"] as const)("v6 closes %s identity, workspace, model and credential fields", provider => {
+  const input = execution("/synthetic/pinned-instructions", provider);
   expect(parseNativeExecutionInput(input)).toEqual(input);
   expect(buildNativeModelEnvelope(input).workspace).toBeNull();
   expect(JSON.stringify(buildNativeModelEnvelope(input))).not.toContain("/synthetic");
@@ -51,8 +51,8 @@ it("v6 closes Dot identity, workspace, model and credential fields", () => {
   ]) expect(() => parseNativeExecutionInput(changed)).toThrow();
 });
 
-it("admits the heartbeat descriptor with the real Dot capabilities and no broker or process startup", async () => {
-  const input = execution("/synthetic/pinned-instructions");
+it.each(["openai_dot", "grok_bot"] as const)("admits the %s descriptor without a broker or process startup", async provider => {
+  const input = execution("/synthetic/pinned-instructions", provider);
   const spawnSpy = vi.spyOn(controlPlane, "spawnRunner");
   try {
     const descriptor = await describeRunnerdNativeSessionBackend(input);
@@ -70,8 +70,8 @@ it("admits the heartbeat descriptor with the real Dot capabilities and no broker
     });
     expect(descriptor).toEqual(await backend.descriptor());
     expect(descriptor).toMatchObject({
-      kind: "runner", name: "openai_dot_mcp", version: "dot-mcp-v1",
-      capabilities: { resume: false, steering: false, interruption: false, usage: false, dynamicTools: true },
+      kind: "runner", name: provider === "grok_bot" ? "grok_bot_mcp" : "openai_dot_mcp", version: provider === "grok_bot" ? "grok-bot-mcp-v1" : "dot-mcp-v1",
+      capabilities: { resume: false, steering: false, interruption: false, usage: false, dynamicTools: true, completionBoundary: "paperclip_work_session", providerTermination: "unavailable", providerTranscriptStreaming: false },
       runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" },
     });
     expect(spawnSpy).not.toHaveBeenCalled();
@@ -120,7 +120,8 @@ it.each([
     } else {
       handle!.child.kill("SIGTERM");
       await handle!.completion;
-      await expect(session.read!()).rejects.toThrow("dot_runner_process_exited_recovery_required");
+      await expect(session.read!()).rejects.toThrow(
+        /^dot_runner_process_exited_recovery_required: code=\S+ signal=\S+ disconnectedMs=(?:none|\d+)$/);
     }
   } finally {
     commandSpy.mockRestore(); spawnSpy.mockRestore();
@@ -131,10 +132,10 @@ it.each([
   }
 }, 45000);
 
-it.each(["local", "custom local directory", "external launcher"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
+it.each(["local", "custom local directory", "external launcher", "grok external launcher"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
   const root = await mkdtemp(join(tmpdir(), "dot-driver-recovery-"));
   await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
-  const input = execution(root);
+  const input = execution(root, launch === "grok external launcher" ? "grok_bot" : "openai_dot");
   let send: ((op: ExternalProviderOperation) => Promise<void>) | undefined;
   let spawned: { pid: number; processGroupId: number | null; startedAt: string } | undefined;
   let calls = 0;
@@ -159,7 +160,7 @@ it.each(["local", "custom local directory", "external launcher"])("reattaches th
   };
   const runnerState = launch === "local" ? join(root, "state/runner") : join(root, "external-runtime/runner");
   if (launch === "custom local directory") options.runnerStateDirectory = runnerState;
-  if (launch === "external launcher") {
+  if (["external launcher", "grok external launcher"].includes(launch)) {
     await mkdir(runnerState, { recursive: true });
     options.runnerStateDirectory = runnerState;
     options.readProviderState = async () => {
@@ -190,6 +191,11 @@ it.each(["local", "custom local directory", "external launcher"])("reattaches th
     const call = operation("tool", { name: "synthetic_counter", arguments: {} });
     await send!(call);
     await vi.waitFor(() => expect(settlements.get(call.requestId)).toMatchObject({ status: "completed", isError: false }), { timeout: 10000 });
+    if (input.provider.kind === "grok_bot") {
+      const renewal = operation("renew", { expiresAtUnixMs: Date.now() + 3600000 });
+      await send!(renewal);
+      await vi.waitFor(() => expect(settlements.get(renewal.requestId)).toMatchObject({ status: "renewed" }), { timeout: 10000 });
+    }
     const snapshot = await session.snapshot();
     expect(snapshot).toMatchObject({ providerSessionId: null, activeTurnId: options.identity.turnId, providerRecoveryPolicy: "same_session_only" });
     await session.detachControllerForRestart!();
@@ -210,3 +216,29 @@ it.each(["local", "custom local directory", "external launcher"])("reattaches th
     await rm(root, { recursive: true, force: true });
   }
 }, 45000);
+
+it("rejects a mismatched Grok driver before any provider state is attached", async () => {
+  const input = execution("/synthetic/pinned-instructions", "grok_bot");
+  expect(() => parseNativeExecutionInput({ ...input, session: { ...input.session, driverKind: "openai_dot_mcp" } })).toThrow();
+  expect(() => parseNativeExecutionInput({ ...input, provider: { ...input.provider, kind: "unsupported_bot" } })).toThrow();
+});
+
+describe("external Runner failure diagnostics", () => {
+  it.each([
+    ["active connection lease expired; durable state is preserved", "lease_expired_requires_bootstrap"],
+    ["runner_remote_process_exited lifecycle=running recoverableFailure=transport_reconnect_grace_exceeded", "transport_reconnect_grace_exceeded"],
+    ["transport reconnect deadline elapsed; durable state is preserved", "transport_reconnect_deadline_exceeded"],
+  ])("preserves the bounded failure reason from %s", (stderr, reason) => {
+    expect(externalRunnerExitMessage({ code: null, signal: null, stdout: "", stderr }))
+      .toContain(`reason=${reason}`);
+  });
+  it("does not disclose raw diagnostics or transport credentials", () => {
+    const stderr = "Bearer qualification-secret https://private.example/path?ticket=qualification-secret UNKNOWN_REASON";
+    expect(externalRunnerExitMessage({ code: null, signal: null, stdout: "", stderr }))
+      .toBe("dot_runner_process_exited_recovery_required: code=null signal=null");
+    const recognized = externalRunnerExitMessage({ code: null, signal: null, stdout: "", stderr: `connection lease expired ${stderr}` });
+    expect(recognized).toContain("reason=lease_expired_requires_bootstrap");
+    expect(recognized).not.toContain("qualification-secret");
+    expect(recognized).not.toContain("private.example");
+  });
+});

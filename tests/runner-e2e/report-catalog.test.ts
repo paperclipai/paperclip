@@ -10,6 +10,7 @@ import { discoverReportCatalog } from "./report-catalog.js";
 import { buildRunnerCampaign } from "./history.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
+import { journeyCapabilities } from "./journey-features.js";
 import type { RunnerE2EResult } from "./types.js";
 
 const temporary: string[] = [];
@@ -58,6 +59,34 @@ function campaign(results: RunnerE2EResult[] = [result()]) {
 }
 
 describe("trusted report catalog discovery", () => {
+  it("shows only the campaign selection while retaining a missing selected result", () => {
+    const known = runnerMatrix.find((execution) => execution.id === "core-compatibility.legacy-codex.local.ask-question")!;
+    const missing = runnerMatrix.find((execution) => execution.id === "core-compatibility.legacy-codex.local.message-marker")!;
+    const page = renderRunnerE2EDashboard({
+      title: "Narrow campaign", generatedAt: "2026-10-20T12:00:00Z",
+      expected: [known.id, missing.id], catalog: runnerMatrix,
+      entries: [{ result: { ...result(), executionId: known.id, suiteId: known.suite.id,
+        profileId: known.profile.id, environmentId: known.environment.id, caseId: known.task.id }, valid: true, errors: [] }],
+    });
+    expect(page).toContain(`data-execution-id="${known.id}"`);
+    expect(page).toContain(`data-execution-id="${missing.id}"`);
+    expect(page).toContain('class="case case-missing"');
+    expect(page).not.toContain('id="suite-first-task"');
+    expect(page).not.toContain('data-report-profile="runner-copilot"');
+    expect(page).not.toContain('class="suite-nav"');
+    expect(page.match(/data-report-case\s/g)).toHaveLength(2);
+    expect(page).toContain('data-report-features="questions-and-approvals"');
+    expect(page).toContain('title="questions-and-approvals/questions"');
+    expect(page).toContain("No mapped journey");
+    expect(page).toContain("0/1 passed · 1 missing");
+  });
+
+  it("leaves an unfamiliar journey unmapped even when its case name matches", () => {
+    const known = runnerMatrix.find((execution) => execution.id === "core-compatibility.legacy-codex.local.ask-question")!;
+    expect(journeyCapabilities(known).map((capability) => capability.id)).toEqual(["questions-and-approvals/questions"]);
+    expect(journeyCapabilities({ ...known, suite: { ...known.suite, id: "branch-only" } })).toEqual([]);
+  });
+
   it("aggregates unknown suites and renders their cases, missing results, and screenshot gallery", () => {
     const summary = campaign();
     expect(summary.suites).toEqual([

@@ -3,7 +3,8 @@ import path from "node:path";
 import { chromium, expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 const requestedRuns = Number(process.env.PAPERCLIP_ISSUE_PERF_RUNS ?? 5);
-const RUNS = Number.isFinite(requestedRuns) ? Math.max(5, Math.floor(requestedRuns)) : 5;
+const CAPTURE_PROFILE = process.env.PAPERCLIP_ISSUE_PERF_PROFILE === "1";
+const RUNS = CAPTURE_PROFILE ? 1 : Number.isFinite(requestedRuns) ? Math.max(5, Math.floor(requestedRuns)) : 5;
 const OUTPUT_DIR = path.resolve(process.cwd(), "test-results/issue-detail-perf");
 const PAGE_READY_TIMEOUT_MS = 90_000;
 const HEADER_MEASURE = "issue-detail:navigate→header-paint";
@@ -27,6 +28,7 @@ type NetworkRecord = {
   status?: number;
   responseHeaders?: Record<string, string>;
   ttfbMs?: number;
+  startedAtEpochMs: number;
   completedAtEpochMs?: number;
 };
 
@@ -131,9 +133,10 @@ async function configureProfile(context: BrowserContext, page: Page, profile: Pr
   return session;
 }
 
-async function installVitalObserver(page: Page, cold: boolean): Promise<void> {
-  await page.addInitScript(({ coldStart }) => {
+async function installVitalObserver(page: Page, cold: boolean, captureProfile: boolean): Promise<void> {
+  await page.addInitScript(({ coldStart, captureProfile }) => {
     if (coldStart) window.__PAPERCLIP_ISSUE_DETAIL_NAVIGATE_START__ = 0;
+    window.__PAPERCLIP_ISSUE_DETAIL_PROFILE__ = captureProfile;
     (window as Window & { __issuePerfLcp?: number }).__issuePerfLcp = undefined;
     try {
       new PerformanceObserver((list) => {
@@ -141,7 +144,7 @@ async function installVitalObserver(page: Page, cold: boolean): Promise<void> {
         if (latest) (window as Window & { __issuePerfLcp?: number }).__issuePerfLcp = latest.startTime;
       }).observe({ type: "largest-contentful-paint", buffered: true });
     } catch {}
-  }, { coldStart: cold });
+  }, { coldStart: cold, captureProfile });
 }
 
 async function startNetworkCapture(session: Awaited<ReturnType<typeof configureProfile>>) {
@@ -155,6 +158,7 @@ async function startNetworkCapture(session: Awaited<ReturnType<typeof configureP
       method: event.request.method,
       type: event.type ?? "Other",
       encodedDataLength: 0,
+      startedAtEpochMs: event.wallTime * 1000,
     });
   });
   session.on("Network.responseReceived", (event) => {
@@ -178,20 +182,20 @@ async function startNetworkCapture(session: Awaited<ReturnType<typeof configureP
   return records;
 }
 
-async function writeTrace(tracePath: string, metrics: RunMetrics, records: Map<string, NetworkRecord>) {
+async function writeTrace(tracePath: string, metrics: RunMetrics, records: Map<string, NetworkRecord>, navigationEpochMs: number) {
   await fs.mkdir(path.dirname(tracePath), { recursive: true });
   const traceEvents = [
     { name: "issue-detail:navigate", cat: "blink.user_timing", ph: "i", ts: 0, pid: 1, tid: 1, s: "t" },
     { name: HEADER_MEASURE, cat: "blink.user_timing", ph: "X", ts: 0, dur: metrics.headerPaintMs * 1000, pid: 1, tid: 1 },
     { name: CONTENT_MEASURE, cat: "blink.user_timing", ph: "X", ts: 0, dur: metrics.contentPaintMs * 1000, pid: 1, tid: 1 },
-    ...[...records.values()].map((record, index) => ({
+    ...[...records.values()].filter((record) => record.completedAtEpochMs !== undefined).map((record) => ({
       name: record.url,
       cat: "loading",
-      ph: "i",
-      ts: index + 1,
+      ph: "X",
+      ts: (record.startedAtEpochMs - navigationEpochMs) * 1000,
+      dur: (record.completedAtEpochMs! - record.startedAtEpochMs) * 1000,
       pid: 1,
       tid: 2,
-      s: "t",
       args: { method: record.method, type: record.type, bytes: record.encodedDataLength, status: record.status },
     })),
   ];
@@ -240,7 +244,8 @@ function summarizeNetwork(records: Map<string, NetworkRecord>, seedData: Seed, c
 async function runScenario(browser: Browser, baseURL: string, seedData: Seed, profile: Profile, scenario: RunMetrics["scenario"], run: number): Promise<RunMetrics> {
   const context = await browser.newContext({ baseURL });
   const page = await context.newPage();
-  await installVitalObserver(page, scenario.startsWith("S2"));
+  const captureProfile = CAPTURE_PROFILE && run === 1;
+  await installVitalObserver(page, scenario.startsWith("S2"), captureProfile);
   const session = await configureProfile(context, page, profile);
   const network = await startNetworkCapture(session);
   const tracePath = path.join(OUTPUT_DIR, `${scenario.slice(0, 2).toLowerCase()}-${profile.name}-run-${run}.trace.json`);
@@ -250,23 +255,38 @@ async function runScenario(browser: Browser, baseURL: string, seedData: Seed, pr
     const issueLink = page.locator("[data-inbox-issue-link]", { hasText: seedData.title }).first();
     await expect(issueLink).toBeVisible({ timeout: PAGE_READY_TIMEOUT_MS });
     network.clear();
+  }
+  if (captureProfile) {
+    await session.send("Profiler.enable");
+    await session.send("Profiler.setSamplingInterval", { interval: 1000 });
+    await session.send("Profiler.start");
+  }
+  if (scenario.startsWith("S1")) {
     await page.evaluate(() => {
       window.__PAPERCLIP_ISSUE_DETAIL_NAVIGATE_START__ = performance.now();
     });
-    await issueLink.click();
+    await page.locator("[data-inbox-issue-link]", { hasText: seedData.title }).first().click();
   } else {
     await page.goto(`/${seedData.prefix}/issues/${seedData.identifier}`);
   }
 
-  await expect(page.getByTestId("issue-detail-header")).toBeVisible({ timeout: PAGE_READY_TIMEOUT_MS });
+  await expect(page.getByTestId("issue-detail-header").filter({ visible: true }).first()).toBeVisible({ timeout: PAGE_READY_TIMEOUT_MS });
   const paint = await readPaintMetrics(page);
+  if (captureProfile) {
+    const { profile } = await session.send("Profiler.stop");
+    const readiness = await page.evaluate(() => performance.getEntriesByType("mark")
+      .filter((entry) => entry.name.startsWith("issue-detail:"))
+      .map((entry) => ({ name: entry.name, startTime: entry.startTime, detail: (entry as PerformanceMark).detail })));
+    await fs.writeFile(tracePath.replace(".trace.json", ".cpuprofile"), JSON.stringify(profile));
+    await fs.writeFile(tracePath.replace(".trace.json", ".readiness.json"), JSON.stringify(readiness, null, 2));
+  }
   const summary = summarizeNetwork(network, seedData, paint.contentPaintEpochMs);
   const { contentPaintEpochMs: _contentPaintEpochMs, ...reportedPaint } = paint;
   const scenarioPaint = scenario.startsWith("S1")
     ? { ...reportedPaint, ttfbMs: null, fcpMs: null, lcpMs: null }
     : reportedPaint;
   const metrics = { scenario, profile: profile.name, run, ...scenarioPaint, ...summary };
-  if (run === 1) await writeTrace(tracePath, metrics, network);
+  if (run === 1) await writeTrace(tracePath, metrics, network, paint.contentPaintEpochMs - paint.contentPaintMs);
   if (scenario.startsWith("S2") && profile.name === "unthrottled" && run === 1) {
     await page.screenshot({ path: path.join(OUTPUT_DIR, "issue-detail-loaded.png"), fullPage: true });
   }
@@ -310,6 +330,7 @@ function buildMarkdown(results: RunMetrics[]): string {
     "# Issue-detail performance baseline",
     "",
     `Runs per scenario/profile: ${RUNS}`,
+    ...(CAPTURE_PROFILE ? ["Diagnostic profile with profiler overhead; use benchmark mode for latency comparisons."] : []),
     "",
     "| Scenario | Profile | N | Header paint | Content paint | TTFB | FCP | LCP | Requests before content | API requests before content | Bytes before content | JS bytes before content | GET issue TTFB | GET issue server timing |",
     "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -322,7 +343,19 @@ function buildMarkdown(results: RunMetrics[]): string {
 test("issue-detail baseline", async ({ request, baseURL }) => {
   expect(baseURL).toBeTruthy();
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
-  const seedData = await seed(request);
+  const seedFile = process.env.PAPERCLIP_ISSUE_PERF_SEED_FILE;
+  const seedData: Seed = seedFile
+    ? JSON.parse(await fs.readFile(seedFile, "utf8")).seed
+    : await seed(request);
+  if (seedFile) {
+    const response = await request.get(`/api/issues/${seedData.issueId}`);
+    expect(response.ok(), await response.text()).toBe(true);
+    expect(await response.json()).toMatchObject({
+      companyId: seedData.companyId,
+      identifier: seedData.identifier,
+      title: seedData.title,
+    });
+  }
   const results: RunMetrics[] = [];
 
   for (const profile of PROFILES) {
@@ -333,7 +366,7 @@ test("issue-detail baseline", async ({ request, baseURL }) => {
   }
 
   const report = buildMarkdown(results);
-  await fs.writeFile(path.join(OUTPUT_DIR, "baseline.json"), JSON.stringify({ seed: seedData, results }, null, 2));
+  await fs.writeFile(path.join(OUTPUT_DIR, "baseline.json"), JSON.stringify({ mode: CAPTURE_PROFILE ? "profile" : "benchmark", seed: seedData, results }, null, 2));
   await fs.writeFile(path.join(OUTPUT_DIR, "baseline.md"), report);
   console.log(`\n${report}\n`);
 });

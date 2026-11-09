@@ -2,6 +2,8 @@
 
 Product map: [Onboarding and first work](../feature-map/onboarding.md).
 
+Feature ID: `onboarding`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -9,7 +11,14 @@ Each capability needs operation-level review before its entire scope can be
 qualified. No live agent execution is claimed. Follow the [map contract](../README.md)
 for format, permission checks, evidence and maintenance.
 
+Scoped runner-default source review: 2026-10-12 at
+`eee0534154eaf5d0d3f2bbc97c1e24d86f34a5a5`, limited to first-agent selection,
+selected-runtime validation and draft restoration. Unrelated baseline entries
+retain the original source commit; no live agent verification is added.
+
 ## `instance`
+
+Capability ID: `onboarding/instance`.
 
 Review: `baseline`.
 
@@ -33,6 +42,8 @@ Gaps: Bootstrapping an instance cannot depend solely on an API served by that
 not-yet-running instance.
 
 ## `company`
+
+Capability ID: `onboarding/company`.
 
 Review: `baseline`.
 
@@ -61,6 +72,8 @@ a company key.
 
 ## `adapter`
 
+Capability ID: `onboarding/adapter`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -74,9 +87,70 @@ provider-account/environment setup.
 Policy: Instance setup is operator work; company creation is board; agent creation/task
 creation retain their individual permissions.
 
+The wizard selects the Codex harness and lets the server resolve an automatic
+new-agent runner; explicit Legacy remains available. Supported-platform and
+immutable sandbox evidence follow [environment probe policy](./execution-environments.md#probe).
+Creation/discovery do not provision a target to determine this default. Adapter
+setup validation requires `agents:create`, plus saved-agent update access when
+testing an existing agent; interactive account login additionally requires a
+board user and owner-bound session. An agent's right to hire is not login or
+instance-environment administration authority.
+
+Scoped source-only runtime preparation: the existing authorized adapter test
+prepares the default Claude CLI in its already acquired sandbox when the image
+version is too old for the selected model. It installs a pinned package into a
+workspace-private versioned prefix and verifies the executable before the hello
+test. This adds no installation API, account grant, environment authority or
+engine fallback. Cloud UI omits manual shell debugging and legacy operator hints
+while retaining check messages and details. Local, SSH and custom
+commands remain operator-managed. Controls:
+[runtime](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts),
+[probe](../../packages/adapters/claude-local/src/server/test.remote.test.ts), and
+[wizard](../../ui/src/components/OnboardingWizard.test.tsx). Live managed
+authorization and subscription execution remain `not-run` for this change.
+
+For fresh managed Codex Auto setup, the wizard's explicit Connect path can call
+`POST /api/environments/{environmentId}/probe?companyId={companyId}` before
+selected-runtime testing, then refresh scoped adapter discovery. This reuses the
+existing board instance-admin/local-implicit probe gate; `agents:create` alone
+is insufficient. A 403, absent proof, changed configuration, missing response
+identity or unconfirmed cleanup remains visible. No probe is added to creation
+or discovery, no agent/company grant is broadened, and provider authentication
+errors never cause an automatic runner switch.
+
+Native setup derives outer sandbox isolation from the server-resolved execution
+target, as task execution does. This is an internal transport choice, not a
+request/configuration permission. Local and SSH setup keep Codex isolation;
+caller-supplied environment flags do not authorize an external sandbox. Existing
+company, account, probe and registration-cleanup gates still apply.
+The bounded hello probe retains read-only permissions and no dynamic tools. Its
+trusted launch skips project-instruction discovery in the new, empty setup
+workspace. This grants no filesystem or networking permission and does not
+change instruction discovery for ordinary task execution.
+
+Scoped source review: 2026-10-13, exact baseline
+`1a0ca66242121e39d88455aa2b52a07acc4a07d9` plus the privately composed onboarding
+correction. [Wizard controls](../../ui/src/components/OnboardingWizard.test.tsx)
+and [existing Product E2E observer controls](../../tests/runner-e2e/first-task.test.ts)
+exercise mocked allowed/denied setup and sticky unknown cost coverage. They do
+not prove live actor authorization or provider execution. The explicit manual
+`confirmation-replies.runner-codex.daytona.task-card-accept` case requires an
+eligible immutable OCI target and the existing probe authority, two identified
+setup leases and separately authorized paid/cleanup reservations. Its fixture
+neither prequalifies the environment nor creates the agent. Actual Cloud named
+snapshot binding, warm/cold signup and live allowed/denied agent checks remain
+`not-run`.
+
+
 Evidence: `source-only` —
 [implementation](../../ui/src/components/OnboardingWizard.tsx#L279) at the reviewed
 commit above.
+
+Scoped Evidence: `source-only` — [wizard/default selection](../../ui/src/components/OnboardingWizard.tsx),
+[creation resolver](../../server/src/services/agent-runner-selection.ts) and
+[setup/login authorization](../../server/src/routes/agents.ts) at the scoped
+commit. Existing agent/approval execution preservation follows
+[hiring access](./agents.md#hire); no live onboarding proof is claimed here.
 
 Verification: `not-run` — exercise a listed permitted operation with actual agent
 credentials/run context; inspect its result and applicable persistence/attribution.
@@ -86,7 +160,14 @@ remaining operations before qualifying the whole capability.
 Gaps: Account authorization, environment administration and model selection need
 separate checks.
 
+Verify automatic onboarding without a post-hire runner change, explicit Legacy,
+saved configuration after reload and the actual selected runtime's useful task
+plus follow-up. Assert denied agent login/probe and foreign-company account or
+environment access separately. These agent-context checks remain `not-run`.
+
 ## `first-task`
+
+Capability ID: `onboarding/first-task`.
 
 Review: `baseline`.
 
@@ -110,8 +191,24 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Task creation is agent-accessible where permitted; scheduling/readiness does not
 follow from successful creation.
+The Codex first-task fixture's operator cost guard uses the existing board
+agent-configuration PATCH before admitting work. This is not evidence of agent
+permission to update its runtime; the listed agent-context checks remain not-run.
+
+Scoped source review: 2026-10-13, the first-task asset correction against
+`ea6c8eb5e16d61111968f633a66748b397b64a3e`. The existing
+[first-task instructions](../../server/src/onboarding-assets/first-task/skills/first-task/SKILL.md)
+send file-producing work through the child's own execution and existing
+dependency/block controls. Native `register_deliverable` retains its current-task
+binding; this adds no cross-task file-registration authority or permission.
+Document-only work may use the existing child-document API inline, and plan-only
+approval does not authorize implementation. The existing asset tests check
+wording only. The literal baseline live attempt failed child-file delivery and
+completion reporting; revised live authorization and execution remain `not-run`.
 
 ## `resume`
+
+Capability ID: `onboarding/resume`.
 
 Review: `baseline`.
 
@@ -134,3 +231,20 @@ evidence.
 
 Gaps: No server onboarding-draft API for this browser-local state; classify explicitly
 or intentionally make it a cross-client product feature.
+
+Scoped source review of [draft restoration](../../ui/src/components/OnboardingWizard.tsx)
+preserves harness/runner intent and invalidates obsolete setup-test results after
+a selection change. Browser draft continuity is not API or live-agent evidence,
+and opening a saved Legacy agent does not apply new-agent defaults.
+
+The initial matching route opening preserves the authorized saved wizard step
+on bare and company-prefixed reloads. Explicit new-company or changed-company
+openings retain their navigation override and clear foreign company resource
+IDs. [Existing component controls](../../ui/src/components/OnboardingWizard.test.tsx)
+exercise these presentation and account boundaries. This scoped correction adds
+no server draft API, agent grant or proof of live actor authorization. The
+managed first-task eval still reloads before Get started and remains a separate
+live acceptance gate. The existing mocked-login browser case also checks the
+same company-scoped active session and saved selection through route reopening
+and a real reload, with one login start and no pending-login hire. These fixture
+assertions do not prove server authorization or live credential use.

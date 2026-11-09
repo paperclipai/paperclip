@@ -1844,3 +1844,37 @@ Paperclip should implement:
 - strict preservation of core governance and audit rules
 
 That is the complete target design for the Paperclip plugin system.
+
+### Browser WebSocket API routes
+
+A scoped API route may declare `transport: "websocket"` with `method: "GET"`
+and `auth: "board"`. Its upgrade runs through the ordinary HTTP authentication
+and company checks and requires a trusted browser Origin. Use
+`companyResolution: { from: "agent", param: "agentId" }` to apply the existing
+`agent:read` decision to the agent selected by the path.
+
+The worker's `onApiRequest` returns `{ websocket: { url, headers } }` for an
+available upstream. The URL must use WSS. These connection details remain in
+trusted server memory and are never returned to the browser as JSON. Browser
+cookies and Origin are not forwarded. Worker response headers cannot override
+WebSocket negotiation or forwarding headers. A failure can return an HTTP error
+status without an upstream. Ordinary HTTP requests cannot open this transport.
+
+The host pipes binary frames with socket backpressure, closes both ends on
+disconnect or worker shutdown, and limits each connection to five minutes.
+Clients may reconnect; every reconnect repeats authorization and worker
+resolution. The route's worker must resolve targets from its trusted resource
+bindings rather than accepting upstream addresses from browser parameters.
+
+The transport carries opaque text and binary WebSocket frames. For example,
+a plugin can declare `/channels/:channelId` for build output, metrics, or a
+remote tool protocol. The worker receives the route key and parameters and
+selects the upstream; Core does not interpret channel contents or require an
+agent resource. WebSocket routes support query or entity-based company
+resolution; body-based resolution is rejected because browser upgrade requests
+cannot send a request body. Ordinary HTTP routes retain body-based resolution.
+
+Agent detail-tab contributions are also independent of WebSockets. Any plugin
+can mount a detail component, including a report or notes view backed by its
+normal JSON API or UI bridge. The sidebar and detail page select declared slots
+by plugin key and slot ID, with no knowledge of the component's subject.

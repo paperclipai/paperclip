@@ -170,6 +170,8 @@ export const mcpEventDeliveries = pgTable("mcp_event_deliveries", {
 
 // Upload identities outlive their short-lived tickets so retries cannot duplicate files.
 export const mcpAttachmentUploads = pgTable("mcp_attachment_uploads", {
+  grantId: uuid("grant_id").references(() => mcpOauthGrants.id, { onDelete: "cascade" }),
+  workSessionId: uuid("work_session_id"),
   id: uuid("id").primaryKey().defaultRandom(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
@@ -193,6 +195,7 @@ export const mcpAttachmentUploads = pgTable("mcp_attachment_uploads", {
 ]);
 
 export const mcpFileTickets = pgTable("mcp_file_tickets", {
+  workSessionId: uuid("work_session_id"),
   tokenHash: text("token_hash").primaryKey(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   grantId: uuid("grant_id").notNull().references(() => mcpOauthGrants.id, { onDelete: "cascade" }),

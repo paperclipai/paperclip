@@ -1,3 +1,7 @@
+---
+navigation: {"section":"Apps, channels, and extensions","sectionOrder":50,"order":10}
+---
+
 # Connection setup
 
 People connect an app or account, choose who may use it, and recover incomplete
@@ -5,25 +9,32 @@ setup from either Apps or a task that needs access. A saved draft, a completed
 provider login, a usable connection, and a resumed task are separate checkpoints.
 Chat channels additionally require an endpoint and linked sender identity.
 
+Feature ID: `connection-setup`.
+
 Agent access: [companion](../agent-access-map/connection-setup.md).
+
+Prompt Injection Prevention reuses shared OpenRouter API-key setup directly from
+Settings → Connections. It adds no Apps provider or transport. Credential ownership
+and audience rules are the existing connection rules; saving a connection alone
+does not activate the service. See [service configuration](../../doc/prompt-injection-prevention.md).
 
 ## Sub-features
 
-- `catalog`: find a provider, inspect its available methods, and open setup;
+- `catalog`: `connection-setup/catalog` — find a provider, inspect its available methods, and open setup;
   unavailable methods explain their prerequisite rather than silently switching.
-- `identity-and-access`: select personal/shared identity and eligible agents;
+- `identity-and-access`: `connection-setup/identity-and-access` — select personal/shared identity and eligible agents;
   an empty explicit selection and company-wide access must not be confused.
-- `credentials`: provider sign-in, key, or generic MCP URL follows its supported
+- `credentials`: `connection-setup/credentials` — provider sign-in, key, or generic MCP URL follows its supported
   setup method; credentials are not retained in browser draft storage.
-- `handoff`: provider popup/full-page callback returns to the correct setup
+- `handoff`: `connection-setup/handoff` — provider popup/full-page callback returns to the correct setup
   host with the original task intent and identity choice intact.
-- `draft-recovery`: cancel, Back, Save & exit, reload, Finish setup, and reconnect
+- `draft-recovery`: `connection-setup/draft-recovery` — cancel, Back, Save & exit, reload, Finish setup, and reconnect
   preserve the exact draft rather than creating duplicate connections.
-- `task-request`: only the addressed person resolves the requested connection;
+- `task-request`: `connection-setup/task-request` — only the addressed person resolves the requested connection;
   usable access releases the pending task request through normal continuation.
-- `channel-setup`: provider endpoint, represented agent, linked sender, and
+- `channel-setup`: `connection-setup/channel-setup` — provider endpoint, represented agent, linked sender, and
   communication instructions are configured before an external message is used.
-- `failure`: denied login, unreachable/private URL, expired credentials, and
+- `failure`: `connection-setup/failure` — denied login, unreachable/private URL, expired credentials, and
   permission errors leave an actionable state rather than a false success.
 
 ## How to get to it (user POV)
@@ -88,11 +99,61 @@ saved connection. Run a permitted read-only action with an eligible agent and
 verify its useful result. Try an ineligible agent and confirm denial. Repeat
 with a user who cannot install company-wide; the UI must not imply broad access.
 
+Notebook is internally gated by `enablePaperclipNotebook` (default off, no settings toggle). Disabled instances hide setup/discovery and deny curated Notebook dispatch and publishing; local removal and grant revocation remain available.
+
+Availability is catalog metadata evaluated by shared connector checks. Notebook
+publication and file uploads stay in the Notebook service.
+
+Paperclip Notebook uses the existing personal-account MCP OAuth setup at
+`https://notebook.paperclip.app/mcp`. Sign in through Cloud, assign agents, and
+verify tool discovery. The connection keeps its default catalog name.
+Reconnect must preserve agent assignments and Allowed / Ask first / Off choices.
+Removal disables local use and clears saved credentials. Remote authorization
+can be revoked separately in Notebook's Connected apps screen; automatic remote
+cleanup and custom keyed refresh recovery are deferred. A lost rotating-token
+response may require reconnecting. Notebook tools use the selected connection's
+ordinary action gateway. See [Notebook](../../doc/connections/PAPERCLIP-NOTEBOOK.md)
+for the Notebook-owned uploader and fixture coverage. Live Notebook qualification
+still requires the deployed service and both hosted and self-hosted clients.
+
+Daytona follows this same key/access wizard. Its native method exposes the
+published platform and Toolbox HTTP actions using provider sandbox IDs, without
+a Paperclip task or lease requirement. [Daytona browser setup](../../tests/e2e/daytona-connector.spec.ts)
+checks the catalog, password field, access controls, and optional organization
+pin. It does not submit a key or qualify a real provider account. See
+[Daytona](../../doc/connections/DAYTONA.md) for API-key authority and OAuth limits.
+
+For Braintrust, verify US OAuth (default), US API key, EU OAuth, and EU API key
+from both Apps and `/apps/connect?source=braintrust`. Inspect the exact regional
+endpoint and method after Save & exit, cancellation/resume, and reconnect;
+these operations must retain the saved connection and its access choices.
+Verify the key stays out of browser draft storage and public responses, then
+perform a bounded read and disposable write through an actual eligible run.
+The [Braintrust qualification matrix](../../doc/connections/BRAINTRUST.md#qualification-record)
+records completed US OAuth connect/discovery, bounded read, synthetic write
+through actual process-agent gateway calls, catalog refresh, reconnect, local
+removal, and structural redaction. US API-key and both EU methods still need
+account-bound proof. Live token expiry/refresh, remote OAuth revocation, and
+native CLI automatic capability delivery remain unqualified; public metadata
+and fixtures do not establish those results.
+
+Unikraft follows the same key/access wizard. Setup asks only for the API token;
+the default metro is an optional select under Advanced, and each action can name
+another published metro. [Unikraft browser setup](../../tests/e2e/unikraft-connector.spec.ts)
+checks the catalog, password field, access controls and the advanced metro. It
+does not submit a token or qualify a real provider account. See
+[Unikraft](../../doc/connections/UNIKRAFT.md) for token authority and metros.
+
 ### `mcp-link`
 
 Automated: AppsConnect's generic MCP cases cover probe-driven auth, private or
 unreachable endpoints, preregistered clients, secret-backed headers, and unsafe
 authorization URLs. These are component/API mocks, not remote provider proof.
+
+[Catalog publication](../../server/src/__tests__/tool-catalog-publication.test.ts)
+uses PostgreSQL and a controlled MCP response to check bounded writes, repeated
+page entries, preserved action choices, rollback, and concurrent publication.
+It does not verify a live provider's discovery contract.
 
 Manual: connect a known test MCP URL through the link flow, verify its saved
 endpoint and a read-only action, then repeat with a bad URL and wrong credential.
@@ -104,6 +165,8 @@ Test no-auth and authenticated endpoints separately; never infer one from the ot
 Automated: [interaction card](../../ui/src/components/IssueThreadInteractionCard.test.tsx)
 checks addressed-user controls. AppsConnect tests cover page/dialog parity,
 task-bound OAuth, popup handoff, and verifying a saved connection before closing.
+Withdrawn requests render a terminal acknowledgement with no setup action; the
+interaction-body test and narrow Storybook journey cover this recovery state.
 The connection-intents browser suite above exercises fixture-backed continuation.
 
 Manual: ask an agent to use an unavailable app, open its request as the named
@@ -132,6 +195,12 @@ Automated: [setup routing](../../ui/src/pages/apps/chat/ChatEndpointSetup.routin
 [identity confirmation](../../ui/src/pages/apps/chat/ChatIdentityConfirm.test.tsx)
 cover shared UI logic with fixtures. Provider-specific live setup is not implied.
 
+[Channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
+also covers bounded Telegram subscription recovery at startup and after committed
+configuration changes, saved retry deadlines, rollback, and parking pending
+repair while an endpoint or connection is inactive. The provider responses are
+fixtures. Settled maintenance leaves no discovery timer or database scans.
+
 Manual: complete setup for one named provider, reload endpoint settings, link
 the intended sender, and send a disposable message. Verify one task and a useful
 reply in the originating conversation. Inspect an unlinked sender's denial and
@@ -140,6 +209,7 @@ Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 
 ## Gotchas
 
+- For connecting an assistant to Paperclip itself, use [Assistant connections (MCP)](./assistant-connections.md). This recipe's MCP-link journey connects Paperclip to an external app server.
 - Private endpoint rejection depends on deployment: owned loopback MCP servers
   are supported in local-trusted/private instances. Public authenticated
   deployments apply the private-network restriction.
@@ -154,3 +224,7 @@ Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 - Full provider matrix, AI-account selection, gateway/profile administration,
   and account revocation lifecycles remain outside this seed recipe.
 - For governed actions after setup, use [questions and approvals](./questions-and-approvals.md).
+
+### Documentation scope: App catalog and connection setup
+
+Provider-specific authentication/revocation, credential-only accounts, and aggregator administrative variants still need their own detailed matrices.

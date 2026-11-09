@@ -1,3 +1,6 @@
+import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
+import type { PluginTaskCredentialWritebackBinding } from "./plugin-task-credential-writeback.js";
+import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { createHash } from "node:crypto";
 import { HttpError, unprocessable } from "../errors.js";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -28,6 +31,7 @@ export function isAiConnectionBusy(error: unknown): error is HttpError {
 
 // Blank values intentionally override inherited credentials in CLI child environments.
 export const AI_AUTH_ENV_KEYS = [
+  "COPILOT_GITHUB_TOKEN",
   "PAPERCLIP_AI_PROVIDER_KEY", "PAPERCLIP_AI_PROVIDER_URL", "PAPERCLIP_CODEX_PROVIDERS",
   "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_USE_VERTEXAI",
   "HERMES_HOME", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
@@ -49,6 +53,7 @@ export const AI_AUTH_ENV_KEYS = [
   "OPENCODE_CONFIG",
   "OPENCODE_CONFIG_DIR",
   "PAPERCLIP_OPENCODE_PROVIDERS",
+  "PAPERCLIP_PI_PROVIDERS",
   "ANTHROPIC_BASE_URL",
   "OPENAI_BASE_URL",
   "XAI_BASE_URL",
@@ -106,6 +111,14 @@ export async function assertManagedAiProjectAuth(
         : [];
   const pattern =
     "apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider[[:space:]]*=|env_key[[:space:]]*=|experimental_bearer_token|cli_auth_credentials_store";
+  if (target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && files.length) {
+    const description = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "describe" }));
+    if (description.kind !== "description" || description.projectAuthCheckVersion !== 1) {
+      throw unprocessable("The plugin environment cannot validate managed project authentication", { code: "ai_connection_incompatible" });
+    }
+    // The process owner checks the exact prepared configuration before it can submit credentials.
+    return;
+  }
   if (target?.kind === "remote" && files.length) {
     // Only inspect for conflicting keys; never return configuration or credential values.
     const result = await runAdapterExecutionTargetProcess(
@@ -235,7 +248,7 @@ export async function prepareManagedAiRuntime(
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
     "PAPERCLIP_OPENCODE_PROVIDERS",
-    "PAPERCLIP_AI_PROVIDER_URL", "PAPERCLIP_CODEX_PROVIDERS", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "GOOGLE_GEMINI_BASE_URL", "ANTHROPIC_BEDROCK_BASE_URL",
+    "PAPERCLIP_AI_PROVIDER_URL", "PAPERCLIP_CODEX_PROVIDERS", "PAPERCLIP_PI_PROVIDERS", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "GOOGLE_GEMINI_BASE_URL", "ANTHROPIC_BEDROCK_BASE_URL",
   ]) {
     if (configuredEnv[key])
       throw unprocessable(
@@ -311,6 +324,7 @@ export async function prepareManagedAiRuntime(
       ...stripAiAuthBindings(input.config.env),
       ...Object.fromEntries(AI_AUTH_ENV_KEYS.map((key) => [key, ""])),
       ...managedAiHomeEnvironment(home),
+      ...(input.binding.provider === "github" ? { GH_TOKEN: "", GITHUB_TOKEN: "" } : {}),
     };
     const capability =
       AI_CONNECTION_CAPABILITIES[input.binding.provider].methods[
@@ -326,7 +340,7 @@ export async function prepareManagedAiRuntime(
     if (!routing && subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
     else if (!routing) env[capability.envKey] = value;
     if (
-      !routing && input.binding.provider === "openai" &&
+      !routing && input.binding.provider === "openai" && harness === "codex_local" &&
       selection.attribution.method === "api_key"
     ) {
       env.CODEX_API_KEY = value;
@@ -334,13 +348,13 @@ export async function prepareManagedAiRuntime(
         mode: 0o600,
       });
     }
-    if (!routing && input.binding.provider === "openrouter") {
+    if (!routing && input.binding.provider === "openrouter" && harness === "opencode_local") {
       env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
-        provider: { openrouter: { options: { apiKey: value } } },
+        provider: { openrouter: { options: { apiKey: value, headers: OPENROUTER_ATTRIBUTION_HEADERS } } },
       });
       env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
     }
-    if (!routing && input.binding.provider === "google") {
+    if (!routing && input.binding.provider === "google" && harness === "gemini_local") {
       // Gemini headless CLI requires an explicit auth choice even with an API key.
       // Seed only the disposable connection home, never the operator's settings.
       const geminiHome = path.join(home, ".gemini");
@@ -352,7 +366,15 @@ export async function prepareManagedAiRuntime(
     }
     const projected = routing ? managedProviderRouting(routing, harness, value, typeof input.config.model === "string" ? input.config.model : "") : undefined;
     if (projected) {
+      const customHeaders = env.ANTHROPIC_CUSTOM_HEADERS ?? process.env.ANTHROPIC_CUSTOM_HEADERS;
       Object.assign(env, projected.env);
+      if (projected.env.ANTHROPIC_CUSTOM_HEADERS && customHeaders !== undefined) {
+        // Preserve secret references until adapter resolution; the adapter merges
+        // attribution after resolving them. Ordinary gateway headers survive too.
+        env.ANTHROPIC_CUSTOM_HEADERS = typeof customHeaders === "string"
+          ? openRouterClaudeHeaders(customHeaders)
+          : customHeaders;
+      }
       if (projected.hermesConfig) await writeFile(path.join(providerHome, "config.yaml"), projected.hermesConfig, { mode: 0o600 });
       if (projected.codexConfig) await writeFile(path.join(providerHome, "config.toml"), 'cli_auth_credentials_store = "file"\n' + projected.codexConfig, { mode: 0o600 });
     }
@@ -374,6 +396,10 @@ export async function prepareManagedAiRuntime(
     const sessionIdentity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${noAuth ? "no-auth" : `${credentialRef!.secretId}:${freshness!.epoch}`}`;
     return {
       sessionIdentity,
+      ...(subscriptionFile && input.binding.provider === "openai" && credentialRef && freshness ? {
+        credentialWriteback: { grantId: selection.grant.id, secretId: credentialRef.secretId, sessionEpoch: freshness.epoch,
+          versionSelector: credentialRef.versionSelector ?? "latest" } satisfies PluginTaskCredentialWritebackBinding,
+      } : {}),
       config: {
         ...input.config,
         ...projected?.config,

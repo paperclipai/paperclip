@@ -1,3 +1,10 @@
+import { getWorkspaceAction } from "../protocol-actions/get-workspace.js";
+import { handoffCaseAction } from "../protocol-actions/handoff-case.js";
+import { createCaseAction, readCaseAction, updateCaseAction } from "../protocol-actions/case-data.js";
+import { createWorkflowAction, listWorkflowsAction, readWorkflowAction, updateWorkflowAction } from "../protocol-actions/workflows.js";
+import { listWorkspacesAction } from "../protocol-actions/list-workspaces.js";
+import { selectWorkspaceAction } from "../protocol-actions/select-workspace.js";
+import { prepareRepositoryAction } from "../protocol-actions/prepare-repository.js";
 import { setTaskMonitorInputSchema } from "../protocol-actions/set-task-monitor.js";
 import { listProjectsDescription, listProjectsInputSchema } from "../protocol-actions/list-projects.js";
 import { setTaskTitleAction } from "../protocol-actions/set-task-title.js";
@@ -471,6 +478,16 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     ),
     outputSchema: operationReceipt,
   }),
+  descriptor({ ...handoffCaseAction.live.descriptor, placement: "optional", effect: "write" }),
+  ...[createCaseAction, readCaseAction, updateCaseAction, createWorkflowAction, listWorkflowsAction, readWorkflowAction, updateWorkflowAction].map(action => descriptor({
+    ...action.live.descriptor,
+    placement: "optional",
+    effect: action.canonical.sideEffectClass === "read" ? "read" : "write",
+  })),
+  descriptor({ ...getWorkspaceAction.live.descriptor, placement: "optional" }),
+  descriptor({ ...listWorkspacesAction.live.descriptor, placement: "optional" }),
+  descriptor({ ...selectWorkspaceAction.live.descriptor, placement: "optional" }),
+  descriptor({ ...prepareRepositoryAction.live.descriptor, placement: "optional" }),
   descriptor({
     operationId: "list_projects",
     title: "List projects",

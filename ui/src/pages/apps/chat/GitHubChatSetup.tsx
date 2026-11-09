@@ -16,13 +16,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useNavigate, useSearchParams, Link } from "@/lib/router";
 import { buildPermissionsForTrustPreset } from "@/lib/trust-policy-ui";
 import { queryKeys } from "@/lib/queryKeys";
+import { GitHubAppRecovery } from "./GitHubConnectionRecovery";
 import type { GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
 
 /** Restrict native manifest submission to GitHub registration endpoints. */
@@ -92,11 +92,6 @@ export function GitHubChatSetup() {
   const [submitManifest, setSubmitManifest] = useState(false);
   const [error, setError] = useState("");
   const [existing, setExisting] = useState(params.get("reconnect") === "1");
-  const [credentials, setCredentials] = useState({
-    appId: "",
-    privateKey: "",
-    webhookSecret: "",
-  });
   const [appNotCreated, setAppNotCreated] = useState(false);
   const [legacyAccount, setLegacyAccount] = useState("");
   const [identityLinked, setIdentityLinked] = useState(false);
@@ -224,8 +219,10 @@ export function GitHubChatSetup() {
     }
   }
   async function refresh() {
-    await current.refetch();
-    if (!identityOnly) await progress.refetch();
+    const verification = !identityOnly ? await progress.refetch() : undefined;
+    const updated = await current.refetch();
+    if (verification?.error) throw verification.error;
+    if (updated.error) throw updated.error;
   }
   const appInput = () => ({
     name: (
@@ -241,6 +238,7 @@ export function GitHubChatSetup() {
     void run(async () => {
       if (
         !identityOnly &&
+        !reconnect &&
         bot &&
         !bot.botExternalId &&
         !state?.registration &&
@@ -288,9 +286,9 @@ export function GitHubChatSetup() {
     <div className="mx-auto w-full max-w-3xl space-y-6 px-4 py-6 sm:px-6">
       {!identityOnly && (
         <SetupWizardNavigation
-          labels={["Choose agent", "Connect GitHub"]}
-          step={bot ? 1 : 0}
-          availableStep={bot ? 1 : 0}
+          labels={reconnect ? ["Reconnect GitHub"] : ["Choose agent", "Connect GitHub"]}
+          step={reconnect ? 0 : bot ? 1 : 0}
+          availableStep={reconnect ? 0 : bot ? 1 : 0}
           onSelect={() => {}}
           disabled
           takeover
@@ -301,9 +299,9 @@ export function GitHubChatSetup() {
           ? "Choose agent"
           : identityOnly || state?.state === "identity"
               ? "Connect your account"
-              : "Connect GitHub"}
+              : reconnect && existing ? "Reconnect GitHub" : "Connect GitHub"}
       </h1>
-      {(error || (!identityOnly && progress.error) || accounts.error) && (
+      {(error || (!identityOnly && !existing && progress.error) || accounts.error) && (
         <p role="alert" className="text-sm text-destructive">
           {error ||
             (accounts.error instanceof Error
@@ -376,77 +374,27 @@ export function GitHubChatSetup() {
           {footer()}
         </>
       ) : existing ? (
-        <>
-          <p className="text-sm text-muted-foreground">
-            {reconnect
-              ? "Leave these blank to reuse this App’s stored credentials, or enter both fields to repair them."
-              : "Use the credentials from this App’s GitHub settings."}
-          </p>
-          <Label htmlFor="github-app-id">App ID</Label>
-          <Input
-            id="github-app-id"
-            value={credentials.appId}
-            onChange={(event) =>
-              setCredentials({ ...credentials, appId: event.target.value })
+        <GitHubAppRecovery
+          key={bot.id}
+          endpoint={bot}
+          reconnect={reconnect}
+          onExit={exit}
+          onConnect={async (credentials) => {
+            if (reconnect || ["active", "paused", "revoked"].includes(bot.status)) {
+              await chatEndpointsApi.setup(bot.id, {
+                action: "reconnect",
+                ...(credentials ? { credentials: { appId: credentials.appId.trim(), privateKey: credentials.privateKey } } : {}),
+              });
+            } else if (credentials) {
+              await githubChatApi.connectApp(bot.id, credentials);
             }
-          />
-          <Label htmlFor="github-private-key">Private key</Label>
-          <Textarea
-            id="github-private-key"
-            value={credentials.privateKey}
-            onChange={(event) =>
-              setCredentials({ ...credentials, privateKey: event.target.value })
-            }
-          />
-          {!reconnect &&
-            !["active", "paused", "revoked"].includes(bot.status) && (
-              <>
-                <Label htmlFor="github-webhook-secret">Webhook secret</Label>
-                <Input
-                  id="github-webhook-secret"
-                  type="password"
-                  value={credentials.webhookSecret}
-                  onChange={(event) =>
-                    setCredentials({
-                      ...credentials,
-                      webhookSecret: event.target.value,
-                    })
-                  }
-                />
-              </>
-            )}
-          {footer(
-            reconnect ? "Reconnect App" : "Connect existing App",
-            async () => {
-              if (
-                reconnect ||
-                ["active", "paused", "revoked"].includes(bot.status)
-              )
-                await chatEndpointsApi.setup(bot.id, {
-                  action: "reconnect",
-                  ...(credentials.appId.trim() || credentials.privateKey.trim()
-                    ? {
-                        credentials: {
-                          appId: credentials.appId,
-                          privateKey: credentials.privateKey,
-                        },
-                      }
-                    : {}),
-                });
-              else await githubChatApi.connectApp(bot.id, credentials);
-              setCredentials({ appId: "", privateKey: "", webhookSecret: "" });
-              setExisting(false);
-              await refresh();
-            },
-            reconnect
-              ? !!(credentials.appId.trim() || credentials.privateKey.trim()) &&
-                  (!credentials.appId.trim() || !credentials.privateKey.trim())
-              : !credentials.appId.trim() ||
-                  !credentials.privateKey.trim() ||
-                  (!["active", "paused", "revoked"].includes(bot.status) &&
-                    !credentials.webhookSecret.trim()),
-          )}
-        </>
+            queryClient.removeQueries({ queryKey: ["github-wizard", bot.id] });
+            await queryClient.invalidateQueries({ queryKey: queryKeys.chatEndpoints.detail(bot.id) });
+            await queryClient.invalidateQueries({ queryKey: queryKeys.chatEndpoints.list(bot.companyId) });
+            await refresh();
+            setExisting(false);
+          }}
+        />
       ) : state?.state === "identity" || identityOnly ? (
         <>
           {identityOnly && identityLinked ? (

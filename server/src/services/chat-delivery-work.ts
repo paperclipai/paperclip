@@ -8,6 +8,8 @@ type ChatDeliveryService = {
   nextInboundDeliveryAt(): Promise<number | null>;
   nextPublicationAt(): Promise<number | null>;
   nextSlackReceiptAt(): Promise<number | null>;
+  processPendingGitHubReviewPublications(): Promise<unknown>;
+  nextGitHubReviewPublicationAt(): Promise<number | null>;
   onPublicationsSettled(wake: () => void): void;
 };
 
@@ -21,6 +23,7 @@ export function registerChatDeliveryWork(
     { queue: DELIVERY_QUEUES.chatInbound, run: service.processQueuedDeliveries, next: service.nextInboundDeliveryAt },
     { queue: DELIVERY_QUEUES.chatPublications, run: service.scheduleQueuedPublications, next: service.nextPublicationAt },
     { queue: DELIVERY_QUEUES.chatReceipts, run: service.processPendingSlackFileUploadReceipts, next: service.nextSlackReceiptAt },
+    { queue: DELIVERY_QUEUES.chatGitHubPublications, run: service.processPendingGitHubReviewPublications, next: service.nextGitHubReviewPublicationAt },
   ];
   const workers = tasks.map(task => {
     const worker = registerChatQueueWork(coordinator, task, canRun);

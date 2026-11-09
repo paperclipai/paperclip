@@ -111,6 +111,10 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    retainedRecoveryAdoptionIdx: index("heartbeat_runs_retained_recovery_adoption_idx")
+      .on(table.id).where(sql`${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+        and not (coalesce(${table.resultJson}, '{}'::jsonb) ? 'systemRecoveryAdoption')
+        and ${table.status} in ('failed', 'interrupted', 'timed_out', 'cancelled', 'succeeded')`),
     scopeBindingCheck: check(
       "heartbeat_runs_scope_binding_check",
       sql`(${table.scopeKind} = 'company' AND ${table.issueId} IS NULL)
@@ -189,5 +193,17 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())
+      .concurrently(),
+    // Match creation provenance precedence, including empty legacy IDs.
+    companyOriginIssueIdx: index("heartbeat_runs_company_origin_issue_idx")
+      .on(table.companyId, sql`coalesce(
+        ${table.nativeIssueId}::text,
+        nullif(${table.contextSnapshot}->>'issueId', ''),
+        nullif(${table.contextSnapshot}->>'taskId', ''),
+        nullif(${table.contextSnapshot}->>'taskKey', '')
+      )`)
+      .concurrently(),
   }),
 );

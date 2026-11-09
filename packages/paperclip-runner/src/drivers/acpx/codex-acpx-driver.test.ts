@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { cursorToolIdentity } from "./cursor-plan-tool-identity.js";
 import { describe, expect, it, vi } from "vitest";
+import { AcpxProviderProcessLostError } from "./codex-runtime-adapter.js";
 
 import type { AcpRuntimeEvent } from "acpx/runtime";
 
@@ -1684,6 +1685,35 @@ describe("Codex ACPX harness driver", () => {
         expect.objectContaining({ turnId }),
       ),
     });
+  });
+
+  it("expires a Copilot permission on provider death and rejects its late answer", async () => {
+    const failure = deferred<void>();
+    const fixture = driverFixture({ agent: "copilot", model: "gpt-5.6-luna", providerPolicy: { readOnly: false } }, { eventStreamFailure: failure.promise });
+    const session = await fixture.driver.openSession({ runId: "run-provider-death", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const created = collectUntil(session.events(), "runtime_request.created");
+    const { turnId } = await session.startTurn({ message: { text: "Edit the file" } });
+    const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
+    const controller = new AbortController();
+    const response = callback({ inferredKind: "edit", raw: {
+      sessionId: "agent-session-1", toolCall: { toolCallId: "dead-edit", title: "Edit file" },
+      options: [{ optionId: "once", kind: "allow_once", name: "Allow once" }],
+    } } as Parameters<typeof callback>[0], { signal: controller.signal, responseDelivery: Promise.resolve() });
+    await created;
+    const request = session.pendingRuntimeRequests!()[0]!;
+    const expired = collectUntil(session.events(), "runtime_request.expired");
+    const error = new AcpxProviderProcessLostError();
+    controller.abort(error);
+    await expect(response).resolves.toEqual({ outcome: "cancel" });
+    expect((await expired).at(-1)).toMatchObject({ eventType: "runtime_request.expired", payload: {
+      requestId: request.requestId, reason: "provider_process_lost", replayAllowed: false,
+    } });
+    await expect(session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action: "accept" } })).rejects.toThrow("no longer pending");
+    const terminal = collectUntil(session.events(), "turn.failed");
+    failure.reject(error);
+    expect((await terminal).at(-1)).toMatchObject({ payload: { error: { code: "ACPX_PROVIDER_PROCESS_LOST" } } });
+    expect(session.pendingRuntimeRequests!()).toEqual([]);
+    await session.close({ reason: "death verified" });
   });
 
   it("delivers only offered permission choices and rejects stale or duplicate answers", async () => {

@@ -46,6 +46,9 @@ PRs that follow this path are **much** more likely to be accepted, even when the
 
 ## PR Requirements (all PRs)
 
+- Do not submit a PR that moves a code file from less than 1,000 lines of code to more than 1,000 lines of code.
+- Do not submit a PR that includes code comments.
+
 ### Use the PR Template
 
 Every pull request **must** follow the PR template at [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). If you create a PR via the GitHub API or other tooling that bypasses the template, copy its contents into your PR description manually. The template includes required sections: Thinking Path, What Changed, Verification, Risks, Model Used, and a Checklist.

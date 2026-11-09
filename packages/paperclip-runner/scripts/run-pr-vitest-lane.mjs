@@ -24,6 +24,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { invocationEnv } from "../../../scripts/ci-profile/record.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -62,6 +63,7 @@ for (const planned of plannedCommands) {
   const result = spawnSync(planned.command, planned.args, {
     cwd: planned.cwd,
     stdio: "inherit",
+    env: planned.args[0] === "exec" && planned.args[1] === "vitest" ? invocationEnv("vitest") : process.env,
   });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);

@@ -6,14 +6,14 @@ const CANDIDATES = new Set(["cursor", "copilot", "pi"]);
 /** Only materialized providers enter the serialized manifest and its digest. */
 export function providerPackManifestFields(providers, candidates) {
   return {
-    ...(["pi", "cursor"].some(provider => providers[provider]) ? { providers: Object.fromEntries(["pi", "cursor"].filter(provider => providers[provider]).map(provider => [provider, providers[provider]])) } : {}),
-    ...(["pi", ...candidates].some(provider => providers[provider]) ? { candidateProviders: Object.fromEntries([...new Set(["pi", ...candidates])].filter(provider => providers[provider]).map(provider => [provider, providers[provider]])) } : {}),
+    ...(["pi", "cursor", "copilot"].some(provider => providers[provider]) ? { providers: Object.fromEntries(["pi", "cursor", "copilot"].filter(provider => providers[provider]).map(provider => [provider, providers[provider]])) } : {}),
+    ...(["pi", ...candidates].some(provider => provider !== "copilot" && providers[provider]) ? { candidateProviders: Object.fromEntries([...new Set(["pi", ...candidates])].filter(provider => provider !== "copilot" && providers[provider]).map(provider => [provider, providers[provider]])) } : {}),
   };
 }
 
 export function providerPackProviders(platform, architecture, candidates) {
   const nativeSupported = ["darwin-arm64", "darwin-x64", "linux-x64"].includes(`${platform}-${architecture}`);
-  return [...new Set([...(nativeSupported ? ["pi", "cursor"] : []), ...candidates])];
+  return [...new Set([...(nativeSupported ? ["pi", "cursor", "copilot"] : []), ...candidates])];
 }
 
 export function parseProviderPackArguments(args) {

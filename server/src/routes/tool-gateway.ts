@@ -55,7 +55,7 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
-async function discoveryRequest<T>(req: Request, res: Response, work: (signal: AbortSignal) => Promise<T>) {
+async function cancellableRequest<T>(req: Request, res: Response, work: (signal: AbortSignal) => Promise<T>) {
   const controller = new AbortController();
   const aborted = () => controller.abort();
   const closed = () => { if (!res.writableEnded) controller.abort(); };
@@ -111,7 +111,7 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (body.method === "tools/list") {
-      const tools = await discoveryRequest(req, res, (signal) => toolGateway.listToolsForNamedGateway({
+      const tools = await cancellableRequest(req, res, (signal) => toolGateway.listToolsForNamedGateway({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
@@ -180,14 +180,15 @@ async function handleMcpGatewayProtocol(
         res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
         return;
       }
-      const result = await toolGateway.executeTool({
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeTool({
+        signal,
         sessionToken: token,
         gatewayId: locator.gatewayId ?? null,
         gatewayPublicId: locator.gatewayPublicId ?? null,
         tool: name,
         parameters: params.arguments ?? {},
         callerHeaders: req.headers,
-      });
+      }));
       const resultRecord = result.result && typeof result.result === "object" && !Array.isArray(result.result)
         ? result.result as Record<string, unknown>
         : null;
@@ -561,7 +562,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(401).json({ error: "Tool gateway session token is required" });
         return;
       }
-      const tools = await discoveryRequest(req, res, (signal) => toolGateway.listToolsForSession(token, { signal }));
+      const tools = await cancellableRequest(req, res, (signal) => toolGateway.listToolsForSession(token, { signal }));
       res.json(tools);
     } catch (err) {
       sendGatewayError(res, err);
@@ -586,16 +587,18 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(400).json({ error: '"tool" is required and must be a string' });
         return;
       }
-      const result = await toolGateway.executeTool({
+      const toolName = body.tool;
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeTool({
+        signal,
         sessionToken: token,
-        tool: body.tool,
+        tool: toolName,
         parameters: body.parameters ?? {},
         timeoutMs: body.timeoutMs,
         approvedActionRequestId:
           typeof body.approvedActionRequestId === "string" ? body.approvedActionRequestId : null,
         idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : null,
         callerHeaders: callerHeaders(req),
-      });
+      }));
       res.json(result);
     } catch (err) {
       sendGatewayError(res, err);

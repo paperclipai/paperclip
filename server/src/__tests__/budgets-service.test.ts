@@ -11,7 +11,7 @@ import {
   createDb,
   projects,
 } from "@paperclipai/db";
-import { budgetService } from "../services/budgets.ts";
+import { budgetService, deliverBudgetEnforcement, hasPendingBudgetEnforcement } from "../services/budgets.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -113,7 +113,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     return event!;
   }
 
-  it("raises one soft incident per window before hard-stopping and safely logging agent telemetry", async () => {
+  it("raises one soft incident per window before hard-stopping and preserving safe local audit details", async () => {
     const { companyId, agentId } = await createBudgetFixture();
     const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
     const service = budgetService(db, { cancelWorkForScope });
@@ -188,7 +188,12 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       .from(agents);
     expect(agentAfterHardStop).toMatchObject({ status: "paused", pauseReason: "budget" });
     expect(agentAfterHardStop?.pausedAt).toBeInstanceOf(Date);
-    expect(cancelWorkForScope).toHaveBeenCalledTimes(2);
+    expect(cancelWorkForScope).not.toHaveBeenCalled();
+    expect(await hasPendingBudgetEnforcement(db)).toBe(true);
+    const [pendingPolicy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy!.id));
+    expect(pendingPolicy.enforcementVersion).toBe(1);
+    await deliverBudgetEnforcement(db, { cancelWorkForScope }, companyId);
+    expect(cancelWorkForScope).toHaveBeenCalledTimes(1);
     expect(cancelWorkForScope).toHaveBeenCalledWith({ companyId, scopeType: "agent", scopeId: agentId, createdBefore: expect.any(Date), enforcement: { policyId: expect.any(String), version: expect.any(Number) } });
 
     const block = await service.getInvocationBlock(companyId, agentId);
@@ -199,10 +204,14 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       reason: "Agent is paused because its budget hard-stop was reached.",
     });
 
-    const telemetryCalls = mockLogActivity.mock.calls.map(([, input]) => input);
-    expect(telemetryCalls.filter((call) => call.action === "budget.soft_threshold_crossed")).toHaveLength(1);
-    expect(telemetryCalls.filter((call) => call.action === "budget.hard_threshold_crossed")).toHaveLength(1);
-    expect(telemetryCalls).toEqual(
+    const [afterAdmission] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy!.id));
+    expect(afterAdmission.enforcementVersion).toBe(pendingPolicy.enforcementVersion);
+    await deliverBudgetEnforcement(db, { cancelWorkForScope }, companyId);
+    expect(cancelWorkForScope).toHaveBeenCalledTimes(1);
+    const activityCalls = mockLogActivity.mock.calls.map(([, input]) => input);
+    expect(activityCalls.filter((call) => call.action === "budget.soft_threshold_crossed")).toHaveLength(1);
+    expect(activityCalls.filter((call) => call.action === "budget.hard_threshold_crossed")).toHaveLength(1);
+    expect(activityCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           action: "budget.soft_threshold_crossed",
@@ -227,7 +236,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
         }),
       ]),
     );
-    for (const call of telemetryCalls) {
+    for (const call of activityCalls) {
       expect(JSON.stringify(call.details)).not.toContain("SECRET_TOKEN_SHOULD_NOT_LEAK");
       expect(call.details).not.toHaveProperty("prompt");
       expect(call.details).not.toHaveProperty("message");
@@ -291,6 +300,11 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       .from(projects);
     expect(projectAfterHardStop?.pauseReason).toBe("budget");
     expect(projectAfterHardStop?.pausedAt).toBeInstanceOf(Date);
+    expect(cancelWorkForScope).not.toHaveBeenCalled();
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]).toMatchObject({ status: "active", lifecycleHolds: [] });
+    expect(await service.getInvocationBlock(companyId, agentId)).toBeNull();
+    await deliverBudgetEnforcement(db, { cancelWorkForScope }, companyId);
+    expect(cancelWorkForScope).toHaveBeenCalledTimes(1);
     expect(cancelWorkForScope).toHaveBeenCalledWith({ companyId, scopeType: "project", scopeId: projectId, createdBefore: expect.any(Date), enforcement: { policyId: expect.any(String), version: expect.any(Number) } });
 
     const overviewWhileBlocked = await service.overview(companyId);
@@ -355,4 +369,42 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     });
     expect(overviewAfterResume.activeIncidents).toHaveLength(0);
   });
+
+  it("discards stale undelivered enforcement when a budget is raised before dispatch", async () => {
+    const { companyId, agentId, projectId } = await createBudgetFixture();
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { cancelWorkForScope });
+    await service.upsertPolicy(companyId, { scopeType: "project", scopeId: projectId,
+      amount: 100, windowKind: "lifetime" }, "board");
+    await service.evaluateCostEvent(await insertCostEvent({ companyId, agentId, projectId, costCents: 125 }));
+    expect(await hasPendingBudgetEnforcement(db)).toBe(true);
+    expect(cancelWorkForScope).not.toHaveBeenCalled();
+    await service.upsertPolicy(companyId, { scopeType: "project", scopeId: projectId,
+      amount: 200, windowKind: "lifetime" }, "board");
+    await deliverBudgetEnforcement(db, { cancelWorkForScope }, companyId);
+    expect(cancelWorkForScope).not.toHaveBeenCalled();
+    expect(await hasPendingBudgetEnforcement(db)).toBe(false);
+    expect(await service.getInvocationBlock(companyId, agentId, { projectId })).toBeNull();
+  });
+
+  it("retains failed cancellation delivery and retries without replaying accounting", async () => {
+    const { companyId, agentId, projectId } = await createBudgetFixture();
+    const service = budgetService(db);
+    await service.upsertPolicy(companyId, { scopeType: "project", scopeId: projectId,
+      amount: 100, windowKind: "lifetime" }, "board");
+    const event = await insertCostEvent({ companyId, agentId, projectId, costCents: 125 });
+    await service.evaluateCostEvent(event);
+    const cancelWorkForScope = vi.fn().mockRejectedValueOnce(new Error("Controlled stop delivery failure")).mockResolvedValue(undefined);
+    await deliverBudgetEnforcement(db, { cancelWorkForScope }, companyId);
+    expect(await hasPendingBudgetEnforcement(db)).toBe(true);
+    expect((await db.select().from(projects).where(eq(projects.id, projectId)))[0].pauseReason).toBe("budget");
+    const [afterFailure] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, companyId));
+    expect(afterFailure.enforcementVersion).toBeGreaterThan(afterFailure.enforcementDeliveredVersion);
+    await deliverBudgetEnforcement(db, { cancelWorkForScope }, companyId);
+    expect(cancelWorkForScope).toHaveBeenCalledTimes(2);
+    expect(await hasPendingBudgetEnforcement(db)).toBe(false);
+    expect(await db.select().from(costEvents).where(eq(costEvents.companyId, companyId))).toHaveLength(1);
+    expect((await db.select().from(budgetIncidents)).filter(incident => incident.thresholdType === "hard")).toHaveLength(1);
+  });
+
 });

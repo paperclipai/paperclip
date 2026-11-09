@@ -2332,6 +2332,286 @@
       "when": 1791807836288,
       "tag": "0334_rare_slipstream",
       "breakpoints": true
+    },
+    {
+      "idx": 335,
+      "version": "7",
+      "when": 1791832982875,
+      "tag": "0335_absurd_bulldozer",
+      "breakpoints": true
+    },
+    {
+      "idx": 336,
+      "version": "7",
+      "when": 1791837392742,
+      "tag": "0336_big_crystal",
+      "breakpoints": true
+    },
+    {
+      "idx": 337,
+      "version": "7",
+      "when": 1791837407237,
+      "tag": "0337_exotic_proemial_gods",
+      "breakpoints": true
+    },
+    {
+      "idx": 338,
+      "version": "7",
+      "when": 1791837431016,
+      "tag": "0338_absurd_vengeance",
+      "breakpoints": true
+    },
+    {
+      "idx": 339,
+      "version": "7",
+      "when": 1791903526575,
+      "tag": "0339_luxuriant_iron_monger",
+      "breakpoints": true
+    },
+    {
+      "idx": 340,
+      "version": "7",
+      "when": 1791911743153,
+      "tag": "0340_open_warlock",
+      "breakpoints": true
+    },
+    {
+      "idx": 341,
+      "version": "7",
+      "when": 1791919024567,
+      "tag": "0341_abnormal_bucky",
+      "breakpoints": true
+    },
+    {
+      "idx": 342,
+      "version": "7",
+      "when": 1791921858146,
+      "tag": "0342_dry_shen",
+      "breakpoints": true
+    },
+    {
+      "idx": 343,
+      "version": "7",
+      "when": 1791926375117,
+      "tag": "0343_new_mentor",
+      "breakpoints": true
+    },
+    {
+      "idx": 344,
+      "version": "7",
+      "when": 1791930226792,
+      "tag": "0344_wide_blue_marvel",
+      "breakpoints": true
+    },
+    {
+      "idx": 345,
+      "version": "7",
+      "when": 1791978393174,
+      "tag": "0345_luxuriant_carmella_unuscione",
+      "breakpoints": true
+    },
+    {
+      "idx": 346,
+      "version": "7",
+      "when": 1791989860950,
+      "tag": "0346_cloudy_whiplash",
+      "breakpoints": true
+    },
+    {
+      "idx": 347,
+      "version": "7",
+      "when": 1792100545989,
+      "tag": "0347_flippant_imperial_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 348,
+      "version": "7",
+      "when": 1792101163248,
+      "tag": "0348_agent_skill_runtime_hooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 349,
+      "version": "7",
+      "when": 1792172178661,
+      "tag": "0349_oval_dragon_lord",
+      "breakpoints": true
+    },
+    {
+      "idx": 350,
+      "version": "7",
+      "when": 1792172225258,
+      "tag": "0350_friendly_rhodey",
+      "breakpoints": true
+    },
+    {
+      "idx": 351,
+      "version": "7",
+      "when": 1792172229036,
+      "tag": "0351_hard_albert_cleary",
+      "breakpoints": true
+    },
+    {
+      "idx": 352,
+      "version": "7",
+      "when": 1792172232859,
+      "tag": "0352_special_warbound",
+      "breakpoints": true
+    },
+    {
+      "idx": 353,
+      "version": "7",
+      "when": 1792172416248,
+      "tag": "0353_skinny_gamma_corps",
+      "breakpoints": true
+    },
+    {
+      "idx": 354,
+      "version": "7",
+      "when": 1792187602372,
+      "tag": "0354_agent_connection_assignment_hooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 355,
+      "version": "7",
+      "when": 1792188236099,
+      "tag": "0355_agent_tool_definition_hooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 356,
+      "version": "7",
+      "when": 1792188583719,
+      "tag": "0356_agent_connector_access_hooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 357,
+      "version": "7",
+      "when": 1792439538702,
+      "tag": "0357_naive_wolfpack",
+      "breakpoints": true
+    },
+    {
+      "idx": 358,
+      "version": "7",
+      "when": 1792444400633,
+      "tag": "0358_issue_assignment_status_version",
+      "breakpoints": true
+    },
+    {
+      "idx": 359,
+      "version": "7",
+      "when": 1792445691138,
+      "tag": "0359_commentary_view_human_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 360,
+      "version": "7",
+      "when": 1792447934421,
+      "tag": "0360_retained_workspace_recovery_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 361,
+      "version": "7",
+      "when": 1792494929768,
+      "tag": "0361_mighty_dracula",
+      "breakpoints": true
+    },
+    {
+      "idx": 362,
+      "version": "7",
+      "when": 1792507638981,
+      "tag": "0362_large_roughhouse",
+      "breakpoints": true
+    },
+    {
+      "idx": 363,
+      "version": "7",
+      "when": 1792514123930,
+      "tag": "0363_steady_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 364,
+      "version": "7",
+      "when": 1792514241837,
+      "tag": "0364_clear_maria_hill",
+      "breakpoints": true
+    },
+    {
+      "idx": 365,
+      "version": "7",
+      "when": 1792514248717,
+      "tag": "0365_naive_shatterstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 366,
+      "version": "7",
+      "when": 1792514264337,
+      "tag": "0366_superb_adam_warlock",
+      "breakpoints": true
+    },
+    {
+      "idx": 367,
+      "version": "7",
+      "when": 1792514265596,
+      "tag": "0367_noisy_lilandra",
+      "breakpoints": true
+    },
+    {
+      "idx": 368,
+      "version": "7",
+      "when": 1792514266649,
+      "tag": "0368_abandoned_bucky",
+      "breakpoints": true
+    },
+    {
+      "idx": 369,
+      "version": "7",
+      "when": 1792541385924,
+      "tag": "0369_late_logan",
+      "breakpoints": true
+    },
+    {
+      "idx": 370,
+      "version": "7",
+      "when": 1792544911793,
+      "tag": "0370_flimsy_lord_tyger",
+      "breakpoints": true
+    },
+    {
+      "idx": 371,
+      "version": "7",
+      "when": 1792597792969,
+      "tag": "0371_furry_red_shift",
+      "breakpoints": true
+    },
+    {
+      "idx": 372,
+      "version": "7",
+      "when": 1792707356696,
+      "tag": "0372_mature_the_initiative",
+      "breakpoints": true
+    },
+    {
+      "idx": 373,
+      "version": "7",
+      "when": 1792710084082,
+      "tag": "0373_wandering_mongu",
+      "breakpoints": true
+    },
+    {
+      "idx": 374,
+      "version": "7",
+      "when": 1792713110842,
+      "tag": "0374_rare_wolfpack",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { OPENROUTER_ATTRIBUTION_HEADERS } from "@paperclipai/adapter-utils/openrouter-attribution";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
@@ -31,6 +32,27 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
 }
 
 describe("prepareOpenCodeRuntimeConfig", () => {
+  it("attributes custom OpenRouter aliases and inline overrides without changing other endpoints", async () => {
+    const other = { options: { baseURL: "https://other.example/v1", headers: { "X-Title": "Other" } } };
+    const configHome = await makeConfigHome({ provider: { other, openrouter: other } });
+    const prepared = await prepareOpenCodeRuntimeConfig({ env: {
+      XDG_CONFIG_HOME: configHome,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { alias: {
+        options: { baseURL: "https://openrouter.ai/api/v1", apiKey: "fixture-key", headers: { "http-referer": "https://harness.example", "X-Route": "selected" } },
+        models: { model: { headers: { "x-title": "Harness" } } },
+      } } }),
+    }, config: {} });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const { alias } = JSON.parse(prepared.env.OPENCODE_CONFIG_CONTENT).provider;
+    expect(alias.options).toMatchObject({ apiKey: "fixture-key", headers: { ...OPENROUTER_ATTRIBUTION_HEADERS, "X-Route": "selected" } });
+    expect(alias.options.headers).not.toHaveProperty("http-referer");
+    expect(alias.models.model.headers).toEqual(OPENROUTER_ATTRIBUTION_HEADERS);
+    const config = JSON.parse(await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"));
+    expect(config.provider.other).toEqual(other);
+    expect(config.provider.openrouter).toEqual(other);
+    await prepared.cleanup();
+  });
+
   it("allows all tools and connected tools by default", async () => {
     const configHome = await makeConfigHome({
       permission: {
@@ -180,7 +202,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    expect(runtimeConfig.provider).toMatchObject({ openrouter: { options: { headers: { "HTTP-Referer": "https://paperclip.ing" } } } });
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS contains invalid JSON; custom providers ignored.",
     );
@@ -197,7 +219,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    expect(runtimeConfig.provider).toMatchObject({ openrouter: { options: { headers: { "HTTP-Referer": "https://paperclip.ing" } } } });
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS is set but is not a JSON object; custom providers ignored.",
     );
@@ -241,7 +263,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    expect(runtimeConfig.provider).toMatchObject({ openrouter: { options: { headers: { "HTTP-Referer": "https://paperclip.ing" } } } });
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS: skipped provider(s) with non-object values: bifrost.",
     );
@@ -259,7 +281,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as { provider?: Record<string, { models?: Record<string, unknown> }> };
     expect(runtimeConfig.provider?.openrouter?.models).toEqual({
-      "openai/gpt-oss-120b:nitro": {},
+      "openai/gpt-oss-120b:nitro": { headers: OPENROUTER_ATTRIBUTION_HEADERS },
     });
     expect(prepared.notes).toContain(
       "Registered configured model openrouter/openai/gpt-oss-120b:nitro in the runtime OpenCode config.",
@@ -288,7 +310,9 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as { provider?: Record<string, { models?: Record<string, unknown> }> };
-    expect(runtimeConfig.provider?.openrouter?.models).toEqual(providers.openrouter.models);
+    expect(runtimeConfig.provider?.openrouter?.models).toEqual(Object.fromEntries(
+      Object.entries(providers.openrouter.models).map(([id, model]) => [id, { ...model, headers: OPENROUTER_ATTRIBUTION_HEADERS }]),
+    ));
     expect(
       prepared.notes.some((note) => note.startsWith("Registered configured model")),
     ).toBe(false);
@@ -305,19 +329,20 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    expect(runtimeConfig.provider).toMatchObject({ openrouter: { options: { headers: { "HTTP-Referer": "https://paperclip.ing" } } } });
     await prepared.cleanup();
   });
 
-  it("respects explicit opt-out", async () => {
+  it("preserves permission settings while attributing OpenRouter when skip-permissions is off", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome },
       config: { dangerouslySkipPermissions: false },
     });
 
-    expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
-    expect(prepared.notes).toEqual([]);
+    const config = JSON.parse(await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"));
+    expect(config.permission).toBeUndefined();
+    expect(config.provider.openrouter.options.headers["HTTP-Referer"]).toBe("https://paperclip.ing");
     await prepared.cleanup();
   });
 });

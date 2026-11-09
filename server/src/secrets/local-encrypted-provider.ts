@@ -10,6 +10,7 @@ import type {
   StoredSecretVersionMaterial,
 } from "./types.js";
 import { badRequest } from "../errors.js";
+import { SecretProviderClientError } from "./types.js";
 
 interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
   scheme: "local_encrypted_v1";
@@ -280,8 +281,18 @@ export const localEncryptedProvider: SecretProviderModule = {
     throw badRequest("local_encrypted does not support external reference secrets");
   },
   async resolveVersion(input) {
-    const masterKey = loadOrCreateMasterKey(false);
-    return decryptValue(masterKey, asLocalEncryptedMaterial(input.material));
+    try {
+      const masterKey = loadOrCreateMasterKey(false);
+      return decryptValue(masterKey, asLocalEncryptedMaterial(input.material));
+    } catch (cause) {
+      // This boundary contains only local key I/O and decryption, never database
+      // work. Consumers can handle a vault outage without swallowing DB errors.
+      throw new SecretProviderClientError({
+        code: "provider_unavailable", provider: "local_encrypted", operation: "resolveVersion",
+        message: cause instanceof Error ? cause.message : "Local encrypted secret could not be resolved",
+        cause,
+      });
+    }
   },
   async deleteOrArchive() {
     // Secret metadata deletion is handled in Paperclip DB; the local key is shared and must remain.

@@ -1,3 +1,4 @@
+import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -57,9 +58,11 @@ import { restoreNativeWorkspaceBestEffort } from "./native-workspace-best-effort
 import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
 import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
+import { waitForPendingRunFailureReports } from "../run-failure-report.js";
 import { deliverExecutionStatuses } from "../execution-status-delivery.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "./status-arbiter.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -554,6 +557,34 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(replayed).toEqual(repaired);
   });
 
+  it("reports a committed failure once when the run row was an unreported pending retry", async () => {
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture, {
+      ...CONTROL_PLANE_CONFORMANCE_TERMINAL,
+      turnTerminalState: "failed",
+      runTerminalState: "failed",
+    });
+    const finalize = () => finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    await finalize();
+    // The executor stores a scheduled same-run retry as failed + retryable_failure,
+    // and reportRunFailure skips that write.
+    await db.update(heartbeatRuns).set({
+      nativePhase: "retryable_failure",
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    await waitForPendingRunFailureReports();
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    await finalize();
+    await waitForPendingRunFailureReports();
+    expect(captureRunFailureCallsFrom(captureCallsBefore)).toEqual([
+      [expect.objectContaining({ runId: fixture.runId, runStatus: "failed" })],
+    ]);
+
+    await finalize();
+    await waitForPendingRunFailureReports();
+    expect(captureRunFailureCallsFrom(captureCallsBefore)).toHaveLength(1);
+  });
+
   it("retires this run's scheduled finalization retry after successful commit", async () => {
     const fixture = await seedNativeRun();
     await driveToCompleteResult(fixture, CONTROL_PLANE_CONFORMANCE_TERMINAL);
@@ -916,4 +947,27 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(alreadyEmittedByCommittedDecision).toBe(true);
     expect(agentTaskRunCalls(callsBefore)).toHaveLength(1);
   });
+
+  it("signals durable accounting when native commitment or permanent failure makes a receipt actionable", async () => {
+    const settled = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.accounting, settled);
+    try {
+      const committed = await seedNativeRun();
+      await driveToCompleteResult(committed);
+      const beforeCommit = settled.mock.calls.length;
+      await finalizeNativeRun({ db, runId: committed.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, committed.runId)))[0].phase).toBe("committed");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, committed.runId)))[0].status).toBe("succeeded");
+      expect(settled.mock.calls.length).toBeGreaterThan(beforeCommit);
+      const failed = await seedNativeRun();
+      await driveToCompleteResult(failed);
+      const beforeFailure = settled.mock.calls.length;
+      await recordNativeFinalizationFailure({ db, runId: failed.runId, error: new Error("native_fixture_permanent_failure"), permanent: true });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, failed.runId)))[0].phase).toBe("terminal_failure");
+      expect(settled.mock.calls.length).toBeGreaterThan(beforeFailure);
+    } finally { unsubscribe(); }
+  });
 });
+
+
+enableRunFailureReporting();

@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -14,6 +15,8 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  authUsers,
+  companyMemberships,
   companySkills,
   createDb,
   closeRegisteredClients,
@@ -43,6 +46,7 @@ import { buildEffectiveRunWorkspaceConfigMetadata, heartbeatService } from "../s
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/index.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -97,6 +101,13 @@ const adapterExecute = vi.hoisted(() =>
     model: "test-model",
   })),
 );
+
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+
+vi.mock("../sentry.ts", async () => {
+  const actual = await vi.importActual<typeof import("../sentry.ts")>("../sentry.ts");
+  return { ...actual, captureRunFailure: mockCaptureRunFailure };
+});
 
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({
@@ -342,6 +353,8 @@ async function seedBranchContainmentRun(
     createdAt: now,
     updatedAt: now,
   });
+  await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+  await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
   await db.insert(projects).values({
     id: projectId,
     companyId,
@@ -880,7 +893,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       tempDb = await startEmbeddedPostgresTestDatabase("paperclip-branch-containment-");
       db = createDb(tempDb.connectionString);
     }
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the
@@ -918,16 +931,18 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     await deleteHeartbeatRunsForCleanup(db);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(workspaceOperations);
-    await db.delete(executionWorkspaces);
     await db.delete(environments);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers).where(eq(authUsers.id, "responsible-user"));
     vi.unstubAllEnvs();
   });
 
@@ -972,6 +987,8 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     };
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     await db.insert(companies).values({ id: companyId, name: "Retained source", issuePrefix, status: "active", defaultResponsibleUserId: "responsible-user" });
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(projects).values({ id: projectId, companyId, name: "Repository replacement", status: "active",
       executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace", workspaceStrategy: { type: "git_worktree", baseRef: "HEAD" } } });
     await db.insert(projectWorkspaces).values([
@@ -1039,24 +1056,72 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       await heartbeat.resumeQueuedRuns();
       const run = await waitForRunToFinish(heartbeat, seeded.runId);
       await heartbeat.waitForRunExecutionDrain(seeded.runId);
-      expect(run).toMatchObject({ status: "failed", errorCode: "workspace_validation_failed" });
-      expect(run?.resultJson).toMatchObject({ workspaceValidation: { reason: "persisted_workspace_source_conflict",
-        reasonCode: kind === "explicit_conflict" ? "explicit_project_workspace_conflict"
-          : kind === "unproven" ? "source_registration_unproven" : "source_scope_mismatch" } });
+      if (kind === "foreign_company") {
+        expect(run).toMatchObject({ status: "failed", errorCode: "setup_failed", error: "Task workspace access is no longer available" });
+      } else {
+        expect(run).toMatchObject({ status: "failed", errorCode: "workspace_validation_failed" });
+        expect(run?.resultJson).toMatchObject({ workspaceValidation: { reason: "persisted_workspace_source_conflict",
+          reasonCode: kind === "explicit_conflict" ? "explicit_project_workspace_conflict" : "source_registration_unproven" } });
+      }
       expect(adapterExecute).not.toHaveBeenCalled();
       const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
       expect(workspace).toMatchObject({ projectWorkspaceId: null, cwd: seeded.worktree, providerRef: seeded.worktree, branchName: seeded.branch, metadata: seeded.metadata });
       const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
       expect(issue).toMatchObject({ executionWorkspaceId: seeded.executionWorkspaceId,
         projectWorkspaceId: kind === "explicit_conflict" ? seeded.newWorkspaceId : null });
-      // Intentionally malformed cross-company/project FKs also prevent the
-      // existing issue-update service from changing status. The source gate
-      // still must fail before dispatch and may never silently repair that FK.
       if (kind === "explicit_conflict" || kind === "unproven") expect(issue.status).toBe("blocked");
       expect(await readFile(path.join(seeded.worktree, "retained.txt"), "utf8")).toBe("unexported original task edits\n");
       expect(await readFile(path.join(seeded.replacement, "replacement.txt"), "utf8")).toBe("replacement source must stay untouched\n");
     },
   );
+
+  it.each(["git_worktree", "project_primary"] as const)("reuses a %s workspace when a private historical task worktree shares its Git root", async (strategyType) => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "unexpected");
+    const seeded = await seedRetainedSourceRun("deleted");
+    if (strategyType === "project_primary") {
+      await db.update(projectWorkspaces).set({ cwd: seeded.owner, repoUrl: seeded.repoUrl }).where(eq(projectWorkspaces.id, seeded.newWorkspaceId));
+      await db.update(executionWorkspaces).set({ mode: "shared_workspace", strategyType,
+        projectWorkspaceId: seeded.newWorkspaceId, cwd: seeded.owner, providerRef: null,
+        providerType: "local_fs", branchName: null, metadata: null }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      await db.update(issues).set({ projectWorkspaceId: seeded.newWorkspaceId,
+        executionWorkspaceSettings: { mode: "shared_workspace" } }).where(eq(issues.id, seeded.issueId));
+    }
+    const [privateIssue] = await db.insert(issues).values({ companyId: seeded.companyId, projectId: seeded.projectId,
+      title: "Private work", visibility: "private" }).returning();
+    const privateCwd = path.join(seeded.owner, ".paperclip", "worktrees", "restricted-task");
+    await runGit(seeded.owner, ["worktree", "add", "-b", "restricted-task", privateCwd]);
+    const [privateWorkspace] = await db.insert(executionWorkspaces).values({ companyId: seeded.companyId, projectId: seeded.projectId,
+      sourceIssueId: privateIssue.id, name: "Private workspace", mode: "isolated_workspace", strategyType: "git_worktree",
+      providerType: "git_worktree", cwd: privateCwd, providerRef: privateCwd, branchName: "restricted-task", status: "idle" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: privateWorkspace.id }).where(eq(issues.id, privateIssue.id));
+
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, seeded.issueId));
+      return { exitCode: 0, signal: null, timedOut: false, summary: "Completed shared-root work.", provider: "test", model: "test-model" };
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    const run = await waitForRunToFinish(heartbeat, seeded.runId);
+    await heartbeat.waitForRunExecutionDrain(seeded.runId);
+    await waitForPendingRunFailureReports();
+
+    expect(run).toMatchObject({ status: "succeeded", errorCode: null });
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    expect(adapterExecute.mock.calls[0]?.[0]).toMatchObject({ context: {
+      paperclipWorkspace: { cwd: strategyType === "project_primary" ? seeded.owner : seeded.worktree },
+      executionWorkspaceId: seeded.executionWorkspaceId,
+    } });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue).toMatchObject({ status: "done", executionWorkspaceId: seeded.executionWorkspaceId });
+    const comments = await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments.map(comment => comment.body).join("\n")).not.toContain("The task couldn’t start.");
+    const actions = await db.select({ cause: issueRecoveryActions.cause }).from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
+    expect(actions).toHaveLength(0);
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(1);
+    expect(await readFile(path.join(seeded.worktree, "retained.txt"), "utf8")).toBe("unexported original task edits\n");
+  });
 
   it("blocks projectless isolated git-worktree issues before dispatch", async () => {
     const companyId = randomUUID();
@@ -1073,6 +1138,8 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       status: "active",
       defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,

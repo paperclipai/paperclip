@@ -57,7 +57,6 @@ export async function regenerateRunnerDashboard(input: {
   historyFile?: string | null;
   outputDirectory?: string;
   evidenceHrefPrefix?: string;
-  publicSummaryImageHref?: string;
 }) {
   const bundle = path.resolve(input.bundle);
   const outputDirectory = path.resolve(input.outputDirectory ?? bundle);
@@ -158,7 +157,6 @@ export async function regenerateRunnerDashboard(input: {
     entries,
     campaign,
     history,
-    publicSummaryImageHref: input.publicSummaryImageHref,
   });
   const upgraded = {
     ...campaign,

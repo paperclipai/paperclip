@@ -1,3 +1,4 @@
+import type { NativeRunRuntimeGrant } from "./runtime-context.js";
 import type {
   PrpEvent,
   PrpStructuredRunResult,
@@ -57,6 +58,7 @@ export interface OpenHarnessSessionInput {
 }
 
 export interface HarnessSessionRecoveryOptions {
+  normalizeReplayPayload?(payload: PrpEvent["payload"]): PrpEvent["payload"];
   /** Abort provider recovery and release any not-yet-returned provider state. */
   signal: AbortSignal;
 }
@@ -457,6 +459,7 @@ export interface AcpxSessionIdentity {
   /** Effective provider mode identifier, bound to the session identity. */
   mode?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 
@@ -506,7 +509,7 @@ export interface HarnessSession {
     displayId?: string | null;
   };
   events(): AsyncIterable<PrpEvent>;
-  attachRun?(input: { runId: string }): Promise<void> | void;
+  attachRun?(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> | void;
   startTurn(input: {
     message: NativeUserMessage;
     /** Set by orchestration only after successful provider-session recovery. */
@@ -532,6 +535,8 @@ export interface HarnessSession {
   }): Promise<void>;
   pendingRuntimeRequests?(): HarnessRuntimeRequest[];
   resolveRuntimeRequest?(input: {
+    /** Durable controller command identity, distinct from the native request identity. */
+    commandId?: string;
     requestId: string;
     turnId: string;
     resolution: HarnessRuntimeRequestResolution;

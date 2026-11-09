@@ -357,7 +357,9 @@ export function TaskSidePanel({
     }
   }, [openBrowserId, controller.activeTabId, onBrowserOpened, accountScope, issue.companyId, issue.id, fileTabsEnabled]);
   const activeTab = controller.tabs.find((tab) => tab.id === controller.activeTabId) ?? null;
-  const canUploadArtifacts = activeTab?.payload.kind === "artifacts" && !conversationAgentId && !issue.id.startsWith("chat:");
+  const hasArtifactUploadSlot = !conversationAgentId && !issue.id.startsWith("chat:")
+    && controller.tabs.some((tab) => tab.payload.kind === "artifacts");
+  const canUploadArtifacts = hasArtifactUploadSlot && activeTab?.payload.kind === "artifacts";
   const subtasksAvailable = showRelatedTasks && (taskCount > 0 || tasksTab?.hasError === true);
   const hasSubtasksTab = controller.tabs.some((tab) => tab.id === "subtasks");
 
@@ -820,7 +822,18 @@ export function TaskSidePanel({
   }
 
   const contentMode = activeTab?.contentMode ?? "full-bleed";
-  const header = <>{tabStrip}{canUploadArtifacts ? <ArtifactUploadButton onUpload={artifactUploads.upload} /> : null}</>;
+  const header = <>{tabStrip}{hasArtifactUploadSlot ? (
+    // Keep the header footprint stable when selection changes. Hidden controls
+    // retain their space but cannot receive focus or open the file picker.
+    <div
+      data-artifact-upload-slot
+      className={cn("shrink-0", !canUploadArtifacts && "invisible")}
+      aria-hidden={!canUploadArtifacts}
+      inert={!canUploadArtifacts}
+    >
+      <ArtifactUploadButton onUpload={artifactUploads.upload} />
+    </div>
+  ) : null}</>;
   return (
     <ArtifactDropzone enabled={canUploadArtifacts} target={paneHeaderSlot?.closest<HTMLElement>("[data-presentation]")} onUpload={artifactUploads.upload}>
     <div className="flex h-full min-h-0 flex-col">

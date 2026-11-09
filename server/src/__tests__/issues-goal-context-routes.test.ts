@@ -99,6 +99,11 @@ const mockDb = vi.hoisted(() => ({
   execute: vi.fn(),
 }));
 
+vi.mock("../services/task-interruption-presentation.js", () => ({
+  taskInterruptionPresentation: vi.fn(async () => null),
+  taskInterruptionPresentations: vi.fn(async () => new Map()),
+}));
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1" })),

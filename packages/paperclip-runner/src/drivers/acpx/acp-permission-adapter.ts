@@ -2,6 +2,8 @@ import type { AcpPermissionDecision, AcpPermissionRequest } from "acpx/runtime";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
 import { cursorToolIdentity } from "./cursor-plan-tool-identity.js";
 
+
+
 import { safeCopilotEditTarget } from "./copilot-permission-context.js";
 
 export type AcpxPermissionAction = "accept" | "accept_for_session" | "decline" | "cancel";

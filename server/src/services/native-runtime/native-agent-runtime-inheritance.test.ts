@@ -3,6 +3,9 @@ import { inheritNativeRunnerAdapterConfig } from "./native-agent-runtime-inherit
 import { resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
 
 describe("native hire runtime inheritance", () => {
+  it("does not inherit operator-owned home mode into a hired agent", () => {
+    expect(inheritNativeRunnerAdapterConfig({ provider: "codex", homeMode: "preconfigured" })).toEqual({ provider: "codex" });
+  });
   it("preserves Cursor's selected mode without its live session or credentials", () => {
     expect(inheritNativeRunnerAdapterConfig({
       provider: "acpx", acpxAgent: "cursor", acpxSessionMode: "plan", model: "exact-cursor-model",

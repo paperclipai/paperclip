@@ -267,6 +267,11 @@ describe("Sidebar", () => {
     expect(navLabels).toContain("Projects");
     expect(navLabels).toContain("Agents");
     expect(container.textContent).not.toContain("Organization");
+    expect(container.textContent).not.toContain("Workspaces");
+    expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
+    expect(container.querySelector('[data-testid="sidebar-goals-placeholder"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Conference Room");
+    expect(container.textContent).not.toContain("Pipelines");
 
     flushSync(() => {
       root.unmount();
@@ -464,17 +469,6 @@ describe("Sidebar", () => {
     });
   });
 
-  it("does not flash the Workspaces link while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
-    expect(container.textContent).not.toContain("Workspaces");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
   it("does not poll attention until Decisions is enabled", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableDecisions: false });
     const root = await renderSidebar();
@@ -549,18 +543,6 @@ describe("Sidebar", () => {
     });
   });
 
-  it("reserves the Goals nav slot while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
-    expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
-    expect(container.querySelector('[data-testid="sidebar-goals-placeholder"]')).not.toBeNull();
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
   it("shows the Goals nav item when the experimental setting is enabled", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -625,31 +607,6 @@ describe("Sidebar", () => {
     });
   });
 
-  it("does not flash the Conference Room item while experimental settings are loading (PAP-137)", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
-    expect(container.textContent).not.toContain("Conference Room");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
-  it("hides the Pipelines nav item when pipelines are disabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-      enablePipelines: false,
-    });
-    const root = await renderSidebar();
-
-    expect(container.textContent).not.toContain("Pipelines");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
   it("always shows Connectors in the Org section", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
     const root = await renderSidebar();
@@ -670,26 +627,15 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows the Pipelines nav item when pipelines are enabled", async () => {
+  it("ignores the retired Pipelines flag in old settings responses", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enablePipelines: true,
     });
     const root = await renderSidebar();
 
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Pipelines");
-    expect(link?.getAttribute("href")).toBe("/pipelines");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
-  it("does not flash the Pipelines nav item while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
     expect(container.textContent).not.toContain("Pipelines");
+    expect(container.querySelector('a[href="/pipelines"]')).toBeNull();
 
     flushSync(() => {
       root.unmount();

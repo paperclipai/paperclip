@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
+import { execFile } from "node:child_process";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -101,6 +102,7 @@ await writeFile(
     projectConfigDisabled: process.env.OPENCODE_DISABLE_PROJECT_CONFIG,
     modelsFetchDisabled: process.env.OPENCODE_DISABLE_MODELS_FETCH,
     defaultPluginsDisabled: process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS,
+    githubTokenPresent: Boolean(process.env.GH_TOKEN || process.env.GITHUB_TOKEN),
   }),
 );
 
@@ -191,9 +193,10 @@ async function callFirstPaperclipTool() {
 async function callTerminalTool(promptBody) {
   const prompt = parsedPromptText(promptBody);
   const blocked = String(prompt.message ?? "").includes("block-result");
+  const monitored = String(prompt.message ?? "").includes("monitor-default");
   const result = {
     schema: "paperclip.run_result.v1",
-    reportedWorkDisposition: blocked ? "blocked" : "done",
+    reportedWorkDisposition: blocked ? "blocked" : monitored ? "yielded" : "done",
     summary: blocked
       ? "Fake provider is blocked."
       : "Fake provider completed the task.",
@@ -443,6 +446,14 @@ const server = createServer(async (request, response) => {
       setTimeout(async () => {
         await callFirstPaperclipTool();
         const parsedPrompt = parsedPromptText(promptPayload);
+        if (String(parsedPrompt.message ?? "").includes("managed-github-operation")) {
+          const result = await new Promise(resolve => {
+            execFile("gh", ["api", "user"], { timeout: 5000 }, (error, stdout, stderr) => {
+              resolve({ stdout, stderr, error: error?.message ?? null });
+            });
+          });
+          await writeFile(join(process.env.XDG_DATA_HOME, "fake-github-operation.json"), JSON.stringify(result));
+        }
         if (String(parsedPrompt.message ?? "").includes("incremental-stream")) {
           const messageID = `stream-message-${promptTurnSeq}`;
           const part = { id: `stream-part-${promptTurnSeq}`, messageID, sessionID: session.id, type: "text", text: "" };

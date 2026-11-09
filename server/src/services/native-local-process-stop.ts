@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import os from "node:os";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
 export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
@@ -13,6 +14,21 @@ function absent(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ESRCH";
   }
+}
+
+/** A fresh workspace is not process containment. Bind an OS observation to
+ * the original host, process birth, and launch event before accepting it. */
+export async function recordedLocalExecutionStopped(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+  const [identity] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    eq(heartbeatRunEvents.eventType, PROCESS_IDENTITY_RECORDED), isNull(heartbeatRunEvents.sourceEventId),
+  )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  const recorded = identity?.payload;
+  if (recorded?.targetKind !== "local" || recorded.hostname !== os.hostname() ||
+      recorded.processPid !== run.processPid || recorded.processGroupId !== run.processGroupId ||
+      !run.processStartedAt || recorded.processStartedAt !== run.processStartedAt.toISOString()) return false;
+  return Boolean(run.processPid && absent(run.processPid) &&
+    (!run.processGroupId || absent(-run.processGroupId)));
 }
 
 /**

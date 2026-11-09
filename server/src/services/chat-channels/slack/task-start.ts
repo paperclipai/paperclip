@@ -1073,3 +1073,21 @@ export function createSlackTaskStart(db: Db, options: SlackTaskStartOptions) {
   }
   return { latestSlackDmControlThreadId, finalizeSlackTaskStartFailure, admitConfirmedSlackTaskStart, processSlackTaskStart, processPendingSlackTaskStarts };
 }
+
+export function slackTaskStartActivityStatus(action: {
+  status: string;
+  updatedAt: Date;
+}): string {
+  const age = Date.now() - action.updatedAt.getTime();
+  if (action.status === "validating" && age >= SLACK_COMMAND_POST_STALE_MS) {
+    return "queued";
+  }
+  if (
+    (action.status === "received" && age >= SLACK_COMMAND_POST_STALE_MS) ||
+    (action.status === "resolving" &&
+      age >= SLACK_COMMAND_EXPLICIT_RETRY_STALE_MS)
+  ) {
+    return "delivery_unknown";
+  }
+  return action.status;
+}

@@ -584,9 +584,12 @@ describe("MarkdownBody", () => {
   it("opens external links in a new tab with safe rel attributes", () => {
     const html = renderMarkdown("[docs](https://example.com/docs)");
 
-    expect(html).toContain('href="https://example.com/docs"');
+    expect(html).toContain("<a href=\"https://example.com/docs\"");
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).not.toContain("lucide-github");
+    expect(html).toContain("lucide-external-link");
+    expect(html).toMatch(/<span style="white-space:nowrap">s<svg[^>]*lucide-external-link/);
   });
 
   it("opens GitHub links in a new tab", () => {
@@ -623,22 +626,9 @@ describe("MarkdownBody", () => {
     expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)"');
   });
 
-  it("does not prefix non-GitHub markdown links with the GitHub icon", () => {
-    const html = renderMarkdown("[docs](https://example.com/docs)");
+  ;
 
-    expect(html).toContain('<a href="https://example.com/docs"');
-    expect(html).not.toContain("lucide-github");
-  });
-
-  it("suffixes external links with a new-tab icon glued to the last character", () => {
-    const html = renderMarkdown("[docs](https://example.com/docs)");
-
-    expect(html).toContain('target="_blank"');
-    expect(html).toContain("lucide-external-link");
-    // Last character "s" must sit in a no-wrap span with the icon so the
-    // indicator never wraps away from the link text.
-    expect(html).toMatch(/<span style="white-space:nowrap">s<svg[^>]*lucide-external-link/);
-  });
+  ;
 
   it("does not render the new-tab icon on internal links", () => {
     const html = renderMarkdown("[settings](/company/settings)");

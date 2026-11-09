@@ -1,6 +1,12 @@
+---
+navigation: {"section":"Tasks and conversations","sectionOrder":20,"order":40}
+---
+
 # Agent conversations and project handoff
 
 A person can hold a persistent conversation with an agent, return to its history, and hand useful work into a project or task. The gated conference-room chat is a separate conversation surface.
+
+Feature ID: `agent-chat`.
 
 Implementation: [agent chat](../../ui/src/pages/AgentChat.tsx), [chat landing](../../ui/src/pages/AgentChats.tsx), [conference room](../../ui/src/pages/BoardChat.tsx).
 
@@ -8,10 +14,10 @@ Agent access: [companion](../agent-access-map/agent-chat.md).
 
 ## Sub-features
 
-- `discovery`: find an agent and reopen an accessible recent conversation.
-- `history`: send messages, inspect replies/files, and return to the same conversation.
-- `handoff`: create or identify a project/task from chat and follow the resulting work.
-- `conference-room`: use the separately gated board chat without assuming parity with agent chat.
+- `discovery`: `agent-chat/discovery` — find an agent and reopen an accessible recent conversation.
+- `history`: `agent-chat/history` — send messages, inspect replies/files, and return to the same conversation.
+- `handoff`: `agent-chat/handoff` — create or identify a project/task from chat and follow the resulting work.
+- `conference-room`: `agent-chat/conference-room` — use the separately gated board chat without assuming parity with agent chat.
 
 ## How to get to it (user POV)
 
@@ -34,6 +40,17 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Enab
 ### `agent-conversation`
 
 Automated: [chat landing](../../ui/src/pages/AgentChats.test.tsx) checks recent-chat routing; [conversation service](../../server/src/__tests__/agent-conversations.test.ts) covers persisted conversation behavior.
+
+Automated: [thread and composer](../../ui/src/components/TaskChatThread.test.tsx)
+keeps an in-flight attachment through first-chat creation on desktop and mobile,
+while initial history for an existing conversation stays deferred. The
+[first-upload browser journey](../../tests/e2e/agent-chat-projects.spec.ts)
+checks the visible file chip, server attachment, no premature agent run, and
+attachment count after send and reload. That journey uses a simulated agent.
+
+Manual: In a conversation with no messages, attach a file before the first
+send. Confirm the same file stays in the composer after the chat is created.
+Send it once, reload, and confirm the file and message remain.
 
 Manual: Start a conversation, send a recognizable request, and inspect its reply.
 Navigate away and reopen the same history. Use `/new` for a fresh session within
@@ -61,3 +78,14 @@ Manual: Check disabled access first, enable in the disposable instance, then sen
 - Idle chat is not failed execution.
 - See [steering](./steering.md) for in-flight messages and [questions](./questions-and-approvals.md) for interactions.
 - An API tool test does not prove that every harness will choose the same handoff tool.
+
+### Storybook verification
+
+#### `conference-room`
+
+Capability ID: `agent-chat/conference-room`.
+
+Scope: ui
+Storybook: Conference-room flag disabled, empty/history/reply, busy and explicit failure states.
+Production: Exercise separate BoardChat route gate, local-trusted deployment and authenticated Claude CLI; send/reload real conversation with responding agent attribution.
+Sources: Source: [BoardChat.tsx](../../ui/src/pages/BoardChat.tsx), [board-chat.ts](../../server/src/routes/board-chat.ts). Tests: [BoardChat.test.tsx](../../ui/src/pages/BoardChat.test.tsx), [board-chat-route-feature-flag.test.ts](../../server/src/__tests__/board-chat-route-feature-flag.test.ts)

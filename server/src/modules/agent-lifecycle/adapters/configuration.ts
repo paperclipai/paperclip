@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { conflict } from "../../../errors.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
@@ -9,13 +11,18 @@ import type { LifecycleEffects } from "./effects.js";
 export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions, publications: ActivityPublication[] = []) {
   if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Configuration integration requires a database transaction");
   assertConfigurationFields(data);
-  const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("update");
+  const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("no key update");
   if (!current) return null;
+  if (options?.expectedConfiguration && Object.entries(options.expectedConfiguration).some(([key, value]) =>
+    !isDeepStrictEqual(current[key as keyof typeof current], value))) {
+    throw conflict("Agent configuration changed while saving. Refresh the roster and review the changes again.");
+  }
   const patch = await effects.prepareConfiguration(tx, current, data, options);
   assertConfigurationFields(patch);
   const changed = ["adapterType", "adapterConfig", "runtimeConfig", "defaultEnvironmentId"].some(key =>
     Object.prototype.hasOwnProperty.call(patch, key) && !jsonEqual(patch[key as keyof typeof patch], current[key as keyof typeof current]));
   const invalidate = changed && ["preparing", "verifying", "resuming"].includes(current.lifecycleState);
+  if (invalidate) await effects.notifyWork(tx);
   const [updated] = await tx.update(agents).set({ ...patch, updatedAt: new Date(), ...(invalidate ? {
     lifecycleVersion: current.lifecycleVersion + 1, lifecycleError: null,
     lifecycleOperation: { ...current.lifecycleOperation!, id: randomUUID(), hostComplete: false,

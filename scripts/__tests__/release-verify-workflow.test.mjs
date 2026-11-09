@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { createServer } from "node:http";
 import { canaryStartup } from "./canary-startup-fixture.mjs";
 import { canRetryPublishedTarball404, TARBALL_METADATA_TIMEOUT_MS } from "../../tests/canary-onboarding/start-published-canary.mjs";
@@ -81,14 +84,14 @@ test("chaos verification isolates callers that verify the same source commit", (
 
 test("canary reuses exact-source proof while stable keeps full verification", () => {
   const releaseWorkflow = readWorkflow("release.yml");
-  const canary = releaseWorkflow.split("  verify_canary:\n")[1].split("\n  publish_canary:")[0];
+  const canary = releaseWorkflow.match(/  verify_canary:\n[\s\S]*?(?=\n  [a-z_]+:)/)[0];
   assert.match(canary, /github\.repository == 'paperclipai\/paperclip' && github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'/);
   assert.match(canary, /actions: read/);
   assert.match(canary, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /run: node scripts\/cloud-source-verification\.mjs "\$SOURCE_SHA"/);
   assert.doesNotMatch(canary, /release-verify\.yml|continue-on-error|always\(\)/);
-  assert.match(releaseWorkflow, /publish_canary:\n\s+if: github\.event_name == 'push'\n\s+needs: verify_canary/);
+  assert.match(releaseWorkflow, /publish_canary:\n\s+if: .*github\.event_name == 'push'.*\n\s+needs: \[verify_canary, release_runner_source, release_runner_binaries\]/);
   // The stable lane is gated on the stable channel since the nightly lane
   // was added; a `needs:` line (for example a preflight job) may sit between
   // the gate and the delegation.
@@ -305,8 +308,20 @@ test("published canaries are gated by the exact-version onboarding browser smoke
   );
   assert.match(
     releaseWorkflow,
-    /smoke_canary_onboarding:\n\s+needs: publish_canary\n\s+if: needs\.publish_canary\.result == 'success'/,
+    /smoke_canary_onboarding:\n\s+needs: publish_canary\n\s+if: \$\{\{ !cancelled\(\) && needs\.publish_canary\.result == 'success' \}\}/,
   );
+  const smoke = releaseWorkflow.split("  smoke_canary_onboarding:\n")[1].split(/\n  [a-z_]+:\n/)[0];
+  const condition = smoke.match(/^    if: \$\{\{ (.+) \}\}$/m)?.[1];
+  assert.match(condition, /^!cancelled\(\) && needs\.publish_canary\.result == 'success'$/);
+  for (const [result, cancelled, expected] of [
+    ["success", false, true], ["failure", false, false],
+    ["cancelled", false, false], ["skipped", false, false], ["success", true, false],
+  ]) {
+    const needs = { publish_canary: { result }, release_runner_source: { result: "success" },
+      select_nightly: { result: "skipped" }, select_beta: { result: "skipped" }, preflight_stable: { result: "skipped" } };
+    assert.equal(runInNewContext(condition, { cancelled: () => cancelled, needs }), expected,
+      `Canary smoke: publisher=${result}, cancelled=${cancelled}`);
+  }
   assert.match(
     releaseWorkflow,
     /PAPERCLIPAI_VERSION: \$\{\{ needs\.publish_canary\.outputs\.canary_version \}\}/,
@@ -739,6 +754,486 @@ test("direct protocol concurrency override only lowers the configured ceiling", 
     });
     assert.equal(result.status, expected === null ? 1 : 0, requested);
     if (expected !== null) assert.equal(result.stdout, expected);
+  }
+});
+
+test("release daemon production uses exact-source native hosts and no publisher or provider permissions", () => {
+  const workflow = readWorkflow("release-verify.yml");
+  const producer = workflow.split("  runner_binaries:\n")[1];
+  const targets = workflow.split("  runner_binary_targets:\n")[1].split("  runner_binaries:\n")[0];
+  for (const [target, host] of [["linux-arm64", "ubuntu-24.04-arm"], ["darwin-arm64", "macos-15"], ["darwin-x64", "macos-15-intel"]]) {
+    assert.ok(targets.includes(`'${target}': '${host}'`));
+  }
+  assert.match(producer, /matrix: \$\{\{ fromJSON\(needs.runner_binary_targets.outputs.matrix\) \}\}/);
+  assert.match(targets, /Unknown exact-source daemon platform contract/);
+  assert.match(targets, /release-runner-targets\.json/);
+  assert.match(targets, /execFileSync\('git', \['show', source \+ ':' \+ file\]/);
+  assert.doesNotMatch(targets, /import .*from '\.\/|await import\(|\beval\(|new Function/);
+  assert.doesNotMatch(targets, /secrets\.|id-token: write|contents: write|npm publish|environment:/);
+  assert.match(producer, /persist-credentials: false/);
+  assert.match(producer, /contents: read/);
+  assert.doesNotMatch(producer, /secrets\.|id-token: write|contents: write|npm publish|environment:/);
+  assert.match(producer, /\[\[ "\$SOURCE_SHA" =~ \^\[a-f0-9\]\{40\}\$ \]\]/);
+  assert.match(producer, /git rev-parse HEAD/);
+  assert.match(producer, /process.platform \+ "-" \+ process.arch/);
+  assert.match(producer, /\['native', \['build:binary'\]/);
+  const runner = JSON.parse(readFileSync(path.join(repoRoot, 'packages/paperclip-runner/package.json'), 'utf8'));
+  assert.match(runner.scripts['build:binary'], /cargo build --release --manifest-path runner\/Cargo.toml --locked/);
+  assert.match(runner.scripts['build:binary'], /&& node scripts\/stage-runner-binary.mjs$/);
+  assert.match(producer, /stage-release-runner-binaries.mjs record/);
+  for (const job of ["runner_chaos_evals", "typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"]) {
+    assert.ok(workflow.includes(`${job}:\n    if: \${{ !inputs.runner_binaries_only }}`));
+  }
+  const release = readWorkflow("release.yml");
+  const source = release.split("  release_runner_source:\n")[1].split(/\n  [a-z_]+:\n/)[0];
+  const binaries = release.split("  release_runner_binaries:\n")[1].split(/\n  [a-z_]+:\n/)[0];
+  assert.match(source, /needs: \[verify_canary, select_nightly, select_beta, preflight_stable\]/);
+  assert.match(source, /!cancelled\(\)/);
+  assert.match(binaries, /needs: release_runner_source/);
+  assert.match(binaries, /ref: \$\{\{ needs\.release_runner_source\.outputs\.sha \}\}/);
+  assert.match(binaries, /runner_binaries_only: true/);
+  const condition = binaries.match(/^    if: (.+)$/m)?.[1].replace(/^\$\{\{\s*|\s*\}\}$/g, "");
+  assert.match(condition, /^!cancelled\(\) && needs\.release_runner_source\.result == 'success' && needs\.release_runner_source\.outputs\.required == 'true'$/,
+    "Native compilation must bypass deliberately skipped channel ancestors and require successful exact-source selection");
+  const laneJobs = ["verify_canary", "select_nightly", "select_beta", "preflight_stable"];
+  for (const activeLane of laneJobs) {
+    for (const [result, required, cancelled, expected] of [
+      ["success", "true", false, true], ["failure", "true", false, false],
+      ["cancelled", "true", false, false], ["skipped", "true", false, false],
+      ["success", "false", false, false], ["success", undefined, false, false],
+      ["success", "true", true, false],
+    ]) {
+      const needs = Object.fromEntries(laneJobs.map(job => [job, { result: job === activeLane ? "success" : "skipped" }]));
+      needs.release_runner_source = { result, outputs: { required } };
+      assert.equal(Object.values(needs).filter(job => job.result === "skipped").length, result === "skipped" ? 4 : 3);
+      assert.equal(runInNewContext(condition, { cancelled: () => cancelled, needs }), expected,
+        `${activeLane}: source=${result}, required=${required}, cancelled=${cancelled}`);
+    }
+  }
+  for (const job of ["publish_canary", "publish_nightly", "publish_beta", "preview_stable", "publish_stable"]) {
+    const block = release.split(`  ${job}:\n`)[1].split(/\n  [a-z_]+:\n/)[0];
+    assert.match(block, /needs: .*release_runner_binaries/);
+    assert.match(block, /pattern: \$\{\{ needs.release_runner_binaries.outputs.runner_artifact_prefix \}\}-\*/);
+    assert.match(block, /PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR/);
+  }
+  const script = readFileSync(path.join(repoRoot, 'scripts/release.sh'), 'utf8');
+  assert.ok(script.indexOf('assemble-daemons "$PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR"') < script.indexOf('scripts/build-standalone-public-packages.mjs'));
+  assert.match(script, /cp -R .*paperclip-runner\/dist\/bin\/\." .*server\/dist\/vendor\/paperclip-runner\/bin\//);
+  assert.match(script, /elif \[ "\$dry_run" = false \]; then[\s\S]*?release_fail "Public releases require/);
+});
+
+function nativeProducer() {
+  return readWorkflow('release-verify.yml').split('  runner_binaries:\n')[1];
+}
+
+test('native provider packs and the image use the same exact Node version', () => {
+  const version = nativeProducer().match(/node-version: ([0-9.]+)/)?.[1];
+  assert.equal(version, '24.21.0');
+  const image = readFileSync(path.join(repoRoot, 'docker/daytona-runner/Dockerfile'), 'utf8');
+  assert.ok(image.includes(`FROM node:${version}-bookworm@sha256:`));
+});
+
+test('native dependency caches are target-bound and unmerged master callers cannot save them', () => {
+  const producer = nativeProducer();
+  const cache = producer.split('      - name: Cache native Rust dependencies\n')[1].split('\n      - ')[0];
+  assert.match(cache, /Swatinem\/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6/);
+  assert.match(cache, /workspaces: \$\{\{ steps.native_rust_workspace.outputs.path \}\} -> target/);
+  assert.match(cache, /shared-key: release-native-v2-\$\{\{ matrix.host \}\}-\$\{\{ matrix.target \}\}-\$\{\{ hashFiles\('packages\/paperclip-runner\/protocol\/\*\*', 'packages\/paperclip-runner\/src\/\*\*', 'packages\/paperclip-runner\/\*.json'\) \}\}/);
+  for (const option of ['cache-workspace-crates', 'cache-bin', 'cache-on-failure']) {
+    assert.match(cache, new RegExp(option + ': false'));
+  }
+  const expression = cache.match(/save-if: \$\{\{ (.+) \}\}/)?.[1];
+  assert.ok(expression, 'cache writes need a separate source trust gate');
+  const canSave = new Function('github', 'inputs', `return (${expression});`);
+  const github = { repository: 'paperclipai/paperclip', repository_id: '1170821064', event_name: 'push', ref: 'refs/heads/master', sha: 'a'.repeat(40) };
+  assert.equal(canSave(github, { ref: github.sha }), true);
+  for (const [overrides, input] of [
+    [{}, 'b'.repeat(40)], [{}, ''],
+    [{ event_name: 'workflow_dispatch' }, github.sha],
+    [{ event_name: 'workflow_dispatch' }, 'b'.repeat(40)],
+    [{ event_name: 'pull_request', ref: 'refs/pull/123/merge' }, github.sha],
+    [{ ref: 'refs/heads/topic' }, github.sha],
+    [{ repository: 'fork/paperclip' }, github.sha],
+    [{ repository_id: '1' }, github.sha],
+  ]) assert.equal(canSave({ ...github, ...overrides }, { ref: input }), false);
+  assert.match(producer, /pinned="\$HOME\/paperclip-runner-rust"/);
+  assert.match(producer, /ln -s "\$GITHUB_WORKSPACE\/packages\/paperclip-runner\/runner" "\$pinned"/);
+  assert.match(producer, /echo "RUSTUP_TOOLCHAIN=\$toolchain" >> "\$GITHUB_ENV"/);
+  assert.doesNotMatch(producer, /cache-hit|continue-on-error/);
+  assert.ok(producer.indexOf('Bind immutable producer source and target') < producer.indexOf('Cache native Rust dependencies'));
+  assert.ok(producer.indexOf('Build TypeScript contract and host daemon concurrently') < producer.indexOf('Record actual daemon metadata and immutable bytes'));
+});
+
+function nativePreparationScript() {
+  const step = nativeProducer().split('      - name: Build TypeScript contract and host daemon concurrently\n')[1].split('\n      - ')[0];
+  const script = step.match(/node --input-type=module <<'NODE'\n([\s\S]*?)\n          NODE/)?.[1];
+  assert.ok(script);
+  return script.replace(/^ {10}/gm, '');
+}
+
+const fixtureProcessGone = pid => {
+  try { process.kill(pid, 0); } catch (error) { return error.code === 'ESRCH'; }
+  try { return /^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, 'utf8')); } catch { return false; }
+};
+const waitForFixture = async (predicate, label) => {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.fail(label);
+};
+
+async function withNativePreparationFixture(mode, check) {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'native-preparation-')));
+  let controller;
+  try {
+    for (const directory of ['scripts', 'tools', 'packages/paperclip-runner', 'logs']) {
+      mkdirSync(path.join(root, directory), { recursive: true });
+    }
+    for (const helper of ['prefetch-child.mjs', 'prefetch-supervisor.mjs']) {
+      copyFileSync(path.join(repoRoot, 'scripts', helper), path.join(root, 'scripts', helper));
+    }
+    writeFileSync(path.join(root, 'prepare.mjs'), nativePreparationScript());
+    writeFileSync(path.join(root, 'tools/pnpm'), `#!${process.execPath}
+const { spawn } = require('node:child_process');
+const { existsSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const root = process.env.FIXTURE_ROOT;
+const name = process.argv.includes('build:binary') ? 'native' : 'typescript';
+writeFileSync(join(root, name + '.started'), JSON.stringify({ pid: process.pid, cwd: process.cwd(), args: process.argv.slice(2) }));
+const wait = setInterval(() => {
+  if (!existsSync(join(root, 'native.started')) || !existsSync(join(root, 'typescript.started'))) return;
+  clearInterval(wait);
+  if (process.env.FIXTURE_MODE === 'success') {
+    setTimeout(() => { writeFileSync(join(root, name + '.finished'), 'joined'); console.log(name + ' complete'); }, 150);
+    return;
+  }
+  const child = spawn(process.execPath, ['-e', \
+    "const fs=require('node:fs'); fs.writeFileSync(process.argv[1], String(process.pid)); setInterval(() => fs.writeFileSync(process.argv[2], String(Date.now())), 25)",\
+    join(root, name + '.descendant'), join(root, name + '.writing')], { stdio: 'inherit' });
+  child.on('exit', () => process.exit(0));
+  const barrier = setInterval(() => {
+    if (!existsSync(join(root, 'native.descendant')) || !existsSync(join(root, 'typescript.descendant'))) return;
+    clearInterval(barrier);
+    if (process.env.FIXTURE_MODE === name) { console.error(name + ' failed'); process.exit(23); }
+  }, 10);
+}, 10);
+`, { mode: 0o755 });
+    controller = spawn(process.execPath, ['prepare.mjs'], { cwd: root, env: {
+      ...process.env, PATH: `${path.join(root, 'tools')}:${process.env.PATH}`, RUNNER_TEMP: path.join(root, 'logs'), FIXTURE_ROOT: root, FIXTURE_MODE: mode,
+    }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    controller.stdout.on('data', chunk => { stdout += chunk; });
+    controller.stderr.on('data', chunk => { stderr += chunk; });
+    const completed = new Promise((resolve, reject) => {
+      controller.once('error', reject);
+      controller.once('close', (status, signal) => resolve({ status, signal, stdout, stderr }));
+    });
+    await check({ root, controller, completed });
+  } finally {
+    if (controller?.exitCode === null && controller.signalCode === null) controller.kill('SIGKILL');
+    for (const name of ['native', 'typescript']) {
+      for (const filename of [name + '.started', name + '.descendant']) {
+        const file = path.join(root, filename);
+        if (!existsSync(file)) continue;
+        const data = readFileSync(file, 'utf8');
+        const pid = filename.endsWith('.started') ? JSON.parse(data).pid : Number(data);
+        if (!fixtureProcessGone(pid)) {
+          try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+        }
+      }
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('native preparation overlaps independent outputs and joins both before recording', async () => {
+  await withNativePreparationFixture('success', async ({ root, completed }) => {
+    const result = await completed;
+    assert.equal(result.status, 0, result.stderr);
+    for (const name of ['native', 'typescript']) assert.equal(readFileSync(path.join(root, name + '.finished'), 'utf8'), 'joined');
+    assert.equal(JSON.parse(readFileSync(path.join(root, 'native.started'), 'utf8')).cwd, path.join(root, 'packages/paperclip-runner'));
+    assert.deepEqual(JSON.parse(readFileSync(path.join(root, 'native.started'), 'utf8')).args, ['build:binary']);
+    assert.deepEqual(JSON.parse(readFileSync(path.join(root, 'typescript.started'), 'utf8')).args, ['--filter', '@paperclipai/paperclip-runner', 'build:typescript']);
+    const results = result.stdout.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
+    assert.deepEqual(results.map(item => [item.build, item.status, item.exitCode]), [['typescript', 'fulfilled', 0], ['native', 'fulfilled', 0]]);
+  });
+});
+
+for (const name of ['typescript', 'native']) {
+  test(`${name} preparation failure fails the join and retires both owned process trees`, async () => {
+    await withNativePreparationFixture(name, async ({ root, completed }) => {
+      const result = await completed;
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, new RegExp(name + ' prefetch failed \\(exit 23\\)'));
+      const results = result.stdout.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
+      assert.equal(results.length, 2);
+      assert.ok(results.every(item => item.status === 'rejected'));
+      for (const build of ['native', 'typescript']) {
+        const pid = Number(readFileSync(path.join(root, build + '.descendant'), 'utf8'));
+        await waitForFixture(() => fixtureProcessGone(pid), build + ' descendant outlived failed join');
+      }
+    });
+  });
+}
+
+test('canceling native preparation retires both supervisors and their descendants', { skip: process.platform === 'win32' }, async () => {
+  await withNativePreparationFixture('cancel', async ({ root, controller, completed }) => {
+    await waitForFixture(() => ['native', 'typescript'].every(name => existsSync(path.join(root, name + '.descendant'))), 'both native build trees must start');
+    controller.kill('SIGTERM');
+    const result = await completed;
+    assert.equal(result.signal, 'SIGTERM');
+    for (const name of ['native', 'typescript']) {
+      const pid = Number(readFileSync(path.join(root, name + '.descendant'), 'utf8'));
+      await waitForFixture(() => fixtureProcessGone(pid), name + ' descendant outlived cancellation');
+    }
+  });
+});
+
+test("premerge native qualification consumes the same Linux-packed npm bytes without publishing", () => {
+  const smoke = readWorkflow("release-smoke.yml");
+  assert.match(smoke, /smoke_service:\n\s+if: inputs.qualification_source_sha == ''/);
+  assert.match(smoke, /smoke:\n\s+if: inputs.qualification_source_sha == ''/);
+  const qualification = smoke.split("  qualification_daemons:\n")[1];
+  assert.doesNotMatch(qualification, /secrets\.|npm publish|id-token: write|contents: write|continue-on-error/);
+  assert.match(qualification, /runner_binaries_only: true/);
+  assert.match(qualification, /PAPERCLIP_RUNNER_PUBLIC_PACKS_DIR/);
+  assert.match(qualification, /if: \$\{\{ !cancelled\(\) && steps.pack_identity.outputs.available == 'true' \}\}/);
+  assert.match(qualification, /name: \$\{\{ inputs.artifact_name \}\}-public-packages/);
+  assert.match(qualification, /--mac-consumer/);
+  assert.match(qualification, /--linux-arm64-consumer/);
+  assert.match(qualification, /fromJSON\(needs.qualification_daemons.outputs.native_consumer_matrix\)/);
+  assert.match(qualification, /pnpm install --ignore-scripts --no-frozen-lockfile/);
+});
+
+test("native ARM qualification prepares its scoped distro sandbox before the existing consumer", () => {
+  const smoke = readWorkflow("release-smoke.yml");
+  const native = smoke.split("  qualification_native:\n")[1];
+  const preparation = native.split("      - name: Prepare Linux ARM sandbox prerequisites\n")[1].split("\n      - ")[0];
+  assert.match(preparation, /if: \$\{\{ matrix\.target == 'linux-arm64' \}\}/);
+  assert.match(preparation, /timeout-minutes: 5/);
+  assert.match(preparation, /bash \.qualification-tooling\/scripts\/prepare-linux-arm64-qualification\.sh/);
+  const tooling = native.split("      - name: Checkout immutable ARM qualification tooling\n")[1].split("\n      - ")[0];
+  assert.match(tooling, /if: \$\{\{ matrix\.target == 'linux-arm64' \}\}/);
+  assert.match(tooling, /repository: \$\{\{ job\.workflow_repository \}\}/);
+  assert.match(tooling, /ref: \$\{\{ job\.workflow_sha \}\}/);
+  assert.match(tooling, /sparse-checkout: scripts\/prepare-linux-arm64-qualification\.sh/);
+  assert.match(tooling, /sparse-checkout-cone-mode: false/);
+  assert.match(tooling, /persist-credentials: false/);
+  assert.doesNotMatch(tooling + preparation, /github\.workflow_sha|github\.sha|ref: (?:master|main)|ref: \$\{\{ inputs\.qualification_source_sha/);
+  assert.ok(native.indexOf("Checkout immutable ARM qualification tooling") < native.indexOf("Prepare Linux ARM sandbox prerequisites"));
+  assert.ok(native.indexOf("Prepare Linux ARM sandbox prerequisites") < native.indexOf("Verify host identity and actual clean npm consumer"));
+  assert.match(native, /path: \|\n\s+\$\{\{ runner\.temp \}\}\/native-public-install\.json\n\s+\$\{\{ runner\.temp \}\}\/paperclip-arm-bwrap-prerequisite\//);
+  assert.doesNotMatch(smoke.split("  qualification_daemons:\n")[0], /prepare-linux-arm64-qualification/,
+    "ordinary service and Docker smoke keep their existing setup");
+});
+
+test("ARM qualification binds separate product and reusable-workflow revisions even when the product lacks the helper", { skip: process.platform === "win32" }, () => {
+  const native = readWorkflow("release-smoke.yml").split("  qualification_native:\n")[1];
+  const step = native.split("      - name: Prepare Linux ARM sandbox prerequisites\n")[1].split("\n      - ")[0];
+  const script = step.split("        run: |\n")[1].split("\n").map(line => line.startsWith("          ") ? line.slice(10) : line).join("\n");
+  const root = mkdtempSync(path.join(tmpdir(), "arm-separate-tooling-"));
+  try {
+    const tools = path.join(root, "tools"); mkdirSync(tools);
+    const tooling = path.join(root, ".qualification-tooling", "scripts"); mkdirSync(tooling, { recursive: true });
+    const helper = 'printf "%s\\n" "$TOOLING_SHA" > "$FIXTURE_PREPARED"\n';
+    writeFileSync(path.join(tooling, "prepare-linux-arm64-qualification.sh"), helper);
+    writeFileSync(path.join(tools, "git"), '#!/bin/bash\nif [[ "$1" == -C ]]; then printf "%s\\n" "$FIXTURE_TOOLING_HEAD"; else printf "%s\\n" "$FIXTURE_PRODUCT_HEAD"; fi\n', { mode: 0o755 });
+    const productSha = "a".repeat(40), toolingSha = "b".repeat(40);
+    for (const [productHead, toolingHead, expectedStatus] of [[productSha, toolingSha, 0], ["c".repeat(40), toolingSha, 1], [productSha, "c".repeat(40), 1], [productSha, "invalid", 1]]) {
+      const report = path.join(root, "report"); mkdirSync(report);
+      const prepared = path.join(root, "prepared");
+      const result = spawnSync("/bin/bash", ["-c", script], { cwd: root, encoding: "utf8", env: {
+        PATH: `${tools}:${path.dirname(process.execPath)}:/usr/bin:/bin`, RUNNER_TEMP: report,
+        SOURCE_SHA: productSha, TOOLING_SHA: toolingSha, TOOLING_REPOSITORY: "paperclipai/paperclip",
+        TOOLING_WORKFLOW_REF: "paperclipai/paperclip/.github/workflows/release-smoke.yml@refs/heads/qualification",
+        TOOLING_WORKFLOW_PATH: ".github/workflows/release-smoke.yml",
+        FIXTURE_PRODUCT_HEAD: productHead, FIXTURE_TOOLING_HEAD: toolingHead, FIXTURE_PREPARED: prepared,
+        GITHUB_REPOSITORY: "different/caller", GITHUB_SHA: "d".repeat(40),
+      } });
+      assert.equal(result.status, expectedStatus, result.stderr);
+      assert.equal(existsSync(path.join(root, "scripts", "prepare-linux-arm64-qualification.sh")), false);
+      assert.equal(existsSync(prepared), expectedStatus === 0);
+      if (expectedStatus === 0) {
+        assert.equal(readFileSync(prepared, "utf8").trim(), toolingSha);
+        const identity = JSON.parse(readFileSync(path.join(report, "paperclip-arm-bwrap-prerequisite", "qualification-identity.json"), "utf8"));
+        assert.equal(identity.productSourceSha, productSha);
+        assert.equal(identity.toolingSourceSha, toolingSha);
+        assert.equal(identity.toolingRepository, "paperclipai/paperclip");
+        assert.equal(identity.toolingWorkflowPath, ".github/workflows/release-smoke.yml");
+        assert.equal(identity.helperSha256, createHash("sha256").update(helper).digest("hex"));
+      }
+      rmSync(report, { recursive: true, force: true });
+      rmSync(prepared, { force: true });
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Linux ARM prerequisite setup rejects other hosts before invoking tools and preserves scoped security", { skip: process.platform === "win32" }, () => {
+  const helper = path.join(repoRoot, "scripts/prepare-linux-arm64-qualification.sh");
+  const source = readFileSync(helper, "utf8");
+  const root = mkdtempSync(path.join(tmpdir(), "arm-prerequisite-guard-"));
+  try {
+    const tools = path.join(root, "tools"); mkdirSync(tools);
+    const sentinel = path.join(root, "invoked");
+    for (const command of ["dpkg", "uname", "mkdir", "mktemp", "sysctl", "sudo"]) {
+      writeFileSync(path.join(tools, command), '#!/bin/bash\nprintf "%s\\n" "$0" >> "$PREREQUISITE_SENTINEL"\nexit 85\n', { mode: 0o755 });
+    }
+    for (const [actions, runnerOs] of [["", "Linux"], ["false", "Linux"], ["true", "macOS"], ["true", "Windows"]]) {
+      const result = spawnSync("/bin/bash", [helper], { encoding: "utf8", env: {
+        PATH: tools, GITHUB_ACTIONS: actions, RUNNER_OS: runnerOs, RUNNER_TEMP: root, PREREQUISITE_SENTINEL: sentinel,
+      } });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /requires a GitHub Actions Linux runner/);
+      assert.equal(existsSync(sentinel), false, "host guard must precede every external tool");
+      assert.equal(existsSync(path.join(root, "paperclip-arm-bwrap-prerequisite")), false);
+    }
+    assert.ok(source.indexOf('"${GITHUB_ACTIONS:-}" != true') < source.indexOf(". /etc/os-release"));
+    assert.match(source, /-o Acquire::AllowInsecureRepositories=false/);
+    assert.match(source, /download "\$package_name=\$package_version"/);
+    assert.match(source, /printf '%s  %s\\n' "\$package_sha256" "\$package_file" \| sha256sum -c -/);
+    assert.match(source, /dpkg-deb --fsys-tarfile "\$package_file"/);
+    assert.match(source, /tar -xO \.\/usr\/bin\/bwrap/);
+    assert.match(source, /11d39094f044f0cda0febb3ad517b830301da6b2ce929664af09ee9e4dd264f9/);
+    assert.ok(source.indexOf('test ! -L "$target"') < source.indexOf('sudo install -o root -g root -m 0644 "$stock_profile" "$target"'));
+    assert.match(source, /timeout 15s sudo "\$parser" -r "\$target"/);
+    for (const setting of ["userns", "apparmor", "clone"]) assert.ok(source.includes(`test "$after_${setting}" = "$before_${setting}"`));
+    const aptCommands = source.replace(/\\\n\s*/g, " ").split("\n").filter(line => /\bapt-get\b/.test(line));
+    assert.equal(aptCommands.length, 2, "only signed-index update and download may invoke APT");
+    assert.match(aptCommands[0], /\bupdate\b/);
+    assert.match(aptCommands[1], /\bdownload\b/);
+    for (const command of aptCommands) assert.doesNotMatch(command, /\b(?:install|upgrade|remove|purge)\b/);
+    assert.doesNotMatch(source, /apt-get[^\n]* install|\bdpkg(?:-deb)?\s+(?:-i|--install|--unpack)|sysctl\s+(?:-w|--system)|\baa-disable\b|\bsetcap\b|systemctl|--no-sandbox/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("exact-source daemon matrices read inert data and never execute preview runner selection", () => {
+  const workflow = readWorkflow("release-verify.yml");
+  const step = workflow.split('      - name: Preserve the immutable source\'s platform contract')[1].split('\n  runner_binaries:')[0];
+  const script = step.split('        run: |\n')[1].split('\n').map(line => line.startsWith('          ') ? line.slice(10) : line).join('\n');
+  const root = mkdtempSync(path.join(tmpdir(), 'release-target-contract-'));
+  try {
+    const environment = {
+      PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: root,
+      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+    };
+    const git = args => {
+      const result = spawnSync('git', args, { cwd: root, env: environment, encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    const template = path.join(root, 'empty-template'); mkdirSync(template);
+    git(['init', '-q', '--template=' + template]);
+    const source = path.join(root, 'packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs');
+    const dataFile = path.join(root, 'packages/paperclip-runner/release-runner-targets.json');
+    mkdirSync(path.dirname(source), { recursive: true });
+    const output = path.join(root, 'outputs'), marker = path.join(root, 'candidate-executed');
+    const historical = ['darwin-arm64', 'darwin-x64', 'linux-x64'];
+    const current = [...historical, 'linux-arm64'];
+    const contract = targets => JSON.stringify({ schema: 'paperclip.runner.release-targets.v1', targets });
+    const malicious = `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'executed');\nwriteFileSync(process.env.GITHUB_OUTPUT, 'matrix={"include":[{"target":"linux-x64","host":"runs-on/fleet=paperclip-post-merge-x64/env=public-ci"}]}\\n');\nprocess.exit(0);\n`;
+    const pin = (module, data) => {
+      rmSync(dataFile, { force: true });
+      writeFileSync(source, module);
+      if (data !== undefined) writeFileSync(dataFile, data);
+      git(['add', 'packages']);
+      git(['-c', 'user.name=Release fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false',
+        'commit', '-qm', 'Fixture', '--allow-empty']);
+      return git(['rev-parse', 'HEAD']);
+    };
+    const run = sha => {
+      writeFileSync(output, '');
+      const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], { cwd: root, encoding: 'utf8', env: {
+        ...environment, SOURCE_SHA: sha, GITHUB_OUTPUT: output,
+      } });
+      assert.equal(existsSync(marker), false, 'Candidate code must never execute while selecting runners');
+      return result;
+    };
+    const assertMatrix = targets => {
+      const data = Object.fromEntries(readFileSync(output, 'utf8').trim().split('\n').map(line => {
+        const index = line.indexOf('='); return [line.slice(0, index), JSON.parse(line.slice(index + 1))];
+      }));
+      assert.deepEqual(data.matrix.include.map(row => row.target), targets);
+      assert.deepEqual(data.native_consumers.include.map(row => row.target), targets.filter(target => target !== 'linux-x64'));
+      const hosts = { 'linux-x64': targets.length === 4 ? 'ubuntu-24.04' : 'ubuntu-latest',
+        'linux-arm64': 'ubuntu-24.04-arm', 'darwin-arm64': 'macos-15', 'darwin-x64': 'macos-15-intel' };
+      for (const row of data.matrix.include) assert.equal(row.host, hosts[row.target], 'Only workflow-owned public hosts may be selected');
+    };
+    for (const [targets, module, data] of [
+      [historical, `export const RELEASE_RUNNER_TARGETS = ${JSON.stringify(historical)};`, undefined],
+      [current, `${malicious}export const RELEASE_RUNNER_TARGETS = Object.freeze(${JSON.stringify(current)});`, undefined],
+      [historical, malicious, contract(historical)],
+      [current, malicious, contract(current)],
+    ]) {
+      const result = run(pin(module, data));
+      assert.equal(result.status, 0, result.stderr);
+      assertMatrix(targets);
+    }
+    const sha = pin(malicious, contract(current));
+    writeFileSync(dataFile, contract(['runs-on/fleet=paperclip-post-merge-x64/env=public-ci']));
+    assert.equal(run(sha).status, 0, 'Read the immutable git blob, not a changed checkout file');
+    assertMatrix(current);
+    assert.equal(run('a'.repeat(40)).status, 1, 'Wrong checked-out source must fail before output');
+    assert.equal(readFileSync(output, 'utf8'), '');
+    for (const data of [
+      contract(['linux-arm64']), contract([...current, 'linux-arm64']), contract([...current.slice(0, 3), 'win32-x64']),
+      JSON.stringify({ schema: 'paperclip.runner.release-targets.v1', targets: current, host: 'trusted-fleet' }),
+      JSON.stringify({ schema: 'other', targets: current }), contract('linux-arm64'), 'null', '{invalid', ' '.repeat(65 * 1024),
+    ]) {
+      const result = run(pin(`export const RELEASE_RUNNER_TARGETS = ${JSON.stringify(historical)};`, data));
+      assert.notEqual(result.status, 0, 'Malformed present data must never fall back to a legacy module');
+      assert.equal(readFileSync(output, 'utf8'), '');
+    }
+    for (const module of [malicious,
+      'export const RELEASE_RUNNER_TARGETS = getTargets();',
+      `export const RELEASE_RUNNER_TARGETS = ${JSON.stringify(current)};\nexport const RELEASE_RUNNER_TARGETS = ${JSON.stringify(historical)};`,
+      'export const RELEASE_RUNNER_TARGETS = ["linux-arm64"];']) {
+      const result = run(pin(module, undefined));
+      assert.notEqual(result.status, 0, 'Unknown legacy declarations must fail closed');
+      assert.equal(readFileSync(output, 'utf8'), '');
+    }
+    pin(malicious, undefined);
+    symlinkSync('scripts/stage-release-runner-binaries.mjs', dataFile);
+    git(['add', 'packages']);
+    git(['-c', 'user.name=Release fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Symlink fixture']);
+    assert.notEqual(run(git(['rev-parse', 'HEAD'])).status, 0, 'Source contract symlinks must not be followed');
+    assert.equal(readFileSync(output, 'utf8'), '');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("historical promotion sources keep their packaging path while new sources require daemon assembly", () => {
+  const workflow = readWorkflow("release.yml");
+  const selector = workflow.split('      - name: Read the exact source packaging contract')[1].split('\n  release_runner_binaries:')[0];
+  const script = selector.split('        run: |\n')[1].split('\n').map(line => line.startsWith('          ') ? line.slice(10) : line).join('\n');
+  const root = mkdtempSync(path.join(tmpdir(), 'release-source-contract-'));
+  try {
+    const tools = path.join(root, 'tools'); mkdirSync(tools);
+    writeFileSync(path.join(tools, 'git'), '#!/bin/sh\ncase "$1" in\nrev-parse) printf "%s\\n" "$FIXTURE_HEAD";;\nshow) cat "$FIXTURE_SOURCE";;\n*) exit 3;;\nesac\n', { mode: 0o755 });
+    const source = path.join(root, 'release.sh'), output = path.join(root, 'outputs');
+    for (const [contents, required] of [['pnpm build\n', false], ['assemble-daemons "$PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR" "$SOURCE_SHA"\n', true]]) {
+      writeFileSync(source, contents); writeFileSync(output, '');
+      const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], { encoding: 'utf8', env: {
+        PATH: `${tools}:/usr/bin:/bin`, SOURCE_SHA: 'a'.repeat(40), FIXTURE_HEAD: 'a'.repeat(40), FIXTURE_SOURCE: source, GITHUB_OUTPUT: output,
+      } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(readFileSync(output, 'utf8'), new RegExp(`required=${required}`));
+    }
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], { encoding: 'utf8', env: {
+      PATH: `${tools}:/usr/bin:/bin`, SOURCE_SHA: 'a'.repeat(40), FIXTURE_HEAD: 'b'.repeat(40), FIXTURE_SOURCE: source, GITHUB_OUTPUT: output,
+    } });
+    assert.equal(result.status, 1, 'Wrong checkout cannot opt out of mandatory assembly');
+    const unreadable = spawnSync('bash', ['-euo', 'pipefail', '-c', script], { encoding: 'utf8', env: {
+      PATH: `${tools}:/usr/bin:/bin`, SOURCE_SHA: 'a'.repeat(40), FIXTURE_HEAD: 'a'.repeat(40), FIXTURE_SOURCE: path.join(root, 'absent'), GITHUB_OUTPUT: output,
+    } });
+    assert.equal(unreadable.status, 1, 'A failed immutable source read must not masquerade as a legacy source');
+
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  for (const job of ['publish_canary','publish_nightly','publish_beta','preview_stable','publish_stable']) {
+    const block = workflow.split(`  ${job}:\n`)[1].split(/\n  [a-z_]+:\n/)[0];
+    assert.match(block, /needs.release_runner_source.result == 'success'/);
+    assert.match(block, /needs.release_runner_source.outputs.required == 'false' \|\| needs.release_runner_binaries.result == 'success'/);
+    assert.match(block, /Download exact-source release daemon receipts\n\s+if: needs.release_runner_source.outputs.required == 'true'/);
   }
 });
 

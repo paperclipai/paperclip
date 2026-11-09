@@ -9,6 +9,7 @@ import { getHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatLifecycle, persistHeartbeatRunProcessMetadata, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -161,6 +162,43 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
     expect(persisted.usageJson).toEqual({ accountingReceiptReady: false, usageSource: "per_run", inputTokens: 8, outputTokens: 3 });
   });
 
+  it.each(["setRunStatus", "setRunStatusIfRunning"] as const)("signals committed terminal accounting before %s publishes a failed live event", async operation => {
+    const { run } = await fixture({ costAccountingPending: true });
+    const settled = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.accounting, settled);
+    vi.mocked(publishLiveEvent).mockImplementationOnce(() => { throw new Error("Live publication unavailable"); });
+    try {
+      await expect(createHeartbeatLifecycle(db, callbacks(db))[operation](run.id, "succeeded", { finishedAt: new Date() }))
+        .rejects.toThrow("Live publication unavailable");
+      const [persisted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(persisted.status).toBe("succeeded");
+      expect(persisted.costAccountingPending).toBe(true);
+      expect(settled).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
+
+  it("does not request accounting for an unchanged running status", async () => {
+    const { run } = await fixture();
+    const settled = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.accounting, settled);
+    try {
+      await createHeartbeatLifecycle(db, callbacks(db)).setRunStatus(run.id, "running");
+      expect(settled).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
+  it("signals legacy terminal accounting after the nested terminalizer transaction commits", async () => {
+    const { run } = await fixture({ runtimeMode: "legacy", costAccountingPending: true });
+    const settled = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.accounting, settled);
+    try {
+      const result = await createHeartbeatLifecycle(db, callbacks(db)).setRunStatusIfRunning(run.id, "failed", { finishedAt: new Date() });
+      expect(result.updated).toBe(true);
+      expect(result.run?.status).toBe("failed");
+      expect(settled).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
+
   it.each(["claimed", "cancelled"] as const)("settles a %s wake without reviving a revoked request", async (status) => {
     const { wake } = await fixture();
     await db.update(agentWakeupRequests).set({ status }).where(eq(agentWakeupRequests.id, wake.id));
@@ -180,6 +218,22 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
     expect(published).toHaveLength(2);
     for (const row of rows) expect(published.find(event => event.payload?.seq === row.seq)?.payload).toMatchObject({ runId: run.id, message: row.message });
   });
+
+  it.each(["legacy.case_handoff_cleanup_intent", "legacy.case_handoff_cleanup_verified"])(
+    "does not count controller cleanup bookkeeping as agent progress (%s)", async (eventType) => {
+      const { run } = await fixture({ status: "succeeded", runtimeMode: "legacy" });
+      const lifecycle = createHeartbeatLifecycle(db, callbacks(db));
+      await lifecycle.appendRunEvent(run, { eventType, stream: "system", message: "Controller cleanup receipt" });
+      const result = { summary: "I will inspect the repo next and then implement the fix." };
+      const planning = await lifecycle.classifyAndPersistRunLiveness(run, result);
+      expect(planning).toMatchObject({ livenessState: "plan_only", lastUsefulActionAt: null });
+
+      await lifecycle.appendRunEvent(run, { eventType: "item.completed", stream: "stdout", message: "Read the source file" });
+      const progressed = await lifecycle.classifyAndPersistRunLiveness(run, result);
+      expect(progressed?.livenessState).toBe("advanced");
+      expect(progressed?.lastUsefulActionAt).toBeInstanceOf(Date);
+    },
+  );
 
   it("reads current redaction settings for each event and persists the published sanitized payload", async () => {
     const { run } = await fixture();

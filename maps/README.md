@@ -13,6 +13,33 @@ identifies the same capability in both maps. Product behavior remains governed b
 [the implementation spec](../doc/SPEC-implementation.md); a map cannot grant
 authority or redefine a permission denial as success.
 
+## Capability identifiers
+
+The feature ID is the recipe filename without `.md`, such as `onboarding`.
+The full capability ID joins that feature ID and a Sub-features key with `/`:
+the `company` key in `feature-map/onboarding.md` is `onboarding/company`.
+Its `agent-access-map/onboarding.md` companion uses the same local `company` key.
+[The feature-map index](feature-map/README.md#browse-features) lists the existing
+feature and full capability IDs.
+
+Each child page states ``Feature ID: `onboarding`.`` after its introduction or
+product-map link. In feature recipes, show the full ID beside the parsed local
+key: ``- `company`: `onboarding/company` — create a company``. In access
+companions and Storybook verification guidance, keep the existing local heading
+and put ``Capability ID: `onboarding/company`.`` beneath it. These labels make
+the existing identifiers visible without changing keys, anchors, or ID generation.
+
+Use full capability IDs in cross-feature references, Storybook annotations,
+tests, issues, PRs, and verification evidence. Both segments use lowercase
+letters, digits, and hyphens. Keep filenames and keys stable when display titles
+or navigation labels change; renaming either changes the capability ID.
+
+Entry-point IDs describe a surface, such as `web-wizard`, and are scoped to their
+recipe. Reference them with a recipe link, such as
+[onboarding.md#web-wizard](feature-map/onboarding.md#web-wizard), and record the
+capability exercised separately. Navigation section labels are not capability IDs.
+See [IDs and references](feature-map/README.md#ids-and-references) for examples.
+
 ## Access contract
 
 Every business operation needs both an API and a usable agent entry point for an
@@ -62,8 +89,9 @@ the agent path, even when a legacy agent can call the REST endpoint directly.
 ## Companion file format
 
 Each `agent-access-map/<area>.md` has an H1, a relative link to its product file,
-review date and source commit, followed by one H2 backticked ID per product
-sub-feature. Each capability contains these fields:
+and its feature ID, followed by one H2 backticked local key per product
+sub-feature. Each capability starts with its full capability ID and contains
+these fields:
 
 - **Review:** `baseline` or `operation-reviewed`.
 - **API:** presence state and exact operation IDs, or a reasoned exception.
@@ -90,14 +118,15 @@ Review: `operation-reviewed`.
 ### `create`
 
 API: `present` — POST /api/companies/{companyId}/routines.
-Agent access: `partial` — agent REST and CLI routine create; default native
-mutation binding missing, and call_api blocks routine mutations.
+Agent access: `available` — agent REST, CLI routine create and native call_api
+under the enabled rollout and active-run/mode gates.
 Policy: same company; assigneeAgentId must be the calling agent; cite the
 routine authorization and native API policy sources.
 Evidence: `source-only` — reviewed commit and source links; no live proof.
 Verification: `not-run` — create an owned routine; reject assignment to another
 agent; inspect saved configuration, attribution and retry behavior.
-Gaps: default native create path; verify using the real permitted agent context.
+Gaps: verify ownership and responsible-user resolution with a permitted agent
+context; source presence alone does not qualify this operation.
 ```
 
 ## Keeping the maps synchronized
@@ -105,7 +134,7 @@ Gaps: default native create path; verify using the real permitted agent context.
 When a change adds/removes a capability or changes its behavior, API, permission,
 tool binding, CLI support, or work mode, update the affected companion and product
 recipe as appropriate in the same change. Preserve IDs across renames where the
-capability is unchanged; update both indexes and cross-links together. An API-only
+capability is unchanged; update the affected cross-links together. Indexes discover recipes automatically. An API-only
 change may update the companion without rewriting unchanged user instructions.
 
 [maintain-verification-skill](../.agents/skills/maintain-verification-skill/SKILL.md)
@@ -121,7 +150,7 @@ Run the structural check after map changes:
 node scripts/check-maps.mjs
 ```
 
-It checks paired areas/IDs, indexes, required fields, and local references. It
+It checks paired areas/IDs, navigation metadata, required fields, and local references. It
 does not certify endpoint authorization, production bindings, operation
 completeness, or live behavior. Source audits must check those against the
 existing API and tool contracts; avoid a second schema catalog or runtime.
@@ -132,4 +161,23 @@ allowed result and relevant denial (another company/private resource, wrong
 owner, missing grant, invalid run, restricted mode or resolver). Mutations also
 need persisted state/attribution and retry behavior. Capture evidence using the
 [existing artifact workflow](../doc/AGENT-ARTIFACTS.md); keep executed run results
-separate from product-map `coverage.json`, which records documentation scope.
+separate from generated `maps/generated/coverage.json`, which lists page references.
+
+## Local authorship and generated indexes
+
+Change only the recipes, access contracts and stories whose behavior or intent
+changed. Feature recipes own navigation metadata; stories own small
+`parameters.paperclip` annotations. Keep the feature-map README's readable ID
+index aligned with those sources; it does not register entries for generation.
+Do not refresh counts in shared READMEs, inventories, fingerprints or review
+journals.
+
+`node scripts/storybook-catalog.mjs` validates and generates aggregate navigation,
+Storybook data, verification routes and the page inventory. All outputs live in
+ignored `maps/generated/`, `ui/storybook/generated/`, and the ignored Storybook
+`preview.tsx` wrapper. Start/build and UI typechecking generate their own inputs.
+A clean merged checkout therefore assembles both branches' changes automatically.
+
+Git provides history and diffs. PRs, issues and CI artifacts retain review/run
+evidence for the named revision. Capability associations do not create whole-file
+review dependencies. Keep durable scenario limits in the affected recipe or story.

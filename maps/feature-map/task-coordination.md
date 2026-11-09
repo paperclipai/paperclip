@@ -1,6 +1,12 @@
+---
+navigation: {"section":"Tasks and conversations","sectionOrder":20,"order":20}
+---
+
 # Delegation, dependencies, and signoff
 
 A larger task can coordinate child work, dependencies, reviewers, and execution controls while preserving a clear owner and a traceable completion decision.
+
+Feature ID: `task-coordination`.
 
 Implementation: [task thread](../../ui/src/pages/IssueDetail.tsx), [execution policy](../../server/src/services/issues.ts).
 
@@ -8,10 +14,10 @@ Agent access: [companion](../agent-access-map/task-coordination.md).
 
 ## Sub-features
 
-- `delegation`: inspect parent/child tasks and the original request behind delegated work.
-- `dependencies`: show blocking tasks and wake eligible work when prerequisites resolve.
-- `signoff`: apply the configured implementation/review completion policy.
-- `tree-control`: pause or resume a task tree without bypassing its gates.
+- `delegation`: `task-coordination/delegation` — inspect parent/child tasks and the original request behind delegated work.
+- `dependencies`: `task-coordination/dependencies` — show blocking tasks and wake eligible work when prerequisites resolve.
+- `signoff`: `task-coordination/signoff` — apply the configured implementation/review completion policy.
+- `tree-control`: `task-coordination/tree-control` — pause or resume a task tree without bypassing its gates.
 
 ## How to get to it (user POV)
 

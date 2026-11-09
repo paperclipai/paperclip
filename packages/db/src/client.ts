@@ -267,6 +267,32 @@ export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: D
   finally { await dedicated.$client.end({ timeout: 1 }); }
 }
 
+// postgres.js pipelines a query onto a busy connection when none is idle, so
+// a short liveness write can wait behind an unrelated slow statement with no
+// client-side bound. Liveness writes (controller-lease renewal) get a small
+// private pool, created on first use and shared for the owner's lifetime.
+const livenessDbFactories = new WeakMap<object, () => Db>();
+const livenessDbs = new WeakMap<object, Db>();
+const LIVENESS_POOL_MAX_CONNECTIONS = 2;
+
+/** The private liveness pool for a `createDb` client; other clients (test
+ * doubles, transactions) are returned unchanged. */
+export function livenessDb(db: Db): Db {
+  const existing = livenessDbs.get(db);
+  if (existing) return existing;
+  const factory = livenessDbFactories.get(db);
+  if (!factory) return db;
+  const created = factory();
+  livenessDbs.set(db, created);
+  return created;
+}
+
+/** Ends the liveness pool if one was created. The ended pool stays cached, so
+ * a late renewal fails like a query on the ended primary pool. */
+export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<void> {
+  await livenessDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   return createDbClient(url, resolved);
@@ -283,6 +309,9 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
   dedicatedDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+  }, db));
+  livenessDbFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: LIVENESS_POOL_MAX_CONNECTIONS, applicationName: "paperclip-controller-lease",
   }, db));
   return db;
 }
@@ -473,6 +502,8 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0313_private_task_access.sql",
   "0314_private_task_draft_assets.sql",
   "0332_little_night_nurse.sql",
+  "0345_luxuriant_carmella_unuscione.sql",
+  "0369_late_logan.sql",
 ]);
 
 async function applyPendingMigrationsManually(
@@ -579,6 +610,9 @@ async function mapHashesToMigrationFiles(migrationFiles: string[]): Promise<Map<
       const content = await readMigrationFileContent(migrationFile);
       const hash = createHash("sha256").update(content).digest("hex");
       mapped.set(hash, migrationFile);
+      if (migrationFile === "0355_agent_tool_definition_hooks.sql") {
+        mapped.set("7ac76adac0220da522c78e51da20490aeb0f90512b4370a05af9f8dd0f75eda6", migrationFile);
+      }
     }),
   );
 

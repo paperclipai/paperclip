@@ -77,6 +77,7 @@ const ALL_CUSTOM_IMAGE_WORKER_METHODS = [
 function createWorkerManager(options?: { workerMethods?: readonly string[] }) {
   const supportedMethods = options?.workerMethods ?? ALL_CUSTOM_IMAGE_WORKER_METHODS;
   const call = vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
+    if (method === "environmentInspectLease") return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     if (method === "environmentStartInteractiveSetup") {
       return {
         providerLeaseId: `lease-${params.sessionId}`,
@@ -198,6 +199,28 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     });
     return { companyId, environmentId };
   }
+
+  it.each(["supported", "old_worker", "changed_config"])("inspects historical setup read-only with exact config and capability gates: %s", async mode => {
+    const fixture = await seed();
+    const worker = createWorkerManager({ workerMethods: [...ALL_CUSTOM_IMAGE_WORKER_METHODS,
+      ...(mode === "old_worker" ? [] : ["environmentInspectLease"])] });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: worker });
+    const created = await service.startSetupSession({ environmentId: fixture.environmentId,
+      actor: { userId: "fixture-user" }, now: new Date("2099-01-01T00:00:00Z") });
+    await service.cancelSetupSession({ sessionId: created.session.id });
+    const [session] = await db.select().from(environmentCustomImageSetupSessions).where(eq(environmentCustomImageSetupSessions.id, created.session.id));
+    expect(session!.metadata).toMatchObject({ setupRpcCompanyId: created.session.metadata!.setupRpcCompanyId,
+      sourceEnvironmentConfigFingerprint: created.session.metadata!.sourceEnvironmentConfigFingerprint });
+    if (mode === "changed_config") await db.update(environments).set({ config: { provider: "fake-plugin", image: "replacement:base" } }).where(eq(environments.id, fixture.environmentId));
+    worker.call.mockClear();
+    const observed = await service.inspectSetupResource(session!);
+    if (mode === "supported") {
+      expect(observed).toEqual({ providerLeaseId: session!.providerLeaseId, state: "destroyed" });
+      expect(worker.call).toHaveBeenCalledExactlyOnceWith(expect.any(String), "environmentInspectLease", expect.objectContaining({
+        companyId: session!.metadata!.setupRpcCompanyId, providerLeaseId: session!.providerLeaseId,
+      }), 15_000);
+    } else { expect(observed).toBeUndefined(); expect(worker.call).not.toHaveBeenCalled(); }
+  });
 
   it("starts, refreshes, finishes, refreshes again, and rolls back setup sessions", async () => {
     const { environmentId } = await seed();
@@ -385,6 +408,8 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
       reason: "user_cancelled",
     });
     expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.metadata).toMatchObject({ setupRpcCompanyId: started.session.metadata!.setupRpcCompanyId,
+      sourceEnvironmentConfigFingerprint: started.session.metadata!.sourceEnvironmentConfigFingerprint });
     expect(await service.getActiveTemplate({ environmentId })).toBeNull();
 
     const expired = await service.startSetupSession({
@@ -399,6 +424,8 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     expect(cleanup).toMatchObject({ scanned: 1, timedOut: 1, failed: 0 });
     const timedOut = await service.getSessionById(expired.session.id);
     expect(timedOut?.status).toBe("timed_out");
+    expect(timedOut?.metadata).toMatchObject({ setupRpcCompanyId: expired.session.metadata!.setupRpcCompanyId,
+      sourceEnvironmentConfigFingerprint: expired.session.metadata!.sourceEnvironmentConfigFingerprint });
   });
 
   it("rejects interactive setup when the provider declares it but the worker omits a setup method", async () => {

@@ -485,11 +485,11 @@ export function githubConnectionEventService(
       emptyPolls = 0;
       nextPollAt = now().getTime() + 5_000;
       const result: GitHubConnectionEventPollResult = {
-        leased: lease.events.length,
+        leased: lease.events.length + (lease.failedEventIds?.length ?? 0),
         processed: 0,
         duplicate: 0,
         ignored: 0,
-        failed: 0,
+        failed: lease.failedEventIds?.length ?? 0,
       };
       const acknowledge: string[] = [];
       for (const event of lease.events) {
@@ -534,6 +534,10 @@ export function githubConnectionEventService(
           leaseId: lease.leaseId,
           deliveryIds: acknowledge,
         });
+      }
+      for (const deliveryId of lease.failedEventIds ?? []) {
+        logger.warn({ deliveryId, reason: "inner_event_authentication_failed" },
+          "GitHub connector event retained for retry");
       }
       return result;
     },

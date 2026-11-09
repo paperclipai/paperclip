@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
@@ -140,6 +140,8 @@ describeEmbeddedPostgres("built-in agents", () => {
     };
   }
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let runnerSelectionSpy: { mockRestore(): void } | undefined;
+  const runnerTarget = { driver: "local", platform: "linux", architecture: "x64" };
   const instructionOperator = { type: "board", userId: "local-board", source: "local_implicit" } as const;
   async function writeInstructionEntry(agent: { id: string; companyId: string }, entryFile: string, content: string) {
     const service = agentInstructionRevisionService(db);
@@ -157,7 +159,16 @@ describeEmbeddedPostgres("built-in agents", () => {
     lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
   }, 20_000);
 
+  beforeEach(async () => {
+    runnerTarget.platform = "linux";
+    runnerTarget.architecture = "x64";
+    const selection = await import("../services/agent-runner-selection.js");
+    runnerSelectionSpy = vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
+      selection.resolveNewAgentRunner({ ...input, target: runnerTarget }));
+  });
+
   afterEach(async () => {
+    runnerSelectionSpy?.mockRestore();
     await lifecycleWorker.sweep();
     await db.delete(routineTriggers);
     await db.delete(routines);
@@ -255,7 +266,9 @@ describeEmbeddedPostgres("built-in agents", () => {
     ])).toThrow("defaultAdapterType must be allowed");
   });
 
-  it("lazily provisions one agent per company/key and updates the same row on setup", async () => {
+  it.each([{ platform: "linux", architecture: "x64" }, { platform: "linux", architecture: "arm64" }, { platform: "darwin", architecture: "arm64" }, { platform: "darwin", architecture: "x64" }])("lazily provisions one agent per company/key and updates the same row on setup ($platform/$architecture)", async ({ platform, architecture }) => {
+    runnerTarget.platform = platform;
+    runnerTarget.architecture = architecture;
     const companyId = await seedCompany();
     const svc = builtInAgentService(db);
 
@@ -280,19 +293,70 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(configured.status).toBe("ready");
     expect(configured.agentId).toBe(created.agentId);
     expect(configured.agent).toMatchObject({
-      adapterType: "codex_local",
-      adapterConfig: { model: "gpt-5.4" },
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", model: "gpt-5.4" },
     });
 
     const reconciled = await svc.ensure(companyId, "briefs");
     expect(reconciled.status).toBe("ready");
     expect(reconciled.agent).toMatchObject({
-      adapterType: "codex_local",
-      adapterConfig: { model: "gpt-5.4" },
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", model: "gpt-5.4" },
     });
 
     const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(rows).toHaveLength(1);
+  });
+
+  it("keeps existing legacy and native built-in runners through unrelated edits and startup", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const svc = builtInAgentService(db);
+    const savedSettings = { model: "gpt-5.5", modelReasoningEffort: "high", timeoutSec: 123 };
+    const created = await svc.ensure(companyId, "briefs", { adapterType: "codex_local", adapterConfig: savedSettings, runner: "legacy" });
+    expect(created.agent?.adapterType).toBe("codex_local");
+    await svc.ensure(companyId, "briefs", { budgetMonthlyCents: 100 });
+    await reconcileBuiltInAgentsOnStartup(db);
+    const legacy = await svc.get(companyId, "briefs");
+    expect(legacy.agent?.adapterType).toBe("codex_local");
+    expect(legacy.agent?.adapterConfig).toEqual(created.agent?.adapterConfig);
+    const switched = await svc.ensure(companyId, "briefs", { runner: "paperclip" });
+    expect(switched.agent).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", ...savedSettings } });
+    await svc.ensure(companyId, "briefs", { budgetMonthlyCents: 200 });
+    await reconcileBuiltInAgentsOnStartup(db);
+    expect((await svc.get(companyId, "briefs")).agent?.adapterConfig).toEqual(switched.agent?.adapterConfig);
+    const switchedBack = await svc.ensure(companyId, "briefs", { runner: "legacy" });
+    expect(switchedBack.agent).toMatchObject({ adapterType: "codex_local", adapterConfig: savedSettings });
+    const switchedAgain = await svc.ensure(companyId, "briefs", { runner: "paperclip" });
+    expect(switchedAgain.agent).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", ...savedSettings } });
+    runnerTarget.platform = "win32";
+    runnerTarget.architecture = "x64";
+    const edited = await svc.ensure(companyId, "briefs", { adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } });
+    expect(edited.agent).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.4" } });
+  });
+
+  it("freezes Codex built-in execution in the reviewed hire through service restart", async () => {
+    const companyId = await seedCompany({ requireApproval: true });
+    const result = await builtInAgentService(db).provision(companyId, "briefs", { adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } }, { requestedByUserId: "board-user" });
+    expect(result.approval?.payload).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.4" } });
+    runnerTarget.platform = "win32";
+    runnerTarget.architecture = "x64";
+    await reconcileBuiltInAgentsOnStartup(db);
+    await approvalService(db).approve(result.approval!.id, "board-user");
+    const approved = await builtInAgentService(db).get(companyId, "briefs");
+    expect(approved.agent?.adapterType).toBe(result.approval!.payload.adapterType);
+    expect(approved.agent?.adapterConfig).toEqual(result.approval!.payload.adapterConfig);
+  });
+
+  it("records the human who enabled a built-in agent and leaves automatic creation unattributed", async () => {
+    const enabledCompanyId = await seedCompany({ requireApproval: false });
+    const automaticCompanyId = await seedCompany({ requireApproval: false });
+    const builtIns = builtInAgentService(db);
+
+    const enabled = await builtIns.provision(enabledCompanyId, "briefs", {}, { requestedByUserId: "board-user" });
+    const automatic = await builtIns.provision(automaticCompanyId, "briefs");
+
+    expect(enabled.state.agent?.createdByUserId).toBe("board-user");
+    expect(automatic.state.agent?.createdByUserId).toBeNull();
   });
 
   it("routes policy-gated built-in provisioning through a pending hire approval", async () => {
@@ -336,7 +400,7 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const rowsBeforeApproval = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(rowsBeforeApproval).toHaveLength(1);
-    expect(rowsBeforeApproval[0]).toMatchObject({ status: "pending_approval" });
+    expect(rowsBeforeApproval[0]).toMatchObject({ status: "pending_approval", createdByUserId: "board-user" });
 
     await expect(builtIns.requireBuiltInAgent(companyId, "briefs")).rejects.toMatchObject({
       status: 412,
@@ -406,7 +470,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     await expect(builtIns.get(companyId, "briefs")).resolves.toMatchObject({
       status: "ready",
       agentId: ready.agentId,
-      agent: { adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } },
+      agent: { adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.4" } },
     });
   });
 
@@ -433,8 +497,8 @@ describeEmbeddedPostgres("built-in agents", () => {
       agentId: seeded.agentId,
       agent: {
         status: "idle",
-        adapterType: "codex_local",
-        adapterConfig: { model: "gpt-5.4" },
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.4" },
         budgetMonthlyCents: 2500,
       },
     });
@@ -600,8 +664,8 @@ describeEmbeddedPostgres("built-in agents", () => {
         role: "general",
         title: null,
         capabilities: "Prepares concise operational briefs for the board and agent company.",
-        adapterType: "codex_local",
-        adapterConfig: { model: "gpt-5.4" },
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.4" },
       },
     });
   });
@@ -647,7 +711,7 @@ describeEmbeddedPostgres("built-in agents", () => {
         role: "general",
         title: "Reflection Coach",
         icon: "eye",
-        adapterType: "codex_local",
+        adapterType: "paperclip_runner",
         permissions: {
           canCreateAgents: false,
           canCreateSkills: false,
@@ -1263,7 +1327,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       title: "Reflection Coach",
       icon: "eye",
       reportsTo: root.id,
-      adapterType: "codex_local",
+      adapterType: "paperclip_runner",
       budgetMonthlyCents: 0,
     });
     expect(state.status).toBe("paused");
@@ -1339,8 +1403,8 @@ describeEmbeddedPostgres("built-in agents", () => {
       icon: "sparkles",
       role: "general",
       reportsTo: root.id,
-      adapterType: "claude_local",
-      adapterConfig: { model: "claude-haiku-4-5" },
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-haiku-4-5" },
       budgetMonthlyCents: 0,
     });
     expect(state.status).toBe("paused");

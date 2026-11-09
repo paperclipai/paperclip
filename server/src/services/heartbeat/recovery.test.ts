@@ -10,8 +10,9 @@ import { createHeartbeatRecovery, type HeartbeatRecoveryDependencies } from "./r
 import type { HotRestartIntent } from "../hot-restart.js";
 import type { NativeRestartRecoveryClaim, NativeRestartRecoveryDisposition } from "../native-runtime/index.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "../native-runtime/native-runner-ownership.js";
-import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, legacyShutdownWorkspaceResourceProtected, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
+import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, maintainLegacyShutdownWorkspaceSettlement, legacyShutdownWorkspaceResourceProtected, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
+import { logger } from "../../middleware/logger.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 
@@ -290,6 +291,103 @@ describePostgres("heartbeat recovery module ownership", () => {
     adapterExecutionControls.delete(f.run.id);
   }
 
+  it("does not let an elapsed shutdown wait stop a sandbox whose exporter still owns settlement", async () => {
+    const f = await seedShutdownSource();
+    const control = createAdapterExecutionControl();
+    control.controller.abort();
+    adapterExecutionControls.set(f.run.id, control);
+    const stop = vi.fn(async () => ({ providerLeaseId: f.lease.providerLeaseId, state: "stopped" }));
+    const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
+      resolveCapabilities: async () => classifyEnvironmentCapabilities({}),
+      acquireRunLease: async () => { throw new Error("Unexpected acquire"); },
+      releaseRunLease: vi.fn(async () => null), retryPendingSandboxTeardown: stop }] });
+    try {
+      await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      expect(await allowLegacyShutdownWorkspaceCleanup(db, source, new Date(Date.now() + 60_000))).toBe(false);
+      await runtime.releaseRunLeases(f.run.id);
+      expect(stop).not.toHaveBeenCalled();
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].status).toBe("active");
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.run.issueId!))).toHaveLength(0);
+    } finally { control.finish(); await deleteShutdownSource(f); }
+  });
+
+  it("renews the durable export fence for other controllers and expires it after owner loss", async () => {
+    const f = await seedShutdownSource();
+    const [initial] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    const originalDeadline = (initial.metadata!.legacyShutdownWorkspaceSettlement as { deadlineAt: string }).deadlineAt;
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const stopRenewing = maintainLegacyShutdownWorkspaceSettlement(db, f.run);
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.waitFor(async () => {
+        const [current] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+        expect(Date.parse((current.metadata!.legacyShutdownWorkspaceSettlement as { deadlineAt: string }).deadlineAt))
+          .toBeGreaterThan(Date.parse(originalDeadline));
+      });
+      expect(await allowLegacyShutdownWorkspaceCleanup(db, initial, new Date(Date.parse(originalDeadline) + 1))).toBe(false);
+      await stopRenewing();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await db.update(heartbeatRuns).set({ status: "interrupted", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      await sweepLegacyShutdownWorkspaceSettlements(db);
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0])
+        .toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure",
+          metadata: { legacyShutdownWorkspaceSettlement: { state: "expired" }, sandboxStopAndRetain: { leaseId: f.lease.id } } });
+    } finally { await stopRenewing(); vi.useRealTimers(); await deleteShutdownSource(f); }
+  });
+
+  it("bounds a contended settlement renewal without blocking unrelated database work", async () => {
+    const f = await seedShutdownSource();
+    const warning = vi.spyOn(logger, "warn");
+    let unlock!: () => void;
+    let locked!: () => void;
+    const lockReady = new Promise<void>(resolve => { locked = resolve; });
+    const releaseLock = new Promise<void>(resolve => { unlock = resolve; });
+    const lock = db.transaction(async tx => {
+      await tx.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)).for("update");
+      locked();
+      await releaseLock;
+    });
+    await lockReady;
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const stopRenewing = maintainLegacyShutdownWorkspaceSettlement(db, f.run);
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))
+        .toEqual([{ id: f.run.id }]);
+      await stopRenewing();
+      expect(warning).toHaveBeenCalledWith({ runId: f.run.id, errorKind: "lock_timeout" },
+        "Shutdown workspace settlement lease renewal failed; source remains protected locally");
+    } finally {
+      unlock();
+      await lock;
+      await stopRenewing();
+      vi.useRealTimers();
+      warning.mockRestore();
+      await deleteShutdownSource(f);
+    }
+  });
+
+  it.each([["57014", "statement_cancelled"], ["08006", "connection_failed"], ["private-credential", "unknown"]])(
+    "reports renewal failure %s without raw database diagnostics", async (code, errorKind) => {
+      const run = { id: randomUUID(), companyId: randomUUID() };
+      const privateValue = "postgres://private-credential@example.invalid/database";
+      const failure = new Error(privateValue, { cause: { code, query: privateValue, params: [privateValue] } });
+      const dbBoundary = { transaction: vi.fn().mockRejectedValue(failure) } as unknown as Db;
+      const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const stopRenewing = maintainLegacyShutdownWorkspaceSettlement(dbBoundary, run);
+      try {
+        await vi.advanceTimersByTimeAsync(10_000);
+        await stopRenewing();
+        expect(warning).toHaveBeenCalledExactlyOnceWith({ runId: run.id, errorKind },
+          "Shutdown workspace settlement lease renewal failed; source remains protected locally");
+        expect(JSON.stringify(warning.mock.calls)).not.toContain("private-credential");
+      } finally { await stopRenewing(); vi.useRealTimers(); warning.mockRestore(); }
+    },
+  );
+
   it("does not turn a stale pending snapshot into a repair hold after settlement", async () => {
     const f = await seedShutdownSource();
     try {
@@ -425,12 +523,13 @@ describePostgres("heartbeat recovery module ownership", () => {
     } finally { control.finish(); await deleteShutdownSource(f); }
   });
 
-  it("pins an unjoined sandbox restore for repair before bounded shutdown cleanup", async () => {
+  it("joins a late successful export before cleanup and continuation after the shutdown wait", async () => {
     const run = await seedRun();
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: run.issueId } }).where(eq(heartbeatRuns.id, run.id));
     const [lease] = await db.insert(environmentLeases).values({ companyId: run.companyId, heartbeatRunId: run.id,
       issueId: run.issueId, status: "active", provider: "daytona", providerLeaseId: randomUUID(), leasePolicy: "ephemeral",
       metadata: { driver: "sandbox", sandboxProviderPlugin: true, pluginId: "fixture-plugin", remoteCwd: "/home/daytona/workspace" } }).returning();
+    await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, run.agentId));
     const deps = callbacks(db);
     deps.setRunStatusIfRunning.mockImplementation(async (id, status, patch) => {
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0].metadata)
@@ -440,10 +539,10 @@ describePostgres("heartbeat recovery module ownership", () => {
     });
     deps.getRun.mockImplementation(async id => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0] ?? null);
     deps.releaseEnvironmentLeasesForRun.mockImplementation(async () => {
-      expect((await deps.getRun(run.id))?.resultJson).toMatchObject({ workspaceRestoreFailure: "restore_failed",
-        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [lease.id] } });
+      expect((await deps.getRun(run.id))?.resultJson).toEqual({ workspaceRestored: true, conversationContinuation: "continue_conversation_v1" });
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0]).toMatchObject({
-        status: "pending_cleanup", leasePolicy: "retain_on_failure", metadata: { sandboxStopAndRetain: { leaseId: lease.id } } });
+        status: "active", leasePolicy: "ephemeral", metadata: { legacyShutdownWorkspaceSettlement: { state: "settled" } } });
+      await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date() }).where(eq(environmentLeases.id, lease.id));
     });
     const control = createAdapterExecutionControl();
     adapterExecutionControls.set(run.id, control);
@@ -452,15 +551,24 @@ describePostgres("heartbeat recovery module ownership", () => {
     try {
       await vi.waitFor(() => expect(control.controller.signal.aborted).toBe(true));
       await vi.advanceTimersByTimeAsync(30_000);
-      await drain;
+      expect(await drain).toMatchObject({ interruptedRunIds: [run.id] });
+      expect(deps.activeRunExecutionPromises.size).toBe(1);
+      expect(deps.releaseEnvironmentLeasesForRun).not.toHaveBeenCalled();
+      expect(deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!))).toHaveLength(0);
+      await db.update(heartbeatRuns).set({ resultJson: { workspaceRestored: true, conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, run.id));
+      control.finish();
+      await Promise.all([...deps.activeRunExecutionPromises]);
       expect(deps.releaseEnvironmentLeasesForRun).toHaveBeenCalledOnce();
-      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!)))
-        .toEqual([expect.objectContaining({ evidence: expect.objectContaining({ workspaceRestoreFailure: "restore_failed" }) })]);
+      expect(deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+      expect(deps.scheduleBoundedRetryForRun).toHaveBeenCalledAfter(deps.releaseEnvironmentLeasesForRun);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!))).toHaveLength(0);
     } finally {
       vi.useRealTimers();
       control.finish();
       adapterExecutionControls.delete(run.id);
       await drain;
+      await Promise.all([...deps.activeRunExecutionPromises]);
       await db.delete(environmentLeases).where(eq(environmentLeases.id, lease.id));
       await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));

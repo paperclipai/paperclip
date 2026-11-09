@@ -1,23 +1,29 @@
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
 import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
   agents,
+  budgetReservations,
+  companies,
   connectionIntentDeliveries,
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
   issues,
+  nativeRunFinalizations,
+  projects,
 } from "@paperclipai/db";
 import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@paperclipai/shared";
 import { withAccountingTransaction } from "../../../services/accounting-transaction.js";
 import type { ActivityPublication } from "../../../services/activity-log.js";
 import { parseObject } from "../../../adapters/utils.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
-import { budgetService, budgetServiceInTransaction } from "../../../services/budgets.js";
+import { budgetService, budgetServiceInTransaction, recheckAdmittedRunBudgetReadOnly } from "../../../services/budgets.js";
+import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInTransaction } from "../../../services/budget-reservations.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
@@ -192,10 +198,11 @@ export function createPostgresRunDispatchAdapter(
   const treeControlSvc = issueTreeControlService(db);
   const issuesSvc = issueService(db);
 
-  async function withIssueThenRunLocks<T>(
-    input: { runId: string; companyId: string },
+  async function withRunOwnershipLocks<T>(
+    input: { runId: string; companyId: string; recoveryLeaseOwner?: string; enforceContinuationOwnership?: boolean },
     onMissing: () => T,
     operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
+    mode: "accounting" | "ownership",
   ): Promise<T> {
     // Queue editing and claiming already use issue -> wake -> run. Read the
     // immutable issue reference without a lock first, then acquire issue ->
@@ -208,37 +215,45 @@ export function createPostgresRunDispatchAdapter(
         .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
         .then((rows) => rows[0] ?? null);
       if (!hint) return onMissing();
-      const hintedIssueId = readNonEmptyString(parseObject(hint.contextSnapshot).issueId);
+      // Already-admitted ordinary work owes the budget/run gate, not another
+      // continuation or chat-control issue lock. Its authority is captured on
+      // the run and reservation; protected recovery retains its admission.
+      const hintedIssueId = input.enforceContinuationOwnership === false ? null
+        : readNonEmptyString(parseObject(hint.contextSnapshot).issueId);
 
-      const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } =
-        await withAccountingTransaction(db, input.companyId, async (typedTx, publications) => {
-          // Budget gates mutate policy state. Acquire company before issue/run,
-          // matching receipt writers (including their attribution FK locks).
-          if (hintedIssueId) {
-            await typedTx
-              .select({ id: issues.id })
-              .from(issues)
-              .where(and(eq(issues.id, hintedIssueId), eq(issues.companyId, input.companyId)))
-              .for("update");
-          }
+      const locked = async (typedTx: Db, publications: ActivityPublication[]) => {
+        // Recovery always takes coordinator before issue/run. Only the
+        // accounting phase acquires the company lock and evaluates budgets.
+        await lockRunBudgetRecoveryOwnerInTransaction(typedTx, input.companyId, input.runId, input.recoveryLeaseOwner);
+        if (hintedIssueId) {
+          await typedTx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(eq(issues.id, hintedIssueId), eq(issues.companyId, input.companyId)))
+            .for("update");
+        }
 
-          const run = await typedTx
-            .select()
-            .from(heartbeatRuns)
-            .where(
-              and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)),
-            )
-            // Keep the run status stable through the semantic decision and any
-            // resulting mutation and synchronous dispatch handoff. Never await
-            // adapter-owned work while this transaction holds the row locks.
-            .for("update")
-            .then((rows) => rows[0] ?? null);
-          if (!run) return { kind: "missing" as const };
+        const run = await typedTx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)),
+          )
+          // Keep the run status stable through the semantic decision and any
+          // resulting mutation and synchronous dispatch handoff. Never await
+          // adapter-owned work while this transaction holds the row locks.
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!run) return { kind: "missing" as const };
 
-          const lockedIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
-          if (lockedIssueId !== hintedIssueId) return { kind: "retry" as const };
-          return { kind: "value" as const, value: await operation(typedTx, run, publications) };
-        });
+        const lockedIssueId = input.enforceContinuationOwnership === false ? null
+          : readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        if (lockedIssueId !== hintedIssueId) return { kind: "retry" as const };
+        return { kind: "value" as const, value: await operation(typedTx, run, publications) };
+      };
+      const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } = mode === "accounting"
+        ? await withAccountingTransaction(db, input.companyId, locked)
+        : await db.transaction(tx => locked(tx as unknown as Db, []));
 
       if (result.kind === "missing") return onMissing();
       if (result.kind === "value") return result.value;
@@ -247,6 +262,14 @@ export function createPostgresRunDispatchAdapter(
     throw new Error(
       `run-dispatch: run ${input.runId} changed issue context repeatedly while acquiring locks`,
     );
+  }
+
+  function withIssueThenRunLocks<T>(
+    input: { runId: string; companyId: string; recoveryLeaseOwner?: string; enforceContinuationOwnership?: boolean },
+    onMissing: () => T,
+    operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
+  ) {
+    return withRunOwnershipLocks(input, onMissing, operation, "accounting");
   }
 
   async function loadGateFacts(
@@ -759,6 +782,9 @@ export function createPostgresRunDispatchAdapter(
     const promoteLockedRun = async (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => {
       if (
         run.status !== "scheduled_retry" ||
+        // The locked row is also the cancellation claim. If Stop won first,
+        // leave settlement to that owner rather than promote its parked run.
+        run.resultJson?.startupCancellation ||
         !run.scheduledRetryAt ||
         new Date(run.scheduledRetryAt).getTime() > now.getTime()
       ) {
@@ -884,6 +910,7 @@ export function createPostgresRunDispatchAdapter(
     now: Date,
     providerDispatchNotStarted = false,
   ): Promise<CancelStaleQueuedRunOutcome> {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
       const [row] = await tx
         .update(heartbeatRuns)
         .set({
@@ -981,10 +1008,27 @@ export function createPostgresRunDispatchAdapter(
       };
   }
 
-  async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
+  async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date, publications?: ActivityPublication[]) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, facts: null, executionBlocker: null, decision: { stale: false as const } };
+    if (typeof contextSnapshot.workspaceReconstructionActionId === "string") {
+      try {
+        await validateReconstructedWorkspaceDispatch(tx, run);
+        const current = await loadGateFacts({ runId: run.id, companyId: run.companyId, agentId: run.agentId,
+          responsibleUserId: run.responsibleUserId, conversationContinuation: true, contextSnapshot,
+          scheduledRetryReason: run.scheduledRetryReason, retryReasonOverride: "native_safe_replacement", wakeupRequestId: run.wakeupRequestId,
+        }, now, tx, publications);
+        if (!current.agentFound || !decideScheduledRetryGate(current.facts, now).allowed) throw new Error("reconstruction_execution_not_eligible");
+      }
+      catch {
+        return { issueId, facts: null, executionBlocker: null, decision: { stale: true as const,
+          errorCode: "execution_reconciliation_required" as const,
+          reason: "Workspace reconstruction changed before execution. Inspect the saved sources and current task before continuing.",
+          details: { issueId, recoveryActionId: contextSnapshot.workspaceReconstructionActionId },
+        } };
+      }
+    }
     const recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
     if (recovery) return { issueId, facts: null, executionBlocker: recovery, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
@@ -1070,9 +1114,9 @@ export function createPostgresRunDispatchAdapter(
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
-    const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
+    const cancelLockedRun = async (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => {
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
-      const { issueId, facts, decision, executionBlocker } = await decideCurrentRunStaleness(tx, run, input.now);
+      const { issueId, facts, decision, executionBlocker } = await decideCurrentRunStaleness(tx, run, input.now, publications);
       if (!decision.stale || !issueId) {
         if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
           // Preserve the authority accepted under the issue/run locks. Later
@@ -1109,63 +1153,79 @@ export function createPostgresRunDispatchAdapter(
   async function dispatchResolvedInteractionIfCurrent<T>(
     input: DispatchResolvedInteractionInput<T>,
   ): Promise<DispatchResolvedInteractionOutcome<T>> {
-    const dispatchLockedRun = async (tx: Db, run: HeartbeatRun) => {
+    const dispatchLockedRun = async (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => {
       if (run.status !== input.expectedStatus || run.resultJson?.cancellation || run.resultJson?.startupCancellation) {
         return { dispatched: false as const, cancellation: { outcome: "lost_race" as const } };
       }
-      const { issueId, decision: initialDecision } = await decideCurrentRunStaleness(
-        tx,
-        run,
-        input.now,
-      );
-      const decision =
-        !initialDecision.stale && issueId
-          ? await tx
-              .select({ executionRunId: issues.executionRunId })
-              .from(issues)
-              .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-              .then((rows) => rows[0] ?? null)
-              .then((issue) =>
-                issue?.executionRunId === run.id
-                  ? initialDecision
-                  : {
-                      stale: true as const,
-                      errorCode: "issue_execution_lock_changed" as const,
-                      reason:
-                        "Cancelled because continuation no longer owns the issue execution lock before adapter dispatch",
-                      details: {
-                        issueId,
-                        expectedExecutionRunId: run.id,
-                        currentExecutionRunId: issue?.executionRunId ?? null,
-                      },
-                    },
-              )
-          : initialDecision;
-
-      if (decision.stale && issueId) {
-        const cancellation = await cancelStaleRunInTx(
+      if (input.enforceContinuationOwnership !== false) {
+        const { issueId, decision: initialDecision } = await decideCurrentRunStaleness(
           tx,
           run,
-          issueId,
-          decision,
-          input.expectedStatus,
           input.now,
-          true, // This locked gate has not handed off to the provider callback.
+          publications,
         );
-        return { dispatched: false as const, cancellation };
+        const decision =
+          !initialDecision.stale && issueId
+            ? await tx
+                .select({ executionRunId: issues.executionRunId })
+                .from(issues)
+                .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+                .then((rows) => rows[0] ?? null)
+                .then((issue) =>
+                  issue?.executionRunId === run.id
+                    ? initialDecision
+                    : {
+                        stale: true as const,
+                        errorCode: "issue_execution_lock_changed" as const,
+                        reason:
+                          "Cancelled because continuation no longer owns the issue execution lock before adapter dispatch",
+                        details: {
+                          issueId,
+                          expectedExecutionRunId: run.id,
+                          currentExecutionRunId: issue?.executionRunId ?? null,
+                        },
+                      },
+                )
+            : initialDecision;
+
+        if (decision.stale && issueId) {
+          const cancellation = await cancelStaleRunInTx(
+            tx,
+            run,
+            issueId,
+            decision,
+            input.expectedStatus,
+            input.now,
+            true, // This locked gate has not handed off to the provider callback.
+          );
+          return { dispatched: false as const, cancellation };
+        }
       }
 
-      // Hand off while ownership is still locked, but do not await the provider
-      // promise. Bootstrap and failure finalization can update these same rows;
-      // the transaction must commit independently of either callback completing.
-      const resultPromise = input.dispatch(() => {});
-      // A synchronous rejection can precede the commit response. Observe it
-      // immediately while preserving the original promise for the caller.
-      void resultPromise.catch(() => {});
-      return { dispatched: true as const, resultPromise };
+      const admissionBlockReason = await recheckRunBudgetReservationInTransaction(
+        tx, publications, run, input.reservationId, input.recoveryLeaseOwner,
+      );
+      // Commit budget-owned hold/enforcement changes before the caller handles
+      // denial. Throwing here would roll back the very stop intent we found.
+      if (admissionBlockReason) return { dispatched: false as const, admissionBlockReason };
+
+      const priorDispatch = parseObject(parseObject(run.usageJson).budgetDispatch);
+      const recoveryLeaseOwner = input.recoveryLeaseOwner ?? null;
+      if (priorDispatch.reservationId === input.reservationId && (priorDispatch.recoveryLeaseOwner ?? null) === recoveryLeaseOwner)
+        return { dispatched: false as const, admissionBlockReason: "Provider dispatch already admitted this reservation generation" };
+      // The committed claim is the dispatch linearization point. A concurrent
+      // charge wins before it, or targets already-admitted work afterwards.
+      // Preserve usage/cancellation evidence and fence duplicate handoffs even
+      // for zero-valued holds. A newly proven native recovery owner has its own
+      // generation; its ordinary stopped-execution checks remain upstream.
+      const claim = { reservationId: input.reservationId, recoveryLeaseOwner, admittedAt: new Date().toISOString() };
+      await tx.update(heartbeatRuns).set({
+        usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({ budgetDispatch: claim })}::jsonb`,
+      }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+      return { dispatched: true as const, claim };
     };
 
-    return withIssueThenRunLocks(
+    const admission = await withIssueThenRunLocks(
       input,
       () => {
         throw new RunDispatchApplicationError(
@@ -1175,7 +1235,73 @@ export function createPostgresRunDispatchAdapter(
       },
       dispatchLockedRun,
     );
+    if (!admission.dispatched) return admission;
+    // Accounting has committed. Close the separate issue/run ownership race
+    // under short row locks, without reacquiring company accounting or awaiting
+    // provider work. Mutating budget evaluation never runs in this second phase.
+    return withRunOwnershipLocks<DispatchResolvedInteractionOutcome<T>>(input, () => ({ dispatched: false as const,
+      cancellation: { outcome: "lost_race" as const } }), async (tx, run) => {
+      const claim = parseObject(parseObject(run.usageJson).budgetDispatch);
+      if (run.status !== input.expectedStatus || run.costAccountedAt || run.resultJson?.cancellation || run.resultJson?.startupCancellation
+        || claim.reservationId !== admission.claim.reservationId || claim.recoveryLeaseOwner !== admission.claim.recoveryLeaseOwner
+        || claim.admittedAt !== admission.claim.admittedAt || claim.handedOffAt)
+        return { dispatched: false as const, cancellation: { outcome: "lost_race" as const } };
 
+      const [scope] = await tx.select({ companyStatus: companies.status, agentStatus: agents.status,
+        lifecycleState: agents.lifecycleState, reservationId: budgetReservations.id,
+        projectId: budgetReservations.projectId, currentProjectId: projects.id, projectPausedAt: projects.pausedAt })
+        .from(companies).innerJoin(agents, and(eq(agents.companyId, companies.id), eq(agents.id, run.agentId)))
+        .leftJoin(budgetReservations, and(eq(budgetReservations.companyId, companies.id), eq(budgetReservations.runId, run.id),
+          eq(budgetReservations.id, input.reservationId), eq(budgetReservations.agentId, run.agentId), eq(budgetReservations.state, "held")))
+        .leftJoin(projects, and(eq(projects.companyId, companies.id), eq(projects.id, budgetReservations.projectId)))
+        .where(eq(companies.id, run.companyId));
+      if (!scope || scope.reservationId !== input.reservationId)
+        return { dispatched: false as const, admissionBlockReason: "Provider dispatch no longer owns a held budget reservation" };
+      if (scope.projectId && !scope.currentProjectId)
+        return { dispatched: false as const, admissionBlockReason: "Reserved project no longer exists" };
+      if (scope.companyStatus !== "active" || scope.projectPausedAt || scope.lifecycleState !== "ready"
+        || ["paused", "terminated", "pending_approval"].includes(scope.agentStatus))
+        return { dispatched: false as const, admissionBlockReason: "Execution scope is paused or no longer ready for work" };
+
+      if (input.enforceContinuationOwnership !== false) {
+        const contextSnapshot = parseObject(run.contextSnapshot);
+        const issueId = readNonEmptyString(contextSnapshot.issueId);
+        if (issueId) {
+          // These facts read current issue authority. The reconstruction/source
+          // coordinator validation remains in the accounting phase, avoiding a
+          // source coordinator lock after issue/run in this final phase.
+          const facts = await loadStalenessFacts({ runId: run.id, companyId: run.companyId, agentId: run.agentId,
+            responsibleUserId: run.responsibleUserId,
+            conversationContinuation: run.runtimeMode === "legacy" && hasConversationContinuationPolicy(run.resultJson),
+            issueId, contextSnapshot, scheduledRetryReason: run.scheduledRetryReason }, input.now, tx);
+          const semantic = decideQueuedRunStaleness(facts, input.now);
+          const decision = semantic.stale || facts.issueExecutionRunId === run.id ? semantic : {
+            stale: true as const, errorCode: "issue_execution_lock_changed" as const,
+            reason: "Cancelled because continuation no longer owns the issue execution lock before adapter dispatch",
+            details: { issueId, expectedExecutionRunId: run.id, currentExecutionRunId: facts.issueExecutionRunId },
+          };
+          if (decision.stale) return { dispatched: false as const,
+            cancellation: await cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now, true) };
+        }
+      }
+      const budgetBlock = await recheckAdmittedRunBudgetReadOnly(tx, { companyId: run.companyId, agentId: run.agentId,
+        runId: run.id, projectId: scope.projectId, reservationId: input.reservationId });
+      if (budgetBlock) return { dispatched: false as const, admissionBlockReason: budgetBlock };
+      if (input.recoveryLeaseOwner) {
+        const [owner] = run.runtimeMode === "native" ? await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
+          eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+          eq(nativeRunFinalizations.leaseOwner, input.recoveryLeaseOwner), sql`${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp()`)) : [];
+        if (!owner) return { dispatched: false as const, admissionBlockReason: "Native recovery no longer owns provider dispatch" };
+      }
+      await tx.update(heartbeatRuns).set({ usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb)
+        || ${JSON.stringify({ budgetDispatch: { ...claim, handedOffAt: new Date().toISOString() } })}::jsonb` })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+      let resultPromise: Promise<T>;
+      try { resultPromise = Promise.resolve(input.dispatch(() => {})); }
+      catch (error) { resultPromise = Promise.reject(error); }
+      void resultPromise.catch(() => {});
+      return { dispatched: true as const, resultPromise };
+    }, "ownership");
   }
 
   return {

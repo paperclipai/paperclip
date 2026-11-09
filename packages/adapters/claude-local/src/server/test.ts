@@ -29,8 +29,8 @@ import {
   claudeCommandLooksLike,
   claudeCommandSupportsEffortFlag,
   minimumClaudeCliVersionForModel,
-  readClaudeCommandVersion,
 } from "./cli-capabilities.js";
+import { prepareCompatibleClaudeCommand } from "./sandbox-cli-version.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
@@ -87,7 +87,7 @@ export async function testEnvironment(
 
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "claude");
+  let command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
@@ -274,7 +274,7 @@ export async function testEnvironment(
     });
   } else if (canRunProbe && minimumCliVersion && versionProbeCommand) {
     const versionProbeEnv = localProbe?.env ?? env;
-    const detectedCliVersion = await readClaudeCommandVersion({
+    const prepared = await prepareCompatibleClaudeCommand({
       runId,
       command: versionProbeCommand,
       target,
@@ -282,7 +282,11 @@ export async function testEnvironment(
       env: versionProbeEnv,
       timeoutSec: 45,
       graceSec: 5,
+      minimumVersion: minimumCliVersion,
     });
+    if (prepared.check) checks.push(prepared.check);
+    command = prepared.command;
+    const detectedCliVersion = prepared.version;
     if (
       !detectedCliVersion ||
       !claudeCliVersionAtLeast(detectedCliVersion, minimumCliVersion)
@@ -295,7 +299,9 @@ export async function testEnvironment(
         detail: detectedCliVersion
           ? `Detected Claude Code ${detectedCliVersion}.`
           : "Could not determine the installed Claude Code version.",
-        hint: "Upgrade Claude Code or restore the default ACP lane, then retry the Test.",
+        hint: targetIsSandbox && command === "claude"
+          ? "Paperclip could not prepare a compatible Claude runtime. Retry connecting."
+          : "Upgrade Claude Code or restore the default ACP lane, then retry the Test.",
       });
     }
   }

@@ -5,8 +5,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SkillSources } from './SkillSources';
 import { skillSourcesApi } from '@/api/skillSources';
+import { ApiError } from '@/api/client';
+import { sourceFixture } from '../../storybook/fixtures/githubSkillSources';
 
-const context = vi.hoisted(() => ({ navigate: vi.fn(), breadcrumbs: vi.fn(), sourceId: 'new' }));
+const context = vi.hoisted(() => ({ navigate: vi.fn(), breadcrumbs: vi.fn(), sourceId: 'new', streamlinedEnabled: true }));
 vi.mock('@/context/CompanyContext', () => ({ useCompany: () => ({ selectedCompanyId: 'company-1', selectedCompany: { name: 'Acme' } }) }));
 vi.mock('@/context/BreadcrumbContext', () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: context.breadcrumbs }) }));
 vi.mock('@/lib/router', () => ({
@@ -14,7 +16,8 @@ vi.mock('@/lib/router', () => ({
   useNavigate: () => context.navigate,
   useParams: () => ({ sourceId: context.sourceId }),
 }));
-vi.mock('@/api/skillSources', () => ({ skillSourcesApi: { list: vi.fn(), repositories: vi.fn(), discoverStream: vi.fn(), create: vi.fn(), select: vi.fn(), refresh: vi.fn(), disconnect: vi.fn() } }));
+vi.mock('@/api/skillSources', () => ({ skillSourcesApi: { list: vi.fn(), projectRepositories: vi.fn(), adoptProject: vi.fn(), settings: vi.fn(), branches: vi.fn(), repositories: vi.fn(), discoverStream: vi.fn(), create: vi.fn(), select: vi.fn(), refresh: vi.fn(), disconnect: vi.fn() } }));
+vi.mock('@/hooks/useStreamlinedUiEnabled', () => ({ useStreamlinedUiEnabled: () => ({ enabled: context.streamlinedEnabled, loaded: true }) }));
 
 const repos = {
   connections: [{ id: 'personal', name: 'Personal' }, { id: 'shared', name: 'Engineering' }],
@@ -48,9 +51,12 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {});
   vi.mocked(skillSourcesApi.list).mockResolvedValue([]);
+  vi.mocked(skillSourcesApi.projectRepositories).mockResolvedValue([]);
   vi.mocked(skillSourcesApi.repositories).mockResolvedValue(structuredClone(repos));
+  vi.mocked(skillSourcesApi.branches).mockResolvedValue({ defaultBranch: 'master', branches: [{ name: 'master', isDefault: true }], truncated: false });
   vi.mocked(skillSourcesApi.discoverStream).mockResolvedValue(discovery);
   context.sourceId = 'new';
+  context.streamlinedEnabled = true;
   sessionStorage.clear();
 });
 afterEach(async () => {
@@ -59,6 +65,123 @@ afterEach(async () => {
 });
 
 describe('GitHub skill source import', () => {
+  it('keeps the Skills views available while managing Sources', async () => {
+    context.sourceId = '';
+    await mount();
+    const navigation = document.querySelector('nav[aria-label="Skills views"]');
+    expect([...navigation!.querySelectorAll('a')].map(link => [link.textContent, link.getAttribute('href')])).toEqual([
+      ['Installed', '/skills'],
+      ['Discover', '/skills?tab=discover'],
+      ['My Skills', '/skills/studio'],
+    ]);
+    expect(navigation!.querySelector('[aria-current="page"]')).toBeNull();
+  });
+
+  it('groups the same repository and ref across projects and shows import progress until it is installed', async () => {
+    context.sourceId = '';
+    const repository = { projectId: 'one', projectName: 'Paperclip', projectVisibility: 'open' as const,
+      workspaceId: 'workspace-one', repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'HEAD',
+      bindingId: null, sourceId: null, status: 'available' as const, lastError: null };
+    vi.mocked(skillSourcesApi.projectRepositories).mockResolvedValue([repository, { ...repository, projectId: 'two', projectName: 'Sentry', workspaceId: 'workspace-two' }]);
+    let finish!: (value: { bindingId: string }) => void;
+    vi.mocked(skillSourcesApi.adoptProject).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValue({ bindingId: 'binding-two' });
+    await mount();
+    expect(document.querySelectorAll('[aria-label="Project repositories"] section')).toHaveLength(1);
+    expect(document.body.textContent).toContain('Paperclip, Sentry');
+    await act(async () => button('Import skills').click()); await flush();
+    expect(document.querySelector('[aria-busy="true"]')).not.toBeNull();
+    expect(document.querySelector('[role="status"]')?.textContent).toContain('Starting import');
+    vi.mocked(skillSourcesApi.projectRepositories).mockResolvedValue([
+      { ...repository, status: 'pending' }, { ...repository, projectId: 'two', projectName: 'Sentry', workspaceId: 'workspace-two', status: 'pending' },
+    ]);
+    await act(async () => finish({ bindingId: 'binding-one' })); await flush();
+    expect(skillSourcesApi.adoptProject).toHaveBeenCalledWith('company-1', 'workspace-two');
+    expect(document.querySelector('[role="status"]')?.textContent).toContain('queued');
+    expect(button('Importing…').disabled).toBe(true);
+  });
+
+  it('offers branch repair rather than connection repair for an unavailable tracked ref', async () => {
+    context.sourceId = '';
+    const source = { ...sourceFixture(), trackingRef: 'main', lastError: 'The tracked GitHub branch or revision is unavailable. Use the repository’s default branch or update its configured ref.' };
+    vi.mocked(skillSourcesApi.list).mockResolvedValue([{ ...source, repairAction: 'branch' }]);
+    vi.mocked(skillSourcesApi.settings).mockResolvedValue({ ...source, trackingRef: 'master', lastError: null });
+    await mount();
+    expect(button('Choose connection')).toBeUndefined();
+    await act(async () => button('Choose a new branch').click()); await flush();
+    await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Branch"]')!.click()); await flush();
+    await act(async () => (document.querySelector('[cmdk-item][data-value="master"]') as HTMLElement).click()); await flush();
+    await act(async () => button('Change branch').click()); await flush();
+    expect(skillSourcesApi.branches).toHaveBeenCalledWith('company-1', source.id, {}, expect.any(AbortSignal));
+    expect(skillSourcesApi.settings).toHaveBeenCalledWith('company-1', source.id, { revision: source.revision, trackingRef: 'master' });
+  });
+
+  it.each([
+    'This repository and branch are already in Sources. Use that source; installed skills were kept.',
+    'The repository at this URL has changed identity. Add it as a new source.',
+  ])('preserves actionable branch conflict advice: %s', async message => {
+    context.sourceId = '';
+    const source = { ...sourceFixture(), trackingRef: 'main', lastError: 'Unavailable branch.', repairAction: 'branch' as const };
+    vi.mocked(skillSourcesApi.list).mockResolvedValue([source]);
+    vi.mocked(skillSourcesApi.settings).mockRejectedValue(new ApiError(message, 409, {}));
+    await mount();
+    await act(async () => button('Choose a new branch').click()); await flush();
+    await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Branch"]')!.click()); await flush();
+    await act(async () => (document.querySelector('[cmdk-item][data-value="master"]') as HTMLElement).click()); await flush();
+    await act(async () => button('Change branch').click()); await flush();
+    expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toBe(message);
+    expect(document.querySelector('button[aria-label="Branch"]')?.textContent).toContain('master');
+  });
+
+  it('keeps an existing source compact while project import is pending', async () => {
+    context.sourceId = '';
+    vi.mocked(skillSourcesApi.list).mockResolvedValue([{ ...sourceFixture(), trackingRef: 'HEAD', projects: [{ id: 'paperclip', name: 'Paperclip', visibility: 'open', active: true }] }]);
+    vi.mocked(skillSourcesApi.projectRepositories).mockResolvedValue([{ projectId: 'sentry', projectName: 'Sentry', projectVisibility: 'open',
+      workspaceId: 'second-workspace', repositoryUrl: sourceFixture().repositoryUrl, trackingRef: 'HEAD', bindingId: 'binding', sourceId: null, status: 'pending', lastError: null }]);
+    await mount();
+    expect(document.querySelectorAll(`a[href="${sourceFixture().repositoryUrl}"]`)).toHaveLength(1);
+    expect(document.querySelector('[aria-label="Project repositories"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Skills from Sentry"]')).toBeNull();
+    expect(document.body.textContent).not.toContain('Other projects with this repo');
+    expect(document.body.textContent).not.toContain('Sentry');
+    expect(document.body.textContent).not.toContain('Paperclip');
+    expect(document.querySelector('section a[href="/skills"]')).toBeNull();
+    expect(document.querySelector('[role="status"]')?.textContent).toContain('Importing skills');
+  });
+
+  it('allows remaining project imports while another matching workspace is pending', async () => {
+    context.sourceId = '';
+    const repository = { projectId: 'one', projectName: 'Paperclip', projectVisibility: 'open' as const, workspaceId: 'already-pending',
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'HEAD', bindingId: 'binding', sourceId: null, status: 'pending' as const, lastError: null };
+    vi.mocked(skillSourcesApi.projectRepositories).mockResolvedValue([repository,
+      { ...repository, projectId: 'two', projectName: 'Sentry', workspaceId: 'available-workspace', status: 'available', bindingId: null }]);
+    vi.mocked(skillSourcesApi.adoptProject).mockResolvedValue({ bindingId: 'second-binding' });
+    await mount();
+    expect(document.querySelector('[role="status"]')?.textContent).toContain('queued');
+    expect(button('Import remaining skills')?.disabled).toBe(false);
+    await act(async () => button('Import remaining skills').click()); await flush();
+    expect(skillSourcesApi.adoptProject).toHaveBeenCalledTimes(1);
+    expect(skillSourcesApi.adoptProject).toHaveBeenCalledWith('company-1', 'available-workspace');
+  });
+
+  it('retains the selected connection and repairs a missing branch directly from connection setup', async () => {
+    context.sourceId = '';
+    const source = { ...sourceFixture(), connectionId: 'personal', lastError: 'Choose a GitHub connection to enable automatic updates.', repairAction: 'connection' as const };
+    vi.mocked(skillSourcesApi.list).mockResolvedValue([source]);
+    vi.mocked(skillSourcesApi.settings).mockRejectedValueOnce(new ApiError('The tracked GitHub branch or revision is unavailable.', 422, { code: 'skill_source_ref_unavailable' }))
+      .mockResolvedValue({ ...source, trackingRef: 'master', lastError: null });
+    await mount();
+    await act(async () => button('Choose connection').click()); await flush();
+    await act(async () => button('Save connection').click()); await flush();
+    expect(skillSourcesApi.settings).toHaveBeenLastCalledWith('company-1', source.id, { revision: source.revision, connectionId: 'personal' });
+    await act(async () => button('Choose a new branch').click()); await flush();
+    await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Branch"]')!.click()); await flush();
+    await act(async () => (document.querySelector('[cmdk-item][data-value="master"]') as HTMLElement).click()); await flush();
+    await act(async () => button('Change branch').click()); await flush();
+    expect(skillSourcesApi.branches).toHaveBeenLastCalledWith('company-1', source.id, { connectionId: 'personal' }, expect.any(AbortSignal));
+    expect(skillSourcesApi.settings).toHaveBeenLastCalledWith('company-1', source.id, { revision: source.revision, connectionId: 'personal', trackingRef: 'master' });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
   it('shows measured Git download progress before skill discovery and retains the automatically chosen connection', async () => {
     let finish!: (value: typeof discovery & { connectionId: string }) => void;
     vi.mocked(skillSourcesApi.discoverStream).mockImplementation((_company, _input, update) => {
@@ -239,6 +362,75 @@ describe('GitHub skill source import', () => {
     expect(skillSourcesApi.discoverStream).toHaveBeenLastCalledWith('company-1', expect.objectContaining({ packageMode: 'repository' }), expect.any(Function), expect.any(AbortSignal));
     expect(button('Import repository').disabled).toBe(false);
     expect(document.body.textContent).not.toContain('Include repository files');
+  });
+
+  async function openRemoval(disconnected = false) {
+    context.sourceId = '';
+    const source = { ...sourceFixture(), companyId: 'company-1', enabled: !disconnected };
+    vi.mocked(skillSourcesApi.list).mockResolvedValue([source]);
+    await mount();
+    const trigger = document.querySelector<HTMLButtonElement>(`button[aria-label="More actions for ${source.fullName}"]`)!;
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    await flush();
+    const menu = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(el => el.textContent === (disconnected ? 'Remove source' : 'Disconnect source'))!;
+    await act(async () => menu.click()); await flush();
+    return source;
+  }
+  it('requires a keep-or-delete choice and cancellation leaves the source intact', async () => {
+    await openRemoval();
+    expect(button('Disconnect source').disabled).toBe(true);
+    expect(document.querySelector('[role="radio"][tabindex="0"]')?.textContent).toContain('Keep editable copies');
+    expect(skillSourcesApi.disconnect).not.toHaveBeenCalled();
+    await act(async () => button('Cancel').click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.body.textContent).toContain('acme/team-skills');
+  });
+  it('removes an already-disconnected source and sends the explicit delete choice and revision', async () => {
+    const source = await openRemoval(true);
+    vi.mocked(skillSourcesApi.disconnect).mockImplementation(async () => {
+      vi.mocked(skillSourcesApi.list).mockResolvedValue([]);
+      return { id: source.id, copiedCount: 0, deletedCount: 2 };
+    });
+    const choice = [...document.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(el => el.textContent?.startsWith('Delete skills'))!;
+    await act(async () => choice.click());
+    await act(async () => button('Remove source').click()); await flush(); await flush();
+    expect(skillSourcesApi.disconnect).toHaveBeenCalledWith('company-1', source.id, { revision: source.revision, skills: 'delete' });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.body.textContent).not.toContain('acme/team-skills');
+  });
+  it('reloads a stale confirmation and requires a new choice for the updated skill count', async () => {
+    const source = await openRemoval();
+    vi.mocked(skillSourcesApi.disconnect).mockRejectedValueOnce(new ApiError('Source changed. Reload before disconnecting.', 409, {}));
+    await act(async () => document.querySelector<HTMLButtonElement>('[role="radio"]')!.click());
+    await act(async () => button('Disconnect source').click()); await flush();
+    expect(button('Disconnect source').disabled).toBe(true);
+    vi.mocked(skillSourcesApi.list).mockResolvedValue([{ ...source, revision: source.revision + 1, entries: source.entries.slice(0, 1) }]);
+    await act(async () => button('Reload source').click()); await flush(); await flush();
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('1 imported skill');
+    expect(document.querySelector('[role="dialog"] [role="alert"]')).toBeNull();
+    expect(button('Disconnect source').disabled).toBe(true);
+    await act(async () => document.querySelector<HTMLButtonElement>('[role="radio"]')!.click());
+    vi.mocked(skillSourcesApi.disconnect).mockImplementation(async () => {
+      vi.mocked(skillSourcesApi.list).mockResolvedValue([]);
+      return { id: source.id, copiedCount: 1, deletedCount: 0 };
+    });
+    await act(async () => button('Disconnect source').click()); await flush(); await flush();
+    expect(skillSourcesApi.disconnect).toHaveBeenLastCalledWith('company-1', source.id, { revision: source.revision + 1, skills: 'copy' });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+  it('sends the keep-copy choice and keeps failures in the confirmation for retry', async () => {
+    const source = await openRemoval();
+    vi.mocked(skillSourcesApi.disconnect).mockRejectedValue(new Error('Source changed. Reload before disconnecting.'));
+    const choice = [...document.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(el => el.textContent?.startsWith('Keep editable copies'))!;
+    await act(async () => choice.click());
+    await act(async () => button('Disconnect source').click()); await flush();
+    expect(skillSourcesApi.disconnect).toHaveBeenCalledWith('company-1', source.id, { revision: source.revision, skills: 'copy' });
+    expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain('Source changed');
+    expect(button('Disconnect source').disabled).toBe(false);
+    expect(document.querySelector('section[aria-label="acme/team-skills"]')).not.toBeNull();
+    const other = [...document.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(el => el.textContent?.startsWith('Delete skills'))!;
+    await act(async () => other.click()); await flush();
+    expect(document.querySelector('[role="dialog"] [role="alert"]')).toBeNull();
   });
 
 });

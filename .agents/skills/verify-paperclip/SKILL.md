@@ -1,6 +1,6 @@
 ---
 name: verify-paperclip
-description: Launch an isolated Paperclip instance, drive its real web UI or CLI using the existing feature-map recipes, capture evidence, and clean up owned processes. Use to verify user-facing Paperclip behavior.
+description: Verify Paperclip from a source checkout, published npm install, or existing staging or production stack. Select the environment, data state, version, and platform; drive real UI or CLI journeys and capture evidence. Route deployment to the private Cloud skills.
 ---
 
 # Verify Paperclip
@@ -15,7 +15,66 @@ recipe or access drift with evidence; map updates belong to
 [maintain-verification-skill](../maintain-verification-skill/SKILL.md).
 Read [development instructions](../../../doc/DEVELOPING.md) for current commands.
 
-## Launch
+## Select the verification target
+
+State what is being tested before starting. Use the requested target; for ordinary
+feature development, default to the current checkout on the current host with
+isolated data. Expand into cross-platform or release qualification only when
+requested or needed to reproduce the problem.
+
+Record these independent dimensions together:
+
+- **Artifact:** source checkout (path, commit, dirty state), published npm package
+  (requested channel and resolved exact version), or deployed image/release.
+- **Environment:** local, staging, or production; target URL and intended company
+  or workspace; board/user/agent identity and authentication mode.
+- **Starting data:** fresh and unonboarded, freshly seeded, cloned, or reused;
+  embedded versus external PostgreSQL; configuration/data location or a redacted
+  database identifier. Never record credentials or connection strings.
+- **Platform:** server OS/architecture, Node/npm versions, and browser/client OS
+  when relevant. A Mac browser against a Linux server is Linux server evidence;
+  WSL is Linux evidence, not native Windows evidence.
+- **Journey:** first installation/onboarding, an existing-user feature, upgrade,
+  or a live agent run; expected outcome and real versus simulated dependencies.
+
+| Target | Use it to prove | Procedure |
+| --- | --- | --- |
+| Checkout dev server, existing or cloned data | Source behavior against existing state | [Checkout modes](references/verification-targets.md#checkout-and-data-modes) |
+| Checkout with fresh empty data | First-run onboarding and subsequent features | [Launch](#launch-an-empty-checkout-instance) below |
+| Checkout test drive, fresh seed or reused data | Features with a configured company/CEO | [Checkout modes](references/verification-targets.md#checkout-and-data-modes) |
+| Published npm canary | End-user installation of a specific prerelease | [npm verification](references/npm-install.md) |
+| Published npm stable (`latest`) | End-user installation of the released package | [npm verification](references/npm-install.md) |
+| Existing staging stack | Deployed build, hosted auth, flags, integrations | [Hosted verification](references/verification-targets.md#staging-and-production) |
+| Existing production stack | Current production journey within the authorized scope | [Hosted verification](references/verification-targets.md#staging-and-production) |
+
+Fresh data does not imply a fresh install. A seeded test drive does not prove
+onboarding. A source build does not prove npm packaging. A passing staging check
+does not prove production, and a production Cloud stack does not prove the stable
+npm install. Report only the combinations actually exercised.
+
+## Deployment handoff
+
+When a requested revision must first be built or deployed, use the skills in the
+private `paperclip-cloud` repo:
+
+- `deploy-paperclip-stack` at `.agents/skills/deploy-paperclip-stack/SKILL.md`
+  for a tenant workspace or an explicitly scoped fleet rollout.
+- `deploy-cloud-harness` at `.agents/skills/deploy-cloud-harness/SKILL.md`
+  for the Cloud control plane itself.
+
+Locate the authorized Cloud checkout or installed skill by name; do not assume a
+sibling directory exists. Those skills own build preparation, deployment,
+migrations, and rollout recovery. Return here with environment, target, resolved
+source SHA, release/image identity, deployment result, and evidence link. If
+private access is unavailable, report that prerequisite as blocked and continue
+checks possible on the supplied target without inventing deploy commands.
+
+A verification request alone does not authorize deployment, npm publication,
+fleet-default changes, or a production rollout. Preserve explicit deployment
+instructions already given. Publishing npm packages belongs to the existing
+[release skill](../release/SKILL.md); installing one does not require publishing it.
+
+## Launch an empty checkout instance
 
 Run from the repository root with Node 24.11+, Python 3, `lsof`, and dependencies
 installed with `pnpm install --frozen-lockfile`. Browser driving uses the existing
@@ -53,7 +112,11 @@ For Paperclip-managed reusable services, follow
 instead of launching a second server. Its cloned-data/login requirements differ
 from this empty local instance.
 
-## Doctor
+## Doctor (owned checkout helper only)
+
+The doctor/stop commands require the real `launch.json` created by `launch.py`.
+Do not fabricate one for dev servers, npm installs, test drives, or hosted stacks.
+Use their own readiness and lifecycle procedures instead.
 
 After startup, and again after any surprising behavior, run:
 
@@ -98,14 +161,16 @@ guessing resource URLs. The unprefixed `/onboarding` route starts naming; use th
 company-prefixed onboarding route to resume its agent setup. Check relevant
 experimental gates and actor permissions.
 
-For CLI checks, discover exact flags with
+For source-checkout CLI checks, discover exact flags with
 `node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts <command> --help`, then
-select the disposable data directory/API/company explicitly. API reads can
+select the disposable data directory/API/company explicitly. For published npm
+checks, use the installed version’s CLI and help instead. API reads can
 corroborate UI writes; API-created state does not prove a creation UI.
 
 ## Evidence
 
-Record feature file, sub-feature and entry-point ID, commit/dirty state, owned URL,
+Include the target dimensions above, then record feature file, sub-feature and
+entry-point ID, commit/dirty state, target URL,
 company/user, flags, runtime/harness, live versus simulated dependencies, command,
 exit code, expected and observed behavior, and evidence links. Report each entry
 as passed, failed, blocked with its prerequisite, or not run.
@@ -121,12 +186,35 @@ incomplete coverage.
 
 For Paperclip-assigned work, attach important proof through
 [the artifact workflow](../../../doc/AGENT-ARTIFACTS.md). Keep runtime results in
-the evidence directory or issue, not in the map; `coverage.json` describes
-documentation coverage rather than live test health.
+the evidence directory or issue, not in the map. The generated
+`maps/generated/coverage.json` lists page references, not live test health.
+
+### Preserve failures through acceptance
+
+A successful retry establishes that a later attempt succeeded. Retain earlier
+material failures in the verification record, including the failed requirement,
+relevant logs, and what changed before the retry. Use a focused comparison or
+reproduction to determine whether the change caused the failure. When useful,
+check the unchanged baseline under comparable conditions. If the cause remains
+unknown, state that uncertainty; do not infer an infrastructure fault from a
+passing retry alone.
+
+Report recovery and resolution separately. A later passing journey can show
+recovery without explaining the earlier failure. Do not describe acceptance as
+complete while a relevant requirement remains unverified. Record the remaining
+gap and the next discriminating check instead of repeating retries until green.
+
+Apply this to failures that bear on the changed behavior or requested acceptance
+criteria. Independently established infrastructure failures can be tracked
+separately, with supporting evidence and any checks they prevented still marked
+blocked or not run. This does not require investigating every unrelated failure.
 
 ## Cleanup
 
-Close the browser context you created (the smoke does this in `finally`). Stop the owned runtime with:
+Close the browser context you created (the smoke does this in `finally`). Leave
+shared dev, staging, and production services running. The remaining cleanup steps
+in this section apply only to `launch.py` instances; use the selected target’s
+procedure for other launchers. Stop the helper-owned runtime with:
 
 ```sh
 python3 .agents/skills/verify-paperclip/scripts/stop.py \

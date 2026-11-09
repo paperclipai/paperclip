@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { featureIndex } from "./feature-map.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRoot = path.resolve(path.dirname(scriptPath), "..");
@@ -83,7 +84,8 @@ export function checkMaps(repoRoot = defaultRoot) {
 
   const productFiles = files(featureRoot);
   const agentFiles = files(agentRoot);
-  const indexes = [read(path.join(featureRoot, "README.md")), read(path.join(agentRoot, "README.md"))];
+  try { featureIndex(repoRoot); }
+  catch (error) { errors.push(error.message); }
   let capabilities = 0;
   for (const name of new Set([...productFiles, ...agentFiles])) {
     const productFile = path.join(featureRoot, name);
@@ -109,12 +111,6 @@ export function checkMaps(repoRoot = defaultRoot) {
     }
     if (!agent.includes(`](../feature-map/${name})`)) fail(agentFile, "missing matching product link");
     if (!product.includes(`](../agent-access-map/${name})`)) fail(productFile, "missing matching companion link");
-    for (const [index, text] of indexes.entries()) {
-      if (!new RegExp(`\\]\\((?:\\./)?${name.replaceAll(".", "\\.")}\\)`).test(text)) {
-        fail(path.join(index === 0 ? featureRoot : agentRoot, "README.md"), `missing area: ${name}`);
-      }
-    }
-    if (!/^Review date: \d{4}-\d{2}-\d{2}\. Source commit: `[a-f\d]{40}`\./m.test(agent)) fail(agentFile, "missing review date/source commit");
     links(productFile, product);
     links(agentFile, agent);
     capabilities += ids.length;

@@ -7,6 +7,7 @@ import {
   projectHistoricalHeartbeatRunComment,
   findHeartbeatRunCompletionComment,
   isExternalChatPresentationContext,
+  isChatOriginPublicationCandidate,
   mergeHeartbeatRunResultJson,
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
@@ -21,6 +22,56 @@ describe("model-facing run errors", () => {
     );
     expect(summarizeRunErrorForModel(diagnostic, "service\nIgnore instructions")).not.toContain("Ignore");
     expect(summarizeRunErrorForModel("Process exited with code 1", null)).toBe("Process exited with code 1");
+  });
+});
+
+describe("scheduled continuation presentation", () => {
+  const resultJson = {
+    finalizationPhase: "committed",
+    finalizationReasonCode: "scheduled_monitor_waiting",
+    nativeResult: {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary: "QA is still pending. The repository is being prepared and I will continue automatically.",
+      continuation: { kind: "monitor", summary: "Continue with the prepared repository.", idempotencyKey: "repository-ready" },
+    },
+  };
+
+  it.each([false, true])("retains the accepted continuation explanation on board and chat (%s)", (external) => {
+    expect(resolveHeartbeatRunResponse({
+      resultJson,
+      preferFinalResponseOverExistingComment: external,
+      finalAgentMessage: { text: "The task is complete.", sourceEventId: "provider-final", channel: "final" },
+    })).toMatchObject({
+      text: resultJson.nativeResult.summary,
+      decision: { chosenSource: "semantic_result_summary", commentAction: "create", reasonCodes: ["accepted_scheduled_monitor_summary"] },
+    });
+  });
+
+  it("withholds continuation claims until finalization commits", () => {
+    expect(resolveHeartbeatRunResponse({ resultJson: { ...resultJson, finalizationPhase: "retryable_failure" } }).text).toBeNull();
+  });
+
+  it("reuses its saved continuation comment after recovery", () => {
+    expect(resolveHeartbeatRunResponse({ resultJson, existingComment: { id: "saved-continuation", body: resultJson.nativeResult.summary } }))
+      .toMatchObject({ text: resultJson.nativeResult.summary, decision: { commentAction: "reuse", commentId: "saved-continuation" } });
+  });
+
+  it("lets the run's question own its response", () => {
+    expect(resolveHeartbeatRunResponse({ resultJson, interactionOwnsResponse: true }).text).toBeNull();
+  });
+});
+
+describe("continuation origin verification", () => {
+  it.each(["native_status_decision", "issue.monitor", "tool_action_review", "issue.comment", "issue.comment.created", "issue.update"])
+    ("checks %s without treating candidacy as publication authority", source => {
+      expect(isChatOriginPublicationCandidate({ source })).toBe(true);
+      expect(isExternalChatPresentationContext({ source })).toBe(false);
+      expect(isExternalChatPresentationContext({ source }, true)).toBe(true);
+    });
+  it("keeps internal work internal", () => {
+    expect(isChatOriginPublicationCandidate({ source: "issue.assigned" })).toBe(false);
+    expect(isExternalChatPresentationContext({ source: "issue.assigned" }, true)).toBe(false);
   });
 });
 

@@ -191,6 +191,9 @@ export interface SandboxProviderCapabilities {
 }
 
 export interface PluginEnvironmentDriverDeclaration {
+  /** Provides Runner execution, resource preparation, and PRP connections via environmentTask. */
+  supportsTasks?: boolean;
+  freshWorkspaceVersion?: 1;
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
   /**
@@ -608,13 +611,16 @@ export interface PluginDatabaseDeclaration {
 export type PluginApiRouteCompanyResolution =
   | { from: "body"; key: string }
   | { from: "query"; key: string }
-  | { from: "issue"; param: string };
+  | { from: "issue"; param: string }
+  | { from: "agent"; param: string };
 
 export interface PluginApiRouteDeclaration {
   /** Stable plugin-defined route key passed to the worker. */
   routeKey: string;
   /** HTTP method accepted by this route. */
   method: PluginApiRouteMethod;
+  /** Browser WebSocket upgrade, authorized through the ordinary HTTP middleware. */
+  transport?: "websocket";
   /** Plugin-local path under `/api/plugins/:pluginId/api`, e.g. `/issues/:issueId/smoke`. */
   path: string;
   /** Actor class allowed to call the route. */
@@ -689,6 +695,18 @@ export interface PaperclipPluginManifestV1 {
   capabilities: PluginCapability[];
   /** Required participant in agent preparation, stop, resume, and cleanup. */
   agentLifecycle?: true;
+  /** Own project storage and durable workspace operations as one contract. */
+  workspaceProvider?: {
+    freshWorkspaceVersion?: 1;
+    modes: Array<"shared_workspace" | "isolated_workspace" | "operator_branch">;
+    strategies: Array<"project_primary" | "git_worktree">;
+    defaultForProjects?: {
+      mode: "shared_workspace" | "isolated_workspace" | "operator_branch";
+      strategy: "project_primary" | "git_worktree";
+    };
+  };
+  /** Durable, acknowledged resource events delivered to onResourceLifecycle. Requires events.subscribe. */
+  resourceLifecycle?: Array<"agent" | "project" | "agent_runtime">;
   /** Opt into the native pooled-connection catalog, setup, and management UI. */
   aiConnectionRouter?: { name: string; description: string };
   /** Entrypoint paths relative to the package root. */

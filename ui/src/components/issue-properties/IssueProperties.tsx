@@ -34,6 +34,7 @@ import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
+import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS, copilotTaskModelCatalogOptions } from "../../lib/copilot-task-model-catalog";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../../hooks/useProjectOrder";
@@ -102,8 +103,6 @@ import { ExternalObjectRows } from "./external-object-rows";
 import {
   asRecord,
   compactRecord,
-  defaultExecutionWorkspaceModeForProject,
-  defaultProjectWorkspaceIdForProject,
   isMainIssueWorkspace,
   overrideLane,
   sortAdapterModels,
@@ -607,7 +606,8 @@ export function IssueProperties({
     () => isMainIssueWorkspace({ issue, project: issueProject }),
     [issue, issueProject],
   );
-  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
+  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId && issue.currentExecutionWorkspace?.id === issue.executionWorkspaceId) && !issueUsesMainWorkspace
+    && experimentalSettings?.enableIsolatedWorkspaces === true;
   const workspaceRuntimeConfig = issueUsesMainWorkspace
     ? null
     : issue.currentExecutionWorkspace?.config?.workspaceRuntime ?? null;
@@ -633,7 +633,7 @@ export function IssueProperties({
     onSuccess: (result, request) => {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
+      if (result.workspace.projectId) void queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
       if (companyId) {
@@ -732,11 +732,12 @@ export function IssueProperties({
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
+  const copilotCatalog = copilotTaskModelCatalogOptions(assignee);
   const assigneeAdapterType = assignee?.adapterType ?? null;
   const assigneeAdapterOverrides = issue.assigneeAdapterOverrides ?? null;
   const showAssigneeAdapterOptions = assigneeAdapterOverrides !== null;
   const supportsAssigneeOverrides = Boolean(
-    assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
+    assigneeAdapterType && (ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType) || copilotCatalog),
   );
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
@@ -753,14 +754,24 @@ export function IssueProperties({
   const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
     && assigneeOverrideAdapterConfig.chrome === true;
   const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig).provider ?? "codex") : undefined;
-  const { data: assigneeAdapterModels } = useQuery({
+  const catalogEnvironmentId = copilotCatalog ? assignee?.defaultEnvironmentId ?? null : null;
+  const copilotCatalogScope = JSON.stringify(copilotCatalog ?? null);
+  const requestCopilotModels = Boolean(copilotCatalog && assigneeOptionsOpen && showAssigneeAdapterOptions && supportsAssigneeOverrides);
+  const { data: assigneeAdapterModels, refetch: refreshAssigneeModels } = useQuery({
     queryKey:
       companyId && assigneeAdapterType
-        ? queryKeys.agents.adapterModels(companyId, assigneeAdapterType, null, catalogProvider)
+        ? [...queryKeys.agents.adapterModels(companyId, assigneeAdapterType, catalogEnvironmentId, catalogProvider), copilotCatalog ?? null]
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, { provider: catalogProvider }),
-    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
+    queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, {
+      provider: catalogProvider,
+      ...(copilotCatalog ? { environmentId: catalogEnvironmentId, ...copilotCatalog } : {}),
+    }),
+    ...(copilotCatalog ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides && (!copilotCatalog || requestCopilotModels),
   });
+  useEffect(() => {
+    if (requestCopilotModels) void refreshAssigneeModels();
+  }, [requestCopilotModels, copilotCatalogScope, catalogEnvironmentId, companyId, refreshAssigneeModels]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
     const models = sortAdapterModels(assigneeAdapterModels ?? []);
     const options = models.map((model) => ({
@@ -2007,26 +2018,7 @@ export function IssueProperties({
                 option.id === (issue.projectId ?? "") && "bg-accent",
               )}
               onClick={() => {
-                if (option.kind === "project") {
-                  const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
-                  onUpdate({
-                    projectId: option.project.id,
-                    projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
-                    executionWorkspaceId: null,
-                    executionWorkspacePreference: workspaceIsolationControlsVisible ? defaultMode : null,
-                    executionWorkspaceSettings: workspaceIsolationControlsVisible && option.project.executionWorkspacePolicy?.enabled
-                      ? { mode: defaultMode }
-                      : null,
-                  });
-                } else {
-                  onUpdate({
-                    projectId: null,
-                    projectWorkspaceId: null,
-                    executionWorkspaceId: null,
-                    executionWorkspacePreference: null,
-                    executionWorkspaceSettings: null,
-                  });
-                }
+                onUpdate({ projectId: option.kind === "project" ? option.project.id : null });
                 setProjectOpen(false);
               }}
             >

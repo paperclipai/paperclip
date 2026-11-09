@@ -2,6 +2,8 @@
 
 Product map: [Developer previews and diagnostic labs](../feature-map/developer-labs.md).
 
+Feature ID: `developer-labs`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -10,6 +12,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `design`
+
+Capability ID: `developer-labs/design`.
 
 Review: `baseline`.
 
@@ -33,6 +37,8 @@ exception.
 
 ## `interaction-labs`
 
+Capability ID: `developer-labs/interaction-labs`.
+
 Review: `baseline`.
 
 API: `not-applicable` — A synthetic card's API parity belongs to the real feature, not
@@ -55,6 +61,8 @@ Gaps: A synthetic card's API parity belongs to the real feature, not to a new la
 
 ## `performance`
 
+Capability ID: `developer-labs/performance`.
+
 Review: `baseline`.
 
 API: `not-applicable` — There is no domain REST action for scrolling a static fixture;
@@ -76,6 +84,8 @@ Gaps: There is no domain REST action for scrolling a static fixture; capture bro
 evidence separately.
 
 ## `route-gates`
+
+Capability ID: `developer-labs/route-gates`.
 
 Review: `baseline`.
 

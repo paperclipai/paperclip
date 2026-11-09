@@ -107,9 +107,11 @@ describe("createChatReconciliationCoordinator", () => {
     // scheduled method returns; app shutdown must also join those workers.
     expect(source).toContain("await chatChannels.shutdown()");
     expect(source).not.toContain("chatChannels.processPendingSlackSessionSyncs()");
+    expect(source).not.toContain("chatChannels.processPendingChatMaintenance()");
     const service = readFileSync(new URL("../services/chat-channels.ts", import.meta.url), "utf8");
     const actionMaintenance = service.slice(service.indexOf("async function processPendingChatMaintenance("),
       service.indexOf("async function processPendingDeliveries("));
+    expect(actionMaintenance).not.toContain("processFailedChatRunRetries(");
     expect(actionMaintenance).not.toContain("processPendingProviderEffects(");
     expect(actionMaintenance).not.toContain("processPendingGitHubWebhookIngress(");
   });

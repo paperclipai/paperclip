@@ -1,4 +1,7 @@
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
+import { execFile } from "node:child_process";
+import os from "node:os";
+import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
@@ -36,7 +39,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const sourceRunId = randomUUID(), successorRunId = randomUUID();
     const commentId: string = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Explicit turn", defaultResponsibleUserId: "board", issuePrefix: `E${companyId.slice(0, 6)}` });
+    await db.insert(companies).values({ id: companyId, name: "Explicit turn", defaultResponsibleUserId: "board", issuePrefix: `E${companyId.replaceAll("-", "")}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Native", role: "engineer", adapterType: "paperclip_runner", status: "idle", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Deploy", status: "blocked", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId,
@@ -54,6 +57,48 @@ const support = await getEmbeddedPostgresTestSupport();
       actorType: "user", actorId: "board", reason: "issue_commented" };
   }
   type Fixture = Awaited<ReturnType<typeof seed>>;
+  it("automatically admits a saved historical local message once after isolated fallback becomes eligible", async () => {
+    const f = await seed();
+    const processStartedAt = new Date();
+    const child = execFile(process.execPath, ["-e", "process.exit(0)"]);
+    await new Promise(resolve => child.on("exit", resolve));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    const [source] = await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy", nativeIssueId: null, issueId: f.issueId,
+      processPid: child.pid, processGroupId: null, processStartedAt,
+      runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
+      resultJson: { workspaceRestoreFailure: "restore_failed" },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId)).returning();
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: source.id, agentId: f.agentId,
+      eventType: "native.process_identity_recorded", stream: "system", level: "info",
+      message: "Test child exited", payload: { targetKind: "local", hostname: os.hostname(),
+        processPid: child.pid, processGroupId: null, processStartedAt: processStartedAt.toISOString() } });
+    await db.update(issueRecoveryActions).set({ status: "active", ownerType: "system",
+      cause: "legacy_execution_requires_reconciliation", returnOwnerAgentId: f.agentId,
+      evidence: { runId: source.id, systemRecovery: failSystemRecovery(createSystemRecovery(source.id),
+        new SystemRecoveryFailure("historical_source_missing", "use_alternative_strategy")) },
+    }).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    // Keep execution queued so this admission test does not invoke a provider.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId: f.companyId, agentId: f.agentId, source: "on_demand", reason: "issue_commented",
+      requestedByActorType: "user", requestedByActorId: "board", status: "deferred_issue_execution",
+      payload: { issueId: f.issueId, commentId: f.commentId, _paperclipWakeContext: {
+        issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: f.commentId, wakeCommentIds: [f.commentId],
+      } },
+    }).returning();
+    const service = heartbeatService(db);
+    await service.resumeRemoteStopComments(source);
+    await service.resumeRemoteStopComments(source);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+    expect(receipt).toMatchObject({ status: "coalesced" });
+    const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${f.commentId}`));
+    expect(runs).toHaveLength(1);
+    expect(runs[0].contextSnapshot?.explicitUserContinuation).toMatchObject({
+      readiness: { mode: "fresh_isolated_workspace", retryIntentId: wake.id, sourceRunId: source.id },
+    });
+  }, 30_000);
   it.each(["handoff", "foreign_task", "running_source", "different_owner", "mention", "interaction", "chat"])("adopts former-owner comments only during an authorized handoff (%s)", async kind => {
     const f = await seed(), nextAgentId = randomUUID(), queueId = randomUUID();
     await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
@@ -87,9 +132,9 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(comment.authorUserId).toBe("second-user");
     } else expect(receipt.status).toBe("deferred_issue_execution");
   });
-  it.each(["ready", "unacknowledged", "pause", "recovery", "controller", "process_running", "identity_missing", "remote_pending", "remote_stopped", "first_delivered", "last_delivered", "mixed_authors"])("delivers a saved native message after run-only Stop exactly once (%s)", async gate => {
+  it.each(["ready", "unacknowledged", "pause", "resolved_recovery", "controller", "process_running", "identity_missing", "remote_pending", "remote_stopped", "first_delivered", "last_delivered", "mixed_authors"])("retains pre-Stop input and delivers once only after a later authorized message (%s)", async gate => {
     const f = await seed();
-    if (gate !== "recovery") await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    if (gate !== "resolved_recovery") await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
     await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issueId));
     await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureDetail: null, leaseOwner: gate === "controller" ? "still-cleaning" : null })
       .where(eq(nativeRunFinalizations.runId, f.sourceRunId));
@@ -144,12 +189,27 @@ const support = await getEmbeddedPostgresTestSupport();
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeRemoteStopComments(source);
     await heartbeat.resumeRemoteStopComments(source);
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", runId: null });
+    const resumeId = randomUUID();
+    await db.insert(issueComments).values({ id: resumeId, companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "board", body: "Resume with my earlier direction.", createdAt: new Date("2026-09-11T11:00:00Z") });
+    queuedIds = [...queuedIds, resumeId];
+    expectedIds = [...expectedIds, resumeId];
+    await db.update(agentWakeupRequests).set({ payload: {
+      issueId: f.issueId, commentId: resumeId, _paperclipWakeContext: { issueId: f.issueId, wakeReason: "issue_commented",
+        wakeCommentId: resumeId, wakeCommentIds: queuedIds },
+    } }).where(eq(agentWakeupRequests.id, queueId));
+    await heartbeat.resumeRemoteStopComments(source);
+    await heartbeat.resumeRemoteStopComments(source);
     const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
-    expect(successors).toHaveLength(["ready", "remote_stopped", "first_delivered", "last_delivered", "mixed_authors"].includes(gate) ? 1 : 0);
+    expect(successors).toHaveLength(["ready", "remote_stopped", "first_delivered", "last_delivered", "mixed_authors", "resolved_recovery"].includes(gate) ? 1 : 0);
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
-    if (["ready", "remote_stopped", "first_delivered", "last_delivered", "mixed_authors"].includes(gate)) {
+    if (["ready", "remote_stopped", "first_delivered", "last_delivered", "mixed_authors", "resolved_recovery"].includes(gate)) {
       expect(wake).toMatchObject({ status: "coalesced", runId: successors[0].id, requestedByActorId: "board" });
       expect(successors[0].contextSnapshot).toMatchObject({ wakeCommentIds: expectedIds });
+      if (gate === "resolved_recovery") expect(successors[0].contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: f.sourceRunId });
       expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
     } else expect(wake.status).toBe("deferred_issue_execution");
   });

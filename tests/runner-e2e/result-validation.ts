@@ -1,5 +1,7 @@
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
+import { STARTUP_REUSE_LAYERS, STARTUP_REUSE_REASONS } from "../../packages/adapter-utils/src/startup-reuse.js";
 import type { RunnerE2EResult } from "./types.js";
+import { DEPENDABLE_CELLS } from "./dependable-qualification.js";
 
 type Rule = (value: unknown, at: string) => void;
 const invalid = (at: string): never => {
@@ -7,6 +9,10 @@ const invalid = (at: string): never => {
 };
 const string: Rule = (value, at) => {
   if (typeof value !== "string") invalid(at);
+};
+const matching = (pattern: RegExp): Rule => (value, at) => {
+  string(value, at);
+  if (!pattern.test(value as string)) invalid(at);
 };
 const number: Rule = (value, at) => {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
@@ -52,9 +58,33 @@ const shape =
     for (const [key, rule] of Object.entries(fields))
       rule((value as Record<string, unknown>)[key], `${at}.${key}`);
   };
+const closedShape = (fields: Record<string, Rule>): Rule => (value, at) => {
+  shape(fields)(value, at);
+  for (const key of Object.keys(value as object)) if (!Object.hasOwn(fields, key)) invalid(`${at} (unexpected field)`);
+};
 const date: Rule = (value, at) => {
   string(value, at);
   if (!Number.isFinite(Date.parse(value as string))) invalid(at);
+};
+const finite: Rule = (value, at) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) invalid(at);
+};
+// Finite invalid bounds remain inspectable evidence with an inconclusive verdict.
+const timingBound = nullable(shape({ ms: finite, inclusive: boolean }));
+const latencyProbe: Rule = (value, at) => {
+  shape({
+    event: oneOf("acknowledgement", "first_visible_response", "message_creation", "final_settlement"),
+    interval: shape({ lower: timingBound, upper: timingBound }),
+    lastAbsentMs: nullable(finite), firstPresentMs: nullable(finite), resolutionMs: nullable(finite),
+    invalid: optional(boolean),
+    observationFailures: optional(integer),
+    observationTimeouts: optional(integer),
+    messageTimestamps: optional(shape({ createdAt: optional(string), editedAt: optional(string) })),
+    target: shape({ operator: oneOf("<", "<="), ms: finite }),
+    verdict: oneOf("pass", "fail", "inconclusive"),
+    recordedVerdict: optional(oneOf("pass", "fail", "inconclusive")),
+    reason: oneOf("within_target", "outside_target", "threshold_overlap", "missing_observations", "invalid_evidence", "unknown_resolution"),
+  })(value, at);
 };
 const url: Rule = (value, at) => {
   string(value, at);
@@ -194,6 +224,23 @@ const fields = {
   issueId: optional(string),
   issueIdentifier: optional(nullable(string)),
   runIds: optional(array(string)),
+  dependableWork: optional(closedShape({
+    campaignId: matching(/^[A-Za-z0-9_.-]{1,120}$/), cell: oneOf(...DEPENDABLE_CELLS), phase: oneOf("candidate", "staging"),
+    evidence: closedShape({ definitionHash: matching(/^[a-f0-9]{64}$/), settingsHash: matching(/^[a-f0-9]{64}$/),
+      instructionsHash: matching(/^[a-f0-9]{64}$/), runnerArtifact: matching(/^sha256:[a-f0-9]{64}$/),
+      revisionAtStart: matching(/^[a-f0-9]{40}$/), revisionAtEnd: matching(/^[a-f0-9]{40}$/),
+      target: oneOf("isolated-candidate", "isolated-staging") }),
+  })),
+  latencyProbes: optional(array(latencyProbe)),
+  startupReuse: optional(array(shape({
+    runId: string,
+    warmth: oneOf("cold", "warm", "partial_reuse", "unknown"),
+    providerLaunchCount: nullable(integer),
+    layers: shape(Object.fromEntries(STARTUP_REUSE_LAYERS.map(layer => [layer, shape({
+      state: oneOf("fresh", "reused", "unknown", "not_applicable"),
+      reason: oneOf(...STARTUP_REUSE_REASONS),
+    })]))),
+  }))),
   turnTimings: optional(
     array(
       shape({

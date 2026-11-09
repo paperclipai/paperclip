@@ -3,7 +3,11 @@
 Product map: [Delegation, dependencies, and
 signoff](../feature-map/task-coordination.md).
 
-Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
+Feature ID: `task-coordination`.
+
+Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
+Native REST transport reconciled in this change; see the
+[shared transport contract](README.md#native-rest-transport).
 
 This is a source-reviewed baseline of representative operations and known gaps.
 Each capability needs operation-level review before its entire scope can be
@@ -11,6 +15,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `delegation`
+
+Capability ID: `task-coordination/delegation`.
 
 Review: `baseline`.
 
@@ -37,14 +43,16 @@ protected task/resource policy.
 
 ## `dependencies`
 
+Capability ID: `task-coordination/dependencies`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
 
 - `PATCH /api/issues/{id}`.
 
-Agent access: `available` — Native set_dependencies for current task; agent REST under
-mutation/checkout policy.
+Agent access: `available` — Native set_dependencies for the current task; agent REST
+/ native `call_api` under mutation and checkout policy.
 
 Policy: Task visibility/mutation, task-assignment and ownership policy; review audience
 independent; tree controls board-only.
@@ -58,9 +66,12 @@ credentials/run context; inspect its result and applicable persistence/attributi
 Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
-Gaps: Generic native PATCH rejects blockedByIssueIds so use its real dedicated tool.
+Gaps: Dedicated set_dependencies is current-task scoped. Generic `call_api`
+forwards blockedByIssueIds to the REST route and retains its ownership checks.
 
 ## `signoff`
+
+Capability ID: `task-coordination/signoff`.
 
 Review: `baseline`.
 
@@ -88,6 +99,8 @@ Gaps: Review policy determines final completion; formal board approval is a diff
 boundary.
 
 ## `tree-control`
+
+Capability ID: `task-coordination/tree-control`.
 
 Review: `baseline`.
 

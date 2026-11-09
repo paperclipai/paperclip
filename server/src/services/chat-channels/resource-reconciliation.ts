@@ -5,7 +5,8 @@ import { slackResourceLabelIsFallback } from "./slack/resources.js";
 import { telegramResourceLabelIsFallback, prepareTelegramResourceMigration, migrateTelegramResourceConversations } from "./telegram/resources.js";
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { chatConversations, chatDeliveries, chatEndpointResources, chatEndpoints, toolConnections, type Db } from "@paperclipai/db";
-import type { ChatEndpointSetupState } from "@paperclipai/shared";
+import { assertChatExecutionDefaultsAccess } from "../chat-execution-defaults.js";
+import type { ChatExecutionDefaults, ChatEndpointSetupState } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { notifyChatDeliveryWork, notifyChatEndpointWork } from "../chat-work-notifications.js";
@@ -163,7 +164,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
 
   async function replaceResources(
     endpointId: string,
-    updates: Array<{ id: string; enabled: boolean }>,
+    updates: Array<{ id: string; enabled?: boolean; executionDefaults?: ChatExecutionDefaults | null }>,
     actorUserId?: string | null,
     options?: { initialGitHubImport?: boolean },
   ) {
@@ -173,7 +174,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
 
   async function updateResourceSelection(
     endpointId: string,
-    updates: Array<{ id: string; enabled: boolean }>,
+    updates: Array<{ id: string; enabled?: boolean; executionDefaults?: ChatExecutionDefaults | null }>,
     actorUserId?: string | null,
     options?: { initialGitHubImport?: boolean; allGitHubRepositoriesEnabled?: boolean },
   ) {
@@ -194,6 +195,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
           const [endpoint] = await tx
             .select({
               companyId: chatEndpoints.companyId,
+              assignedAgentId: chatEndpoints.assignedAgentId,
               connectionId: chatEndpoints.connectionId,
               provider: chatEndpoints.provider,
               setup: chatEndpoints.setup,
@@ -213,6 +215,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
               id: chatEndpointResources.id,
               availability: chatEndpointResources.availability,
               enabled: chatEndpointResources.enabled,
+              executionDefaults: chatEndpointResources.executionDefaults,
             })
             .from(chatEndpointResources)
             .where(
@@ -233,7 +236,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
             .for("no key update");
           if (!bulk && rows.length !== new Set(ids).size)
             throw unprocessable("Every resource must belong to this endpoint");
-          const selectedUpdates = bulk
+          const selectedUpdates: typeof updates = bulk
             ? rows.map((row) => ({ id: row.id, enabled: options!.allGitHubRepositoriesEnabled! }))
             : updates;
           const availabilityById = new Map(
@@ -250,15 +253,27 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
               "A destination must still be available from the provider before it can be enabled",
               { code: "chat_resource_unavailable", resourceId: unavailable.id },
             );
-          const finalEnabled = new Map(
-            selectedUpdates.map((entry) => [entry.id, entry.enabled]),
-          );
+          const finalEnabled = new Map(rows.map((row) => [row.id, row.enabled]));
+          for (const entry of selectedUpdates) {
+            if (entry.enabled !== undefined) finalEnabled.set(entry.id, entry.enabled);
+          }
+          const finalDefaults = new Map(rows.map((row) => [row.id, row.executionDefaults]));
+          for (const entry of selectedUpdates) {
+            if (entry.executionDefaults === undefined) continue;
+            await assertChatExecutionDefaultsAccess(db, {
+              companyId: endpoint.companyId,
+              assigneeAgentId: endpoint.assignedAgentId,
+              actor: { type: "board", userId: actorUserId, source: actorUserId ? "session" : "local_implicit" },
+              defaults: entry.executionDefaults,
+            }, tx);
+            finalDefaults.set(entry.id, entry.executionDefaults);
+          }
           const changes = rows
-            .filter((row) => row.enabled !== finalEnabled.get(row.id))
+            .filter((row) => row.enabled !== finalEnabled.get(row.id) || JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)))
             .map((row) => ({
               resourceId: row.id,
-              before: { enabled: row.enabled },
-              after: { enabled: finalEnabled.get(row.id)! },
+              before: { enabled: row.enabled, ...(JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)) ? { executionDefaults: row.executionDefaults } : {}) },
+              after: { enabled: finalEnabled.get(row.id)!, ...(JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)) ? { executionDefaults: finalDefaults.get(row.id) } : {}) },
             }));
           if (bulk) {
             // One atomic database update, independent of pagination/search and
@@ -276,7 +291,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
           } else for (const entry of selectedUpdates)
             await tx
               .update(chatEndpointResources)
-              .set({ enabled: entry.enabled, updatedAt: new Date() })
+              .set({ enabled: entry.enabled, ...(entry.executionDefaults !== undefined ? { executionDefaults: entry.executionDefaults } : {}), updatedAt: new Date() })
               .where(
                 and(
                   eq(chatEndpointResources.companyId, endpoint.companyId),
@@ -419,6 +434,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                   (currentEndpoint.provider === "slack" &&
                     effect.resourceType === "channel" &&
                     effect.availability === "available"),
+                ...(previousResource ? { executionDefaults: previousResource.executionDefaults } : {}),
                 metadata: effect.metadata ?? {},
               })
               .onConflictDoUpdate({
@@ -438,6 +454,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                         enabled: sql<boolean>`${chatEndpointResources.enabled} or ${migratedEnabled}`,
                       }
                     : {}),
+                  ...(previousResource ? { executionDefaults: previousResource.executionDefaults } : {}),
                   metadata: effect.metadata ?? {},
                   updatedAt: now,
                 },
@@ -491,7 +508,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                     : currentEndpoint.status === "attention"
                       ? "verifying"
                       : currentEndpoint.status;
-                if (status !== currentEndpoint.status) await notifyChatEndpointWork(tx);
+                if (status !== currentEndpoint.status) await notifyChatEndpointWork(tx, currentEndpoint.connectionId);
                 await tx
                   .update(chatEndpoints)
                   .set({

@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -68,6 +69,7 @@ describeEmbeddedPostgres("activity service", () => {
     await db.delete(documents);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -204,6 +206,7 @@ describeEmbeddedPostgres("activity service", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -233,8 +236,12 @@ describeEmbeddedPostgres("activity service", () => {
       assigneeAgentId: agentId,
     });
 
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId, companyId, agentId, source: "issue", status: "claimed",
+    });
     await db.insert(heartbeatRuns).values({
       id: runId,
+      wakeupRequestId,
       companyId,
       agentId,
       scopeKind: "issue",
@@ -243,7 +250,7 @@ describeEmbeddedPostgres("activity service", () => {
       status: errorCode ? "failed" : "succeeded",
       errorCode,
       error: "provider-error".repeat(200),
-      contextSnapshot: { issueId },
+      contextSnapshot: { issueId, queuedCommentSourceWakeIds: ["coalesced-queue"] },
       usageJson: {
         inputTokens: 11,
         output_tokens: 7,
@@ -275,7 +282,9 @@ describeEmbeddedPostgres("activity service", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({
       runId,
+      wakeupRequestId,
       agentId,
+      queuedCommentSourceWakeIds: ["coalesced-queue"],
       invocationSource: "assignment",
       contextIssueId: issueId,
       error: errorCode === "native_provider_model_rejected" ? "provider-error".repeat(200).slice(0, 2000) : null,

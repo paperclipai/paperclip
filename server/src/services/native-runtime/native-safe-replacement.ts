@@ -1,3 +1,4 @@
+import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
@@ -34,6 +35,20 @@ const processAlive = (pid: number | null) => {
   }
 };
 
+export function nativeReplacementPending() {
+  return and(
+    eq(heartbeatRuns.status, "failed"),
+    eq(nativeRunFinalizations.phase, "terminal_failure"),
+    inArray(
+      nativeRunFinalizations.failureCode,
+      ["native_provider_terminal_failed", "native_session_cleanup_quarantined", "provider_transport_failed"],
+    ),
+    isNull(nativeRunFinalizations.resultId),
+    sql`coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = ''`,
+    sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') = ''`,
+  );
+}
+
 /** Retryable outbox: terminal_failure plus a new-format failure code is the durable candidate. */
 export async function reconcileSafeNativeReplacements(
   db: Db,
@@ -55,17 +70,7 @@ export async function reconcileSafeNativeReplacements(
       eq(nativeRunFinalizations.runId, heartbeatRuns.id),
     )
     .where(
-      and(
-        eq(heartbeatRuns.status, "failed"),
-        eq(nativeRunFinalizations.phase, "terminal_failure"),
-        inArray(
-          nativeRunFinalizations.failureCode,
-          ["native_provider_terminal_failed", "native_session_cleanup_quarantined", "provider_transport_failed"],
-        ),
-        isNull(nativeRunFinalizations.resultId),
-        sql`coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = ''`,
-        sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') = ''`,
-      ),
+      nativeReplacementPending(),
     )
     .limit(25);
   let scheduled = 0;
@@ -260,6 +265,7 @@ export async function reconcileSafeNativeReplacements(
             current.failureDetail?.replacementDenied
           )
             return;
+          await notifyExecutionRunWork(tx);
           await tx
             .update(nativeRunFinalizations)
             .set({
@@ -401,6 +407,7 @@ export async function reconcileSafeNativeReplacements(
             idempotencyKey: `native-safe-replacement:${run.id}`,
           })
           .returning();
+        await notifyExecutionRunWork(tx);
         await tx.insert(heartbeatRuns).values({
           id: successorRunId,
           companyId: run.companyId,

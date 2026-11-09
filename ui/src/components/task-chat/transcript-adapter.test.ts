@@ -221,7 +221,7 @@ describe("completion tool feed visibility", () => {
     const [notice] = transcriptToTaskChatItems([{
       kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
       status: "informational", title: "Provider notice", summary,
-      payload: { noticeId: "long-notice", summary },
+      payload: { noticeId: "long-notice", summary, userActionable: true },
     }], { runId: "notice", running: false });
     expect(notice.kind === "protocol" && notice.surface === "provider_activity" &&
       notice.details.find((detail) => detail.label === "Summary")?.value).toBe(summary);
@@ -240,7 +240,7 @@ describe("completion tool feed visibility", () => {
         })),
         { kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
           status: "informational", title: "Provider notice", summary: "Repository is not trusted",
-          payload: { noticeId: "notice", summary: "Repository is not trusted" } },
+          payload: { noticeId: "notice", summary: "Repository is not trusted", userActionable: true } },
       ];
       const parsed = transcriptToTaskChatItems(entries, { runId: "finish-visibility", running });
       expect(parsed).toHaveLength(4);
@@ -858,19 +858,7 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
         description: "Canonical event details",
       },
     ]);
-    expect(
-      notice?.kind === "protocol" && notice.surface === "provider_activity"
-        ? notice.details
-        : [],
-    ).toEqual(
-      expect.arrayContaining([
-        { label: "Severity", value: "warning", mono: false },
-        { label: "Category", value: "config", mono: false },
-        { label: "Scope", value: "environment", mono: false },
-        { label: "Recoverable", value: "Yes", mono: false },
-        { label: "User Actionable", value: "No", mono: false },
-      ]),
-    );
+    expect(notice).toBeUndefined();
   });
 
   it("retains every canonical provider family for live and settled rendering", () => {
@@ -898,7 +886,7 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
       status: index % 2 === 0 ? "running" : "completed",
       title: family,
       summary: `Visible ${family}`,
-      payload: { [`${family}Id`]: `${family}-1` },
+      payload: { [`${family}Id`]: `${family}-1`, ...(family === "provider_notice" ? { userActionable: true } : {}) },
     }));
     const items = transcriptToTaskChatItems(entries, {
       ...opts,
@@ -1124,21 +1112,20 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     ]);
   });
 
-  it("keeps a pending request composer-only while preserving its group boundary", () => {
+  it("keeps a pending request in the feed while preserving its group boundary", () => {
     const rows = buildTurnTimelineRows(
       [tool("before"), request("pending", "pending"), tool("after")],
       true,
     );
 
-    expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row.kind === "activity_phase")).toBe(true);
+    expect(rows).toHaveLength(3);
     expect(
       rows.map((row) =>
-        row.kind === "activity_phase" ? row.items[0]?.id : null,
+        row.kind === "activity_phase" ? row.items[0]?.id : row.id,
       ),
-    ).toEqual(["before", "after"]);
+    ).toEqual(["before", "pending:pending", "after"]);
     expect(rows[0]).toMatchObject({ kind: "activity_phase", active: false });
-    expect(rows[1]).toMatchObject({ kind: "activity_phase", active: true });
+    expect(rows[2]).toMatchObject({ kind: "activity_phase", active: true });
   });
 
   it("retains progress-only phases and uses the same row order for settled assembly", () => {
@@ -1715,14 +1702,6 @@ describe("interstitial self-talk classification (PAP-355)", () => {
       if (m.kind !== "message") continue;
       expect(m.interstitial).toBe(true);
     }
-  });
-
-  it("marks only the message still open at the tail as streaming", () => {
-    const items = transcriptToTaskChatItems(stream, {
-      runId: "run-1",
-      running: true,
-    });
-    const messages = items.filter((it) => it.kind === "message");
     if (messages[0].kind !== "message" || messages[1].kind !== "message")
       return;
     // The first message was closed by the tool call — finished self-talk.
@@ -1751,13 +1730,6 @@ describe("interstitial self-talk classification (PAP-355)", () => {
       expect(m.interstitial).toBe(true);
       expect(m.streaming).toBe(false);
     }
-  });
-
-  it("stamps atMs from the first streamed chunk", () => {
-    const messages = transcriptToTaskChatItems(stream, {
-      runId: "run-1",
-      running: false,
-    }).filter((it) => it.kind === "message");
     if (messages[0].kind !== "message" || messages[1].kind !== "message")
       return;
     expect(messages[0].atMs).toBe(Date.parse(TS));

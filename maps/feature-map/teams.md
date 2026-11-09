@@ -1,6 +1,12 @@
-# Team packages and catalog installation
+---
+navigation: {"section":"Agents and reusable capabilities","sectionOrder":30,"order":40}
+---
+
+# Team packages and installation
 
 Operators can preview and install a team package with its agents and related resources. Catalog/package installation is available through the CLI/API; the repository also contains catalog UI components that are not a current top-level route.
+
+Feature ID: `teams`.
 
 Implementation: [CLI teams](../../cli/src/commands/client/teams.ts), [catalog components](../../ui/src/pages/TeamCatalog.tsx).
 
@@ -8,10 +14,10 @@ Agent access: [companion](../agent-access-map/teams.md).
 
 ## Sub-features
 
-- `discovery`: list available team catalog entries and inspect package contents.
-- `preview`: inspect proposed resources and installation options before mutation.
-- `install`: install into the intended company and inspect resulting agents and resources.
-- `configuration`: supply required adapters/accounts and verify installed agents can work.
+- `discovery`: `teams/discovery` — list available team catalog entries and inspect package contents.
+- `preview`: `teams/preview` — inspect proposed resources and installation options before mutation.
+- `install`: `teams/install` — install into the intended company and inspect resulting agents and resources.
+- `configuration`: `teams/configuration` — supply required adapters/accounts and verify installed agents can work.
 
 ## How to get to it (user POV)
 

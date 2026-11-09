@@ -1161,3 +1161,10 @@ it("requires export retry for ordinary restoration while keeping explicit board 
   expect(document.body.textContent).not.toContain("Send for review");
   expect(document.body.textContent).toContain("False positive, done");
 });
+
+it("requires owner-stop recovery even for board false-positive dispositions", () => {
+  const node = render(<IssueRecoveryActionCard action={buildAction({ kind: "active_run_watchdog", ownerType: "board",
+    cause: "native_workspace_finalization_owner_unverified" })} onResolve={() => {}} canFalsePositive />);
+  expect(node.querySelector("[data-testid='recovery-action-resolve-trigger']")).toBeNull();
+  expect(node.textContent).not.toContain("False positive");
+});

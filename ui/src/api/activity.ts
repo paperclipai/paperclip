@@ -7,6 +7,8 @@ export interface RunForIssue {
   runId: string;
   execution?: ExecutionProjection | null;
   runtimeMode?: "legacy" | "native";
+  wakeupRequestId?: string | null;
+  queuedCommentSourceWakeIds?: string[] | null;
   status: string;
   agentId: string;
   adapterType: string;

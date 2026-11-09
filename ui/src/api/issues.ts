@@ -1,4 +1,6 @@
 import type { SetIssueTitle } from "@paperclipai/shared";
+import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
+import type { IssueSummary } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
@@ -102,6 +104,8 @@ export type IssueListFilters = {
   originId?: string;
   descendantOf?: string;
   createdFromIssueId?: string;
+  includeAgentCreatedTasks?: boolean;
+  includeParticipatedTasks?: boolean;
   includeRoutineExecutions?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
@@ -143,6 +147,9 @@ function issueListSearchParams(filters?: IssueListFilters) {
   if (filters?.originId) params.set("originId", filters.originId);
   if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
   if (filters?.createdFromIssueId) params.set("createdFromIssueId", filters.createdFromIssueId);
+  if (filters?.includeParticipatedTasks) params.set("includeParticipatedTasks", "true");
+  if (filters?.includeAgentCreatedTasks !== undefined)
+    params.set("includeAgentCreatedTasks", String(filters.includeAgentCreatedTasks));
   if (filters?.includeRoutineExecutions)
     params.set("includeRoutineExecutions", "true");
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
@@ -164,6 +171,17 @@ function issueListSearchParams(filters?: IssueListFilters) {
 }
 
 export const issuesApi = {
+  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions): Promise<IssueSummary[]> => {
+    if (issueIds.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
+    const ids = [...new Set(issueIds.map((id) => id.trim().toLowerCase()))].sort();
+    if (ids.length === 0) return [];
+    const params = new URLSearchParams({ ids: ids.join(",") });
+    const path = `/companies/${companyId}/issues/summaries?${params}`;
+    // React Query deduplicates within an account; URL-only HTTP coalescing must
+    // never join a request sent with the previous account's cookie.
+    detachInflightGet(path);
+    return api.get<IssueSummary[]>(path, { ...options, cache: "no-store" });
+  },
   /** Fetch every page for bounded task-detail relations, not just the default first page. */
   listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId" | "attention">, options?: RequestOptions): Promise<Issue[]> => {
     const pageSize = 500;
@@ -278,8 +296,19 @@ export const issuesApi = {
       `/issues/${id}/stalled-review-decision`,
       data,
     ),
+  resumeWorkspaceFinalization: (id: string, data: { actionId: string; runId: string; ownerToken: string; controllerAndCopybackStopped: true; stopEvidence: string }) =>
+    api.post<{ runId: string; resultId: string; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
     api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
+  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null }) =>
+    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
+  recoverWorkspace: (id: string, data: { actionId: string; runId: string; idempotencyKey: string }) =>
+    api.post<{ actionId: string; status: string }>(`/issues/${id}/recovery-actions/recover-workspace`, data),
+  reconstructWorkspace: (id: string, data: { actionId: string; runId: string; expectedStatusVersion: number; attachmentIds: string[];
+    missingWork: string; actionOutcome: "completed" | "not_performed" | "mixed"; outcomeEvidence: string; acknowledgeLostWork: true }) =>
+    api.post<{ runId: string; actionId: string; status: "queued"; replayed: boolean }>(`/issues/${id}/recovery-actions/reconstruct-workspace`, data),
+  recoveryActions: (id: string) =>
+    api.get<{ active: IssueRecoveryAction | null; actions: IssueRecoveryAction[] }>(`/issues/${id}/recovery-actions`),
   resolveRecoveryAction: (
     id: string,
     data: {
@@ -287,7 +316,7 @@ export const issuesApi = {
       workspaceBaseRef?: { requestedRef: string; branch: string };
       actionId?: string;
       outcome: "restored" | "false_positive" | "blocked" | "cancelled";
-      sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";
+      sourceIssueStatus: Issue["status"];
       resolutionNote?: string | null;
     },
   ) =>
@@ -461,6 +490,8 @@ export const issuesApi = {
       `/issues/${id}/interactions/${interactionId}/skip`,
       reason ? { reason } : {},
     ),
+  dismissInteraction: (id: string, interactionId: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/dismiss`, {}),
   respondToInteraction: (
     id: string,
     interactionId: string,

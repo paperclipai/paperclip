@@ -273,7 +273,7 @@ export function applyOptimisticIssueCommentUpdate(
   if (!issue) return issue;
   const nextIssue: Issue = { ...issue };
 
-  if (params.reopen === true && (issue.status === "done" || issue.status === "cancelled" || issue.status === "blocked")) {
+  if (params.reopen === true && !issue.executionBlocker && (issue.status === "done" || issue.status === "cancelled" || issue.status === "blocked")) {
     nextIssue.status = "todo";
   }
 

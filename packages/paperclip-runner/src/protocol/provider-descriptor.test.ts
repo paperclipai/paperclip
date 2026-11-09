@@ -30,6 +30,17 @@ describe("provider runtime descriptor", () => {
     expect(validatePrpEvent(event).ok).toBe(true);
     expect(validatePrpEvent({ ...event, payload: { ...event.payload, turnControls: { steering: "true" } } }).ok).toBe(false);
   });
+  it.each(["openai_dot", "grok_bot"] as const)("accepts the real %s external-session descriptor and rejects native-process claims", provider => {
+    const descriptor = { provider, driver: provider === "grok_bot" ? "grok_bot_mcp" : "openai_dot_mcp", service: provider,
+      executionKind: "remote_service", model: null, providerSessionId: null, processId: null, providerVersion: "unknown" };
+    expect(validate(descriptor), JSON.stringify(validate.errors)).toBe(true);
+    for (const changed of [
+      { ...descriptor, service: "anthropic_managed_agents" }, { ...descriptor, driver: "codex_app_server" },
+      { ...descriptor, executionKind: "local_process" }, { ...descriptor, model: "an-unreported-model" },
+      { ...descriptor, providerSessionId: "invented-session" }, { ...descriptor, processId: 42 }, { ...descriptor, agentProcessId: 42 },
+    ]) expect(validate(changed)).toBe(false);
+  });
+
   it("accepts ACPX sidecar and child process identities separately", () => {
     expect(validate({
       provider: "acpx",

@@ -37,10 +37,8 @@ function createDbStub(...selectResponses: unknown[][]) {
 }
 
 async function createApp(db: Record<string, unknown>) {
-  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/access.js"),
-    import("../middleware/index.js"),
-  ]);
+  const { errorHandler } = await import("../middleware/index.js");
+  const { accessRoutes } = await import("../routes/access.js");
   const app = express();
   app.use((req, _res, next) => {
     (req as any).actor = { type: "anon" };

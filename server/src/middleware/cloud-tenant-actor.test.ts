@@ -3,7 +3,14 @@ import express, { type Request } from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
+import {
+  authUsers,
+  companies,
+  companyMemberships,
+  instanceSettings,
+  instanceUserRoles,
+  principalPermissionGrants,
+} from "@paperclipai/db";
 import { actorMiddleware, cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./idle-admission.js";
 import { idleWorkSnapshot, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
@@ -59,10 +66,14 @@ function createFakeDb(options: {
       return chain;
     },
     select: () => {
-      if (options.selectThrows) throw new Error("select unavailable");
       return {
         from: (table: unknown) => ({
           where: (condition: unknown) => {
+            // Role-default grant seeding reads existing grants first; keep that
+            // read working so selectThrows exercises only the degradable reads.
+            if (options.selectThrows && table !== principalPermissionGrants) {
+              throw new Error("select unavailable");
+            }
             selectWheres.push({ table, condition });
             const rows =
               table === instanceSettings && settingsRow
@@ -257,6 +268,34 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     );
     expect(actor!.isInstanceAdmin).toBe(false);
     expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
+  });
+
+  it.each(["admin", "member", "support"])(
+    "grants experimental settings access only to the admin stack role (%s)",
+    async (stackRole) => {
+      const { db, insertedTables } = createFakeDb();
+      const actor = await resolveCloudTenantActor(
+        db,
+        fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": stackRole }),
+      );
+      expect(actor?.canManageExperimentalSettings).toBe(stackRole === "admin");
+      expect(actor?.isInstanceAdmin).toBe(false);
+      expect(insertedTables).not.toContain(instanceUserRoles);
+    },
+  );
+
+  it("removes experimental settings access on the next request after a stack admin is demoted", async () => {
+    const { db } = createFakeDb();
+    const admin = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "admin" }),
+    );
+    const member = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" }),
+    );
+    expect(admin?.canManageExperimentalSettings).toBe(true);
+    expect(member?.canManageExperimentalSettings).toBe(false);
   });
 
   describe("company membership union", () => {

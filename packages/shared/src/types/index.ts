@@ -367,6 +367,7 @@ export type {
   ProjectManagedByPlugin,
   ProjectVisibility,
   ProjectWorkspace,
+  ProjectWorkspaceProviderConfiguration,
 } from "./project.js";
 export type {
   CompanySearchCountType,
@@ -661,6 +662,7 @@ export type {
 } from "./external-object.js";
 export type {
   CompactIssue,
+  IssueSummary,
   Issue,
   IssueChangeReceiptEntry,
   IssueChanges,
@@ -1101,3 +1103,5 @@ export type { AgentInstructionCandidate } from "./agent.js";
 export * from "./skill-source.js";
 
 export * from "./agent-lifecycle.js";
+
+export * from "./task-workspace.js";

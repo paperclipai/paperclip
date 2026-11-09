@@ -93,6 +93,35 @@ describe("first-task proposal mode policy", () => {
     expect(skill).toContain("`request_checkbox_confirmation` targeting its saved revision");
     expect(skill).toContain("explicit plan requests regardless of the single-task proposal mode");
   });
+
+  it("hands accepted file-producing child work to its own execution before reporting results", async () => {
+    const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
+    expect(skill).toContain("If the accepted child work requires a file deliverable");
+    expect(skill).toContain("self-contained child description");
+    expect(skill).toContain("requested filenames");
+    expect(skill).toContain("child's own Paperclip execution");
+    expect(skill).toContain("even when the child is assigned to yourself");
+    expect(skill).toContain("Do not create or register that file from the onboarding run");
+    expect(skill).toContain("`register_deliverable` is bound to its current task");
+    expect(skill).toContain("preserve existing blocker IDs");
+    expect(skill).toContain("`set_dependencies`");
+    expect(skill).toContain("`paperclip_block`");
+    expect(skill).toContain("`blockedByIssueIds`");
+    expect(skill).toContain("End the turn so the child can execute");
+    expect(skill).toContain("Do not poll for its result");
+    expect(skill).toContain("verify the saved child document and retrievable file");
+    expect(skill).toContain("actual child task and download links");
+  });
+
+  it("keeps plan-only authorization and document-only child execution distinct from file handoff", async () => {
+    const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
+    expect(skill).toContain("For a plan-only request, retain the accepted plan on this task");
+    expect(skill).toContain("Do not start its implementation or hire the proposed team without authorization");
+    expect(skill).toContain("Create exactly one child linked to this onboarding task");
+    expect(skill).toContain("For document-only child work, you may execute it directly");
+    expect(skill).toContain("Save the finished output as a document on the child task and mark that child done");
+    expect(skill).toContain("On later wakes, continue that same child instead of creating another");
+  });
 });
 
 describe("chief-of-staff persona", () => {

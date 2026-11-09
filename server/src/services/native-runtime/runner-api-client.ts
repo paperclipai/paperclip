@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { badRequest, forbidden, unprocessable } from "../../errors.js";
+import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { runnerApiOperation, type RunnerApiOperation } from "./runner-api-catalog.js";
 import { captureRunnerApiResponse, type RunnerApiResponseBody } from "./runner-api-response.js";
-import { runnerApiRestriction } from "./runner-api-policy.js";
 import { RunnerApiResponseLimitError, RunnerApiResponseCleanupError, RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
 
 /** Request/upload bound only. Response capture has a separate streamed limit. */
@@ -39,6 +39,8 @@ export interface RunnerApiIo {
   apiUrl: string;
   token: string;
   fetch?: typeof fetch;
+  /** Server-owned page size for the dedicated saved-result reader. */
+  responseTextPageBytes?: number;
   /** Revalidate server-owned authority after asynchronous file preparation. */
   beforeDispatch?(): Promise<void>;
   /** Reserve before spilling. Settle completed bytes; failed captures retain their reservation. */
@@ -54,37 +56,8 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   const operation = runnerApiOperation(input.operationId);
   if (operation.transport !== "rest") throw unprocessable("This endpoint requires its existing protocol client; call_api supports REST only");
   if (input.responseText && operation.method !== "GET") throw badRequest("responseText requires a GET operation; read the saved artifact instead of repeating a mutation");
-  const restriction = runnerApiRestriction(operation.method, operation.path);
-  if (restriction) throw forbidden(restriction);
   if (!operation.allowedModes.includes(context.workMode)) throw forbidden("call_api permits only reads in Ask and Plan modes; use the permitted dedicated tools");
   if (input.pathParams?.companyId && input.pathParams.companyId !== context.companyId) throw forbidden("API call belongs to another company");
-  const mutation = !["GET", "HEAD", "OPTIONS"].includes(operation.method);
-  if (mutation) {
-    const issueRoute = /^\/api\/issues\/\{[^}]+\}/.test(operation.path);
-    const body = input.body && typeof input.body === "object" && !Array.isArray(input.body) ? input.body as Record<string, unknown> : {};
-    // Raw uploads must not hide lifecycle fields from the structured policy
-    // check and subsequently become JSON inside Express's body parser.
-    const guardedBody = /^\/api\/(issues|agents)\/\{[^}]+\}$/.test(operation.path)
-      || (issueRoute && /\/comments$/.test(operation.path));
-    if (guardedBody && (input.files?.length || (input.body !== undefined && (!input.body || typeof input.body !== "object" || Array.isArray(input.body))))) {
-      throw forbidden("Lifecycle-sensitive API updates require an inline JSON object");
-    }
-    if (/^\/api\/agents\/\{[^}]+\}$/.test(operation.path) && ["status", "runtimeState"].some(key => Object.hasOwn(body, key))) {
-      throw forbidden("API agent updates cannot bypass runner execution-control authority");
-    }
-    if (issueRoute && /\/comments$/.test(operation.path) && ["reopen", "resume", "interrupt"].some(key => body[key] === true)) {
-      throw forbidden("API comments cannot change runner execution state");
-    }
-    if (issueRoute && /\/issues\/\{[^}]+\}$/.test(operation.path)) {
-      const lifecycle = ["status", "workMode", "executionRunId", "checkoutRunId", "executionState", "executionPolicy", "executionAgentNameKey", "executionLockedAt", "completedAt", "cancelledAt", "startedAt", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "reopen", "resume", "interrupt"];
-      if (lifecycle.some((key) => Object.hasOwn(body, key))) throw forbidden("Use dedicated completion, review, delegation or dependency tools for task lifecycle changes");
-      // The real issue router normalizes identifiers and PostgreSQL accepts
-      // uppercase UUIDs. Apply the same identity comparison before dispatch.
-      const target = Object.values(input.pathParams ?? {}).map(id => id.trim().toLowerCase());
-      const activeIds = [context.issueId, context.issueIdentifier].filter((id): id is string => Boolean(id)).map(id => id.toLowerCase());
-      if (operation.method === "DELETE" && target.some(id => activeIds.includes(id))) throw forbidden("The active runner task cannot delete itself");
-    }
-  }
   const contentType = (input.contentType ?? "application/json").split(";", 1)[0].trim().toLowerCase();
   if (input.body !== undefined && !input.files?.length) {
     const requestSchema = operation.requestBody?.content?.[contentType]?.schema as { type?: string } | undefined;
@@ -149,13 +122,16 @@ export async function readBoundedResponse(response: Response, maxBytes = RUNNER_
 }
 
 export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiContext, io: RunnerApiIo) {
+  const inlineBytes = RUNNER_API_INLINE_BYTES;
   const { operation, input: validated } = validateRunnerApiCall(input, context);
   input = validated;
+  const sensitiveResponse = runnerApiSensitiveResponse(operation.method, operation.path);
   const url = runnerApiUrl(operation, input, context, io.apiUrl);
   if (!io.token) throw new Error("Paperclip run authentication is unavailable");
   const headers = new Headers({ Authorization: `Bearer ${io.token}`, "X-Paperclip-Run-Id": context.runId });
   const textOffset = input.responseText?.offsetBytes ?? 0;
-  const textLimit = input.responseText?.limitBytes ?? RUNNER_API_INLINE_BYTES;
+  const textLimit = input.responseText?.limitBytes
+    ?? (input.responseText ? io.responseTextPageBytes : undefined) ?? RUNNER_API_INLINE_BYTES;
   const assetTextRange = operation.operationId === "GET /api/assets/{assetId}/content"
     ? { start: Math.max(0, textOffset - 1), end: Math.min(Number.MAX_SAFE_INTEGER, textOffset + textLimit) }
     : undefined;
@@ -215,16 +191,20 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
   try {
     response = await (io.fetch ?? fetch)(url, { method: operation.method, headers, body, redirect: "manual", signal: controller.signal });
     clearTimeout(timeout);
-    if (assetTextRange && response.ok) {
+    if (sensitiveResponse) {
+      timeout = setTimeout(() => controller.abort(), RUNNER_API_TIMEOUT_MS);
+      bytes = await readBoundedResponse(response);
+      await io.beforeDispatch?.();
+    } else if (assetTextRange && response.ok) {
       timeout = setTimeout(() => controller.abort(), RUNNER_API_TIMEOUT_MS);
       bytes = await readBoundedResponse(response, textLimit + 2);
     } else {
-      captured = await captureRunnerApiResponse(response, RUNNER_API_INLINE_BYTES, controller, RUNNER_API_TIMEOUT_MS, io.beforeDispatch, {
+      captured = await captureRunnerApiResponse(response, inlineBytes, controller, RUNNER_API_TIMEOUT_MS, io.beforeDispatch, {
         beforeSpill: async () => { settleCapture = await io.reserveResponseCapture?.(); },
       });
       // Read only the requested window (+ one UTF-8 lookahead byte) into memory.
       bytes = await captured.read(input.responseText && response.ok ? textOffset : 0,
-        input.responseText ? textLimit + 1 : RUNNER_API_INLINE_BYTES);
+        input.responseText ? textLimit + 1 : inlineBytes);
     }
   } catch (error) {
     await disposeCapture(!(error instanceof RunnerApiResponseCleanupError));
@@ -240,7 +220,8 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
     // the HTTP evidence, but never describe that write as definitely not applied.
     const uncertain = mutation && (response.status >= 500 || response.status === 408 || (response.status >= 300 && response.status < 400));
     const uncertainty = { outcome: "unknown", guidance: "Inspect current state before retrying this mutation; it may already have succeeded." };
-    const base = { ok: response.ok, status: response.status, operationId: operation.operationId, contentType: type, retryAfter: response.headers.get("retry-after"), ...(uncertain ? uncertainty : {}) };
+    const etag = input.responseText && response.ok ? response.headers.get("etag") : null;
+    const base = { ok: response.ok, status: response.status, operationId: operation.operationId, contentType: type, retryAfter: response.headers.get("retry-after"), ...(etag ? { etag } : {}), ...(uncertain ? uncertainty : {}) };
     if (response.status >= 300 && response.status < 400) return { ...base, ok: false, error: "api_redirect_not_followed" };
     let totalBytes = captured?.byteSize ?? bytes.length;
     let baseOffset = captured && response.ok ? textOffset : 0;
@@ -280,11 +261,11 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
         return { ...base, ok: false, error: "response_text_invalid_utf8" };
       }
       const nextOffset = baseOffset + end;
-      const artifact = captured && captured.byteSize > RUNNER_API_INLINE_BYTES
+      const artifact = captured && captured.byteSize > inlineBytes
         ? await saveResponse(captured.body, type) : undefined;
       return { ...base, data, ...(artifact ? { artifact, guidance: "Continue reading this saved artifact with GET /api/assets/{assetId}/content and responseText.nextOffsetBytes for a stable snapshot." } : {}), responseText: { offsetBytes, nextOffsetBytes: nextOffset < totalBytes ? nextOffset : null, totalBytes } };
     }
-    if (assetTextRange && response.ok && (totalBytes > RUNNER_API_INLINE_BYTES || !/json|^text\//i.test(type))) {
+    if (assetTextRange && response.ok && (totalBytes > inlineBytes || !/json|^text\//i.test(type))) {
       // This content is already an authorized, stable asset. Return its existing
       // reference after a bounded preview; never download and duplicate it.
       const assetId = input.pathParams!.assetId;
@@ -294,10 +275,11 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
         guidance: "Read this asset with responseText: { offsetBytes: 0 }. Continue with responseText.nextOffsetBytes until null." };
     }
     if (!totalBytes) return { ...base, data: null };
-    if (totalBytes > RUNNER_API_INLINE_BYTES || !/json|^text\//i.test(type)) {
+    if (!sensitiveResponse && (totalBytes > inlineBytes || !/json|^text\//i.test(type))) {
       return { ...base, artifact: await saveResponse(captured?.body ?? bytes, type), byteSize: totalBytes, preview: /json|^text\//i.test(type) ? bytes.subarray(0, 2000).toString("utf8") : null,
         ...(/json|^text\//i.test(type) ? { guidance: "Read the saved artifact with GET /api/assets/{assetId}/content and responseText: { offsetBytes: 0 }. Continue with responseText.nextOffsetBytes until null. Do not repeat a mutation to read its response." } : {}) };
     }
+    if (sensitiveResponse && !/json|^text\//i.test(type)) return { ...base, ok: false, error: "credential_response_requires_text_content" };
     const text = bytes.toString("utf8");
     if (/json/i.test(type)) {
       try { return { ...base, data: JSON.parse(text) as unknown }; }

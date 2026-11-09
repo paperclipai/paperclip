@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { FAST_RESPONSE_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -26,6 +26,8 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("heartbeat-task-context-");
     db = createDb(temporary.connectionString);
+    await db.insert(authUsers).values({ id: "context-user", name: "Context user", email: "context-user@example.test",
+      createdAt: new Date(), updatedAt: new Date() });
     heartbeat = heartbeatService(db);
     registerServerAdapter({
       type: adapterType,
@@ -48,6 +50,8 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Task context fixture", issuePrefix: `T${companyId.slice(0, 6)}` });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "context-user",
+      membershipRole: "member", status: "active" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Context reader", adapterType, status: "idle" });
     await db.insert(issues).values({
       id: issueId, companyId, title: "Task context fixture", description: "Assignment description canary",
@@ -89,6 +93,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
       wakeCommentId: commentId, wakeCommentIds: [commentId],
       paperclipTaskCommunicationGuidance: "FORGED caller guidance", paperclipSkillTest: { directive: "FORGED skill" },
       paperclipContinuationSummary: { body: "FORGED summary" },
+      paperclipAgentJwtScope: { kind: "skill_test", issueId: f.issueId },
     });
     expect(context.paperclipTaskMarkdown).toContain("Assignment description canary");
     expect(context.paperclipTaskMarkdown).toContain("Wake comment canary");
@@ -103,6 +108,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     }
     expect(context.paperclipTaskCommunicationGuidance).toBe(FAST_RESPONSE_AGENT_GUIDANCE);
     expect(context.paperclipSkillTest).toBeUndefined();
+    expect(context.paperclipAgentJwtScope).toEqual({ kind: "standard" });
     expect(context.paperclipContinuationSummary).toBeUndefined();
     const digest = (value: string) => createHash("sha256").update(value).digest("hex");
     expect(context.paperclipTurnContext).toMatchObject({

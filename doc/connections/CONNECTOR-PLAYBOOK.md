@@ -5,6 +5,13 @@ and shipping Paperclip app connections.
 
 Status: canonical end-to-end authoring guide for Apps v2 catalog connections.
 
+Experimental voice connections use the same company-scoped channel endpoints,
+vault, task bindings, delivery ledger and publications, with `transport: voice`
+and an explicit runtime rather than Chat SDK. Do not expose voice transport as
+an MCP tool connection. Speko's browser implementation and its remaining phone
+qualification gate are documented in the [native voice report](../plans/2026-10-09-speko-pr-qualification.md)
+and [E2E runbook](../plans/2026-09-11-speko-voice-e2e-runbook.md). The optional
+Company Phone Agent is a catalog template; selecting it must remain optional.
 For connector artwork, follow [Connector icons](./CONNECTOR-ICONS.md): fixed gray Paperclip frames, authentic vendor artwork, explicit theme variants, optical fit and exact provenance. Brand-library additions do not activate connectors. Use the shared registry/resolver and branding generator; do not introduce per-screen logos or outer-surface overrides.
 
 This runbook is the repeatable, agent-executable procedure for adding a vendor
@@ -60,6 +67,72 @@ They authenticate provider execution and never enter MCP discovery or tool/chann
 execution. Extend the provider's existing catalog entry with typed AI methods;
 reuse the existing login controllers. See [AI Connections](./AI-CONNECTIONS.md)
 for compatibility, personal defaults, resolver isolation, and legacy adoption.
+
+## Provider app attribution
+
+When a provider supports application attribution, credit Paperclip for requests
+that Paperclip manages. Research the provider's current attribution contract
+alongside authentication. A harness may identify itself by default; setting an
+API key or model alone does not replace that identity.
+
+For OpenRouter, use the shared policy in
+`packages/shared/src/openrouter-attribution.ts`:
+
+```http
+HTTP-Referer: https://paperclip.ing
+X-OpenRouter-Title: Paperclip
+X-Title: Paperclip
+X-OpenRouter-Categories: cloud-agent,programming-app
+```
+
+The URL is the app identity. Keep it stable across companies, deployments,
+personal keys, and shared keys. Send only public product identity; never put a
+company name, user identifier, task, credential, or instance URL in these fields.
+Preserve authentication, routing headers, and explicit visibility preferences.
+Replace conflicting attribution names case-insensitively. Do not rely on header
+casing or send two different identities under the legacy and current title names.
+See [OpenRouter app attribution](https://openrouter.ai/docs/app-attribution).
+
+Apply this policy to the actual provider endpoint, including a custom connection
+that points to `https://openrouter.ai` or its documented
+[regional endpoints](https://openrouter.ai/docs/guides/features/in-region-routing),
+`https://eu.openrouter.ai` and `https://us.openrouter.ai`. Do not infer OpenRouter from a model name,
+URL substring, or a provider label whose endpoint was changed. A private gateway
+must implement forwarding or attribution itself; Paperclip cannot establish the
+identity of an upstream request it does not control.
+
+Managed AI connections project attribution into Codex provider `http_headers`,
+Claude `ANTHROPIC_CUSTOM_HEADERS`, OpenCode provider `options.headers`, and Hermes
+`model.default_headers`. Native Runner also regenerates Codex headers after its
+config allowlist, preserves Claude headers across environment isolation, sets
+OpenCode proxy headers at the upstream boundary, and attributes Pi's default and
+custom OpenRouter providers in `models.json`. Explicit legacy provider configs
+for Codex, OpenCode, and Pi use the same policy. Legacy Pi also loads a temporary
+extension at execution time, including on remote targets. It applies attribution
+after credential and model-header resolution on Pi 0.74 and at provider dispatch
+on Pi 1.0. This covers bare `OPENROUTER_API_KEY` setups and existing Pi home
+configurations without replacing the home, credentials, settings, or model catalog.
+The extension checks each request's endpoint, including custom aliases and regional
+hosts; a provider named `openrouter` that points elsewhere retains its headers.
+These paths must preserve model
+overrides, helper-model requests, retries, and recovery. The standalone Runner
+keeps its dependency-free copy of the policy under a parity test.
+
+For each new or changed provider path, verify:
+
+- Actual outgoing headers from the supported, pinned harness or SDK. Config
+  snapshots alone do not prove precedence over a harness's own defaults.
+- Custom aliases, conflicting mixed-case attribution, and model-level overrides.
+- An unrelated provider and a repointed built-in provider retain their settings.
+- The credential and unrelated headers survive; secrets never enter test logs.
+- A small live request succeeds and its provider-side record carries the expected
+  app identity, when the provider exposes that record. Keep this evidence separate
+  from public leaderboard visibility, which depends on the provider's processing
+  and ranking rules.
+
+Record coverage limits explicitly. An externally managed agent, an unmanaged
+harness configuration, or a gateway that replaces headers requires separate
+qualification; do not claim that generating Paperclip's configuration covers it.
 
 ## Read/write defaults and credential ownership
 
@@ -471,7 +544,16 @@ This is the implementation sequence an autonomous coding agent should follow.
    task. Do not reset, rewrite, or format unrelated files.
 4. Decide whether the request is research-only, definition-only, or a new
    runtime capability. A store card is not evidence of runtime support.
-5. Write acceptance criteria before editing. At minimum: actionable store card,
+5. Apply [Module boundaries](../../rules/module-boundaries.mdc) before extending
+   shared code. Identify what the existing connection system already supports
+   and which requested features need a new platform capability. Keep new
+   connector-specific protocol behavior in
+   `server/src/services/connectors/<provider>/`; catalog definitions, branding,
+   and registration belong in their established locations. Shared gateway,
+   OAuth, and runtime code should use domain contracts, without interpreting
+   provider tool names or response formats. Separate ordinary MCP calls from
+   optional helpers such as local-file publishing when assessing the footprint.
+6. Write acceptance criteria before editing. At minimum: actionable store card,
    setup completes, credentials are vaulted, tools list, one safe read runs,
    refresh/reconnect works, revoke blocks use, and no secret appears in API or
    logs.
@@ -638,6 +720,12 @@ definitions, resource-assignment resolver, and execution handler. Use names such
 as `agentmail_send` rather than extending core tools with provider-specific
 branches. Existing MCP connectors continue to use their normal MCP tool catalog;
 they do not need a duplicate native wrapper just to supply a skill.
+
+For a gated catalog connector, declare `experimentalFeatureKey` in its
+`AppDefinition`. Shared availability checks resolve the saved application key
+and evaluate that feature before setup, discovery, and execution. Keep the
+feature's settings visibility separate from this enforcement. Do not add
+provider-name checks to the gateway or setup screens.
 
 **Resolve eligibility from current assignments and access.** An AgentMail account
 credential alone does not give an agent email capabilities. An active inbox
@@ -1220,8 +1308,12 @@ unrelated worktree change, or temporary evidence file is staged.
 
 ### Phase 12: Prepare and submit the pull request
 
-1. Keep commits scoped. A typical split is definition/branding, generic runtime
-   capability, and tests/docs. Do not split generated output from its source.
+1. Recheck [Module boundaries](../../rules/module-boundaries.mdc). Explain each
+   substantive shared change in the PR: the missing capability, why the existing
+   contract is insufficient, affected consumers, and behavior with the connector
+   absent or disabled. Separate substantial platform capabilities into reviewable
+   slices with explicit dependencies when appropriate. Keep tests and docs with
+   their behavior and generated output with its source.
 2. Do not commit `pnpm-lock.yaml`; GitHub Actions owns it in this repository.
 3. Read `.github/PULL_REQUEST_TEMPLATE.md` immediately before writing the PR
    body.

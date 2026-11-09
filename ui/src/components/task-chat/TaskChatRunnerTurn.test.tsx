@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { MemoryRouter } from "@/lib/router";
 import { TaskChatRunnerTurn } from "./TaskChatRunnerTurn";
+import { TaskChatRequestHistoryContext } from "./TaskChatComposerTakeoverContext";
 import { transcriptToTaskChatItems } from "./transcript-adapter";
 import type {
   TaskChatItem,
@@ -47,6 +48,7 @@ describe("TaskChatRunnerTurn", () => {
       root.render(
         <MemoryRouter>
           <ThemeProvider>
+            <TaskChatRequestHistoryContext.Provider value="issue-1">
             <TaskChatRunnerTurn
               runId={runId}
               agentName="Runner"
@@ -58,6 +60,7 @@ describe("TaskChatRunnerTurn", () => {
               continuedAfterSteering={continuedAfterSteering}
               onRuntimeRequestDecision={onRuntimeRequestDecision}
             />
+            </TaskChatRequestHistoryContext.Provider>
           </ThemeProvider>
         </MemoryRouter>,
       ),
@@ -163,6 +166,33 @@ describe("TaskChatRunnerTurn", () => {
       expect(container.textContent).not.toContain("Reconnecting");
     },
   );
+
+  it.each(["Muse", "Dot"])("shows Waiting for %s until native acceptance, without a Thinking claim", provider => {
+    const waiting = { phase: "waiting_for_provider", label: `Waiting for ${provider}` } as ExecutionProjection;
+    render([], "running", "run-1", undefined, false, false, waiting);
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
+      .toContain(`Waiting for ${provider}`);
+    const tail = container.querySelector('[data-testid="task-chat-current-activity-label"]');
+    expect(tail?.textContent).toBe(`Waiting for ${provider}`);
+    expect(tail?.classList.contains("shimmer-text")).toBe(false);
+    expect(container.textContent).not.toContain("Working");
+    expect(container.textContent).not.toContain("Thinking");
+
+    // Re-render the same live turn after the native acceptance projection changes.
+    render([], "running", "run-1", undefined, false, false,
+      { phase: "working", label: "Working" } as ExecutionProjection);
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
+      .toContain("Working for");
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent)
+      .toBe("Thinking");
+
+    // A stale waiting projection must never override a terminal run outcome.
+    render([], "failed", "run-1", undefined, false, false, waiting);
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
+      .toContain("Stopped");
+    expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
+    expect(container.textContent).not.toContain(`Waiting for ${provider}`);
+  });
 
   it("labels the streaming tail as a continuation after steering", () => {
     render([], "running", "run-1", undefined, false, true);
@@ -1226,7 +1256,7 @@ describe("TaskChatRunnerTurn", () => {
     ).toBe(true);
   });
 
-  it("does not leave a pending runtime marker after action moves to the composer", async () => {
+  it("keeps a compact pending runtime entry without duplicating composer controls", async () => {
     const onDecision = vi.fn();
     render(
       [
@@ -1258,6 +1288,7 @@ describe("TaskChatRunnerTurn", () => {
     expect(
       container.querySelector('[data-testid="task-chat-runtime-request"]'),
     ).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-pending-runtime-request"]')?.textContent).toContain("Allow command?");
     expect(onDecision).not.toHaveBeenCalled();
   });
 

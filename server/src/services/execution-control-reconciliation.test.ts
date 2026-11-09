@@ -1,3 +1,4 @@
+import { enableRunFailureReporting } from "../__tests__/helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -96,6 +97,38 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
     });
   });
 
+  it("leaves a run owned by a live legacy controller to that controller", async () => {
+    const { runId } = await seedAbandonedRunFixture();
+    const leaseExpiresAt = new Date(Date.now() + 45_000);
+    await db
+      .update(heartbeatRuns)
+      .set({ runtimeMode: "legacy", controllerBootId: randomUUID(), controllerLeaseExpiresAt: leaseExpiresAt })
+      .where(eq(heartbeatRuns.id, runId));
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    const result = await reconcileAbandonedExecutionControl(db);
+
+    expect(result.surfaced).toBe(0);
+    const [owned] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(owned?.status).toBe("running");
+    expect(owned?.errorCode).toBeNull();
+    expect(owned?.executionControlDeadlineAt?.getTime()).toBe(leaseExpiresAt.getTime());
+
+    await db
+      .update(heartbeatRuns)
+      .set({ controllerLeaseExpiresAt: new Date(Date.now() - 1_000), executionControlDeadlineAt: new Date(Date.now() - 1_000) })
+      .where(eq(heartbeatRuns.id, runId));
+    const lapsed = await reconcileAbandonedExecutionControl(db);
+
+    expect(lapsed.surfaced).toBe(1);
+    const [failed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(failed?.status).toBe("failed");
+    expect(failed?.errorCode).toBe("execution_finalization_deadline_exceeded");
+    await vi.waitFor(() => {
+      expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(1);
+    }, { timeout: 5_000 });
+  });
+
   it("reports zero events for a repeated sweep over the same already-failed run", async () => {
     const { runId } = await seedAbandonedRunFixture();
     await reconcileAbandonedExecutionControl(db);
@@ -187,3 +220,6 @@ describeEmbeddedPostgres("native review execution reconciliation admission", () 
     expect(review?.status).toBe("pending");
   });
 });
+
+
+enableRunFailureReporting();

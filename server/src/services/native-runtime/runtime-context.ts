@@ -1,5 +1,7 @@
+import { measureRunPhase } from "../execution-preparation-timing.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
+import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -80,7 +82,7 @@ async function verifyMaterializedAsset(
   rootPath: string,
   manifestFiles: Array<{ path: string; sha256: string; mode: number; size: number }>,
 ): Promise<void> {
-  const actual = await collectDirectoryFiles(rootPath);
+  const actual = await measureRunPhase("runtime_context.asset_read", () => collectDirectoryFiles(rootPath));
   const actualByPath = new Map(actual.map((file) => [file.path, file]));
   if (actualByPath.size !== manifestFiles.length) throw new Error("runtime context asset file count mismatch");
   for (const expected of manifestFiles) {
@@ -92,59 +94,64 @@ async function verifyMaterializedAsset(
 }
 
 export async function materializeAsset(files: AssetFile[]): Promise<NativeRuntimeAssetReference> {
-  const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
-  const manifestFiles = sorted.map((file) => ({ path: safeRelativePath(file.path, "runtime context path"), sha256: sha256(file.content), mode: file.mode & 0o555, size: file.content.byteLength }));
-  const totalBytes = manifestFiles.reduce((sum, file) => sum + file.size, 0);
-  if (!manifestFiles.length || manifestFiles.length > MAX_ASSET_FILES || totalBytes > MAX_ASSET_BYTES) throw new Error("runtime context bundle is empty or exceeds its bound");
-  const assetDigest = sha256(JSON.stringify(manifestFiles));
-  const manifestText = `${JSON.stringify({ schema: "paperclip.runtime-asset-manifest.v1", digest: assetDigest, fileCount: manifestFiles.length, totalBytes, files: manifestFiles })}\n`;
-  const manifestDigest = sha256(manifestText);
+  const { sorted, manifestFiles, totalBytes, assetDigest, manifestText, manifestDigest } = await measureRunPhase("runtime_context.asset_manifest", () => {
+    const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
+    const manifestFiles = sorted.map((file) => ({ path: safeRelativePath(file.path, "runtime context path"), sha256: sha256(file.content), mode: file.mode & 0o555, size: file.content.byteLength }));
+    const totalBytes = manifestFiles.reduce((sum, file) => sum + file.size, 0);
+    if (!manifestFiles.length || manifestFiles.length > MAX_ASSET_FILES || totalBytes > MAX_ASSET_BYTES) throw new Error("runtime context bundle is empty or exceeds its bound");
+    const assetDigest = sha256(JSON.stringify(manifestFiles));
+    const manifestText = `${JSON.stringify({ schema: "paperclip.runtime-asset-manifest.v1", digest: assetDigest, fileCount: manifestFiles.length, totalBytes, files: manifestFiles })}\n`;
+    const manifestDigest = sha256(manifestText);
+    return { sorted, manifestFiles, totalBytes, assetDigest, manifestText, manifestDigest };
+  });
   const assetsRoot = path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets");
   const rootPath = path.join(assetsRoot, "bundles", assetDigest);
   const manifestPath = path.join(assetsRoot, "manifests", `${assetDigest}.json`);
-  const existing = await fs.readFile(manifestPath, "utf8").catch(() => null);
+  const existing = await measureRunPhase("runtime_context.asset_cache", () => fs.readFile(manifestPath, "utf8").catch(() => null));
   if (existing !== null) {
     if (sha256(existing) !== manifestDigest || !(await fs.stat(rootPath).catch(() => null))?.isDirectory()) throw new Error(`runtime context asset verification failed: ${assetDigest}`);
-    await verifyMaterializedAsset(rootPath, manifestFiles);
+    await measureRunPhase("runtime_context.asset_verify", () => verifyMaterializedAsset(rootPath, manifestFiles), { fileCount: manifestFiles.length, bytes: totalBytes });
     return { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest: assetDigest, manifestDigest, rootPath, fileCount: manifestFiles.length, totalBytes };
   }
-  const stagingRoot = path.join(assetsRoot, ".staging", randomUUID());
-  await fs.mkdir(stagingRoot, { recursive: true, mode: 0o700 });
-  try {
-    for (const file of sorted) {
-      const target = path.join(stagingRoot, file.path);
-      await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-      await fs.writeFile(target, file.content, { mode: file.mode & 0o555 });
-      await fs.chmod(target, file.mode & 0o555);
+  await measureRunPhase("runtime_context.asset_materialize", async () => {
+    const stagingRoot = path.join(assetsRoot, ".staging", randomUUID());
+    await fs.mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+    try {
+      for (const file of sorted) {
+        const target = path.join(stagingRoot, file.path);
+        await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+        await fs.writeFile(target, file.content, { mode: file.mode & 0o555 });
+        await fs.chmod(target, file.mode & 0o555);
+      }
+      await fs.mkdir(path.dirname(rootPath), { recursive: true, mode: 0o700 });
+      let publishedRoot = false;
+      await fs.rename(stagingRoot, rootPath).then(() => {
+        publishedRoot = true;
+      }).catch(async (error: NodeJS.ErrnoException) => {
+        // Concurrent publishers can surface EACCES on macOS when the winning
+        // destination has already been made read-only. Treat that as a race only
+        // when the content-addressed destination now exists; a genuine permission
+        // failure with no published destination must still fail loudly.
+        const publishedByPeer = (await fs.stat(rootPath).catch(() => null))?.isDirectory() === true;
+        if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY" && !publishedByPeer) throw error;
+        await fs.rm(stagingRoot, { recursive: true, force: true });
+      });
+      // Publish the writable staging directory first. Renaming a read-only
+      // directory can fail with EACCES on macOS even when both parents are owned
+      // and writable. Files are already immutable; directories become immutable
+      // immediately after this process wins publication.
+      if (publishedRoot) await makeDirectoriesReadOnly(rootPath);
+      await fs.mkdir(path.dirname(manifestPath), { recursive: true, mode: 0o700 });
+      await fs.writeFile(manifestPath, manifestText, { flag: "wx", mode: 0o400 }).catch(async (error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+        if (sha256(await measureRunPhase("runtime_context.asset_cache", () => fs.readFile(manifestPath, "utf8"))) !== manifestDigest) throw new Error(`runtime context manifest race mismatch: ${assetDigest}`);
+      });
+      await measureRunPhase("runtime_context.asset_verify", () => verifyMaterializedAsset(rootPath, manifestFiles), { fileCount: manifestFiles.length, bytes: totalBytes });
+    } catch (error) {
+      await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
     }
-    await fs.mkdir(path.dirname(rootPath), { recursive: true, mode: 0o700 });
-    let publishedRoot = false;
-    await fs.rename(stagingRoot, rootPath).then(() => {
-      publishedRoot = true;
-    }).catch(async (error: NodeJS.ErrnoException) => {
-      // Concurrent publishers can surface EACCES on macOS when the winning
-      // destination has already been made read-only. Treat that as a race only
-      // when the content-addressed destination now exists; a genuine permission
-      // failure with no published destination must still fail loudly.
-      const publishedByPeer = (await fs.stat(rootPath).catch(() => null))?.isDirectory() === true;
-      if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY" && !publishedByPeer) throw error;
-      await fs.rm(stagingRoot, { recursive: true, force: true });
-    });
-    // Publish the writable staging directory first. Renaming a read-only
-    // directory can fail with EACCES on macOS even when both parents are owned
-    // and writable. Files are already immutable; directories become immutable
-    // immediately after this process wins publication.
-    if (publishedRoot) await makeDirectoriesReadOnly(rootPath);
-    await fs.mkdir(path.dirname(manifestPath), { recursive: true, mode: 0o700 });
-    await fs.writeFile(manifestPath, manifestText, { flag: "wx", mode: 0o400 }).catch(async (error: NodeJS.ErrnoException) => {
-      if (error.code !== "EEXIST") throw error;
-      if (sha256(await fs.readFile(manifestPath, "utf8")) !== manifestDigest) throw new Error(`runtime context manifest race mismatch: ${assetDigest}`);
-    });
-    await verifyMaterializedAsset(rootPath, manifestFiles);
-  } catch (error) {
-    await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
-    throw error;
-  }
+  }, { fileCount: manifestFiles.length, bytes: totalBytes });
   return { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest: assetDigest, manifestDigest, rootPath, fileCount: manifestFiles.length, totalBytes };
 }
 
@@ -181,12 +188,12 @@ async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>,
     const entry = byKey.get(key);
     if (!entry) throw new Error(`assigned runtime skill is missing from the company library: ${key}`);
     if (entry.sourceStatus === "missing") throw new Error(entry.missingDetail ?? `assigned runtime skill source is missing: ${key}`);
-    return { key: entry.key, runtimeName: safeRelativePath(entry.runtimeName, `runtime name for ${key}`), versionId: entry.versionId ?? entry.currentVersionId ?? null, bundle: await materializeAsset(await collectDirectoryFiles(entry.source)) };
+    return { key: entry.key, runtimeName: safeRelativePath(entry.runtimeName, `runtime name for ${key}`), versionId: entry.versionId ?? entry.currentVersionId ?? null, bundle: await materializeAsset(await measureRunPhase("runtime_context.asset_read", () => collectDirectoryFiles(entry.source))) };
   }));
 }
 
 export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pick<RuntimeAgent, "id" | "companyId">; runId: string }) {
-  const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(input.agent.companyId, input.agent.id);
+  const effective = await toolAccessService(input.db).getEffectiveToolAssignmentsForAgent(input.agent.companyId, input.agent.id);
   const permitted = new Set([...effective.entries.filter((entry) => entry.effect === "include" && entry.connectionId).map((entry) => entry.connectionId!), ...effective.allowedTools.map((tool) => tool.connectionId)]);
   const hasGitHubConnection = effective.installedConnections.some((connection) => {
     const config = connection.config && typeof connection.config === "object"
@@ -199,7 +206,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
   });
   const hasVoiceConnection = effective.installedConnections.some(connection => connection.transport === "voice");
   const [runIdentity] = hasGitHubConnection || hasVoiceConnection
-    ? await input.db.select({ contextSnapshot: heartbeatRuns.contextSnapshot, responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
+    ? await input.db.select({ issueId: boundRunIssueIdSql(), responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.id, input.runId),
@@ -221,7 +228,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
   // App access is optional runtime context. Keep usable assignments pinned, but
   // do not stop unrelated work because an assigned app needs attention.
   const githubBotConnectionIds = await githubBotConnectionIdsForRun(input.db, input.agent.companyId, input.agent.id, input.runId);
-  const spekoConnectionIds = hasVoiceConnection ? new Set((await spekoToolsForSession(input.db, { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId, issueId: typeof runIdentity?.contextSnapshot?.issueId === "string" ? runIdentity.contextSnapshot.issueId : typeof runIdentity?.contextSnapshot?.taskId === "string" ? runIdentity.contextSnapshot.taskId : null, identityContextId: runIdentity?.activeIdentityContextId })).map(tool => tool.connectionId)) : new Set<string>();
+  const spekoConnectionIds = hasVoiceConnection ? new Set((await spekoToolsForSession(input.db, { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId, issueId: runIdentity?.issueId ?? null, identityContextId: runIdentity?.activeIdentityContextId })).map(tool => tool.connectionId)) : new Set<string>();
   const availableConnectionIds = new Set(resolvedInstalledConnections.filter((connection) =>
     permitted.has(connection.id)
     && connection.status === "active"
@@ -245,10 +252,12 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
 }
 
 export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[]; instructionWorkingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" } }): Promise<NativeRuntimeContextSnapshot> {
+  const preconfigured = input.runtimeConfig.homeMode === "preconfigured";
+  const emptyMcpDigest = sha256("preconfigured");
   const [instructions, skills, mcp] = await Promise.all([
-    materializeInstructionBundle(input.db, input.agent, input.instructionWorkingCopy?.kind === "agent_files"),
-    materializeSelectedSkills(input.runtimeConfig, input.runtimeSkillEntries, input.agent.adapterType === "paperclip_runner"),
-    resolveNativeRuntimeMcpSnapshot({ db: input.db, agent: input.agent, runId: input.runId }),
+    measureRunPhase("runtime_context.instructions", () => materializeInstructionBundle(input.db, input.agent, input.instructionWorkingCopy?.kind === "agent_files")),
+    measureRunPhase("runtime_context.skills", () => preconfigured ? [] : materializeSelectedSkills(input.runtimeConfig, input.runtimeSkillEntries, input.agent.adapterType === "paperclip_runner")),
+    measureRunPhase("runtime_context.mcp", () => preconfigured ? { assignmentSetId: `sha256:${emptyMcpDigest}`, digest: emptyMcpDigest, bindingId: null } : resolveNativeRuntimeMcpSnapshot({ db: input.db, agent: input.agent, runId: input.runId })),
   ]);
   const snapshot = {
     prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },

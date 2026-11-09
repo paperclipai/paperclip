@@ -1,6 +1,6 @@
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { createHash } from "node:crypto";
-import { adoptAgentFiles, agentFileToken } from "./agent-file-store.js";
+import { adoptAgentFiles, agentFileToken, isAgentFileSaveRecorded } from "./agent-file-store.js";
 import { and, desc, eq, getTableColumns, lt, or, sql } from "drizzle-orm";
 import {
   activityLog,
@@ -247,6 +247,12 @@ export function agentInstructionRevisionService(db: Db) {
             )
           : null;
       const candidate = bytes ?? Buffer.from(restored!.contentBase64, "base64");
+      const recordSave = (row: Revision) => tx.insert(activityLog).values({ companyId: input.companyId,
+        actorType: bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
+        actorId: (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
+        agentId: bound.type === "agent" ? bound.agentId : null, runId: row.sourceRunId,
+        responsibleUserId: row.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
+        details: { path: input.entryFile, contentHash: row.contentHash, source: restored ? "legacy_restore" : (input as InstructionCommitInput).source } });
       const bindEntry = async () => {
         if (
           !state.agent.adapterConfig.instructionsRootPath ||
@@ -267,6 +273,7 @@ export function agentInstructionRevisionService(db: Db) {
       // An exact replay can safely return the durable receipt even after its base
       // advanced. Restore also deduplicates identical content, preserving history.
       if (current && current.contentBase64 === candidate.toString("base64")) {
+        if (!await isAgentFileSaveRecorded(tx, state.agent, input.entryFile, current.contentHash)) await recordSave(current);
         await bindEntry();
         return { row: current, changed: false };
       }
@@ -287,12 +294,7 @@ export function agentInstructionRevisionService(db: Db) {
       }
       await materializeInstructionBytes(state.root, state.entryFile, candidate);
       const row = currentRow(input, input.entryFile, candidate, bound);
-      await tx.insert(activityLog).values({ companyId: input.companyId,
-        actorType: bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
-        actorId: (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
-        agentId: bound.type === "agent" ? bound.agentId : null, runId: row.sourceRunId,
-        responsibleUserId: row.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
-        details: { path: input.entryFile, contentHash: row.contentHash, source: restored ? "legacy_restore" : (input as InstructionCommitInput).source } });
+      await recordSave(row);
       await bindEntry();
       return { row, changed: true };
     });

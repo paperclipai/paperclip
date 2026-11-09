@@ -1121,6 +1121,10 @@ export function createGitHubWebhookIngress(db: Db, options: GitHubWebhookIngress
         and(
           eq(chatEndpoints.provider, "github"),
           eq(chatEndpoints.status, "active"),
+          // Cloud Apps target the durable Cloud relay, not the direct tenant
+          // callback checked by this recovery worker. The Cloud inbox owns
+          // transport retries for those registrations.
+          sql`nullif(${chatEndpoints.setup}#>>'{github,cloudRegistrationId}', '') is null`,
           eq(toolConnections.enabled, true),
           eq(toolConnections.status, "active"),
           onlyEndpointId ? eq(chatEndpoints.id, onlyEndpointId) : undefined,

@@ -1,3 +1,7 @@
+import express from "express";
+import request from "supertest";
+import { errorHandler } from "../middleware/error-handler.js";
+import { voiceSessionRoutes } from "../routes/voice-sessions.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -7,7 +11,7 @@ import { VOICE_RESULT_NOTIFICATION } from "@paperclipai/shared";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { chatActions, principalPermissionGrants, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
+import { chatActions, instanceUserRoles, principalPermissionGrants, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { configureSpekoSessionTools } from "../services/voice/speko-tool-setup.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { chatChannelService } from "../services/chat-channels.js";
@@ -521,6 +525,34 @@ const support = await getEmbeddedPostgresTestSupport();
     const input = { companyId: f.companyId, endpointId: f.endpointId, issueId: f.issueId, caller: f.request.caller, idempotencyKey: randomUUID(), maxDurationSeconds: 600 };
     return { ...f, service, transport, credentials, input };
   }
+
+  it("loads history and starts calls for Cloud owners without local admin roles, retaining membership revocation", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+    const f = await nativeServiceFixture();
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(eq(companyMemberships.principalId, f.callerId));
+    expect(await db.select().from(instanceUserRoles).where(eq(instanceUserRoles.userId, f.callerId))).toEqual([]);
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "cloud_tenant", userId: f.callerId, isInstanceAdmin: true, companyIds: [f.companyId] };
+      next();
+    });
+    app.use("/api", voiceSessionRoutes(db, f.service));
+    app.use(errorHandler);
+    const historyPath = `/api/companies/${f.companyId}/voice-history/${f.endpointId}`;
+    const history = await request(app).get(historyPath).expect(200);
+    expect(history.body).toHaveLength(1);
+    const started = await request(app).post(`/api/companies/${f.companyId}/voice-sessions`)
+      .send({ endpointId: f.endpointId, issueId: f.issueId, idempotencyKey: randomUUID() }).expect(201);
+    const [persisted] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, started.body.session.id));
+    expect(persisted).toMatchObject({ callerId: f.callerId, callerAuthority: "member", companyId: f.companyId });
+    expect(f.transport.createBrowserSession).toHaveBeenCalledTimes(1);
+    await db.update(companyMemberships).set({ status: "removed" }).where(eq(companyMemberships.principalId, f.callerId));
+    await request(app).get(historyPath).expect(403);
+    await request(app).post(`/api/companies/${f.companyId}/voice-sessions`)
+      .send({ endpointId: f.endpointId, issueId: f.issueId, idempotencyKey: randomUUID() }).expect(403);
+    expect(f.transport.createBrowserSession).toHaveBeenCalledTimes(1);
+  });
 
   async function pushFixture() {
     await instanceSettingsService(db).updateExperimental({enableChatConnectors: true});
@@ -1269,8 +1301,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(removed.paperclipRuntimeSkills).toEqual([]);
   });
 
-  it("makes call_my_phone discoverable through the governed gateway and reuses a durable attempt", async () => {
+  it.each([false, true])("makes call_my_phone discoverable through the governed gateway and reuses a durable attempt (continued: %s)", async continued => {
     const f = await phoneToolFixture();
+    if (continued) {
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running", nativeIssueId: f.issueId, contextSnapshot: {} }).returning();
+      await initializeRunIdentity(db, { companyId: f.companyId, agentId: f.agentId, runId: run.id, issueId: f.issueId, responsibleUserId: f.callerId, parentRunId: f.runId, cause: "monitor" });
+      f.gatewaySession = await f.gateway.createSession({ companyId: f.companyId, agentId: f.agentId, runId: run.id });
+    }
     const tools = await f.gateway.listToolsForSession(f.gatewaySession.token);
     const tool = tools.find(tool => tool.providerType === "paperclip_speko_voice");
     expect(tool).toMatchObject({ upstreamToolName: "call_my_phone", connectionId: f.connectionId });

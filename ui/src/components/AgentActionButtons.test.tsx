@@ -134,6 +134,18 @@ describe("AgentActionButtons", () => {
     );
   }
 
+  it.each(["codex_local", "claude_local", "paperclip_runner"])("returns unfinished %s agents to their saved runner", async adapterType => {
+    render(makeAgent({ adapterType, status: "paused", lifecycleState: "paused", pauseReason: "setup" }));
+    await flushReact();
+    const finish = [...container.querySelectorAll("button")].find(button => button.textContent === "Finish setup");
+    expect(finish).toBeTruthy();
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Resume")).toBe(false);
+    await act(() => finish!.click());
+    expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining("setupAgentId=agent-1"));
+    expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining(`runner=${adapterType === "paperclip_runner" ? "paperclip" : "legacy"}`));
+    expect(mockAgentsApi.resume).not.toHaveBeenCalled();
+  });
+
   it.each(["preparing", "verifying", "resuming"] as const)("offers pause rather than resume during %s", async lifecycleState => {
     render(makeAgent({ status: "paused", lifecycleState }));
     await flushReact();
@@ -200,23 +212,20 @@ describe("AgentActionButtons", () => {
     expect(container.textContent).not.toContain("Clear error");
   });
 
-  it("starts an administrator-selected run with raw provider tracing", async () => {
-    render(makeAgent(), { canRunWithProviderTrace: true });
+  it.each([false, true])("keeps the normal run action when persistent tracing is %s", async tracingEnabled => {
+    render(makeAgent({ runtimeConfig: tracingEnabled ? { debug: { providerTrace: "raw" } } : {} }));
     await flushReact();
 
-    const traceButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Run with provider trace"),
-    );
-    expect(traceButton).toBeTruthy();
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.some(button => button.textContent?.includes("Run with provider trace"))).toBe(false);
+    expect(container.textContent?.includes("Raw tracing on")).toBe(tracingEnabled);
 
     await act(async () => {
-      traceButton?.click();
+      buttons.find(button => button.textContent === "Run Heartbeat")!.click();
     });
     await flushReact();
 
-    expect(mockAgentsApi.invoke).toHaveBeenCalledWith("agent-1", "company-1", {
-      debug: { providerTrace: "raw" },
-    });
+    expect(mockAgentsApi.invoke).toHaveBeenCalledExactlyOnceWith("agent-1", "company-1");
     expect(mockNavigate).toHaveBeenCalledWith("/agents/alpha/runs/run-1");
   });
 

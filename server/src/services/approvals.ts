@@ -1,5 +1,4 @@
 import { approvalResolutionRecords, resolvableApprovalStatuses as resolvableStatuses } from "../lib/approval-records.js";
-import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
@@ -177,7 +176,6 @@ export function approvalService(db: Db) {
     const result = await (status === "approved" ? lifecycle.approveHire : lifecycle.rejectHire)(target, userId, note);
     if (result?.hireApprovedAgentId && result.approval) {
       await reconcileApprovedBuiltInAgent(result.approval.companyId, result.approval.payload, db);
-      await budgetService(db).deliverPendingEnforcement(result.approval.companyId);
       void notifyHireApproved(db, { companyId: result.approval.companyId, agentId: result.hireApprovedAgentId,
         source: "approval", sourceId: result.approval.id, approvedAt: result.approval.decidedAt ?? new Date() }).catch(() => {});
     }

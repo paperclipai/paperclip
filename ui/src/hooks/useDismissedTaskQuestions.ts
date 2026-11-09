@@ -9,7 +9,8 @@ function loadDismissedQuestions(storageKey: string | null): Set<string> {
   }
 }
 
-/** Presentation preference only: the original question remains answerable. */
+/** Browser fallback for all composer requests; saved interaction dismissal also lives on the server.
+ * Keep the original storage key so existing question dismissals survive upgrades. */
 export function useDismissedTaskQuestions(issueId?: string | null, userId?: string | null) {
   const storageKey = issueId ? `paperclip:task-question-dismissals:${userId ?? "board"}:${issueId}` : null;
   const [state, setState] = useState(() => ({ storageKey, ids: loadDismissedQuestions(storageKey) }));

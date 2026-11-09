@@ -259,6 +259,18 @@ describe("ConnectionIntentInteractionBody states and audience", () => {
     expect(document.body.textContent).toContain(expected);
   });
 
+  it("shows the stored reason on an expired request", () => {
+    // The server writes what actually expired the request and what to do next.
+    // A generic "no longer active" line left the reader with no next step.
+    const reason = "The task was reassigned before the connection request was answered, so the Notion connection is still not connected. Reconnect it or choose an available connection.";
+    renderBody({
+      ...terminal("expired", "expired"),
+      result: { version: 1, outcome: "expired", reason },
+    } as ConnectionIntentInteraction);
+    expect(document.body.textContent).toContain(reason);
+    expect(document.body.textContent).not.toContain("This request is no longer active.");
+  });
+
   it("shows non-addressees only the waiting state and never loads setup", () => {
     renderBody(pendingConnectionIntentInteraction, "other-user");
     expect(document.body.textContent).toContain("Waiting for Carol");
@@ -627,6 +639,15 @@ describe("AI repair inside the card", () => {
     await act(() => button("Fix connection")!.click());
     expect(document.body.textContent).toContain("Dotta must reconnect My Codex account");
     expect(document.querySelector('[data-testid="shared-ai-credentials"]')).toBeNull();
+  });
+  it("shows a withdrawn AI request as terminal without another setup action", () => {
+    renderBody({ ...interaction, status: "cancelled", resolvedAt: new Date() });
+    expect(document.body.textContent).toContain("Connection request withdrawn");
+    expect(document.body.textContent).not.toContain("This task can’t run");
+    expect(button("Fix connection")).toBeUndefined();
+    expect(document.querySelector('[data-testid="connection-intent-terminal"]')).not.toBeNull();
+    expect(setupOptionsMock).not.toHaveBeenCalled();
+    expect(credentialRender).not.toHaveBeenCalled();
   });
   it("does not promise to run without credentials when declined", () => {
     renderBody({ ...interaction, status: "rejected" });

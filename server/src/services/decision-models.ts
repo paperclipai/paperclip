@@ -1,7 +1,8 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gte, lt, lte, or, sql } from "drizzle-orm";
 import {
-  agents, authUsers, budgetPolicies, budgetReservations, companies, companyMemberships, companyDecisionModels, costEvents,
+  agents, authUsers, budgetReservations, companies, companyMemberships, companyDecisionModels, costEvents,
   decisionInvocations, heartbeatRuns, issues, projects, companySecrets, type Db,
 } from "@paperclipai/db";
 import {
@@ -14,7 +15,8 @@ import { aiConnectionService } from "./ai-connections.js";
 import { accessService } from "./access.js";
 import { type AuthorizationActor } from "./authorization.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
-import { budgetPoliciesForRun, budgetService, budgetServiceInTransaction, computeObservedSpend, type BudgetServiceHooks } from "./budgets.js";
+import { withBudgetSpan } from "./budget-tracing.js";
+import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 import { createCostEventInTransaction } from "./costs.js";
 import { logActivity } from "./activity-log.js";
 import { decisionReceipt, runDecisionProvider, type DecisionProviderOutcome } from "./decision-model-provider.js";
@@ -138,7 +140,7 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
     return (context: DecisionContext) => { let result = cache.get(context); if (!result) { result = availability(context); cache.set(context, result); } return result; };
   }
   async function settle(invocation: typeof decisionInvocations.$inferSelect, outcome: DecisionProviderOutcome) {
-    await withAccountingTransaction(db, invocation.companyId, async (tx, publications) => {
+    await withBudgetSpan("budget.accounting.settlement", () => withAccountingTransaction(db, invocation.companyId, async (tx, publications) => {
       const [current] = await tx.select().from(decisionInvocations).where(and(eq(decisionInvocations.companyId, invocation.companyId), eq(decisionInvocations.id, invocation.id))).for("update");
       if (!current || current.status !== "running") return;
       const receipt = outcome.receipt;
@@ -161,6 +163,7 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
         providerRequestId: receipt.providerRequestId, pricingProvenance: receipt.pricingProvenance, occurredAt: invocation.startedAt,
       }, publications, { actorType: invocation.actorType as "system" | "user" | "agent", actorId: invocation.actorId, agentId: links.agentId });
       const finishedAt = new Date();
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, invocation.companyId);
       await tx.update(decisionInvocations).set({ status: outcome.answers ? "succeeded" : receipt.costStatus === "unpriced" ? "unknown" : "failed",
         errorCode: outcome.errorCode ?? null, costEventId: event.id, providerRequestId: receipt.providerRequestId,
         inputTokens: receipt.inputTokens, outputTokens: receipt.outputTokens, finishedAt, durationMs: Math.max(0, finishedAt.getTime() - invocation.startedAt.getTime()),
@@ -168,8 +171,7 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
       if (receipt.costStatus !== "unpriced") await tx.update(budgetReservations).set({ state: outcome.noProviderWork ? "released" : "settled", settledAt: finishedAt }).where(and(
         eq(budgetReservations.companyId, invocation.companyId), eq(budgetReservations.decisionInvocationId, invocation.id), eq(budgetReservations.state, "held"),
       ));
-    });
-    await budgetService(db, options.budgetHooks).deliverPendingEnforcement(invocation.companyId);
+    }));
   }
   async function decide(context: DecisionContext, request: DecisionRequest, signal?: AbortSignal): Promise<DecisionResult> {
     const parsed = decisionRequestSchema.safeParse(request);
@@ -202,23 +204,17 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
       if (!currentSecret || currentSecret.status !== "active" || currentSecret.version !== credentialSnapshot.version)
         return { reason: "connection_unavailable" as const };
       const budgets = budgetServiceInTransaction(tx, publications);
-      const block = await budgets.getInvocationBlock(context.companyId, current.agentId, { projectId: current.projectId });
+      const { block, policies, observations } = await budgets.evaluateAdmission(context.companyId, current.agentId, { projectId: current.projectId });
       const [company] = await tx.select({ status: companies.status }).from(companies).where(eq(companies.id, context.companyId));
       const [agent] = current.agentId ? await tx.select({ status: agents.status }).from(agents).where(and(eq(agents.id, current.agentId), eq(agents.companyId, context.companyId))) : [];
       if (block || company.status !== "active" || (current.agentId && (!agent || agent.status === "paused" || agent.status === "terminated"))) return { reason: "budget_blocked" as const };
-      const policies = await tx.select().from(budgetPolicies).where(and(eq(budgetPolicies.companyId, context.companyId), eq(budgetPolicies.isActive, true),
-        eq(budgetPolicies.hardStopEnabled, true), eq(budgetPolicies.metric, "billed_cents"), sql`${budgetPolicies.amount} > 0`, budgetPoliciesForRun(context.companyId, current.agentId, current.projectId)));
       const amount = policies.reduce((max, p) => { const n = centsToUnits(p.reservationCents); return n > max ? n : max; }, 0n);
-      for (const policy of policies) {
-        const [held] = await tx.select({ total: sql<string>`coalesce(sum(${budgetReservations.amountCents}),0)::text` }).from(budgetReservations).where(and(
-          eq(budgetReservations.companyId, context.companyId), eq(budgetReservations.state, "held"),
-          policy.scopeType === "agent" ? eq(budgetReservations.agentId, current.agentId!) : undefined,
-          policy.scopeType === "project" ? eq(budgetReservations.projectId, current.projectId!) : undefined,
-        ));
-        const committed = centsToUnits((await computeObservedSpend(tx, policy)).totalExact) + centsToUnits(held.total);
+      for (const [index, policy] of policies.entries()) {
+        const committed = centsToUnits(observations[index].ledgerCents) + centsToUnits(observations[index].effectiveHeldCents);
         if (committed >= centsToUnits(policy.amount) || committed + amount > centsToUnits(policy.amount)) return { reason: "budget_blocked" as const };
       }
       signal?.throwIfAborted();
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, context.companyId);
       const [invocation] = await tx.insert(decisionInvocations).values({ id: randomUUID(), companyId: context.companyId, feature: context.feature.id,
         actorType: current.actorType, actorId: current.actorId, responsibleUserId: current.userId, agentId: current.agentId,
         issueId: current.issueId, projectId: current.projectId, runId: current.runId, identityContextId: current.identityContextId,

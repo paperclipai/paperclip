@@ -121,6 +121,7 @@ export async function pollUntil<T>(input: {
   accept: (value: T) => boolean;
   reject?: (value: T) => string | undefined;
   intervalMs?: number;
+  retryOnError?: (error: unknown) => boolean;
   timeoutFailureClass?: "candidate_failure" | "transient_infrastructure";
   timeoutDetail?: (value: T | undefined) => string | undefined;
 }): Promise<T> {
@@ -136,6 +137,7 @@ export async function pollUntil<T>(input: {
       }
       lastError = undefined;
     } catch (error) {
+      if (input.retryOnError && !input.retryOnError(error)) throw error;
       if (
         error instanceof Error &&
         error.message.startsWith(`Stopped waiting for ${input.label}:`)

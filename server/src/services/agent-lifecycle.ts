@@ -2,25 +2,25 @@ import { logger } from "../middleware/logger.js";
 import type { Db } from "@paperclipai/db";
 import * as lifecycle from "../modules/agent-lifecycle/index.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
-import { budgetServiceInTransaction, deliverBudgetEnforcement, policyBlocks, type BudgetServiceHooks } from "./budgets.js";
+import { budgetServiceInTransaction, policyBlocks, type BudgetServiceHooks } from "./budgets.js";
 import { recordAgentStatusEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 import { clearPrimaryAgent } from "./primary-agent.js";
 import { deleteAgentDependencies } from "./agent-deletion.js";
 import { prepareAgentConfiguration, completeAgentConfiguration } from "./agent-configuration.js";
 import { prepareAgentHire, initializeAgentHire, prepareAgentHireApproval, completeAgentHireApproval } from "./agent-hiring.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { fenceActiveCompanyAgentStopsInTransaction as fenceActiveCompanyStops } from "../modules/agent-lifecycle/index.js";
+import { applyAgentPolicyHoldsInTransaction } from "../modules/agent-lifecycle/index.js";
 import { trackIdleWork } from "./task-admission.js";
 
-export { scheduleAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+export { scheduleAgentLifecycle, processAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 export type { LifecycleDriver, LifecycleAgent } from "../modules/agent-lifecycle/index.js";
 
-export function createAgentLifecycleEffects(hooks: BudgetServiceHooks = {}): lifecycle.LifecycleEffects {
+export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): lifecycle.LifecycleEffects {
   return {
+    notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
     reportFailure(context, error) {
-      // Only known codes are safe; provider errors can contain credentials or private data.
-      const allowedCodes = new Set(["required_plugin_unavailable", "invalid_lifecycle_result", "harness_test_failed",
-        "test_environment_unavailable", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "40001", "40P01", "53300", "57P01"]);
-      const candidate = error as { code?: unknown; cause?: { code?: unknown } } | null;
-      const code = [candidate?.code, candidate?.cause?.code].find(value => typeof value === "string" && allowedCodes.has(value));
+      const code = lifecycle.lifecycleFailureCode(error);
       logger.warn({ ...context, failureCode: code ?? "unclassified" }, "Agent lifecycle operation failed");
     },
     transaction: withAccountingTransaction,
@@ -30,7 +30,6 @@ export function createAgentLifecycleEffects(hooks: BudgetServiceHooks = {}): lif
       budgetServiceInTransaction(db, publications).upsertPolicy(companyId, {
         scopeType: "agent", scopeId: agentId, amount, isActive, windowKind: "calendar_month_utc",
       }, userId),
-    enforceBudget: (db, companyId, agentId) => deliverBudgetEnforcement(db, hooks, companyId, agentId),
     recordCreation: (db, companyId, agentId) => recordResourceCreationEvent(db, companyId, "agent", agentId),
     recordStatus: recordAgentStatusEvent,
     clearPrimary: clearPrimaryAgent,
@@ -58,4 +57,13 @@ export function configureAgentLifecycle(db: Db, driver: lifecycle.LifecycleDrive
 
 export function startAgentLifecycle(db: Db, driver: lifecycle.LifecycleDriver, canRun: () => boolean) {
   return lifecycle.startAgentLifecycle(db, createAgentLifecycleEffects(), trackedDriver(driver), canRun);
+}
+
+/** Budget evaluation owns the transaction and supplies the aggregate agent decision. */
+export function applyAgentBudgetHoldInTransaction(tx: Db, companyId: string, agentId: string, blocked: boolean) {
+  return applyAgentPolicyHoldsInTransaction(tx, createAgentLifecycleEffects(), companyId, agentId, { budget: blocked });
+}
+
+export function fenceActiveCompanyAgentStopsInTransaction(tx: Db, companyId: string, status: "paused" | "archived") {
+  return fenceActiveCompanyStops(tx, createAgentLifecycleEffects(), companyId, status);
 }

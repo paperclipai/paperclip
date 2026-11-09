@@ -6,6 +6,7 @@ import type { ActivityPublication } from "../../../types/activity-publication.js
 
 /** Services supply integrations; lifecycle owns the transaction and state writes. */
 export interface LifecycleEffects {
+  notifyWork(db: Db): Promise<void>;
   reportFailure(context: LifecycleFailure, error: unknown): void;
   deleteDependencies(db: Db, companyId: string, agentId: string): Promise<void>;
   prepareConfiguration(db: Db, current: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch>;
@@ -13,7 +14,6 @@ export interface LifecycleEffects {
   transaction<T>(db: Db, companyId: string, work: (tx: Db, publications: ActivityPublication[]) => Promise<T>): Promise<T>;
   policyBlocks(db: Db, policy: typeof budgetPolicies.$inferSelect): Promise<boolean>;
   setAgentBudget(db: Db, publications: ActivityPublication[], companyId: string, agentId: string, amount: number, userId: string | null, isActive?: boolean): Promise<unknown>;
-  enforceBudget(db: Db, companyId: string, agentId: string): Promise<void>;
   recordCreation(db: Db, companyId: string, agentId: string): Promise<void>;
   recordStatus(db: Db, companyId: string, agentId: string, before: string, after: string): Promise<void>;
   clearPrimary(db: Db, companyId: string, agentId: string): Promise<unknown>;

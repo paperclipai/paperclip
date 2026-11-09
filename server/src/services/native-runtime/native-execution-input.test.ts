@@ -664,3 +664,27 @@ describe("Pi thinking native execution projection", () => {
     expect(() => buildNativeExecutionInput({ ...fixture("low"), acpxAgent: "copilot" })).toThrow("only for Pi");
   });
 });
+
+
+describe("Claude effort and master home-mode compatibility", () => {
+  it.each([
+    ["isolated", undefined, "v5"], ["preconfigured", undefined, "v7"],
+    ["isolated", "high", "v9"], ["preconfigured", "high", "v9"],
+  ] as const)("retains %s home mode with effort %s in %s", (homeMode, claudeEffort, version) => {
+    const value = buildNativeExecutionInput({
+      companyId: "company", runId: "run", agentId: "agent",
+      issue: { id: "issue", identifier: "CLA-1", title: "Useful output", description: null, workMode: "standard" },
+      taskPrompt: "Create the requested file.",
+      workspace: { id: "workspace", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5",
+      acpxPermissionMode: "approve-all", homeMode, claudeEffort,
+      completionContract: { id: "contract", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Create a file", criteria: [{ id: "output", requirement: "Create the file" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+    expect(value.schema).toBe(`paperclip.native-execution-input.${version}`);
+    if (version !== "v5") expect(value).toHaveProperty("homeMode", homeMode);
+    if (claudeEffort) expect(value.provider).toHaveProperty("claudeEffort", claudeEffort);
+    expect(JSON.stringify(buildNativeModelEnvelope(value))).not.toContain("claudeEffort");
+  });
+});

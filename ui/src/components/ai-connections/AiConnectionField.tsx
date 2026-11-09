@@ -33,7 +33,9 @@ export function aiProviderForAdapter(
       claude_local: "anthropic",
       codex_local: "openai",
       opencode_local: "openrouter",
+      pi_local: "openrouter",
       grok_local: "xai",
+      copilot_runtime: "github",
       gemini_local: "google",
       hermes_local: "openrouter",
     } as Record<string, AiProvider>
@@ -111,7 +113,7 @@ export function AiConnectionField({
   };
   const method: AiAuthMethod = (value && value.mode !== "router" && value.mode !== "responsible_user" ? value.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
-    ?? (provider === "openrouter" || provider === "google" ? "api_key" : "subscription");
+    ?? (provider === "openrouter" || provider === "google" || provider === "github" ? "api_key" : "subscription");
   const compatiblePools = agentId ? accounts.data?.pools?.filter(pool => pool.enabled && pool.members.some(member => isAiConnectionCompatible(member.binding, routerAdapterType ?? adapterType, member.profile.model, member.profile.provider, member.profile.acpxAgent))) ?? [] : [];
   if (!provider) return null;
   if (legacy && !value && !adopting)
@@ -123,7 +125,7 @@ export function AiConnectionField({
     );
   return (
     <div className="space-y-4">
-      {value && value.mode !== "router" && (adapterType !== "opencode_local" || Boolean(model)) && !isAiConnectionCompatible(value, adapterType, model) && (
+      {value && value.mode !== "router" && (!["opencode_local", "pi_local"].includes(adapterType) || Boolean(model)) && !isAiConnectionCompatible(value, adapterType, model) && (
         <p role="alert" className="text-sm text-destructive">
           This connection does not support the current harness and model. Choose
           a compatible connection before saving.
@@ -143,6 +145,7 @@ export function AiConnectionField({
       </label>}
       {value?.mode !== "router" && <AiConnectionSelect
         adapterType={adapterType}
+          model={model}
         requirement={{ companyId, provider }}
         connections={accounts.data?.connections ?? []}
         value={value}
@@ -236,7 +239,7 @@ export function AiConnectionField({
             initialMethod={reconnecting?.method ?? method}
             fixedMethod={Boolean(reconnecting)}
             connectionId={reconnecting?.id}
-            name={reconnecting?.name ?? `My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : provider === "google" ? "Gemini" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
+            name={reconnecting?.name ?? `My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : provider === "google" ? "Gemini" : provider === "github" ? "GitHub Copilot" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
             ownership="personal"
             agentIds={agentId ? [agentId] : []}
             allAgents={allAgents}

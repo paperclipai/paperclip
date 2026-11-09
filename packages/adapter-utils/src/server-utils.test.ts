@@ -20,6 +20,7 @@ import {
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
+  normalizePaperclipRunnerAdapterConfig,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   PAPERCLIP_FEEDBACK_SKILL_KEYS,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -42,6 +43,12 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+it("keeps Pi draft models empty and preserves saved native Pi settings", () => {
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "pi", model: "" })).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "" });
+  const saved = { provider: "acpx", acpxAgent: "pi", model: "openrouter/provider/model", piThinkingLevel: "max", acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", saved)).toMatchObject(saved);
+});
 
 it("reserves identity credentials even for mixed-case inherited or configured keys", () => {
   const keys = ["PAPERCLIP_AGENT_KEY_ID", "Paperclip_Agent_Public_Key", "paperclip_agent_private_key"];
@@ -340,6 +347,37 @@ describe("materializePaperclipSkillCopy", () => {
       await expect(
         fs.readFile(path.join(target, "local-marker.txt"), "utf8"),
       ).resolves.toBe("keep\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not lock an already-current materialized skill", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const skillsHome = path.join(root, "skills");
+      const target = path.join(skillsHome, "skill");
+      const lock = `${target}.lock`;
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await materializePaperclipSkillCopy(source, target);
+
+      await fs.mkdir(lock);
+      const owner = path.join(lock, "owner.json");
+      await fs.writeFile(
+        owner,
+        JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+        "utf8",
+      );
+
+      await expect(
+        materializePaperclipSkillCopy(source, target),
+      ).resolves.toMatchObject({ copiedFiles: 0 });
+      expect((await fs.readdir(skillsHome)).sort()).toEqual(["skill", "skill.lock"]);
+      await expect(fs.readFile(owner, "utf8")).resolves.toContain(`"pid":${process.pid}`);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

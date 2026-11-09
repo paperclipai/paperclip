@@ -716,6 +716,7 @@ export interface PluginWorkerHandle {
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
+    onWorkerSettled?: () => void,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
@@ -796,6 +797,8 @@ export interface WorkerDiagnostics {
  * for starting/stopping all workers and routing RPC calls.
  */
 export interface PluginWorkerManager {
+  /** Subscribe after a worker successfully applies live company configuration. */
+  onConfigApplied(listener: () => void): () => void;
   inspectIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<{
     backgroundWork: "none" | "present" | "unknown"; pluginIds: string[];
   }>;
@@ -898,6 +901,7 @@ export function createPluginWorkerHandle(
   // Unlike RPC promises, these survive timeouts. A late response is the
   // completion receipt. A worker crash cannot manufacture one.
   const unsettledCalls = new Map<string | number, () => void>();
+  const unsettledInspections = new Set<() => void>();
   let activeHostHandlers = 0;
   let idleHold: { ownerId: string; expiresAt: number; ready: boolean } | null = null;
 
@@ -3016,6 +3020,10 @@ export function createPluginWorkerHandle(
       )),
     );
 
+    // Read-only requests cannot continue in an exited worker. Do not infer
+    // completion for execute/cleanup calls, whose provider work may outlive it.
+    for (const finish of [...unsettledInspections]) finish();
+
     // Close the one login pseudo-terminal route with a fixed non-secret exit and
     // clear the route one time. The pending pseudo-terminal calls
     // already rejected through `rejectAllPending`.
@@ -3349,14 +3357,17 @@ export function createPluginWorkerHandle(
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
+    onWorkerSettled?: () => void,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       const idleControl = method === "prepareIdleSleep" || method === "releaseIdleSleep";
       if (!idleControl && method !== "shutdown" && idleSleepHeld()) {
+        onWorkerSettled?.();
         reject(new Error("Plugin is held for idle sleep"));
         return;
       }
       if (!childProcess?.stdin?.writable) {
+        onWorkerSettled?.();
         reject(
           new Error(
             `Cannot call "${method}" — worker for "${pluginId}" is not running`,
@@ -3366,7 +3377,20 @@ export function createPluginWorkerHandle(
       }
 
       const id = nextRequestId++;
-      if (!idleControl) unsettledCalls.set(id, beginIdleTrackedWork());
+      if (!idleControl) {
+        const finishIdle = beginIdleTrackedWork();
+        let completed = false;
+        const finish = () => {
+          if (completed) return;
+          completed = true;
+          finishIdle();
+          unsettledInspections.delete(finish);
+          unsettledCalls.delete(id);
+          onWorkerSettled?.();
+        };
+        unsettledCalls.set(id, finish);
+        if (method === "environmentInspectLease") unsettledInspections.add(finish);
+      }
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
@@ -3522,15 +3546,17 @@ export function createPluginWorkerHandle(
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
       executeLogSink?: ExecuteLogSink,
+      onWorkerSettled?: () => void,
     ): Promise<HostToWorkerMethods[M][1]> {
       if (status !== "running" && status !== "starting") {
+        onWorkerSettled?.();
         return Promise.reject(
           new Error(
             `Cannot call "${method}" — worker for "${pluginId}" is ${status}`,
           ),
         );
       }
-      return callInternal(method, params, timeoutMs, executeLogSink);
+      return callInternal(method, params, timeoutMs, executeLogSink, onWorkerSettled);
     },
 
     openLoginPtySession(input: LoginPtyOpenInput) {
@@ -3726,6 +3752,8 @@ export function createPluginWorkerManager(
 ): PluginWorkerManager {
   const log = logger.child({ service: "plugin-worker-manager" });
   const workers = new Map<string, PluginWorkerHandle>();
+  const configApplied = new Set<() => void>();
+  let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
   // The one shared, process-scoped aggregate route-slot controller. The manager
@@ -3736,6 +3764,10 @@ export function createPluginWorkerManager(
   );
 
   return {
+    onConfigApplied(listener) {
+      configApplied.add(listener);
+      return () => { configApplied.delete(listener); };
+    },
     async inspectIdleSleep(hold) {
       if (startupLocks.size) return { backgroundWork: "unknown", pluginIds: [] };
       const snapshot = [...workers.entries()];
@@ -3872,7 +3904,23 @@ export function createPluginWorkerManager(
           new Error(`No worker registered for plugin "${pluginId}"`),
         );
       }
-      return handle.call(method, params, timeoutMs, executeLogSink);
+      let finishInspection: (() => void) | undefined;
+      if (method === "environmentInspectLease") {
+        if (activeInspections >= 2) return Promise.reject(new Error("Provider inspection concurrency limit reached"));
+        activeInspections += 1;
+        let finished = false;
+        finishInspection = () => { if (!finished) { finished = true; activeInspections -= 1; } };
+      }
+      // A caller timeout is not worker completion. Inspection capacity is
+      // released only by its actual reply, send failure, or worker exit.
+      const result = handle.call(method, params, timeoutMs, executeLogSink, finishInspection);
+      if (method === "configChanged") void result.then(() => {
+        for (const listener of configApplied) {
+          try { listener(); }
+          catch { log.warn({ pluginId }, "Plugin configuration listener failed"); }
+        }
+      }, () => {});
+      return result;
     },
 
     openLoginPtySession(pluginId: string, input: LoginPtyOpenInput) {

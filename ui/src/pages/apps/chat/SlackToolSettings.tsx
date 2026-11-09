@@ -1,4 +1,3 @@
-import { Link } from "react-router-dom";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type {
@@ -200,11 +199,9 @@ export function SlackSearchView({
 export function SlackToolsSettings({
   companyId,
   endpointId,
-  connectionId,
 }: {
   companyId: string;
   endpointId: string;
-  connectionId?: string | null;
 }) {
   const query = useQuery({
     queryKey: ["slack-capabilities", companyId, endpointId],
@@ -217,14 +214,7 @@ export function SlackToolsSettings({
         capabilities={query.data}
         error={query.error?.message}
       />
-      {connectionId && (
-        <Link
-          className="text-sm underline underline-offset-4"
-          to={`/apps/${connectionId}/permissions`}
-        >
-          Manage action permissions
-        </Link>
-      )}
+
     </div>
   );
 }

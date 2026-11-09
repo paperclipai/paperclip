@@ -1,3 +1,6 @@
+import type { PluginWorkspaceParams, PluginWorkspaceResult } from "./workspace-provider.js";
+import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
+import type { PluginAgentRuntimeState } from "./types.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
@@ -56,6 +59,7 @@ export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 import type {
   PluginEvent,
   ResourceLifecycleEvent,
+  ResourceLifecycleResult,
   PluginIssueCheckoutOwnership,
   PluginIssueOrchestrationSummary,
   PluginIssueRelationSummary,
@@ -634,6 +638,11 @@ export interface PluginEnvironmentRunnerIngressEndpointParams
 
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
+  /** Explicit platform probes may request a provider-owned immutable snapshot
+   * identity. Supporting providers create by that ID and return snapshotIdentity
+   * in lease metadata. Older providers may omit it; the host then cannot qualify
+   * a mutable snapshot name. Ordinary discovery must not allocate a sandbox. */
+  resolveSnapshotIdentity?: boolean;
   workspaceMode?: string;
   requestedCwd?: string;
   agentId?: string;
@@ -683,6 +692,18 @@ export interface PluginEnvironmentTerminationReceipt {
 }
 
 export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentReleaseLeaseParams {}
+
+/** Observe this exact allocation without starting, stopping or deleting it.
+ * Missing resources must be distinguished from permission/transport failures. */
+export interface PluginEnvironmentInspectLeaseParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string;
+  leaseMetadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentLeaseObservation {
+  providerLeaseId: string;
+  state: "active" | "stopped" | "destroyed" | "unknown";
+}
 
 export interface PluginEnvironmentRealizeWorkspaceParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
@@ -1351,6 +1372,7 @@ export interface HostToWorkerMethods {
   handleApiRequest: [params: PluginApiRequestInput, result: PluginApiResponse];
   /** @see PLUGIN_SPEC.md §13.8 */
   agentLifecycle: [params: AgentLifecycleRequest, result: AgentLifecycleResult];
+  resourceLifecycle: [params: ResourceLifecycleEvent, result: ResourceLifecycleResult];
   getData: [params: GetDataParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.9 */
   performAction: [params: PerformActionParams, result: unknown];
@@ -1373,6 +1395,8 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentValidateConfigParams,
     result: PluginEnvironmentValidationResult,
   ];
+  workspaceOperation: [params: PluginWorkspaceParams, result: PluginWorkspaceResult];
+  environmentTask: [params: PluginEnvironmentTaskParams, result: PluginEnvironmentTaskResult];
   environmentProbe: [
     params: PluginEnvironmentProbeParams,
     result: PluginEnvironmentProbeResult,
@@ -1396,6 +1420,10 @@ export interface HostToWorkerMethods {
   environmentDestroyLease: [
     params: PluginEnvironmentDestroyLeaseParams,
     result: PluginEnvironmentTerminationReceipt | void,
+  ];
+  environmentInspectLease: [
+    params: PluginEnvironmentInspectLeaseParams,
+    result: PluginEnvironmentLeaseObservation,
   ];
   environmentRealizeWorkspace: [
     params: PluginEnvironmentRealizeWorkspaceParams,
@@ -1488,6 +1516,8 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "handleWebhook",
   "handleApiRequest",
   "agentLifecycle",
+  "resourceLifecycle",
+  "workspaceOperation",
   "getData",
   "performAction",
   "executeTool",
@@ -1496,12 +1526,14 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "resolveExternalObject",
   "refreshExternalObjects",
   "environmentValidateConfig",
+  "environmentTask",
   "environmentProbe",
   "environmentAcquireLease",
   "environmentResumeLease",
   "environmentReleaseLease",
   "environmentStopLease",
   "environmentDestroyLease",
+  "environmentInspectLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
   "environmentRunnerIngressEndpoint",
@@ -1761,6 +1793,10 @@ export interface WorkerToHostMethods {
   "projects.list": [
     params: { companyId: string; limit?: number; offset?: number },
     result: Project[],
+  ];
+  "projects.getInstanceSecrets": [
+    params: { projectId: string; companyId: string },
+    result: Record<string, string>,
   ];
   "projects.get": [
     params: { projectId: string; companyId: string },
@@ -2109,6 +2145,10 @@ export interface WorkerToHostMethods {
   "agents.list": [
     params: { companyId: string; status?: string; limit?: number; offset?: number },
     result: Agent[],
+  ];
+  "agents.getRuntime": [
+    params: { agentId: string; companyId: string },
+    result: PluginAgentRuntimeState | null,
   ];
   "agents.get": [
     params: { agentId: string; companyId: string },

@@ -33,6 +33,8 @@ vi.mock("./SidebarNavItem", () => ({
   SidebarNavItem: ({ to, label }: { to: string; label: string }) => <a href={to}>{label}</a>,
 }));
 
+vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => ({ slots: [{ pluginKey: "test.plugin", id: "insights", displayName: "Insights" }] }) }));
+
 describe("AgentContextualSidebar", () => {
   it.each([false, true])("keeps Channels available for default email regardless of the chat setting (%s)", (enabled) => {
     const client = new QueryClient();
@@ -40,6 +42,8 @@ describe("AgentContextualSidebar", () => {
     const markup = renderToStaticMarkup(<QueryClientProvider client={client}><MemoryRouter>
       <AgentContextualSidebar agentRef="agent" agentId="agent-1" agentName="Agent" />
     </MemoryRouter></QueryClientProvider>);
+    expect(markup).toContain("Insights");
+    expect(markup).toContain("plugin%3Atest.plugin%3Ainsights");
     expect(markup.includes('href="/agents/agent/channels"')).toBe(true);
     expect(markup).toContain('href="/agents/agent/tools"');
     client.clear();

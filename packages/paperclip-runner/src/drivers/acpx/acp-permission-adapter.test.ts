@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AcpPermissionRequest } from "acpx/runtime";
 import { normalizeAcpxPermission } from "./acp-permission-adapter.js";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createCopilotToolEvidence } from "./copilot-tool-evidence.js";
 
 function request(kinds = ["allow_once", "allow_always", "reject_once"]): AcpPermissionRequest {
   return { sessionId: "session", inferredKind: "edit", raw: {
@@ -50,6 +54,42 @@ describe("ACP permission normalization", () => {
     expect(() => normalizeAcpxPermission(request(["allow_once", "allow_once"]))).toThrow("ambiguous");
     const duplicate = request(); duplicate.raw.options[1]!.optionId = duplicate.raw.options[0]!.optionId;
     expect(() => normalizeAcpxPermission(duplicate)).toThrow("ambiguous");
+  });
+  it("keeps a native absolute workspace alias answerable with the same projected target", () => {
+    const root = mkdtempSync(join(tmpdir(), "copilot-permission-alias-"));
+    try {
+      const workspace = join(root, "workspace"), alias = join(root, "alias");
+      mkdirSync(workspace); mkdirSync(join(workspace, "nested")); symlinkSync(workspace, alias);
+      const path = join(alias, "nested", "new.txt"), value = request();
+      value.raw.toolCall = { toolCallId: "patch-call", kind: "edit", rawInput: { fileName: path }, locations: [{ path }] };
+      const cwd = realpathSync(workspace), normalized = normalizeAcpxPermission(value, { provider: "copilot", workingDirectory: cwd });
+      expect(normalized.title).toBe("Change file: nested/new.txt");
+      expect(normalized.resolve({ action: "accept" })).toEqual({ outcome: "allow_once" });
+      const events: any[] = [];
+      const projection = createCopilotToolEvidence({ sessionId: "session", turnId: "turn", workingDirectory: cwd, active: () => true, emit: event => events.push(event) });
+      projection.permission(value, "permission", normalized.choices.map(choice => choice.key));
+      expect(events[0].payload.details).toContainEqual({ name: "target", value: "nested/new.txt" });
+      writeFileSync(join(workspace, "nested", "new.txt"), "existing");
+      expect(normalizeAcpxPermission(value, { provider: "copilot", workingDirectory: cwd }).title).toBe(normalized.title);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("refuses outside, dangling, conflicting and unresolvable alias targets", () => {
+    const root = mkdtempSync(join(tmpdir(), "copilot-permission-alias-"));
+    try {
+      const workspace = join(root, "workspace"), alias = join(root, "alias"), outside = join(root, "outside");
+      mkdirSync(workspace); mkdirSync(outside); symlinkSync(workspace, alias);
+      symlinkSync(join(outside, "missing.txt"), join(workspace, "dangling.txt"));
+      symlinkSync(outside, join(workspace, "escape"));
+      writeFileSync(join(outside, "existing.txt"), "outside");
+      for (const path of [join(alias, "dangling.txt"), join(alias, "escape", "new.txt"), join(alias, "escape", "existing.txt"), join(alias, "missing-parent", "new.txt"), join(outside, "new.txt")]) {
+        const value = request(); value.raw.toolCall = { toolCallId: "patch-call", kind: "edit", rawInput: { fileName: path }, locations: [{ path }] };
+        const normalized = normalizeAcpxPermission(value, { provider: "copilot", workingDirectory: realpathSync(workspace) });
+        expect(normalized.title).toContain("target unavailable");
+        expect(normalized.choices.map(choice => choice.key)).toEqual(["decline", "cancel"]);
+      }
+      const conflict = request(); conflict.raw.toolCall = { toolCallId: "patch-call", kind: "edit", rawInput: { fileName: join(alias, "one.txt") }, locations: [{ path: join(alias, "two.txt") }] };
+      expect(normalizeAcpxPermission(conflict, { provider: "copilot", workingDirectory: realpathSync(workspace) }).title).toContain("target unavailable");
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
 

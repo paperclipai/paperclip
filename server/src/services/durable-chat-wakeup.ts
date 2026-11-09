@@ -116,7 +116,7 @@ export async function authorizeFailedChatRunRetryWake(
 ): Promise<boolean> {
   const action = input.wakeupRequestId
     ? await tx
-        .select({ companyId: chatActions.companyId, kind: chatActions.kind })
+        .select({ companyId: chatActions.companyId, kind: chatActions.kind, payload: chatActions.payload })
         .from(chatActions)
         .where(eq(chatActions.id, input.wakeupRequestId))
         .limit(1)
@@ -144,7 +144,9 @@ export async function authorizeFailedChatRunRetryWake(
     !(selector as Record<string, unknown>).failedRunId ||
     (selector as Record<string, unknown>).failedRunId !==
       input.contextSnapshot.retryOfRunId ||
-    input.contextSnapshot.forceFreshSession === true ||
+    (input.contextSnapshot.forceFreshSession === true &&
+      (typeof action.payload.taskRetryIntentId !== "string" ||
+        input.contextSnapshot.taskRetryRequestId !== action.payload.taskRetryIntentId)) ||
     ["resumeFromRunId", "resumeSessionParams", "resumeSessionDisplayId"].some(
       (key) => Object.hasOwn(input.contextSnapshot, key),
     )
@@ -322,6 +324,8 @@ export async function slackMentionAllowsRunStart(
         sql`${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId' = ${run.wakeupRequestId}`,
       ),
     ));
-  return inputs.every(({ event }) => event.trigger === "mention" ||
+  return inputs.every(({ event }) =>
+    (event.conversation as { isDirectMessage?: boolean } | undefined)?.isDirectMessage === true ||
+    event.trigger === "mention" ||
     (event.message as { mentionedBot?: boolean } | undefined)?.mentionedBot === true);
 }

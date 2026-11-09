@@ -161,10 +161,13 @@ describe("createDispatchResolvedInteractionIfCurrent", () => {
       runId: "run-1",
       companyId: "company-1",
       expectedStatus: "running",
+      reservationId: "reservation-1",
+      enforceContinuationOwnership: false,
       dispatch,
     });
 
     expect(result.dispatched).toBe(true);
     expect(writer.dispatchCalls).toHaveLength(1);
+    expect(writer.dispatchCalls[0]).toMatchObject({ enforceContinuationOwnership: false });
   });
 });

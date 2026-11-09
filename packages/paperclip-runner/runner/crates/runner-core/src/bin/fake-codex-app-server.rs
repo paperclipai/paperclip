@@ -659,6 +659,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let expected_canonical_task_context_file =
         argument(&args, "--expected-canonical-task-context-file");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
+    let terminal_result = argument(&args, "--terminal-result-file")
+        .map(|path| -> Result<Value, Box<dyn std::error::Error>> {
+            Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+        })
+        .transpose()?;
     let replay_completed_tool_call = args
         .iter()
         .any(|value| value == "--replay-completed-tool-call");
@@ -682,6 +687,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--finish-turn-with-pending-tool");
     let require_dynamic_tool = args.iter().any(|value| value == "--require-dynamic-tool");
+    let repair_assigned_discovery = args
+        .iter()
+        .any(|value| value == "--repair-assigned-discovery");
     let require_completion_contract = args
         .iter()
         .any(|value| value == "--require-completion-contract");
@@ -934,6 +942,64 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             continue;
         }
+        if repair_assigned_discovery
+            && message.get("method").is_none()
+            && message.get("id") == Some(&json!("discovery-request"))
+        {
+            let text = message
+                .pointer("/result/contentItems/0/text")
+                .and_then(Value::as_str)
+                .ok_or("discovery response omitted content")?;
+            let result: Value = serde_json::from_str(text)?;
+            if message.pointer("/result/success") == Some(&json!(false)) {
+                let hint = result
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .ok_or("discovery rejection omitted guidance")?;
+                if !hint.contains("Correct the arguments and retry")
+                    || !hint.contains("/properties/query/type")
+                    || hint.contains("PRIVATE_QUERY")
+                {
+                    return Err("discovery rejection lacks safe repair guidance".into());
+                }
+                log_call(call_log.as_deref(), "discovery:repair-guidance")?;
+                send(
+                    json!({"id":"discovery-request", "method":"item/tool/call", "params":{
+                        "threadId":state.thread_id, "turnId":state.active_turn_id,
+                        "callId":"assigned-discovery", "tool":"paperclip_search_assigned_tools",
+                        "arguments":{"query":"github"}
+                    }}),
+                )?;
+            } else {
+                if message.pointer("/result/success") != Some(&json!(true))
+                    || result != json!({"tools":[{"name":"app_github_read_pull_request"}]})
+                {
+                    return Err("corrected discovery did not return assigned tools".into());
+                }
+                log_call(call_log.as_deref(), "discovery:success")?;
+                finish_turn(&state_path, &mut state, "completed")?;
+            }
+            continue;
+        }
+        if message.get("method").is_none()
+            && message.get("id") == Some(&json!("terminal-result-request"))
+        {
+            let success = message.pointer("/result/success") == Some(&json!(true));
+            log_call(
+                call_log.as_deref(),
+                if success {
+                    "terminal-result:accepted"
+                } else {
+                    "terminal-result:rejected"
+                },
+            )?;
+            finish_turn(
+                &state_path,
+                &mut state,
+                if success { "completed" } else { "failed" },
+            )?;
+            continue;
+        }
         if message.get("method").is_none() && message.get("id") == Some(&json!("tool-request-1")) {
             if message.pointer("/result/success") == Some(&json!(false)) {
                 log_call(call_log.as_deref(), "tool-response:failure")?;
@@ -1034,6 +1100,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "initialized" => {}
             "thread/start" => {
+                if let Some(delay) = argument(&args, "--thread-start-delay-ms") {
+                    thread::sleep(Duration::from_millis(delay.parse()?));
+                }
                 if require_external_sandbox
                     && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
                         || message.pointer("/params/permissions").is_some())
@@ -1076,7 +1145,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 send(json!({
                     "id": id,
-                    "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
+                    "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"},
+                        "model": argument(&args, "--returned-model").map(Value::String).unwrap_or_else(|| message.pointer("/params/model").filter(|model| model.is_string()).cloned().unwrap_or(json!("gpt-test")))}
                 }))?;
                 if agent_created_goal {
                     send(json!({
@@ -1652,6 +1722,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }))?;
                 } else if exit_after_turn_start {
                     return Ok(());
+                } else if repair_assigned_discovery {
+                    send(
+                        json!({"id":"discovery-request", "method":"item/tool/call", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id,
+                            "callId":"assigned-discovery", "tool":"paperclip_search_assigned_tools",
+                            "arguments":{"query":{"PRIVATE_QUERY":"private search"}}
+                        }}),
+                    )?;
+                } else if let Some(result) = &terminal_result {
+                    send(json!({
+                        "id": "terminal-result-request", "method": "item/tool/call",
+                        "params": { "threadId": state.thread_id, "turnId": provider_turn_id,
+                            "callId": "terminal-result-call", "tool": "paperclip_finish", "arguments": result }
+                    }))?;
                 } else if emit_tool_call {
                     send(json!({
                         "id": "tool-request-1",

@@ -391,6 +391,21 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(result.executionTarget).toBeNull();
   });
 
+  it("forwards authorized project IDs to task-only providers without staging directories", async () => {
+    const environment = makeEnvironment("plugin" as Environment["driver"]);
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({ kind: "remote", transport: "sandbox",
+      providerKey: "plugin", remoteCwd: "provider/project", runnerTask: vi.fn() });
+    const runtime = makeMockRuntime({ supportsTasks: vi.fn().mockResolvedValue(true) });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    const input = { ...makeRealizeInput({ environment }), adapterType: "paperclip_runner",
+      runnerTaskProjectIds: ["anchor", "authorized-reference", "anchor"] };
+    input.executionWorkspace.projectId = "anchor";
+    const result = await orchestrator.realizeForRun(input);
+    expect(result.executionTarget).toMatchObject({ runnerTaskProjectIds: ["anchor", "authorized-reference"] });
+    expect(runtime.realizeWorkspace).not.toHaveBeenCalled();
+    expect(runtime.execute).not.toHaveBeenCalled();
+  });
+
   it("persisted metadata is updated on lease and execution workspace after realization", async () => {
     const persistedExecutionWorkspace = makePersistedExecutionWorkspace();
     const updatedLease = makeLease({
@@ -770,6 +785,7 @@ describe("native runner lifecycle changes before lease acquisition", () => {
     expect(warm.lease.leasePolicy).toBe("reuse_by_environment");
     expect(warm.environment.config).toEqual({ provider: "daytona", reuseLease: true });
     expect(acquireRunLease.mock.calls[1][0].persistedExecutionWorkspace).toEqual(input.persistedExecutionWorkspace);
+    expect(acquireRunLease.mock.calls[1][0].configuredEnvironment).toBe(environment);
     // Run-scoped adaptation must not change the shared environment or other agents.
     expect(environment.config).toEqual({ provider: "daytona", reuseLease: false });
     const coldAgain = await orchestrator.acquireForRun({ ...input, heartbeatRunId: "run-3", adapterConfig: { lifecycleMode: "per_turn" } });

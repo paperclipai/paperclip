@@ -2,6 +2,7 @@ import type { Db } from "@paperclipai/db";
 import { issues, heartbeatRuns } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { canActorReadExecutionWorkspace, type AuthorizationActor, type AuthorizationDecision } from "./authorization.js";
+import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 
 type RunIssueBinding = {
   companyId: string;
@@ -30,29 +31,52 @@ export async function canActorReadHeartbeatRun(
   run: RunIssueBinding,
 ): Promise<boolean> {
   if (run.scopeKind === "company") return true;
-  if (!run.issueId) return false;
+  const issueId = run.issueId;
+  if (!issueId) return false;
 
-  const issueExists = await db
+  // Callers pass the pooled Db, not a transaction. The existence check and
+  // the issue:read decision only read, so each rebuilds after a transient
+  // disconnect without replaying the other.
+  const issueExists = await retryIdempotentDatabaseOperation(() => db
     .select({ id: issues.id })
     .from(issues)
-    .where(and(eq(issues.id, run.issueId), eq(issues.companyId, run.companyId)))
-    .then((rows) => rows.length > 0);
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+    .then((rows) => rows.length > 0));
   if (!issueExists) return false;
 
-  const decision = await access.decide({
+  const decision = await retryIdempotentDatabaseOperation(() => access.decide({
     actor,
     action: "issue:read",
     resource: {
       type: "issue",
       companyId: run.companyId,
-      issueId: run.issueId,
+      issueId,
       projectId: null,
       parentIssueId: null,
       assigneeAgentId: null,
       assigneeUserId: null,
     },
-  });
+  }));
   return decision.allowed;
+}
+
+export async function getHeartbeatRunReadDecisions(
+  db: Db,
+  access: Parameters<typeof canActorReadHeartbeatRun>[1],
+  actor: AuthorizationActor,
+  runs: readonly RunIssueBinding[],
+): Promise<boolean[]> {
+  const decisions = new Map<string, Promise<boolean>>();
+  return Promise.all(runs.map(run => {
+    const binding = { companyId: run.companyId, scopeKind: run.scopeKind, issueId: run.issueId };
+    const key = JSON.stringify([binding.companyId, binding.scopeKind === "company", binding.issueId ?? null]);
+    let decision = decisions.get(key);
+    if (!decision) {
+      decision = canActorReadHeartbeatRun(db, access, actor, binding);
+      decisions.set(key, decision);
+    }
+    return decision;
+  }));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

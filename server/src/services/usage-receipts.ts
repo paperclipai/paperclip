@@ -8,13 +8,17 @@ import { z } from "zod";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
 import type { AdapterExecutionResult, AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
-import { pricingProvenanceSchema, usdToUnits } from "@paperclipai/shared";
+import { compareCents, normalizeCents, pricingProvenanceSchema, usdToUnits } from "@paperclipai/shared";
 import { idleAccountingSpoolPath, registerIdleSpoolDirectory } from "./idle-local-work.js";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { receiptFingerprint } from "./receipt-fingerprint.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
 import { ensureDurableDirectory, syncDirectory } from "../lib/durable-directory.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { knownRunCostCents } from "./budget-exposure.js";
+import { createLiveRunUsageProjection, liveRunUsageCostCents } from "./budget-live-usage.js";
+import { budgetServiceInTransaction } from "./budgets.js";
 
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
@@ -36,6 +40,11 @@ const envelopeSchema = z.object({
   schema: z.literal("paperclip/accounting-receipt/v1"), id: z.string().uuid(), companyId: z.string().uuid(),
   runId: z.string().uuid(), sourceId: z.string().uuid(), sequence: z.number().int().positive(), receivedAt: z.iso.datetime(),
   adapterType: z.string().max(100), receipt: checkpointSchema,
+  // Derived by the recorder, not a provider's final charge. Keeping it in the
+  // fsynced envelope preserves known partial attempts through database replay.
+  liveCostCents: z.string().max(160).refine(value => {
+    try { return compareCents(value, 0) >= 0; } catch { return false; }
+  }, "Invalid live cost").transform(normalizeCents).nullable().optional(),
 });
 export type UsageReceiptEnvelope = z.infer<typeof envelopeSchema>;
 export const usageReceiptSpoolPath = idleAccountingSpoolPath;
@@ -58,7 +67,7 @@ export async function spoolUsageReceipt(envelope: UsageReceiptEnvelope, director
 export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
   const envelope = envelopeSchema.parse(raw);
   const hash = receiptFingerprint(envelope);
-  return withAccountingTransaction(db, envelope.companyId, async tx => {
+  return withAccountingTransaction(db, envelope.companyId, async (tx, publications) => {
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, envelope.runId), eq(heartbeatRuns.companyId, envelope.companyId))).for("update");
     if (!run) throw notFound("Accounting run not found");
     const [existing] = await tx.select().from(runUsageReceipts).where(and(eq(runUsageReceipts.companyId, envelope.companyId), eq(runUsageReceipts.runId, envelope.runId), eq(runUsageReceipts.sourceId, envelope.sourceId), eq(runUsageReceipts.sequence, envelope.sequence)));
@@ -73,6 +82,23 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
     if (run.costAccountedAt || previous.accountingReceiptSourceId !== envelope.sourceId || Number(previous.accountingReceiptSequence ?? 0) >= envelope.sequence) return;
     const receipt = envelope.receipt;
     const billingType = receipt.billingType === "api" ? "metered_api" : receipt.billingType === "subscription" ? "subscription_included" : receipt.billingType ?? "unknown";
+    const oldProjection = previous.budgetExposure && typeof previous.budgetExposure === "object"
+      ? previous.budgetExposure as Record<string, unknown> : {};
+    const canonicalProjection = typeof oldProjection.sourceId === "string" && typeof oldProjection.sequence === "number";
+    let previousCost = canonicalProjection ? null : knownRunCostCents(previous);
+    if (typeof oldProjection.costCents === "string") {
+      try {
+        const projected = normalizeCents(oldProjection.costCents);
+        if (compareCents(projected, 0) >= 0 && (canonicalProjection || compareCents(projected, previousCost ?? "0") > 0)) previousCost = projected;
+      } catch { /* Older malformed projections are not billing evidence. */ }
+    }
+    const reportedCost = envelope.liveCostCents !== undefined ? envelope.liveCostCents
+      : liveRunUsageCostCents({ ...receipt, billingType } as AdapterUsageCheckpoint);
+    const observedCost = reportedCost === null ? previousCost
+      : !receipt.complete && previousCost !== null && compareCents(previousCost, reportedCost) > 0 ? previousCost : reportedCost;
+    // Running checkpoints cannot settle yet. Their terminal transition owns
+    // the accounting wake; only a late receipt needs to reactivate that worker.
+    if (!["queued", "running"].includes(run.status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, envelope.companyId);
     await tx.update(heartbeatRuns).set({
       costAccountingPending: true,
       accountingLastError: previous.accountingCaptureFailed === true ? "usage_capture_failed" : null,
@@ -83,9 +109,15 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
         accountingReceiptReady: previous.accountingCaptureFailed !== true && receipt.complete && receipt.usageBasis !== "session_cumulative", accountingReceiptId: envelope.id,
         accountingReceiptSequence: envelope.sequence, accountingReceiptReceivedAt: envelope.receivedAt,
         costStatus: receipt.costStatus ?? null,
+        budgetExposure: { sourceId: envelope.sourceId, sequence: envelope.sequence, costCents: observedCost },
         pricingProvenance: receipt.pricingProvenance ?? { source: receipt.costUsd != null || receipt.costUsdExact != null ? "provider_reported" : "unknown", version: "accounting-receipt/v1" },
       },
     }).where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.costAccountedAt)));
+    if (observedCost !== null && compareCents(observedCost, previousCost ?? "0") !== 0) {
+      const scope = previous.ledgerScope && typeof previous.ledgerScope === "object" ? previous.ledgerScope as Record<string, unknown> : {};
+      await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(envelope.companyId, run.agentId,
+        typeof scope.projectId === "string" ? scope.projectId : null);
+    }
   });
 }
 
@@ -202,6 +234,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
   let sequence = 0;
   let currentAttempt = "default";
   const attempts = new Map<string, AdapterUsageCheckpoint>();
+  let initialLiveUsage: Parameters<typeof createLiveRunUsageProjection>[0];
   // Native run deltas retain their baseline across same-run recovery. Restore
   // the previous snapshot as the same attempt, never add it a second time.
   // An empty final result must not erase the last durable observation.
@@ -210,8 +243,14 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     const [previous] = await db.select().from(runUsageReceipts).where(and(
       eq(runUsageReceipts.id, priorReceiptId), eq(runUsageReceipts.runId, input.runId), eq(runUsageReceipts.companyId, input.companyId),
     ));
-    if (previous) attempts.set("default", envelopeSchema.parse(previous.receiptJson).receipt as AdapterUsageCheckpoint);
+    if (previous) {
+      const restored = envelopeSchema.parse(previous.receiptJson);
+      const receipt = restored.receipt as AdapterUsageCheckpoint;
+      attempts.set("default", receipt);
+      initialLiveUsage = { receipt, costCents: restored.liveCostCents };
+    }
   }
+  const projectLiveUsage = createLiveRunUsageProjection(initialLiveUsage);
   let chain = Promise.resolve();
   let captureFailed = bound[0].usageJson?.accountingCaptureFailed === true;
   let finishFailedCapture: (() => void) | undefined;
@@ -253,6 +292,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       version: "accounting-receipt/v1",
     };
     attempts.set(attempt, priced);
+    const liveCostCents = projectLiveUsage(attempt, priced);
     const parts = [...attempts.values()];
     const latest = attempts.get(currentAttempt)!;
     const receipt: AdapterUsageCheckpoint = { ...latest, complete: latest.complete && !captureFailed, usage: {
@@ -289,10 +329,16 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       // can be considered complete, even if a later attempt succeeded.
       receipt.complete = !captureFailed && parts.every(part => part.complete);
     }
-    const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt };
+    const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt, liveCostCents };
     const file = await spoolUsageReceipt(envelope, directory);
     try { await persistUsageReceipt(db, envelope); await fs.rm(file, { force: true }); }
-    catch (error) { logger.warn({ err: error, runId: input.runId, receiptId: envelope.id }, "Usage receipt is durable on disk; database replay pending"); }
+    catch (error) {
+      // The fsynced receipt is durable even when the DB transaction failed.
+      // Wake the owned spool recovery path; never certify that failed write as free.
+      const { wakeCostAccountingWork } = await import("./budget-enforcement-worker.js");
+      wakeCostAccountingWork(db);
+      logger.warn({ err: error, runId: input.runId, receiptId: envelope.id }, "Usage receipt is durable on disk; database replay pending");
+    }
     return receipt;
   }
   return {

@@ -1,4 +1,5 @@
 import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
+import { AgentBulkRoster } from "@/components/agents/AgentBulkRoster";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
@@ -20,15 +21,9 @@ import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
-import { PageTabBar } from "../components/PageTabBar";
-import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
-import {
-  resourceMembershipState,
-  useResourceMemberships,
-} from "../hooks/useResourceMemberships";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -45,14 +40,6 @@ const ConfigureBuiltInAgentModal = lazy(() =>
 
 export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
-
-const AGENT_FILTER_TAB_ITEMS: { value: FilterTab; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Active" },
-  { value: "paused", label: "Paused" },
-  { value: "error", label: "Error" },
-  { value: "builtin", label: "Built-in" },
-];
 
 function isFilterTab(value: string): value is FilterTab {
   return (AGENT_FILTER_TABS as readonly string[]).includes(value);
@@ -204,12 +191,7 @@ export function Agents() {
     enabled: !!selectedCompanyId,
   });
   const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
-  const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
-  const visibleTabItems = useMemo(
-    () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
-    [builtInAgentsEnabled],
-  );
-
+  const tab: FilterTab = "all";
   const { data: builtInAgents } = useQuery({
     queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
     queryFn: () => builtInAgentsApi.list(selectedCompanyId!),
@@ -268,7 +250,6 @@ export function Agents() {
     refetchInterval: sharedRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedRuns, runs, runsUpdatedAt);
-  const membershipsQuery = useResourceMemberships(selectedCompanyId);
 
   // Map agentId -> first live run + live run count
   const liveRunByAgent = useMemo(() => {
@@ -318,10 +299,10 @@ export function Agents() {
   }, [setBreadcrumbs]);
 
   useEffect(() => {
-    if (selectedCompanyId && requestedTab === "builtin" && instanceSettings && !builtInAgentsEnabled) {
+    if (requestedTab !== "all") {
       navigate("/agents/all", { replace: true });
     }
-  }, [builtInAgentsEnabled, instanceSettings, navigate, requestedTab, selectedCompanyId]);
+  }, [navigate, requestedTab]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select a company to view agents." />;
@@ -380,45 +361,28 @@ export function Agents() {
         // columns line up vertically. Below xl the meta columns are hidden, so
         // the title flexes instead: a fixed width there let the shrink-0
         // trailing actions squeeze the name to zero width on mobile.
-        titleClassName="flex-1 xl:flex-none xl:w-56"
+        titleClassName="flex-1"
         titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
         subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
-        className={cn(
-          "group",
-          agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
-          resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
-        )}
+        className="group"
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
           <AgentAvatar agent={agent} size={32} />
         )}
-        secondaryRow={
-          builtInCluster ? (
-            <div className="xl:hidden flex flex-wrap items-center gap-1.5">
-              {builtInCluster}
-            </div>
-          ) : undefined
-        }
-        meta={
-          <div className="flex items-center gap-3">
-            {builtInCluster && (
-              <div className="hidden xl:flex items-center gap-1.5">
-                {builtInCluster}
-              </div>
-            )}
-            <div className="hidden xl:flex items-center gap-3">
-              <AgentMetaColumns
-                agent={agent}
-                environment={resolveRenderedEnvironment(agent.id)}
-                showEnvironment={showEnvironmentColumn}
-              />
-            </div>
+        secondaryRowClassName={cn("pl-11", !builtInCluster && !showEnvironmentColumn && !agent.lastHeartbeatAt && "sm:hidden")}
+        secondaryRow={(agent.status === "paused" || builtInCluster || showEnvironmentColumn || agent.lastHeartbeatAt) && (
+          <div className="flex flex-wrap items-center gap-2">
+            {agent.status === "paused" && <span className="sm:hidden"><AgentStatusBadge status={agent.status} /></span>}
+            {builtInCluster}
+            {showEnvironmentColumn && <span className="text-xs text-muted-foreground" title={resolveRenderedEnvironment(agent.id).title}>
+              {resolveRenderedEnvironment(agent.id).label} · {resolveRenderedEnvironment(agent.id).detail}
+            </span>}
+            {agent.lastHeartbeatAt && <span className="text-xs text-muted-foreground" title="Last heartbeat">{relativeTime(agent.lastHeartbeatAt)}</span>}
           </div>
-        }
-        metaSpacerClassName="hidden xl:block"
+        )}
         trailing={
           <div className="flex items-center gap-3">
             <div className="hidden sm:flex items-center gap-3">
@@ -441,14 +405,7 @@ export function Agents() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
-          <PageTabBar
-            items={visibleTabItems}
-            value={tab}
-            onValueChange={(v) => navigate(`/agents/${v}`)}
-          />
-        </Tabs>
+      <div className="flex justify-end">
         <div className="flex items-center gap-2">
           {/* View toggle */}
           {!forceListView && (
@@ -502,17 +459,13 @@ export function Agents() {
       )}
 
       {/* List view */}
-      {effectiveView === "list" && filtered.length > 0 && (
-        <div>
-          {filtered.map(renderAgentRow)}
-        </div>
+      {effectiveView === "list" && agents && agents.length > 0 && (
+        <AgentBulkRoster key={selectedCompanyId} companyId={selectedCompanyId}
+          agents={agents.filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status))}
+          visibleAgents={filtered} renderAgent={renderAgentRow} />
       )}
 
-      {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected status.
-        </p>
-      )}
+
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
@@ -527,8 +480,6 @@ export function Agents() {
               environmentByAgentId={environmentByAgentId}
               environmentDataLoading={environmentDataLoading}
               showEnvironment={showEnvironmentColumn}
-              tab={tab}
-              memberships={membershipsQuery.data}
               builtInByAgentId={builtInByAgentId}
               onConfigureBuiltIn={setConfigureState}
             />
@@ -571,8 +522,6 @@ function OrgTreeNode({
   environmentByAgentId,
   environmentDataLoading,
   showEnvironment,
-  tab,
-  memberships,
   builtInByAgentId,
   onConfigureBuiltIn,
 }: {
@@ -583,8 +532,6 @@ function OrgTreeNode({
   environmentByAgentId: Map<string, EnvironmentDescriptor>;
   environmentDataLoading: boolean;
   showEnvironment: boolean;
-  tab: FilterTab;
-  memberships: ReturnType<typeof useResourceMemberships>["data"];
   builtInByAgentId: Map<string, BuiltInAgentState>;
   onConfigureBuiltIn: (state: BuiltInAgentState) => void;
 }) {
@@ -592,17 +539,12 @@ function OrgTreeNode({
   const builtInState = builtInByAgentId.get(node.id);
   const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
   const hasInvalidOrgChain = Boolean(agent && agent.orgChainHealth?.status === "invalid_org_chain");
-  const membershipState = resourceMembershipState(memberships, "agent", node.id);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
-        className={cn(
-          "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
-          agent?.pausedAt && tab !== "paused" && "opacity-50",
-          membershipState === "left" && "sm:text-foreground/55",
-        )}
+        className="group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit"
       >
         {hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
@@ -689,8 +631,6 @@ function OrgTreeNode({
               environmentByAgentId={environmentByAgentId}
               environmentDataLoading={environmentDataLoading}
               showEnvironment={showEnvironment}
-              tab={tab}
-              memberships={memberships}
               builtInByAgentId={builtInByAgentId}
               onConfigureBuiltIn={onConfigureBuiltIn}
             />

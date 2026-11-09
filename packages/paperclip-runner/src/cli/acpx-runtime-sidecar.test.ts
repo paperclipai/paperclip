@@ -1,11 +1,14 @@
+import { canonicalNativeRuntimeContextDigest } from "../contracts/runtime-context.js";
 import { acpxProfileActivity } from "../drivers/acpx/profile-activity.js";
+import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { appendSemanticToolReceipt, readNativeSemanticReceipt, semanticInputSha256 } from "../drivers/semantic-tool-receipt.js";
 import { startRunnerToolBridge, type RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
+import { resolveCompletionContinuation } from "../drivers/completion-continuation.js";
 import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "../drivers/acpx/usage-accounting.js";
 import { stripTypeScriptTypes } from "node:module";
 import { cursorPlanToolIdentity, cursorToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -84,6 +87,7 @@ import {
 const children = new Set<SidecarProcess>();
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all([...children].map((child) => child.close()));
   children.clear();
 });
@@ -314,6 +318,62 @@ describe("qualified ACPX runtime sidecar", () => {
     }
   });
 
+  it.each([["monitor", true], ["monitor", false], ["same_agent", true], ["same_agent", false]] as const)("resolves an omitted continuation before the production sidecar validator with saved %s authority=%s", async (kind, eligible) => {
+    const raw = { reportedWorkDisposition: "yielded", summary: "The review fix is published.", evidence: [], verification: [],
+      completionClaim: { contractRevision: "1", objectiveSatisfied: false, criteria: [], remainingWork: [{ description: "Wait for checks.", blocksCompletion: true }] } };
+    const continuation = { kind, summary: "Continue from saved task state.", idempotencyKey: "saved:task:receipt" };
+    const tools = new Map<string, any>(), emitted: any[] = [];
+    const handler = loadWaitForTool({ tools, emitted, validate: validatePrpStructuredRunResult });
+    const commands = loadActualToolCommands(tools);
+    const bridge = await startRunnerToolBridge({ handler, captureSemanticReceipt: () => () => {} });
+    try {
+      const response = fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "paperclip_finish", arguments: raw } }) });
+      await vi.waitFor(() => expect(emitted.find(event => event.operationId === "get_task_context")).toBeDefined());
+      const read = emitted[0];
+      await commands.resolve({ callId: read.callId, turnId: "test-turn", result: {
+        run: { id: "test-run" }, activeTask: { executionRunId: "test-run" }, completionContinuation: eligible ? continuation : null,
+      }, error: null });
+      if (eligible) {
+        await vi.waitFor(() => expect(tools.has("3")).toBe(true));
+        expect(emitted.map(event => event.operationId)).toEqual(["get_task_context", "paperclip_finish"]);
+        expect(emitted[1].input).toMatchObject({ reportedWorkDisposition: "yielded", continuation });
+        expect(validatePrpStructuredRunResult(emitted[1].input).ok).toBe(true);
+        await commands.resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
+      }
+      const body = await (await response).json();
+      const receipt = readNativeSemanticReceipt({ contents: body.result.content });
+      expect(receipt).toMatchObject({ inputSha256: semanticInputSha256(raw),
+        normalizedInputSha256: eligible ? semanticInputSha256(emitted[1].input) : null, outcome: eligible ? "returned" : "error" });
+      if (!eligible) {
+        expect(emitted).toHaveLength(1);
+        expect(body.result.isError).toBe(true);
+        expect(body.result.content[0].text).toContain("no eligible saved monitor");
+      }
+    } finally {
+      for (const pending of tools.values()) { pending.cleanup(); pending.reject(new Error("test cleanup")); }
+      await bridge.close();
+    }
+  });
+
+  it("keeps sidecar completion identity reserved and refuses cancellation during its monitor read", async () => {
+    const tools = new Map<string, any>(), emitted: any[] = [], capture = vi.fn(() => vi.fn());
+    const handler = loadWaitForTool({ tools, emitted, validate: validatePrpStructuredRunResult });
+    const controller = new AbortController();
+    const call = { tool: "paperclip_finish", callId: "finish", arguments: { reportedWorkDisposition: "yielded", summary: "Wait for checks.", evidence: [], verification: [],
+      completionClaim: { contractRevision: "1", objectiveSatisfied: false, criteria: [], remainingWork: [] } },
+      signal: controller.signal, captureNormalizedInput: capture };
+    const result = handler(call).catch(error => error);
+    try {
+      await vi.waitFor(() => expect(emitted).toHaveLength(1));
+      await expect(handler(call)).rejects.toThrow("duplicated");
+    } finally { controller.abort(); }
+    expect((await result).message).toContain("cancelled");
+    expect(capture).not.toHaveBeenCalled();
+    expect(tools.size).toBe(0);
+    expect(emitted[0].operationId).toBe("get_task_context");
+  });
+
   it("does not capture normalized authority when actual sidecar validation fails", async () => {
     const emitted: unknown[] = [], capture = vi.fn(() => vi.fn());
     const wait = loadWaitForTool({ tools: new Map(), emitted, validate: validatePrpStructuredRunResult });
@@ -363,6 +423,7 @@ describe("qualified ACPX runtime sidecar", () => {
       await expect(pending).rejects.toThrow("fixture write failed");
       expect(commit).not.toHaveBeenCalled(); expect(tools.size).toBe(0); expect(wire.sequence()).toBe(0);
     } else {
+      await vi.waitFor(() => expect(tools.has("3")).toBe(true));
       expect(commit).not.toHaveBeenCalled(); expect(tools.has("3")).toBe(true); expect(wire.sequence()).toBe(1);
       expect(JSON.parse(wire.writes[0]!).payload.input).toEqual(capture.mock.calls[0]![0]);
       await loadActualToolCommands(tools).resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
@@ -375,6 +436,8 @@ describe("qualified ACPX runtime sidecar", () => {
   it.each(["success", "accepted-false", "error", "cancel", "timeout", "receiver-rejected"])(
     "commits normalized delivery only after the actual tool.resolve handler succeeds: %s",
     async mode => {
+      const credentialCanary = "custom-observability-credential-canary";
+      if (mode === "error") vi.stubEnv("OTEL_EXPORTER_OTLP_LOGS_HEADERS", `x-custom=${credentialCanary}`);
       const raw = { reportedWorkDisposition: "done", summary: "Complete", evidence: [{ ref: mode === "receiver-rejected" ? "x".repeat(300 * 1024) : "fixture" }], verification: [],
         completionClaim: { contractRevision: "1", objectiveSatisfied: true, criteria: [], remainingWork: [] } };
       const validation = validatePrpStructuredRunResult(raw);
@@ -403,7 +466,7 @@ describe("qualified ACPX runtime sidecar", () => {
         if (mode === "success" || mode === "accepted-false") {
           await expect(commands.resolve(params)).resolves.toEqual({ resolved: true });
         } else if (mode === "error") {
-          await expect(commands.resolve({ ...params, result: undefined, error: { message: "Receiver rejected completion" } })).resolves.toEqual({ resolved: true });
+          await expect(commands.resolve({ ...params, result: undefined, error: { message: `Receiver rejected completion: ${credentialCanary}` } })).resolves.toEqual({ resolved: true });
         } else if (mode === "cancel") {
           const cancelled = await fetch(bridge.url, { method: "POST", headers,
             body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 3 } }) });
@@ -415,6 +478,10 @@ describe("qualified ACPX runtime sidecar", () => {
           expect(Buffer.byteLength(wire.writes[0]!)).toBeLessThan(ACPX_SIDECAR_MAX_FRAME_BYTES);
         }
         const body = await (await response).json();
+        if (mode === "error") {
+          expect(JSON.stringify(body)).not.toContain(credentialCanary);
+          expect(JSON.stringify(body)).toContain("[REDACTED]");
+        }
         const delivered = mode === "success" || mode === "accepted-false";
         const receipt = readNativeSemanticReceipt({ contents: body.result.content });
         expect(receipt).toMatchObject({ normalizedInputSha256: delivered ? semanticInputSha256(validation.result) : null,
@@ -1063,6 +1130,23 @@ describe("qualified ACPX runtime sidecar", () => {
     },
   );
 
+  it("routes assigned MCP through PRP in the actual restricted Claude open dispatcher", async () => {
+    const sidecar = startSidecar(), model = "claude-sonnet-5", digest = "a".repeat(64);
+    const snapshot = { prompt: { revision: "fixture", text: "Instructions", digest: createHash("sha256").update("Instructions").digest("hex") },
+      instructions: { entryPath: "AGENTS.md", bundle: { schema: "paperclip.runtime-asset.v1" as const,
+        rootPath: "/unused", digest, manifestDigest: digest, fileCount: 0, totalBytes: 0 } },
+      skills: [], mcp: { assignmentSetId: "assigned", digest, bindingId: "assigned-run" } };
+    sidecar.write(initializeRequest(1, "claude", model));
+    expect(await sidecar.next(frame => frame.id === 1)).toMatchObject({ ok: true });
+    sidecar.write({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: 2, command: "session.open",
+      params: { runtimeDirectory: "/unused", workingDirectory: "/", normalizedSessionId: "assigned-open",
+        agent: "claude", model, permissionMode: "deny-all", providerPolicy: { readOnly: true }, systemInstructions: "Instructions",
+        runtimeContext: { ...snapshot, aggregateDigest: canonicalNativeRuntimeContextDigest(snapshot) },
+        tools: [{ name: "assigned_lookup", inputSchema: { type: "object" } }] } });
+    expect(await sidecar.next(frame => frame.id === 2)).toMatchObject({ ok: false,
+      error: { message: "ACPX working directory must be a non-root directory" } });
+  });
+
   it.each(["off", "low", "high", "max"])(
     "accepts Pi thinking level %s through the actual session.open dispatcher",
     async (piThinkingLevel) => {
@@ -1274,15 +1358,11 @@ function loadWaitForTool(input: {
   const start = source.indexOf("async function waitForTool");
   const end = source.indexOf("\nasync function waitForPermission", start);
   if (start < 0 || end < 0) throw new Error("waitForTool source not found");
-  const functionSource = source
-    .slice(start, end)
-    .replace(
-      "async function waitForTool(call: RunnerToolCall): Promise<unknown>",
-      "async function waitForTool(call)",
-    );
+  const functionSource = stripTypeScriptTypes(source.slice(start, end));
   const factory = new Function(
     "boundedIdentity", "tools", "turnId", "emit", "PRP_COMPLETION_TOOL_NAME",
     "PRP_BLOCK_TOOL_NAME", "validatePrpStructuredRunResult", "boundedSidecarValue", "record", "MAX_PENDING_TOOLS", "stringifyAcpxSidecarFrame",
+    "resolveCompletionContinuation", "runId", "normalizingTools", "randomUUID",
     `return (${functionSource});`,
   );
   return factory(
@@ -1300,6 +1380,10 @@ function loadWaitForTool(input: {
     (value: unknown) => value,
     512,
     stringifyAcpxSidecarFrame,
+    resolveCompletionContinuation,
+    "test-run",
+    new Set<string>(),
+    randomUUID,
   );
 }
 
@@ -1332,7 +1416,7 @@ function loadActualToolCommands(tools: Map<string, unknown>): {
   const start = source.indexOf("async function dispatch("), end = source.indexOf("\nasync function pumpTurn(", start);
   const safeStart = source.indexOf("function safeText("), safeEnd = source.indexOf("\nfunction safeMessage(", safeStart);
   if (start < 0 || end < 0 || safeStart < 0 || safeEnd < 0) throw new Error("Actual sidecar command dispatcher not found");
-  const dispatcher = new Function("tools", "boundedIdentity", "record", "text", "parseAcpxSidecarRequest", "ACPX_SIDECAR_PROTOCOL_VERSION", `
+  const dispatcher = new Function("tools", "boundedIdentity", "record", "text", "parseAcpxSidecarRequest", "ACPX_SIDECAR_PROTOCOL_VERSION", "redactObservabilityDiagnostic", `
     let turnId="test-turn", requestId=0;
     ${stripTypeScriptTypes(source.slice(safeStart, safeEnd))}
     ${stripTypeScriptTypes(source.slice(start, end))}
@@ -1340,6 +1424,6 @@ function loadActualToolCommands(tools: Map<string, unknown>): {
       resolve: params => dispatch(parseAcpxSidecarRequest({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: ++requestId, command: "tool.resolve", params })),
       setTurn: value => { turnId=value; }
     };
-  `)(tools, boundedIdentity, record, text, parseAcpxSidecarRequest, ACPX_SIDECAR_PROTOCOL_VERSION);
+  `)(tools, boundedIdentity, record, text, parseAcpxSidecarRequest, ACPX_SIDECAR_PROTOCOL_VERSION, redactObservabilityDiagnostic);
   return dispatcher;
 }

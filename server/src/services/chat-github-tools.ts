@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { githubReviewAssessmentSchema } from "@paperclipai/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   chatDeliveries,
   chatMessageLinks,
@@ -21,7 +21,8 @@ import type {
   ToolGatewayDescriptor,
   ToolGatewaySession,
 } from "./tool-gateway.js";
-import { runContextSnapshotString } from "./tool-access-policy.js";
+import { boundRunIssueIdSql } from "./run-task-binding.js";
+import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
 
 const objectSchema = (
   properties: Record<string, unknown>,
@@ -100,7 +101,7 @@ export const GITHUB_BOT_TOOLS = [
     name: "submit_review",
     title: "Submit a review assessment",
     description:
-      "Submit a structured assessment for this task's exact PR head. Use begin_review before starting an explicitly requested review. Paperclip validates coverage and score, publishes allowed summary/findings, and computes the Paperclip Review check. Coverage reviewedPaths and omittedPaths name only allowed changed files from read_pull_request(files); describe additional context in the rationale. Follow the schema length limits. Incomplete analysis cannot pass. This never formally approves a PR.",
+      "Submit a structured assessment for this task's exact PR head. Use begin_review before starting an explicitly requested review. Paperclip validates coverage and score, publishes allowed summary/findings, and computes the Paperclip Review check. Coverage reviewedPaths and omittedPaths name only allowed changed files from read_pull_request(files); describe additional context in the rationale. Follow the schema length limits. Incomplete analysis cannot pass. This never formally approves a PR. Transient publication failures retry automatically. A received result or failed result with receipt.retryable=true remains queued; do not claim publication yet. After a timeout, repeat the exact call to recover its durable receipt. Do not begin another review or revise the assessment just to retry publication.",
     risk: "write",
     // Share the input contract with server validation so discovery includes every
     // length/array bound; hidden limits caused real agents to abandon publication.
@@ -241,7 +242,9 @@ export async function githubBotToolsForSession(
 ): Promise<ToolGatewayDescriptor[]> {
   if (!session.agentId || !session.issueId || !session.runId) return [];
   const rows = await db
-    .select({
+    // A PR task can also own inline finding threads. They share one endpoint
+    // and catalog, so discovery must not emit a tool once per conversation.
+    .selectDistinct({
       endpoint: chatEndpoints,
       connection: toolConnections,
       entry: toolCatalogEntries,
@@ -331,8 +334,7 @@ export async function githubBotConnectionIdsForRun(
 ): Promise<Set<string>> {
   const [run] = await db
     .select({
-      issueId: heartbeatRuns.nativeIssueId,
-      snapshotIssueId: runContextSnapshotString("issueId"),
+      issueId: boundRunIssueIdSql(),
     })
     .from(heartbeatRuns)
     .where(
@@ -342,7 +344,7 @@ export async function githubBotConnectionIdsForRun(
         eq(heartbeatRuns.id, runId),
       ),
     );
-  const issueId = run?.issueId ?? run?.snapshotIssueId;
+  const issueId = run?.issueId;
   if (typeof issueId !== "string") return new Set();
   const rows = await db
     .select({
@@ -384,7 +386,16 @@ export async function githubGuestBotConnectionForSession(
 ): Promise<string | null> {
   if (!session.runId || !session.agentId || !session.issueId) return null;
   const [run] = await db
-    .select({ wakeCommentId: runContextSnapshotString("wakeCommentId") })
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+      activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      issueId: boundRunIssueIdSql(),
+      contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('wakeCommentId', ${heartbeatRuns.contextSnapshot}->'wakeCommentId')`,
+    })
     .from(heartbeatRuns)
     .where(
       and(
@@ -393,7 +404,7 @@ export async function githubGuestBotConnectionForSession(
         eq(heartbeatRuns.id, session.runId),
       ),
     );
-  const commentId = run?.wakeCommentId;
+  const commentId = run ? await chatRunSourceMessageId(db, run, { allowLegacyWakeComment: true, provider: "github" }) : null;
   if (typeof commentId !== "string") return null;
   const [source] = await db
     .select({

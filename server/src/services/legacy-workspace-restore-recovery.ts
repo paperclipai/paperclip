@@ -14,7 +14,7 @@ export type LegacyWorkspaceRestoreSource = Pick<typeof environmentLeases.$inferS
   | "provider" | "providerLeaseId" | "acquiredAt" | "leasePolicy" | "metadata">;
 
 function needsRemoteRestore(run: Run): boolean {
-  return run.runtimeMode === "legacy" && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
+  return ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
     && hasWorkspaceRestoreFailure(run.resultJson);
 }
 
@@ -54,7 +54,7 @@ function matchesOriginalSource(lease: typeof environmentLeases.$inferSelect, run
 
 /** A local lock timeout has no remote source to retain and keeps its old policy. */
 export async function hasUnrestoredRemoteWorkspace(db: Db, run: Run): Promise<boolean> {
-  if (!needsRemoteRestore(run)) return false;
+  if (run.runtimeMode !== "legacy" || !needsRemoteRestore(run)) return false;
   if (hasRequiredWorkspaceRecovery(run.resultJson)) return true;
   const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases)
     .leftJoin(environments, eq(environments.id, environmentLeases.environmentId)).where(leaseScope(run)).limit(1);
@@ -65,10 +65,11 @@ export async function hasUnrestoredRemoteWorkspace(db: Db, run: Run): Promise<bo
  * failed run without its exact stop-only intent. The original allocation must
  * not enter warm reuse; it belongs to the board's workspace repair action. */
 export async function preserveLegacyWorkspaceRestoreSources(db: Db, run: Run, source?: LegacyWorkspaceRestoreSource): Promise<string[]> {
-  if (!needsRemoteRestore(run)) return [];
+  if (!needsRemoteRestore(run) || (run.runtimeMode === "native" && !source)) return [];
   const rows = await db.select({ lease: environmentLeases }).from(environmentLeases)
     .leftJoin(environments, eq(environments.id, environmentLeases.environmentId))
-    .where(leaseScope(run, source)).for("update", { of: environmentLeases });
+    .where(and(leaseScope(run, source), run.runtimeMode === "native" && source ? eq(environmentLeases.id, source.id) : undefined))
+    .for("update", { of: environmentLeases });
   const retained: string[] = [];
   for (const { lease } of rows) {
     if (lease.status !== "active") {

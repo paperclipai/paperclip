@@ -7,13 +7,17 @@ import { activityLog, agentWakeupRequests, agents, approvals, authUsers, compani
 } from "@paperclipai/db";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
-import { findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
+import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../services/legacy-execution-recovery.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
+import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
+import { reserveRunBudget } from "../services/budget-reservations.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -61,6 +65,28 @@ describePostgres("already available connection requests", () => {
     expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
   });
 
+  it.each(["ready", "revoked", "question", "approval"] as const)("checks retired connection cards while a continuation is todo: %s", async state => {
+    const f = await seed();
+    const run = await retry(f);
+    await satisfiedConnectionIntentService(db).sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("expired");
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
+    if (state === "revoked") await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, f.grant.id));
+    if (state === "question") await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: "ask_user_questions", status: "pending", addresseeUserId: "connection-owner", payload: { version: 1, questions: [] } });
+    if (state === "approval") {
+      const [approval] = await db.insert(approvals).values({ companyId: f.companyId, type: "tool_action", status: "pending", payload: {} }).returning();
+      await db.insert(issueApprovals).values({ companyId: f.companyId, issueId: f.issueId, approvalId: approval.id });
+    }
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(await findSatisfiedToolConnection(db, task, f.intent, run.id)).toBeNull();
+    expect(await connectionContinuationPendingResponse(db, task, "connection-owner", run.id))
+      .toBe(state === "ready" ? null : state === "approval" ? "approval" : "interaction");
+    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId,
+      runId: run.id, retryReasonOverride: "native_safe_replacement", now: new Date() }))
+      .toMatchObject({ allowed: state === "ready" });
+  });
+
   it("keeps a retry under another user's identity waiting for its response", async () => {
     const f = await seed(); const run = await retry(f);
     await db.update(heartbeatRuns).set({ responsibleUserId: "someone-else" }).where(eq(heartbeatRuns.id, run.id));
@@ -85,6 +111,60 @@ describePostgres("already available connection requests", () => {
       expect(wakeup).toHaveBeenCalledOnce();
     } finally { unsubscribe(); }
   });
+
+  it("releases a created human setup card's worker hold, then resumes when access becomes available", async () => {
+    const f = await seed();
+    await db.delete(issueThreadInteractions);
+    await db.update(toolConnections).set({ status: "draft", enabled: false }).where(eq(toolConnections.id, f.connection.id));
+    const [source] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "succeeded", finishedAt: new Date(), contextSnapshot: { issueId: f.issueId } }).returning();
+    let cardId = "";
+    const wakeup = vi.fn(async () => {
+      await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+        status: "queued", idempotencyKey: `connection-intent:${cardId}:expired` });
+      return null;
+    });
+    const service = connectionIntentDeliveryService(db, { wakeup });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { errors.push(error); } });
+    let sawPassive!: () => void, sawDelivered!: () => void;
+    const passive = new Promise<void>(resolve => { sawPassive = resolve; });
+    const delivered = new Promise<void>(resolve => { sawDelivered = resolve; });
+    const wait = async (event: Promise<void>) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { await Promise.race([event, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Connection worker did not settle")), 8000); })]); }
+      finally { clearTimeout(timer); }
+      await new Promise<void>(resolve => setImmediate(resolve));
+    };
+    try {
+      await coordinator.register(DELIVERY_QUEUES.connection, { retryMs: 5000, run: () => service.sweepPending(),
+        hasPending: async () => { const pending = await service.hasPending();
+          if (!pending && service.nextRunAt() !== null) sawPassive();
+          if (!pending && wakeup.mock.calls.length > 0) sawDelivered();
+          return pending;
+        }, nextRunAt: service.nextRunAt,
+      }).ready;
+      const card = await issueThreadInteractionService(db).createConnectionIntent({ id: f.issueId, companyId: f.companyId }, {
+        payload: f.intent.payload, sourceRunId: source!.id, addresseeUserId: "connection-owner", idempotencyKey: "passive-setup-card",
+      });
+      cardId = card.id;
+      await wait(passive);
+      expect(errors).toEqual([]); expect(idleWorkSnapshot().active).toBe(0);
+      expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+      const now = Date.now(), ownerId = randomUUID();
+      const drain = (): IdleSleepDrainStatus => ({ ownerId, draining: true, startedAt: new Date(now - 1000),
+        expiresAt: new Date(now + 60_000), activeRuns: 0, pendingWakes: 0 });
+      expect(await readIdleSleepSafety(db, drain, Date.now, ownerId, async () => "none", undefined, undefined, true, true)).toMatchObject({ backgroundWork: "none" });
+      // This mutation has no queue notification: awake-only maintenance must
+      // still discover new access; after sleep startup performs the same scan.
+      await db.update(toolConnections).set({ status: "active", enabled: true }).where(eq(toolConnections.id, f.connection.id));
+      await wait(delivered);
+      expect(errors).toEqual([]); expect(wakeup).toHaveBeenCalledOnce();
+      expect((await db.select().from(connectionIntentDeliveries))[0].deliveredAt).not.toBeNull();
+      expect((await db.select().from(agentWakeupRequests))[0]).toMatchObject({ status: "queued", idempotencyKey: `connection-intent:${cardId}:expired` });
+      expect(await readIdleSleepSafety(db, drain, Date.now, ownerId, async () => "none", undefined, undefined, true, true)).toMatchObject({ backgroundWork: "present" });
+    } finally { await coordinator.stop(); }
+  }, 20_000);
 
   it.each(["wrong_identity", "revoked", "disabled", "removed_member", "denied_policy"] as const)("rechecks %s after the card retires", async (reason) => {
     const f = await seed(); const run = await retry(f);
@@ -211,8 +291,9 @@ describePostgres("already available connection requests", () => {
         expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "issue_waiting_for_response" });
     } else {
       const invoke = vi.fn(async () => null);
+      const reservation = await reserveRunBudget(db, f.companyId, run.id, null);
       expect(await dispatch.dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: run.id,
-        expectedStatus: "running", now: new Date(), dispatch: invoke })).toMatchObject({ dispatched: false,
+        reservationId: reservation.id, expectedStatus: "running", now: new Date(), dispatch: invoke })).toMatchObject({ dispatched: false,
           cancellation: { outcome: "cancelled", errorCode: "issue_waiting_for_response" } });
       expect(invoke).not.toHaveBeenCalled();
     }

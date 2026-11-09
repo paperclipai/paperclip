@@ -50,33 +50,13 @@ describe("AppErrorBoundary", () => {
       );
     });
 
+    expect(container.textContent).toContain("Paperclip hit an error");
+    expect(container.textContent).toContain("Maximum update depth exceeded");
+
     expect(captureBrowserExceptionMock).toHaveBeenCalledTimes(1);
     expect(captureBrowserExceptionMock).toHaveBeenCalledWith(expect.any(Error), {
       boundary: "app", componentStack: expect.stringContaining("BoomRender"),
     });
-    expect(
-      Array.from(container.querySelectorAll("button")).some(
-        (button) => button.textContent === "Reload page",
-      ),
-    ).toBe(true);
-
-    act(() => {
-      root.unmount();
-    });
-  });
-
-  it("renders a reload prompt instead of a blank page when the shell throws in render", () => {
-    const root = createRoot(container);
-    act(() => {
-      root.render(
-        <AppErrorBoundary>
-          <BoomRender />
-        </AppErrorBoundary>,
-      );
-    });
-
-    expect(container.textContent).toContain("Paperclip hit an error");
-    expect(container.textContent).toContain("Maximum update depth exceeded");
     expect(
       Array.from(container.querySelectorAll("button")).some(
         (button) => button.textContent === "Reload page",

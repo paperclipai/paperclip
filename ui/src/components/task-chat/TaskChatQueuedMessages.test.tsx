@@ -80,10 +80,10 @@ describe("TaskChatQueuedMessages", () => {
     return props;
   }
 
-  it("shows the saved message's wait reason and removes it when admission succeeds", () => {
+  it("keeps saved input visible without duplicating the task status", () => {
     const message = "Waiting for the previous environment to stop. Your message will start automatically.";
     render({ queue: { ...queue, executionWait: { reason: "remote_cleanup", message } } });
-    expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
+    expect(container.textContent).not.toContain(message);
     expect(container.textContent).toContain("First queued message");
     render();
     expect(container.textContent).not.toContain(message);
@@ -361,7 +361,8 @@ describe("TaskChatQueuedMessages", () => {
     ).toBeNull();
   });
 
-  it.each(["run-1", null])("delivers legacy queued messages with target %s", async (targetRunId) => {
+  it("delivers legacy queued messages to a live target", async () => {
+    const targetRunId = "run-1";
     const onInterrupt = vi.fn().mockResolvedValue(undefined);
     render({
       queue: {
@@ -393,4 +394,11 @@ describe("TaskChatQueuedMessages", () => {
       ),
     ).toBeNull();
   });
+  it("hides Steer and Interrupt without a live target while leaving saved messages editable", () => {
+    render({ queue: { ...queue, targetRunId: null, protocol: "legacy", steeringDisposition: "unsupported" } });
+    expect(container.textContent).toContain("First queued message");
+    expect(container.querySelector('[data-testid="task-chat-queued-interrupt-comment-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-queued-steer-comment-1"]')).toBeNull();
+  });
+
 });

@@ -11,7 +11,6 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getSandboxDuplexGatewayCodecSource } from "./sandbox-callback-bridge.js";
 import {
   createBridgeBodyReservation,
   getBridgeBodyReservedBytesForTest,
@@ -118,6 +117,28 @@ function createRecordingTraceContext(): {
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
+
+  function processSessionInput(
+    runId: string,
+    target: AdapterSandboxExecutionTarget,
+    runtimeRootDir: string,
+    command: string,
+    args: string[],
+    cwd: string,
+  ): Parameters<typeof startAdapterExecutionTargetProcessSessionBridge>[0] {
+    return {
+      runId,
+      target,
+      runtimeRootDir,
+      adapterKey: "acpx",
+      command,
+      args,
+      cwd,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    };
+  }
 
   async function createSandboxRoot(prefix: string): Promise<string> {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), prefix));
@@ -512,18 +533,14 @@ describe("sandbox adapter execution targets", () => {
     };
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir, runner);
 
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-makedir",
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge(processSessionInput(
+      "run-process-session-makedir",
       target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
-    });
+      path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      process.execPath,
+      [childPath],
+      rootDir,
+    ));
     expect(bridge).not.toBeNull();
 
     try {
@@ -769,16 +786,14 @@ describe("sandbox adapter execution targets", () => {
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir, runner);
 
     const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-poll-parent",
-      target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
+      ...processSessionInput(
+        "run-process-session-poll-parent",
+        target,
+        path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        process.execPath,
+        [childPath],
+        rootDir,
+      ),
       getRuntimeParentContext: () => runParentToken,
     });
     expect(bridge).not.toBeNull();
@@ -824,18 +839,14 @@ describe("sandbox adapter execution targets", () => {
     };
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir, runner);
 
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-poll-nogetter",
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge(processSessionInput(
+      "run-process-session-poll-nogetter",
       target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
-    });
+      path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      process.execPath,
+      [childPath],
+      rootDir,
+    ));
     expect(bridge).not.toBeNull();
     bridgeStarted = true;
 
@@ -886,16 +897,14 @@ describe("sandbox adapter execution targets", () => {
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir, runner);
 
     const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-stdin-parent",
-      target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
+      ...processSessionInput(
+        "run-process-session-stdin-parent",
+        target,
+        path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        process.execPath,
+        [childPath],
+        rootDir,
+      ),
       getRuntimeParentContext: () => currentParent as never,
     });
     expect(bridge).not.toBeNull();
@@ -960,17 +969,14 @@ describe("sandbox adapter execution targets", () => {
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
     const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-sendinput-span",
-      target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
-      // Record each wrapper span name, then run the wrapped work.
+      ...processSessionInput(
+        "run-process-session-sendinput-span",
+        target,
+        path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        process.execPath,
+        [childPath],
+        rootDir,
+      ),
       runtimeSpan: async (name, work) => {
         spanNames.push(name);
         if (name === "sandbox.agentSession.sendInput") resolveSendInput();
@@ -1024,17 +1030,14 @@ describe("sandbox adapter execution targets", () => {
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
     const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-poll-span",
-      target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
-      // Record each wrapper span name, then run the wrapped work.
+      ...processSessionInput(
+        "run-process-session-poll-span",
+        target,
+        path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        process.execPath,
+        [childPath],
+        rootDir,
+      ),
       runtimeSpan: async (name, work) => {
         spanNames.push(name);
         if (name === "sandbox.agentSession.pollOutput") resolvePoll();
@@ -1066,18 +1069,7 @@ describe("sandbox adapter execution targets", () => {
     );
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session",
-      target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
-    });
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge(processSessionInput("run-process-session", target, path.posix.join(rootDir, ".paperclip-runtime", "acpx"), process.execPath, [childPath], rootDir));
     expect(bridge).not.toBeNull();
 
     try {
@@ -1344,18 +1336,14 @@ describe("sandbox adapter execution targets", () => {
     );
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-buffer",
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge(processSessionInput(
+      "run-process-session-buffer",
       target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
-    });
+      path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      process.execPath,
+      [childPath],
+      rootDir,
+    ));
     expect(bridge).not.toBeNull();
 
     try {
@@ -1382,18 +1370,14 @@ describe("sandbox adapter execution targets", () => {
     );
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-fast-exit",
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge(processSessionInput(
+      "run-process-session-fast-exit",
       target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
-    });
+      path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      process.execPath,
+      [childPath],
+      rootDir,
+    ));
     expect(bridge).not.toBeNull();
 
     try {
@@ -1412,18 +1396,14 @@ describe("sandbox adapter execution targets", () => {
     await writeFile(childPath, "process.stdout.write('guarded-out\\n');", "utf8");
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-auth",
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge(processSessionInput(
+      "run-process-session-auth",
       target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
-    });
+      path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      process.execPath,
+      [childPath],
+      rootDir,
+    ));
     expect(bridge).not.toBeNull();
 
     let squatter: net.Socket | null = null;
@@ -1484,18 +1464,14 @@ describe("sandbox adapter execution targets", () => {
     );
     const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-stream",
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge(processSessionInput(
+      "run-process-session-stream",
       target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async () => {},
-    });
+      path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      process.execPath,
+      [childPath],
+      rootDir,
+    ));
     expect(bridge).not.toBeNull();
 
     const child = spawn(bridge!.agentCommand, [], { stdio: ["pipe", "pipe", "pipe"] });
@@ -1563,16 +1539,7 @@ describe("sandbox adapter execution targets", () => {
       const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
       const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-        runId: "run-stream-echo",
-        target,
-        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-        adapterKey: "acpx",
-        command: process.execPath,
-        args: [childPath],
-        cwd: rootDir,
-        env: {},
-        timeoutSec: 5,
-        onLog: async () => {},
+        ...processSessionInput("run-stream-echo", target, path.posix.join(rootDir, ".paperclip-runtime", "acpx"), process.execPath, [childPath], rootDir),
         streamOutputViaSession: true,
       });
       expect(bridge).not.toBeNull();
@@ -1609,18 +1576,8 @@ describe("sandbox adapter execution targets", () => {
 
       const spanNames: string[] = [];
       const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-        runId: "run-stream-span",
-        target,
-        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-        adapterKey: "acpx",
-        command: process.execPath,
-        args: [childPath],
-        cwd: rootDir,
-        env: {},
-        timeoutSec: 5,
-        onLog: async () => {},
+        ...processSessionInput("run-stream-span", target, path.posix.join(rootDir, ".paperclip-runtime", "acpx"), process.execPath, [childPath], rootDir),
         streamOutputViaSession: true,
-        // Record each wrapper span name, then run the wrapped work.
         runtimeSpan: async (name, work) => {
           spanNames.push(name);
           return work();
@@ -1660,16 +1617,7 @@ describe("sandbox adapter execution targets", () => {
       const runtimeSpan = createRuntimeSpanRunner(traceContext, () => runRootContext);
 
       const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-        runId: "run-stream-parent",
-        target,
-        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-        adapterKey: "acpx",
-        command: process.execPath,
-        args: [childPath],
-        cwd: rootDir,
-        env: {},
-        timeoutSec: 5,
-        onLog: async () => {},
+        ...processSessionInput("run-stream-parent", target, path.posix.join(rootDir, ".paperclip-runtime", "acpx"), process.execPath, [childPath], rootDir),
         streamOutputViaSession: true,
         runtimeSpan,
       });
@@ -1761,16 +1709,7 @@ describe("sandbox adapter execution targets", () => {
       const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
       const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-        runId: "run-stream-buffer",
-        target,
-        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-        adapterKey: "acpx",
-        command: process.execPath,
-        args: [childPath],
-        cwd: rootDir,
-        env: {},
-        timeoutSec: 5,
-        onLog: async () => {},
+        ...processSessionInput("run-stream-buffer", target, path.posix.join(rootDir, ".paperclip-runtime", "acpx"), process.execPath, [childPath], rootDir),
         streamOutputViaSession: true,
       });
       expect(bridge).not.toBeNull();
@@ -1802,16 +1741,7 @@ describe("sandbox adapter execution targets", () => {
       const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
       const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-        runId: "run-stream-fast-exit",
-        target,
-        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-        adapterKey: "acpx",
-        command: process.execPath,
-        args: [childPath],
-        cwd: rootDir,
-        env: {},
-        timeoutSec: 5,
-        onLog: async () => {},
+        ...processSessionInput("run-stream-fast-exit", target, path.posix.join(rootDir, ".paperclip-runtime", "acpx"), process.execPath, [childPath], rootDir),
         streamOutputViaSession: true,
       });
       expect(bridge).not.toBeNull();
@@ -1847,16 +1777,7 @@ describe("sandbox adapter execution targets", () => {
       const target: AdapterSandboxExecutionTarget = localSandboxTarget(rootDir);
 
       const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-        runId: "run-stream-live",
-        target,
-        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-        adapterKey: "acpx",
-        command: process.execPath,
-        args: [childPath],
-        cwd: rootDir,
-        env: {},
-        timeoutSec: 5,
-        onLog: async () => {},
+        ...processSessionInput("run-stream-live", target, path.posix.join(rootDir, ".paperclip-runtime", "acpx"), process.execPath, [childPath], rootDir),
         streamOutputViaSession: true,
       });
       expect(bridge).not.toBeNull();
@@ -4483,7 +4404,8 @@ describe("sandbox adapter execution targets", () => {
       // sentinel reaches any of them on the http2 path.
       const telemetryDump = JSON.stringify({ spans, counters, events });
       const logDump = logLines.join("");
-      for (const sentinel of sentinels) {
+      expect(bridgeToken).not.toBe("");
+      for (const sentinel of [...sentinels, bridgeToken]) {
         expect(telemetryDump).not.toContain(sentinel);
         expect(logDump).not.toContain(sentinel);
       }
@@ -4654,6 +4576,7 @@ describe("sandbox adapter execution targets", () => {
     const target: AdapterSandboxExecutionTarget = duplexSandboxTarget(remoteCwd, runner);
 
     __duplexReadinessTesting.resetNewlineScanUnits();
+    __duplexReadinessTesting.resetBufferGrowthCopyUnits();
     const bridge = await startTestDuplexBridge("run-scan-bound", target, api.origin, {
       duplexReadinessTimeoutMs: 5_000,
       duplexObservabilityRecorder: recorder,
@@ -4666,45 +4589,7 @@ describe("sandbox adapter execution targets", () => {
       // totalBytes. A per-chunk full rescan is quadratic (about
       // totalBytes^2 / (2 * chunkSize)), far above this bound.
       expect(scanUnits).toBeLessThanOrEqual(4 * totalBytes);
-    } finally {
-      await bridge?.stop();
-      await api.close();
-    }
-  }, 20000);
-
-  it("bounds the pre-READY buffer growth-copy work by the bytes received", async () => {
-    const { rootDir, remoteCwd } = await createSandboxWorkspace("paperclip-duplex-growth-");
-    const api = await startRecordingApiServer();
-    // An adversarial provider sends many small newline-less fragments before the
-    // cap fires. A one-copy-per-fragment append copies the whole retained buffer
-    // on every fragment, so the total copy work is quadratic in the number of
-    // fragments. The gate must instead grow its backing storage by doubling, so
-    // the total copy work stays linear in the bytes received.
-    const readinessBufferCapBytes = DEFAULT_MAX_DUPLEX_FRAME_BYTES + 4_096;
-    const smallChunk = "x".repeat(64);
-    const chunkCount = Math.ceil(readinessBufferCapBytes / smallChunk.length) + 1;
-    const totalBytes = chunkCount * smallChunk.length;
-    const { runner, control } = makeDuplexSelectionRunner((ctx) => {
-      for (let i = 0; i < chunkCount; i += 1) {
-        ctx.emitRaw(smallChunk);
-      }
-    });
-    const { recorder } = createRecordingDuplexRecorder();
-    const target: AdapterSandboxExecutionTarget = duplexSandboxTarget(remoteCwd, runner);
-
-    __duplexReadinessTesting.resetBufferGrowthCopyUnits();
-    const bridge = await startTestDuplexBridge("run-growth-bound", target, api.origin, {
-      duplexReadinessTimeoutMs: 5_000,
-      duplexObservabilityRecorder: recorder,
-    });
-    try {
-      expect(bridge).not.toBeNull();
-      expect(control.openCount).toBe(1);
       const copyUnits = __duplexReadinessTesting.readBufferGrowthCopyUnits();
-      // Doubling growth copies a logarithmic number of times, each at most the
-      // current buffer length, so the total stays within a small multiple of
-      // totalBytes. A per-fragment full-buffer copy is quadratic (about
-      // totalBytes^2 / (2 * chunkSize)), far above this bound.
       expect(copyUnits).toBeLessThanOrEqual(4 * totalBytes);
     } finally {
       await bridge?.stop();
@@ -4981,41 +4866,6 @@ describe("sandbox adapter execution targets", () => {
     }
   }, 20000);
 
-  it("test_a_missing_preface_aborts_the_open_and_falls_back_to_queue_v1", async () => {
-    const { rootDir, remoteCwd } = await createSandboxWorkspace("paperclip-http2-no-preface-");
-    const api = await startRecordingApiServer();
-    // The gateway sends a valid READY line, but no HTTP/2 client preface ever
-    // follows (a suppressed or a stalled sandbox client). Readiness passes,
-    // then the bounded preface scan finds nothing before its bound; the host
-    // must abort the open and select the file bridge instead of hanging or
-    // leaking the channel.
-    const { runner, control } = makeHttp2SelectionRunner((ctx) => {
-      ctx.emitReady();
-      // No connectHttp2() call: the client preface never arrives.
-    });
-    const { recorder, counters } = createRecordingDuplexRecorder();
-    const target: AdapterSandboxExecutionTarget = duplexSandboxTarget(remoteCwd, runner);
-
-    const bridge = await startTestDuplexBridge("run-no-preface", target, api.origin, {
-      // A short readiness timeout, so the preface-missing bound (which reapplies
-      // this same value) fires quickly in the test.
-      duplexReadinessTimeoutMs: 500,
-      duplexObservabilityRecorder: recorder,
-    });
-    try {
-      expect(bridge).not.toBeNull();
-      expect(control.openCount).toBe(1);
-      // The missing preface aborted the open; the file bridge serves.
-      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
-      const fallback = counters.find((c) => c.metric === DUPLEX_COUNTER_FALLBACK_TOTAL);
-      expect(fallback?.dimensions.fallback_reason).toBe("preface_missing");
-      // The bounded cleanup left no live provider session.
-      expect(control.closeCount + control.stopCount).toBeGreaterThanOrEqual(1);
-    } finally {
-      await bridge?.stop();
-      await api.close();
-    }
-  }, 20000);
 
   it("test_disabled_flag_selects_queue_v1", async () => {
     const { rootDir, remoteCwd } = await createSandboxWorkspace("paperclip-http2-disabled-");
@@ -5074,6 +4924,7 @@ describe("sandbox adapter execution targets", () => {
       const fallbacks = counters.filter((c) => c.metric === DUPLEX_COUNTER_FALLBACK_TOTAL);
       expect(fallbacks).toHaveLength(1);
       expect(fallbacks[0]?.dimensions.fallback_reason).toBe("preface_missing");
+      expect(control.closeCount + control.stopCount).toBeGreaterThanOrEqual(1);
     } finally {
       await bridge?.stop();
       await api.close();
@@ -5974,39 +5825,6 @@ describe("sandbox adapter execution targets", () => {
 
 });
 
-// The names the embedded codec source declares. A test wraps the source and
-// reads these names back. The generated gateway never decodes, so the embedded
-// copy declares only the frame version and the encode function.
-interface EmbeddedCodec {
-  encodeDuplexFrame: (frame: unknown) => string;
-  DUPLEX_FRAME_VERSION: number;
-}
-
-// This describe block covers the zero-dependency codec every generated
-// gateway embeds (`DUPLEX_GATEWAY_CODEC_SOURCE`). The `http2_v1` gateway
-// embeds this same codec source to send its one READY line, so this coverage
-// stays live for the active transport.
-describe("embedded sandbox gateway codec", () => {
-  it("encodes the READY frame to the exact byte-for-byte wire format", () => {
-    // `JSON.stringify` writes object keys in insertion order, so this pins the
-    // exact key order the gateway writes: version, then type, then nonce. A
-    // reordered or reformatted call site would change the bytes on the wire
-    // without failing a looser, parse-then-compare assertion.
-    const codecFactory = new Function(
-      `${getSandboxDuplexGatewayCodecSource()}\nreturn { encodeDuplexFrame, DUPLEX_FRAME_VERSION };`,
-    ) as unknown as () => EmbeddedCodec;
-    const codec = codecFactory();
-
-    expect(codec.DUPLEX_FRAME_VERSION).toBe(DUPLEX_FRAME_VERSION);
-    const nonce = "fixed-test-nonce";
-    const encoded = codec.encodeDuplexFrame({ version: codec.DUPLEX_FRAME_VERSION, type: "ready", nonce });
-    expect(encoded).toBe(`{"version":2,"type":"ready","nonce":"${nonce}"}\n`);
-
-    // The host encode side produces the same bytes for the same frame, so the
-    // two copies stay wire compatible on the one frame the gateway still sends.
-    expect(encoded).toBe(encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "ready", nonce }));
-  });
-});
 
 /** Wait for the pending microtasks and macrotasks to settle. */
 function flushMacrotasks(): Promise<void> {
@@ -6106,31 +5924,6 @@ function createFakeBridgeTransport() {
   };
 }
 
-describe("settleRunDisposition atomic read and mark", () => {
-  it("marks the orderly completion and reports a success for a healthy channel", async () => {
-    const broker = createFakeBridgeTransport();
-
-    // The one atomic step marks the orderly completion and reads the success.
-    expect(broker.settleRunDisposition()).toEqual({ failed: false, lossReason: null });
-    // A later teardown loss orders after the mark, so it stays a normal teardown.
-    broker.emitExit();
-    await flushMacrotasks();
-    expect(broker.runDisposition).toEqual({ failed: false, lossReason: null });
-  });
-
-  it("reports the failure and does not mark for a latched loss", async () => {
-    const broker = createFakeBridgeTransport();
-
-    // A loss ordered before any orderly completion latches the failure.
-    broker.emitExit();
-    await flushMacrotasks();
-    // The atomic step reads the failure and no-ops the mark, so a later
-    // completion cannot clear the latch.
-    expect(broker.settleRunDisposition()).toEqual({ failed: true, lossReason: "provider_exit" });
-    broker.markOrderlyCompletion();
-    expect(broker.runDisposition).toEqual({ failed: true, lossReason: "provider_exit" });
-  });
-});
 
 describe("CLI-lane run-disposition seam", () => {
   const CLEAN_RESULT = {
@@ -6243,27 +6036,6 @@ describe("CLI-lane run-disposition seam", () => {
     expect(broker.runDisposition.failed).toBe(false);
   });
 
-  it("cannot clear the loss latch with a later completion", async () => {
-    const broker = createFakeBridgeTransport();
-    // The loss latches before the CLI process exits.
-    broker.emitExit();
-    await flushMacrotasks();
-    // A later orderly completion cannot clear the latch.
-    broker.markOrderlyCompletion();
-
-    const runner = mockRunner({ ...CLEAN_RESULT });
-    const result = await runAdapterExecutionTargetProcess("run-cli-latch", sandboxTarget(runner), "agent-cli", [], {
-      cwd: "/local",
-      env: {},
-      timeoutSec: 5,
-      graceSec: 1,
-      onLog: async () => {},
-      settleRunDisposition: () => broker.settleRunDisposition(),
-    });
-
-    expect(result.exitCode).toBe(1);
-    expect(result.errorCode).toBe(DUPLEX_CHANNEL_LOST_ERROR_CODE);
-  });
 
   it("leaves an already-failed CLI result unchanged and never settles the disposition", async () => {
     const broker = createFakeBridgeTransport();

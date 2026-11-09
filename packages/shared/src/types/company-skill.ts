@@ -55,6 +55,7 @@ export interface CompanySkill {
   authorName: string | null;
   homepageUrl: string | null;
   categories: string[];
+  accessSourceId?: string | null;
   sharingScope: CompanySkillSharingScope;
   publicShareToken: string | null;
   forkedFromSkillId: string | null;
@@ -89,6 +90,7 @@ export interface CompanySkillListItem {
   authorName: string | null;
   homepageUrl: string | null;
   categories: string[];
+  accessSourceId?: string | null;
   sharingScope: CompanySkillSharingScope;
   publicShareToken: string | null;
   forkedFromSkillId: string | null;

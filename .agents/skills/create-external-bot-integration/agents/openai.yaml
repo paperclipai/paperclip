@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create External Bot Integration"
+  short_description: "Build and qualify external agents in Paperclip"
+  default_prompt: "Use $create-external-bot-integration to build and qualify this external agent through Paperclip Runner, including onboarding and both directions of work."

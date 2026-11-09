@@ -117,6 +117,9 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     ) => {
       const existing = await getById(id);
       if (!existing) throw notFound("Agent not found");
+      if (existing.lifecycleHolds?.includes("setup")) {
+        throw conflict("Finish agent setup before creating keys");
+      }
       if (existing.status === "pending_approval") {
         throw conflict("Cannot create keys for pending approval agents");
       }

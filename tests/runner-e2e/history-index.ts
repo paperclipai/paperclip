@@ -1,3 +1,7 @@
+import { renderReportHistory, reportHistoryStyles, reportHistoryScript } from "./report-history.js";
+import { renderReportShell, reportNavigationStyles, reportShellScript } from "./report-navigation.js";
+import { runnerMatrix } from "./catalog.js";
+import { campaignSuiteSummaryStyles, renderCampaignSuiteSummary } from "./campaign-summary.js";
 import type {
   RunnerE2EHistoryCampaign,
   RunnerE2EHistoryIndex,
@@ -37,17 +41,6 @@ function date(value: string) {
   }).format(new Date(value));
 }
 
-function safeRelativeAssetHref(relative: string | undefined) {
-  if (!relative || /^(?:[a-z]+:|\/\/|\/)/i.test(relative)) return null;
-  const segments = relative.split("/");
-  if (
-    segments.some((segment) => !segment || segment === "." || segment === "..")
-  ) {
-    return null;
-  }
-  return segments.map(encodeURIComponent).join("/");
-}
-
 function campaignStatus(campaign: RunnerE2EHistoryCampaign) {
   if (campaign.failed === 0 && (campaign.incomplete ?? 0) > 0) return "incomplete";
   return campaign.failed === 0 &&
@@ -79,40 +72,31 @@ function campaignRow(campaign: RunnerE2EHistoryCampaign) {
     )
     .join("");
   const billing = campaign.billing;
-  return `<tr>
+  return `<tr data-index-campaign data-index-status="${status}" data-index-search="${html([campaign.campaignId, campaign.source.ref, campaign.source.sha].join(" ").toLowerCase())}">
     <td data-label="Campaign">
       <a class="campaign-link" href="${html(campaign.publicUrl)}">${html(campaign.campaignId)}</a>
       <small>${html(date(campaign.generatedAt))} UTC</small>
     </td>
-    <td data-label="Status">
+    <td data-label="Result">
       <span class="status status-${status}">${status}</span>
-      <small>${campaign.complete ? "Complete campaign" : "Partial campaign"}${campaign.retries > 0 ? ` · ${campaign.retries} retries` : ""}</small>
+      <small>${campaign.passed}/${campaign.selected} passed · ${campaign.executed} executed</small>
     </td>
     <td data-label="Source">${sourceCell(campaign)}</td>
-    <td data-label="Suites"><div class="suite-list">${suites}</div></td>
-    <td data-label="Tests">
-      <strong>${campaign.passed}/${campaign.selected} passed</strong>
-      <small>${campaign.executed} executed · ${campaign.failed} failed${campaign.incomplete ? ` · ${campaign.incomplete} incomplete` : ""}</small>
+    <td class="open-cell" data-label="Details"><a href="${html(campaign.publicUrl)}" aria-label="Open campaign ${html(campaign.campaignId)}">Open report&nbsp;→</a>
+      <details class="campaign-row-details"><summary>Suites &amp; billing</summary>
+        <div class="suite-list">${suites}</div>
+        <p>${campaign.complete ? "Complete campaign" : "Partial campaign"} · ${campaign.retries} retries · cleanup ${campaign.cleanupPassed ? "passed" : "failed"}</p>
+        <p>${campaign.failed} failed${campaign.incomplete ? ` · ${campaign.incomplete} incomplete` : ""}</p>
+        <p>${html(number(billing.llm.totalTokens))} tokens · ${html(number(billing.llm.inputTokens))} in · ${html(number(billing.llm.outputTokens))} out · ${html(number(billing.llm.cachedInputTokens))} cached</p>
+        <p>${html(usd(billing.observedAndEstimatedCostUsd))} recorded cost · ${html(usd(billing.reportedLlmCostUsd))} LLM · ${html(usd(billing.estimatedRuntimeCostUsd))} runtime</p>
+        <p>${html(duration(billing.agentRunDurationMs))} agent · ${html(duration(billing.leaseDurationMs))} Daytona lease</p>
+      </details>
     </td>
-    <td data-label="Tokens">
-      <strong>${html(number(billing.llm.totalTokens))}</strong>
-      <small>${html(number(billing.llm.inputTokens))} in · ${html(number(billing.llm.outputTokens))} out · ${html(number(billing.llm.cachedInputTokens))} cached</small>
-    </td>
-    <td data-label="Cost">
-      <strong>${html(usd(billing.observedAndEstimatedCostUsd))}</strong>
-      <small>${html(usd(billing.reportedLlmCostUsd))} LLM · ${html(usd(billing.estimatedRuntimeCostUsd))} runtime</small>
-    </td>
-    <td data-label="Time">
-      <strong>${html(duration(billing.agentRunDurationMs))}</strong>
-      <small>${html(duration(billing.leaseDurationMs))} Daytona lease</small>
-    </td>
-    <td class="open-cell"><a href="${html(campaign.publicUrl)}" aria-label="Open campaign ${html(campaign.campaignId)}">Open report&nbsp;→</a></td>
   </tr>`;
 }
 
 export function renderRunnerHistoryIndex(
   history: RunnerE2EHistoryIndex,
-  options: { latestSummaryImageHref?: string } = {},
 ) {
   const campaigns = [...history.campaigns].sort((left, right) =>
     right.generatedAt.localeCompare(left.generatedAt),
@@ -133,10 +117,7 @@ export function renderRunnerHistoryIndex(
   const rows =
     campaigns.length > 0
       ? campaigns.map(campaignRow).join("")
-      : `<tr><td class="empty" colspan="9">No campaigns have been published yet.</td></tr>`;
-  const latestSummaryImageHref = safeRelativeAssetHref(
-    options.latestSummaryImageHref,
-  );
+      : `<tr><td class="empty" colspan="4">No campaigns have been published yet.</td></tr>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -173,8 +154,13 @@ export function renderRunnerHistoryIndex(
     .pointers { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px; }
     .pointers a { padding:8px 11px; border:1px solid var(--border); border-radius:7px; background:var(--raised); font-size:12px; text-decoration:none; }
     .pointers a:hover,.campaign-link:hover,.open-cell a:hover { text-decoration:underline; }
-    .latest-summary { margin:0 0 24px; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--raised); }
-    .latest-summary img { display:block; width:100%; height:auto; border-radius:6px; }
+    .latest-campaign { margin-bottom:32px; }
+    .latest-campaign-heading { display:flex; flex-wrap:wrap; align-items:baseline; gap:12px; margin-bottom:20px; }
+    .latest-campaign-heading h2 { margin:0; font-size:18px; font-weight:600; }
+    .latest-metrics { display:flex; flex-wrap:wrap; gap:24px 48px; margin:0 0 16px; }
+    .latest-metrics dt { color:var(--muted); font-size:11px; }
+    .latest-metrics dd { margin:4px 0 0; font:600 24px/1.2 var(--mono); }
+    ${campaignSuiteSummaryStyles}
     .table-wrap { border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
     table { width:100%; border-collapse:collapse; }
     th,td { padding:14px 12px; border-bottom:1px solid var(--border); text-align:left; vertical-align:top; }
@@ -203,22 +189,36 @@ export function renderRunnerHistoryIndex(
       .open-cell { display:block; padding-top:14px; text-align:left; } .open-cell::before { display:none; }
     }
     @media (max-width:520px) { .summary { grid-template-columns:1fr; } .metric { border-right:0; } footer { flex-direction:column; } }
+    :root { --muted-foreground:var(--muted); --card:var(--raised); --border-strong:var(--border); --font-sans:var(--font); --font-mono:var(--mono); --radius:8px; --pass-text:var(--pass); --pass-border:var(--pass); --fail-text:var(--fail); --fail-border:var(--fail); --missing-text:#b45309; --missing-bg:#fef3c7; --missing-border:#f59e0b; }
+    .index-search { display:flex; justify-content:space-between; align-items:center; gap:20px; margin:28px 0 14px; }
+    .index-search h2 { margin:0; font-size:15px; }
+    .index-search input { width:300px; max-width:65%; min-height:36px; padding:8px 10px; background:var(--background); border:1px solid var(--border); border-radius:5px; color:var(--foreground); font:inherit; }
+    .index-result { color:var(--muted); font-size:11px; }
+    .report-surface h1 { font-size:32px; }
+    .report-surface .lede { font-size:12px; }
+    .report-surface .table-wrap { overflow-x:auto; }
+    .report-surface table { table-layout:fixed; }
+    .report-surface th:first-child { width:29%; }
+    .report-surface th:nth-child(2) { width:20%; }
+    .report-surface th:nth-child(3) { width:28%; }
+    .report-surface td { overflow-wrap:anywhere; }
+    .campaign-row-details { margin-top:8px; color:var(--muted); font-size:11px; text-align:left; font-weight:400; }
+    .campaign-row-details summary { cursor:pointer; text-align:right; }
+    .campaign-row-details p { margin:10px 0; }
+    .campaign-row-details .suite-list { white-space:normal; }
+    ${reportNavigationStyles}
+    ${reportHistoryStyles}
+    @media(max-width:860px) { .report-surface table { min-width:0; } }
   </style>
 </head>
 <body>
-  <div class="brand-bar">
-    <a class="brand-lockup" href="https://paperclip.ing" aria-label="Paperclip home">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/></svg>
-      <span>Paperclip</span>
-    </a>
-    <span class="brand-context">Quality engineering · Runner acceptance</span>
-  </div>
+  ${renderReportShell({ history })}
   <main>
     <header>
       <div>
         <p class="eyebrow">Historical test reporting</p>
-        <h1>Runner E2E campaigns</h1>
-        <p class="lede">Each row is one workflow campaign against a Paperclip revision. Open a report for its configuration matrices, matchers, per-test billing, declared screenshots, and normalized results. Additional diagnostic evidence remains in access-controlled workflow artifacts.</p>
+        <h1 data-index-title>Runner E2E campaigns</h1>
+        <p class="lede" data-index-description>${campaigns.length} retained campaigns. Open a report for test outcomes, per-test billing, declared screenshots, and normalized results.</p>
       </div>
       <div class="summary" aria-label="History summary">
         <div class="metric"><strong>${campaigns.length}</strong><span>Campaigns</span></div>
@@ -226,19 +226,63 @@ export function renderRunnerHistoryIndex(
         <div class="metric"><strong>${html(usd(totalCost))}</strong><span>Recorded cost</span></div>
       </div>
     </header>
-    ${latestSummaryImageHref ? `<figure class="latest-summary"><img src="${html(latestSummaryImageHref)}" alt="Latest runner E2E campaign status summary"></figure>` : ""}
+    <section data-index-overview>
+    ${latest ? `<section class="latest-campaign" aria-label="Latest campaign summary">
+      <div class="latest-campaign-heading"><h2>Latest campaign</h2><a class="campaign-link" href="${html(latest.publicUrl)}">${html(latest.campaignId)}</a></div>
+      <dl class="latest-metrics">
+        <div><dt>Passed</dt><dd>${latest.passed}/${latest.selected}</dd></div>
+        <div><dt>Failed or incomplete</dt><dd>${latest.failed + (latest.incomplete ?? 0)}</dd></div>
+        <div><dt>Test time</dt><dd>${html(duration(latest.suites.reduce((total, suite) => total + suite.durationMs, 0)))}</dd></div>
+      </dl>
+      ${renderCampaignSuiteSummary(latest.suites, runnerMatrix, latest.publicUrl)}
+    </section>` : ""}
     <nav class="pointers" aria-label="Campaign pointers">
       ${latest ? `<a href="${html(latest.publicUrl)}">Latest run · ${html(latest.campaignId)}</a>` : ""}
       ${latestGreen ? `<a href="${html(latestGreen.publicUrl)}">Latest complete green · ${html(latestGreen.campaignId)}</a>` : ""}
     </nav>
+    </section>
+    <div class="index-search"><h2 data-index-list-title>Recent campaigns</h2><input type="search" data-index-query aria-label="Search campaigns" placeholder="Find a campaign, revision, or branch…"></div>
+    <p class="index-result" data-index-result aria-live="polite"></p>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Campaign</th><th>Status</th><th>Source</th><th>Suites</th><th>Tests</th><th>Tokens</th><th>Cost</th><th>Agent time</th><th></th></tr></thead>
+        <thead><tr><th>Campaign</th><th>Result</th><th>Source</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
+    <details data-index-trends hidden><summary>Trends and detailed history</summary>${renderReportHistory(history)}</details>
     <footer><span>Updated ${html(date(history.updatedAt))} UTC</span><span>Immutable campaign reports · Declared screenshots and normalized results</span></footer>
-  </main>
+  </main></div></div>
+  <script>${reportShellScript}${reportHistoryScript}
+  (() => {
+    const shell = document.querySelector('.report-shell');
+    const rows = [...document.querySelectorAll('[data-index-campaign]')];
+    const query = document.querySelector('[data-index-query]');
+    const crumbs = document.querySelector('[data-nav-breadcrumbs]');
+    const originalDescription = document.querySelector('[data-index-description]').textContent;
+    const apply = () => {
+      const params = new URLSearchParams(location.search);
+      const view = ['history','attention'].includes(params.get('view')) ? params.get('view') : 'overview';
+      const title = {overview:'Runner E2E campaigns',history:'Campaign history',attention:'Needs attention'}[view];
+      shell.dataset.view = view;
+      document.querySelector('[data-index-title]').textContent = title;
+      document.querySelector('[data-index-overview]').hidden = view !== 'overview';
+      document.querySelector('[data-index-trends]').hidden = view !== 'history';
+      document.querySelector('[data-index-description]').textContent = view === 'attention' ? 'Campaigns with failed or incomplete executions, missing results, or cleanup failures.' : originalDescription;
+      document.querySelector('[data-index-list-title]').textContent = view === 'overview' ? 'Recent campaigns' : 'Campaigns';
+      crumbs.replaceChildren();
+      const root = document.createElement('a'); root.href = '?view=history'; root.textContent = 'Campaigns'; root.dataset.navView = 'history'; crumbs.append(root);
+      const separator = document.createElement('span');separator.setAttribute('aria-hidden','true');separator.textContent='/';crumbs.append(separator);
+      const current = document.createElement('span');current.setAttribute('aria-current','page');current.textContent = view === 'overview' ? 'Overview' : title;crumbs.append(current);
+      document.querySelectorAll('[data-nav-view]').forEach(link => { if(link.dataset.navView===view)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current'); });
+      const search=query.value.trim().toLowerCase(); let visible=0,matching=0;
+      rows.forEach(row => { const match=(!search||row.dataset.indexSearch.includes(search))&&(view!=='attention'||row.dataset.indexStatus!=='passed');if(match)matching++;row.hidden=!match||(view==='overview'&&!search&&visible>=10);if(!row.hidden)visible++; });
+      document.querySelector('[data-index-result]').textContent=visible+' of '+matching+' campaigns'+(view==='overview'&&!search&&matching>10?' · Open Campaign history for all retained reports':'');
+    };
+    document.addEventListener('click',event=>{ const link=event.target.closest('[data-nav-view]');if(!link||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;event.preventDefault();const url=new URL(location.href);url.searchParams.set('view',link.dataset.navView);url.searchParams.delete('q');history.pushState(null,'',url);query.value='';apply();window.scrollTo({top:0,behavior:'instant'}); });
+    query.addEventListener('input',()=>{const url=new URL(location.href);if(query.value)url.searchParams.set('q',query.value);else url.searchParams.delete('q');history.replaceState(null,'',url);apply();});
+    const read=()=>{query.value=new URLSearchParams(location.search).get('q')||'';apply();};window.addEventListener('popstate',read);read();
+  })();
+  </script>
 </body>
 </html>`;
 }

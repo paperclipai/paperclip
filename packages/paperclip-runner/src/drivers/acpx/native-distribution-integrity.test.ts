@@ -10,6 +10,9 @@ import type { ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { awaitVerifiedAcpxProviderExit, awaitVerifiedAcpxProviderOwnership, verifyNativeAcpxInstallation } from "./installation-integrity.js";
 import { createNativeAcpxDistributionSnapshot, readNativeAcpxDistributionEntries, parseNativeAcpxDistributionEntries, type NativeAcpxDistributionInput, type NativeAcpxDistributionEntry } from "./native-distribution-integrity.js";
+import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
+import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
@@ -322,6 +325,36 @@ describe("native ACPX execution closure", () => {
     expect(first.text).toMatch(/^native:fixed:.*paperclip-acpx-native-.*\/state$/);
     expect(first.text).not.toBe(second.text);
   });
+  it("reports failed deletion and retries retirement without relaunching", async () => {
+    const lease = await (await verifyNativeAcpxInstallation(await fixture())).openCommand();
+    const originalRemove = vi.mocked(rm).getMockImplementation()!;
+    const deleting = gate(); const holdDeletion = gate();
+    let privateRoot: string | undefined;
+    let failed = false;
+    vi.mocked(rm).mockImplementation(async (path, options) => {
+      if (String(path).includes("paperclip-acpx-native-") && !failed) {
+        privateRoot = String(path); deleting.release(); await holdDeletion.promise;
+        failed = true; throw new Error("snapshot deletion failed");
+      }
+      return await originalRemove(path, options);
+    });
+    try {
+      expect((await output(lease.spawn())).code).toBe(0);
+      await deleting.promise;
+      const rejected = expect(lease.close()).rejects.toThrow("snapshot deletion failed");
+      await new Promise<void>(resolve => setImmediate(resolve));
+      holdDeletion.release();
+      await rejected;
+      await expect(stat(privateRoot!)).resolves.toBeDefined();
+      expect(() => lease.spawn()).toThrow("closed");
+      await lease.close();
+      await expect(stat(privateRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      holdDeletion.release();
+      vi.mocked(rm).mockImplementation(originalRemove);
+      await lease.close();
+    }
+  });
   // Copy/hash the real Node closure and start its bootstrap + owned shim. These
   // operations share the adjacent native-closure test's bounded allowance;
   // Vitest's 5s default is not a provider startup or permission deadline.
@@ -617,7 +650,113 @@ describe("native ACPX execution closure", () => {
       child.kill(); await Promise.all(fences.map(server => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))));
     }
   }, 15_000);
+
+  it("proves native child death before any caller cleanup, despite the launcher's pending guardian read", async () => {
+    const declaration = await fixture({ node: true, script: 'console.log(process.pid);setInterval(()=>{},1000);' });
+    const fences = await Promise.all([listen(), listen()]);
+    const fds = fences.map(server => (server as Server & { _handle?: { fd?: number } })._handle!.fd!);
+    const child = (await (await verifyNativeAcpxInstallation(declaration)).openCommand()).spawn([], {}, {
+      credentialFenceFds: [fds[0]!, fds[1]!], activateCredentialFenceOwner: async () => undefined,
+    });
+    const exited = once(child, "exit");
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const ready = once(child.stdout!, "data");
+      await awaitVerifiedAcpxProviderOwnership(child);
+      const [chunk] = await ready;
+      const nativePid = Number(String(chunk).trim());
+      expect(Number.isSafeInteger(nativePid) && nativePid > 0 && nativePid !== child.pid).toBe(true);
+      const proof = awaitVerifiedAcpxProviderExit(child);
+      process.kill(nativePid, "SIGKILL");
+      // No guardian.kill/close is allowed to manufacture the lifetime proof.
+      await Promise.race([proof, new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new Error("Native exit proof remained open after child death")), 3_000);
+      })]);
+      await exited;
+      expect(() => process.kill(nativePid, 0)).toThrow();
+    } finally {
+      clearTimeout(deadline);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await exited;
+      await Promise.all(fences.map(server => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))));
+    }
+  }, 15_000);
+
+  it("expires a real ACPX permission on native child death without replaying its mutation", async () => {
+    // This is a deterministic ACP peer in a verified native distribution. No
+    // provider credential, remote service or model is involved.
+    const declaration = await fixture({ node: true, script: blockingCopilotPeer });
+    const fences = await Promise.all([listen(), listen()]);
+    const fds = fences.map(server => (server as Server & { _handle?: { fd?: number } })._handle!.fd!);
+    const installation = await verifyNativeAcpxInstallation(declaration);
+    const owner = createAcpxCommandLeaseOwner(await installation.openCommand(), installation.openCommand);
+    const pidFile = join(declaration.distributionRoot, "native-pid");
+    let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      port = await openCodexAcpxRuntime({
+        command: owner.command, refreshConsumedCommand: owner.refreshConsumedCommand,
+        profile: resolveQualifiedAcpxProfile("copilot", "gpt-5.6-luna"),
+        cwd: declaration.distributionRoot, stateDirectory: join(declaration.distributionRoot, "state"),
+        providerSessionKey: "native-death-fixture", permissionMode: "approve-reads",
+        permissionPolicy: { autoApprove: ["read"], escalate: ["write"], defaultAction: "escalate" },
+        launchEnvironment: { PATH: "/usr/bin:/bin", NATIVE_TEST_PID_FILE: pidFile },
+        credentialFenceFds: [fds[0]!, fds[1]!], activateCredentialFenceOwner: async () => undefined,
+        systemInstructions: "Read task context before editing.", mcpServers: [], retainFailedAdmissionCleanup: () => undefined,
+      });
+      let pending!: () => void;
+      const requested = new Promise<void>(resolve => { pending = resolve; });
+      let callbackSignal!: AbortSignal;
+      let lateAnswer!: (value: { outcome: "allow_once" }) => void;
+      const handler = vi.fn((_request, context) => {
+        callbackSignal = context.signal; pending();
+        return new Promise<{ outcome: "allow_once" }>(resolve => { lateAnswer = resolve; });
+      });
+      const turn = port.startTurn({ text: "Attempt one edit", requestId: "native-death-turn", onPermissionRequest: handler });
+      const settled = expect(turn.result).rejects.toMatchObject({ code: "ACPX_PROVIDER_PROCESS_LOST" });
+      const draining = expect((async () => { for await (const _event of turn.events) { /* drain */ } })())
+        .rejects.toMatchObject({ code: "ACPX_PROVIDER_PROCESS_LOST" });
+      const bounded = new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(new Error("Real native ACPX death remained unsettled")), 5_000);
+      });
+      await Promise.race([requested, bounded]);
+      const nativePid = Number(await readFile(pidFile, "utf8"));
+      expect(Number.isSafeInteger(nativePid) && nativePid > 0).toBe(true);
+      process.kill(nativePid, "SIGKILL");
+      await Promise.race([Promise.all([settled, draining]), bounded]);
+      expect(callbackSignal.aborted).toBe(true);
+      lateAnswer({ outcome: "allow_once" });
+      expect(() => port!.startTurn({ text: "Replay", requestId: "replay" })).toThrow("provider exited");
+      expect(handler).toHaveBeenCalledOnce();
+      expect(() => process.kill(nativePid, 0)).toThrow();
+    } finally {
+      clearTimeout(deadline);
+      await port?.close({ reason: "offline native-death fixture complete" });
+      await owner.command.close();
+      await Promise.all(fences.map(server => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))));
+    }
+  }, 15_000);
 });
+
+const blockingCopilotPeer = String.raw`
+const send=m=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...m})+'\n');
+require('node:fs').writeFileSync(process.env.NATIVE_TEST_PID_FILE,String(process.pid));
+const mode='https://agentclientprotocol.com/protocol/session-modes#agent';
+const config=[{id:'mode',name:'Mode',type:'select',currentValue:mode,options:[{value:mode,name:'Agent'}]},
+ {id:'allow_all',name:'Allow all',type:'select',currentValue:'off',options:[{value:'off',name:'Off'}]},
+ {id:'model',name:'Model',type:'select',currentValue:'gpt-5.6-luna',options:[{value:'gpt-5.6-luna',name:'Luna'}]}];
+const snapshot={sessionId:'copilot-death-session',modes:{currentModeId:mode,availableModes:[{id:mode,name:'Agent'}]},configOptions:config,
+ models:{currentModelId:'gpt-5.6-luna',availableModels:[{modelId:'gpt-5.6-luna',name:'Luna'}]}};
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+ const m=JSON.parse(line);
+ if(m.method==='initialize')send({id:m.id,result:{protocolVersion:1,agentCapabilities:{loadSession:true},authMethods:[]}});
+ else if(['session/new','session/load'].includes(m.method))send({id:m.id,result:snapshot});
+ else if(m.method==='session/set_model'||m.method==='session/close')send({id:m.id,result:{}});
+ else if(m.method==='session/set_config_option')send({id:m.id,result:{configOptions:config}});
+ else if(m.method==='session/prompt')send({id:'pending-edit',method:'session/request_permission',params:{sessionId:'copilot-death-session',
+  toolCall:{toolCallId:'native-edit',title:'Write file',kind:'edit',status:'pending',rawInput:{path:'target.txt',content:'FORBIDDEN'}},
+  options:[{optionId:'allow',name:'Allow',kind:'allow_once'},{optionId:'deny',name:'Deny',kind:'reject_once'}]}});
+});`;
 
 async function listen(): Promise<Server> {
   const server = createServer(); server.listen(0, "127.0.0.1"); await once(server, "listening"); return server;

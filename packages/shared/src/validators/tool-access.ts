@@ -411,7 +411,14 @@ function rejectUnsafeHeaderCredentials(
   }
 }
 
+export const googleWorkspaceServiceSelectionSchema = z.object({
+  gmail: z.enum(["read", "write"]).optional(),
+  drive: z.enum(["read", "write"]).optional(),
+  calendar: z.enum(["read", "write"]).optional(),
+}).strict().refine(value => Object.keys(value).length > 0, "Select at least one Google service");
+
 export const connectToolAppSchema = z.object({
+  workspaceServices: googleWorkspaceServiceSelectionSchema.optional(),
   agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   galleryKey: z.string().trim().min(1).max(120).optional(),
   connectionMethodKey: z.string().trim().min(1).max(120).optional(),
@@ -441,6 +448,9 @@ export const connectToolAppSchema = z.object({
   /** Same-company agent that owns a dedicated provider identity. */
   subjectAgentId: z.string().guid().optional(),
 }).superRefine((value, ctx) => {
+  if (value.workspaceServices && value.galleryKey !== "google-workspace") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceServices"], message: "Service selection requires Google Workspace" });
+  }
   if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
   if (value.credentialValues) rejectUnsafeHeaderCredentials(value.credentialValues, ctx, ["credentialValues"]);
   if ((value.grantKind === "agent") !== Boolean(value.subjectAgentId)) {
@@ -521,6 +531,7 @@ export const finalizeOAuthAccessSchema = z.object({
 export type FinalizeOAuthAccess = z.infer<typeof finalizeOAuthAccessSchema>;
 
 export const startToolOAuthSchema = z.object({
+  workspaceServices: googleWorkspaceServiceSelectionSchema.optional(),
   asCurrentUser: z.boolean().optional(),
   asAgentId: z.string().uuid().optional(),
   interactionId: z.string().uuid().optional(),
