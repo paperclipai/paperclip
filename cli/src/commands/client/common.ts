@@ -146,8 +146,9 @@ export async function getAllIssueHistory<T>(
     const query = new URLSearchParams({ limit: String(ISSUE_HISTORY_PAGE_MAX) });
     if (before) query.set("before", before);
     const page = (await api.get<T[]>(`${apiPath`/api/issues/${issueId}/${kind}`}?${query}`)) ?? [];
+    if (before !== undefined && page.length > 0 && getId(page[page.length - 1]!) === before) return rows;
     rows.push(...page);
-    if (page.length < ISSUE_HISTORY_PAGE_MAX) return rows;
+    if (page.length !== ISSUE_HISTORY_PAGE_MAX) return rows;
     before = getId(page[page.length - 1]!);
   }
 }

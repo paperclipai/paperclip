@@ -12,8 +12,9 @@ async function fullIssueHistory<T>(issueId: string, kind: "activity" | "runs", g
     const params = new URLSearchParams({ limit: String(ISSUE_HISTORY_PAGE_MAX) });
     if (before) params.set("before", before);
     const page = await api.get<T[]>(`/issues/${issueId}/${kind}?${params}`);
+    if (before !== undefined && page.length > 0 && getId(page[page.length - 1]!) === before) return rows;
     rows.push(...page);
-    if (page.length < ISSUE_HISTORY_PAGE_MAX) return rows;
+    if (page.length !== ISSUE_HISTORY_PAGE_MAX) return rows;
     before = getId(page[page.length - 1]!);
   }
 }

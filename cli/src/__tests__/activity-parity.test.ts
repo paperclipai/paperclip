@@ -65,6 +65,30 @@ describe("activity parity commands", () => {
     ]);
     expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toHaveLength(101);
   });
+
+  it("stops when a server that ignores the page parameters repeats the cursor", async () => {
+    const fullList = Array.from({ length: 100 }, (_, index) => ({ id: `activity-${index}` }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(fullList)));
+    vi.stubGlobal("fetch", fetchMock);
+    const log = vi.mocked(console.log);
+
+    await run(["activity", "issue", ISSUE_ID, "--json"]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toHaveLength(100);
+  });
+
+  it("keeps a full list from a server that ignores the page parameters", async () => {
+    const fullList = Array.from({ length: 120 }, (_, index) => ({ id: `activity-${index}` }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(fullList)));
+    vi.stubGlobal("fetch", fetchMock);
+    const log = vi.mocked(console.log);
+
+    await run(["activity", "issue", ISSUE_ID, "--json"]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toHaveLength(120);
+  });
 });
 
 function jsonResponse(body: unknown = { ok: true }, init: ResponseInit = { status: 200 }): Response {

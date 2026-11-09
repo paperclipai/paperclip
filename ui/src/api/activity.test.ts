@@ -41,6 +41,22 @@ describe("activityApi full issue history", () => {
     expect(mockApi.get).toHaveBeenLastCalledWith("/issues/PAP-1/runs?limit=100&before=r-99");
   });
 
+  it("keeps a full list from a server that ignores the page parameters", async () => {
+    const all = rows("a", ISSUE_HISTORY_PAGE_MAX + 20);
+    mockApi.get.mockResolvedValue(all);
+
+    await expect(activityApi.forIssue("PAP-1")).resolves.toEqual(all);
+    expect(mockApi.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops when a server that ignores the page parameters repeats the cursor", async () => {
+    const all = rows("a", ISSUE_HISTORY_PAGE_MAX);
+    mockApi.get.mockResolvedValue(all);
+
+    await expect(activityApi.runsForIssue("PAP-1")).resolves.toEqual(all);
+    expect(mockApi.get).toHaveBeenCalledTimes(2);
+  });
+
   it("fails the whole read when a later page fails", async () => {
     mockApi.get.mockResolvedValueOnce(rows("a", ISSUE_HISTORY_PAGE_MAX)).mockRejectedValueOnce(new Error("503"));
 
