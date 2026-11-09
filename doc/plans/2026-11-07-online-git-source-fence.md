@@ -100,3 +100,18 @@ serialized remote function, compare archive bytes and digests, remove every
 original source, restore uncommitted/staged work, and run fsck. No hosted import,
 hold, cancellation, provider call, or shared-cache Git command is part of these
 local tests.
+
+The online migration owner can checkpoint completed immutable nested-snapshot
+verification in the child snapshot ledger. This optional versioned proof binds
+the complete encrypted reference, child lineage, source operation and a known
+S3 endpoint/region/bucket/prefix/style namespace. A new process can reuse it only
+after fresh strong-ETag/length and current ledger/source-fence checks. The proof
+is published only after canonical decryption, manifest/file restore and a stable
+post-verification HEAD. Missing or unknown proof versions, implicit provider
+endpoints and weak or changed validators require full verification. Existing
+records need no migration. No plaintext scratch, parent journal CAS, authority,
+retention deadline or local/Git source proof is reused. Every resumed invocation
+reacquires the source locks and captures current local bytes again. Read-only
+verifier callers do not opt into checkpoint publication.
+A change that strengthens immutable archive verification must advance the proof
+version so earlier verification cannot bypass the new checks.

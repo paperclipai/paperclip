@@ -13,6 +13,7 @@ import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js
 import type { StorageService } from "../storage/types.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, type WorkspaceSnapshotRef } from "./remote-workspace-snapshot-storage.js";
+import { nestedWorkspaceVerificationCheckpoint } from "./remote-workspace-verification-checkpoint.js";
 
 type ReadDb = Pick<Db, "select">;
 type Workspace = typeof executionWorkspaces.$inferSelect;
@@ -304,8 +305,9 @@ export async function inspectImportedWorkspaceSourcePaths(db: ReadDb, workspace:
  * the parent archive. The snapshot owner retains the resulting dependencies. */
 export function createNestedWorkspaceImportVerifier(input: {
   db: Db; storage: StorageService; companyId: string; sourceLock: SourceTransaction;
-  projectIds: readonly string[]; issueIds: readonly string[]; signal?: AbortSignal;
+  projectIds: readonly string[]; issueIds: readonly string[]; signal?: AbortSignal; persistVerification?: boolean;
 }) {
+  const checkpoint = input.persistVerification ? nestedWorkspaceVerificationCheckpoint(input.db, input.storage.immutableObjectNamespace, input.signal) : undefined;
   const stop = new AbortController(), signal = input.signal ? AbortSignal.any([input.signal, stop.signal]) : stop.signal;
   const proofs = new Map<string, { etag: string; checked: Promise<boolean> }>();
   let closed = false, current: Promise<ImportedWorkspaceChild[]> | undefined;
@@ -332,12 +334,22 @@ export function createNestedWorkspaceImportVerifier(input: {
       if (previous && etag === previous.etag
         && await previous.checked) return;
       proofs.delete(key);
+      if (etag && await checkpoint?.read({ reference, children, operationId, etag })) {
+        await assertOwner();
+        proofs.set(key, { etag, checked: Promise.resolve(true) });
+        return;
+      }
       const checked = (async () => {
         await loadWorkspaceSnapshotArchive({ storage: input.storage, reference, targetPath: archivePath, signal });
         await restoreRemoteWorkspaceArchive({ archivePath, targetDir: restored, expectedManifestDigest: reference.manifestDigest, signal });
         if (!etag) return false;
         const after = await objectHead(reference);
-        return after !== null && after.exists && after.etag === etag && after.contentLength === reference.byteSize;
+        const stable = after !== null && after.exists && after.etag === etag && after.contentLength === reference.byteSize;
+        if (stable && checkpoint) {
+          await assertOwner();
+          await checkpoint.save({ reference, children, operationId, etag });
+        }
+        return stable;
       })();
       const proof = etag ? { etag, checked } : null;
       if (proof) proofs.set(key, proof);
