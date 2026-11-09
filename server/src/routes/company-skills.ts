@@ -1231,8 +1231,10 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
   router.get("/companies/:companyId/skills/:skillId/update-diff", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
+    // The skillId parameter handler has already checked company access and that this actor can read the skill.
     assertCompanyAccess(req, companyId);
-    const unsupported = (reason: string, currentRef: string | null = null): SkillSourceUpdateDiff => ({ supported: false, reason, currentRef, latestRef: null, files: [] });
+    const unsupported = (reason: string, currentRef: string | null = null, latestRef: string | null = null): SkillSourceUpdateDiff =>
+      ({ supported: false, reason, currentRef, latestRef, hasUpdate: false, files: [], truncated: false });
     const skill = await svc.getById(companyId, skillId);
     if (!skill) { res.status(404).json({ error: "Skill not found" }); return; }
     const managed = await sourceSvc.sourceForSkill(companyId, skillId);
@@ -1241,13 +1243,25 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     if (!managed.enabled || entry.selection !== "selected") { res.json(unsupported("Source is disconnected. Reconnect it in Skills → Sources.", skill.sourceRef ?? null)); return; }
     const currentRef = skill.sourceRef ?? null;
     if (!currentRef || !/^[a-f0-9]{40}$/i.test(currentRef)) { res.json(unsupported("The installed source revision is unknown.", currentRef)); return; }
-    const read = skillSourceGitHubReader(db, companyId, req.actor, managed.connectionId);
-    const latest = await read(`/repos/${managed.fullName}/commits/${encodeURIComponent(managed.trackingRef)}`) as { sha: string };
-    const files = latest.sha.toLowerCase() === currentRef.toLowerCase() ? [] : await diffGitHubSkillUpdate({
-      repositoryUrl: managed.repositoryUrl, packageMode: managed.packageMode, skillPath: entry.path, installedCommitSha: currentRef, latestCommitSha: latest.sha,
-    }, read);
-    const result: SkillSourceUpdateDiff = { supported: true, reason: null, currentRef, latestRef: latest.sha, files };
-    res.json(result);
+    // Stop the GitHub reads and both scans when the caller goes away; they hold shared scan and download slots.
+    const controller = new AbortController();
+    const stop = () => { if (!res.writableEnded) controller.abort(); };
+    res.once("close", stop);
+    try {
+      const read = skillSourceGitHubReader(db, companyId, req.actor, managed.connectionId);
+      const latest = await read(`/repos/${managed.fullName}/commits/${encodeURIComponent(managed.trackingRef)}`, controller.signal) as { sha: string };
+      if (latest.sha.toLowerCase() === currentRef.toLowerCase()) {
+        res.json({ supported: true, reason: null, currentRef, latestRef: latest.sha, hasUpdate: false, files: [], truncated: false } satisfies SkillSourceUpdateDiff);
+        return;
+      }
+      const diff = await diffGitHubSkillUpdate({
+        repositoryUrl: managed.repositoryUrl, packageMode: managed.packageMode, skillPath: entry.path, installedCommitSha: currentRef, latestCommitSha: latest.sha,
+      }, read, controller.signal);
+      const result: SkillSourceUpdateDiff = diff.supported
+        ? { supported: true, reason: null, currentRef, latestRef: latest.sha, hasUpdate: true, files: diff.files, truncated: diff.truncated }
+        : { ...unsupported(diff.reason, currentRef, latest.sha), hasUpdate: true };
+      res.json(result);
+    } finally { res.off("close", stop); }
   });
 
   router.get("/companies/:companyId/skills/:skillId/files", async (req, res) => {

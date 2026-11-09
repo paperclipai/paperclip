@@ -46,18 +46,26 @@ export interface SkillSourceFilePreview {
 /** One file that differs between the installed and latest tracked source revisions. */
 export interface SkillSourceUpdateDiffFile {
   path: string;
-  change: 'added' | 'removed' | 'modified';
-  /** Binary files and files too large to compare carry no line diff. */
+  /** `not_compared`: the scan left this path out of at least one revision (too large, a symlink, or rejected by the audit). */
+  change: 'added' | 'removed' | 'modified' | 'not_compared';
   binary: boolean;
-  /** Unified line diff ("-" installed, "+" latest), or null when not comparable. */
+  /** The file's executable bit differs between the two revisions. */
+  executableChanged: boolean;
+  /** Unified line diff ("-" installed, "+" latest); "" when only the executable bit changed; null when unavailable. */
   diff: string | null;
+  /** Why `diff` is null: binary content, a file too large to diff, a path left out of a snapshot, or the response budget ran out. */
+  diffUnavailable: 'binary' | 'too_large' | 'omitted' | 'budget' | null;
 }
 export interface SkillSourceUpdateDiff {
   supported: boolean;
   reason: string | null;
   currentRef: string | null;
   latestRef: string | null;
+  /** False when the installed revision is already the latest one. */
+  hasUpdate: boolean;
   files: SkillSourceUpdateDiffFile[];
+  /** Some files were not listed or carry no diff because the response reached its size or work budget. */
+  truncated: boolean;
 }
 export interface SkillSourceEntry {
   id: string;
