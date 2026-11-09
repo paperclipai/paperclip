@@ -253,6 +253,7 @@ import {
   NATIVE_CURRENT_WAKE_COMMENTS_UNREAD,
   resolveCurrentWakeCommentsBinding,
 } from "./current-wake-comments.js";
+import { claimFirstTurnQueuedInput } from "./first-turn-queued-input.js";
 import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
@@ -11062,6 +11063,12 @@ async function executePaperclipNativeSessionWithinScope(
           executeNativeSession({
             resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner",
             getFreshSessionHandoff: input.getFreshSessionHandoff,
+            // A failed seal commits nothing: the messages stay queued for the
+            // turn boundary instead of failing this run before its turn.
+            getFirstTurnQueuedInput: () => claimFirstTurnQueuedInput(input.db, input.execution.binding).catch((error) => {
+              logger.warn({ err: error, runId: input.execution.binding.runId }, "first-turn queued input was not sealed");
+              return null;
+            }),
             getUnreadSteeredMessages: () => readUnreadSteeredMessages(input.db, {
               companyId: input.execution.binding.companyId,
               runId: input.execution.binding.runId,

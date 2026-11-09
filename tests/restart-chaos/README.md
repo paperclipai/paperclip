@@ -102,6 +102,21 @@ Neither G1 nor H1 is in the default workloads. The board's actions and what the
 observer saw are in the timeline (`governance_*`) and in each task's grade
 (`governance`).
 
+## Stop while running, then continue (S1, `--triggers stop`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads S1 --faults K1,K2,K4 --triggers stop --concurrency 4 --tasks 6 --seed 23
+```
+
+S1 is the board's Stop button. While the task's run is running, the harness cancels it through
+`POST /api/heartbeat-runs/:id/cancel`. The `stop` trigger fires the fault 0–2 s later. At least
+20 s after the stop, once no run is running or queued and no fault is in progress, the harness
+comments that it stopped the run on purpose and asks the agent to continue with an extra marker
+line. The oracle checks that the stopped run ended `cancelled`, that nothing started between the
+stop and the continue comment (recovery must not restart work the operator stopped), and that the
+finished brief has both markers. S1 is not a default workload.
+
 ## Code change in a real repository (R1, `--workspace-repo`)
 
 ```sh

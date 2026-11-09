@@ -306,6 +306,12 @@ export interface ExecuteNativeSessionOptions {
   /** Read bounded task history only after recovery requires a fresh conversation. */
   getFreshSessionHandoff?: () => Promise<string | null>;
   /**
+   * Seals this run's first-turn input immediately before `turn.start` and
+   * returns user messages that arrived while the run was preparing. Repeated
+   * calls for the same run return the same messages.
+   */
+  getFirstTurnQueuedInput?: () => Promise<string | null>;
+  /**
    * Steered messages the provider acknowledged but the model never read, read
    * when a restart continuation starts. The provider lost them with the
    * interrupted turn, so the continuation delivers them.
@@ -3047,6 +3053,14 @@ export async function executeNativeSession(
           }
           if ("workspace" in modelEnvelope && modelEnvelope.workspace && recoveredSnapshot.workingDirectory) {
             modelEnvelope.workspace.cwd = recoveredSnapshot.workingDirectory;
+          }
+          if (!(dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) && options.getFirstTurnQueuedInput) {
+            const queuedInput = await options.getFirstTurnQueuedInput();
+            if (queuedInput && "task" in modelEnvelope) {
+              modelEnvelope.task.prompt = `${modelEnvelope.task.prompt}\n\n${queuedInput}`;
+            } else if (queuedInput && "events" in modelEnvelope) {
+              modelEnvelope.events = `${modelEnvelope.events}\n\n${queuedInput}`;
+            }
           }
           await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },

@@ -10352,3 +10352,53 @@ it("fails preconfigured recovery without replacing a missing provider session", 
   expect(openSession).not.toHaveBeenCalled();
   expect(openReplacementSession).not.toHaveBeenCalled();
 });
+
+describe("first-turn queued input", () => {
+  async function startFirstTurn(executionInput: NativeExecutionInputV1 | NativeExecutionInputV5, queued: string | null) {
+    const order: string[] = [];
+    const sent: string[] = [];
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {},
+      async startTurn(turn) {
+        order.push("turn.start");
+        sent.push(turn.message.text);
+        throw new Error("stop after turn.start");
+      },
+      async result() { return null; },
+      async snapshot() {
+        return { backendKind: "mock", sessionId: "driver-first-turn", identity, providerSessionId: "provider-first-turn",
+          cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] };
+      },
+      close: vi.fn(async () => undefined),
+    };
+    const getFirstTurnQueuedInput = vi.fn(async () => { order.push("claim"); return queued; });
+    await expect(executeNativeSession({
+      input: executionInput,
+      getFirstTurnQueuedInput,
+      backend: { async descriptor() { return { kind: "mock", name: "first-turn", version: "1", capabilities: await session.capabilities(),
+        runtimeContextCapabilities: { instructions: "native" as const, skills: "native" as const, mcp: "native" as const } }; }, async openSession() { return session; } },
+      controlPlane: { async openRun() {}, async checkpointSession() {}, async appendEvent() { return { cursor: 1, highestContiguousSourceSeq: 1, disposition: "committed" as const }; },
+        async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; }, async completeRun() {} },
+      runnerInstanceId: "runner-first-turn", controlPlaneInstanceId: "control-first-turn",
+    })).rejects.toThrow("stop after turn.start");
+    return { order, sent, getFirstTurnQueuedInput };
+  }
+
+  it("adds messages queued during preparation to the first turn, sealed just before turn.start", async () => {
+    const queued = "New messages from the user arrived while this run was starting.\n\n[Message 1 of 2]\nfirst\n\n[Message 2 of 2]\nsecond";
+    const { order, sent, getFirstTurnQueuedInput } = await startFirstTurn(preparedInput(), queued);
+    expect(getFirstTurnQueuedInput).toHaveBeenCalledOnce();
+    expect(order).toEqual(["claim", "turn.start"]);
+    const envelope = JSON.parse(sent[0]!) as { task: { prompt: string }; completionContract: { criteria: Array<{ source?: unknown }> } };
+    expect(envelope.task.prompt).toBe(`${preparedInput().task.prompt}\n\n${queued}`);
+    // Appending input keeps the prompt-bound completion sources.
+    expect(envelope.completionContract.criteria[0]!.source).toMatchObject({ location: "task.prompt" });
+  });
+
+  it("starts the first turn unchanged when nothing is queued", async () => {
+    const { sent } = await startFirstTurn(input, null);
+    expect((JSON.parse(sent[0]!) as { task: { prompt: string } }).task.prompt).toBe(input.task.prompt);
+  });
+});

@@ -39,6 +39,9 @@ use crate::provider_events::{
 };
 use crate::qualified_launch::{verify_executable_launch_artifact, verify_launch_artifact};
 
+#[path = "acpx_park_preparation.rs"]
+mod park_preparation;
+
 fn bounded_turn_timing(response: &Value, elapsed: Duration) -> Value {
     let mut receipt = serde_json::Map::new();
     for key in [
@@ -1703,16 +1706,18 @@ impl AcpxCommandExecutor {
                 "run.attach requires the same settled ACPX provider profile and session",
             ));
         }
-        if let Some(session) = self.session.as_mut() {
-            session
-                .shutdown("run authority rotation")
-                .map_err(|error| {
-                    DurableRunnerError::invalid(format!(
-                        "failed to checkpoint ACPX before attaching a new run: {error}"
-                    ))
-                })?;
+        if !self.rebind_prepared_session(&descriptor, &tool_set, next_candidate.is_some()) {
+            if let Some(session) = self.session.as_mut() {
+                session
+                    .shutdown("run authority rotation")
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!(
+                            "failed to checkpoint ACPX before attaching a new run: {error}"
+                        ))
+                    })?;
+            }
+            self.session = None;
         }
-        self.session = None;
         if let Some(admission) = next_candidate {
             self.launch_profile
                 .as_mut()
@@ -1982,7 +1987,7 @@ impl AcpxCommandExecutor {
         if self
             .session
             .as_ref()
-            .is_some_and(|session| session.state().has_settled_turns())
+            .is_some_and(AcpxProviderSession::generation_has_run_turn)
         {
             self.retain_buffered_provider_events()?;
         }
@@ -1992,7 +1997,10 @@ impl AcpxCommandExecutor {
         let (provider_process_will_be_replaced, previous_process_id) = self
             .session
             .as_ref()
-            .map(|session| (session.state().has_settled_turns(), session.process_id()))
+            .map(|session| match session.prepared_from_process_id() {
+                Some(process_id) => (true, process_id),
+                None => (session.generation_has_run_turn(), session.process_id()),
+            })
             .expect("ACPX session exists after availability check");
         {
             let state = self
@@ -2600,7 +2608,10 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .is_some_and(|state| !state.pending_events.is_empty() || state.lifecycle == "closed")
-            || self.session.is_none()
+            || self
+                .session
+                .as_ref()
+                .is_none_or(AcpxProviderSession::awaits_run_rebind)
         {
             return Ok(());
         }
@@ -2608,6 +2619,13 @@ impl AcpxCommandExecutor {
     }
 
     fn retain_buffered_provider_events(&mut self) -> Result<(), DurableRunnerError> {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(AcpxProviderSession::awaits_run_rebind)
+        {
+            return Ok(());
+        }
         if let Some(session) = self.session.as_mut() {
             session.settle_park_observation().map_err(|error| {
                 DurableRunnerError::invalid(format!("ACPX observation settlement failed: {error}"))
@@ -2885,6 +2903,10 @@ impl CommandExecutor for AcpxCommandExecutor {
                     && !state.provider_exit_unconfirmed
                     && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
             }))
+    }
+
+    fn prepare_for_park(&mut self, deadline: Instant) -> Result<bool, DurableRunnerError> {
+        self.prepare_session_for_park(deadline)
     }
 
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
