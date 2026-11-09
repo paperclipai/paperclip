@@ -177,6 +177,14 @@ describe("waitForAgentsReady", () => {
     expect(timeline.entries.filter(entry => entry.kind === "seed_agent_lifecycle_error")).toEqual([expect.objectContaining({ adapter: "codex", error: "host busy" })]);
   });
 
+  it("keeps waiting while the server keeps retrying the same lifecycle error, and fails once the agent row stops changing", async () => {
+    let reads = 0;
+    const retrying = { get: async () => ({ lifecycleState: "verifying", lifecycleError: "host busy", updatedAt: `t${++reads}` }) } as unknown as ChaosApi;
+    await expect(waitForAgentsReady(retrying, { codex: { id: "a1" } }, new Timeline(null), 60, 5, undefined, 20)).rejects.toThrow(/never reached lifecycleState ready/);
+    const parked = { get: async () => ({ lifecycleState: "verifying", lifecycleError: "host busy", updatedAt: "t1" }) } as unknown as ChaosApi;
+    await expect(waitForAgentsReady(parked, { codex: { id: "a1" } }, new Timeline(null), 5_000, 5, undefined, 20)).rejects.toThrow(/failed lifecycle verification: host busy/);
+  });
+
   it("names the last read error when an agent never becomes ready", async () => {
     const broken = { get: async () => { throw new Error("401 unauthorized"); } } as unknown as ChaosApi;
     await expect(waitForAgentsReady(broken, { codex: { id: "a1" } }, new Timeline(null), 20, 5)).rejects.toThrow(/codex \(last read error: 401 unauthorized\)/);

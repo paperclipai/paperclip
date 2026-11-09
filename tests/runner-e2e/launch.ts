@@ -70,6 +70,7 @@ import {
   buildMatrixJobs,
   parseRunnerSelectors,
   RunnerSelectorError,
+  selectorArgumentsWithEnvironment,
   selectRunnerExecutions,
 } from "./selectors.js";
 import { resolveRunnerE2ESource } from "./source.js";
@@ -562,6 +563,7 @@ async function runAttempt(input: {
     const agentFilesystemSandbox = agentFilesystemSandboxConfig({
       platform: process.platform, env: process.env, executions, repositoryRoot, temporaryRoot, privateDir,
       evidenceRoot: manualPrivateHandoff?.root, installedRelease: Boolean(installedCli),
+      instanceRoot: path.join(paperclipHome, "instances", instanceId),
     });
     // Playwright's default cache holds compiled graders in the shared /tmp.
     if (sandboxedAgents) await rm(defaultPlaywrightCacheDirectory(), { recursive: true, force: true });
@@ -1069,14 +1071,14 @@ async function runWithConcurrency<T, R>(
 }
 
 async function main() {
-  const args = process.argv.slice(2);
+  const args = selectorArgumentsWithEnvironment(process.argv.slice(2));
   if (args.includes("--target-config") || args.includes("product-journeys")) {
     const { launchProductJourneys } = await import("./product-journeys/launch.js");
     return launchProductJourneys(args, repositoryRoot);
   }
   let options: ReturnType<typeof parseRunnerSelectors>;
   try {
-    options = parseRunnerSelectors(process.argv.slice(2));
+    options = parseRunnerSelectors(args);
   } catch (error) {
     if (error instanceof RunnerSelectorError)
       throw new Error(`${error.message}\nUse --list to inspect valid cells.`);

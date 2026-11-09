@@ -31,7 +31,7 @@ export async function waitForAgentsReady(api: ChaosApi, agents: Partial<Record<s
   const started = Date.now();
   const pending = new Map(Object.entries(agents).flatMap(([adapter, agent]) => agent ? [[adapter, agent] as const] : []));
   const lastProblem = new Map<string, string>();
-  const errorSince = new Map<string, { error: string; at: number }>();
+  const errorSince = new Map<string, { error: string; updatedAt: unknown; at: number }>();
   while (pending.size) {
     if (cancelled()) throw new Error("Harness interrupted while waiting for agents to finish verification");
     for (const [adapter, { id: agentId, createdAt }] of [...pending]) {
@@ -48,9 +48,10 @@ export async function waitForAgentsReady(api: ChaosApi, agents: Partial<Record<s
         pending.delete(adapter);
       } else if (lifecycleError) {
         const previous = errorSince.get(adapter);
-        const since = previous?.error === lifecycleError ? previous.at : Date.now();
+        const unchanged = previous?.error === lifecycleError && previous.updatedAt === agent.updatedAt;
+        const since = unchanged ? previous!.at : Date.now();
         if (previous?.error !== lifecycleError) timeline.add("seed_agent_lifecycle_error", { adapter, agentId, error: lifecycleError });
-        errorSince.set(adapter, { error: lifecycleError, at: since });
+        errorSince.set(adapter, { error: lifecycleError, updatedAt: agent.updatedAt, at: since });
         lastProblem.set(adapter, `last lifecycle error: ${lifecycleError}`);
         if (TERMINAL_LIFECYCLE_STATES.has(String(agent.lifecycleState)) || Date.now() - since > errorGraceMs) {
           throw new Error(`Agent ${adapter} (${agentId}) failed lifecycle verification: ${lifecycleError}`);

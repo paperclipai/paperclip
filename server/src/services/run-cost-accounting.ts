@@ -71,9 +71,11 @@ const remoteExecutionTerminated = sql`exists (select 1 from ${environmentLeases}
 /** A native run's receipt source is closed only with positive stop evidence,
  * after recovery ended in terminal failure without a result:
  * - Local: the run no longer records a process identity and its latest
- *   server-authored process event is the verified local stop. Only a failed
- *   run closes this way; a cancelled local run keeps its accounting drain,
- *   since Stop recovery can still reattach a recorder.
+ *   server-authored process event is the verified local stop. This holds for
+ *   any terminal status (failed, cancelled, timed out, interrupted): a stopped
+ *   process reports no more usage. Settlement still imports spooled receipts,
+ *   and a receipt a reattached recorder delivers later posts through
+ *   late-receipt reconciliation.
  * - Remote: every allocation has a termination receipt for its sandbox, so
  *   neither the original nor a reattached runner can report usage. That proof
  *   does not clear the recorded remote process identity.
@@ -86,9 +88,11 @@ const settledNativeCoordinator = sql`exists (select 1 from ${nativeRunFinalizati
     and ((${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure')
       or ${nativeRunFinalizations.resultId} is not null))`;
 
+// A verified local stop closes the receipt source for any terminal status: a
+// restart cancels, times out or interrupts a run as often as it fails one.
 const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${settledNativeCoordinator}
-  and ((${heartbeatRuns.status} = 'failed'
+  and ((${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
     and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
     and (select process_event.event_type from ${heartbeatRunEvents} process_event
       where process_event.company_id = ${heartbeatRuns.companyId} and process_event.run_id = ${heartbeatRuns.id}
@@ -104,6 +108,12 @@ const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
  * failure, instead of holding company work. A usage recorder binds every run
  * with an empty fence map; only a replaced receipt source (a non-empty map)
  * shows that provider work began. */
+const inheritedProcessIdentityOnly = sql`${heartbeatRuns.runnerProfileJson}->>'inheritedProcessIdentityRunId' is not null
+  and not exists (select 1 from ${heartbeatRunEvents} own_process
+    where own_process.company_id = ${heartbeatRuns.companyId} and own_process.run_id = ${heartbeatRuns.id}
+      and own_process.source_event_id is null
+      and own_process.event_type in ('native.process_start_requested', 'native.process_identity_recorded'))`;
+
 const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
   and ${settledNativeCoordinator}
@@ -111,7 +121,7 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
   and coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSourceFences', '{}'::jsonb) = '{}'::jsonb
   and not exists (select 1 from ${runUsageReceipts} journaled_receipt
     where journaled_receipt.company_id = ${heartbeatRuns.companyId} and journaled_receipt.run_id = ${heartbeatRuns.id})
-  and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+  and ((${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null) or (${inheritedProcessIdentityOnly}))
   and coalesce((select process_event.event_type from ${heartbeatRunEvents} process_event
       where process_event.company_id = ${heartbeatRuns.companyId} and process_event.run_id = ${heartbeatRuns.id}
         and process_event.source_event_id is null
@@ -120,8 +130,10 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
 
 /** Waiting for closure evidence is bounded. Past the remote runner reconnect
  * grace plus a margin, a terminal run whose recovery has settled no longer
- * holds new company work: its debt settles as unpriced, flagged so the
- * blocking policy still counts it and the board sees which run it was. */
+ * holds new company work: its debt settles as unpriced and is flagged so the
+ * board sees which run it was. The flag also exempts the charge from the
+ * blocking unpriced-usage policy (budget-exposure.ts): accounting is never a
+ * company gate. */
 /** A run's accounting settled: an admission hold may have cleared. Held work
  * (queued runs, saved messages and Retries, and tasks whose start or
  * continuation was refused) waits passively, so wake its owners. */
@@ -144,8 +156,9 @@ function closureEvidenceTimedOut(at: Date = new Date()) {
  * certify what it missed. It is bounded like missing closure evidence: past
  * the same bound, once native recovery will not run the provider again, its
  * known usage settles as unpriced (or as a lower-bound estimate) and is
- * flagged so the blocking policy still counts it. Without the bound such a
- * run held company admission until its UTC budget window rolled over. */
+ * flagged, which exempts it from the blocking unpriced-usage policy
+ * (budget-exposure.ts). Without the bound such a run held company admission
+ * until its UTC budget window rolled over. */
 function captureFailureBoundPassed(at: Date = new Date()) {
   return sql`${heartbeatRuns.usageJson}->>'accountingCaptureFailed' = 'true'
   and ${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
@@ -396,8 +409,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       // A complete receipt arriving later may price this charge (see usage-receipts).
       ...(receiptUnavailable ? { usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({
         accountingReceiptUnavailable: true,
-        // Unlike a verified stop, the run may still have spent: the blocking
-        // unpriced-usage policy keeps counting this charge.
+        // Unlike a verified stop, the run may still have spent. The flag names
+        // the run in Costs; like any charge accounting settled without its
+        // receipt, it is exempt from the blocking unpriced-usage policy
+        // (budget-exposure.ts), because accounting is never a company gate.
         ...(closureTimedOut ? { accountingClosureTimedOut: true } : {}),
         // Late reconciliation measures a later receipt from the accepted money.
         ...(lostReceiptEstimate ? { costUsdExact: lostReceiptEstimate.costUsdExact, costStatus: "estimated",

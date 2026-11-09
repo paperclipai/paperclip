@@ -405,6 +405,28 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
   };
 }
 
+/**
+ * The interrupted-preparation lane: a preparation that a restart interrupted
+ * spent no provider work and hit no transient fault, so its first retry starts
+ * at once. If it is interrupted again it backs off like a transient failure
+ * (the longest delay from then on), so a preparation that itself keeps taking
+ * the server down is slowed and still capped by the lane's attempt limit.
+ */
+export function computeInterruptedPreparationRetrySchedule(
+  attempt: number,
+  now = new Date(),
+  random: () => number = Math.random,
+) {
+  if (!Number.isInteger(attempt) || attempt <= 0) return null;
+  if (attempt === 1) {
+    return { attempt, baseDelayMs: 0, delayMs: 0, dueAt: new Date(now.getTime()),
+      maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS };
+  }
+  const schedule = computeBoundedTransientHeartbeatRetrySchedule(
+    Math.min(attempt - 1, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS), now, random);
+  return schedule ? { ...schedule, attempt } : null;
+}
+
 export { normalizeAgentNameKey };
 
 function readNonEmptyString(value: unknown): string | null {
@@ -515,12 +537,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           : null
         : nextAttempt <= maxAttempts
           ? interruptedPreparationLane
-            ? (() => {
-              // Later lane attempts keep the longest transient delay.
-              const schedule = computeBoundedTransientHeartbeatRetrySchedule(
-                Math.min(nextAttempt, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS), now, opts?.random);
-              return schedule ? { ...schedule, attempt: nextAttempt } : null;
-            })()
+            ? computeInterruptedPreparationRetrySchedule(nextAttempt, now, opts?.random)
             : computeBoundedTransientHeartbeatRetrySchedule(
               nextAttempt,
               now,

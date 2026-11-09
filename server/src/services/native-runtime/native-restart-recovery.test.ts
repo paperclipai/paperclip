@@ -70,6 +70,26 @@ describe("native restart recovery classification", () => {
     expect(result.allowed).toBe(!live);
     expect(probe).not.toHaveBeenCalled();
   });
+  it("takes over a live remote lease at once when its controller is proven gone in this process space", async () => {
+    const now = new Date();
+    const startedAt = new Date(now.getTime() - 60_000);
+    const owner = { leaseOwner: "old-controller", leaseExpiresAt: new Date(now.getTime() + 50_000),
+      controllerPid: 424242, controllerProcessStartedAt: startedAt,
+      controllerHostHash: currentProcessSpaceHash(), controllerBootId: currentControllerBootId() };
+    // A hard restart: the previous controller's PID is gone.
+    await expect(evaluateNativeControllerTakeover({ now, remoteLeaseFenced: true, owner, isProcessAlive: () => false }))
+      .resolves.toMatchObject({ allowed: true, reason: "remote_lease_controller_process_dead" });
+    // The previous controller is still running: keep waiting for its lease.
+    await expect(evaluateNativeControllerTakeover({ now, remoteLeaseFenced: true, owner,
+      isProcessAlive: () => true, readProcessStartedAt: async () => startedAt }))
+      .resolves.toEqual({ allowed: false, reason: "remote_controller_lease_live" });
+    // Another process space (a different container or host): never probed, keep waiting.
+    const probe = vi.fn(() => false);
+    await expect(evaluateNativeControllerTakeover({ now, remoteLeaseFenced: true,
+      owner: { ...owner, controllerHostHash: "sha256:another-process-space" }, isProcessAlive: probe }))
+      .resolves.toEqual({ allowed: false, reason: "remote_controller_lease_live" });
+    expect(probe).not.toHaveBeenCalled();
+  });
   it("does not reopen a failed checkpoint or reset an exhausted provider budget", () => {
     const evidence = {
       runnerPidAlive: false,

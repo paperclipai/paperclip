@@ -331,6 +331,16 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("tells agents managed-agent profiles are created with the CLI, not a web page", () => {
+    const route = buildOpenApiSpec().paths["/api/companies/{companyId}/managed-agent-profiles"];
+    for (const operation of [route.get, route.post]) {
+      expect(operation.description).toContain("Board only");
+      expect(operation.description).toContain("There is no web page");
+    }
+    expect(route.post.description).toContain("paperclipai managed-agent setup --company-id <companyId>");
+    expect(route.post.description).toContain("--acknowledge-retention");
+  });
+
   it("documents the export include body so agents can request projects and skills", () => {
     const spec = buildOpenApiSpec();
     for (const path of ["/api/companies/{companyId}/exports", "/api/companies/{companyId}/exports/preview"]) {
@@ -388,6 +398,26 @@ describe("openapi routes", () => {
       detail: { properties: { kind: { enum: ["questions"] } } },
     } } });
     for (const code of ["200", "400", "401", "403", "404"]) expect(operation.responses[code]).toBeDefined();
+  });
+
+  it("documents task-tree controls as board-only and names the human page", () => {
+    const spec = buildOpenApiSpec() as any;
+    const boardSecurity = [{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }];
+    for (const [path, method] of [
+      ["/api/issues/{id}/tree-control/state", "get"],
+      ["/api/issues/{id}/tree-control/preview", "post"],
+      ["/api/issues/{id}/tree-holds", "get"],
+      ["/api/issues/{id}/tree-holds", "post"],
+      ["/api/issues/{id}/tree-holds/{holdId}", "get"],
+      ["/api/issues/{id}/tree-holds/{holdId}/release", "post"],
+    ] as const) {
+      const operation = spec.paths[path][method];
+      expect(operation.security).toEqual(boardSecurity);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    }
+    const create = spec.paths["/api/issues/{id}/tree-holds"].post.description as string;
+    expect(create).toContain("Pause subtree");
+    expect(create).toContain("/{prefix}/issues/{identifier}");
   });
 
   it("documents owned conversation reads and exact revision access separately", () => {
@@ -592,6 +622,16 @@ describe("openapi routes", () => {
     expect(patch.description).toContain("it is not deleted");
     expect(patch.description).toContain("give them the returned href as a Markdown link");
     expect(patch.description).toContain("Restoring (archived: false) starts a fresh full summary");
+  });
+
+  it("tells agents that creating or refreshing a status card only queues the summarizer, so they reply now with its link", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const create = res.body.paths["/api/companies/{companyId}/status-cards"].post;
+    expect(create.description).toContain("The response is returned before any summary exists");
+    expect(create.description).toContain("reply now with the returned href as a Markdown link");
+    const refresh = res.body.paths["/api/status-cards/{id}/refresh"].post;
+    expect(refresh.description).toContain("Queues a refresh; it does not return a new summary");
+    expect(refresh.description).toContain("Do not sleep or poll for it: reply now that the refresh is queued, with the returned card.href");
   });
 
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
