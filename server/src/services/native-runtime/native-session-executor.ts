@@ -379,6 +379,9 @@ export class NativeControllerDetachedForRestartError extends Error {
 const activeNativeSessions = new Map<string, ActiveNativeSession>();
 // Shutdown can race provider startup before onSession publishes its handle.
 const nativeRunsDetachingForRestart = new Map<string, symbol>();
+/** Flushes a run's pending restart-recovery budget check when the controller
+ * detaches it for another restart (its trace never finishes). */
+const nativeRunRecoveryFlushers = new Map<string, () => void>();
 
 // A restart must not cut authority rotation between archiving the previous
 // runner state and authenticating its replacement. Keep the startup owner
@@ -464,6 +467,7 @@ export async function detachNativeSessionsForRestart(
       continue;
     }
     nativeRunsDetachingForRestart.set(runId, Symbol("native controller detach"));
+    try { nativeRunRecoveryFlushers.get(runId)?.(); } catch { /* Diagnostics cannot change detach. */ }
     let active = activeNativeSessions.get(runId);
     if (!active) {
       // Only a startup registered before this fence may complete read-only
@@ -9648,16 +9652,22 @@ async function executePaperclipNativeSessionWithinScope(
     preparationSpans,
     Date.now(),
   );
+  const traceRunId = input.execution.binding.runId;
+  const flushRecovery = () => trace.flushRestartRecovery();
   const trace = createNativeRunTrace({
-    runId: input.execution.binding.runId,
+    runId: traceRunId,
     startedAtMs: preparationStarts.runStartedAtMs,
     onEvent: input.onEvent,
+    onFinish: () => {
+      if (nativeRunRecoveryFlushers.get(traceRunId) === flushRecovery) nativeRunRecoveryFlushers.delete(traceRunId);
+    },
     budget: {
       adapter: speedBudgetAdapter(input.execution.provider),
       environment: !input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local" ? "local" : "remote",
       restartRecovery: Boolean(input.restartRecovery),
     },
   });
+  nativeRunRecoveryFlushers.set(traceRunId, flushRecovery);
   await emitStartupReuse(input.onEvent, "environment", environmentStartupReuse(input.runnerExecutionTarget));
   if (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") {
     await emitStartupReuse(input.onEvent, "workspace", { state: "not_applicable", reason: "not_applicable" });

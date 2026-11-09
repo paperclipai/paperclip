@@ -175,6 +175,18 @@ describe("speed budget checks in the native run trace", () => {
       restartTotalMs: control + 3_000, providerLoadMs: 3_000 })]);
   });
 
+  it("flushes a pending recovery check when the controller detaches the run", async () => {
+    const { trace, breaches } = traced({ adapter: "codex", environment: "local", restartRecovery: true });
+    const late = LOCAL_SPEED_BUDGETS.codex.restart_recovery_control_plane.p95Ms + 1_000;
+    // A launched runner whose load span has not been written yet.
+    trace.checkRestartRecovery({ readyAtMs: 0, emittedAtMs: late, committedAtMs: late, disposition: "resume_dead_runner" });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(breaches()).toEqual([]);
+    trace.flushRestartRecovery();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(breaches()).toEqual([expect.objectContaining({ metric: "restart_recovery_control_plane", measuredMs: late })]);
+  });
+
   it("logs each span's own start time in its run-log row", async () => {
     const events: AdapterRuntimeEvent[] = [];
     const trace = createNativeRunTrace({ runId: "run-1", startedAtMs: 1_000, onEvent: async event => { events.push(event); } });

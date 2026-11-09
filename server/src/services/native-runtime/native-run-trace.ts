@@ -270,6 +270,8 @@ export function createNativeRunTrace(input: {
   startedAtMs?: number;
   onEvent?: NativeRunTraceSink;
   traceContext?: StartupTraceContextHandle;
+  /** Called once when the trace finishes. */
+  onFinish?: () => void;
   /** Speed-budget subject (invariant 8). Absent or remote means no check. */
   budget?: {
     adapter: SpeedBudgetAdapter | null;
@@ -648,6 +650,7 @@ export function createNativeRunTrace(input: {
 
   const finish = async (outcome: NativeRunSpanOutcome): Promise<void> => {
     if (ended) return;
+    try { input.onFinish?.(); } catch { /* Diagnostics cannot change runner control flow. */ }
     // Settled diagnostics can defer more (a budget breach after a deferred
     // measurement), so drain until none remain. Judge restart recovery after
     // the first drain, so a deferred provider span is counted, then drain its
@@ -724,6 +727,9 @@ export function createNativeRunTrace(input: {
     traceStartedAtMs,
     setBudgetStart,
     checkRestartRecovery,
+    /** Judge a pending restart-recovery check now (the controller is detaching
+     * this run for another restart and will not finish the trace). */
+    flushRestartRecovery: () => judgeRestartRecovery(),
     start,
     annotate,
     activate,
