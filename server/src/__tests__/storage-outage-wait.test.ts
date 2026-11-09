@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
-import { endStorageOutageWaitOn, isStorageUnavailableError, noteStorageAvailable, retryThroughStorageOutage, runSharedStorageWork, waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { endStorageOutageWaitOn, isStorageUnavailableError, retryThroughStorageOutage, runSharedStorageWork, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import { RemoteWorkspaceRestoreError } from "../services/remote-workspace-transport.js";
 
 const OUTAGE = `<?xml version="1.0" encoding="UTF-8"?>
@@ -92,7 +92,6 @@ describe("the shared storage outage wait", () => {
     throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
   });
   const policy = { budgetMs: 200, firstDelayMs: 10, maxDelayMs: 40 };
-  beforeEach(() => noteStorageAvailable());
 
   it("retries until the store answers, within its budget", async () => {
     let calls = 0;
@@ -130,17 +129,34 @@ describe("the shared storage outage wait", () => {
   it("gives up once one outage has lasted longer than the budget, however the waits overlap", async () => {
     const startedAt = Date.now();
     const failing = () => retryThroughStorageOutage(outage, undefined, policy);
-    const results = await Promise.allSettled(Array.from({ length: 4 }, failing));
+    const results = await waitOutStorageOutages(() => Promise.allSettled(Array.from({ length: 4 }, failing)));
     expect(results.every(result => result.status === "rejected")).toBe(true);
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(policy.budgetMs - policy.maxDelayMs);
     expect(Date.now() - startedAt).toBeLessThan(policy.budgetMs * 3);
   });
 
-  it("starts a new outage after the store answers", async () => {
-    await expect(retryThroughStorageOutage(outage, undefined, policy)).rejects.toMatchObject({ name: "ServiceUnavailable" });
-    noteStorageAvailable();
-    let calls = 0;
-    await expect(retryThroughStorageOutage(async () => (++calls < 3 ? outage() : "ok"), undefined, policy)).resolves.toBe("ok");
+  it("keeps the limit when only some keys fail and other storage calls succeed", async () => {
+    const startedAt = Date.now();
+    const result = await waitOutStorageOutages(async () => {
+      const reads = setInterval(() => void retryThroughStorageOutage(async () => "read", undefined, policy), 5);
+      try {
+        return await retryThroughStorageOutage(async () => {
+          await retryThroughStorageOutage(async () => "head read", undefined, policy);
+          return outage();
+        }, undefined, policy).catch((error: unknown) => error);
+      } finally { clearInterval(reads); }
+    });
+    expect(result).toMatchObject({ name: "ServiceUnavailable" });
+    expect(Date.now() - startedAt).toBeLessThan(policy.budgetMs * 3);
+  });
+
+  it("gives a later outage its own limit once the waiting work recovered", async () => {
+    await waitOutStorageOutages(async () => {
+      const recoversAt = Date.now() + policy.budgetMs - 60;
+      await expect(retryThroughStorageOutage(async () => (Date.now() < recoversAt ? outage() : "ok"), undefined, policy)).resolves.toBe("ok");
+      const secondRecoversAt = Date.now() + policy.budgetMs - 60;
+      await expect(retryThroughStorageOutage(async () => (Date.now() < secondRecoversAt ? outage() : "again"), undefined, policy)).resolves.toBe("again");
+    });
   });
 
   it("lets one run's Stop end only its own wait, not shared work another run waits on", async () => {

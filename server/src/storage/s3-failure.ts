@@ -1,5 +1,4 @@
 import { recordStorageFailure, type StorageFailureOperation } from "./failure-diagnostics.js";
-import { noteStorageAvailable } from "./storage-unavailable.js";
 import { recordStorageRequest } from "./request-stats.js";
 
 const ERROR_CODE = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
@@ -66,7 +65,6 @@ export async function withS3FailureDiagnostics<T>(operation: StorageFailureOpera
   try {
     const result = await send();
     recordStorageRequest(result, false);
-    noteStorageAvailable();
     return result;
   } catch (error) {
     recordStorageRequest(error, true);

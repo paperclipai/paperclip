@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
 import { recordS3BodyFailure, withS3FailureDiagnostics } from "../storage/s3-failure.js";
-import { endStorageOutageWaitOn, isStorageUnavailableError, noteStorageAvailable, sendThroughStorageOutage, waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { endStorageOutageWaitOn, isStorageUnavailableError, sendThroughStorageOutage, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import {
   createObjectByteJournal,
   ObjectJournalBusyError,
@@ -72,7 +72,6 @@ afterEach(() => vi.useRealTimers());
 
 describe("object byte journal", () => {
   it("keeps another run's shared probe going when one run is stopped during a storage outage", async () => {
-    noteStorageAvailable();
     const s = storage();
     const put = s.provider.putObjectConditional!;
     const recoversAt = Date.now() + 1_000;
