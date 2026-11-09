@@ -612,6 +612,17 @@ failing setup. The save's retry budget bounds that wait. A save that exhausts
 its retries is handed to the board as a named recovery action. After that hand-off,
 the cutoff no longer advances.
 
+Automatic wakes do not run into a hold that preparation would refuse. A parent or
+dependent woken because a child or blocker stalled on the board
+(`issue_blocker_stalled`) is not woken again when its assignee's last run on the
+task failed setup on its bound workspace's hold and that hold is still past the
+cutoff, or held by a writer that cannot be named: another run could only fail
+the same way. The wake is delivered once the hold settles or the task changes
+assignee, and the sweep checks again at most hourly. Failed runs that carry a
+stall, including resource-wait retries of its wake, are retried after ten
+minutes, then twenty, and not after the third failed run. The stall stays
+listed on the waiting task, and a new stall wakes it again.
+
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
 these existing runs immediately. The shared delivery coordinator owns the drain's
