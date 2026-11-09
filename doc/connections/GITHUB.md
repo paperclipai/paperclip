@@ -154,7 +154,13 @@ repository owner first. The authenticated GitHub username and the accounts
 where the App is installed are separate. An organization installation does not
 grant access to the user's personal repositories. Personal repository creation
 needs App access to that personal account; organization creation needs App access
-to that organization and the tool's `organization` argument. The agent must
+to that organization and the tool's `organization` argument. When the App is
+installed on exactly one account, and its access snapshot identifies that
+account as an organization, `create_repository` and `fork_repository` calls that omit `organization` use
+that organization, because the personal account is unavailable. Paperclip fills
+it in before policy, approval, and audit, so approval cards and test results
+show the owner. An explicit owner is unchanged, and any other installation set
+keeps GitHub's personal-account default. The agent must
 keep the owner requested by the user. The user can choose the intended account
 from **Add More Repos on GitHub**, then select **Refresh access**. If creation remains
 unavailable, the user can create the repository on GitHub and give the App access,

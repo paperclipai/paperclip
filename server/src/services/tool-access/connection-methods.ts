@@ -15,6 +15,7 @@ import { isPaperclipCloudConnectorStrategy } from "../paperclip-cloud-connector.
 import { honchoManagedArguments } from "../honcho-connection.js";
 import { assertGoogleChatToolArgumentsSupported, googleChatToolInputSchema } from "../google-chat-tool-policy.js";
 import { gmailArchiveToolInputSchema } from "../gmail-archive-tool-policy.js";
+import { githubOwnerToolInputSchema } from "./github-default-owner.js";
 
 type ConnectionSettings = {
   config: Record<string, unknown>;
@@ -345,6 +346,7 @@ export function projectedConnectionToolInputSchema(
   if (managed) inputSchema = stripManagedToolArgumentSchema(inputSchema, managed);
   inputSchema = googleChatToolInputSchema(connection, toolName, inputSchema);
   inputSchema = gmailArchiveToolInputSchema(connection, toolName, inputSchema);
+  inputSchema = githubOwnerToolInputSchema(connection, toolName, inputSchema);
   const sourceTemplateKey =
     typeof connection.config.sourceTemplateKey === "string"
       ? connection.config.sourceTemplateKey

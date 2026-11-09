@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -39,7 +39,8 @@ vi.mock("./current-wake-comments.js", async importOriginal => ({
   resolveCurrentWakeCommentsBinding: async () => null,
   assertCurrentWakeCommentsRead: async () => undefined,
 }));
-import { buildNativeHarnessBackupManifest, createRunnerdBackend, resolveNativeHarnessPersistenceProfile, scopedRunnerdStateRoot } from "./native-session-executor.js";
+import { buildNativeHarnessBackupManifest, createRunnerdBackend, quarantinedBootstrapOfOwnerHeldNoProviderWork, resolveNativeHarnessPersistenceProfile,
+  scopedRunnerdStateRoot } from "./native-session-executor.js";
 
 // Durable-root admission is the boundary under test. Reaching the run's tool
 // authority proves admission passed; no provider or runner process starts.
@@ -89,7 +90,9 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
    * later committed its result and released the controller lease, but no
    * suspended Runner receipt or failover backup ever reached the controller.
    * Only the database controller checkpoint and recovery pointer survive. */
-  async function seedRecoveredPriorRun(control: "settled" | "pending-command" | "unanswered-tool" = "settled",
+  async function seedRecoveredPriorRun(control: "settled" | "pending-command" | "unanswered-tool"
+    | "failed-turn-start" | "rejected-turn-start" | "indeterminate-turn-start" | "unknown-outcome-turn-start"
+    | "unsuperseded-unknown-outcome-turn-start" | "failed-suspend" = "settled",
     options: { controller?: { bootId: string; pid: number; processStartedAt: Date }; provider?: "codex" | "acpx" | "opencode" } = {}) {
     const issueId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue after recovery", assigneeAgentId: agentId, status: "in_progress" });
@@ -126,10 +129,25 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     try {
       // Shape the file-backed journal first; the database checkpoint captures
       // it when persistence moves to the controller's external writer.
-      const commands = ["run.prepare", "session.open", "turn.start", "runner.suspend"].map(type => controller.queueCommand(type));
+      const unknownOutcome = { status: "failed", result: { commandType: "turn.start", status: "failed",
+        result: { code: "execution_indeterminate", message: "runner recovered after journaling this command; it will not execute twice" } } };
+      const answers = {
+        "failed-turn-start": { status: "failed", result: { status: "failed" } },
+        "rejected-turn-start": { status: "rejected", result: { status: "rejected" } },
+        "indeterminate-turn-start": { status: "indeterminate", result: { status: "indeterminate" } },
+        "unknown-outcome-turn-start": unknownOutcome,
+      } as const;
+      const answered = answers as Record<string, unknown>;
+      const commands = ["run.prepare", "session.open", ...(control in answered ? ["turn.start"] : []), "turn.start", "runner.suspend"]
+        .map(type => controller.queueCommand(type));
       for (const command of control === "pending-command" ? commands.slice(0, -1) : commands) {
         Object.assign(command, { status: "completed", result: { status: "completed" } });
       }
+      if (control in answered) Object.assign(commands[2]!, answers[control as keyof typeof answers]);
+      if (control === "unsuperseded-unknown-outcome-turn-start") {
+        Object.assign(commands.find(command => command.type === "turn.start")!, unknownOutcome);
+      }
+      if (control === "failed-suspend") Object.assign(commands.at(-1)!, { status: "failed", result: { status: "failed" } });
       const event = (sourceSeq: number, sourceEventId: string, eventType: string) => ({ sourceSeq, sourceEventId, eventType,
         priority: 0 as const, envelope: { ...identity }, deliveryCount: 1, logicalEffectCount: 1 });
       controller.store.state.committedEvents.push(
@@ -184,16 +202,19 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const remoteExecute = vi.fn(async (_request: unknown): Promise<{ exitCode: number; timedOut: boolean; stdout: string; stderr: string }> => {
       throw new Error("admission must not reach the sandbox");
     });
-    const start = (outcome: "created" | "replacement" | "resumed" = "created") => createRunnerdBackend({
+    const start = (outcome: "created" | "replacement" | "resumed" = "created",
+      restartRecovery?: Parameters<typeof createRunnerdBackend>[0]["restartRecovery"]) => createRunnerdBackend({
       db, execution, runnerInstanceId: next.runnerInstanceId, onLog: async (_stream, chunk) => { logs.push(chunk); },
+      ...(restartRecovery ? { restartRecovery } : {}),
       runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId,
         leaseId, remoteCwd: "/workspace", reusableLeaseConfigured: true,
         runner: { execute: remoteExecute },
         sandboxLeaseAcquisition: { outcome, providerLeaseId } } as never,
     }).then(() => "constructed", (error: Error) => error.message);
     // A local Runner keeps its controller root on this host between turns.
-    const startLocal = () => createRunnerdBackend({
+    const startLocal = (restartRecovery?: Parameters<typeof createRunnerdBackend>[0]["restartRecovery"]) => createRunnerdBackend({
       db, execution, runnerInstanceId: next.runnerInstanceId, onLog: async (_stream, chunk) => { logs.push(chunk); },
+      ...(restartRecovery ? { restartRecovery } : {}),
     }).then(() => "constructed", (error: Error) => error.message);
     return { runId, logs, start, startLocal, native: next, environmentId, leaseId, providerLeaseId, remoteExecute, selectedRunId: selected?.id ?? null };
   }
@@ -626,6 +647,29 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       expect(await retry.start()).toBe("native_controller_recovery_unsupported:metadata_format");
     }, 60_000);
 
+  it.each([
+    { control: "failed-turn-start", outcome: ADMITTED },
+    { control: "rejected-turn-start", outcome: ADMITTED },
+    { control: "indeterminate-turn-start", outcome: ADMITTED },
+    { control: "unknown-outcome-turn-start", outcome: ADMITTED },
+    { control: "unsuperseded-unknown-outcome-turn-start", outcome: stranded("journal_commands_unsettled(turn.start.failed)") },
+    { control: "failed-suspend", outcome: stranded("journal_commands_unsettled(runner.suspend.failed)") },
+  ] as const)("retires a finished owner whose journal holds an answered $control command", async ({ control, outcome }) => {
+    const prior = await seedRecoveredPriorRun(control);
+    const followUp = await admitFollowUp(prior);
+    expect(await followUp.start()).toBe(outcome);
+  }, 60_000);
+
+  it("starts a follow-up whose own bootstrap never reached its root from the previous owner's settled root", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = await restoreHeldRoot(prior, followUp);
+    expect(await followUp.start("created", { kind: "bootstrap_incomplete", runId: followUp.runId, leaseOwner: "successor",
+      controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null } as never)).toBe(ADMITTED);
+    expect(await quarantined()).toEqual([]);
+    expect(await archivedOwners(root)).toEqual([prior.runId]);
+  }, 60_000);
+
   it("admits again when a retry rebuilds the same projection from the database", async () => {
     const prior = await seedRecoveredPriorRun();
     const followUp = await admitFollowUp(prior);
@@ -646,6 +690,34 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
     expect(await followUp.start()).toBe(ADMITTED);
     expect(await quarantined()).toHaveLength(1);
+  }, 60_000);
+
+  it.each([
+    { label: "an interrupted bootstrap that never opened its session", turnIssued: false, sessionOpened: false },
+    { label: "a remote bootstrap that opened its session without a turn", turnIssued: false, sessionOpened: true },
+    { label: "a bootstrap copy that already issued a turn", turnIssued: true, sessionOpened: false },
+  ])("retires a finished owner past its own quarantined earlier bootstrap: $label", async ({ turnIssued, sessionOpened }) => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    expect(await followUp.start()).toBe(stranded("owner_observed"));
+    const [copy] = await quarantined();
+    const copyRoot = join(stateDirectory, "quarantine", copy!);
+    const path = join(copyRoot, "control-plane", "control-plane-state.json");
+    const state = JSON.parse(await readFile(path, "utf8"));
+    const bootstrap = state.commands.filter((command: { type: string }) => command.type === "run.prepare" || command.type === "session.open"
+      || (turnIssued && command.type === "turn.start"));
+    for (const command of bootstrap) {
+      command.status = command.type === "run.prepare" || (sessionOpened && command.type === "session.open") ? "completed" : "pending";
+    }
+    const opened = sessionOpened ? ["session.started", "session.capabilities.updated"].map((eventType, index) => ({
+      sourceSeq: index + 1, sourceEventId: `opened-${index + 1}`, eventType, priority: 1, envelope: { ...prior.identity },
+      deliveryCount: 1, logicalEffectCount: 1 })) : [];
+    await writeFile(path, JSON.stringify({ ...state, commands: bootstrap, committedEvents: opened, ackedSourceSeq: opened.length }));
+    await rm(join(copyRoot, "runner"), { recursive: true, force: true });
+    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    expect(await followUp.start()).toBe(turnIssued
+      ? stranded("quarantine_journal_commands_unsettled(session.open.pending,turn.start.pending)") : ADMITTED);
   }, 60_000);
 
   it("keeps an unsuspended Runner receipt decisive after a retry rebuilds the root", async () => {
@@ -769,6 +841,76 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       schema: "paperclip.runner.durable.state.v1", lifecycle: "ready", ...prior.identity }));
     return { prior, followUp, root };
   }
+
+  it.each(["exited", "alive", "another owner"] as const)(
+    "skips a local quarantined bootstrap that opened a session only when it is this owner's and its processes %s",
+    async scenario => {
+      const runner = scenario === "alive" ? await runnerProcess() : await stoppedRunnerProcess();
+      const root = await mkdtemp(join(tmpdir(), "quarantined-opened-bootstrap-"));
+      const identity = { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "owner-run",
+        normalizedSessionId: "session-1", turnId: "turn-owner-run", itemId: "item-owner-run" };
+      try {
+        await mkdir(join(root, "control-plane"), { recursive: true, mode: 0o700 });
+        await mkdir(join(root, "runner"), { recursive: true, mode: 0o700 });
+        await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify({
+          schema: "paperclip.runner.durable.control-plane-state.v2", identity,
+          bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", originIdentity: identity, credentialsIssued: 1, adopted: false },
+          commands: [
+            { commandId: "prepare", type: "run.prepare", status: "completed", result: { status: "prepared" } },
+            { commandId: "open", type: "session.open", status: "completed", result: { result: { status: "started", processId: runner.pid } } },
+          ],
+          committedEvents: [{ sourceSeq: 1, sourceEventId: "opened-1", eventType: "session.started", priority: 1, envelope: identity }],
+          ackedSourceSeq: 1, connectionCount: 1 }));
+        await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1",
+          ...identity, lifecycle: "ready", outbox: [], processedCommands: {
+            prepare: { commandType: "run.prepare", status: "completed", result: { status: "prepared" } },
+            open: { commandType: "session.open", status: "completed", result: { status: "started", processId: runner.pid } } } }));
+        const owner = scenario === "another owner" ? { ...identity, runId: "another-run" } : identity;
+        expect(quarantinedBootstrapOfOwnerHeldNoProviderWork(root, owner, true)).toBe(scenario === "exited");
+      } finally {
+        if (scenario === "alive") runner.child.kill("SIGKILL");
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 60_000);
+  it.each([
+    { label: "never delivered to a dead runner", connectionCount: 0, claim: true, admitted: true },
+    { label: "possibly delivered", connectionCount: 1, claim: true, admitted: false },
+    { label: "without a dead-runner claim", connectionCount: 0, claim: false, admitted: false },
+  ])("resumes from the previous turn when a warm attach rotation was $label", async ({ connectionCount, claim, admitted }) => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = await restoreHeldRoot(prior, followUp);
+    const priorIdentity = JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8")).identity;
+    const epoch = join(root, "authority-epochs",
+      `epoch-${createHash("sha256").update(JSON.stringify(priorIdentity)).digest("hex").slice(0, 24)}`);
+    await mkdir(epoch, { recursive: true, mode: 0o700 });
+    await rename(join(root, "control-plane"), join(epoch, "control-plane"));
+    await writeFile(join(epoch, "runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1", ...priorIdentity,
+      lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null }));
+    await mkdir(join(root, "runner"), { recursive: true, mode: 0o700 });
+    await writeFile(join(root, "runner", "codex-provider-state.json"), "{}");
+    const identity = { ...priorIdentity, runId: followUp.runId, turnId: `turn-${followUp.runId}`, itemId: `item-${followUp.runId}` };
+    await mkdir(join(root, "control-plane"), { mode: 0o700 });
+    const undelivered = JSON.stringify({ schema: "paperclip.runner.durable.control-plane-state.v2", identity,
+      bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", originIdentity: identity, credentialsIssued: 0, adopted: false },
+      runAttachTemplate: {}, tickets: {}, leases: {},
+      commands: [{ commandId: "attach", controllerSeq: 1, type: "run.attach", status: "pending", payload: {} }],
+      committedEvents: [], ackedSourceSeq: 0, connectionCount, commandDeliveryCounts: {} });
+    await writeFile(join(root, "control-plane", "control-plane-state.json"), undelivered);
+    const outcome = await followUp.startLocal(claim ? { kind: "resume_dead_runner", runId: followUp.runId, leaseOwner: "successor",
+      controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null } as never : undefined);
+    if (!admitted) {
+      expect(outcome).toBe("runner_state_identity_mismatch: authority_indeterminate");
+      return;
+    }
+    expect(outcome).toBe(ADMITTED);
+    expect(JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8")).identity).toEqual(priorIdentity);
+    expect(existsSync(join(root, "authority-epochs"))).toBe(false);
+    const [archive] = await readdir(join(root, "continuity-breaks"));
+    expect(await readFile(join(root, "continuity-breaks", archive!, "control-plane", "control-plane-state.json"), "utf8")).toBe(undelivered);
+    expect(await quarantined()).toEqual([]);
+    expect(followUp.logs.join("")).toContain("stopped before its runner received the session");
+  }, 60_000);
 
   it("retires a finished local owner whose Runner stopped before it proved suspension", async () => {
     const { prior, followUp, root } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());

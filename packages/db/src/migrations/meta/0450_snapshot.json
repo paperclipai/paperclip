@@ -1,5 +1,5 @@
 {
-  "id": "48acdeb2-938d-489b-90a1-1b09e219a703",
+  "id": "b8f43f1a-3230-4cda-991d-0e7b6323114b",
   "prevId": "4bd9d289-9cb8-4262-9dd7-04ce2b6020c4",
   "version": "7",
   "dialect": "postgresql",
@@ -4099,6 +4099,28 @@
           "isUnique": true,
           "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'chat-completion:%'",
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_issue_blocker_stalled_uq": {
+          "name": "agent_wakeup_requests_issue_blocker_stalled_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'issue_blocker_stalled:%' AND \"agent_wakeup_requests\".\"status\" IN ('queued', 'deferred_issue_execution', 'claimed', 'coalesced', 'completed')",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -16093,12 +16115,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "feedback_data_sharing_enabled": {
           "name": "feedback_data_sharing_enabled",
@@ -50575,12 +50591,6 @@
         },
         "execution_workspace_policy": {
           "name": "execution_workspace_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

@@ -724,6 +724,7 @@ export type {
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
   IssueRecoveryAction,
+  IssueBlockerStalledWakeContext,
   SuccessfulRunHandoffState,
   SuccessfulRunHandoffStateKind,
   IssueScheduledRetry,

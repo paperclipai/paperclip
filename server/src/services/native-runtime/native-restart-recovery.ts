@@ -47,7 +47,7 @@ import { logger } from "../../middleware/logger.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
-import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
+import { nativeRestartContinuationInFlight, nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { requestNativeStartupCleanup, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-startup-cleanup.js";
@@ -678,7 +678,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   /** Durable evidence proves a claimed remote bootstrap reached no provider work. */
   remoteBootstrapProvenIncomplete?: boolean;
   remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn"
-    | "remote_runner_exited_before_provider_work";
+    | "remote_runner_exited_before_provider_work" | "remote_runner_never_received_commands";
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -789,6 +789,16 @@ async function hasNativeRunnerOriginatedEvidence(
     .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
       or(isNotNull(heartbeatRunEvents.sourceEventId),
         inArray(heartbeatRunEvents.eventType, ["adapter.invoke", "tool.execution.started"]))))
+    .limit(1);
+  return event !== undefined;
+}
+
+async function hasNativeRunEvent(
+  tx: Pick<Db, "select">, run: { companyId: string; id: string }, eventType: string,
+): Promise<boolean> {
+  const [event] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
+    .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      eq(heartbeatRunEvents.eventType, eventType)))
     .limit(1);
   return event !== undefined;
 }
@@ -1408,6 +1418,24 @@ export async function claimNativeRestartRecoveries(input: {
       const remoteBootstrapProvenIncomplete = remoteBootstrapProof !== null
         && (!hasProviderEvidence || remoteBootstrapProof === "session_opened_without_turn");
 
+      const admissionCheckpointOnly = !hasCheckpoint || (checkpointIdentityMatches && checkpointRecord.cursor == null
+        && (!Array.isArray(checkpointRecord.terminalTurns) || checkpointRecord.terminalTurns.length === 0)
+        && checkpointRecord.activeTurnId == null && checkpointRecord.semanticResult == null && checkpointRecord.terminal == null);
+      const remoteRunnerNeverReceivedCommands = !unclaimedBootstrap && !remoteRunnerNeverLaunched
+        && !remoteRunnerExitedBeforeProviderWork && !remoteBootstrapProvenIncomplete
+        && remoteSandbox && remoteWorkspace !== null && !pluginTask && !durableAuthority && stagedAttachment === null
+        && admissionCheckpointOnly && providerEvents.length === 0
+        && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
+        && row.coordinator.phase === "observed" && Boolean(row.coordinator.leaseOwner)
+        && row.coordinator.attempt >= 1 && row.coordinator.controllerGeneration >= 1
+        && Boolean(row.coordinator.controllerBootId && row.coordinator.controllerPid && row.coordinator.controllerProcessStartedAt)
+        && !row.coordinator.failureDetail?.successorRunId
+        && !row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt
+        && !row.run.sessionIdBefore && !row.run.sessionIdAfter
+        && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
+        && !(await hasNativeRunnerOriginatedEvidence(tx, row.run))
+        && !(await hasNativeRunEvent(tx, row.run, PROCESS_IDENTITY_RECORDED));
+
       // Read before this claim appends its own history entry.
       const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
       const resumeKeepsAttempt = cleanDrainSuspension || await restartResumeKeepsAttempt(tx, {
@@ -1417,9 +1445,10 @@ export async function claimNativeRestartRecoveries(input: {
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
         remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched
-          || remoteRunnerExitedBeforeProviderWork,
+          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands,
         remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched ? "remote_runner_never_launched"
           : remoteRunnerExitedBeforeProviderWork ? "remote_runner_exited_before_provider_work"
+          : remoteRunnerNeverReceivedCommands ? "remote_runner_never_received_commands"
           : remoteBootstrapProof === "session_opened_without_turn" ? "remote_session_opened_without_turn" : undefined,
         runnerPidAlive,
         runnerGroupAlive,
@@ -1427,7 +1456,7 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessAlive: providerProcesses.livePids.length > 0,
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
-        hasCheckpoint,
+        hasCheckpoint: hasCheckpoint && !remoteRunnerNeverReceivedCommands,
         stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&
@@ -1436,7 +1465,8 @@ export async function claimNativeRestartRecoveries(input: {
         checkpointFailed:
           (checkpointRecord.terminal as Record<string, unknown> | undefined)
             ?.runTerminalState === "failed" &&
-          nativeRestartInterruptedTurnId(checkpointRecord as unknown as PersistedNativeSession) === null,
+          nativeRestartInterruptedTurnId(checkpointRecord as unknown as PersistedNativeSession) === null &&
+          !nativeRestartContinuationInFlight(checkpointRecord as unknown as PersistedNativeSession),
         providerAttempt: row.coordinator.attempt,
         resumeChargesAttempt: !resumeKeepsAttempt,
       });

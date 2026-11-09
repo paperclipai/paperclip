@@ -60,6 +60,20 @@ export function parseBenchRecord(text: string | null | undefined) {
     ? { seconds: finished - started, result: fields.result } : null;
 }
 
+export function stallWakeChecks(artifacts: OracleArtifacts): OracleResult["checks"] {
+  const stalls = artifacts.childStalls ?? [];
+  if (!stalls.length) return [];
+  const wakes = artifacts.stallWakes ?? [];
+  const matching = (stall: { childIssueId: string; recoveryActionId: string | null }) => wakes.filter(wake =>
+    wake.stalledIssueId === stall.childIssueId && (stall.recoveryActionId === null || wake.recoveryActionId === stall.recoveryActionId));
+  const unwoken = stalls.filter(stall => matching(stall).length === 0).map(stall => `${stall.childIssueId}:${stall.recoveryActionId}`);
+  const perPair = new Map<string, number>();
+  for (const wake of wakes) perPair.set(`${wake.stalledIssueId}:${wake.recoveryActionId}`, (perPair.get(`${wake.stalledIssueId}:${wake.recoveryActionId}`) ?? 0) + 1);
+  const repeated = [...perPair.entries()].filter(([, count]) => count > 1).map(([key]) => key);
+  return [{ name: "parent_woken_once_per_stall", ok: !unwoken.length && !repeated.length,
+    detail: `stalls=${stalls.length} wakes=${wakes.length}${unwoken.length ? ` unwoken=${unwoken.join(",")}` : ""}${repeated.length ? ` repeated=${repeated.join(",")}` : ""}` }];
+}
+
 function result(checks: OracleResult["checks"]): OracleResult {
   return { verdict: checks.every(check => check.ok) ? "pass" : "fail", checks };
 }
@@ -205,6 +219,7 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
         { name: "part2_kept", ok: distinct && Boolean(agents) && part2[0]!.assigneeAgentId === agents!.self.id,
           detail: `assignee=${part2[0]?.assigneeAgentId ?? "none"}` },
         { name: "summary_has_both_parts", ok: summary.includes(partMarker(nonce, 1)) && summary.includes(partMarker(nonce, 2)) },
+        ...stallWakeChecks(artifacts),
       ]);
     },
   },

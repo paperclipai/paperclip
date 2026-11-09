@@ -267,7 +267,7 @@ import {
   remoteRecoveryProbeReason,
 } from "./remote-runner-recovery-diagnostics.js";
 import { readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS } from "./remote-runner-recovery-probe.js";
-import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands } from "./remote-warm-session-recovery.js";
 import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
@@ -5458,7 +5458,7 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
     }
     if (!isSettledRemoteWarmControlState(settledControl, identity)) {
       // Closed vocabulary only: known command types and statuses, never payloads.
-      const unsettled = settledCommands.filter(command => command.status !== "completed")
+      const unsettled = unsettledControllerCommands(settledCommands)
         .map(command => `${retirementReasonName("commandType", command.type)}.${retirementReasonName("commandStatus", command.status)}`);
       return refuse(unsettled.length > 0 ? `journal_commands_unsettled(${[...new Set(unsettled)].slice(0, 4).join(",")})`
         : "journal_terminal_unsettled");
@@ -5612,6 +5612,7 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
     if (!isSafeNativeStateDirectory(quarantine)) return refuse("quarantine_unsafe");
     for (const name of readdirSync(quarantine)) {
       if (!name.startsWith(`${basename(input.root)}.`)) continue;
+      if (quarantinedBootstrapOfOwnerHeldNoProviderWork(resolve(quarantine, name), identity, localRunner)) continue;
       const copy = readSettledRunnerdProjection(resolve(quarantine, name), identity, { localRunner });
       if (copy.refused !== undefined) return refuse(`quarantine_${copy.refused}`);
     }
@@ -5625,6 +5626,15 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
     return null;
   };
   return { finished: true, run: prior.run, recheck };
+}
+
+export function quarantinedBootstrapOfOwnerHeldNoProviderWork(root: string, identity: Record<string, string>,
+  localRunner: boolean): boolean {
+  if (!isSafeNativeStateDirectory(root)) return false;
+  const copied = readRunnerdDurableIdentity(root);
+  if (!copied || Object.entries(identity).some(([key, value]) => copied[key] !== value)) return false;
+  return runnerdStateProvesIncompleteBootstrap(root, { localProcesses: localRunner })
+    || (!localRunner && runnerdStateProvesNoRemoteProviderTurn(root));
 }
 
 async function retireFinishedPerTurnRunnerdOwner(input: Parameters<typeof inspectFinishedPerTurnRunnerdOwner>[0])
@@ -5643,6 +5653,63 @@ async function retireFinishedPerTurnRunnerdOwner(input: Parameters<typeof inspec
     `[paperclip-runner] Run ${input.identity.runId} finished without a saved runner checkpoint; starting a new runner for this conversation.\n`,
   );
   return { retired: true };
+}
+
+function undeliveredAttachRotationSource(root: string, execution: NativeExecutionInput): string | null {
+  try {
+    const control = readRunnerdControlPlaneState(root);
+    const identity = record(control.identity);
+    const commands = Array.isArray(control.commands) ? control.commands.map(record) : [];
+    const history = record(control.bootstrapHistory);
+    if (!RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(control.schema)) ||
+        !durableIdentityMatchesExecution(identity, execution) ||
+        control.connectionCount !== 0 || control.ackedSourceSeq !== 0 ||
+        !Array.isArray(control.committedEvents) || control.committedEvents.length !== 0 ||
+        Object.keys(record(control.commandDeliveryCounts)).length !== 0 ||
+        control.warmTransition != null || control.completedWarmTransition != null || control.stagedRunAttachment != null ||
+        history.adopted === true || history.credentialsIssued !== 0 ||
+        commands.length !== 1 || commands[0]!.type !== "run.attach" || commands[0]!.status !== "pending" ||
+        existsSync(resolve(root, "runner", "runner-state.json"))) return null;
+    const archives = resolve(root, "authority-epochs");
+    if (!isSafeNativeStateDirectory(archives)) return null;
+    const candidates = readdirSync(archives).map(name => resolve(archives, name)).filter(epoch => {
+      const state = resolve(epoch, "control-plane", "control-plane-state.json");
+      return isSafeNativeStateDirectory(epoch) && existsSync(state) && existsSync(resolve(epoch, "runner-state.json"));
+    }).sort((left, right) => lstatSync(resolve(right, "control-plane", "control-plane-state.json")).mtimeMs
+      - lstatSync(resolve(left, "control-plane", "control-plane-state.json")).mtimeMs);
+    const latest = candidates[0];
+    if (!latest) return null;
+    const prior = record(readRunnerdControlPlaneState(latest).identity);
+    const runner = record(JSON.parse(readBoundedNativeFile(resolve(latest, "runner-state.json"),
+      NATIVE_RUNNER_STATE_MAX_BYTES, "runner_state_too_large").toString("utf8")));
+    const digest = createHash("sha256").update(JSON.stringify(prior)).digest("hex").slice(0, 24);
+    if (basename(latest) !== `epoch-${digest}` || prior.runId === identity.runId ||
+        ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].some(key => prior[key] !== identity[key]) ||
+        runner.schema !== RUNNERD_STATE_SCHEMA || runner.lifecycle !== "suspended" ||
+        ["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId"].some(key => runner[key] !== prior[key])) return null;
+    return latest;
+  } catch {
+    return null;
+  }
+}
+
+async function rollBackUndeliveredAttachRotation(root: string, execution: NativeExecutionInput,
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>): Promise<void> {
+  if (!existsSync(root) || !isSafeNativeStateDirectory(root)) return;
+  const epoch = undeliveredAttachRotationSource(root, execution);
+  if (!epoch) return;
+  const archivedAt = Date.now();
+  const breakRoot = resolve(root, "continuity-breaks", `${archivedAt}-${randomUUID()}`);
+  mkdirSync(breakRoot, { recursive: true, mode: 0o700 });
+  noteNativeRunnerEvidence(archivedAt);
+  renameSync(resolve(root, "control-plane"), resolve(breakRoot, "control-plane"));
+  mkdirSync(resolve(root, "runner"), { recursive: true, mode: 0o700 });
+  renameSync(resolve(epoch, "runner-state.json"), resolve(root, "runner", "runner-state.json"));
+  renameSync(resolve(epoch, "control-plane"), resolve(root, "control-plane"));
+  rmdirSync(epoch);
+  if (readdirSync(resolve(root, "authority-epochs")).length === 0) rmdirSync(resolve(root, "authority-epochs"));
+  await onLog?.("stdout",
+    `[paperclip-runner] Run ${execution.binding.runId} stopped before its runner received the session; resuming from the previous turn.\n`);
 }
 
 async function migrateRunnerdStateRootForExecution(input: {
@@ -5700,6 +5767,10 @@ async function migrateRunnerdStateRootForExecution(input: {
       return verified;
     }
     await assertCleanupActivationCommitted(input.db, scoped, input.execution);
+    if (input.restartRecovery?.kind === "resume_dead_runner" && input.restartRecovery.runId === input.execution.binding.runId
+      && (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local")) {
+      await rollBackUndeliveredAttachRotation(scoped, input.execution, input.onLog);
+    }
     const identity = readRunnerdDurableIdentity(scoped);
     if (!identity && input.restartRecovery?.kind === "bootstrap_incomplete" &&
         (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") &&
@@ -5737,7 +5808,7 @@ async function migrateRunnerdStateRootForExecution(input: {
       if (result.kind !== "state") throw new Error("Plugin Runner checkpoint unavailable");
       savePluginRunnerCheckpoint(scoped, result.state, identity);
     }
-    if (input.restartRecovery?.kind === "bootstrap_incomplete") {
+    if (input.restartRecovery?.kind === "bootstrap_incomplete" && identity.runId === input.execution.binding.runId) {
       // A local runner's process ids belong to this host, so a fresh provider
       // session it opened before any turn can be proven gone here.
       const localProcesses = !input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local";
@@ -5812,7 +5883,8 @@ async function migrateRunnerdStateRootForExecution(input: {
       // Name the failed retirement proof: the shared error otherwise hides
       // which of several independent fences held the follow-up.
       let retirementRefusal = "";
-      if (verification === "terminal_state_indeterminate" && !input.restartRecovery && !input.retainedWarmOwnerRunId) {
+      if (verification === "terminal_state_indeterminate" && !input.retainedWarmOwnerRunId
+        && (!input.restartRecovery || input.restartRecovery.kind === "bootstrap_incomplete")) {
         const retirement = await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity });
         if (retirement.retired) return;
         if (retirement.refused !== "lifecycle_not_per_turn") retirementRefusal = `; retirement_refused=${retirement.refused}`;
@@ -6464,7 +6536,9 @@ async function verifyStagedAttachmentRestart(input: {
   const target = input.runnerExecutionTarget;
   if (input.restartRecovery?.kind !== "reattach_remote_runner" || input.restartRecovery.remote.kind === "plugin_task" ||
       target?.kind !== "remote" || target.transport !== "sandbox" || target.runnerTask ||
-      target.sandboxLeaseAcquisition?.outcome !== "resumed") return deny();
+      target.sandboxLeaseAcquisition?.outcome === "replacement" ||
+      input.restartRecovery.remote.providerLeaseId !== target.sandboxLeaseAcquisition?.providerLeaseId ||
+      input.restartRecovery.remote.remoteCwd !== target.remoteCwd) return deny();
   const [current] = await input.db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, input.execution.binding.runId), eq(heartbeatRuns.companyId, input.execution.binding.companyId),
     eq(heartbeatRuns.agentId, input.execution.binding.agentId), eq(heartbeatRuns.nativeIssueId, input.execution.binding.issueId)));
@@ -15600,6 +15674,15 @@ async function createRunnerdBackendWithinSessionClaim(
                       // lease was not provider-confirmed lost. Never silently create a new
                       // provider session from that ambiguous state.
                       throw new Error("runner_harness_state_mismatch: backup_without_reusable_lease");
+                    } else if (state.incompleteReason === "not_suspended"
+                      && input.restartRecovery?.kind === "bootstrap_incomplete"
+                      && state.notSuspendedRunId === input.execution.binding.runId
+                      && hasRemoteBootstrapRestartProof(input.execution.binding.runId)) {
+                      if (!(await moveInterruptedBootstrapSessionAside()
+                        && takeRemoteBootstrapRestartProof(input.execution.binding.runId)
+                        && await claimUntouchedRemoteSession())) {
+                        throw new Error("runner_harness_state_mismatch: created_not_suspended");
+                      }
                     }
                   }
                 } else if (remoteTarget && remoteCommandRunner) {
