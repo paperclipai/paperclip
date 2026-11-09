@@ -58,6 +58,8 @@ beforeAll(async () => {
   fixtureRoot = await mkdtemp(join(tmpdir(), "paperclip-opencode-fixture-"));
   fixture = join(fixtureRoot, "fake-opencode-server.mjs");
   await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), fixture);
+  // Tests launch the fixture directly; it must not depend on run order.
+  await chmod(fixture, 0o755);
 });
 
 const TURN_TERMINAL_EVENT_TYPES = new Set([
