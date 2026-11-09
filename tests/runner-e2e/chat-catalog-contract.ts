@@ -8,9 +8,21 @@ import type { ChatExternalInputRequirement } from "./chat-private-inputs.js";
 import type { ChatScenario } from "./chat-feature-cases.js";
 
 /** Lifecycle readiness permits an already-busy worker; this is not run completion proof. */
-export function chatCatalogAgentIsReady(value: { lifecycleState?: string | null; status?: string | null; lifecycleError?: unknown }): boolean {
+export interface ChatCatalogAgentReadiness { lifecycleState?: string | null; status?: string | null; lifecycleError?: unknown;
+  lifecycleHolds?: unknown; pauseReason?: string | null; lifecycleOperation?: Record<string, unknown> | null }
+export function chatCatalogAgentIsReady(value: ChatCatalogAgentReadiness): boolean {
   return value.lifecycleState === "ready" && !value.lifecycleError
     && ["idle", "active", "running"].includes(value.status ?? "");
+}
+/** Names only closed lifecycle/status fields of the last observation, so a timeout says which half was unready. */
+export function chatCatalogAgentReadinessDetail(value: ChatCatalogAgentReadiness | undefined): string {
+  if (!value) return "no agent state was observed";
+  const word = (input: unknown) => typeof input === "string" && /^[a-z_]{1,40}$/.test(input) ? input : input == null ? "none" : "other";
+  const holds = Array.isArray(value.lifecycleHolds) ? value.lifecycleHolds.map(word).join(",") || "none" : "none";
+  const operation = value.lifecycleOperation ?? {};
+  const flags = ["waitingForSignal", "retryRequired", "recheckRequested", "hostComplete"].filter(key => operation[key] === true).join(",") || "none";
+  return `last observed lifecycleState=${word(value.lifecycleState)} status=${word(value.status)} holds=${holds} pauseReason=${word(value.pauseReason)}`
+    + ` operationFlags=${flags} attempts=${typeof operation.attempts === "number" ? operation.attempts : "none"}`;
 }
 
 export interface ChatCatalogCheck { id: string; passed: boolean; detail: string }

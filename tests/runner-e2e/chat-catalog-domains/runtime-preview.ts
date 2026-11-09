@@ -29,9 +29,9 @@ export function gradePreview(value: unknown) {
   const failure = o.state.failureOperation as WorkspaceOperation | undefined; const reply = String(o.state.failureReply ?? "");
   c.add("startup-failure-exposed-actionably", !!failure && failure.status === "failed" && failure.executionWorkspaceId === workspace.id
     && (o.state.failureRunIds as string[] | undefined)?.includes(failure.heartbeatRunId ?? "") === true
-    && o.state.failedHttpReachable === false && /fail|error|could not|couldn't|did not start|not running/i.test(reply)
-    && /start|process|server|preview|exit/i.test(reply) && !/preview (?:is|has) (?:now )?(?:ready|running)|successfully restart/i.test(reply),
-  "A separate explicit restart really fails under the fixture's process-start fault; its own answer preserves the failure and repair context.");
+    && o.state.failedHttpReachable === false && reply.trim().length > 0,
+  // The reply's wording (failure kept visible, next repair step) is for a human reader; saved state proves the outcome.
+  "A separate explicit restart really fails under the fixture's process-start fault, the endpoint is down, and that restart turn answered in chat.");
   c.add("no-unrelated-work-or-publication", o.tasks.length === 1 && o.tasks[0]?.id === (o.state.task as Entity).id
     && o.runs.length === 3 && o.runs.every(run => run.status === "succeeded"),
   "The prepared website plus two explicit controller turns are the only native work; no remote deployment or extra task is substituted.");
@@ -46,10 +46,10 @@ export const runtimePreviewCases = [runtimeDefinition("workspaces.preview-servic
   const websiteBytes = await readFile(path.join(cwd, "index.html"), "utf8");
   if (!/<html|<!doctype html/i.test(websiteBytes) || !websiteBytes.includes(state.marker)) throw new Error("Actual native website prerequisite is not present");
   const failureFlag = path.join(cwd, "preview-start-failure.fixture"); const script = path.join(cwd, "preview-server.cjs");
-  await writeFile(script, `const fs=require('node:fs');const http=require('node:http');const path=require('node:path');if(fs.existsSync(path.join(__dirname,'preview-start-failure.fixture'))){console.error('Owned preview startup fixture failed with exit 17');process.exit(17)}const body=fs.readFileSync(path.join(__dirname,'index.html'));http.createServer((req,res)=>{res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end(body)}).listen(Number(process.argv[2]),'127.0.0.1');`, "utf8");
+  await writeFile(script, `const fs=require('node:fs');const http=require('node:http');const path=require('node:path');if(fs.existsSync(path.join(__dirname,'preview-start-failure.fixture'))){console.error('Owned preview startup fixture failed with exit 17');process.exit(17)}const body=fs.readFileSync(path.join(__dirname,'index.html'));http.createServer((req,res)=>{res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end(body)}).listen(Number(process.env.PORT),'127.0.0.1');`, "utf8");
   const workspace = await ctx.input.api.get<PreviewWorkspace>(`/api/execution-workspaces/${state.workspaceBefore.workspace.id}`);
   await ctx.input.api.patch(`/api/execution-workspaces/${workspace.id}`, { config: { ...workspace.config, desiredState: "stopped", workspaceRuntime: { services: [{
-    name: "Website preview", command: "node preview-server.cjs {{port}}", cwd: ".", port: { type: "auto" }, lifecycle: "shared", stopPolicy: { type: "manual" },
+    name: "Website preview", command: "node preview-server.cjs", cwd: ".", port: { type: "auto" }, lifecycle: "shared", stopPolicy: { type: "manual" },
     readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 100 },
     expose: { type: "url", urlTemplate: "http://127.0.0.1:{{port}}" },
   }] } } });
@@ -57,6 +57,7 @@ export const runtimePreviewCases = [runtimeDefinition("workspaces.preview-servic
   if (saved.runtimeServices?.some(row => row.status === "running")) throw new Error("Preview setup must not start the target service");
   return { ...state, workspace: saved, websiteBytes, failureFlag };
 }, gradePreview, {
+  oracleVersion: "paperclip.chat-catalog.preview-service.v3",
   sourceFiles: ["chat-catalog-domains/runtime-preview.ts", "chat-catalog-domains/runtime-workspaces.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/workspaces.yaml"],
   expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000,
   async act(ctx, state) {

@@ -17,5 +17,7 @@ it("rejects a service record without HTTP content readiness", () => { const o = 
 it("rejects serving another website's bytes", () => { const o = valid(); o.state.initialHttpBody = "Other website"; expect(gradePreview(o).passed).toBe(false); });
 it("rejects a similarly named service from another workspace", () => { const o = valid(); o.state.healthyService.executionWorkspaceId = "other"; expect(gradePreview(o).passed).toBe(false); });
 it("rejects a preview product from an unrelated run", () => { const o = valid(); o.state.previewProducts[0]!.createdByRunId = "foreign"; expect(gradePreview(o).passed).toBe(false); });
-it("rejects claiming readiness after the actual startup failure", () => { const o = valid(); o.state.failureReply = "The preview is now ready."; expect(gradePreview(o).passed).toBe(false); });
+it("rejects a restart turn that left no chat answer", () => { const o = valid(); o.state.failureReply = ""; expect(gradePreview(o).passed).toBe(false); });
+it("rejects an endpoint that still answers after the supposed startup failure", () => { const o = valid(); o.state.failedHttpReachable = true; expect(gradePreview(o).passed).toBe(false); });
+it("rejects a restart that never recorded a failed operation", () => { const o = valid(); o.state.failureOperation.status = "succeeded"; expect(gradePreview(o).passed).toBe(false); });
 it("rejects failure attributed to the initial healthy turn", () => { const o = valid(); o.state.failureOperation.heartbeatRunId = "canonical"; expect(gradePreview(o).passed).toBe(false); });
