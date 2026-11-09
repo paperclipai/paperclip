@@ -1,4 +1,5 @@
 import { recordStorageFailure, type StorageFailureOperation } from "./failure-diagnostics.js";
+import { recordStorageRequest } from "./request-stats.js";
 
 const ERROR_CODE = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
 const REQUEST_ID = /^[A-Za-z0-9+/=._-]{1,128}$/;
@@ -55,8 +56,11 @@ export function recordS3BodyFailure(error: unknown, response: unknown): void {
 
 export async function withS3FailureDiagnostics<T>(operation: StorageFailureOperation, send: () => Promise<T>): Promise<T> {
   try {
-    return await send();
+    const result = await send();
+    recordStorageRequest(result, false);
+    return result;
   } catch (error) {
+    recordStorageRequest(error, true);
     recordS3Failure(error, operation);
     throw error;
   }
