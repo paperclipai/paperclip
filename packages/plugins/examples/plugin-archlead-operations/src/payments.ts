@@ -55,20 +55,7 @@ export type WebhookSecretConfigKey =
   | "cashfreeWebhookSecretRef"
   | "paddleWebhookSecretRef";
 
-interface CachedSecret {
-  secret: string;
-  refHash: string;
-  cachedAt: number;
-}
-
-const webhookSecretCache = new Map<string, CachedSecret>();
-const SECRET_CACHE_TTL_MS = 5 * 60 * 1000;
-
-export function clearWebhookSecretCache(): void {
-  webhookSecretCache.clear();
-}
-
-export async function resolveWebhookSecretCached(
+export async function resolveWebhookSecret(
   ctx: PluginContext,
   companyId: string,
   configKey: WebhookSecretConfigKey,
@@ -78,23 +65,7 @@ export async function resolveWebhookSecretCached(
   if (!isSecretRef(secretRef)) {
     throw new Error(`Company webhook secret reference is not configured: ${configKey}`);
   }
-
-  const cacheKey = `${companyId}:${configKey}`;
-  const refHash = JSON.stringify(secretRef);
-  const now = Date.now();
-  const cached = webhookSecretCache.get(cacheKey);
-
-  if (cached && cached.refHash === refHash && now - cached.cachedAt < SECRET_CACHE_TTL_MS) {
-    return cached.secret;
-  }
-
-  const secret = await ctx.secrets.resolve(secretRef, { companyId, configPath: configKey });
-  webhookSecretCache.set(cacheKey, {
-    secret,
-    refHash,
-    cachedAt: now,
-  });
-  return secret;
+  return ctx.secrets.resolve(secretRef, { companyId, configPath: configKey });
 }
 
 export async function verifyCompanyWebhook(
@@ -112,7 +83,7 @@ export async function verifyCompanyWebhook(
     throw new Error("Webhook signature is invalid or outside the allowed timestamp window");
   }
 
-  const secret = await resolveWebhookSecretCached(ctx, companyId, configKey);
+  const secret = await resolveWebhookSecret(ctx, companyId, configKey);
   const valid = verifyFn(
     input.rawBody,
     timestamp,
@@ -142,7 +113,7 @@ export async function verifyPaymentProviderWebhook(
     }
   }
 
-  const secret = await resolveWebhookSecretCached(ctx, companyId, configKey);
+  const secret = await resolveWebhookSecret(ctx, companyId, configKey);
   const verified = provider === "cashfree"
     ? verifyCashfreeSignature(
       input.rawBody,

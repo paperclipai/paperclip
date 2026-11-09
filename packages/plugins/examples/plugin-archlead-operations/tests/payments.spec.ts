@@ -1,6 +1,5 @@
 import { createHmac } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { clearWebhookSecretCache } from "../src/payments.js";
+import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
@@ -316,28 +315,25 @@ describe("ArchLead Operations payments", () => {
     );
     expect(database.receipts.size).toBe(1);
   });
-  beforeEach(() => {
-    clearWebhookSecretCache();
-  });
-
-  it("caches resolved webhook secrets so repeat unauthenticated attempts do not consume resolution budget", async () => {
+  it("resolves webhook secrets at call time so secret rotation immediately updates verification without stale caching", async () => {
+    let currentSecret = "first-secret-value";
     const harness = createTestHarness({
       manifest,
       config: { cashfreeWebhookSecretRef: SECRET_REF },
     });
     paymentDatabase(harness);
     await plugin.definition.setup(harness.ctx);
-    const resolveSpy = vi.spyOn(harness.ctx.secrets, "resolve");
+    const resolveSpy = vi.spyOn(harness.ctx.secrets, "resolve").mockImplementation(async () => currentSecret);
 
     const body = {
       type: "PAYMENT_SUCCESS_WEBHOOK",
       event_time: "2026-11-04T10:00:00.000Z",
       data: {
         order: {
-          order_id: "cashfree-provider-cached",
-          order_tags: buildPaymentOrderMetadata("cashfree", COMPANY_ID, "cashfree-local-cached").order_tags,
+          order_id: "cashfree-provider-rotate",
+          order_tags: buildPaymentOrderMetadata("cashfree", COMPANY_ID, "cashfree-local-rotate").order_tags,
         },
-        payment: { cf_payment_id: "cashfree-payment-cached", payment_status: "SUCCESS" },
+        payment: { cf_payment_id: "cashfree-payment-rotate", payment_status: "SUCCESS" },
       },
     };
 
@@ -347,16 +343,15 @@ describe("ArchLead Operations payments", () => {
     await expect(plugin.definition.onWebhook?.(noHeaderInput)).rejects.toThrow("signature is invalid");
     expect(resolveSpy).not.toHaveBeenCalled();
 
-    // 2. Unauthenticated attempt with invalid signature triggers initial resolution and caches it
-    const invalidSignature = cashfreeInput(body);
-    invalidSignature.headers["x-webhook-signature"] = `A${invalidSignature.headers["x-webhook-signature"].slice(1)}`;
-    await expect(plugin.definition.onWebhook?.(invalidSignature)).rejects.toThrow("signature is invalid");
-    expect(resolveSpy).toHaveBeenCalledTimes(1);
+    // 2. Secret rotates to a new value
+    currentSecret = "rotated-secret-value";
+    const rotatedInput = cashfreeInput(body, currentSecret);
 
-    // 3. Repeated unauthenticated attempts use cache and DO NOT call secrets.resolve again
-    for (let i = 0; i < 5; i++) {
-      await expect(plugin.definition.onWebhook?.(invalidSignature)).rejects.toThrow("signature is invalid");
-    }
-    expect(resolveSpy).toHaveBeenCalledTimes(1);
+    // 3. Newly signed event with rotated secret succeeds immediately (not blocked by stale cache)
+    await expect(plugin.definition.onWebhook?.(rotatedInput)).resolves.toBeUndefined();
+
+    // 4. Old secret signature fails on live check
+    const staleSignatureInput = cashfreeInput(body, "first-secret-value");
+    await expect(plugin.definition.onWebhook?.(staleSignatureInput)).rejects.toThrow("signature is invalid");
   });
 });
