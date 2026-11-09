@@ -127,6 +127,31 @@ it.each(["quota", "runner"] as const)("rechecks a fresh native pool pin for a co
   } finally { await heartbeat.drainActiveRunExecutions(); await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId)); await instanceSettingsService(db).updateExperimental(original); }
 }, 30_000);
 
+it.each(["save", "archive", "inspect", "convert"] as const)("rejects unrelated scoped connection authority for harness pool %s", async operation => {
+  const own = await aiConnectionService(db).save(companyId, "bob", { provider: "openai", method: "api_key", ownership: "personal", name: "Own scoped connection",
+    apiKey: "synthetic-bob-key", agentIds: [], allAgents: false }, randomUUID());
+  const { harnessPoolService } = await import("../services/harness-pools.js");
+  const native = members[0]!;
+  const config = { schemaVersion: 2 as const, kind: "harness_pool" as const, name: "Company pool", enabled: true, mode: "failover" as const, members: [
+    { id: randomUUID(), harness: { type: "codex" as const }, connection: native.binding as Exclude<typeof native.binding, { mode: "responsible_user" }>, model: native.profile.model },
+  ] };
+  const pool = await harnessPoolService(db).save(companyId, { config }, "alice");
+  const app = express(); app.use(express.json());
+  app.use((req, _res, next) => { req.actor = { type: "board", userId: "bob", source: "session", companyIds: [companyId],
+    memberships: [{ companyId, status: "active", membershipRole: "member" }] } as typeof req.actor; next(); });
+  app.use("/api", aiConnectionRoutes(db)); app.use(errorHandler);
+  const url = `/api/companies/${companyId}/harness-pools`;
+  const query = `?connectionId=${own.connectionId}`;
+  const response = operation === "save"
+    ? await request(app).post(url + query).send({ id: pool.id, expectedRevision: pool.revision, config: { ...config, members: [{ ...config.members[0],
+      connection: { mode: "delegated", provider: "openai", method: "api_key", ...own } }] } })
+    : operation === "archive" ? await request(app).delete(`${url}/${pool.id}${query}`).send({ expectedRevision: pool.revision })
+      : operation === "convert" ? await request(app).post(`${url}/${pool.id}/convert${query}`).send({ expectedRevision: pool.revision, preview: true })
+        : await request(app).get(`${url}/${pool.id}/inspection${query}`);
+  expect(response.status, JSON.stringify(response.body)).toBe(403);
+  expect(await harnessPoolService(db).get(companyId, pool.id)).toMatchObject({ revision: pool.revision, name: "Company pool" });
+});
+
 it("saves an OpenCode harness pool with automatic effort and rejects unsupported effort", async () => {
   const catalog = await import("../services/openrouter-models.js");
   const models = vi.spyOn(catalog, "listOpenRouterModels").mockResolvedValue([{ id: "openrouter/fixture/model", label: "Fixture model" }]);

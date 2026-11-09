@@ -146,7 +146,9 @@ export function connectionManagementGuard(db: Db, purpose: "tool" | "chat" | "ai
       };
       const uuid = (value: unknown) => { if (typeof value !== "string" || !isUuidLike(value)) throw badRequest("Expected a resource identifier"); return value; };
       const text = (value: unknown) => typeof value === "string" && value ? value : null;
-      let connectionId = text(req.params.connectionId) ?? text(req.query.connectionId) ?? text(body.resumeConnectionId) ?? text(body.reconnectConnectionId) ?? text(body.connectionId) ?? text(req.params.poolId) ?? (poolOperation ? text(body.id) : null);
+      let connectionId = poolOperation
+        ? text(req.params.poolId) ?? text(body.id)
+        : text(req.params.connectionId) ?? text(req.query.connectionId) ?? text(body.resumeConnectionId) ?? text(body.reconnectConnectionId) ?? text(body.connectionId) ?? text(req.params.poolId);
       let profileId = text(req.params.profileId) ?? text(req.query.profileId) ?? text(body.profileId);
       let gatewayId = text(req.params.gatewayId) ?? text(req.query.gatewayId) ?? text(req.query.gateway);
       for (const id of new Set(Array.isArray(body.policyIds) ? body.policyIds : [])) {
