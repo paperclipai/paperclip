@@ -119,8 +119,11 @@ public static class PaperclipProcessJob {
           if (jobList != IntPtr.Zero) Marshal.FreeHGlobal(jobList);
           if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
         }
-        if (ResumeThread(child.Thread) == UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
-        uint result = WaitForMultipleObjects(2, new[] { child.Process, stop.SafeWaitHandle.DangerousGetHandle() }, false, UInt32.MaxValue);
+        uint result = 1;
+        if (!stop.WaitOne(0)) {
+          if (ResumeThread(child.Thread) == UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
+          result = WaitForMultipleObjects(2, new[] { child.Process, stop.SafeWaitHandle.DangerousGetHandle() }, false, UInt32.MaxValue);
+        }
         if (result > 1) throw new Win32Exception(Marshal.GetLastWin32Error());
         uint code = 143;
         if (result == 0) Require(GetExitCodeProcess(child.Process, out code));

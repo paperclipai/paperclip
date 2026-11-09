@@ -419,6 +419,27 @@ function scanText(relPath: string, source: string): string[] {
   return offenders;
 }
 
+function readGuidanceFileIfPresent(
+  relPath: string,
+  readGuidanceFile: (relPath: string) => string,
+  trackedFiles: ReadonlySet<string>,
+): string | null {
+  try {
+    return readGuidanceFile(relPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && !trackedFiles.has(relPath)) return null;
+    throw error;
+  }
+}
+
+function trackedGuidanceFiles(): Set<string> {
+  return new Set(execFileSync(
+    "git",
+    ["ls-files", "--cached", "-z"],
+    { cwd: repoRoot, encoding: "utf8" },
+  ).split("\0"));
+}
+
 function scanGuidanceFiles(
   files: string[],
   readGuidanceFile: (relPath: string) => string,
@@ -426,38 +447,30 @@ function scanGuidanceFiles(
 ): string[] {
   const offenders: string[] = [];
   for (const relPath of files) {
-    try {
-      offenders.push(...scanText(relPath, readGuidanceFile(relPath)));
-    } catch (error) {
-      // Temporary untracked fixtures can disappear after the tree walk. A
-      // tracked file disappearing is a repository integrity failure and must
-      // still fail closed.
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !trackedFiles.has(relPath)) continue;
-      throw error;
-    }
+    const source = readGuidanceFileIfPresent(relPath, readGuidanceFile, trackedFiles);
+    if (source !== null) offenders.push(...scanText(relPath, source));
   }
   return offenders;
 }
 
 function scanForOffenders(): string[] {
-  const trackedFiles = new Set(execFileSync(
-    "git",
-    ["ls-files", "--cached", "-z"],
-    { cwd: repoRoot, encoding: "utf8" },
-  ).split("\0"));
-  return scanGuidanceFiles(listGuidanceFiles(), read, trackedFiles);
+  return scanGuidanceFiles(listGuidanceFiles(), read, trackedGuidanceFiles());
 }
 
-function scanForBrokenExecForm(): string[] {
+function scanForBrokenExecForm(
+  files = listGuidanceFiles(),
+  readGuidanceFile = read,
+  trackedFiles: ReadonlySet<string> = trackedGuidanceFiles(),
+): string[] {
   const offenders: string[] = [];
-  for (const relPath of listGuidanceFiles()) {
-    read(relPath)
-      .split("\n")
-      .forEach((line, index) => {
-        if (recommendsBrokenExecForm(line)) {
-          offenders.push(`${relPath}:${index + 1}: ${line.trim()}`);
-        }
-      });
+  for (const relPath of files) {
+    const source = readGuidanceFileIfPresent(relPath, readGuidanceFile, trackedFiles);
+    if (source === null) continue;
+    source.split("\n").forEach((line, index) => {
+      if (recommendsBrokenExecForm(line)) {
+        offenders.push(`${relPath}:${index + 1}: ${line.trim()}`);
+      }
+    });
   }
   return offenders;
 }
@@ -535,7 +548,7 @@ describe("paperclipai CLI invocation safety", () => {
     }
   });
 
-  it("ignores vanished untracked guidance but still fails when a tracked file disappears", () => {
+  it.each([scanGuidanceFiles, scanForBrokenExecForm])("ignores vanished untracked guidance but still fails when a tracked file disappears (%#)", scan => {
     const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-guidance-race-"));
     try {
       execFileSync("git", ["init", "--quiet"], { cwd: root });
@@ -546,14 +559,14 @@ describe("paperclipai CLI invocation safety", () => {
       rmSync(trackedAbsPath);
 
       const readFixture = (relPath: string) => readFileSync(path.join(root, relPath), "utf8");
-      expect(() => scanGuidanceFiles([trackedPath], readFixture, new Set([trackedPath]))).toThrow();
+      expect(() => scan([trackedPath], readFixture, new Set([trackedPath]))).toThrow();
 
       const untrackedPath = "temporary-plugin/package.json";
       const untrackedAbsPath = path.join(root, untrackedPath);
       mkdirSync(path.dirname(untrackedAbsPath), { recursive: true });
       writeFileSync(untrackedAbsPath, "{}");
       rmSync(untrackedAbsPath);
-      expect(scanGuidanceFiles([untrackedPath], readFixture, new Set())).toEqual([]);
+      expect(scan([untrackedPath], readFixture, new Set())).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
