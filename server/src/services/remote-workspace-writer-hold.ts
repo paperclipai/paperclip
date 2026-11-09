@@ -22,6 +22,9 @@ export function runOwnerFenceHeldSql() {
       and ${nativeRunFinalizations.leaseOwner} is not null and ${nativeRunFinalizations.leaseExpiresAt} > now()))`;
 }
 
+/** The setup error a run gets when reservation refuses a remote workspace hold. */
+export const REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE = "The workspace still has an unfinished writer or save operation.";
+
 type RemoteWorkspaceWriterHold = Awaited<ReturnType<typeof readRemoteWorkspaceWriterHold>>;
 
 /**

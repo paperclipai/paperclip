@@ -21,22 +21,23 @@
  * (a new action after a Retry or another failure) wakes again.
  *
  * A wake that did not reach the agent is retried, boundedly. A refusal
- * (wake-on-demand off, agent paused) is retried after ten minutes. A wake whose
- * run failed is retried with a doubling wait and given up after
- * MAX_FAILED_STALL_DELIVERIES failed runs; the stall stays listed on the
- * waiter's page. A waiter whose bound remote workspace is held by a writer that
- * reservation refuses outright (remoteWorkspaceHoldRefusesStart) is not woken
- * at all until that hold settles: its run could only fail setup.
+ * (wake-on-demand off, agent paused) is retried after ten minutes. A stall whose
+ * runs failed (the keyed wake's run or a resource-wait retry carrying it) is
+ * retried with a doubling wait and given up after MAX_FAILED_STALL_DELIVERIES
+ * failed runs; the stall stays listed on the waiter's page. A waiter whose last
+ * run failed setup on its bound remote workspace's hold is not woken again while
+ * reservation would still refuse that hold (remoteWorkspaceHoldRefusesStart):
+ * its run could only fail the same way. It is woken once the hold settles.
  */
-import { and, eq, gt, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON, readRemoteWorkspaceAuthority, type IssueBlockerStalledWakeContext,
   type IssueBlockerStallRelation } from "@paperclipai/shared";
 import { logActivity } from "../activity-log.js";
 import { parseHeartbeatPolicy } from "../heartbeat/timer-policy.js";
 import { authorizationService } from "../authorization.js";
-import { readRemoteWorkspaceWriterHold, remoteWorkspaceHoldRefusesStart } from "../remote-workspace-writer-hold.js";
-import { readUnchangedBaseline } from "../remote-workspace-unchanged-proof.js";
+import { readRemoteWorkspaceWriterHold, REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE,
+  remoteWorkspaceHoldRefusesStart } from "../remote-workspace-writer-hold.js";
 
 const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"];
 /** Waiters that may be woken: not finished, and not parked in the backlog by the board. */
@@ -131,18 +132,26 @@ async function readStalls(db: Db, filter: StallFilter, limit = MAX_STALLS_PER_PA
 type StallRow = Awaited<ReturnType<typeof readStalls>>[number];
 
 /**
- * Whether the waiter's bound remote workspace is held by a writer that
- * workspace reservation refuses outright instead of waiting for (a writer
- * ended past the holder cutoff with its save unsettled, or one that cannot be
- * named). A run woken now could only fail setup. A workspace whose ended writer
- * may be proven unchanged is left to reservation, which releases it.
+ * Whether a run of the waiter's assignee could only fail setup on its bound
+ * remote workspace's hold. The evidence is the assignee's own latest run on the
+ * task: it failed setup on that hold, so this agent uses the workspace and
+ * reservation already tried, and refused, to release the writer. The hold must
+ * still be one reservation refuses outright (an ended writer past the holder
+ * cutoff with its save unsettled, or a writer that cannot be named). Another
+ * assignee, a later run, or a settled hold lets the wake through.
  */
-async function waiterWorkspaceRefusesStart(db: Db, companyId: string, executionWorkspaceId: string | null) {
-  if (!executionWorkspaceId) return false;
+async function waiterWorkspaceRefusesStart(db: Db, companyId: string,
+  waiter: { id: string; assigneeAgentId: string | null; executionWorkspaceId: string | null }) {
+  if (!waiter.executionWorkspaceId || !waiter.assigneeAgentId) return false;
+  const [latest] = await db.select({ status: heartbeatRuns.status, error: heartbeatRuns.error }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, waiter.assigneeAgentId),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${waiter.id}`))
+    .orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+  if (latest?.status !== "failed" || latest.error !== REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE) return false;
   const [workspace] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
-    .where(and(eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, executionWorkspaceId)));
+    .where(and(eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, waiter.executionWorkspaceId)));
   const authority = readRemoteWorkspaceAuthority(workspace?.metadata);
-  if (!authority?.writerRunId || readUnchangedBaseline(workspace!.metadata)) return false;
+  if (!authority?.writerRunId) return false;
   return remoteWorkspaceHoldRefusesStart(await readRemoteWorkspaceWriterHold(db, { companyId, authority }));
 }
 
@@ -258,21 +267,31 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
         // (company_id, payload->>'issueId') is indexed; the key narrows to this stall.
         // A delivered or pending wake ends it. A refused one (wake-on-demand off,
         // agent paused) is retried once the refusal is old, so re-enabling wakes
-        // still delivers the stall. A wake whose run failed is retried after a
-        // doubling wait, and not after MAX_FAILED_STALL_DELIVERIES failed runs.
+        // still delivers the stall. Failed runs carrying this stall (the keyed
+        // wake's run, or a resource-wait retry that keeps its context) are
+        // retried after a doubling wait, and not after MAX_FAILED_STALL_DELIVERIES.
         const [prior] = await db.select({
           delivered: sql<boolean>`coalesce(bool_or(${inArray(agentWakeupRequests.status, DELIVERED_OR_PENDING_WAKE_STATUSES)}), false)`,
-          failedRuns: sql<number>`(count(*) filter (where ${agentWakeupRequests.status} = 'failed'))::int`,
           lastRequestedAt: sql<string | null>`max(${agentWakeupRequests.requestedAt})`,
         }).from(agentWakeupRequests)
           .where(and(eq(agentWakeupRequests.companyId, stall.companyId),
             sql`${agentWakeupRequests.payload}->>'issueId' = ${waiter.id}`,
             eq(agentWakeupRequests.idempotencyKey, idempotencyKey)));
         if (prior?.delivered) { result.alreadyWoken += 1; continue; }
-        const failedRuns = Number(prior?.failedRuns ?? 0);
+        const [failed] = await db.select({
+          runs: sql<number>`count(*)::int`,
+          lastAt: sql<string | null>`max(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}))`,
+        }).from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, stall.companyId), eq(heartbeatRuns.status, "failed"),
+            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${waiter.id}`,
+            sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,stalledIssueId}' = ${stall.issueId}`,
+            sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,recoveryAction,id}' = ${stall.actionId}`));
+        const failedRuns = Number(failed?.runs ?? 0);
         if (failedRuns >= MAX_FAILED_STALL_DELIVERIES) { result.alreadyWoken += 1; continue; }
-        if (prior?.lastRequestedAt) {
-          const dueAt = new Date(prior.lastRequestedAt).getTime() + REFUSED_WAKE_RETRY_MS * 2 ** Math.max(0, failedRuns - 1);
+        const lastAttemptAt = Math.max(prior?.lastRequestedAt ? new Date(prior.lastRequestedAt).getTime() : 0,
+          failed?.lastAt ? new Date(failed.lastAt).getTime() : 0);
+        if (lastAttemptAt > 0) {
+          const dueAt = lastAttemptAt + REFUSED_WAKE_RETRY_MS * 2 ** Math.max(0, failedRuns - 1);
           if (dueAt > Date.now()) {
             result.alreadyWoken += 1;
             retryAt(dueAt);
@@ -288,7 +307,7 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
             sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,stalledIssueId}' = ${stall.issueId}`,
             sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,recoveryAction,id}' = ${stall.actionId}`)).limit(1);
         if (carried) { result.alreadyWoken += 1; continue; }
-        if (await waiterWorkspaceRefusesStart(db, stall.companyId, waiter.executionWorkspaceId)) {
+        if (await waiterWorkspaceRefusesStart(db, stall.companyId, waiter)) {
           result.deferred += 1;
           retryAt(Date.now() + HELD_WORKSPACE_RECHECK_MS);
           continue;

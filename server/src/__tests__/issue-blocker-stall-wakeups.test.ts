@@ -242,10 +242,30 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       contextSnapshot: { ...calls[0]!.input.contextSnapshot, wakeReason: "workspace_busy_retry", retryOfRunId: randomUUID() } }).returning();
     await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(calls).toHaveLength(1);
-    // A retry chain that was itself cancelled, or failed before the agent ran, no longer counts.
-    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, retry.id));
+    // A retry chain that failed no longer carries the stall. Its failure counts
+    // as a failed run of this stall, so the stall is retried after the wait.
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, retry.id));
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(1);
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 11 * 60_000) }).where(eq(heartbeatRuns.id, retry.id));
     await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(calls).toHaveLength(2);
+  });
+
+  it("counts failed resource-wait retries toward the stall's failed-run limit", async () => {
+    const f = await fixture();
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    // Each keyed wake is cancelled by a workspace wait; its keyless retry then fails.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await db.update(agentWakeupRequests).set({ status: "cancelled", requestedAt: new Date(Date.now() - 24 * 60 * 60_000) })
+        .where(eq(agentWakeupRequests.companyId, f.companyId));
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.parentAgent, invocationSource: "automation",
+        status: "failed", finishedAt: new Date(Date.now() - 24 * 60 * 60_000),
+        contextSnapshot: { ...calls[0]!.input.contextSnapshot, wakeReason: "workspace_busy_retry", retryOfRunId: randomUUID() } });
+      await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    }
+    expect(calls).toHaveLength(3);
   });
 
   it("reaches a waiter through its own sweep when the stalled blocker is unassigned", async () => {
@@ -357,7 +377,13 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(issueRecoveryActions).set({ kind: "active_run_watchdog", cause: "native_workspace_sync_out_retry_exhausted",
       ownerType: "board", status: "escalated", evidence: { runId: writer.id, systemRecovery: { state: "exhausted" } } })
       .where(eq(issueRecoveryActions.id, f.action.id));
-    return { ...f, writer, workspace, authority };
+    // The parent's own last run (an earlier wake) already failed setup on that hold.
+    const [refused] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.parentAgent,
+      invocationSource: "automation", status: "failed", errorCode: "setup_failed",
+      error: "The workspace still has an unfinished writer or save operation.",
+      createdAt: new Date(Date.now() - 30 * 60_000), finishedAt: new Date(Date.now() - 30 * 60_000),
+      contextSnapshot: { issueId: f.parent.id, wakeReason: "issue_commented" } }).returning();
+    return { ...f, writer, workspace, authority, refused };
   }
 
   it("holds a stall wake while the waiter's workspace is held by a writer reservation would refuse", async () => {
@@ -390,12 +416,38 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(calls.map(call => call.agentId)).toEqual([f.parentAgent]);
   });
 
+  it("wakes a waiter with no evidence that its own run is refused by the hold", async () => {
+    // No run of this assignee has failed on the hold yet: reservation may still
+    // release the writer, or this agent may not use the workspace at all.
+    const fresh = await legacySharedWorkspaceFixture();
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, fresh.refused.id));
+    // Reassigned to another agent: the old assignee's refused run is no evidence for it.
+    const reassigned = await legacySharedWorkspaceFixture();
+    const otherAgent = randomUUID();
+    await db.insert(agents).values({ id: otherAgent, companyId: reassigned.companyId, name: "New owner", role: "engineer", status: "idle" });
+    companyIdOf.set(otherAgent, reassigned.companyId);
+    await db.update(issues).set({ assigneeAgentId: otherAgent }).where(eq(issues.id, reassigned.parent.id));
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: fresh.companyId });
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: reassigned.companyId });
+    expect(calls.map(call => call.agentId)).toEqual([fresh.parentAgent, otherAgent]);
+  });
+
   it("backs off a stall wake whose run keeps failing, and stops after a bounded number of failed runs", async () => {
     const f = await fixture();
     const { calls, enqueueWakeup } = wakeRecorder();
-    const fail = async (minutesAgo: number) => db.update(agentWakeupRequests)
-      .set({ status: "failed", requestedAt: new Date(Date.now() - minutesAgo * 60_000) })
-      .where(eq(agentWakeupRequests.companyId, f.companyId));
+    const age = async (minutesAgo: number) => {
+      const at = new Date(Date.now() - minutesAgo * 60_000);
+      await db.update(agentWakeupRequests).set({ requestedAt: at }).where(eq(agentWakeupRequests.companyId, f.companyId));
+      await db.update(heartbeatRuns).set({ finishedAt: at }).where(eq(heartbeatRuns.companyId, f.companyId));
+    };
+    // The latest wake's run fails, as the queue records it.
+    const fail = async (minutesAgo: number) => {
+      await db.update(agentWakeupRequests).set({ status: "failed" }).where(eq(agentWakeupRequests.companyId, f.companyId));
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.parentAgent, invocationSource: "automation",
+        status: "failed", contextSnapshot: calls.at(-1)!.input.contextSnapshot });
+      await age(minutesAgo);
+    };
     await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(calls).toHaveLength(1);
     // First failed run: retried after ten minutes.
@@ -407,7 +459,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const backingOff = await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(calls).toHaveLength(2);
     expect(backingOff.retryAt).toBeGreaterThan(Date.now() + 8 * 60_000);
-    await fail(21);
+    await age(21);
     await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(calls).toHaveLength(3);
     // Third failed run: the stall is not retried again, and no timer is asked for.
