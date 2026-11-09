@@ -1617,6 +1617,14 @@ export interface ToolAccessDecisionInput {
     riskLevel?: ToolRiskLevel | string | null;
     toolName: string;
     arguments?: unknown;
+    /**
+     * Set when the decision has no real call arguments (for example a
+     * tools/list listing, an access summary, or a grant check). Argument
+     * conditions then evaluate as unknown: they never deny listing access,
+     * while granting policies still apply as if some call could satisfy them.
+     * The call path keeps deciding with the actual arguments.
+     */
+    argumentsUnknown?: boolean;
     idempotencyKey?: string | null;
     sideEffecting?: boolean;
   };
