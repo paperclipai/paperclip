@@ -721,12 +721,18 @@ describe("ArchLead Operations plugin", () => {
 
   it("clamps unbounded overview bridge limit to MAX_RECORDS to prevent amplification", async () => {
     const harness = createTestHarness({ manifest });
+    const listSpy = vi.spyOn(harness.ctx.entities, "list");
     await plugin.definition.setup(harness.ctx);
     const overview = await harness.getData<{
       totals: { leads: number; requests: number; isLimited: boolean };
       pagination: { limit: number; offset: number };
     }>("overview", { companyId: COMPANY_ID, limit: 1_000_000, offset: -50 });
     expect(overview.pagination).toMatchObject({ limit: 200, offset: 0 });
+    expect(listSpy).toHaveBeenCalled();
+    for (const call of listSpy.mock.calls) {
+      expect(call[0].limit).toBeLessThanOrEqual(200);
+      expect(call[0].offset).toBe(0);
+    }
   });
 
   it("self-heals and recovers an unfinished sandbox qualification task on retry", async () => {
