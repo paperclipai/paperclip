@@ -1883,7 +1883,7 @@ impl CodexProviderState {
     ) -> Result<ToolCallAdmission, ProviderBridgeError> {
         let replay = self.tool_bridge.replay_result(call_id, operation_id, input);
         let replay = replay.map_err(|error| {
-            self.record_terminal_tool_rejection(operation_id);
+            self.record_tool_admission_error(operation_id, &error);
             error
         })?;
         if let Some(result) = replay {
@@ -1902,7 +1902,7 @@ impl CodexProviderState {
             self.tool_bridge
                 .begin_call(call_id.to_owned(), operation_id.to_owned(), input.clone());
         let call = call.map_err(|error| {
-            self.record_terminal_tool_rejection(operation_id);
+            self.record_tool_admission_error(operation_id, &error);
             error
         })?;
         if pending_replay {
@@ -1913,6 +1913,12 @@ impl CodexProviderState {
             Ok(ToolCallAdmission::PendingReplay)
         } else {
             Ok(ToolCallAdmission::Pending(call))
+        }
+    }
+
+    fn record_tool_admission_error(&mut self, operation_id: &str, error: &ProviderBridgeError) {
+        if !error.is_active_turn_receipt_limit() && !error.is_result_backpressure() {
+            self.record_terminal_tool_rejection(operation_id);
         }
     }
 
@@ -4562,7 +4568,7 @@ impl CodexCommandExecutor {
             .state
             .as_mut()
             .expect("Codex state remains available for a rejected tool call");
-        state.record_terminal_tool_rejection(&operation_id);
+        state.record_tool_admission_error(&operation_id, &error);
         let mut payload = json!({
             "provider": state.config.provider,
             "code": "semantic_tool_denied",
@@ -7587,6 +7593,80 @@ done
         assert_eq!(active_goal_events[0].event_type, "session.failed");
         assert_eq!(active_goal_events[0].payload["recoverable"], false);
         assert!(state.validate().is_ok());
+    }
+
+    #[test]
+    fn capacity_rejected_completion_remains_continuable_but_invalid_reports_do_not() {
+        for terminal_operation in ["paperclip_finish", "paperclip_block"] {
+            let mut state = declared_finish_state();
+            let mut operations = state
+                .tool_bridge
+                .authorized_tools()
+                .cloned()
+                .collect::<Vec<_>>();
+            operations[0].operation_id = terminal_operation.to_owned();
+            operations.push(crate::provider_bridge::AuthorizedTool {
+                operation_id: "read_context".to_owned(),
+                version: 1,
+                description: "Read context".to_owned(),
+                input_schema: json!({"type":"object"}),
+                response_schema: json!({"type":"object"}),
+            });
+            state.tool_bridge = ProviderToolBridge::default();
+            state
+                .tool_bridge
+                .prepare(AuthorizedToolSet {
+                    schema: TOOL_SET_SCHEMA.to_owned(),
+                    schema_version: 1,
+                    catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                    operations,
+                })
+                .unwrap();
+            let mut exhausted = false;
+            for index in 0..16 {
+                let call_id = format!("read-{index}");
+                match state.admit_tool_call(&call_id, "read_context", &json!({})) {
+                    Ok(ToolCallAdmission::Pending(_)) => {
+                        state
+                            .tool_bridge
+                            .apply_result(ToolResult {
+                                call_id,
+                                operation_id: "read_context".to_owned(),
+                                result: json!({"text":"x".repeat(700_000)}),
+                                is_error: false,
+                            })
+                            .unwrap();
+                    }
+                    Err(error) => {
+                        assert!(error.is_active_turn_receipt_limit());
+                        exhausted = true;
+                        break;
+                    }
+                    _ => panic!("expected a new read call"),
+                }
+            }
+            assert!(exhausted);
+            let error = state
+                .admit_tool_call(
+                    "valid-completion",
+                    terminal_operation,
+                    &valid_opencode_result(),
+                )
+                .unwrap_err();
+            assert!(error.is_active_turn_receipt_limit());
+            state.receipt_limit_interrupt_pending = true;
+            assert!(
+                receipt_limit_can_continue(&state, Some("turn.interrupted")),
+                "capacity alone must not poison {terminal_operation}"
+            );
+            assert!(state
+                .admit_tool_call("invalid-completion", terminal_operation, &json!({}))
+                .is_err());
+            assert!(
+                !receipt_limit_can_continue(&state, Some("turn.interrupted")),
+                "invalid completion must still fail closed"
+            );
+        }
     }
 
     fn assert_rejected_finish_terminal(state: &CodexProviderState) {

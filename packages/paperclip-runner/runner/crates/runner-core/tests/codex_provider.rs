@@ -6774,6 +6774,7 @@ fn receipt_limit_accepts_a_terminal_after_the_initial_interrupt_deadline() {
     let config = provider_config(
         &directory,
         &[
+            "--durable-turn-ids",
             "--require-dynamic-tool",
             "--hold-turn",
             "--emit-tool-call-on-resume",
@@ -6855,6 +6856,24 @@ fn receipt_limit_accepts_a_terminal_after_the_initial_interrupt_deadline() {
         "fast provider polls must not replace a delayed terminal with fallback failure"
     );
 
+    let settled = read_receipt_limit_state(&directory);
+    recovered
+        .execute(&command(
+            "capacity-continuation",
+            4,
+            "turn.start",
+            json!({"text":"Continue from the retained results; do not repeat completed actions."}),
+        ))
+        .expect("start the next turn after a confirmed internal interrupt");
+    let continued = read_receipt_limit_state(&directory);
+    assert_eq!(continued["threadId"], settled["threadId"]);
+    assert!(continued["activeProviderTurnId"].is_string());
+    assert!(
+        serde_json::to_string(&continued["toolBridge"])
+            .unwrap()
+            .contains("retained-call-0"),
+        "the next turn must retain exact replay protection for completed calls"
+    );
     recovered.shutdown().expect("stop recovered provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }

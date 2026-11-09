@@ -135,8 +135,9 @@ export function nativeRestartContinuationInFlight(snapshot: Pick<PersistedNative
   if (!last || typeof last.fingerprint !== "string" || !last.turnId || last.turnId === activeTurnId) return false;
   try {
     const fingerprint = JSON.parse(last.fingerprint);
-    return fingerprint?.terminalState === "failed" && fingerprint.result === null &&
-      isNativeRestartInterruption(fingerprint.error);
+    return fingerprint?.result === null &&
+      ((fingerprint.terminalState === "failed" && isNativeRestartInterruption(fingerprint.error)) ||
+        (fingerprint.terminalState === "interrupted" && isNativeReceiptLimitInterruption(fingerprint.error)));
   } catch { return false; }
 }
 
