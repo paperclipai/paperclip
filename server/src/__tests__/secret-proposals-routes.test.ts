@@ -865,6 +865,38 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     ]);
   });
 
+  it.each(["rejected", "approved", "pending"] as const)("deletes a secret whose %s binding proposal referenced it", async (outcome) => {
+    const fixture = await seedRun();
+    const secret = await secretService(db).create(fixture.companyId, {
+      name: "dev/deploy/publishing",
+      key: "DEPLOY_PUBLISHING",
+      provider: "local_encrypted",
+      value: "publishing-secret",
+    });
+    const proposals = createSecretProposalsService(db);
+    const proposal = await proposals.createBinding({ companyId: fixture.companyId, heartbeatRunId: fixture.heartbeatRunId }, {
+      secretId: secret.id,
+      configPath: "env.PUBLISHING_API_KEY",
+      justification: "Publish the site",
+      bindingTargetPolicy: "self_and_reports",
+    });
+    if (outcome === "rejected") await proposals.transition(fixture.companyId, proposal.id, "rejected", { resolvedByUserId: "board-user" });
+    if (outcome === "approved") {
+      await proposals.approve(fixture.companyId, proposal.id, { resolvedByUserId: "board-user" });
+      await db.delete(companySecretBindings).where(eq(companySecretBindings.secretId, secret.id));
+    }
+
+    // The proposal's secret reference used ON DELETE SET NULL, which the binding
+    // shape check rejects, so deleting the secret failed with a 500.
+    const deleted = await request(createBoardApp(fixture)).delete(`/api/secrets/${secret.id}`);
+    expect(deleted.status).toBe(200);
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id))).toEqual([]);
+    expect(await db.select().from(companySecretProposals).where(eq(companySecretProposals.id, proposal.id))).toEqual([]);
+    // A pending review card closes as rejected instead of pointing at a deleted proposal.
+    const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, proposal.interactionId!));
+    expect(card?.status).toBe(outcome === "approved" ? "accepted" : "rejected");
+  });
+
   it("proposes and approves a binding by resolving the proposer's own sourceConfigPath", async () => {
     const fixture = await seedRun();
     const sourceSecret = await secretService(db).create(fixture.companyId, {

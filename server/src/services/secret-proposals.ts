@@ -915,5 +915,30 @@ export function createSecretProposalsService(db: Db) {
     return row?.at == null ? null : new Date(row.at).getTime();
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired, sweepExpiredForCompany, expiryDeadlines, nextExpiryAt };
+  /**
+   * Deleting a secret also deletes the binding proposals that reference it.
+   * Settle pending ones first, so their review cards close as rejected with
+   * the reason instead of pointing at a proposal that no longer exists.
+   */
+  async function rejectPendingBindingsForSecret(companyId: string, secretId: string, input: { resolvedByUserId?: string | null }) {
+    const pending = await db.select({ id: companySecretProposals.id }).from(companySecretProposals).where(and(
+      eq(companySecretProposals.companyId, companyId),
+      eq(companySecretProposals.secretId, secretId),
+      eq(companySecretProposals.kind, "binding"),
+      eq(companySecretProposals.status, "pending"),
+    ));
+    for (const row of pending) {
+      try {
+        await transition(companyId, row.id, "rejected", {
+          resolvedByUserId: input.resolvedByUserId ?? null,
+          reason: "The referenced secret was deleted.",
+        });
+      } catch (error) {
+        // Resolved concurrently; the secret deletion still removes the row.
+        if (!(error instanceof HttpError) || error.status !== 409) throw error;
+      }
+    }
+  }
+
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, rejectPendingBindingsForSecret, sweepExpired, sweepExpiredForCompany, expiryDeadlines, nextExpiryAt };
 }

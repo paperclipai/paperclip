@@ -1122,6 +1122,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     );
     if (!existing) return;
 
+    await proposals.rejectPendingBindingsForSecret(existing.companyId, existing.id, { resolvedByUserId: req.actor.userId ?? null });
     const removed = await svc.remove(id);
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
