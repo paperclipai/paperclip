@@ -329,7 +329,7 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
     if (!recorded) {
       const saved = await getWorkspaceSnapshot(input.db, input);
       if (!saved || (!recapture && saved.manifestDigest !== input.manifestDigest)) failure("publication_changed");
-      await verify(saved); return saved;
+      await verifyTimed(saved); return saved;
     }
     // The object key is unique per attempt, so a late losing uploader cannot
     // overwrite an object already used by a committed generation.
