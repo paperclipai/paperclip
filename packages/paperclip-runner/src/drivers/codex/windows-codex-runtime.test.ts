@@ -1,10 +1,15 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { materializeWindowsCodexRuntime } from "./windows-codex-runtime.js";
+import { dirname, join, win32 } from "node:path";
+import { materializeWindowsCodexRuntime, windowsCodexRuntimeCacheBase } from "./windows-codex-runtime.js";
 
 const creationRace = vi.hoisted(() => ({ next: false }));
+const account = vi.hoisted(() => ({ homedir: "Z:\\profiles\\relocated-user" }));
+vi.mock("node:os", async importOriginal => ({
+  ...await importOriginal<typeof import("node:os")>(),
+  homedir: () => account.homedir,
+}));
 vi.mock("node:fs", async importOriginal => {
   const fs = await importOriginal<typeof import("node:fs")>();
   return { ...fs, mkdirSync: ((...args: Parameters<typeof fs.mkdirSync>) => {
@@ -65,4 +70,21 @@ it("creates another generation after a source update", () => {
   const next = materializeWindowsCodexRuntime(f.binary, f.cache);
   expect(next).not.toBe(previous);
   expect(readFileSync(previous, "utf8")).toBe("official runtime fixture");
+});
+
+it("places a relocated profile's default cache in per-user system-volume LOCALAPPDATA", () => {
+  const drive = process.env.SystemDrive ?? "C:";
+  vi.stubEnv("LOCALAPPDATA", `${drive}\\Users\\fixture\\AppData\\Local`);
+  try {
+    const cache = windowsCodexRuntimeCacheBase();
+    expect(win32.parse(cache).root.toLowerCase()).toBe(`${drive}\\`.toLowerCase());
+    expect(cache).toBe(win32.join(process.env.LOCALAPPDATA!, "Paperclip", "runtime-cache", "native-codex"));
+    vi.stubEnv("LOCALAPPDATA", "Z:\\profiles\\relocated-user\\AppData\\Local");
+    expect(() => windowsCodexRuntimeCacheBase()).toThrow("per-user LOCALAPPDATA");
+  } finally { vi.unstubAllEnvs(); }
+});
+it.skipIf(process.platform !== "win32")("refuses an explicit cache on another volume before creating it", () => {
+  const f = fixture();
+  const otherDrive = (process.env.SystemDrive ?? "C:").toUpperCase() === "Z:" ? "Y:" : "Z:";
+  expect(() => materializeWindowsCodexRuntime(f.binary, `${otherDrive}\\paperclip-cache`)).toThrow("Windows system volume");
 });

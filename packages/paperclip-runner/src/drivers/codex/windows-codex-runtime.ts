@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 
 const verified = new Map<string, { sources: string; targets: string; binary: string }>();
 function fileFacts(path: string, cached = false): string {
@@ -26,10 +26,26 @@ function digest(path: string): string {
   } finally { closeSync(descriptor); }
 }
 
+export function windowsCodexRuntimeCacheBase(): string {
+  const systemRoot = `${process.env.SystemDrive ?? "C:"}\\`.toLowerCase();
+  const local = process.env.LOCALAPPDATA ?? win32.join(homedir(), "AppData", "Local");
+  if (win32.parse(local).root.toLowerCase() !== systemRoot) {
+    throw new Error("Native Codex needs a per-user LOCALAPPDATA directory on the Windows system volume");
+  }
+  return win32.join(local, "Paperclip", "runtime-cache", "native-codex");
+}
+
+function requireSystemVolumeCache(path: string): void {
+  if (process.platform === "win32" && win32.parse(path).root.toLowerCase() !== `${process.env.SystemDrive ?? "C:"}\\`.toLowerCase()) {
+    throw new Error("Native Codex cache must be on the Windows system volume");
+  }
+}
+
 /** MXC cannot mount ReFS resources. Copy only the verified runtime executables
  * to the user's system-volume cache, never credentials or provider sessions. */
-export function materializeWindowsCodexRuntime(binary: string, cacheBase = join(homedir(), ".paperclip", "runtime-cache", "native-codex")): string {
+export function materializeWindowsCodexRuntime(binary: string, cacheBase = windowsCodexRuntimeCacheBase()): string {
   if (!isAbsolute(cacheBase)) throw new Error("Native Codex cache must be absolute");
+  requireSystemVolumeCache(cacheBase);
   const files = [basename(binary), "codex-code-mode-host.exe"].filter(name => existsSync(join(dirname(binary), name)));
   const sources = files.map(name => `${name}:${fileFacts(join(dirname(binary), name))}`).join(";");
   const parents: string[] = [];
@@ -46,6 +62,7 @@ export function materializeWindowsCodexRuntime(binary: string, cacheBase = join(
     if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("Native Codex cache must not contain directory links");
   }
   const canonicalBase = realpathSync(cacheBase);
+  requireSystemVolumeCache(canonicalBase);
   const key = `${binary}:${canonicalBase}`;
   const previous = verified.get(key);
   const targetFacts = (path: string) => files.map(name => fileFacts(join(dirname(path), name), true)).join(";");

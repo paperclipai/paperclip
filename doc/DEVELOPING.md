@@ -158,7 +158,10 @@ qualified Codex dependency. MXC requires a supported Windows 11 build; an
 unavailable sandbox fails closed. Filesystem read restrictions remain enabled.
 When the installed executable is outside the system volume, only its executable
 resources are copied to a hash-verified cache under
-`~/.paperclip/runtime-cache/native-codex`. Credentials and sessions are never
+`%LOCALAPPDATA%/Paperclip/runtime-cache/native-codex`. The per-user local application
+data path and its canonical cache path must be on the Windows system volume.
+A relocated application data path on another volume fails setup with an explicit
+error; Paperclip does not create a shared machine cache. Credentials and sessions are never
 copied there. A cold cache hashes and copies the runtime once; subsequent lookups
 reuse the generation while its file identities and timestamps remain unchanged.
 The optional live confinement regression is:
