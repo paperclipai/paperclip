@@ -246,5 +246,11 @@ export const heartbeatRuns = pgTable(
         nullif(${table.contextSnapshot}->>'taskKey', '')
       )`)
       .concurrently(),
+    // Covers the `agent_wakeup_requests` foreign key below. Postgres does not
+    // index a referencing column for you, so every delete of a wakeup row
+    // scans this whole table to check referential integrity.
+    wakeupRequestIdx: index("heartbeat_runs_wakeup_request_id_idx")
+      .on(table.wakeupRequestId)
+      .concurrently(),
   }),
 );

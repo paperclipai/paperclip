@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_wakeup_request_id_idx" ON "heartbeat_runs" USING btree ("wakeup_request_id");
