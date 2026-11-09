@@ -3,6 +3,10 @@ import { expect, test } from "@playwright/test";
 
 test.use({ trace: "retain-on-failure" });
 
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 // The tenant UI and task database are real. Cloud is an external dependency:
 // simulate its entry endpoint and independent session states at the HTTP edge.
 for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paperclip.app"]) {
