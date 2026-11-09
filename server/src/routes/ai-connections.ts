@@ -164,7 +164,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const context = connectionRequestContext(req);
     const targetPoolId = typeof req.params.poolId === "string" ? req.params.poolId
       : req.method === "POST" && typeof req.body?.id === "string" ? req.body.id : null;
-    const scopedConfigure = targetPoolId && context?.resource.connectionId === targetPoolId && (context.decision.action === "connections:configure"
+    const scopedConfigure = context && targetPoolId && context.resource.connectionId === targetPoolId && (context.decision.action === "connections:configure"
       || (await connectionManagementService(db).capability(req.actor, "connections:configure", { ...context.resource, readOnly: false }, { mutation: false })).allowed);
     if (!scopedConfigure && !(await canManageAiConnections(db, req, companyId))) throw forbidden("Manage connections permission is required");
     return companyId;
