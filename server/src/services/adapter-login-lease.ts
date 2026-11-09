@@ -1,3 +1,4 @@
+import { resolveLoginCommandKey } from "./login-command.js";
 import type { Environment } from "@paperclipai/shared";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 
@@ -54,9 +55,10 @@ export function buildLoginLeaseAcquireArgs(
   options: BuildLoginLeaseAcquireArgsOptions,
 ): AcquireLoginLeaseArgs {
   return {
+    ...(options.metadata.environment.driver === "plugin" ? { purpose: "login" as const, loginCommandKey: resolveLoginCommandKey(options.metadata.adapterType ?? "") } : {}),
     companyId: options.metadata.companyId,
     environment: options.metadata.environment,
-    adapterType: options.metadata.adapterType ?? null,
+    adapterType: options.metadata.environment.driver === "plugin" ? "paperclip_runner" : options.metadata.adapterType ?? null,
     agentId: options.targetAgentId ?? null,
     // A null issue, a null heartbeat run, and a null execution workspace disable
     // lease reuse, so the login session always runs in a fresh sandbox.

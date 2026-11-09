@@ -1,3 +1,4 @@
+import { assertLoginEnvironmentTarget } from "./login-environment.js";
 // The production transport binding for the Claude setup-token login session.
 //
 // The session service (`setup-token-session.ts`) drives the login flow over
@@ -352,6 +353,7 @@ export function buildSetupTokenLoginTransport(
 
 /** The dependencies the production sandbox provider needs. */
 export interface ProductionSetupTokenSandboxProviderDeps {
+  db?: Db;
   environments: Pick<ReturnType<typeof environmentService>, "getById" | "getLeaseById" | "releaseLease">;
   environmentRuntime: Pick<ReturnType<typeof environmentRuntimeService>, "acquireRunLease" | "getDriver">;
   /**
@@ -395,7 +397,9 @@ export function createProductionSetupTokenSandboxProvider(
 
   return {
     async acquire({ scope, deadline }) {
-      const environment = await deps.environments.getById(scope.environmentId);
+      const environment = deps.db
+        ? await assertLoginEnvironmentTarget(deps.db, scope)
+        : await deps.environments.getById(scope.environmentId);
       if (!environment) {
         log("[paperclip] Setup-token login: the selected environment is not found.");
         return failClosed();
@@ -423,9 +427,9 @@ export function createProductionSetupTokenSandboxProvider(
             environment,
             adapterType: scope.adapterType,
           },
-          // The setup-token login is company-and-environment scoped. It carries
-          // no target agent, so the lease binds no agent.
-          targetAgentId: null,
+          // The optional agent selects an existing computer; credential ownership
+          // remains with the company and user.
+          targetAgentId: scope.agentId,
           // Re-check the environment company binding inside the lease insert
           // transaction. The route guard ran earlier, so a managed
           // reconciliation can bind this sandbox to another company between the
@@ -552,6 +556,7 @@ export interface LoginPtyWorkerManagerLike {
       providerLeaseId: string;
       loginCommandKey: LoginCommandKey;
       sessionHome: string;
+      expiresAt?: string;
     },
   ): Promise<LoginPtySession>;
 }
@@ -561,6 +566,7 @@ export interface LoginPtyLeaseLookup {
   getLeaseById(leaseId: string): Promise<
     | {
         providerLeaseId: string | null;
+        expiresAt?: Date | null;
         metadata: Record<string, unknown> | null | undefined;
       }
     | null
@@ -610,7 +616,7 @@ export function createWorkerBoundLoginPtyOpener(
         : {};
     const pluginId = readLeaseMetaString(metadata.pluginId);
     const driverKey =
-      readLeaseMetaString(metadata.provider) ?? readLeaseMetaString(metadata.driver);
+      readLeaseMetaString(metadata.driverKey) ?? readLeaseMetaString(metadata.provider) ?? readLeaseMetaString(metadata.driver);
     if (!providerLeaseId || !pluginId || !driverKey) {
       log("[paperclip] Setup-token login: the lease carries no sandbox worker binding.");
       throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
@@ -638,6 +644,7 @@ export function createWorkerBoundLoginPtyOpener(
         providerLeaseId,
         loginCommandKey,
         sessionHome,
+        expiresAt: lease?.expiresAt?.toISOString(),
       });
     };
   };

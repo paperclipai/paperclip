@@ -28,6 +28,11 @@ export function recoverableTaskCreation(operation: Pick<SandboxCreationOperation
     metadata.providerMetadata !== null && typeof metadata.providerMetadata === "object" && !Array.isArray(metadata.providerMetadata);
 }
 
+/** Plugin allocations can return their exact creation lease after a lost reply. */
+export function recoverablePluginCreation(operation: Pick<SandboxCreationOperation, "metadata">): boolean {
+  return recoverableTaskCreation(operation) || (operation.metadata.driver === "plugin" && operation.metadata.purpose === "login");
+}
+
 type CreationOwner = {
   companyId: string;
   environmentId: string;
@@ -97,7 +102,7 @@ export async function createOwnedSandbox(
     crashPoint("sandbox.create.after_provider_before_lease");
     return { ...lease, metadata: { ...lease.metadata, creationOperationId: id } };
   } catch (error) {
-    if (recoverableTaskCreation(operation)) {
+    if (recoverablePluginCreation(operation)) {
       try {
         await writeEnvironmentCleanup(db, tx => tx.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(), updatedAt: new Date() })
           .where(and(eq(sandboxCreationOperations.id, id), recoverableSandboxCreationCondition())),
@@ -153,9 +158,10 @@ export async function queueSandboxCreationCleanup(db: Db, input: {
       heartbeatRunId: operation.runId, issueId: operation.issueId, executionWorkspaceId: operation.executionWorkspaceId,
       provider: operation.provider, providerLeaseId: input.providerLeaseId,
       metadata: { ...operation.metadata, creationOperationId: operation.id, environmentId: operation.originalEnvironmentId,
-        providerMetadata: input.providerMetadata ?? operation.metadata.creationProviderMetadata ?? {}, runnerTaskRetiring: true,
+        providerMetadata: input.providerMetadata ?? operation.metadata.creationProviderMetadata ?? {},
+        ...(operation.metadata.runnerTaskLease === true ? { runnerTaskRetiring: true } : {}),
         ...(contextId ? { runnerTaskStartupCleanup: { contextId, requiresPreparationStop: false } } : {}) },
-      failureReason: "interrupted_task_creation",
+      failureReason: operation.metadata.purpose === "login" ? "interrupted_login_creation" : "interrupted_task_creation",
     });
     await tx.update(sandboxCreationOperations).set({ state: "cleanup_pending", leaseId: lease.id, updatedAt: new Date(),
       metadata: { ...operation.metadata, creationProviderLeaseId: input.providerLeaseId,
@@ -189,9 +195,10 @@ export async function recoverSandboxCreations(db: Db,
       }
       const [existingCompany] = await db.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).limit(1);
       const observation = existingCompany ? await inspect(candidate) : null;
-      if (existingCompany && recoverableTaskCreation(candidate) && observation?.creationLease) {
+      if (existingCompany && recoverablePluginCreation(candidate) && observation?.creationLease) {
         const lease = observation.creationLease;
         if (typeof lease.providerLeaseId !== "string" || lease.providerLeaseId.length === 0 || lease.providerLeaseId !== observation.providerLeaseId ||
+            (candidate.metadata.purpose === "login" && lease.providerLeaseId !== candidate.id) ||
             !lease.metadata || typeof lease.metadata !== "object" || Array.isArray(lease.metadata)) {
           throw new Error("Task creation recovery returned foreign ownership");
         }
@@ -202,7 +209,14 @@ export async function recoverSandboxCreations(db: Db,
         await onTaskRecovered?.(candidate);
         continue;
       }
-      if (existingCompany && recoverableTaskCreation(candidate)) throw new Error("Task creation identity is not available yet");
+      if (existingCompany && candidate.metadata.purpose === "login" && observation?.state === "destroyed" && observation.providerLeaseId === candidate.id) {
+        const settledAt = Date.parse(typeof candidate.metadata.creationSettleAt === "string" ? candidate.metadata.creationSettleAt : "");
+        if (!Number.isFinite(settledAt) || Date.now() < settledAt) throw new Error("Login allocation creation has not settled yet");
+        await writeEnvironmentCleanup(db, tx => tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: new Date() })
+          .where(and(eq(sandboxCreationOperations.id, candidate.id), eq(sandboxCreationOperations.state, "pending"))), { companyId: candidate.companyId });
+        continue;
+      }
+      if (existingCompany && recoverablePluginCreation(candidate)) throw new Error("Plugin allocation creation identity is not available yet");
       const cleanup = observation?.creationCleanup ? readEnvironmentCreationCleanupError({ data: {
         schema: "paperclip/environment-creation-cleanup/v1", cleanup: observation.creationCleanup,
       } }) : null;

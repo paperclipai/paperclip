@@ -42,6 +42,7 @@ export type AdapterAuthSessionOwnerResponse =
   z.infer<typeof adapterAuthSessionOwnerResponseSchema>;
 
 export const startAdapterAuthSessionRequestSchema = z.object({
+  agentId: z.string().guid().optional(),
   aiConnection: aiConnectionLoginIntentSchema.optional(),
   environmentId: z.string().guid(),
   adapterType: z.enum(AGENT_ADAPTER_TYPES),

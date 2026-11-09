@@ -31,13 +31,13 @@ describe("claude setup-token session start request", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects an agent id: the scope carries no agent id", () => {
+  it("accepts an optional saved-agent transport target", () => {
     const result = startClaudeSetupTokenSessionRequestSchema.safeParse({
       environmentId: ENVIRONMENT_ID,
       adapterType: "claude_local",
       agentId: "22222222-2222-4222-8222-222222222222",
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 });
 

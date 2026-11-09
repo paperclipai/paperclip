@@ -1,3 +1,4 @@
+import { assertLoginEnvironmentTarget } from "./login-environment.js";
 import { writeLoginCleanup } from "./login-cleanup-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
@@ -132,6 +133,8 @@ export interface LoginSessionLease {
 }
 
 export interface AcquireLoginLeaseInput {
+  agentId?: string;
+  expiresAt?: Date;
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -212,6 +215,7 @@ export interface LoginSessionActivityEvent {
 export type LoginSessionActivityRecorder = (event: LoginSessionActivityEvent) => void;
 
 export interface StartDeviceLoginInput {
+  agentId?: string;
   managementContext?: ConnectionManagementContext;
   aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   companyId: string;
@@ -925,7 +929,8 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
     // caller cannot address the row by the internal id.
     const publicSessionId = randomUUID();
     const startedAt = now();
-    const ttlSeconds = input.ttlSeconds ?? resolveProfile(input.adapterType).timeoutMs / 1000;
+    const requestedTtlSeconds = input.ttlSeconds ?? resolveProfile(input.adapterType).timeoutMs / 1000;
+    const ttlSeconds = input.agentId ? Math.min(requestedTtlSeconds, DEVICE_LOGIN_TIMEOUT_MS / 1000) : requestedTtlSeconds;
     const expiresAt = new Date(startedAt.getTime() + ttlSeconds * 1000);
     const base = {
       sessionId,
@@ -964,6 +969,8 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
         environmentId: input.environmentId,
         adapterType: input.adapterType,
         sessionId,
+        agentId: input.agentId,
+        expiresAt,
         startedByUserId: input.startedByUserId,
       });
     } catch (error) {
@@ -1472,6 +1479,7 @@ export function buildSandboxLoginDriver(deps: {
   lease: EnvironmentLease;
   sessionHome: string;
   timeoutMs: number;
+  readCredential?: () => Promise<Buffer>;
 }): SandboxLoginDriver {
   const { openPtySession, environmentRuntime, environment, lease, sessionHome, timeoutMs } = deps;
   const transport = createLoginPtyTransport(openPtySession);
@@ -1483,6 +1491,7 @@ export function buildSandboxLoginDriver(deps: {
       // The read ignores the runner path. It runs one fixed, server-controlled,
       // descriptor-bound operation against the verified session home. So a swap of
       // the credential file between a check and the read cannot steer the read.
+      if (deps.readCredential) return deps.readCredential();
       return runDescriptorBoundAuthRead({
         environmentRuntime,
         environment,
@@ -1513,6 +1522,7 @@ export interface LoginPtySessionBinding {
   providerLeaseId: string;
   /** The server-controlled session home. The opener sets `CODEX_HOME` to it. */
   sessionHome: string;
+  expiresAt?: string;
   /** The resolved environment for the acquired lease. */
   environment: Environment;
   /** The acquired environment lease. */
@@ -1572,7 +1582,7 @@ export function createWorkerBoundLoginPtyOpener(
         : {};
     const pluginId = readLeaseMetaString(metadata.pluginId);
     const driverKey =
-      readLeaseMetaString(metadata.provider) ?? readLeaseMetaString(metadata.driver);
+      readLeaseMetaString(metadata.driverKey) ?? readLeaseMetaString(metadata.provider) ?? readLeaseMetaString(metadata.driver);
     if (!binding.providerLeaseId || !pluginId || !driverKey) {
       log("[paperclip] Device login: the lease carries no sandbox worker binding.");
       throw new Error(CODEX_LOGIN_PTY_BIND_FAILED);
@@ -1599,6 +1609,7 @@ export function createWorkerBoundLoginPtyOpener(
         providerLeaseId: binding.providerLeaseId,
         loginCommandKey,
         sessionHome: binding.sessionHome,
+        expiresAt: binding.expiresAt,
       });
   };
 }
@@ -1640,7 +1651,7 @@ export function createProductionLoginSessionRuntime(
   const environmentsSvc = environmentService(deps.db);
   return {
     async acquireLoginLease(input) {
-      const environment = await environmentsSvc.getById(input.environmentId);
+      const environment = await assertLoginEnvironmentTarget(deps.db, input);
       if (!environment) {
         throw new Error(`Environment "${input.environmentId}" is not found.`);
       }
@@ -1659,6 +1670,9 @@ export function createProductionLoginSessionRuntime(
             environment,
             adapterType: input.adapterType,
           },
+          targetAgentId: input.agentId,
+          requestedExpiresAt: input.expiresAt,
+          assertCompanyBinding: true,
         }),
       );
       // Tag the lease with the session identifier, so the reaper resolves an
@@ -1681,6 +1695,7 @@ export function createProductionLoginSessionRuntime(
             adapterType: input.adapterType,
             providerLeaseId,
             sessionHome,
+            expiresAt: record.lease.expiresAt?.toISOString(),
             environment: record.environment,
             lease: record.lease,
           })
@@ -1692,6 +1707,7 @@ export function createProductionLoginSessionRuntime(
         lease: record.lease,
         sessionHome,
         timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
+        ...(record.environment.driver === "plugin" ? { readCredential: () => deps.environmentRuntime.readLoginCredential({ environment: record.environment, lease: record.lease }) } : {}),
       });
       const driverKey = record.environment.driver;
       return {

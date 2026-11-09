@@ -323,6 +323,7 @@ export async function resolvePluginSandboxProviderDriverById(input: {
 }
 
 export async function listReadyPluginEnvironmentDrivers(input: {
+  kind?: "sandbox_provider" | "environment_driver";
   db: Db;
   workerManager?: PluginWorkerManager;
   recoverMissingWorker?: ReadyPluginWorkerRecovery;
@@ -374,7 +375,7 @@ export async function listReadyPluginEnvironmentDrivers(input: {
     );
     rows.push(
       ...(plugin.manifestJson.environmentDrivers ?? [])
-        .filter((driver) => driver.kind === "sandbox_provider")
+        .filter((driver) => driver.kind === (input.kind ?? "sandbox_provider"))
         .map((driver) => ({
           pluginId: plugin.id,
           pluginKey: plugin.pluginKey,
