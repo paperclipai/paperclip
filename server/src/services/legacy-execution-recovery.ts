@@ -25,7 +25,11 @@ import { readRunCancellation } from "./run-cancellation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
-import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import {
+  executionFailureRetryCount,
+  isProviderRateLimitWindowRun,
+  providerRateLimitWindowRetriesSpent,
+} from "./execution-recovery-attempt.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
@@ -88,6 +92,16 @@ export function legacyExecutionNeedsReconciliation(
       || run.errorCode === RUNNER_REVISION_MISMATCH_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
       || run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE) &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  // The gateway refused a request of the turn, and the retry resumes the saved
+  // session, which holds every action the turn took before it: nothing is
+  // replayed. The last attempt's failure falls through to the hold below, and
+  // so does a turn that left a background task behind, which the session does
+  // not hold.
+  if (
+    isProviderRateLimitWindowRun(run) &&
+    !providerRateLimitWindowRetriesSpent(run) &&
+    !run.resultJson?.unmanagedBackgroundTask
+  ) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
@@ -321,6 +335,8 @@ export async function terminalizeLegacyExecution(input: {
           ? "The original sandbox is retained for workspace repair. Verify that it has stopped, recover the missing files, record workspaceRepairEvidence, and explicitly remove the retained allocation when recovery is complete. A new agent turn cannot prove file recovery."
           : hasWorkspaceRestoreFailure(updated.resultJson)
           ? "Verify safe workspace staging or repair, then reconcile the stopped run before continuing. Saved work and approval decisions remain in force."
+          : isProviderRateLimitWindowRun(updated)
+          ? "The provider's rate limit rejected this run again on every scheduled retry. Wait for the limit to reopen, or have it raised, then resume the issue; its saved session is kept."
           : "Inspect the stopped provider and recorded actions, then reconcile their outcomes before continuing. This adapter has not established a safe resume checkpoint.",
         maxAttempts: 3,
         wakePolicy: null,

@@ -174,6 +174,23 @@ it.each([
   expect(logs).toContain(title);
 });
 
+it("reports a Databricks rate-limit window to the server through the real executor", async () => {
+  const details = "API Error: Request rejected (429) · User defined rate limit(s) exceeded for 'serving.opus'. Tokens-per-hour (TPH) rate limit exceeded for default user";
+  const { result } = await executeFailure("ACP agent reported a terminal limit failure.", "limit", "oneshot", undefined, {}, details);
+  expect(result).toMatchObject({
+    exitCode: 1,
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore: "2026-07-15T20:15:00.000Z",
+    resultJson: {
+      errorFamily: "provider_quota",
+      rateLimitWindow: true,
+      retryNotBefore: "2026-07-15T20:15:00.000Z",
+      providerQuotaRetryNotBefore: "2026-07-15T20:15:00.000Z",
+    },
+  });
+});
+
 it("does not infer quota from the historical generic terminal-limit error", () => {
   expect(classifyClaudeTerminalSessionFailure({
     category: "limit",

@@ -383,7 +383,10 @@ export interface AcpxRemoteManagedHomeResult {
 export type AcpxTerminalFailureClassification = Pick<
   AdapterExecutionResult,
   "errorCode" | "errorFamily" | "retryNotBefore"
->;
+> & {
+  /** The provider rejected the run for a rate-limit window that reopens by itself. */
+  rateLimitWindow?: true;
+};
 
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
@@ -5481,6 +5484,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               : {}),
             ...(failureDiagnostic ? { terminalSessionFailure: failureDiagnostic } : {}),
             ...(classifiedFailure?.errorFamily ? { errorFamily: classifiedFailure.errorFamily } : {}),
+            ...(classifiedFailure?.rateLimitWindow ? { rateLimitWindow: true } : {}),
             ...(classifiedFailure?.retryNotBefore
               ? {
                   retryNotBefore: classifiedFailure.retryNotBefore,

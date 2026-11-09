@@ -70,6 +70,7 @@ import {
   parseClaudeStreamJson, createClaudeStreamParser,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  claudeRateLimitWindowRetryDelayMs,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
   isClaudeProviderQuotaError,
@@ -1068,6 +1069,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           })
         : null;
+      const rateLimitWindow =
+        providerQuota &&
+        claudeRateLimitWindowRetryDelayMs({
+          parsed: null,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        }) !== null;
       const errorCode = proc.errorCode
         // Forward the transport-level error code from the run-disposition seam
         // first, even on the unparsed path. A lost duplex control channel
@@ -1111,6 +1120,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stdout: proc.stdout,
           stderr: proc.stderr,
           ...(errorFamily ? { errorFamily } : {}),
+          ...(rateLimitWindow ? { rateLimitWindow: true } : {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }
             : {}),
@@ -1216,6 +1226,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
+    const rateLimitWindow =
+      providerQuota &&
+      claudeRateLimitWindowRetryDelayMs({
+        parsed,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage,
+      }) !== null;
     const resolvedErrorCode = proc.errorCode
       // Forward the transport-level error code from the run-disposition seam
       // first. A lost duplex control channel surfaces the typed
@@ -1261,6 +1279,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
       ...(errorFamily ? { errorFamily } : {}),
+      ...(rateLimitWindow ? { rateLimitWindow: true } : {}),
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),

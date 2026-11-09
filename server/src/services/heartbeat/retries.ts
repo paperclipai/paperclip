@@ -19,11 +19,14 @@ import {
 } from "../conversation-continuation.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import {
+  PROVIDER_RATE_LIMIT_WINDOW_RETRY_JITTER_MS,
+  PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS,
   executionFailureRetryCount,
   executionRetryAttemptCount,
   accountingForScheduledRetry,
   INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS,
   INTERRUPTED_PREPARATION_RETRY_REASON,
+  isProviderRateLimitWindowRun,
 } from "../execution-recovery-attempt.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
@@ -156,12 +159,27 @@ export function isTransientWorkspacePreparationCode(code: string | null | undefi
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 
-export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailureRetryCount>[0] & { errorCode?: string | null }): boolean {
-  return run.errorCode === RUNNER_REVISION_MISMATCH_CODE
-    ? executionRetryAttemptCount(run, RUNNER_REVISION_WAIT_RETRY_REASON) >= RUNNER_REVISION_MISMATCH_RETRY.maxAttempts
-    : run.errorCode === STORAGE_UNAVAILABLE_CODE
-      ? executionRetryAttemptCount(run, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) >= STORAGE_UNAVAILABLE_RETRY.maxAttempts
-      : executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+export function boundedRetryMaxAttemptsForRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+) {
+  return isProviderRateLimitWindowRun(run)
+    ? PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS
+    : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+}
+
+export function failedRunRetryBudgetSpent(
+  run: Parameters<typeof executionFailureRetryCount>[0] & { errorCode?: string | null; resultJson?: unknown },
+): boolean {
+  if (run.errorCode === RUNNER_REVISION_MISMATCH_CODE) {
+    return executionRetryAttemptCount(run, RUNNER_REVISION_WAIT_RETRY_REASON) >= RUNNER_REVISION_MISMATCH_RETRY.maxAttempts;
+  }
+  if (run.errorCode === STORAGE_UNAVAILABLE_CODE) {
+    return executionRetryAttemptCount(run, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) >= STORAGE_UNAVAILABLE_RETRY.maxAttempts;
+  }
+  return executionFailureRetryCount(run) >= boundedRetryMaxAttemptsForRun({
+    errorCode: run.errorCode ?? null,
+    resultJson: run.resultJson,
+  } as Parameters<typeof boundedRetryMaxAttemptsForRun>[0]);
 }
 
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 2;
@@ -515,13 +533,25 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // Interrupted preparation spent no provider work: its own lane, bounded
     // like the native controller-generation cap (execution-recovery-attempt).
     const interruptedPreparationLane = retryReason === INTERRUPTED_PREPARATION_RETRY_REASON;
+    const rateLimitWindow =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON &&
+      isProviderRateLimitWindowRun(run);
     const maxAttempts = Math.max(
       0,
       Math.floor(
         opts?.maxAttempts ?? (interruptedPreparationLane
-          ? INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+          ? INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS : boundedRetryMaxAttemptsForRun(run)),
       ),
     );
+    // The adapter's retryNotBefore sets this wait, with a jitter on top; the
+    // bounded delay table only covers the first attempts of the default budget.
+    const jitterMs = rateLimitWindow
+      ? Math.floor(
+          Math.min(Math.max((opts?.random ?? Math.random)(), 0), 1) *
+            PROVIDER_RATE_LIMIT_WINDOW_RETRY_JITTER_MS,
+        )
+      : 0;
+    const delayMs = opts?.delayMs ?? (rateLimitWindow ? jitterMs : undefined);
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
     // An interrupted preparation never spends failures, but it never revives
@@ -529,14 +559,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const failureBudgetSpent = interruptedPreparationLane && opts?.maxAttempts == null
       && executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
     const computedBaseSchedule = failureBudgetSpent ? null
-      : opts?.delayMs != null
+      : delayMs != null
         ? nextAttempt <= maxAttempts
           ? {
               attempt: nextAttempt,
-              baseDelayMs: Math.max(0, Math.floor(opts.delayMs)),
-              delayMs: Math.max(0, Math.floor(opts.delayMs)),
+              baseDelayMs: Math.max(0, Math.floor(delayMs)),
+              delayMs: Math.max(0, Math.floor(delayMs)),
               dueAt: new Date(
-                now.getTime() + Math.max(0, Math.floor(opts.delayMs)),
+                now.getTime() + Math.max(0, Math.floor(delayMs)),
               ),
               maxAttempts,
             }
@@ -645,16 +675,15 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       }
     }
 
+    const waitUntil = transientRetryNotBefore
+      ? new Date(transientRetryNotBefore.getTime() + jitterMs)
+      : null;
     const schedule =
-      transientRetryNotBefore &&
-      transientRetryNotBefore.getTime() > baseSchedule.dueAt.getTime()
+      waitUntil && waitUntil.getTime() > baseSchedule.dueAt.getTime()
         ? {
             ...baseSchedule,
-            dueAt: transientRetryNotBefore,
-            delayMs: Math.max(
-              0,
-              transientRetryNotBefore.getTime() - now.getTime(),
-            ),
+            dueAt: waitUntil,
+            delayMs: Math.max(0, waitUntil.getTime() - now.getTime()),
           }
         : baseSchedule;
 

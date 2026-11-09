@@ -1676,6 +1676,64 @@ describe("claude execute", () => {
     }
   });
 
+  it("marks a Databricks rate-limit window for a retry a quarter of an hour out", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-window-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      resultEvent: {
+        type: "result",
+        subtype: "error",
+        session_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        is_error: true,
+        result: "API Error: Request rejected (429) · User defined rate limit(s) exceeded for 'serving.opus'. Tokens-per-hour (TPH) rate limit exceeded for default user",
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 22, 10, 15, 0));
+
+    try {
+      const result = await execute({
+        runId: "run-claude-rate-limit-window",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const expectedRetryNotBefore = new Date(2026, 3, 22, 10, 30, 0).toISOString();
+      expect(result).toMatchObject({
+        exitCode: 1,
+        errorCode: "provider_quota",
+        errorFamily: "provider_quota",
+        retryNotBefore: expectedRetryNotBefore,
+        resultJson: { rateLimitWindow: true, retryNotBefore: expectedRetryNotBefore },
+      });
+    } finally {
+      vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("treats subtype=success results as successful even when the process exits nonzero", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-success-subtype-"));
     const workspace = path.join(root, "workspace");

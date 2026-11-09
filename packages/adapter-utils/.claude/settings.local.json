@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/stefan/work/paperclip/.claude/worktrees/databricks-rate-limit-pr/packages/adapter-utils/scripts/paperclip-issue-update.sh:*)",
+      "Bash(/home/stefan/work/paperclip/.claude/worktrees/databricks-rate-limit-pr/packages/adapter-utils/scripts/paperclip:*)",
+      "Bash(curl:*)",
+      "Bash(env)",
+      "Bash(env:*)"
+    ],
+    "additionalDirectories": [
+      "/home/stefan/.paperclip/instances/default/companies/company-1",
+      "/home/stefan/.paperclip/instances/default/companies/company-1/acp-engine/agents/agent-1",
+      "/tmp/paperclip-acpx-skills-AUdnVM/state",
+      "/tmp/paperclip-acpx-skills-gFrkPG/state",
+      "/tmp/paperclip-acpx-skills-t2caPt/state",
+      "/tmp/paperclip-acpx-skills-xF16bY/state",
+      "/tmp/paperclip-acpx-skills-ysNPRC/state"
+    ],
+    "defaultMode": "default"
+  }
+}

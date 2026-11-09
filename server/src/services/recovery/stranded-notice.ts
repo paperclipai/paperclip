@@ -52,6 +52,8 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
   acpx_auth_required: "Error: agent login required",
 };
 
+const RATE_LIMIT_WINDOW_NOTICE_TITLE = "Error: model rate limit reached";
+
 const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
   workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
   remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: "Inspect the failed run and check repository access and sandbox load before retrying the task." },
@@ -259,6 +261,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     status: string;
     errorCode?: string | null;
     errorSummary?: string | null;
+    rateLimitWindow?: boolean;
   } | null | undefined;
 }): StrandedRecoveryEscalationNotice {
   const workspaceScan = WORKSPACE_SCAN_NOTICES[input.sourceRun?.errorCode ?? ""];
@@ -270,6 +273,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
   const fallbackBody = input.fallbackBody?.trim();
   const body = seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
   const title =
+    (input.sourceRun?.rateLimitWindow ? RATE_LIMIT_WINDOW_NOTICE_TITLE : undefined) ??
     STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE[input.sourceRun?.errorCode?.trim() ?? ""] ??
     seed?.title ??
     STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE[input.recoveryCause ?? ""] ??
