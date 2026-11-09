@@ -21,7 +21,7 @@ it("tells agents searching for assistant disconnection that only the person can 
 
 it("says the call_api protocol rejection is final instead of inviting another search", () => {
   expect(() => validateRunnerApiCall({ operationId: "GET /api/mcp/connections" }, context))
-    .toThrow(/no other API route substitutes for it\. Its catalog description says who can use it\./);
+    .toThrow(/no other API route substitutes for it\. Read its catalog description for details\./);
 });
 
 it("points at the catalog description only when the protocol endpoint has one", () => {
@@ -31,4 +31,11 @@ it("points at the catalog description only when the protocol endpoint has one", 
   try { validateRunnerApiCall({ operationId: "POST /api/mcp/project-tools" }, context); } catch (error) { message = (error as Error).message; }
   expect(message).toContain("no other API route substitutes for it.");
   expect(message).not.toContain("catalog description");
+});
+
+it("does not claim a non-guidance protocol description says who can use the endpoint", () => {
+  let message = "";
+  try { validateRunnerApiCall({ operationId: "GET /api/companies/{companyId}/events/ws" }, context); } catch (error) { message = (error as Error).message; }
+  expect(message).toContain("Read its catalog description for details.");
+  expect(message).not.toContain("who can use it");
 });

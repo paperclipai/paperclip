@@ -54,7 +54,7 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   if (!parsed.success) throw badRequest("Invalid call_api arguments", { issues: parsed.error.issues });
   const input = parsed.data;
   const operation = runnerApiOperation(input.operationId);
-  if (operation.transport !== "rest") throw unprocessable(`This endpoint requires its existing protocol client; call_api supports REST only and no other API route substitutes for it.${operation.description.trim() ? " Its catalog description says who can use it." : ""}`);
+  if (operation.transport !== "rest") throw unprocessable(`This endpoint requires its existing protocol client; call_api supports REST only and no other API route substitutes for it.${operation.description.trim() ? " Read its catalog description for details." : ""}`);
   if (input.responseText && operation.method !== "GET") throw badRequest("responseText requires a GET operation; read the saved artifact instead of repeating a mutation");
   if (!operation.allowedModes.includes(context.workMode)) throw forbidden("call_api permits only reads in Ask and Plan modes; use the permitted dedicated tools");
   if (input.pathParams?.companyId && input.pathParams.companyId !== context.companyId) throw forbidden("API call belongs to another company");
