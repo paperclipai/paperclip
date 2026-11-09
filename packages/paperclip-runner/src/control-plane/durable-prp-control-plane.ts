@@ -2232,7 +2232,7 @@ export class DurablePrpControlPlane {
       .then(() => checkpoint.catch(error => { checkpointFailure = error ?? new Error("checkpoint_failed"); throw error; }))
       .then(() => connection.sendJson(frame))
       .catch(() => {
-        if (checkpointFailure !== null && this.#eventOwner === connection && this.#protocolIntegrityError === null) {
+        if (checkpointFailure !== null && this.#protocolIntegrityError === null) {
           this.#eventCommitFailed(connection, `checkpoint_flush_failed:${eventCommitFailureCause(checkpointFailure)}`);
         } else connection.close();
       });

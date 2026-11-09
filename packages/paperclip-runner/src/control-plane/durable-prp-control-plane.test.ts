@@ -1416,6 +1416,41 @@ it("fails closed at once when the journal cannot record a runner event", async (
   }
 });
 
+it("fails closed when checkpoint storage keeps failing before a reconnect authenticates", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-stall-"));
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: vi.fn(async () => undefined), onProtocolIntegrityError });
+  let checkpointUp = true;
+  core.setCheckpointPersistence(async () => {
+    if (!checkpointUp) throw Object.assign(new Error("connect to private-db-host refused"), { code: "ECONNREFUSED" });
+  });
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    const tickets = Array.from({ length: 20 }, () => core.issueBootstrapTicket(60_000));
+    await core.flushCheckpoint();
+    checkpointUp = false;
+    for (const ticket of tickets) {
+      const client = await authenticate(core, ticket);
+      client?.socket.destroy();
+      clock += 3_000;
+      if (onProtocolIntegrityError.mock.calls.length > 0) break;
+    }
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error & { reason: string; detail: string };
+    expect(failure.reason).toBe("runner_event_commit_stalled");
+    expect(failure.detail).toMatch(/^checkpoint_flush_failed:ECONNREFUSED at source seq 1$/);
+    expect(failure.message).not.toContain("private-db-host");
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("fails closed when runner events keep failing to commit without progress", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-event-delivery-stall-"));
   const commits = vi.fn(async () => {
