@@ -13,7 +13,7 @@ import {
   recordRecentTask,
   RECENT_TASKS_UPDATED_EVENT,
 } from "@/lib/recent-tasks";
-import { useRecentTasks } from "./useRecentTasks";
+import { RECENT_TASK_SUMMARY_CONCURRENCY, useRecentTasks } from "./useRecentTasks";
 
 const { getIssue, summaries } = vi.hoisted(() => ({ getIssue: vi.fn(), summaries: vi.fn() }));
 vi.mock("@/api/issues", () => ({ issuesApi: { get: getIssue, summaries } }));
@@ -194,6 +194,7 @@ describe("recent task synchronization", () => {
   });
 
   it.each([false, true])("refreshes long histories in parallel bounded requests without pruning on a partial failure (%s)", async fails => {
+    // Three chunks, all in flight together within the concurrency limit.
     const count = ISSUE_SUMMARIES_MAX_IDS * 2 + 3;
     const tasks = Array.from({ length: count }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${String(i).padStart(3, "0")}` }));
     tasks.forEach(issue => recordRecentTask(issue, "user-1"));
@@ -216,6 +217,26 @@ describe("recent task synchronization", () => {
     expect(entries).toHaveLength(count);
     expect(entries.every(entry => entry.title.startsWith("Refreshed"))).toBe(!fails);
     expect(getIssue).not.toHaveBeenCalled();
+  });
+
+  it("limits how many summary chunks are in flight at once", async () => {
+    const count = ISSUE_SUMMARIES_MAX_IDS * 5;
+    const tasks = Array.from({ length: count }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${String(i).padStart(3, "0")}` }));
+    tasks.forEach(issue => recordRecentTask(issue, "user-1"));
+    const pending: Array<() => void> = [];
+    summaries.mockImplementation(async (_company, ids: string[]) => {
+      await new Promise<void>(resolve => pending.push(resolve));
+      return tasks.filter(issue => ids.includes(issue.id));
+    });
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="many" /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(RECENT_TASK_SUMMARY_CONCURRENCY);
+    while (pending.length) {
+      pending.splice(0).forEach(resolve => resolve());
+      await flush();
+    }
+    expect(summaries).toHaveBeenCalledTimes(5);
+    expect(readRecentTasks(storageKey, "company-1")).toHaveLength(count);
   });
 
   it("prunes successful omissions without resurrecting cached full details", async () => {

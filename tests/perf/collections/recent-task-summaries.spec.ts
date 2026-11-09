@@ -26,8 +26,13 @@ test("Mine refreshes a recent-task history with one summaries request", async ({
     const url = new URL(item.url());
     if (url.pathname === `/api/companies/${companyId}/issues/summaries`) summaries.push(url);
   });
+  const response = page.waitForResponse(item => new URL(item.url()).pathname === `/api/companies/${companyId}/issues/summaries`);
   await page.goto(`/${fixture.company.issuePrefix}/issues?view=mine`);
-  await expect.poll(() => summaries.length).toBeGreaterThan(0);
+  // The server must accept the whole batch, not just receive it.
+  const first = await response;
+  expect(first.status()).toBe(200);
+  const rows = await first.json() as Array<{ id: string }>;
+  expect(rows.map(row => row.id).sort()).toEqual([...taskIds].sort());
   // Allow any follow-up chunk to start before counting.
   await page.waitForTimeout(1_500);
   // The live-updates socket may refresh the batch once after it opens; that

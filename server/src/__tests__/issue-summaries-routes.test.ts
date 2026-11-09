@@ -66,6 +66,14 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     await request(app(f.actor)).get(url(f.companyId) + query).expect(400);
   });
 
+  it("accepts exactly the maximum number of IDs", async () => {
+    const f = await fixture();
+    const ids = [f.rows[0]!.id, f.rows[1]!.id,
+      ...Array.from({ length: ISSUE_SUMMARIES_MAX_IDS - 2 }, () => randomUUID())];
+    const res = await request(app(f.actor)).get(url(f.companyId)).query({ ids: ids.join(",") }).expect(200);
+    expect(res.body.map((row: { id: string }) => row.id)).toEqual([f.rows[0]!.id, f.rows[1]!.id]);
+  });
+
   it("omits hidden, private, foreign and missing IDs without revealing them", async () => {
     const f = await fixture();
     const foreign = await fixture();
