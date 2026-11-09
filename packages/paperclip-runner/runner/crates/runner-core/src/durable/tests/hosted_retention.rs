@@ -19,7 +19,7 @@ impl CommandExecutor for RetentionExecutor {
     fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
         Ok(true)
     }
-    fn prepare_for_park(&mut self) -> Result<bool, DurableRunnerError> {
+    fn prepare_for_park(&mut self, _deadline: std::time::Instant) -> Result<bool, DurableRunnerError> {
         self.prepares.fetch_add(1, Ordering::SeqCst);
         Ok(true)
     }

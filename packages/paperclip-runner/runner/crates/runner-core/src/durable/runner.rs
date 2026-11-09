@@ -47,6 +47,7 @@ enum CommandLifecycle {
 }
 
 const TERMINAL_RESULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+const HOST_PARK_PREPARATION_BUDGET: Duration = Duration::from_secs(20);
 const CUMULATIVE_ACK_PERSIST_INTERVAL: usize = 16;
 
 fn reconnect_delay(base: Duration, max_delay: Duration, attempt: &mut u32) -> Duration {
@@ -318,7 +319,7 @@ pub trait CommandExecutor {
         Ok(false)
     }
 
-    fn prepare_for_park(&mut self) -> Result<bool, DurableRunnerError> {
+    fn prepare_for_park(&mut self, _deadline: Instant) -> Result<bool, DurableRunnerError> {
         Ok(false)
     }
 
@@ -1455,15 +1456,16 @@ fn process_host_control<E: CommandExecutor>(
             )
             && executor.host_park_ready()? =>
         {
-            let ready = match executor.prepare_for_park() {
-                Ok(false) => true,
-                Ok(true) => executor.host_park_ready()?,
-                Err(error) => {
-                    state.record_diagnostic(format!("host park preparation failed: {error}"));
-                    store.save(state)?;
-                    false
-                }
-            };
+            let ready =
+                match executor.prepare_for_park(Instant::now() + HOST_PARK_PREPARATION_BUDGET) {
+                    Ok(false) => true,
+                    Ok(true) => executor.host_park_ready()?,
+                    Err(error) => {
+                        state.record_diagnostic(format!("host park preparation failed: {error}"));
+                        store.save(state)?;
+                        false
+                    }
+                };
             if !ready {
                 control.channel.reply(&request, "conflict")?;
                 return Ok(HostAction::None);
@@ -3252,7 +3254,7 @@ mod tests {
                 self.calls.push("proof");
                 Ok(!self.prepared_once || self.ready_after_prepare)
             }
-            fn prepare_for_park(&mut self) -> Result<bool, DurableRunnerError> {
+            fn prepare_for_park(&mut self, _deadline: Instant) -> Result<bool, DurableRunnerError> {
                 self.calls.push("prepare");
                 self.prepared_once = true;
                 self.prepared

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use paperclip_runner_core::acpx_provider_session::{
     AcpxPermissionMode, AcpxProviderSession, AcpxProviderSessionConfig,
@@ -842,10 +842,14 @@ fn prepared_generation_rebinds_only_an_identical_unused_configuration() {
     let config = reusable_config(&directory);
     let mut session = AcpxProviderSession::start(&config).unwrap();
     assert!(!session.can_prepare_next_generation());
-    assert!(session.prepare_next_generation().is_err());
+    assert!(session
+        .prepare_next_generation(Instant::now() + Duration::from_secs(20))
+        .is_err());
     settle_turn(&mut session, "turn-1");
     let first_pid = session.process_id();
-    session.prepare_next_generation().unwrap();
+    session
+        .prepare_next_generation(Instant::now() + Duration::from_secs(20))
+        .unwrap();
     let prepared_pid = session.process_id();
     assert_ne!(prepared_pid, first_pid);
     assert!(session.awaits_run_rebind() && !session.generation_has_run_turn());
@@ -894,7 +898,9 @@ fn prepared_generation_rebinds_only_an_identical_unused_configuration() {
         !session.rebind_run(&later).unwrap(),
         "a used generation is never rebound"
     );
-    session.prepare_next_generation().unwrap();
+    session
+        .prepare_next_generation(Instant::now() + Duration::from_secs(20))
+        .unwrap();
     settle_turn(&mut session, "turn-2");
     assert!(
         !session.rebind_run(&later).unwrap(),
@@ -912,7 +918,9 @@ fn prepared_generation_never_admits_the_reaped_generation_late_callback() {
     let mut session = AcpxProviderSession::start(&reusable_config(&directory)).unwrap();
     settle_turn(&mut session, "turn-1");
     std::fs::write(directory.join("fault"), "late-tool-after-suspend").unwrap();
-    session.prepare_next_generation().unwrap();
+    session
+        .prepare_next_generation(Instant::now() + Duration::from_secs(20))
+        .unwrap();
     std::fs::write(directory.join("fault"), "").unwrap();
     let events = settle_turn(&mut session, "turn-2");
     assert!(!events

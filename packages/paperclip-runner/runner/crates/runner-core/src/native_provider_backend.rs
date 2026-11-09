@@ -337,9 +337,9 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         }
     }
 
-    fn prepare_for_park(&mut self) -> Result<bool, DurableRunnerError> {
+    fn prepare_for_park(&mut self, deadline: Instant) -> Result<bool, DurableRunnerError> {
         match self.selected.as_mut() {
-            Some(SelectedExecutor::Acpx(executor)) => executor.prepare_for_park(),
+            Some(SelectedExecutor::Acpx(executor)) => executor.prepare_for_park(deadline),
             _ => Ok(false),
         }
     }

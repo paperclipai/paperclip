@@ -268,7 +268,7 @@ fn last_process_start(journal: &[Value]) -> usize {
 fn prepared_park(harness: &mut Harness) -> Value {
     harness.complete_turn("first");
     assert!(harness.executor.host_park_ready().unwrap());
-    assert!(harness.executor.prepare_for_park().unwrap());
+    assert!(harness.executor.prepare_for_park(park_deadline()).unwrap());
     harness.fixture.process_starts().last().unwrap()["processStart"].clone()
 }
 
@@ -279,7 +279,7 @@ fn park_reaps_the_old_generation_before_spawning_and_proves_the_new_one_dormant(
     harness.complete_turn("first");
     let before = harness.fixture.journal().len();
     assert!(harness.executor.host_park_ready().unwrap());
-    assert!(harness.executor.prepare_for_park().unwrap());
+    assert!(harness.executor.prepare_for_park(park_deadline()).unwrap());
     let journal = harness.fixture.journal();
     let spawned = last_process_start(&journal);
     assert!(spawned > before);
@@ -309,7 +309,7 @@ fn park_reaps_the_old_generation_before_spawning_and_proves_the_new_one_dormant(
     assert_eq!(harness.drain(), Vec::<Value>::new());
     assert_eq!(harness.fixture.state()["lifecycle"], "session_open");
     assert!(
-        !harness.executor.prepare_for_park().unwrap(),
+        !harness.executor.prepare_for_park(park_deadline()).unwrap(),
         "a prepared generation is not prepared twice"
     );
     assert_eq!(harness.fixture.process_starts().len(), 2);
@@ -433,7 +433,7 @@ fn late_and_pre_turn_callbacks_never_reach_the_next_run() {
     let mut harness = Harness::new();
     harness.complete_turn("first");
     harness.fixture.fault("late-tool-after-suspend");
-    assert!(harness.executor.prepare_for_park().unwrap());
+    assert!(harness.executor.prepare_for_park(park_deadline()).unwrap());
     harness.fixture.fault("");
     let (attached, _) = harness.attach("run-2", |_| {});
     let events = harness.complete_turn("second");
@@ -447,7 +447,7 @@ fn late_and_pre_turn_callbacks_never_reach_the_next_run() {
     let mut harness = Harness::new();
     harness.complete_turn("first");
     harness.fixture.fault("pre-turn-tool");
-    assert!(harness.executor.prepare_for_park().unwrap());
+    assert!(harness.executor.prepare_for_park(park_deadline()).unwrap());
     harness.fixture.fault("");
     let prepared_pid = harness.fixture.process_starts().last().unwrap()["processStart"].clone();
     assert!(
@@ -468,7 +468,10 @@ fn failed_preparation_conflicts_and_leaves_a_cold_recoverable_session() {
     let old_pid = harness.opened["processId"].clone();
     harness.complete_turn("first");
     harness.fixture.fault("reject-open");
-    let error = harness.executor.prepare_for_park().unwrap_err();
+    let error = harness
+        .executor
+        .prepare_for_park(park_deadline())
+        .unwrap_err();
     assert!(
         error.to_string().contains("park preparation failed"),
         "{error}"
@@ -482,7 +485,7 @@ fn failed_preparation_conflicts_and_leaves_a_cold_recoverable_session() {
     assert_eq!(state["providerExitUnconfirmed"], false);
     assert!(state["identity"].is_object());
     assert!(!harness.executor.host_park_ready().unwrap());
-    assert!(!harness.executor.prepare_for_park().unwrap());
+    assert!(!harness.executor.prepare_for_park(park_deadline()).unwrap());
     assert_eq!(harness.drain(), Vec::<Value>::new());
     let (attached, _) = harness.attach("run-2", |_| {});
     assert_eq!(attached.result["status"], "resumed");
@@ -496,11 +499,45 @@ fn failed_preparation_conflicts_and_leaves_a_cold_recoverable_session() {
 }
 
 #[test]
+fn a_slow_replacement_open_fails_at_the_park_deadline_and_leaves_the_runner_responsive() {
+    let mut harness = Harness::new();
+    let old_pid = harness.opened["processId"].clone();
+    harness.complete_turn("first");
+    harness.fixture.fault("slow-open");
+    let started = Instant::now();
+    let error = harness
+        .executor
+        .prepare_for_park(Instant::now() + Duration::from_secs(1))
+        .unwrap_err();
+    let elapsed = started.elapsed();
+    harness.fixture.fault("");
+    assert!(
+        error.to_string().contains("timed out at session.open"),
+        "{error}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "park preparation took {elapsed:?}"
+    );
+    assert!(!alive(&old_pid));
+    let slow_pid = harness.fixture.process_starts().last().unwrap()["processStart"].clone();
+    assert!(!alive(&slow_pid));
+    let state = harness.fixture.state();
+    assert_eq!(state["lifecycle"], "suspended");
+    assert_eq!(state["providerExitUnconfirmed"], false);
+    assert!(!harness.executor.host_park_ready().unwrap());
+    let (attached, _) = harness.attach("run-2", |_| {});
+    assert_eq!(attached.result["status"], "resumed");
+    harness.complete_turn("second");
+    harness.executor.shutdown().unwrap();
+}
+
+#[test]
 fn failed_preparation_recovers_the_same_run_on_its_next_turn() {
     let mut harness = Harness::new();
     harness.complete_turn("first");
     harness.fixture.fault("reject-open");
-    assert!(harness.executor.prepare_for_park().is_err());
+    assert!(harness.executor.prepare_for_park(park_deadline()).is_err());
     harness.fixture.fault("");
     let events = harness.complete_turn("second");
     assert!(events
@@ -550,4 +587,8 @@ fn a_conflicted_park_keeps_the_prepared_provider_for_the_same_run() {
             && event["payload"]["previousProcessId"] == prepared_pid));
     assert_eq!(harness.fixture.process_starts().len(), 3);
     harness.executor.shutdown().unwrap();
+}
+
+fn park_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(20)
 }

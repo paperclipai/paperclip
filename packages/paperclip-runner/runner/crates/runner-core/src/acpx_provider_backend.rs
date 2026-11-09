@@ -2905,8 +2905,8 @@ impl CommandExecutor for AcpxCommandExecutor {
             }))
     }
 
-    fn prepare_for_park(&mut self) -> Result<bool, DurableRunnerError> {
-        self.prepare_session_for_park()
+    fn prepare_for_park(&mut self, deadline: Instant) -> Result<bool, DurableRunnerError> {
+        self.prepare_session_for_park(deadline)
     }
 
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {

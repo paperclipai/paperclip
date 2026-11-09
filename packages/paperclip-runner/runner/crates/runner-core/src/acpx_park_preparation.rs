@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::{
     await_provider_lifetime_fence, AcpxCommandExecutor, AcpxProviderDescriptor, AcpxProviderSession,
 };
@@ -5,7 +7,10 @@ use crate::durable::DurableRunnerError;
 use crate::provider_bridge::AuthorizedToolSet;
 
 impl AcpxCommandExecutor {
-    pub(super) fn prepare_session_for_park(&mut self) -> Result<bool, DurableRunnerError> {
+    pub(super) fn prepare_session_for_park(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<bool, DurableRunnerError> {
         self.ensure_persistence_healthy()?;
         let eligible = self.candidate_admission().is_none()
             && self.state.as_ref().is_some_and(|state| {
@@ -29,7 +34,7 @@ impl AcpxCommandExecutor {
             .session
             .as_mut()
             .expect("checked ACPX session")
-            .prepare_next_generation();
+            .prepare_next_generation(deadline);
         match prepared {
             Ok(()) => Ok(true),
             Err(error) => {

@@ -662,7 +662,7 @@ impl AcpxProviderSession {
         // the same verified persistent session in a fresh process generation.
         let provider_restarted = self.generation_has_run_turn;
         if provider_restarted {
-            if let Err(error) = self.restart_idle_provider() {
+            if let Err(error) = self.restart_idle_provider(None) {
                 return Err(self.fail_closed(error));
             }
         }
@@ -1315,7 +1315,8 @@ impl AcpxProviderSession {
         Ok(())
     }
 
-    fn restart_idle_provider(&mut self) -> Result<(), LocalRunnerError> {
+    fn restart_idle_provider(&mut self, deadline: Option<Instant>) -> Result<(), LocalRunnerError> {
+        self.transport.bound_requests_by(deadline);
         let suspended = self.transport.request(
             GeneratedAcpxSidecarCommand::SessionSuspend,
             json!({"reason":"ACPX turn receipt epoch rotation"}),
@@ -1330,6 +1331,7 @@ impl AcpxProviderSession {
             &restart_config.transport,
             &restart_config.agent,
         )?;
+        replacement.bound_requests_by(deadline);
         let (replacement_identity, _, turn_controls) =
             match bootstrap(&mut replacement, &restart_config) {
                 Ok(value) => value,

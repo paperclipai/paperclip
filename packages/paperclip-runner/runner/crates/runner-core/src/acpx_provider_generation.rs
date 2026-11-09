@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -91,7 +93,7 @@ impl AcpxProviderSession {
             && self.transport.buffered_events().len() == 0
     }
 
-    pub fn prepare_next_generation(&mut self) -> Result<(), LocalRunnerError> {
+    pub fn prepare_next_generation(&mut self, deadline: Instant) -> Result<(), LocalRunnerError> {
         if !self.can_prepare_next_generation() {
             return Err(LocalRunnerError::invalid(
                 "ACPX provider is not at a reusable generation boundary",
@@ -108,7 +110,7 @@ impl AcpxProviderSession {
                     "ACPX tool receipt rotation before park failed: {error}"
                 ))
             })?;
-        if let Err(error) = self.restart_idle_provider() {
+        if let Err(error) = self.restart_idle_provider(Some(deadline)) {
             return Err(self.fail_closed(error));
         }
         if self.state.settled_turn_identity_capacity_reached() {
@@ -125,6 +127,7 @@ impl AcpxProviderSession {
         if let Err(error) = self.verify_dormant_session() {
             return Err(self.fail_closed(error));
         }
+        self.transport.bound_requests_by(None);
         self.prepared_generation = Some((generation_digest(&self.config), previous_process_id));
         Ok(())
     }

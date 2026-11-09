@@ -240,6 +240,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
                     "error":{"code":"temporarily_unavailable","message":"Optional read is temporarily unavailable.","retryable":true}});
             }
+            if command == "session.open" && fault == "slow-open" {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
             if command == "session.open" && fault == "reject-open" {
                 response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
                     "error":{"code":"session_open_failed","message":"The replacement provider could not open.","retryable":false}});
