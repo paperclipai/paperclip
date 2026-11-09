@@ -2057,7 +2057,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
     for (const agentId of agentIds) {
-      await startNextQueuedRunForAgent(agentId);
+      await startNextQueuedRunForAgent(agentId, true);
     }
   }
 

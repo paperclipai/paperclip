@@ -6,6 +6,9 @@ import { activityLog, agents, companies, companyMemberships, heartbeatRuns, issu
 import { aiConnectionService } from "../services/ai-connections.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService, wakeConnectionIntentAfterResolution } from "../services/connection-intent-delivery.js";
+import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
+import { evaluateAgentInvokabilityFromDb } from "../services/agent-invokability.js";
 import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -105,6 +108,33 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     expect(source).toMatchObject({ status: "queued", startedAt: null, responsibleUserId: f.userId });
     expect(source!.contextSnapshot).toEqual({ issueId: f.issueId });
+  });
+
+  it.each(["retry", "continuation"] as const)("restores an inline setup card through full recovery for a retained %s", async kind => {
+    const f = await fixture();
+    if (kind === "retry") {
+      const [prior] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+        status: "failed", finishedAt: new Date(), contextSnapshot: { issueId: f.issueId } }).returning();
+      await db.update(heartbeatRuns).set({ retryOfRunId: prior!.id }).where(eq(heartbeatRuns.id, f.runId));
+    } else await db.update(heartbeatRuns).set({ continuationAttempt: 1 }).where(eq(heartbeatRuns.id, f.runId));
+    const deps = createHeartbeatQueueTestDependencies(db);
+    deps.getAgent.mockImplementation(async id => (await db.select().from(agents).where(eq(agents.id, id)))[0] ?? null);
+    deps.getAgentInvokability.mockImplementation(agent => evaluateAgentInvokabilityFromDb(db, agent));
+    const queue = createHeartbeatQueue(db, deps);
+    await queue.startNextQueuedRunForAgent(f.agentId);
+    expect(await cards(f.issueId)).toHaveLength(0);
+    await queue.resumeFreshQueuedRunsAtStartup();
+    expect(await cards(f.issueId)).toHaveLength(0);
+    expect(deps.executeRun).not.toHaveBeenCalledWith(f.runId);
+    // The global startup pass may dispatch unrelated ready fixtures. The full
+    // recovery below is scoped to this retained turn’s company.
+    deps.executeRun.mockClear();
+    await queue.resumeQueuedRunsAfterDrain({ companyId: f.companyId });
+    await queue.resumeQueuedRunsAfterDrain({ companyId: f.companyId });
+    expect(await cards(f.issueId)).toMatchObject([{ status: "pending", sourceRunId: f.runId, payload: { agentSetup: true } }]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+      .toMatchObject({ status: "queued", startedAt: null, responsibleUserId: f.userId });
+    expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
   it.each(["decline", "stop", "reassign", "setup_owner_changed"] as const)("does not dispatch or lift verification after %s", async action => {
