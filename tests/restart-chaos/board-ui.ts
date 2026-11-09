@@ -23,7 +23,7 @@ async function retryButtonsBannerFirst(page: Page): Promise<ElementHandle[]> {
   const candidates: Array<{ button: ElementHandle; inBanner: boolean }> = [];
   for (const button of await page.getByRole("button", { name: "Retry", exact: true }).elementHandles()) {
     if (!await button.isVisible().catch(() => false)) continue;
-    const inBanner = await button.evaluate(node => Boolean(node.closest("[role=status], [role=alert]"))).catch(() => false);
+    const inBanner = await button.evaluate(node => Boolean((node as Element).closest("[role=status], [role=alert]"))).catch(() => false);
     candidates.push({ button, inBanner });
   }
   return [...candidates.filter(candidate => candidate.inBanner), ...candidates.filter(candidate => !candidate.inBanner)].map(candidate => candidate.button);
