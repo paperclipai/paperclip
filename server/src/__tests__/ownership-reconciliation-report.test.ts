@@ -457,15 +457,34 @@ describe("report-only ownership reconciliation", () => {
       body: "self", createdAt: minutesAgo(2) });
     await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "queued",
       payload: { issueId, commentId: carried.id } });
-    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false,
+      processStartedAt: minutesAgo(10) });
     expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId)).toEqual([lost.id]);
     // The young comment may still get its normal wake: a deadline, not a report.
     expect(report.nextDueAt?.getTime()).toBe(young.createdAt.getTime() + 30_000);
     // A run that started after the comment read it.
     await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", invocationSource: "manual",
       contextSnapshot: { issueId }, startedAt: minutesAgo(1), createdAt: minutesAgo(1), finishedAt: new Date() });
-    const later = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    const later = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false,
+      processStartedAt: minutesAgo(10) });
     expect(later.violations.filter(row => row.reason === "user_comment_without_wake")).toEqual([]);
+  });
+
+  it("finds at once a young user comment whose wake a restart lost after the board stopped the run", async () => {
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Stopped then continued", status: "todo", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "cancelled", invocationSource: "assignment",
+      runtimeMode: "native", contextSnapshot: { issueId }, startedAt: minutesAgo(4), createdAt: minutesAgo(4), finishedAt: minutesAgo(1) });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "user-1",
+      body: "I stopped your previous run on purpose. Please continue.", createdAt: new Date(Date.now() - 12_000) }).returning();
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false,
+      processStartedAt: new Date(Date.now() - 2_000) });
+    expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId))
+      .toEqual([comment!.id]);
+    const sameProcess = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false,
+      processStartedAt: minutesAgo(10) });
+    expect(sameProcess.violations.filter(row => row.reason === "user_comment_without_wake")).toEqual([]);
+    expect(sameProcess.nextDueAt?.getTime()).toBe(comment!.createdAt.getTime() + 30_000);
   });
 
   it("finds a user comment that a restart left without a wake on a task its agent then closed", async () => {

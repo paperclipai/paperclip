@@ -14,6 +14,9 @@ use paperclip_runner_core::provider_bridge::{authorized_tool_catalog_digest, Aut
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+#[path = "support/acpx_turn_end_restart.rs"]
+mod turn_end_restart;
+
 struct Fixture(PathBuf);
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -267,8 +270,9 @@ fn last_process_start(journal: &[Value]) -> usize {
 
 fn prepared_park(harness: &mut Harness) -> Value {
     harness.complete_turn("first");
+    harness.executor.prepare_next_turn().unwrap();
     assert!(harness.executor.host_park_ready().unwrap());
-    assert!(harness.executor.prepare_for_park(park_deadline()).unwrap());
+    assert!(!harness.executor.prepare_for_park(park_deadline()).unwrap());
     harness.fixture.process_starts().last().unwrap()["processStart"].clone()
 }
 
