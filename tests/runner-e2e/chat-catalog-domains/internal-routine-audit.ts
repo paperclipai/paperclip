@@ -41,15 +41,23 @@ function canonicalJson(value: unknown): string {
 }
 /** Same digest the server stores for a redacted call_api input (canonical JSON, sha256). */
 export function callApiInputDigest(input: Record<string, unknown>) { return createHash("sha256").update(canonicalJson(input), "utf8").digest("hex"); }
-/** call_api inputs whose response carries this routine's run records (status and failure reason). */
+/**
+ * call_api inputs whose response carries this routine's run records (status and failure reason): its runs
+ * (any positive limit; the fixture has one run), its detail (recent runs), or the company routine list
+ * (last run), unfiltered or filtered to the routine's project. The company path parameter may be omitted;
+ * the server fills it from the caller's company. Empty query/path objects are equivalent to omitted ones.
+ */
 export function routineExecutionReads(companyId: string, routineId: string, projectId?: string) {
-  const list = "GET /api/companies/{companyId}/routines";
-  return [
-    { operationId: "GET /api/routines/{id}/runs", pathParams: { id: routineId } },
-    { operationId: "GET /api/routines/{id}", pathParams: { id: routineId } },
-    { operationId: list, pathParams: { companyId } },
-    ...(projectId ? [{ operationId: list, pathParams: { companyId }, query: { projectId } }] : []),
-  ].map(callApiInputDigest);
+  const list = "GET /api/companies/{companyId}/routines"; const runs = "GET /api/routines/{id}/runs"; const detail = "GET /api/routines/{id}";
+  const variants = (operationId: string, paths: Array<Record<string, unknown> | undefined>, queries: Array<Record<string, unknown> | undefined>) =>
+    paths.flatMap(pathParams => queries.map(query => ({ operationId, ...(pathParams ? { pathParams } : {}), ...(query ? { query } : {}) })));
+  const limits = Array.from({ length: 500 }, (_, index) => index + 1).flatMap(limit => [{ limit }, { limit: String(limit) }]);
+  const routinePath = [{ id: routineId }];
+  return new Set([
+    ...variants(runs, routinePath, [undefined, {}, ...limits]),
+    ...variants(detail, routinePath, [undefined, {}]),
+    ...variants(list, [{ companyId }, undefined, {}], [undefined, {}, ...(projectId ? [{ projectId }] : [])]),
+  ].map(callApiInputDigest));
 }
 function prp(row: RunEvent) {
   const envelope = (row.payload?.prpEvent ?? {}) as Record<string, unknown>;
@@ -63,10 +71,10 @@ function prp(row: RunEvent) {
  * succeeded. A dedicated tool's unredacted output must carry the failed
  * routine-run id. The agent's own wording is never matched.
  */
-export function readFailedExecution(events: readonly RunEvent[], failedRunId: string, expectedReads: readonly string[]) {
+export function readFailedExecution(events: readonly RunEvent[], failedRunId: string, expectedReads: ReadonlySet<string>) {
   if (!failedRunId) return false;
   const uses = new Set(events.map(prp).filter(({ item }) => item.type === "tool_use" && item.name === "call_api"
-    && expectedReads.includes(String((item.input as Record<string, unknown> | undefined)?.apiPayloadSha256))).map(({ item }) => String(item.id)));
+    && expectedReads.has(String((item.input as Record<string, unknown> | undefined)?.apiPayloadSha256))).map(({ item }) => String(item.id)));
   return events.some(row => {
     const { envelope, payload, item } = prp(row); const result = (item.result ?? {}) as Record<string, unknown>;
     if (item.type === "tool_result" && uses.has(String(item.tool_use_id)) && result.ok === true && result.status === 200) return true;
@@ -142,7 +150,7 @@ function routineAudit(): ChatCatalogCase {
     await ctx.input.evidence("chat-catalog-routine-audit-setup.json", { companyId: ctx.input.fixtures.company.id, timezone, trigger, edit, runs: outcome.runs, task: outcome.task, now });
     return { project: p, worker: { id: worker.id }, routine: saved, timezone, editEventId: edit.id, failedRunId: failed.id, executionTaskId: failed.linkedIssueId, routineRunCount: outcome.runs.length, now };
   }, gradeRoutineAudit);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.routine-audit.v4", authentication: "human-session", expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 720_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.routine-audit.v5", authentication: "human-session", expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 720_000,
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-routine-audit.ts", "run-observations.ts"],
     async observe(ctx, state): Promise<RoutineAudit> {
       const id = entity(state, "routine").id; const o = await observeInternal(ctx, state); const leadEvents: RunEvent[] = [];
