@@ -13,13 +13,13 @@ vi.mock("../api/projects", () => ({ projectsApi: { getClaudeProjectTrust: vi.fn(
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const workspace = { id: "workspace", sourceType: "local_path", cwd: "/reviewed", repoUrl: null, repoRef: null,
-  defaultRef: null, remoteProvider: null, remoteWorkspaceRef: null, updatedAt: "2026-11-09T10:00:00Z" } as unknown as ProjectWorkspace;
+  defaultRef: null, remoteProvider: null, remoteWorkspaceRef: null, updatedAt: new Date("2026-11-09T10:00:00Z") } as unknown as ProjectWorkspace;
 
 describe("Claude project trust consent", () => {
   it.each([
-    { cwd: "/replacement", updatedAt: "2026-11-09T10:01:00Z" },
-    { repoUrl: "https://example.test/replacement.git", updatedAt: "2026-11-09T10:01:00Z" },
-    { updatedAt: "2026-11-09T10:01:00Z" },
+    { cwd: "/replacement", updatedAt: new Date("2026-11-09T10:01:00Z") },
+    { repoUrl: "https://example.test/replacement.git", updatedAt: new Date("2026-11-09T10:01:00Z") },
+    { updatedAt: new Date("2026-11-09T10:01:00Z") },
   ])("clears unsaved choices after the reviewed workspace changes: %j", async (changed) => {
     const empty = { agentIds: [] as string[] };
     vi.mocked(projectsApi.getClaudeProjectTrust).mockResolvedValue(empty);
@@ -37,7 +37,7 @@ describe("Claude project trust consent", () => {
       const checkbox = () => container.querySelector<HTMLButtonElement>('[role="checkbox"]')!;
       await act(async () => { checkbox().click(); });
       expect(checkbox().getAttribute("aria-checked")).toBe("true");
-      await act(async () => { render({ ...workspace, ...changed } as ProjectWorkspace); await settle(); });
+      await act(async () => { render({ ...workspace, ...changed }); await settle(); });
       await act(async () => { await settle(); });
       expect(checkbox().getAttribute("aria-checked")).toBe("false");
       const save = [...container.querySelectorAll("button")].find((button) => button.textContent === "Save Claude trust")!;
