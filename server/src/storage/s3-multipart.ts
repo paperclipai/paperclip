@@ -147,6 +147,43 @@ function isRequestRateLimited(error: unknown) {
   return name === "SlowDown" || $metadata?.httpStatusCode === 503 || $metadata?.httpStatusCode === 429;
 }
 
+const TRANSIENT_FILE_REQUEST_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const TRANSIENT_FILE_REQUEST_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN",
+  "ENOTFOUND", "ERR_STREAM_PREMATURE_CLOSE", "UND_ERR_SOCKET"]);
+const TRANSIENT_FILE_REQUEST_NAMES = new Set(["RequestTimeout", "TimeoutError", "NetworkingError", "InternalError", "ServiceUnavailable"]);
+
+function isTransientFileRequestFailure(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const { name, code, $metadata } = error as { name?: unknown; code?: unknown; $metadata?: { httpStatusCode?: unknown } };
+  const status = $metadata?.httpStatusCode;
+  if (typeof status === "number") return TRANSIENT_FILE_REQUEST_STATUS.has(status);
+  return (typeof code === "string" && TRANSIENT_FILE_REQUEST_CODES.has(code))
+    || (typeof name === "string" && TRANSIENT_FILE_REQUEST_NAMES.has(name));
+}
+
+export async function sendFileRequestWithRetry<T>(signal: AbortSignal | undefined, send: () => Promise<T>): Promise<T> {
+  for (let failures = 0, throttles = 0; ;) {
+    signal?.throwIfAborted();
+    try {
+      return await send();
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (isRequestRateLimited(error)) {
+        recordStorageThrottle();
+        if (++throttles >= THROTTLED_PART_ATTEMPTS) throw error;
+        const ceiling = Math.min(THROTTLE_BACKOFF_MAX_MS, THROTTLE_BACKOFF_BASE_MS * 2 ** (throttles - 1));
+        const wait = Math.floor(Math.random() * ceiling);
+        recordStorageBackoff(wait);
+        await delay(wait, undefined, { signal });
+        continue;
+      }
+      if (!isTransientFileRequestFailure(error) || ++failures >= FILE_PART_ATTEMPTS) throw error;
+      recordStorageBackoff(failures * 500);
+      await delay(failures * 500, undefined, { signal });
+    }
+  }
+}
+
 /** Base64 MD5 of an inclusive byte range, as the Content-MD5 header expects. */
 export async function fileRangeMd5(file: string, start: number, end: number, signal?: AbortSignal) {
   const digest = createHash("md5");
