@@ -1,5 +1,5 @@
 import childProcess, { execFileSync, type SpawnOptions } from "node:child_process";
-import { accessSync, constants, existsSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -88,6 +88,7 @@ export function agentFilesystemSandboxConfig(input: {
   evidenceRoot?: string;
   installedRelease: boolean;
   sharedTemporary?: string;
+  gitStores?: readonly string[];
 }): AgentFilesystemSandboxConfig | null {
   if (!agentFilesystemSandboxApplies(input)) return null;
   const sharedTemporary = path.resolve(input.sharedTemporary ?? (input.env.TMPDIR?.trim() || os.tmpdir()));
@@ -96,7 +97,7 @@ export function agentFilesystemSandboxConfig(input: {
   // and graders, so `git show HEAD:tests/...` would otherwise bypass `tests/`.
   const essential = [
     path.join(input.repositoryRoot, "tests"),
-    path.join(input.repositoryRoot, ".git"),
+    ...(input.gitStores ?? gitStorePaths(input.repositoryRoot)),
     path.join(input.repositoryRoot, ".manual-private-trusted"),
     ...HARNESS_PRIVATE_TEMPORARY_CHILDREN.map((child) => path.join(input.temporaryRoot, child)),
     input.privateDir,
@@ -159,9 +160,31 @@ export function sandboxedInvocation(
   };
 }
 
-export function isRunnerdLaunch(command: unknown, options: SpawnOptions | undefined) {
-  return typeof command === "string" && path.isAbsolute(command) && !options?.shell &&
-    path.basename(command) === RUNNERD_EXECUTABLE_NAME;
+/** Matches runnerd by executable name, whether absolute or resolved through PATH. */
+export function isRunnerdLaunch(command: unknown) {
+  return typeof command === "string" && path.basename(command) === RUNNERD_EXECUTABLE_NAME;
+}
+
+/**
+ * The checkout's Git store holds the committed scenarios and graders. A linked
+ * worktree's `.git` is a file that points into the main repository, so hide the
+ * worktree's gitdir and the shared common directory as well.
+ */
+export function gitStorePaths(repositoryRoot: string): string[] {
+  const dotGit = path.join(repositoryRoot, ".git");
+  const stores = [dotGit];
+  try {
+    if (!statSync(dotGit).isFile()) return stores;
+    const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"))?.[1]?.trim();
+    if (!pointer) return stores;
+    const gitDir = path.resolve(repositoryRoot, pointer);
+    stores.push(gitDir);
+    const common = readFileSync(path.join(gitDir, "commondir"), "utf8").trim();
+    if (common) stores.push(path.resolve(gitDir, common));
+  } catch {
+    // A missing .git or commondir leaves only the paths found so far.
+  }
+  return stores;
 }
 
 export function pythonExecutable() {
@@ -240,22 +263,37 @@ export function installAgentFilesystemSandbox(repositoryRoot: string, env: NodeJ
     console.warn(`[agent-filesystem-sandbox] disabled: ${probe.failures.join("; ")}`);
     return null;
   }
-  childProcess.spawn = wrapRunnerdSpawn(childProcess.spawn, config, python);
+  const launchers = childProcess as unknown as Record<RunnerdLaunchApi, (...args: unknown[]) => unknown>;
+  for (const api of RUNNERD_LAUNCH_APIS) launchers[api] = wrapRunnerdLaunch(launchers[api], config, python, api);
   syncBuiltinESMExports();
   return config;
 }
 
-/** Returns a `spawn` that starts runnerd inside the sandbox and passes other launches through. */
+/** Every child_process API that can start an executable directly. */
+export const RUNNERD_LAUNCH_APIS = ["spawn", "spawnSync", "execFile", "execFileSync"] as const;
+export type RunnerdLaunchApi = typeof RUNNERD_LAUNCH_APIS[number];
+
+/**
+ * Wraps one launch API so runnerd starts inside the sandbox and other launches
+ * pass through. A runnerd launch the wrapper cannot rewrite fails closed.
+ */
+export function wrapRunnerdLaunch<T extends (...args: any[]) => unknown>(original: T, config: AgentFilesystemSandboxConfig, python: string, api: RunnerdLaunchApi = "spawn"): T {
+  return function (this: unknown, command: unknown, ...rest: unknown[]) {
+    if (!isRunnerdLaunch(command)) return Reflect.apply(original, this, [command, ...rest]);
+    const hasArgs = Array.isArray(rest[0]);
+    const args = hasArgs ? rest[0] as string[] : [];
+    const afterArgs = hasArgs ? rest.slice(1) : rest;
+    const options = afterArgs[0] && typeof afterArgs[0] === "object" ? afterArgs[0] as SpawnOptions : undefined;
+    if (options?.shell) throw new Error("agent_filesystem_sandbox: refusing to start runnerd through a shell, outside the sandbox");
+    const invocation = sandboxedInvocation(config, python, command as string, args, options?.env ?? process.env);
+    const result = Reflect.apply(original, this, [invocation.command, invocation.args, ...afterArgs]);
+    const pid = (result as { pid?: number } | undefined)?.pid;
+    console.log(`[agent-filesystem-sandbox] runnerd launched inside the sandbox via ${api}${pid ? ` (pid ${pid})` : ""}`);
+    return result;
+  } as T;
+}
+
+/** Back-compatible name for the spawn wrapper. */
 export function wrapRunnerdSpawn(original: typeof childProcess.spawn, config: AgentFilesystemSandboxConfig, python: string) {
-  return function (this: unknown, command: string, ...rest: unknown[]) {
-    const args = Array.isArray(rest[0]) ? rest[0] as string[] : [];
-    const options = (Array.isArray(rest[0]) ? rest[1] : rest[0]) as SpawnOptions | undefined;
-    if (isRunnerdLaunch(command, options)) {
-      const invocation = sandboxedInvocation(config, python, command, args, options?.env ?? process.env);
-      const child = Reflect.apply(original, this, [invocation.command, invocation.args, options ?? {}]) as ReturnType<typeof original>;
-      console.log(`[agent-filesystem-sandbox] runnerd launched inside the sandbox (pid ${child.pid ?? "unknown"})`);
-      return child;
-    }
-    return Reflect.apply(original, this, [command, ...rest]);
-  } as typeof childProcess.spawn;
+  return wrapRunnerdLaunch(original, config, python, "spawn");
 }

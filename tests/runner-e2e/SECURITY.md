@@ -331,8 +331,9 @@ file modes cannot separate them. OpenCode's `external_directory` policy guards
 its own read and grep tools, but not arbitrary shell commands.
 
 `agent-filesystem-sandbox.ts` closes that gap for local native cells on Linux.
-The launcher selects the hidden paths: `tests/`, the checkout's `.git/` (which
-holds the committed scenarios and graders), the trusted
+The launcher selects the hidden paths: `tests/`, the checkout's Git store (which
+holds the committed scenarios and graders; for a linked worktree, its gitdir
+and the shared common directory), the trusted
 `.manual-private-trusted/` copy, the private evidence directory, `RUNNER_TEMP`,
 and the attempt root's `artifacts-private/`, `control/`,
 `selected-private-inputs/` and `playwright-transform-cache/` children.
@@ -346,7 +347,9 @@ directory accepts no new entries. Agents must keep creating files in `/tmp`, so
 a sandboxed attempt creates its root in `/var/tmp` instead of `/tmp`. The
 agent's workspace, home and Paperclip home stay readable inside that root. If
 harness material would stay under the shared temporary directory or contain the
-agent's state, the launcher fails the attempt in CI and warns elsewhere. The E2E server entry starts each `paperclip-runnerd` through
+agent's state, the launcher fails the attempt in CI and warns elsewhere. The E2E server entry starts each `paperclip-runnerd` (through `spawn`,
+`spawnSync`, `execFile` or `execFileSync`, by absolute path or PATH; a shell
+launch is refused) through
 `agent-filesystem-sandbox.py`, which applies a Landlock domain and then execs
 runnerd with its original PID, argv, cwd and environment. Runnerd, the provider,
 its tools and every shell command inherit the domain. The domain also sets
