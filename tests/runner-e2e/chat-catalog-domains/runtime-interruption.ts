@@ -8,11 +8,16 @@ import { renderRuntimeArtifact, hasSimplerWebsite } from "./runtime-rendered-art
 import { collectRunEvents } from "../run-observations.js";
 import { readRegisteredArtifacts } from "../registered-artifact.js";
 import { createIssueThreadInteractionSchema } from "../../../packages/shared/src/validators/issue.js";
-import { checks, type Entity } from "./internal-support.js";
+import { checks, hasLink, internalResultLink, type Entity } from "./internal-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { clickInteractionAction } from "./runtime-support.js";
 import { runtimeQueueCases } from "./runtime-queue.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
+// The task page addresses its issue by the route's identifier (COM-1) or id,
+// so a response wait must accept either spelling of the same issue.
+function issueApiPaths(task: Entity, suffix: string) {
+  return new Set([task.id, (task as { identifier?: string | null }).identifier].filter((key): key is string => !!key).map(key => `/api/issues/${encodeURIComponent(key)}${suffix}`));
+}
 export function gradeInterruption(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("actual-fresh-direction-native-interruption-evidence", !!o, "A genuine native active owner, saved accepted plan direction, supported human Interrupt and one eligible successor are required."); if (!o) return c.result();
@@ -22,9 +27,8 @@ export function gradeInterruption(value: unknown) {
     && before.entries[0].source.interactionId === (s.approvedDirection as Entity).id && s.planApprovedByHuman === true && s.interruptControlEnabled === true,
   "An actual human accepted the exact saved simpler plan; its typed fresh-session response is waiting behind the original native owner, making the production Interrupt control legitimately available.");
   c.add("actual-human-interrupt-and-native-stop-confirmed", s.humanInterrupted === true && s.interruptStatus === 200 && original?.id === s.workerRunId && original.status === "cancelled"
-    && s.nativeStopAcknowledged === true && s.oldEvidenceRetained === true && /interrupt|stop|cancel/i.test(String(s.queryReply))
-    && /human|you|control|button|interrupt/i.test(String(s.queryReply)) && !/I(?:'ve| have)? (?:already )?(?:stopped|interrupted|cancelled)/i.test(String(s.queryReply)),
-  "The canonical reply guides the authorized human control; the real click and matching durable native cancellation ACK establish stopped execution while retaining its evidence.");
+    && s.nativeStopAcknowledged === true && s.oldEvidenceRetained === true && s.workerRunningAfterReply === true && s.humanFollowedReplyTaskLink === true,
+  "The reply links the running task, and the person reaches its Interrupt control by clicking that rendered link; the original run was still running after the reply, so the stop is the person's click, confirmed by the matching durable native cancellation ACK while its evidence is retained. The reply's wording is not graded.");
   c.add("one-owner-after-cleanup-with-exact-accepted-direction", s.successorCount === 1 && !!next && next.agentId === (s.worker as Entity).id && next.status === "succeeded"
     && Date.parse(String(next.startedAt)) >= Date.parse(String(original.finishedAt)) && s.neverConcurrentOwners === true
     && s.acceptedDirectionInputBound === true && s.freshSessionBound === true && s.queueEmptyAfterDelivery === true,
@@ -45,7 +49,8 @@ export const runtimeInterruptionCases = [runtimeDefinition("steering.interrupt-w
     payload: { version: 1, prompt: "Use this saved simpler layout on the next eligible attempt?", supersedeOnUserComment: false,
       target: { type: "issue_document", issueId: task.id, documentId: plan.id, key: "plan", revisionId: plan.latestRevisionId, revisionNumber: plan.latestRevisionNumber } } }));
   await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
-  const accept = ctx.input.page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === `/api/issues/${task.id}/interactions/${confirmation.id}/accept`);
+  const acceptPaths = issueApiPaths(task, `/interactions/${confirmation.id}/accept`);
+  const accept = ctx.input.page.waitForResponse(r => r.request().method() === "POST" && acceptPaths.has(new URL(r.url()).pathname));
   await clickInteractionAction(ctx.input.page, confirmation, "Approve");
   if ((await accept).status() !== 200) throw new Error("Actual human simpler-plan approval did not succeed");
   const session = await ctx.input.api.get<{ user: { id: string } }>("/api/auth/get-session");
@@ -58,7 +63,7 @@ export const runtimeInterruptionCases = [runtimeDefinition("steering.interrupt-w
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { ...state, marker, plan, planBody: body, approvedDirection: approved, directionQueue: queue, planApprovedByHuman: approved.status === "accepted" && approved.resolvedByUserId === session.user.id && !approved.resolvedByAgentId, interruptControlEnabled: true };
 }, gradeInterruption, {
-  oracleVersion: "paperclip.chat-catalog.runtime.interrupt-with-direction.v3", authentication: "human-session", expectedRunCount: 3, attemptTimeoutMs: 900_000,
+  oracleVersion: "paperclip.chat-catalog.runtime.interrupt-with-direction.v4", authentication: "human-session", expectedRunCount: 3, attemptTimeoutMs: 900_000,
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 2 } },
   sourceFiles: ["chat-catalog-domains/runtime-interruption.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],
@@ -66,10 +71,20 @@ export const runtimeInterruptionCases = [runtimeDefinition("steering.interrupt-w
     await pollUntil({ label: "Canonical interruption guidance before the actual human action", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
       accept: v => chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && v.runs.length === 2 && v.runs.some(row => row.id === state.workerRunId && row.status === "running") && v.runs.some(row => row.agentId === ctx.input.fixtures.agent.id && row.status === "succeeded")) });
-    state.queryReply = (await observeRuntime(ctx, state)).reply;
+    state.workerRunningAfterReply = true;
     const source = ctx.input.page.url(), task = state.task as Entity, confirmation = state.approvedDirection as Entity, endpoint = `/api/issues/${task.id}/queued-comments`;
-    await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
-    const interrupted = ctx.input.page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === `${endpoint}/interrupt`);
+    // The person follows the task link the reply rendered to reach the
+    // Interrupt control; a reply without one leaves them no route to it.
+    const replied = await pollUntil({ label: "The reply's rendered link to the running task", deadlineAt: Date.now() + 30_000,
+      load: () => observeRuntime(ctx, state),
+      accept: o => o.links.some(link => hasLink({ ...o, links: [link] }, "issues", task) && o.renderedLinkEvidence?.some(row => row.href === link)) });
+    state.queryReply = replied.reply;
+    const href = replied.links.find(link => hasLink({ ...replied, links: [link] }, "issues", task) && replied.renderedLinkEvidence?.some(row => row.href === link))!;
+    await internalResultLink(ctx, replied, href).first().click();
+    await ctx.input.page.waitForURL(url => { const parts = url.pathname.split("/").map(decodeURIComponent), at = parts.indexOf("issues"); return at >= 0 && [task.id, task.identifier].includes(parts[at + 1]); });
+    state.humanFollowedReplyTaskLink = true;
+    const interruptPaths = issueApiPaths(task, "/queued-comments/interrupt");
+    const interrupted = ctx.input.page.waitForResponse(r => r.request().method() === "POST" && interruptPaths.has(new URL(r.url()).pathname));
     chatCatalogNativePhaseRemainingBudget(ctx)?.();
     await ctx.input.page.getByTestId(`task-chat-queued-interrupt-${confirmation.id}`).click(); state.humanInterrupted = true; state.interruptStatus = (await interrupted).status();
     const stopped = await pollUntil({ label: "Matching native cancellation ACK after actual supported Interrupt", deadlineAt: Date.now() + 90_000,
