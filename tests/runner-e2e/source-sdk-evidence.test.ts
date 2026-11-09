@@ -10,6 +10,8 @@ import { prepareSourceServerDependencies } from "./source-startup.js";
 import { copyRetainedSourceSdk, retainPreparedSourceSdk, SOURCE_SDK_DIAGNOSTICS } from "./source-sdk-evidence.js";
 import { packageEvidence } from "./evidence.js";
 import { isHistoricalBundlePathAllowed } from "./history-publish.js";
+import { sealManualResultEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
+import { MANUAL_PRIVATE_EXECUTIONS, MANUAL_PRIVATE_PROTOCOL } from "./manual-private-retention.js";
 
 const roots: string[] = [], executionId = "chat-features.runner-opencode.local.plugins.install-plugin", sourceRevision = "a".repeat(40);
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
@@ -23,7 +25,7 @@ async function fixture(secrets: string[] = []) {
   for (const directory of ["packages/shared", "packages/plugins/sdk"]) {
     await put(`${directory}/src/index.ts`, "export const syntheticFixture = true;\n"); await put(`${directory}/tsconfig.json`, "{}");
   }
-  await put("node_modules/typescript/bin/tsc", `const fs=require('node:fs'),path=require('node:path');if(process.env.FAIL_COMPILER==='1')process.exit(7);const dir=path.join(path.dirname(process.argv[3]),'dist');fs.mkdirSync(path.join(dir,'nested'),{recursive:true});fs.writeFileSync(path.join(dir,'index.js'),process.env.SYNTHETIC_OUTPUT_CONTENT||'export const syntheticFixture = true;\\n');fs.writeFileSync(path.join(dir,'nested/child.js'),'export {};\\n');`);
+  await put("node_modules/typescript/bin/tsc", `const fs=require('node:fs'),path=require('node:path');if(process.env.FAIL_COMPILER==='1')process.exit(7);const dir=path.join(path.dirname(process.argv[3]),'dist');fs.mkdirSync(path.join(dir,'nested'),{recursive:true});fs.writeFileSync(path.join(dir,'index.js'),process.env.SYNTHETIC_OUTPUT_CONTENT||'export const syntheticFixture = true;\\n');fs.writeFileSync(path.join(dir,'nested/child.js'),'export {};\\n');fs.writeFileSync(path.join(dir,'index.d.ts'),'export declare const syntheticFixture: boolean;\\n');fs.writeFileSync(path.join(dir,'index.js.map'),'{"version":3}\\n');`);
   await mkdir(path.join(temporaryRoot, "artifacts-private"), { recursive: true, mode: 0o700 });
   await mkdir(path.join(temporaryRoot, "selected-private-inputs"), { recursive: true, mode: 0o700 });
   stagePrivateDiagnostics(temporaryRoot, [executionId], secrets);
@@ -94,4 +96,16 @@ it("ordinary/multi-cell/installed lanes do not retain or require SDK evidence", 
     await expect(retainPreparedSourceSdk({ ...f.input, ...changed })).resolves.toBeUndefined();
   await expect(copyRetainedSourceSdk(f.temporaryRoot, "unselected", null, f.uploadDir, [])).resolves.toBeUndefined();
   await expect(stat(path.join(f.temporaryRoot, "artifacts-private/source-sdk-build"))).rejects.toThrow();
+});
+it("retains declarations and source maps under names the private result sealer admits", async () => {
+  const f = await fixture(); await f.prepare();
+  const receipt = JSON.parse(await readFile(path.join(f.temporaryRoot, "artifacts-private/source-sdk-build/receipt.json"), "utf8"));
+  expect(receipt.files.map((row: { retainedPath: string }) => row.retainedPath)).toEqual(expect.arrayContaining(["packages/shared/dist/index.d.ts.txt", "packages/shared/dist/index.js.map.txt", "packages/shared/dist/index.js"]));
+  // Built SDK output always contains .d.ts and .map files. Sealing the results
+  // tree used to reject them as unsupported carriers and lose the whole attempt.
+  const context = { root: f.root, protocol: MANUAL_PRIVATE_PROTOCOL, private: true, workflowSha: "a".repeat(40), targetSha: "b".repeat(40), runId: "123", attempt: "1", executionIds: [MANUAL_PRIVATE_EXECUTIONS[0]!] } as ManualPrivateHandoff;
+  const results = path.join(f.root, "results"), uploadDir = path.join(results, "campaign", "attempt-1");
+  await copyRetainedSourceSdk(f.temporaryRoot, executionId, sourceRevision, uploadDir, []);
+  for (const file of receipt.files) expect(hash(await readFile(path.join(uploadDir, SOURCE_SDK_DIAGNOSTICS, file.retainedPath)))).toBe(file.sha256);
+  await expect(sealManualResultEvidence(context, [], results)).resolves.not.toThrow();
 });
