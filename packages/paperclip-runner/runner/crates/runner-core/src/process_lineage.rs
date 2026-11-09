@@ -59,10 +59,10 @@ impl ProcessTable for LiveProcessTable {
     }
 
     fn session_of(&self, pid: i32) -> Option<i32> {
-        let pid = rustix::process::Pid::from_raw(pid)?;
-        rustix::process::getsid(Some(pid))
-            .ok()
-            .map(|sid| sid.as_raw_nonzero().get())
+        // Not rustix's getsid: it asserts a nonzero session, and a kernel
+        // thread or a process whose session leader is outside this PID
+        // namespace reports 0. That assertion killed the sampler thread.
+        paperclip_process_table::session(pid)
     }
 }
 
