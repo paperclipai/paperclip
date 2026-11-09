@@ -14,6 +14,7 @@ import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { pluginsApi } from "../api/plugins";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -194,6 +195,18 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
   usePublishSharedQueryData(sharedActivity, activity, activityUpdatedAt);
+
+  const { data: plugins, isError: pluginsError } = useQuery({
+    queryKey: queryKeys.plugins.all,
+    queryFn: () => pluginsApi.list(),
+    enabled: !!selectedCompanyId && !!activity?.some((event) => event.actorType === "plugin"),
+    retry: false,
+  });
+
+  const pluginNameMap = useMemo(
+    () => new Map(pluginsError ? [] : (plugins ?? []).map((plugin) => [plugin.id, plugin.manifestJson.displayName])),
+    [plugins, pluginsError],
+  );
 
   const { data: issues } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
@@ -511,12 +524,13 @@ export function Dashboard() {
                   Recent Activity
                 </h3>
                 <Card className="@container block py-0 divide-y divide-border overflow-hidden">
-                  {designSandbox ? <ActivityList events={recentActivity} agentMap={agentMap} userProfileMap={userProfileMap} entityNameMap={entityNameMap} entityTitleMap={entityTitleMap} rowClassName={event => animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined} /> : recentActivity.map((event) => (
+                  {designSandbox ? <ActivityList events={recentActivity} agentMap={agentMap} userProfileMap={userProfileMap} pluginNameMap={pluginNameMap} entityNameMap={entityNameMap} entityTitleMap={entityTitleMap} rowClassName={event => animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined} /> : recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
                       event={event}
                       agentMap={agentMap}
                       userProfileMap={userProfileMap}
+                      pluginNameMap={pluginNameMap}
                       entityNameMap={entityNameMap}
                       entityTitleMap={entityTitleMap}
                       className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
