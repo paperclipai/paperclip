@@ -510,20 +510,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
    * message owed again; the outbox holds it until the limit resets.
    */
   async function releaseConversationCommentsForDailyCap(run: typeof heartbeatRuns.$inferSelect) {
+    const owned = and(
+      eq(agentWakeupRequests.companyId, run.companyId),
+      eq(agentWakeupRequests.agentId, run.agentId),
+      or(eq(agentWakeupRequests.runId, run.id),
+        run.wakeupRequestId ? eq(agentWakeupRequests.id, run.wakeupRequestId) : undefined),
+      sql`${agentWakeupRequests.idempotencyKey} like ${CONVERSATION_COMMENT_KEY_PREFIX + "%"}`,
+    );
     await db.transaction(async tx => {
-      const released = await tx.update(agentWakeupRequests).set({
+      const receipts = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(owned).for("update");
+      if (!receipts.length) return;
+      // Register the recovery signal before the write it announces.
+      await notifyIssueRecovery(tx, { companyId: run.companyId });
+      await tx.update(agentWakeupRequests).set({
         idempotencyKey: null,
         payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb)
           || jsonb_build_object('releasedConversationCommentKey', ${agentWakeupRequests.idempotencyKey})`,
         updatedAt: new Date(),
-      }).where(and(
-        eq(agentWakeupRequests.companyId, run.companyId),
-        eq(agentWakeupRequests.agentId, run.agentId),
-        or(eq(agentWakeupRequests.runId, run.id),
-          run.wakeupRequestId ? eq(agentWakeupRequests.id, run.wakeupRequestId) : undefined),
-        sql`${agentWakeupRequests.idempotencyKey} like ${CONVERSATION_COMMENT_KEY_PREFIX + "%"}`,
-      )).returning({ id: agentWakeupRequests.id });
-      if (released.length) await notifyIssueRecovery(tx, { companyId: run.companyId });
+      }).where(and(owned, inArray(agentWakeupRequests.id, receipts.map(row => row.id))));
     });
   }
 
