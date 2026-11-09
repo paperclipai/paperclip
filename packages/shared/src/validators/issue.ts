@@ -979,6 +979,8 @@ export const updateIssueSchema = objectWithoutDefaults(
     executionDecision: z.enum(["approve", "request_changes"]).optional(),
     /** Bind an execution decision to the stage observed by the caller. */
     expectedExecutionStageId: z.string().uuid().optional(),
+    /** Bind an execution decision to the exact review round observed by the caller. */
+    expectedExecutionLastDecisionId: z.string().uuid().nullable().optional(),
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),

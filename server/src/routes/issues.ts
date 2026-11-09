@@ -5785,6 +5785,8 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
       reviewPolicy?: IssueReviewPolicy | null;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
@@ -5895,7 +5897,8 @@ export function issueRoutes(
       }
       return true;
     }
-    if (issue.status !== "in_progress") {
+    const hasRunLock = Boolean(issue.checkoutRunId || issue.executionRunId);
+    if (issue.status !== "in_progress" && !hasRunLock) {
       return true;
     }
     const runId = requireAgentRunId(req, res);
@@ -14416,7 +14419,14 @@ export function issueRoutes(
         throw unprocessable("executionDecision cannot be combined with status");
       }
       if (req.body?.executionDecision !== undefined && Object.keys(req.body).some(
-        (key) => !["executionDecision", "expectedExecutionStageId", "comment", "commentClientRequestId", "attachmentIds"].includes(key),
+        (key) => ![
+          "executionDecision",
+          "expectedExecutionStageId",
+          "expectedExecutionLastDecisionId",
+          "comment",
+          "commentClientRequestId",
+          "attachmentIds",
+        ].includes(key),
       )) {
         throw unprocessable("executionDecision may only be combined with its decision comment and attachments");
       }
@@ -14425,6 +14435,20 @@ export function issueRoutes(
       }
       if (req.body?.expectedExecutionStageId !== undefined && req.body.executionDecision === undefined) {
         throw unprocessable("expectedExecutionStageId requires executionDecision");
+      }
+      if (
+        req.body?.executionDecision !== undefined &&
+        req.body.expectedExecutionLastDecisionId === undefined
+      ) {
+        throw unprocessable(
+          "executionDecision requires expectedExecutionLastDecisionId from the task's current executionState",
+        );
+      }
+      if (
+        req.body?.expectedExecutionLastDecisionId !== undefined &&
+        req.body.executionDecision === undefined
+      ) {
+        throw unprocessable("expectedExecutionLastDecisionId requires executionDecision");
       }
       next();
     },
@@ -14530,6 +14554,7 @@ export function issueRoutes(
         reviewRequest,
         executionDecision,
         expectedExecutionStageId,
+        expectedExecutionLastDecisionId,
         reopen: reopenRequested,
         resume: resumeRequested,
         interrupt: interruptRequested,
@@ -14969,6 +14994,7 @@ export function issueRoutes(
             : undefined,
         executionDecision,
         expectedExecutionStageId,
+        expectedExecutionLastDecisionId,
         deferFinalStatusToNativeRun,
         requestedAssigneePatch: {
           assigneeAgentId: normalizedAssigneeAgentId,
@@ -15386,6 +15412,8 @@ export function issueRoutes(
               status: existing.status,
               assigneeAgentId: existing.assigneeAgentId,
               assigneeUserId: existing.assigneeUserId,
+              checkoutRunId: existing.checkoutRunId,
+              executionRunId: existing.executionRunId,
               executionPolicy: existing.executionPolicy ?? null,
               executionState: existing.executionState ?? null,
             }

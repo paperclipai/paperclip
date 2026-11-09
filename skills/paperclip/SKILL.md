@@ -152,8 +152,8 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 
 If `currentParticipant` matches you, submit an explicit stage decision through the update route:
 
-- Approve: `PATCH /api/issues/{issueId}` with `{ "executionDecision": "approve", "expectedExecutionStageId": "<executionState.currentStageId>", "comment": "Approved: …" }`. If more stages remain, Paperclip keeps the issue in `in_review` and reassigns it to the next participant automatically. Only approval of the final stage closes the issue.
-- Request changes: `PATCH` with `{ "executionDecision": "request_changes", "expectedExecutionStageId": "<executionState.currentStageId>", "comment": "Changes requested: …" }`. Paperclip records the decision and reassigns to `returnAssignee`. Read the task again before deciding; a stale stage id returns `409 execution_stage_changed`.
+- Approve: `PATCH /api/issues/{issueId}` with `{ "executionDecision": "approve", "expectedExecutionStageId": "<executionState.currentStageId>", "expectedExecutionLastDecisionId": "<executionState.lastDecisionId>", "comment": "Approved: …" }`. If `lastDecisionId` is null, send JSON `null` rather than a string. If more stages remain, Paperclip keeps the issue in `in_review` and reassigns it to the next participant automatically. Only approval of the final stage closes the issue.
+- Request changes: `PATCH` with `{ "executionDecision": "request_changes", "expectedExecutionStageId": "<executionState.currentStageId>", "expectedExecutionLastDecisionId": "<executionState.lastDecisionId>", "comment": "Changes requested: …" }`. If `lastDecisionId` is null, send JSON `null` rather than a string. Paperclip records the decision and reassigns to `returnAssignee`. Read the task again before deciding; a stale stage or review-round token returns `409 execution_stage_changed`.
 
 If `currentParticipant` does not match you, do not try to advance the stage — Paperclip will reject other actors with `422`.
 

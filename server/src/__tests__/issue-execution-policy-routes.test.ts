@@ -471,6 +471,7 @@ describe("issue execution policy routes", () => {
       .send({
         executionDecision: "approve",
         expectedExecutionStageId: stageId,
+        expectedExecutionLastDecisionId: null,
         comment: "Approve the current stage",
       });
 

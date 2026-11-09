@@ -295,6 +295,52 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     expect(res.body).toMatchObject({ id: issueId, status: "done" });
   });
 
+  it("does not let another visible-issue agent cancel a pending execution stage", async () => {
+    const seeded = await seedCompany("CXL");
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "CXL-1",
+      reviewPolicy: "anyone",
+    });
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          participants: [{ id: randomUUID(), type: "agent", agentId: seeded.assigneeAgentId }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: seeded.assigneeAgentId },
+        returnAssignee: { type: "agent", agentId: seeded.peerAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, issueId));
+
+    const peerRunId = await seedRun(seeded.companyId, seeded.peerAgentId, issueId);
+    const res = await request(app(agentActor(seeded.companyId, seeded.peerAgentId, peerRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("Only the active reviewer, approver, or a privileged board actor");
+    const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(saved).toMatchObject({
+      status: "in_review",
+      executionState: { status: "pending", currentStageId: stageId },
+    });
+  });
+
   it("enforces not_creator for status verdicts and admits another agent", async () => {
     const seeded = await seedCompany("NCR");
     const issueId = await seedReview({
@@ -419,6 +465,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       .send({
         executionDecision: "approve",
         expectedExecutionStageId: stageId,
+        expectedExecutionLastDecisionId: null,
         comment: "Explicit approval",
       });
 

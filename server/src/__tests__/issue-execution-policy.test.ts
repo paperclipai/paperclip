@@ -368,6 +368,7 @@ describe("issue execution policy transitions", () => {
         policy,
         executionDecision: "approve",
         expectedExecutionStageId: reviewStageId,
+        expectedExecutionLastDecisionId: null,
         requestedAssigneePatch: {},
         actor: { agentId: qaAgentId },
         commentBody: "Review approved",
@@ -430,6 +431,7 @@ describe("issue execution policy transitions", () => {
         policy: repeatedActorPolicy,
         executionDecision: "approve",
         expectedExecutionStageId: firstStageId,
+        expectedExecutionLastDecisionId: null,
         requestedAssigneePatch: {},
         actor: { agentId: qaAgentId },
         commentBody: "Approve the review stage",
@@ -444,6 +446,7 @@ describe("issue execution policy transitions", () => {
         policy: repeatedActorPolicy,
         executionDecision: "approve",
         expectedExecutionStageId: firstStageId,
+        expectedExecutionLastDecisionId: null,
         requestedAssigneePatch: {},
         actor: { agentId: qaAgentId },
         commentBody: "Retry the review-stage approval",
@@ -557,6 +560,7 @@ describe("issue execution policy transitions", () => {
         policy,
         executionDecision: "approve",
         expectedExecutionStageId: approvalStageId,
+        expectedExecutionLastDecisionId: null,
         requestedAssigneePatch: {},
         actor: { userId: ctoUserId },
         commentBody: "Final approval",
@@ -634,6 +638,7 @@ describe("issue execution policy transitions", () => {
         policy,
         executionDecision: "request_changes",
         expectedExecutionStageId: reviewStageId,
+        expectedExecutionLastDecisionId: null,
         requestedAssigneePatch: {},
         actor: { agentId: qaAgentId },
         commentBody: "Please fix the rollback case",
@@ -816,6 +821,35 @@ describe("issue execution policy transitions", () => {
       expect(result.patch).toEqual({ executionState: null });
       expect(result.decision).toBeUndefined();
       expect(result.workflowControlledAssignment).toBeUndefined();
+    });
+
+    it("does not let a non-participant cancel a pending execution stage", () => {
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "cancelled",
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+          commentBody: "Trying to cancel another participant's review",
+        }),
+      ).toThrow("Only the active reviewer, approver, or a privileged board actor can cancel");
     });
 
     it("does not let a non-current board actor close a pending stage", () => {

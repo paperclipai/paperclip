@@ -49,6 +49,7 @@ type TransitionInput = {
   requestedStatus?: string;
   executionDecision?: "approve" | "request_changes";
   expectedExecutionStageId?: string;
+  expectedExecutionLastDecisionId?: string | null;
   deferFinalStatusToNativeRun?: boolean;
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
@@ -733,6 +734,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   const requestedStatus = input.requestedStatus;
   const executionDecision = input.executionDecision;
   const expectedExecutionStageId = input.expectedExecutionStageId;
+  const expectedExecutionLastDecisionId = input.expectedExecutionLastDecisionId;
   const activeStage = currentStage && existingState?.status === PENDING_STATUS ? currentStage : null;
   const effectiveReviewRequest = input.reviewRequest === undefined
     ? existingState?.reviewRequest ?? null
@@ -797,9 +799,23 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     if (executionDecision && !expectedExecutionStageId) {
       throw unprocessable("executionDecision requires expectedExecutionStageId from the task's current executionState");
     }
+    if (executionDecision && expectedExecutionLastDecisionId === undefined) {
+      throw unprocessable(
+        "executionDecision requires expectedExecutionLastDecisionId from the task's current executionState",
+      );
+    }
     if (executionDecision && expectedExecutionStageId !== activeStage.id) {
       throw conflict(
         "The execution stage changed before this decision could be applied. Read the task again before deciding.",
+        { code: "execution_stage_changed" },
+      );
+    }
+    if (
+      executionDecision &&
+      expectedExecutionLastDecisionId !== (existingState?.lastDecisionId ?? null)
+    ) {
+      throw conflict(
+        "The execution review round changed before this decision could be applied. Read the task again before deciding.",
         { code: "execution_stage_changed" },
       );
     }
@@ -812,9 +828,17 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
     }
     // Cancellation is an issue lifecycle operation, never a disguised stage
-    // decision. Route authorization decides who may cancel; the execution
-    // policy must always terminate its pending state unambiguously.
+    // decision. It still terminates a live review, so only the current stage
+    // participant or a privileged board actor may clear the pending state.
     if (requestedStatus === "cancelled") {
+      if (
+        !principalsEqual(currentParticipant, actor) &&
+        !input.allowBoardOverride
+      ) {
+        throw unprocessable(
+          "Only the active reviewer, approver, or a privileged board actor can cancel a pending execution stage",
+        );
+      }
       patch.executionState = null;
       return { patch };
     }

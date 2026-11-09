@@ -11225,6 +11225,8 @@ export function issueService(db: Db) {
           status: string;
           assigneeAgentId: string | null;
           assigneeUserId: string | null;
+          checkoutRunId: string | null;
+          executionRunId: string | null;
           executionPolicy: unknown;
           executionState: unknown;
         };
@@ -11603,6 +11605,10 @@ export function issueService(db: Db) {
               expectedExecutionDecisionSnapshot.assigneeAgentId ||
             receiptExisting.assigneeUserId !==
               expectedExecutionDecisionSnapshot.assigneeUserId ||
+            receiptExisting.checkoutRunId !==
+              expectedExecutionDecisionSnapshot.checkoutRunId ||
+            receiptExisting.executionRunId !==
+              expectedExecutionDecisionSnapshot.executionRunId ||
             !isDeepStrictEqual(
               receiptExisting.executionPolicy ?? null,
               expectedExecutionDecisionSnapshot.executionPolicy,
@@ -12656,10 +12662,23 @@ export function issueService(db: Db) {
         checkoutRunId: string | null;
         executionRunId: string | null;
       }) => {
+        const hasRunLock = Boolean(
+          candidate.checkoutRunId || candidate.executionRunId,
+        );
+        const ownsCheckoutLock =
+          candidate.checkoutRunId == null ||
+          candidate.checkoutRunId === actorRunId;
+        const ownsExecutionLock =
+          candidate.executionRunId == null ||
+          candidate.executionRunId === actorRunId;
         if (
-          candidate.status === "in_progress" &&
           candidate.assigneeAgentId === actorAgentId &&
-          sameRunLock(candidate.checkoutRunId, actorRunId)
+          ((candidate.status === "in_progress" &&
+            sameRunLock(candidate.checkoutRunId, actorRunId)) ||
+            (actorRunId !== null &&
+              hasRunLock &&
+              ownsCheckoutLock &&
+              ownsExecutionLock))
         ) {
           return { ...candidate, adoptedFromRunId: null as string | null };
         }

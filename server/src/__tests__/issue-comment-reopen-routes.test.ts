@@ -3065,6 +3065,7 @@ describe("issue comment reopen routes", () => {
       .send({
         executionDecision: "approve",
         expectedExecutionStageId: policy.stages[0].id,
+        expectedExecutionLastDecisionId: null,
         comment: "Approved for ship",
       });
 
@@ -3158,6 +3159,7 @@ describe("issue comment reopen routes", () => {
       .send({
         executionDecision: "approve",
         expectedExecutionStageId: policy.stages[0].id,
+        expectedExecutionLastDecisionId: null,
         comment: "Review approved",
       });
 

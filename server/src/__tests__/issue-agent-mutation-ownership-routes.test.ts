@@ -3225,6 +3225,7 @@ describe("agent issue mutation checkout ownership", () => {
       const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({
         executionDecision: "approve",
         expectedExecutionStageId: approvalStageId,
+        expectedExecutionLastDecisionId: null,
         comment: "Final approval",
       });
 

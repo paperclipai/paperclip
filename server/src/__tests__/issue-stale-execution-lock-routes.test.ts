@@ -8,6 +8,8 @@ import {
   companyMemberships,
   activityLog,
   agents,
+  agentRuntimeState,
+  agentWakeupRequests,
   companies,
   createDb,
   heartbeatRunEvents,
@@ -52,6 +54,8 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companyMemberships);
     await db.delete(companies);
@@ -581,7 +585,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     const decide = (comment: string) =>
       request(createApp(boardActor(companyId)))
         .patch(`/api/issues/${issueId}`)
-        .send({ executionDecision: "approve", expectedExecutionStageId: reviewStageId, comment })
+        .send({ executionDecision: "approve", expectedExecutionStageId: reviewStageId, expectedExecutionLastDecisionId: null, comment })
         .then((response) => response);
     const firstDecision = decide("First concurrent approval");
     const secondDecision = decide("Second concurrent approval");
@@ -686,6 +690,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     const decision = {
       executionDecision: "approve",
       expectedExecutionStageId: reviewStageId,
+      expectedExecutionLastDecisionId: null,
       comment: "Approve the review stage",
     };
 
@@ -718,6 +723,164 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       .where(eq(issueExecutionDecisions.issueId, issueId));
     expect(decisions).toHaveLength(1);
     expect(decisions[0]).toMatchObject({ stageId: reviewStageId, outcome: "approved" });
+  });
+
+  it("does not let a retry from the previous review round decide resubmitted work", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const reviewStageId = randomUUID();
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review-round retry binding",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: reviewStageId,
+          type: "review",
+          participants: [{ type: "user", userId: "board-user" }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "board-user" },
+        returnAssignee: { type: "agent", agentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+    const staleDecision = {
+      executionDecision: "request_changes",
+      expectedExecutionStageId: reviewStageId,
+      expectedExecutionLastDecisionId: null,
+      comment: "Please revise the implementation",
+    };
+
+    const requestedChanges = await request(createApp(boardActor(companyId)))
+      .patch(`/api/issues/${issueId}`)
+      .send(staleDecision);
+    expect(requestedChanges.status, JSON.stringify(requestedChanges.body)).toBe(200);
+    expect(requestedChanges.body.executionState).toMatchObject({
+      status: "changes_requested",
+      currentStageId: reviewStageId,
+      lastDecisionId: expect.any(String),
+    });
+    const reviewRoundDecisionId = requestedChanges.body.executionState.lastDecisionId;
+
+    const resubmitted = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Revision ready for another review" });
+    expect(resubmitted.status, JSON.stringify(resubmitted.body)).toBe(200);
+    expect(resubmitted.body.executionState).toMatchObject({
+      status: "pending",
+      currentStageId: reviewStageId,
+      lastDecisionId: reviewRoundDecisionId,
+    });
+
+    const staleRetry = await request(createApp(boardActor(companyId)))
+      .patch(`/api/issues/${issueId}`)
+      .send(staleDecision);
+    expect(staleRetry.status, JSON.stringify(staleRetry.body)).toBe(409);
+    expect(staleRetry.body.details).toMatchObject({ code: "execution_stage_changed" });
+
+    const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(saved).toMatchObject({
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        lastDecisionId: reviewRoundDecisionId,
+      },
+    });
+    const decisions = await db.select().from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ stageId: reviewStageId, outcome: "changes_requested" });
+  });
+
+  it("rejects a staged decision from a different live run of the same agent", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const secondRunId = randomUUID();
+    const issueId = randomUUID();
+    const reviewStageId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: secondRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+      contextSnapshot: { issueId },
+    });
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Staged decision run ownership",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: reviewStageId,
+          type: "review",
+          participants: [{ type: "agent", agentId }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+        returnAssignee: { type: "agent", agentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, secondRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: reviewStageId,
+        expectedExecutionLastDecisionId: null,
+        comment: "Decision from the non-owning run",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue run ownership conflict");
+    const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(saved).toMatchObject({
+      status: "in_review",
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionState: { status: "pending", currentStageId: reviewStageId },
+    });
+    const decisions = await db.select().from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(0);
   });
 
   it("rejects a non-current board done override without closing or skipping stages", async () => {
