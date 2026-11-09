@@ -2224,7 +2224,7 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string
 
 /** `paperclip-runnerd` is always launched with `--run-id <runId>`. A failed or
  * slow process listing proves nothing, so it keeps the caller blocked. */
-async function noLocalRunnerProcessForRun(runId: string): Promise<boolean> {
+export async function noLocalRunnerProcessForRun(runId: string): Promise<boolean> {
   const listing = await new Promise<string | null>(resolve => {
     execFile("ps", ["-axww", "-o", "command="], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 * 1024 },
       (error, stdout) => resolve(error ? null : stdout));

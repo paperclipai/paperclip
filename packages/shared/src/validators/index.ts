@@ -452,6 +452,7 @@ export {
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
+  confirmRunStoppedSchema,
   confirmOwnerGoneSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
