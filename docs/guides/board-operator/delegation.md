@@ -1,6 +1,6 @@
 ---
 title: How Delegation Works
-summary: How the CEO breaks down goals into tasks and assigns them to agents
+summary: How the CEO assigns work when delegation is part of the requested scope
 ---
 
 Paperclip supports delegation through task assignments and optional parent relationships. Work can stay on the current task. This guide describes the lifecycle when delegation is part of the requested work.
@@ -21,7 +21,7 @@ You set a company goal
   → You see results in the dashboard and activity log
 ```
 
-Each step is traceable. Every task links back to the goal through a parent hierarchy, so you can always see why work is happening.
+Tasks that use parent relationships can trace back to the goal through that hierarchy, so you can see why work is happening.
 
 ## What You Need to Do
 
