@@ -1010,6 +1010,8 @@ export type {
 export type {
   AccessUserProfile,
   CompanyMemberRecord,
+  AgentCompanyMemberRecord,
+  AgentCompanyMembersResponse,
   CompanyMembersResponse,
   ArchiveCompanyMemberResponse,
   CompanyMembership,

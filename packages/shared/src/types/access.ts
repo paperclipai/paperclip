@@ -53,6 +53,17 @@ export interface CompanyMemberRecord extends CompanyMembership {
   };
 }
 
+/** Board-managed agent grants. Human role and removal affordances do not apply. */
+export interface AgentCompanyMemberRecord extends CompanyMembership {
+  principalType: "agent";
+  grants: PrincipalPermissionGrant[];
+}
+
+export interface AgentCompanyMembersResponse {
+  members: AgentCompanyMemberRecord[];
+  access: CompanyMembersResponse["access"];
+}
+
 export interface CompanyMembersResponse {
   members: CompanyMemberRecord[];
   access: {

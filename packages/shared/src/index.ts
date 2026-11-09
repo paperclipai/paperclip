@@ -1321,6 +1321,8 @@ export type {
   InboxDismissalKind,
   AccessUserProfile,
   CompanyMemberRecord,
+  AgentCompanyMemberRecord,
+  AgentCompanyMembersResponse,
   CompanyMembersResponse,
   CompanyMembership,
   CompanyInviteListResponse,
