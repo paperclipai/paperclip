@@ -17299,9 +17299,20 @@ export function issueRoutes(
     });
     // A chat message held by the agent's daily limit has no wake receipt yet:
     // show it as saved and waiting, with the reason, instead of as sent.
-    const held = queue.state === null && queue.entries.length === 0
-      ? await heldConversationComments(db, issue) : null;
-    if (held) {
+    const held = await heldConversationComments(db, issue);
+    if (held && (queue.state !== null || queue.entries.length > 0)) {
+      // Earlier queued work keeps its controls; held messages join it read-only.
+      const queuedIds = new Set(queue.entries.map(entry => entry.comment.id));
+      const extra = held.comments.filter(comment => !queuedIds.has(comment.id));
+      const snapshot = buildQueuedCommentQueueSnapshot({
+        issueId: issue.id, queueId: null, state: "deferred", activeRunId: null,
+        protocol: queue.protocol, steeringDisposition: "unsupported", comments: extra,
+        actorType: actor.actorType, actorId: actor.actorId,
+      });
+      queue = { ...queue, executionWait: queue.executionWait ?? { reason: held.hold.reason, message: held.hold.message },
+        entries: [...queue.entries, ...snapshot.entries.map((entry, index) => ({
+          ...entry, position: queue.entries.length + index, canEdit: false, canDiscard: false }))] };
+    } else if (held) {
       const snapshot = buildQueuedCommentQueueSnapshot({
         issueId: issue.id, queueId: null, state: "deferred", activeRunId: null,
         protocol: queue.protocol, steeringDisposition: "unsupported", comments: held.comments,

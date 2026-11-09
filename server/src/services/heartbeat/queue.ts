@@ -3,6 +3,7 @@ import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompac
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
+import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -481,6 +482,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       finishedAt: now,
       error: reason,
     });
+    await releaseConversationCommentsForDailyCap(cancelled);
 
     await appendRunEvent(cancelled, {
       eventType: "lifecycle",
@@ -499,6 +501,30 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     });
 
     return cancelled;
+  }
+
+  /**
+   * A chat message accepted before the limit was reached must not be consumed
+   * when dispatch then cancels its run at the limit. Releasing the outbox key
+   * on its receipts (the run's own and any coalesced into it) makes the
+   * message owed again; the outbox holds it until the limit resets.
+   */
+  async function releaseConversationCommentsForDailyCap(run: typeof heartbeatRuns.$inferSelect) {
+    await db.transaction(async tx => {
+      const released = await tx.update(agentWakeupRequests).set({
+        idempotencyKey: null,
+        payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb)
+          || jsonb_build_object('releasedConversationCommentKey', ${agentWakeupRequests.idempotencyKey})`,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, run.agentId),
+        or(eq(agentWakeupRequests.runId, run.id),
+          run.wakeupRequestId ? eq(agentWakeupRequests.id, run.wakeupRequestId) : undefined),
+        sql`${agentWakeupRequests.idempotencyKey} like ${CONVERSATION_COMMENT_KEY_PREFIX + "%"}`,
+      )).returning({ id: agentWakeupRequests.id });
+      if (released.length) await notifyIssueRecovery(tx, { companyId: run.companyId });
+    });
   }
 
   async function markTimerHeartbeatChecked(
