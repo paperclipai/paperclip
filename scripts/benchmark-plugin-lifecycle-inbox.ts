@@ -77,7 +77,7 @@ try {
   await client.unsafe("ANALYZE");
   const [{ events }] = await client.unsafe(`SELECT count(*)::int AS events FROM resource_lifecycle_events`);
   const [{ acks }] = await client.unsafe(`SELECT count(*)::int AS acks FROM plugin_lifecycle_acknowledgments`);
-  const [{ version }] = await client.unsafe(`SHOW server_version`);
+  const [{ server_version: version }] = await client.unsafe(`SHOW server_version`);
 
   const cases = [
     { name: "page-100-all-types", limit: 100, types: ["agent", "project", "agent_runtime"] },
