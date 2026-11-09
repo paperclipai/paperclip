@@ -17,9 +17,10 @@ vi.mock("../services/budgets.js", () => ({
   flushBudgetEvaluationWorkPage: work.evaluate,
 }));
 vi.mock("../services/budget-evaluation-work.js", () => ({ hasPendingBudgetEvaluation: work.evaluationPending }));
-const resumeWork = vi.hoisted(() => ({ expiry: vi.fn(async (): Promise<number | null> => null) }));
+const resumeWork = vi.hoisted(() => ({ expiry: vi.fn(async (): Promise<number | null> => null),
+  pendingForRun: vi.fn(async (_db: unknown, runId: string) => runId !== "run-unclaimed") }));
 vi.mock("../services/budget-resume-continuation.js", () => ({ hasDeliverableBudgetResume: vi.fn(async () => false),
-  nextBudgetResumeClaimExpiryAt: resumeWork.expiry }));
+  hasPendingBudgetResumeForRun: resumeWork.pendingForRun, nextBudgetResumeClaimExpiryAt: resumeWork.expiry }));
 vi.mock("../services/run-cost-accounting.js", () => ({ readCostAccountingWork: work.accounting }));
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -68,6 +69,10 @@ describe("budget accounting delivery", () => {
     const deliverResumeContinuations = vi.fn(async () => undefined);
     const worker = registerBudgetEnforcementWork(s.db, s.coordinator, { deliverResumeContinuations });
     await worker.ready;
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(1);
+    // Another tenant's cancellation without a resume claim wakes nothing.
+    publishLiveEvent({ companyId: "company-2", type: "heartbeat.run.status", payload: { runId: "run-unclaimed", status: "cancelled" } } as never);
+    await vi.advanceTimersByTimeAsync(1_500);
     expect(deliverResumeContinuations).toHaveBeenCalledTimes(1);
     publishLiveEvent({ companyId: "company-1", type: "heartbeat.run.status", payload: { runId: "run-1", status: "cancelled" } } as never);
     await vi.advanceTimersByTimeAsync(1_500);

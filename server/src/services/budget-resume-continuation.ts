@@ -172,6 +172,13 @@ export async function hasPendingBudgetResume(db: Db) {
   return Boolean(row);
 }
 
+/** True when this run carries a pending resume claim (a primary-key lookup). */
+export async function hasPendingBudgetResumeForRun(db: Db, runId: string) {
+  const [row] = await db.select({ id: budgetResumeClaims.runId }).from(budgetResumeClaims)
+    .where(and(eq(budgetResumeClaims.runId, runId), eq(budgetResumeClaims.state, "pending"))).limit(1);
+  return Boolean(row);
+}
+
 /** True while a claim can be delivered now: its stop settled and no live
  * dispatcher holds it. A claim waiting for its Stop re-arms with that Stop. */
 export async function hasDeliverableBudgetResume(db: Db, now = new Date()) {

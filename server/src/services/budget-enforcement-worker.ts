@@ -12,7 +12,7 @@ import {
   type BudgetServiceHooks,
 } from "./budgets.js";
 import { hasPendingBudgetEvaluation } from "./budget-evaluation-work.js";
-import { hasDeliverableBudgetResume, nextBudgetResumeClaimExpiryAt } from "./budget-resume-continuation.js";
+import { hasDeliverableBudgetResume, hasPendingBudgetResumeForRun, nextBudgetResumeClaimExpiryAt } from "./budget-resume-continuation.js";
 import { readCostAccountingWork } from "./run-cost-accounting.js";
 import { subscribeAllCompanyLiveEvents } from "./live-events.js";
 
@@ -81,8 +81,14 @@ export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, 
   // Stop) makes a pending resume claim deliverable. The terminal status event
   // is published after its persisted transition; wake for it, so delivery
   // never waits for unrelated budget work.
+  // Only a run that carries a pending resume claim wakes the worker: one
+  // primary-key lookup, so other cancellations never start an instance pass.
   const unsubscribe = subscribeAllCompanyLiveEvents(event => {
-    if (event.type === "heartbeat.run.status" && String(event.payload.status) === "cancelled") worker.wake();
+    if (event.type !== "heartbeat.run.status" || String(event.payload.status) !== "cancelled") return;
+    const runId = event.payload.runId;
+    if (typeof runId !== "string") return;
+    void hasPendingBudgetResumeForRun(db, runId).then(pending => { if (pending) worker.wake(); })
+      .catch(error => logger.warn({ err: error, runId }, "Budget resume wake check failed"));
   });
   return { ...worker, stop: async () => { unsubscribe(); await worker.stop(); } };
 }
