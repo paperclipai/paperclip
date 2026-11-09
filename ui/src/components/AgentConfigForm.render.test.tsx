@@ -1401,6 +1401,23 @@ describe("AgentConfigForm environment selector", () => {
     }));
   });
 
+  it("requests Codex models for the selected account", async () => {
+    const binding = { provider: "openai", method: "subscription", mode: "responsible_user" } as const;
+    const accounts = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({ currentUserId: "you", canManageConnections: true, connections: [{
+      id: "codex-account", grantId: "codex-grant", companyId: "company-1", provider: "openai", method: "subscription", name: "Codex",
+      ownership: "personal", ownerUserId: "you", isDefault: true, status: "connected",
+    }] });
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "gpt-6.1-terra", label: "Terra" }]);
+    try {
+      const result = await renderForm([makeEnvironment({ id: "local-1", name: "Local", driver: "local" })], {
+        adapterType: "codex_local", adapterConfig: { model: "gpt-6.1-terra" }, runtimeConfig: { aiConnection: binding },
+      });
+      roots.push(result.root);
+      await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "codex_local", expect.objectContaining({ aiConnection: binding, agentId: "agent-1" })));
+      expect(result.container.textContent).toContain("Terra");
+    } finally { accounts.mockRestore(); }
+  });
+
   it("requests the native Kimi model catalog while preserving an explicit saved model", async () => {
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     const result = await renderForm([], {

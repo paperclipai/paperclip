@@ -49,6 +49,7 @@ import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services/copilot-connection-probe.js";
 import { antigravityConnectionModels } from "../services/antigravity-connection-models.js";
+import { fetchAccountModels } from "../services/account-model-catalog.js";
 import { resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
@@ -3142,6 +3143,29 @@ export function agentRoutes(
       return;
     }
     const provider = asNonEmptyString(req.query.provider);
+    if ((type === "codex_local" || type === "claude_local") && typeof req.query.aiConnection === "string") {
+      if (req.query.aiConnection.length > 4096) throw unprocessable("Invalid AI connection binding");
+      let binding: AiConnectionBinding;
+      try { binding = aiConnectionBindingSchema.parse(JSON.parse(req.query.aiConnection)); }
+      catch { throw unprocessable("Invalid AI connection binding"); }
+      const expectedProvider = type === "codex_local" ? "openai" : "anthropic";
+      if (binding.provider !== expectedProvider) throw unprocessable("Select a compatible AI connection");
+      const userId = responsibleUserForAiRequest(req);
+      const modelAgentId = asNonEmptyString(req.query.agentId);
+      if (modelAgentId) {
+        const modelAgent = await svc.getById(modelAgentId);
+        if (!modelAgent || modelAgent.companyId !== companyId) throw notFound("Agent not found");
+        await assertCanUpdateAgent(req, modelAgent);
+      }
+      const service = aiConnectionService(db);
+      const selected = await service.select({ companyId, userId, agentId: modelAgentId ?? "00000000-0000-0000-0000-000000000000", adapterType: type, binding,
+        allowUninstalledPersonal: !modelAgentId, allowUninstalledShared: !modelAgentId });
+      if (selected.connection.config.ai && aiConnectionMetadataSchema.parse(selected.connection.config.ai).routing) throw unprocessable("Use the configured gateway model catalog");
+      const credential = await service.runtimeCredential(selected);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await fetchAccountModels(expectedProvider, selected.attribution.method as "subscription" | "api_key", credential));
+      return;
+    }
     if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "kimi") {
       res.json([]);
       return;

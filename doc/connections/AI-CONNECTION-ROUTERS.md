@@ -217,11 +217,11 @@ controls as agent configuration. Choose an existing connected account or use
 use the existing account setup flow, including access controls. A pool member
 always saves an explicit account grant; connecting it does not change your
 personal default. Changing harness or account clears the previous model and
-effort. Reconnecting the same account preserves them. Model choices come from
-the selected connection's routing catalog or the supported harness catalog,
-with the existing refresh and custom-model controls.
-Saving validates model IDs against the saved connection's routing catalog or
-the supported harness catalog. OpenRouter members use its public catalog.
+effort. Reconnecting the same account preserves them. Claude and Codex model
+choices are requested using the selected account; gateway connections use their
+configured routing catalog, and OpenRouter uses its public catalog. Refresh
+reloads the catalog. A model ID can also be entered manually; provider access
+is checked when it is used. If discovery fails, the editor reports the failure.
 
 On an agent's Harness / Runtime settings, choose **Harness: Pool**, then the
 central pool. This explicitly uses **Paperclip Runner** and requires the existing
