@@ -50,6 +50,26 @@ harness validates the task identity before measuring. Network spans in the trace
 use recorded request start/end timestamps relative to task navigation; they
 include completed requests observed during the sample, even after content paint.
 
+## Real-instance click harness
+
+Local fixtures cannot reproduce staging's network round trips, server contention
+or object-store latency. `staging-click-harness.js` measures the same journey on
+any running instance, including staging, from the signed-in browser:
+
+1. Open an Issues list, for example `/<company>/issues?view=mine`.
+2. Paste the file into the DevTools console (or evaluate it through a browser
+   automation tool).
+3. Run `await __taskOpenHarness.series(["ABC-1", "ABC-2", "ABC-3"])`.
+
+Each sample reports the time from the row click to a visible composer and to the
+latest message in the viewport, the requests started before that point, the
+requests that finished last before it (`releasedBy`), the slowest and repeated
+requests, layout shifts, and any movement of the latest message after it first
+appeared. `serverMs` comes from the `paperclip_api` Server-Timing entry that every
+API response carries, so a long `duration` with a short `serverMs` points to the
+network or browser queueing rather than the handler. Run samples serially and
+record whether each task's data was already cached (a revisit) or not.
+
 ## Task layout stability
 
 The normal browser CI suite also runs `tests/e2e/task-loading-frame.spec.ts`.
