@@ -131,11 +131,7 @@ import {
 } from "../legacy-execution-recovery.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { isExternalChatPresentationContext } from "../heartbeat-run-summary.js";
-import {
-  CHAT_CONTROL_RECOVERY_STOP_CODE,
-  CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
-  readChatControlRecoveryStop,
-} from "../chat-control-recovery-stop.js";
+import { isOperatorCancelledRun, readChatControlRecoveryStop } from "../chat-control-recovery-stop.js";
 import {
   TERMINAL_HEARTBEAT_RUN_STATUSES,
   issueService,
@@ -829,35 +825,6 @@ function isStrandedIssueRecoveryIssue(
   issue: Pick<RecoveryIssue, "originKind">,
 ) {
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
-}
-
-/**
- * True when the issue's latest run was cancelled by a board operator (the
- * board cancel route stamps the attribution; interrupt-by-comment uses the
- * operator_interrupted error code). While such a run is the latest activity
- * on an issue, recovery stands down entirely: the operator deliberately
- * stopped the agent, and re-waking it — or escalating "stranding" — would
- * fight the human. Any newer run or wake supersedes the exemption.
- */
-function isOperatorCancelledRun(
-  latestRun: LatestIssueRun,
-  currentAgentId: string,
-): boolean {
-  if (
-    latestRun?.agentId === currentAgentId &&
-    [
-      CHAT_CONTROL_RECOVERY_STOP_CODE,
-      CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
-    ].includes(latestRun.errorCode ?? "")
-  )
-    return true;
-  if (!latestRun || latestRun.status !== "cancelled") return false;
-  if (latestRun.errorCode === "operator_interrupted") return true;
-  const result = parseObject(latestRun.resultJson);
-  return (
-    result.cancelledByActorType === "user" ||
-    result.cancelledByActorType === "board"
-  );
 }
 
 function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
