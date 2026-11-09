@@ -13,7 +13,7 @@ import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../serv
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
-import { issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
+import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { activityService } from "../services/activity.js";
@@ -8572,13 +8572,13 @@ export function issueRoutes(
     }
     const parsed = issueSummariesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      res.status(400).json({ error: "ids must be the only query parameter and contain one to five comma-separated UUIDs" });
+      res.status(400).json({ error: `ids must be the only query parameter and contain one to ${ISSUE_SUMMARIES_MAX_IDS} comma-separated UUIDs` });
       return;
     }
     const rows = await listIssueSummaries(db, companyId, parsed.data.ids, await issueReadSqlCondition(db, req.actor));
     const visible = await filterIssuesForActor(req, rows);
     // Blocked rows carry glyph-only blocker state so every task view resolves
-    // the same glyph (covered → "in queue") as the task pane. At most five IDs.
+    // the same glyph (covered → "in queue") as the task pane. At most ISSUE_SUMMARIES_MAX_IDS IDs.
     const blockerAttention = await listIssueStatusBlockerAttention(db, companyId, visible, async (ids) => new Set(
       (await filterIssuesForActor(req, await listIssueSummaries(db, companyId, ids, await issueReadSqlCondition(db, req.actor))))
         .map((row) => row.id),
@@ -14540,12 +14540,21 @@ export function issueRoutes(
    * Conversation tasks are excluded: a conversation turn settles from its final
    * reply (nativeConversationReplyResult), not from a runner tool, so a reply
    * that moves the conversation to review still settles without the lock.
+   *
+   * The one status-shaped request a run must be able to send is the active
+   * review/approval participant's approval (`status: "done"` with its decision
+   * comment): no runner tool records a stage decision, so refusing it leaves
+   * the stage pending forever. With `allowStageApproval` the guard returns
+   * "defer_final_status" for that request instead of refusing it. The caller
+   * records the decision and keeps the task (and the run's lock) in review;
+   * the run's own paperclip_finish report then sets the final status.
    */
   async function assertNativeRunKeepsOwnExecutionLock(
     req: Request,
-    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null },
+    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null; executionState?: unknown },
     requestedStatus: unknown = req.body.status,
-  ) {
+    options: { allowStageApproval?: boolean } = {},
+  ): Promise<"defer_final_status" | undefined> {
     const runId = req.actor.type === "agent" ? req.actor.runId : null;
     if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
     if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
@@ -14558,6 +14567,10 @@ export function issueRoutes(
     const run = await heartbeat.getRun(runId);
     if (!run || run.runtimeMode !== "native" || run.status !== "running"
       || run.agentId !== req.actor.agentId || run.companyId !== issue.companyId) return;
+    if (options.allowStageApproval && requestedStatus === "done" && issue.status === "in_review" &&
+        activeExecutionParticipantAgentId(issue) === req.actor.agentId) {
+      return "defer_final_status";
+    }
     // A blocker that the dependency rules reject anyway keeps its specific
     // error; otherwise the run reports the block with paperclip_block.
     if (Array.isArray(req.body.blockedByIssueIds) && req.body.blockedByIssueIds.length > 0) {
@@ -14566,7 +14579,11 @@ export function issueRoutes(
         blockedByIssueIds: req.body.blockedByIssueIds, parentIssueId: issue.parentId,
       });
     }
-    throw conflict(
+    throw nativeRunStatusReportedByFinish(requestedStatus);
+  }
+
+  function nativeRunStatusReportedByFinish(requestedStatus: unknown) {
+    return conflict(
       "This run owns the task's execution, so it cannot change the task status directly; doing so would end its access to the task before it reports. " +
         "Report the outcome with paperclip_finish instead: reportedWorkDisposition \"needs_review\" for review, \"done\" when complete, or \"yielded\" with continuation.kind \"monitor\" to wait on a scheduled monitor. " +
         "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
@@ -14682,7 +14699,7 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
-      await assertNativeRunKeepsOwnExecutionLock(req, existing);
+      const nativeStageApproval = await assertNativeRunKeepsOwnExecutionLock(req, existing, req.body.status, { allowStageApproval: true });
       if (req.body.expectedStatusVersion !== undefined && (
         existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
       )) {
@@ -15233,6 +15250,18 @@ export function issueRoutes(
         throw unprocessable("Snapshot-guarded policy updates cannot change task status or ownership");
       }
       Object.assign(updateFields, transition.patch);
+      let deferredNativeStageApproval = false;
+      if (nativeStageApproval === "defer_final_status") {
+        // Only the final stage's approval is deferred. Anything else this
+        // request would do (an intermediate approval that hands the task to the
+        // next participant, or no decision at all) keeps the ordinary refusal.
+        const finalApproval = transition.decision?.outcome === "approved" && updateFields.status === "done" &&
+          (transition.patch.assigneeAgentId === undefined || transition.patch.assigneeAgentId === existing.assigneeAgentId) &&
+          transition.patch.assigneeUserId === undefined;
+        if (!finalApproval) throw nativeRunStatusReportedByFinish(req.body.status);
+        delete updateFields.status;
+        deferredNativeStageApproval = true;
+      }
 
       const nextStatus = updateFields.status ?? existing.status;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
@@ -15659,10 +15688,13 @@ export function issueRoutes(
         const lockedPolicyChangeRequested =
           req.body.reviewPolicy !== undefined &&
           req.body.reviewPolicy !== lockedExisting.reviewPolicy;
+        // A deferred native approval is still a review verdict even though
+        // its status write is left to the run's finish report.
         const lockedReviewVerdictRequested =
           lockedExisting.status === "in_review" &&
           (updateFields.status === "done" ||
-            updateFields.status === "cancelled");
+            updateFields.status === "cancelled" ||
+            deferredNativeStageApproval);
         if (
           (lockedReviewVerdictRequested || lockedPolicyChangeRequested) &&
           lockedExisting.reviewPolicy != null &&
