@@ -65,11 +65,6 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   }
   if (!operation.allowedModes.includes(context.workMode)) throw forbidden("call_api permits only reads in Ask and Plan modes; use the permitted dedicated tools");
   if (input.pathParams?.companyId && input.pathParams.companyId !== context.companyId) throw forbidden("API call belongs to another company");
-  if (operation.method === "PATCH" && input.body === undefined && !input.files?.length && operation.requestBody?.required) {
-    // A PATCH without a body changes nothing but still returns success, which
-    // reads as a completed update. Name the missing argument instead.
-    throw badRequest(`This request was not sent: this PATCH requires body, a JSON object with the fields to change${patchFieldHint(operation)}. Received arguments: ${Object.keys(value as Record<string, unknown>).sort().join(", ")}.`);
-  }
   const contentType = (input.contentType ?? "application/json").split(";", 1)[0].trim().toLowerCase();
   if (input.body !== undefined && !input.files?.length) {
     const requestSchema = operation.requestBody?.content?.[contentType]?.schema as { type?: string } | undefined;
@@ -171,6 +166,13 @@ export function runnerApiPagination(headers: Headers) {
 export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiContext, io: RunnerApiIo) {
   const inlineBytes = RUNNER_API_INLINE_BYTES;
   const { operation, input: validated } = validateRunnerApiCall(input, context);
+  // New dispatches only. Recovery and saved receipts still validate an older
+  // accepted body-less PATCH, so this rule stays out of validateRunnerApiCall.
+  if (operation.method === "PATCH" && validated.body === undefined && !validated.files?.length && operation.requestBody?.required) {
+    // A PATCH without a body changes nothing but still returns success, which
+    // reads as a completed update. Name the missing argument instead.
+    throw badRequest(`This request was not sent: this PATCH requires body, a JSON object with the fields to change${patchFieldHint(operation)}. Received arguments: ${Object.keys(input).sort().join(", ")}.`);
+  }
   input = validated;
   const sensitiveResponse = runnerApiSensitiveResponse(operation.method, operation.path);
   const url = runnerApiUrl(operation, input, context, io.apiUrl);
