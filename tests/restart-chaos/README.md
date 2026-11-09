@@ -25,7 +25,7 @@ Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below
 `--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
-`--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600), keeping
+`--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600; with `--triggers time`), keeping
 the rest of the seeded plan, for example to restart a Daytona R1 task after its workspace preparation.
 
 Each wave's temporary instance (embedded Postgres, workspaces, often 5–13 GB) is
