@@ -8,6 +8,7 @@ import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { motionMilliseconds, motionNumber } from "@/lib/onboarding-motion-tokens";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 export interface AgentSetupPromptProps {
   /** The complete text to preview and copy; never truncated on the clipboard. */
@@ -66,9 +67,9 @@ function readLogoPositions(group: HTMLSpanElement | null) {
 /** A small handoff to the user's agent, with an inspectable prompt and local copy feedback. */
 export function AgentSetupPrompt({
   prompt,
-  title = "Agent setup",
-  description = "Paste this into your agent to take care of setup.",
-  label = "Set up with an agent",
+  title,
+  description,
+  label,
   variant = "outline",
   side = "top",
   align = "start",
@@ -77,8 +78,12 @@ export function AgentSetupPrompt({
   onCopied,
   agent,
 }: AgentSetupPromptProps) {
+  const { t } = useTranslation();
+  const titleText = title ?? t("agents.AgentSetupPrompt.title");
+  const descriptionText = description ?? t("agents.AgentSetupPrompt.description");
+  const labelText = label ?? t("agents.AgentSetupPrompt.label");
   const agents = agent ? [agent] : defaultAgents;
-  const recipient = agent ? `your ${agent.name}` : "your agent";
+  const recipient = agent ? t("agents.AgentSetupPrompt.recipientNamed", { name: agent.name }) : t("agents.AgentSetupPrompt.recipientGeneric");
   const id = useId();
   const reducedMotion = usePrefersReducedMotion();
   const [open, setOpen] = useState(false);
@@ -187,7 +192,7 @@ export function AgentSetupPrompt({
           <Button
             type="button"
             variant={variant}
-            aria-label={label}
+            aria-label={labelText}
             data-copied={status === "copied"}
             onClick={(event) => {
               // The trigger remains a copy action while open. Dismiss with
@@ -200,8 +205,8 @@ export function AgentSetupPrompt({
           >
             {status === "copied" ? <Check className="agent-setup-check size-4" /> : <Terminal className="size-4 text-muted-foreground" />}
             <span className="relative min-w-0">
-              <span className={status === "copied" ? "invisible" : undefined}>{label}</span>
-              {status === "copied" && <span className="agent-setup-confirmation absolute inset-0 flex items-center">Copied!</span>}
+              <span className={status === "copied" ? "invisible" : undefined}>{labelText}</span>
+              {status === "copied" && <span className="agent-setup-confirmation absolute inset-0 flex items-center">{t("agents.AgentSetupPrompt.copied")}</span>}
             </span>
             <span className="agent-setup-trigger-logos" data-single={Boolean(agent)}><AgentLogos agents={agents} ref={triggerLogos} hidden={open || Boolean(flight)} /></span>
           </Button>
@@ -225,10 +230,10 @@ export function AgentSetupPrompt({
         >
           <div className="flex items-start gap-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <h2 id={`${id}-title`} className="text-sm font-semibold">{title}</h2>
-              <p id={`${id}-description`} className="text-sm leading-relaxed text-muted-foreground">{description}</p>
+              <h2 id={`${id}-title`} className="text-sm font-semibold">{titleText}</h2>
+              <p id={`${id}-description`} className="text-sm leading-relaxed text-muted-foreground">{descriptionText}</p>
             </div>
-            <Button type="button" variant="ghost" size="icon-xs" aria-label="Close agent setup" onClick={() => changeOpen(false)}>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label={t("agents.AgentSetupPrompt.closeSetup")} onClick={() => changeOpen(false)}>
               <X className="size-3.5" />
             </Button>
           </div>
@@ -237,20 +242,20 @@ export function AgentSetupPrompt({
             <div className="agent-setup-preview-logos absolute right-3 top-0 z-10"><AgentLogos agents={agents} ref={previewLogos} hidden={Boolean(flight)} /></div>
             {status === "failed" ? (
               <Textarea
-                aria-label="Setup prompt"
+                aria-label={t("agents.AgentSetupPrompt.setupPrompt")}
                 readOnly
                 value={prompt}
                 onFocus={(event) => event.currentTarget.select()}
                 className="agent-setup-preview resize-none rounded-lg bg-muted/50 p-3 pt-5 font-mono text-xs leading-relaxed"
               />
             ) : (
-              <pre tabIndex={0} aria-label="Setup prompt" className="agent-setup-preview m-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/50 p-3 pt-5 font-mono text-xs leading-relaxed text-muted-foreground">{prompt}</pre>
+              <pre tabIndex={0} aria-label={t("agents.AgentSetupPrompt.setupPrompt")} className="agent-setup-preview m-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/50 p-3 pt-5 font-mono text-xs leading-relaxed text-muted-foreground">{prompt}</pre>
             )}
           </div>
 
           <div className="flex flex-col gap-2">
             {status === "failed" && (
-              <p role="alert" className="text-xs text-destructive">Could not copy automatically. Select and copy the prompt above, or try again.</p>
+              <p role="alert" className="text-xs text-destructive">{t("agents.AgentSetupPrompt.copyFailed")}</p>
             )}
             <Button
               ref={copyButton}
@@ -262,15 +267,15 @@ export function AgentSetupPrompt({
               onClick={() => { if (prompt.trim()) void copyPrompt(); }}
             >
               {status === "copied" ? <Check className="agent-setup-check size-4" /> : <Copy className="size-4" />}
-              {status === "copied" ? "Copied to clipboard" : status === "copying" ? "Copying…" : status === "failed" ? "Try copying again" : "Copy prompt"}
+              {status === "copied" ? t("agents.AgentSetupPrompt.copiedToClipboard") : status === "copying" ? t("agents.AgentSetupPrompt.copying") : status === "failed" ? t("agents.AgentSetupPrompt.tryCopyingAgain") : t("agents.AgentSetupPrompt.copyPrompt")}
             </Button>
             <p className="text-center text-xs text-muted-foreground">
-              {status === "copied" ? `Ready to paste into ${recipient}.` : agent ? `Give this prompt to ${recipient}.` : "Works with Codex, ChatGPT, Claude, and more."}
+              {status === "copied" ? t("agents.AgentSetupPrompt.readyToPaste", { recipient }) : agent ? t("agents.AgentSetupPrompt.giveToRecipient", { recipient }) : t("agents.AgentSetupPrompt.worksWith")}
             </p>
           </div>
         </PopoverContent>
       </Popover>
-      <span role="status" className="sr-only">{status === "copied" ? `Setup prompt copied. Ready to paste into ${recipient}.` : ""}</span>
+      <span role="status" className="sr-only">{status === "copied" ? t("agents.AgentSetupPrompt.copiedAnnouncement", { recipient }) : ""}</span>
       {flight && createPortal(
         <span ref={flyingLogos} className="agent-setup-flight-layer" aria-hidden="true">
           {agents.map((agent, index) => (

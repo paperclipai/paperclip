@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { createVoiceSessionController, type VoiceSessionDependencies } from "@/lib/voice-session-controller";
 import { VoiceControls } from "./VoiceControls";
 import { VoiceTranscript } from "./VoiceTranscript";
+import { useTranslation } from "@/i18n";
 
 export interface VoiceConversationPanelProps {
   agentName: string;
@@ -14,6 +15,7 @@ export interface VoiceConversationPanelProps {
 }
 
 export function VoiceConversationPanel({ agentName, dependencies, notification, autoStart = false, onEndedChange, accessRevoked = false }: VoiceConversationPanelProps) {
+  const { t } = useTranslation();
   const controller = useMemo(() => createVoiceSessionController(dependencies), [dependencies]);
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const started = useRef(false);
@@ -31,7 +33,7 @@ export function VoiceConversationPanel({ agentName, dependencies, notification, 
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <VoiceControls {...snapshot} agentName={agentName} onStart={() => { void controller.start(); }} onMute={() => { void controller.mute(); }} onEnd={() => { void controller.stop(); }} onResumeAudio={() => { void controller.resumeAudio(); }} onRepeat={() => { void controller.repeat(); }} />
-      <div className="max-h-64 overflow-y-auto" role="region" aria-label="Voice transcript history" tabIndex={snapshot.transcript.length ? 0 : undefined}><VoiceTranscript entries={snapshot.transcript} agentName={agentName} /></div>
+      <div className="max-h-64 overflow-y-auto" role="region" aria-label={t("agents.VoiceConversationPanel.transcriptHistory")} tabIndex={snapshot.transcript.length ? 0 : undefined}><VoiceTranscript entries={snapshot.transcript} agentName={agentName} /></div>
     </div>
   );
 }

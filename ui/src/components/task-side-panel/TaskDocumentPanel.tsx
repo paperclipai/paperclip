@@ -10,6 +10,7 @@ import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { documentDisplayTitle } from "@/lib/issue-artifacts";
 import { useLocation } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 
 export function TaskDocumentPanel({
   issueId,
@@ -26,6 +27,7 @@ export function TaskDocumentPanel({
   documentIssueId?: string;
   currentIssueId?: string;
 }) {
+  const { t } = useTranslation();
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const query = useQuery<IssueDocument | null>({
@@ -51,14 +53,14 @@ export function TaskDocumentPanel({
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
         <Loader2 className="size-4 animate-spin" aria-hidden />
-        Loading document…
+        {t("sidePanel.TaskDocumentPanel.loading")}
       </div>
     );
   }
   if (view.kind === "error") {
     return (
       <div className="py-6">
-        <QueryErrorState error={query.error} action="load the document" onRetry={view.retry} retrying={view.isFetching} />
+        <QueryErrorState error={query.error} action={t("sidePanel.TaskDocumentPanel.loadAction")} onRetry={view.retry} retrying={view.isFetching} />
       </div>
     );
   }
@@ -68,9 +70,9 @@ export function TaskDocumentPanel({
       <div className="flex items-start gap-3 py-8 text-sm" role="status">
         <FileQuestion className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden />
         <div className="space-y-1">
-          <p className="font-medium">{revisionId ? "Reviewed revision unavailable" : "Document no longer available"}</p>
+          <p className="font-medium">{revisionId ? t("sidePanel.TaskDocumentPanel.revisionUnavailable") : t("sidePanel.TaskDocumentPanel.documentUnavailable")}</p>
           <p className="text-muted-foreground">
-            {revisionId ? "The exact reviewed revision could not be found. The current version has not been substituted." : "Close this tab or choose another document."}
+            {revisionId ? t("sidePanel.TaskDocumentPanel.revisionMissingNotice") : t("sidePanel.TaskDocumentPanel.closeNotice")}
           </p>
         </div>
       </div>
@@ -82,15 +84,15 @@ export function TaskDocumentPanel({
       <header className="space-y-1">
         <h2 className="text-lg font-semibold">{documentDisplayTitle(document)}</h2>
         <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-          <span>{`Revision ${document.latestRevisionNumber ?? 1}`}</span>
+          <span>{t("sidePanel.TaskDocumentPanel.revision", { number: document.latestRevisionNumber ?? 1 })}</span>
           <span aria-hidden>·</span>
-          <span>{`Updated ${new Date(document.updatedAt).toLocaleString()}`}</span>
+          <span>{t("sidePanel.TaskDocumentPanel.updated", { date: new Date(document.updatedAt).toLocaleString() })}</span>
           {!revisionId ? <DocumentAnnotationsCountChip
             issueId={issueId}
             docKey={document.key}
             panelOpen={annotationPanelOpen}
             onToggle={() => setAnnotationPanelOpen((open) => !open)}
-          /> : <span>· Reviewed version</span>}
+          /> : <span>{t("sidePanel.TaskDocumentPanel.reviewedVersion")}</span>}
         </div>
       </header>
       {document.body.trim() ? (
@@ -112,7 +114,7 @@ export function TaskDocumentPanel({
           </DocumentMarkdownBody>
         </IssueDocumentAnnotations>
       ) : (
-        <p className="text-sm text-muted-foreground">Document is empty.</p>
+        <p className="text-sm text-muted-foreground">{t("sidePanel.TaskDocumentPanel.empty")}</p>
       )}
     </article>
   );

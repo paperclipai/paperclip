@@ -9,11 +9,12 @@ import { useSecondTick } from "../hooks/useSecondTick";
 import { TaskProjectAccessNotice } from "./TaskProjectAccessNotice";
 import { ProviderFailureNotice } from "./ProviderFailureNotice";
 import { LockedIssueChip, isLockedIssueStub } from "./LockedIssueChip";
+import { t } from "@/i18n";
 
-const recoveryStepText: Record<NonNullable<TaskInterruptionPresentation["recoveryStep"]>, string> = {
-  checking_previous_run: "Checking that the previous attempt stopped",
-  saving_previous_files: "Saving files from the previous attempt",
-  finishing_recovery: "Finishing recovery of saved work",
+const recoveryStepKeys: Record<NonNullable<TaskInterruptionPresentation["recoveryStep"]>, string> = {
+  checking_previous_run: "issues.executionBlockerNotice.recovery.checkingPreviousRun",
+  saving_previous_files: "issues.executionBlockerNotice.recovery.savingPreviousFiles",
+  finishing_recovery: "issues.executionBlockerNotice.recovery.finishingRecovery",
 };
 
 const blockerAction: Record<string, string> = {
@@ -40,28 +41,28 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   if (presentation?.projectAccess && !optimistic && !takingLonger) return <TaskProjectAccessNotice
     access={presentation.projectAccess} issueId={issueId} agentName={agentName} projectName={projectName}
     canRetry={canRetry && presentation.canRetry} onRetry={onRetry} error={error} className={className} />;
-  if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{describeError(error).body}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
-  if (takingLonger) return <div role="status" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}><span>Taking longer than usual…</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
+  if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{describeError(error).body}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>{t("issues.executionBlockerNotice.retry")}</Button>}</div>;
+  if (takingLonger) return <div role="status" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}><span>{t("issues.executionBlockerNotice.takingLonger")}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>{t("issues.executionBlockerNotice.retry")}</Button>}</div>;
   const step = !optimistic && presentation?.responsibility === "system" && presentation.recoveryStep
-    && ["working", "retry_scheduled"].includes(presentation.state) ? recoveryStepText[presentation.recoveryStep] : null;
+    && ["working", "retry_scheduled"].includes(presentation.state) ? t(recoveryStepKeys[presentation.recoveryStep]) : null;
   const seconds = Math.max(0, Math.ceil((Date.parse(presentation?.nextRetryAt ?? "") - Date.now()) / 1000));
-  const retryIn = `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`;
+  const retryIn = t("issues.executionBlockerNotice.tryingAgain", { time: seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s` });
   if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
     // Saved-work recovery is what the task waits for, so name it over the
     // generic automatic-retry line while keeping the provider explanation.
     return <ProviderFailureNotice failure={presentation.providerFailure} className={className}
-      actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button> : undefined}>
-      {presentation.state === "retry_scheduled" && <p>{step ? `${step}. ${retryIn}` : "Paperclip will retry automatically."}</p>}
+      actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry}>{t("issues.executionBlockerNotice.retry")}</Button> : undefined}>
+      {presentation.state === "retry_scheduled" && <p>{step ? `${step}. ${retryIn}` : t("issues.executionBlockerNotice.retryAutomatically")}</p>}
     </ProviderFailureNotice>;
   }
-  if (step && presentation?.state === "working") return <div role="status" aria-label="Task status"
+  if (step && presentation?.state === "working") return <div role="status" aria-label={t("issues.executionBlockerNotice.taskStatus")}
     className={cn("text-sm text-muted-foreground", className)}>{`${step}…`}</div>;
   // A task that has not started yet names the admission hold it waits for.
   if (!optimistic && presentation?.state === "working" && presentation.retryWait) {
     const dependencies = presentation.retryWait.reason === "dependency_blocked" ? blockers ?? [] : [];
     const unfinished = dependencies.filter(blocker => isLockedIssueStub(blocker) || blocker.status !== "done");
     const waitingOn = unfinished.length ? unfinished : dependencies;
-    return <div role="status" aria-label="Task status" className={cn("text-sm text-muted-foreground", className)}>
+    return <div role="status" aria-label={t("issues.executionBlockerNotice.taskStatus")} className={cn("text-sm text-muted-foreground", className)}>
       <p>{presentation.retryWait.message}</p>
       {waitingOn.length ? <ul className="mt-1 space-y-0.5" data-testid="retry-waiting-on">
         {waitingOn.map(blocker => isLockedIssueStub(blocker)
@@ -69,7 +70,7 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
           : <li key={blocker.id} className="flex min-w-0 items-center gap-2">
           <Link to={createIssueDetailPath(blocker.identifier ?? blocker.id)}
             className="font-mono text-xs text-foreground underline-offset-2 hover:underline">
-            {blocker.identifier ?? "Task"}
+            {blocker.identifier ?? t("issues.executionBlockerNotice.taskFallback")}
           </Link>
           <span className="min-w-0 truncate">{blocker.title}</span>
           <span className="shrink-0 text-xs">{blockerAction[blocker.status] ?? blocker.status.replace(/_/g, " ")}</span>
@@ -81,7 +82,7 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
       !["failed", "retry_scheduled"].includes(presentation.state)) return null;
   return (
     <div className={cn(presentation.state === "failed" && "pt-4", className)}>
-      <div role="status" aria-label="Task status" className={cn(
+      <div role="status" aria-label={t("issues.executionBlockerNotice.taskStatus")} className={cn(
         "flex items-center justify-between gap-3 text-sm",
         presentation.state === "failed" ? "rounded-lg bg-destructive/10 p-4 text-foreground" : "text-muted-foreground",
       )}>
@@ -90,9 +91,9 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
           ? step ? `${step}. ${retryIn}` : retryIn
           : presentation.retryWait ? presentation.retryWait.message
           : presentation.workspaceFailure
-            ? <>Couldn’t prepare the task folders. {presentation.workspaceFailure.message}</>
-            : "Couldn’t finish this attempt. Your message is saved."}</span>
-        {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry}>Retry</Button>}
+            ? t("issues.executionBlockerNotice.workspaceFailure", { message: presentation.workspaceFailure.message })
+            : t("issues.executionBlockerNotice.attemptFailed")}</span>
+        {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry}>{t("issues.executionBlockerNotice.retry")}</Button>}
       </div>
     </div>
   );

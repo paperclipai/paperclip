@@ -1,6 +1,12 @@
 import type { Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "./company-members";
+import { t } from "@/i18n";
 import { formatReviewPolicyValue } from "./review-policy";
+
+/** Verbo traduzido pela ação; o texto em inglês do mapa é o padrão quando não há tradução. */
+function localizedVerb(scope: "row" | "detail", action: string, english: string): string {
+  return t(`activityLog.${scope}.${action.replace(/\./g, "_")}`, english);
+}
 
 type ActivityDetails = Record<string, unknown> | null | undefined;
 
@@ -469,16 +475,16 @@ export function formatActivityVerb(
       ? details.tool
       : typeof details?.upstreamToolName === "string"
         ? details.upstreamToolName
-        : "an app action";
+        : t("activityLog.toolGateway.anAppAction");
     const tool = rawTool.replace(/[._-]+/g, " ");
     const isTest = details?.source === "test";
-    if (action === "tool_gateway.call_completed") return `${isTest ? "tested" : "used"} ${tool} on`;
-    if (action === "tool_gateway.call_allowed") return `${isTest ? "started a test of" : "was allowed to use"} ${tool} on`;
-    if (action === "tool_gateway.call_denied") return `was blocked from using ${tool} on`;
-    if (action === "tool_gateway.approval_requested") return `asked to use ${tool} on`;
-    if (action === "tool_gateway.session_created") return "opened an app session for";
-    if (action === "tool_gateway.session_rejected") return "was blocked from opening an app session for";
-    if (action === "tool_gateway.discovery") return "discovered app actions for";
+    if (action === "tool_gateway.call_completed") return t(isTest ? "activityLog.toolGateway.testedOn" : "activityLog.toolGateway.usedOn", { tool });
+    if (action === "tool_gateway.call_allowed") return t(isTest ? "activityLog.toolGateway.startedTestOf" : "activityLog.toolGateway.wasAllowed", { tool });
+    if (action === "tool_gateway.call_denied") return t("activityLog.toolGateway.wasBlocked", { tool });
+    if (action === "tool_gateway.approval_requested") return t("activityLog.toolGateway.askedToUse", { tool });
+    if (action === "tool_gateway.session_created") return t("activityLog.toolGateway.sessionCreated");
+    if (action === "tool_gateway.session_rejected") return t("activityLog.toolGateway.sessionRejected");
+    if (action === "tool_gateway.discovery") return t("activityLog.toolGateway.discovery");
   }
 
   if (action === "issue.updated") {
@@ -503,7 +509,7 @@ export function formatActivityVerb(
   });
   if (structuredChange) return structuredChange;
 
-  return ACTIVITY_ROW_VERBS[action] ?? action.replace(/[._]/g, " ");
+  return localizedVerb("row", action, ACTIVITY_ROW_VERBS[action] ?? action.replace(/[._]/g, " "));
 }
 
 export function formatIssueActivityAction(
@@ -542,7 +548,7 @@ export function formatIssueActivityAction(
     const serviceName = typeof details.serviceName === "string" && details.serviceName.trim()
       ? details.serviceName.trim()
       : null;
-    const base = ISSUE_ACTIVITY_LABELS[action] ?? action.replace(/[._]/g, " ");
+    const base = localizedVerb("detail", action, ISSUE_ACTIVITY_LABELS[action] ?? action.replace(/[._]/g, " "));
     return serviceName ? `${base} for ${serviceName}` : base;
   }
 
@@ -558,8 +564,8 @@ export function formatIssueActivityAction(
   ) {
     const key = typeof details.key === "string" ? details.key : "document";
     const title = typeof details.title === "string" && details.title ? ` (${details.title})` : "";
-    return `${ISSUE_ACTIVITY_LABELS[action] ?? action} ${key}${title}`;
+    return `${localizedVerb("detail", action, ISSUE_ACTIVITY_LABELS[action] ?? action)} ${key}${title}`;
   }
 
-  return ISSUE_ACTIVITY_LABELS[action] ?? action.replace(/[._]/g, " ");
+  return localizedVerb("detail", action, ISSUE_ACTIVITY_LABELS[action] ?? action.replace(/[._]/g, " "));
 }

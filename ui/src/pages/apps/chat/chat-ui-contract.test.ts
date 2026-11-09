@@ -1,8 +1,20 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+// Os textos em inglês das telas moram no catálogo; o contrato confere fonte e catálogo juntos.
+const enCatalog = readFileSync(new URL("../../../i18n/locales/en.json", import.meta.url), "utf8")
+  .replace(/\r\n/g, "\n")
+  .replace(/\\"/g, '"');
+
+function rawSource(relativePath: string) {
+  return readFileSync(new URL(relativePath, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+}
+
 function source(relativePath: string) {
-  return readFileSync(new URL(relativePath, import.meta.url), "utf8");
+  const text = rawSource(relativePath);
+  return relativePath.endsWith("ChatEndpointSetup.tsx") || relativePath.endsWith("ChatEndpointDetail.tsx")
+    ? `${text}\n${enCatalog}`
+    : text;
 }
 
 describe("chat connector UI contract", () => {
@@ -31,11 +43,11 @@ describe("chat connector UI contract", () => {
     expect(issue).toMatch(
       /agentsApi\.retryFailedRun\(\s*failedRun\.agentId,\s*failedRun\.runId,\s*companyId/,
     );
-    expect(issue).toContain("Retry queued");
+    expect(issue).toContain('t("issues.issueDetail.toasts.retryQueuedTitle")');
     for (const file of ["Inbox.tsx", "LegacyInbox.tsx"]) {
       const page = source(`../../${file}`);
       expect(page).toMatch(
-        /const retryRunMutation = useMutation\(\{[\s\S]*?onError: \(error\) => \{\s*pushToast\(\{\s*title: "Run retry failed"/,
+        /const retryRunMutation = useMutation\(\{[\s\S]*?onError: \(error\) => \{\s*pushToast\(\{\s*title: (?:"Run retry failed"|t\("[^"]*runRetryFailed"\))/,
       );
     }
   });
@@ -48,7 +60,7 @@ describe("chat connector UI contract", () => {
   });
 
   it("provides every settled detail tab and no detach control", () => {
-    const detail = source("./ChatEndpointDetail.tsx");
+    const detail = rawSource("./ChatEndpointDetail.tsx");
     for (const tab of ["settings", "access", "conversations", "activity"]) {
       expect(detail).toContain(`"${tab}"`);
     }
@@ -185,7 +197,7 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("/task@bot_username");
     expect(setup).toContain("registers its command menu automatically");
     expect(setup).toContain(
-      "ordinary\n          mentions are not delivered to bots",
+      "ordinary mentions are not delivered to bots",
     );
     expect(setup).toContain("Create Azure Bot");
     expect(setup).toContain("Microsoft 365 work or school organization");

@@ -1,5 +1,6 @@
 import { UserCheck, UserMinus, type LucideIcon } from "lucide-react";
 import { ISSUE_REVIEW_POLICIES, type IssueReviewPolicy } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 /**
  * Copy for an issue's `reviewPolicy` (PAP-16506 P4).
@@ -29,27 +30,38 @@ export interface IssueReviewPolicyBadge {
 }
 
 /** Only the constrained policies are shown; `anyone` is the silent default. */
-const BADGES: Partial<Record<IssueReviewPolicy, IssueReviewPolicyBadge>> = {
-  not_creator: {
-    value: "not_creator",
-    label: "Anyone else",
-    description: "Anyone except whoever asked for the review can approve it.",
-    Icon: UserMinus,
-  },
-  human_only: {
-    value: "human_only",
-    label: "Human only",
-    description: "Only a person can approve this review. Agents cannot give the verdict.",
-    Icon: UserCheck,
-  },
-};
+function badgeFor(policy: IssueReviewPolicy): IssueReviewPolicyBadge | null {
+  switch (policy) {
+    case "not_creator":
+      return {
+        value: policy,
+        label: t("issues.reviewPolicyBadge.notCreatorLabel"),
+        description: t("issues.reviewPolicyBadge.notCreatorDescription"),
+        Icon: UserMinus,
+      };
+    case "human_only":
+      return {
+        value: policy,
+        label: t("issues.reviewPolicyBadge.humanOnlyLabel"),
+        description: t("issues.reviewPolicyBadge.humanOnlyDescription"),
+        Icon: UserCheck,
+      };
+    default:
+      return null;
+  }
+}
 
 /** Mid-sentence wording for activity lines and field-change receipts. */
-const VALUE_LABELS: Record<IssueReviewPolicy, string> = {
-  anyone: "anyone",
-  not_creator: "anyone else",
-  human_only: "human only",
-};
+function policyValueLabel(policy: IssueReviewPolicy): string {
+  switch (policy) {
+    case "not_creator":
+      return t("issues.reviewPolicyValue.notCreator");
+    case "human_only":
+      return t("issues.reviewPolicyValue.humanOnly");
+    default:
+      return t("issues.reviewPolicyValue.anyone");
+  }
+}
 
 /**
  * The badge for a policy, or `null` when there is nothing to show — which is the
@@ -59,7 +71,7 @@ export function issueReviewPolicyBadge(
   policy: IssueReviewPolicy | null | undefined,
 ): IssueReviewPolicyBadge | null {
   if (typeof policy !== "string") return null;
-  return BADGES[policy as IssueReviewPolicy] ?? null;
+  return badgeFor(policy);
 }
 
 /**
@@ -67,10 +79,12 @@ export function issueReviewPolicyBadge(
  * cleared column must read "anyone" rather than "none".
  */
 export function formatReviewPolicyValue(value: unknown): string {
-  if (value === null || value === undefined) return VALUE_LABELS.anyone;
-  if (typeof value !== "string") return VALUE_LABELS.anyone;
+  if (value === null || value === undefined) return policyValueLabel("anyone");
+  if (typeof value !== "string") return policyValueLabel("anyone");
   // Forward-compatible: a policy this build does not know reads as itself.
-  return VALUE_LABELS[value as IssueReviewPolicy] ?? value.replace(/_/g, " ");
+  return (ISSUE_REVIEW_POLICIES as readonly string[]).includes(value)
+    ? policyValueLabel(value as IssueReviewPolicy)
+    : value.replace(/_/g, " ");
 }
 
 /**

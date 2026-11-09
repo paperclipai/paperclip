@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import type { ToolConnection } from "@paperclipai/shared";
 import { isConnectableAppSlug } from "@paperclipai/shared";
@@ -24,6 +25,7 @@ import { ReviewPanel } from "./app-detail/ReviewPanel";
 import { appApplicationTabHref, appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
 
 export function AppNotConnected() {
+  const { t } = useTranslation();
   const { applicationId = "", tab } = useParams<{ applicationId: string; tab?: string }>();
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
@@ -83,7 +85,7 @@ export function AppNotConnected() {
   useEffect(() => {
     if (!activeTab) return;
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: t("apps.connections.breadcrumbsConnectors", { defaultValue: "Connectors" }), href: "/apps" },
       { label: appName, href: appApplicationTabHref(applicationId, "permissions") },
       { label: appTabLabel(activeTab) },
     ]);
@@ -97,7 +99,7 @@ export function AppNotConnected() {
     return <Navigate to={appApplicationTabHref(applicationId, "permissions")} replace />;
   }
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage apps.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("apps.connections.selectOrgPrompt", { defaultValue: "Select an organization to manage apps." })}</div>;
   }
   if (!applicationId || !activeTab) {
     return <Navigate to={applicationId ? appApplicationTabHref(applicationId, "permissions") : "/apps"} replace />;
@@ -108,7 +110,7 @@ export function AppNotConnected() {
       <QueryErrorState
         size="page"
         error={loadFailure.error}
-        action="load this app"
+        action={t("errorActions.loadThisApp")}
         onRetry={loadFailure.retry}
         retrying={loadFailure.isFetching}
       />
@@ -128,8 +130,8 @@ export function AppNotConnected() {
   if (!application) {
     return (
       <div className="max-w-3xl space-y-3 p-6 text-sm text-muted-foreground">
-        <p>This app doesn’t exist anymore.</p>
-        <Button variant="outline" size="sm" onClick={() => navigate("/apps")}>Back to connectors</Button>
+        <p>{t("apps.notConnected.appNoLongerExists", { defaultValue: "This app doesn’t exist anymore." })}</p>
+        <Button variant="outline" size="sm" onClick={() => navigate("/apps")}>{t("apps.notConnected.backToConnectors", { defaultValue: "Back to connectors" })}</Button>
       </div>
     );
   }
@@ -167,13 +169,13 @@ export function AppNotConnected() {
       )
       : grantsQuery.data?.capabilities.canConfigure === true);
   const reconnectUnavailableMessage = grantsQuery.isLoading || grantsView.kind === "reconnecting"
-    ? "Checking who can reconnect this identity…"
+    ? t("apps.notConnected.checkingWhoCanReconnect", { defaultValue: "Checking who can reconnect this identity…" })
     : grantsView.kind === "error"
-      ? "We couldn't verify who can reconnect this identity. Reload the page to try again."
+      ? t("apps.notConnected.couldNotVerifyWho", { defaultValue: "We couldn't verify who can reconnect this identity. Reload the page to try again." })
       : previousConnection?.credentialPolicy === "per_user"
         && retainedPersonalUserId !== grantsQuery.data?.currentUserId
-        ? "The person this connection belongs to must reconnect it."
-        : "You don't have permission to reconnect this identity.";
+        ? t("apps.notConnected.ownerMustReconnect", { defaultValue: "The person this connection belongs to must reconnect it." })
+        : t("apps.notConnected.noPermissionReconnect", { defaultValue: "You don't have permission to reconnect this identity." });
   const connectHref = newConnectionHref({
     applicationId,
     appName: application.name,

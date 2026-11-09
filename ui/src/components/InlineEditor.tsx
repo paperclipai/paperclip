@@ -6,6 +6,7 @@ import { ApiError } from "../api/client";
 import { useDurableAutosave } from "../hooks/useDurableAutosave";
 import { useDraftOwner } from "../hooks/useDraftOwner";
 import { loadStructuredDraft, saveStructuredDraft } from "../lib/composer-draft";
+import { t, useTranslation } from "@/i18n";
 
 type StoredInlineDraft = { version: 1; draft: string; base: string };
 import { FoldCurtain } from "./FoldCurtain";
@@ -82,7 +83,7 @@ function OwnedInlineEditor({
   onSave,
   as: Tag = "span",
   className,
-  placeholder = "Click to edit...",
+  placeholder = t("common.inlineEditor.clickToEdit"),
   multiline = false,
   fitContent = false,
   nullable = false,
@@ -97,6 +98,7 @@ function OwnedInlineEditor({
   readCurrentValue,
   draftOwner,
 }: InlineEditorProps & { draftOwner: string | undefined }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const editingChangeCallback = useRef(onEditingChange);
   editingChangeCallback.current = onEditingChange;
@@ -139,11 +141,11 @@ function OwnedInlineEditor({
       beforeSave: restored && restored.draft.trim() === next && readCurrent ? async () => {
         const current = await readCurrent();
         if (current !== restored.base && current.trim() !== next) {
-          throw new ApiError("This changed since you loaded it. Your draft is kept for review.", 409, {});
+          throw new ApiError(t("common.inlineEditor.changedSinceLoaded"), 409, {});
         }
       } : undefined,
     });
-  }, [runAutosave]);
+  }, [runAutosave, t]);
   const autosaveState = autosave.status;
   const autosaveStateRef = useRef(autosaveState);
   autosaveStateRef.current = autosaveState;
@@ -498,9 +500,9 @@ function OwnedInlineEditor({
             )}
             role={autosaveState === "error" ? "alert" : "status"}
           >
-            {autosave.label ?? "Idle"}
+            {autosave.label ?? t("common.inlineEditor.idle")}
           </span>
-          {autosaveState === "stalled" ? <button type="button" className="ml-2 text-xs text-foreground underline" onClick={autosave.resendNow}>Retry saving</button> : null}
+          {autosaveState === "stalled" ? <button type="button" className="ml-2 text-xs text-foreground underline" onClick={autosave.resendNow}>{t("common.inlineEditor.retrySaving")}</button> : null}
         </div>
       </div>
     );
@@ -555,7 +557,7 @@ function OwnedInlineEditor({
     >
       {value || placeholder}
     </DisplayTag>
-    {autosaveState === "stalled" ? <button type="button" className="text-xs text-foreground underline" onClick={autosave.resendNow}>Retry saving</button> : null}
+    {autosaveState === "stalled" ? <button type="button" className="text-xs text-foreground underline" onClick={autosave.resendNow}>{t("common.inlineEditor.retrySaving")}</button> : null}
     </>
   );
 }

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
@@ -49,7 +50,7 @@ interface ActiveAgentsPanelProps {
 
 export function ActiveAgentsPanel({
   companyId,
-  title = "Agents",
+  title = t("dashboard.ActiveAgentsPanel.agents"),
   minRunCount = MIN_DASHBOARD_RUNS,
   fetchLimit,
   cardLimit = DASHBOARD_RUN_CARD_LIMIT,
@@ -158,8 +159,8 @@ export function ActiveAgentsPanel({
         <div className="mt-3 flex justify-end text-xs text-muted-foreground">
           <Link to="/dashboard/live" className="hover:text-foreground hover:underline">
             {hiddenRunCount > 0
-              ? `${hiddenRunCount} more active/recent run${hiddenRunCount === 1 ? "" : "s"}`
-              : "View all runs"}
+              ? t("dashboard.ActiveAgentsPanel.moreRuns", { count: hiddenRunCount })
+              : t("dashboard.ActiveAgentsPanel.viewAllRuns")}
           </Link>
         </div>
       )}
@@ -189,8 +190,8 @@ export const AgentRunCard = memo(function AgentRunCard({
   const statusLabel = runStatusLabels[run.status] ?? run.status.replace(/[_-]/g, " ");
   const runUrl = `/agents/${run.agentId}/runs/${run.id}`;
   const timestamp = run.finishedAt
-    ? `Finished ${relativeTime(run.finishedAt)}`
-    : run.startedAt ? `Started ${relativeTime(run.startedAt)}` : `Queued ${relativeTime(run.createdAt)}`;
+    ? t("dashboard.ActiveAgentsPanel.finishedWhen", { when: relativeTime(run.finishedAt) })
+    : run.startedAt ? t("dashboard.ActiveAgentsPanel.startedWhen", { when: relativeTime(run.startedAt) }) : t("dashboard.ActiveAgentsPanel.queuedWhen", { when: relativeTime(run.createdAt) });
   const taskStatus = issue?.status === "in_review" && issue.externalConversationState === "waiting" ? "idle" : issue?.status ?? "backlog";
   const taskTitle = issue?.title ?? (issueLoadFailed ? "Task unavailable" : "Loading task…");
 

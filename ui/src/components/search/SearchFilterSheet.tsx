@@ -11,6 +11,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 import { SHOW_TASK_PRIORITY_UI } from "@/lib/ui-flags";
 import {
   applyAssigneeToken,
@@ -92,6 +93,7 @@ export function SearchFilterSheet({
   sort: CompanySearchSort;
   onSortChange: (next: CompanySearchSort) => void;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<SearchFilters>(filters);
   const options = buildSearchFilterOptions(data);
 
@@ -131,26 +133,28 @@ export function SearchFilterSheet({
   const selectedAssignee = assigneeToken(draft, data.currentUserId);
   const applyLabel =
     previewTotal === null
-      ? "Show results"
-      : `Show ${previewTotal} ${previewTotal === 1 ? "result" : "results"}`;
+      ? t("search.searchFilterSheet.showResults")
+      : previewTotal === 1
+        ? t("search.searchFilterSheet.showOne")
+        : t("search.searchFilterSheet.showMany", { total: previewTotal });
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="bottom" className="max-h-(--sz-85vh) gap-0 rounded-t-xl p-0" data-testid="search-filter-sheet">
         <SheetHeader className="flex-row items-center justify-between border-b border-border">
-          <SheetTitle className="text-base">Filters</SheetTitle>
+          <SheetTitle className="text-base">{t("search.searchFilterSheet.title")}</SheetTitle>
           <button
             type="button"
             className={cn("text-xs text-muted-foreground hover:text-foreground", activeCount === 0 && "invisible")}
             onClick={() => update({})}
           >
-            Clear all
+            {t("search.searchFilterSheet.clearAll")}
           </button>
         </SheetHeader>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-4">
           <ChipToggleGroup
-            title="Status"
+            title={t("common.status")}
             options={options.status}
             selected={draft.status ?? []}
             onToggle={(value) => toggleMulti("status", value)}
@@ -158,38 +162,38 @@ export function SearchFilterSheet({
           {/* PAP-411: Priority filter group hidden behind SHOW_TASK_PRIORITY_UI (search DSL stays intact). */}
           {SHOW_TASK_PRIORITY_UI && (
           <ChipToggleGroup
-            title="Priority"
+            title={t("search.searchFilterSheet.priority")}
             options={options.priority}
             selected={draft.priority ?? []}
             onToggle={(value) => toggleMulti("priority", value)}
           />
           )}
           <ChipToggleGroup
-            title="Assignee"
+            title={t("search.searchFilterSheet.assignee")}
             options={options.assignee}
             selected={selectedAssignee ? [selectedAssignee] : []}
             onToggle={toggleAssignee}
           />
           <ChipToggleGroup
-            title="Project"
+            title={t("search.searchFilterSheet.project")}
             options={options.project}
             selected={draft.projectId ? [draft.projectId] : []}
             onToggle={(value) => toggleSingle("projectId", value)}
           />
           <ChipToggleGroup
-            title="Label"
+            title={t("search.searchFilterSheet.label")}
             options={options.label}
             selected={draft.labelId ? [draft.labelId] : []}
             onToggle={(value) => toggleSingle("labelId", value)}
           />
           <ChipToggleGroup
-            title="Updated"
+            title={t("search.searchFilterSheet.updated")}
             options={options.updated}
             selected={draft.updatedWithin ? [draft.updatedWithin] : []}
             onToggle={(value) => toggleSingle("updatedWithin", value)}
           />
           <div className="space-y-1.5">
-            <div className="text-xs font-medium text-muted-foreground">Sort by</div>
+            <div className="text-xs font-medium text-muted-foreground">{t("search.searchFilterSheet.sortBy")}</div>
             <div className="flex flex-wrap gap-1.5">
               {COMPANY_SEARCH_SORTS.map((value) => (
                 <button
@@ -213,7 +217,7 @@ export function SearchFilterSheet({
         <SheetFooter className="flex-row gap-2 border-t border-border">
           <SheetClose asChild>
             <Button variant="outline" className="flex-1">
-              Cancel
+              {t("common.cancel")}
             </Button>
           </SheetClose>
           <Button
@@ -239,10 +243,11 @@ export function SearchFilterSheetTrigger({
   activeCount: number;
   onClick: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs font-normal" onClick={onClick}>
       <SlidersHorizontal className="h-3.5 w-3.5" />
-      Filters
+      {t("search.searchFilterSheetTrigger.label")}
       {activeCount > 0 ? (
         <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-(length:--text-nano) font-semibold tabular-nums text-primary-foreground">
           {activeCount}

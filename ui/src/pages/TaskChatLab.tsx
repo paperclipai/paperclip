@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Pause, Play, RotateCcw } from "lucide-react";
 import {
@@ -145,14 +146,15 @@ function useStreamingReplay(
  * page-surface treatment.
  */
 const BUBBLE_VARIANTS = [
-  { id: "", label: "Chosen · C · On bg" },
-  { id: "former", label: "Former" },
-  { id: "darker", label: "A · Darker" },
-  { id: "hairline", label: "B · Hairline" },
+  { id: "", labelKey: "issues.TaskChatLab.bubbleVariant.chosen" },
+  { id: "former", labelKey: "issues.TaskChatLab.bubbleVariant.former" },
+  { id: "darker", labelKey: "issues.TaskChatLab.bubbleVariant.darker" },
+  { id: "hairline", labelKey: "issues.TaskChatLab.bubbleVariant.hairline" },
 ] as const;
 type BubbleVariantId = (typeof BUBBLE_VARIANTS)[number]["id"];
 
 export function TaskChatLab() {
+  const { t } = useTranslation();
   const [selected, setSelected] = useState<TaskChatStateId>("agent-message");
   const [bubbleVariant, setBubbleVariant] = useState<BubbleVariantId>("");
   const [speed, setSpeed] = useState(1);
@@ -168,19 +170,19 @@ export function TaskChatLab() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="border-b border-border px-4 py-2">
-        <h1 className="text-sm font-semibold">Task Chat Lab</h1>
+        <h1 className="text-sm font-semibold">{t("issues.TaskChatLab.title")}</h1>
         <p className="text-xs text-muted-foreground">
-          Synthetic harness for the task chat redesign · every state renders here with no live agent.
+          {t("issues.TaskChatLab.description")}
         </p>
       </header>
 
       <div className="flex min-h-0 flex-1">
         {/* State switcher */}
-        <nav className="w-56 shrink-0 overflow-y-auto border-r border-border p-2" aria-label="States">
+        <nav className="w-56 shrink-0 overflow-y-auto border-r border-border p-2" aria-label={t("issues.TaskChatLab.statesNav")}>
           {(["live", "tier-b"] as const).map((tier) => (
             <div key={tier} className="mb-3">
               <p className="mb-1 px-1 text-(length:--text-nano) font-semibold uppercase tracking-wide text-muted-foreground">
-                {tier === "live" ? "Live states" : "Tier-B (synthetic)"}
+                {tier === "live" ? t("issues.TaskChatLab.tierLive") : t("issues.TaskChatLab.tierB")}
               </p>
               <ul className="flex flex-col gap-0.5">
                 {TASK_CHAT_STATE_LIST.filter((m) => m.tier === tier).map((m) => (
@@ -215,7 +217,7 @@ export function TaskChatLab() {
               className="flex items-center gap-1 rounded border border-border px-2 py-1 hover:bg-accent"
             >
               {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-              {playing ? "Pause" : "Play"}
+              {playing ? t("issues.TaskChatLab.pause") : t("issues.TaskChatLab.play")}
             </button>
             <button
               type="button"
@@ -223,10 +225,10 @@ export function TaskChatLab() {
               className="flex items-center gap-1 rounded border border-border px-2 py-1 hover:bg-accent"
             >
               <RotateCcw className="h-3.5 w-3.5" />
-              Replay
+              {t("issues.TaskChatLab.replay")}
             </button>
             <label className="flex items-center gap-2">
-              <span className="text-muted-foreground">Speed</span>
+              <span className="text-muted-foreground">{t("issues.TaskChatLab.speed")}</span>
               <input
                 type="range"
                 min={0.1}
@@ -234,14 +236,14 @@ export function TaskChatLab() {
                 step={0.1}
                 value={speed}
                 onChange={(e) => setSpeed(parseFloat(e.target.value))}
-                aria-label="Streaming speed"
+                aria-label={t("issues.TaskChatLab.streamingSpeedAria")}
                 className="w-32"
               />
               <span className="w-10 tabular-nums">{speed.toFixed(1)}×</span>
             </label>
             <div className="ml-auto flex items-center gap-2">
-              <span className="text-muted-foreground">Agent bubble</span>
-              <div className="flex items-center gap-0.5 rounded border border-border p-0.5" role="group" aria-label="Agent bubble treatment">
+              <span className="text-muted-foreground">{t("issues.TaskChatLab.agentBubble")}</span>
+              <div className="flex items-center gap-0.5 rounded border border-border p-0.5" role="group" aria-label={t("issues.TaskChatLab.agentBubbleTreatmentAria")}>
                 {BUBBLE_VARIANTS.map((v) => (
                   <button
                     key={v.id || "current"}
@@ -253,7 +255,7 @@ export function TaskChatLab() {
                       bubbleVariant === v.id ? "bg-primary text-primary-foreground" : "hover:bg-accent",
                     )}
                   >
-                    {v.label}
+                    {t(v.labelKey)}
                   </button>
                 ))}
               </div>

@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import { ChevronRight, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { TaskChatItem } from "./task-chat-model";
+import { t, useTranslation } from "@/i18n";
 
 /** One MCP server that the harness could not start for this run. */
 export interface TaskChatMcpStartupFailure {
@@ -52,7 +53,7 @@ function failureLine(failure: TaskChatMcpStartupFailure) {
   return (
     <>
       <span className="font-medium text-foreground">{failure.serverName}</span>
-      <span> MCP server failed to start</span>
+      <span> {t("issues.TaskChatRunHealthBanner.mcpServerFailedTo")}</span>
       {failure.reason ? <span className="text-muted-foreground">: {failure.reason}</span> : null}
     </>
   );
@@ -65,6 +66,7 @@ function failureLine(failure: TaskChatMcpStartupFailure) {
  * scrolling away as one more activity row.
  */
 export function TaskChatRunHealthBanner({ failures }: { failures: readonly TaskChatMcpStartupFailure[] }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const listId = `task-chat-run-health-${useId().replaceAll(":", "")}`;
   if (failures.length === 0) return null;
@@ -86,8 +88,8 @@ export function TaskChatRunHealthBanner({ failures }: { failures: readonly TaskC
         <span className={cn("min-w-0 flex-1", open ? "whitespace-normal break-words" : "truncate")}>
           {single ? failureLine(single) : (
             <>
-              <span className="font-medium text-foreground">{failures.length} MCP servers</span>
-              <span> failed to start: </span>
+              <span className="font-medium text-foreground">{t("issues.TaskChatRunHealthBanner.mcpServers", { count: failures.length })}</span>
+              <span> {t("issues.TaskChatRunHealthBanner.failedToStart")} </span>
               <span className="text-muted-foreground">{failures.map((failure) => failure.serverName).join(", ")}</span>
             </>
           )}
@@ -102,7 +104,7 @@ export function TaskChatRunHealthBanner({ failures }: { failures: readonly TaskC
           {single ? null : failures.map((failure) => (
             <p key={failure.id} className="min-w-0 whitespace-pre-wrap break-words">{failureLine(failure)}</p>
           ))}
-          <p>The agent ran without these tools. Fix the server&apos;s command or credentials, then try again.</p>
+          <p>{t("issues.TaskChatRunHealthBanner.theAgentRanWithout")}</p>
         </div>
       ) : null}
     </div>

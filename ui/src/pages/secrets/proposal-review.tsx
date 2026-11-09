@@ -1,5 +1,6 @@
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useMemo, useState } from "react";
+import { t, useTranslation } from "@/i18n";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Fingerprint, KeyRound, Link2, ShieldAlert, Variable, ServerCog } from "lucide-react";
 import type {
@@ -41,8 +42,8 @@ import { describeError } from "@/api/errors";
 
 /** Short, non-reversible fingerprint label. Never renders the value. */
 export function fingerprintLabel(fingerprint: string | null, length: number | null): string {
-  const digest = fingerprint ? `sha256:${fingerprint.slice(0, 10)}…` : "no fingerprint";
-  const size = typeof length === "number" ? `${length} ${length === 1 ? "byte" : "bytes"}` : null;
+  const digest = fingerprint ? `sha256:${fingerprint.slice(0, 10)}…` : t("secrets.proposalReview.noFingerprint", "no fingerprint");
+  const size = typeof length === "number" ? `${length} ${length === 1 ? t("secrets.proposalReview.byte", "byte") : t("secrets.proposalReview.bytes", "bytes")}` : null;
   return size ? `${digest} · ${size}` : digest;
 }
 
@@ -60,6 +61,7 @@ export function FingerprintChip({
   length: number | null;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const { pushToast } = useToastActions();
   const label = fingerprintLabel(fingerprint, length);
   if (!fingerprint) {
@@ -76,10 +78,10 @@ export function FingerprintChip({
       type="button"
       onClick={() => {
         copyTextToClipboard(full)
-          .then(() => pushToast({ title: "Fingerprint copied", tone: "success" }))
-          .catch(() => pushToast({ title: "Couldn’t copy fingerprint", tone: "error" }));
+          .then(() => pushToast({ title: t("secrets.proposalReview.toastCopied", "Fingerprint copied"), tone: "success" }))
+          .catch(() => pushToast({ title: t("secrets.proposalReview.toastCopyFailed", "Couldn’t copy fingerprint"), tone: "error" }));
       }}
-      title={`Copy full digest — ${full}`}
+      title={t("secrets.proposalReview.copyFullDigest", { digest: full })}
       className={cn(
         "inline-flex items-center gap-1 font-mono hover:text-foreground",
         className,
@@ -108,7 +110,7 @@ export function ProposalJustification({
 }) {
   return (
     <div className={cn("space-y-0.5", className)}>
-      <p className="text-(length:--text-micro) text-muted-foreground">Reason given by the agent</p>
+      <p className="text-(length:--text-micro) text-muted-foreground">{t("secrets.proposalReview.reasonGivenByAgent", "Reason given by the agent")}</p>
       <p className="whitespace-pre-wrap break-words text-xs text-foreground/80">
         “{justification}”
       </p>
@@ -164,7 +166,7 @@ export function ProposedBadge({ className }: { className?: string }) {
         className,
       )}
     >
-      <ShieldAlert className="size-3" /> Proposed
+      <ShieldAlert className="size-3" /> {t("secrets.proposalReview.proposed", "Proposed")}
     </Badge>
   );
 }
@@ -180,9 +182,9 @@ export function bindingSecretLabel(proposal: SecretProposalView): {
   pending: boolean;
 } {
   if (proposal.secretProposalId) {
-    return { name: proposal.secretProposalName ?? "proposed secret", pending: true };
+    return { name: proposal.secretProposalName ?? t("secrets.proposalReview.proposedSecret", "proposed secret"), pending: true };
   }
-  return { name: proposal.secretName ?? "secret", pending: false };
+  return { name: proposal.secretName ?? t("secrets.proposalReview.secret", "secret"), pending: false };
 }
 
 function readableError(error: unknown): string {
@@ -259,10 +261,10 @@ export function useProposalReview(
     },
     onSuccess: (result) => {
       pushToast({
-        title: result.kind === "secret" ? "Secret approved" : "Binding approved",
+        title: result.kind === "secret" ? t("secrets.proposalReview.toastSecretApproved", "Secret approved") : t("secrets.proposalReview.toastBindingApproved", "Binding approved"),
         body:
           result.kind === "secret"
-            ? (result.proposedName ?? "Secret created")
+            ? (result.proposedName ?? t("secrets.proposalReview.secretCreated", "Secret created"))
             : `${result.target?.name ?? "Agent"} · ${bindingEnvKey(result) || "binding"}`,
         tone: "success",
       });
@@ -278,7 +280,7 @@ export function useProposalReview(
       secretsApi.rejectProposal(companyId!, proposal.id, { reason: reason.trim() }),
     onSuccess: (result) => {
       pushToast({
-        title: "Proposal rejected",
+        title: t("secrets.proposalReview.toastProposalRejected", "Proposal rejected"),
         body: result.kind === "secret" ? (result.proposedName ?? undefined) : undefined,
         tone: "info",
       });
@@ -379,6 +381,7 @@ function ApproveDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
   const isSecret = draft?.proposal.kind === "secret";
   const previewName = draft
     ? draft.folder.trim()
@@ -395,19 +398,19 @@ function ApproveDialog({
           <>
             <DialogHeader>
               <DialogTitle>
-                {isSecret ? "Approve & create secret" : "Approve binding"}
+                {isSecret ? t("secrets.proposalReview.dialogApproveSecret", "Approve & create secret") : t("secrets.proposalReview.dialogApproveBinding", "Approve binding")}
               </DialogTitle>
               <DialogDescription>
                 {isSecret
-                  ? "The value is created as the proposing agent recorded it. Re-folder or rename it before it lands."
-                  : "Grant the target agent access to this secret. This runs with your permissions."}
+                  ? t("secrets.proposalReview.approveSecretDesc", "The value is created as the proposing agent recorded it. Re-folder or rename it before it lands.")
+                  : t("secrets.proposalReview.approveBindingDesc", "Grant the target agent access to this secret. This runs with your permissions.")}
               </DialogDescription>
             </DialogHeader>
 
             {/* Provenance recap — keeps the social-engineering surface visible. */}
             <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
               <div className="flex items-center gap-1.5 text-muted-foreground">
-                <span>Proposed by</span>
+                <span>{t("secrets.proposalReview.proposedBy")}</span>
                 <AgentRefChip agent={draft.proposal.proposedBy} className="font-medium text-foreground" />
               </div>
               <ProposalJustification justification={draft.proposal.justification} />
@@ -417,7 +420,7 @@ function ApproveDialog({
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
-                    <Label htmlFor="approve-folder">Folder</Label>
+                    <Label htmlFor="approve-folder">{t("secrets.proposalReview.folder")}</Label>
                     <Input
                       id="approve-folder"
                       value={draft.folder}
@@ -427,7 +430,7 @@ function ApproveDialog({
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label htmlFor="approve-name">Name</Label>
+                    <Label htmlFor="approve-name">{t("secrets.proposalReview.name")}</Label>
                     <Input
                       id="approve-name"
                       value={draft.leaf}
@@ -440,27 +443,27 @@ function ApproveDialog({
                   </div>
                 </div>
                 <p className="text-(length:--text-micro) text-muted-foreground">
-                  Lands as{" "}
+                  {t("secrets.proposalReview.landsAs", "Lands as")}{" "}
                   {previewName ? (
                     <SecretPathName name={previewName} className="font-mono" />
                   ) : (
-                    <span className="italic">enter a name</span>
+                    <span className="italic">{t("secrets.proposalReview.enterName", "enter a name")}</span>
                   )}
                 </p>
 
                 <div className="space-y-1">
-                  <Label htmlFor="approve-description">Description</Label>
+                  <Label htmlFor="approve-description">{t("secrets.proposalReview.description", "Description")}</Label>
                   <Input
                     id="approve-description"
                     value={draft.description}
                     onChange={(event) => onChange({ ...draft, description: event.target.value })}
-                    placeholder="Optional"
+                    placeholder={t("secrets.proposalReview.optional", "Optional")}
                   />
                 </div>
 
                 {localConfigs.length > 0 ? (
                   <div className="space-y-1">
-                    <Label htmlFor="approve-provider-config">Provider vault</Label>
+                    <Label htmlFor="approve-provider-config">{t("secrets.proposalReview.providerVault")}</Label>
                     <select
                       id="approve-provider-config"
                       value={draft.providerConfigId}
@@ -469,7 +472,7 @@ function ApproveDialog({
                       }
                       className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                     >
-                      <option value="">Deployment default</option>
+                      <option value="">{t("secrets.proposalReview.deploymentDefault")}</option>
                       {localConfigs.map((config) => (
                         <option key={config.id} value={config.id}>
                           {config.displayName}
@@ -498,16 +501,16 @@ function ApproveDialog({
 
             <DialogFooter>
               <Button variant="ghost" onClick={onCancel} disabled={pending}>
-                Cancel
+                {t("common.cancel", "Cancel")}
               </Button>
               <Button onClick={onConfirm} disabled={pending || !canConfirm}>
                 {pending
-                  ? "Approving…"
+                  ? t("secrets.proposalReview.approving", "Approving…")
                   : isSecret
-                    ? "Approve & create"
+                    ? t("secrets.proposalReview.approveAndCreate", "Approve & create")
                     : draft.cascade
-                      ? "Approve secret & bind"
-                      : "Approve binding"}
+                      ? t("secrets.proposalReview.approveSecretAndBind", "Approve secret & bind")
+                      : t("secrets.proposalReview.approveBinding", "Approve binding")}
               </Button>
             </DialogFooter>
           </>
@@ -524,6 +527,7 @@ function BindingApproveBody({
   draft: ApproveDraft;
   onChange: (next: ApproveDraft) => void;
 }) {
+  const { t } = useTranslation();
   const { proposal } = draft;
   const secret = bindingSecretLabel(proposal);
   const envKey = bindingEnvKey(proposal);
@@ -531,7 +535,7 @@ function BindingApproveBody({
     <div className="space-y-3 text-sm">
       <div className="space-y-2 rounded-md border border-border p-3">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Target agent</span>
+          <span className="text-xs text-muted-foreground">{t("secrets.proposalReview.targetAgent")}</span>
           {proposal.target ? (
             <AgentRefChip agent={proposal.target} className="text-sm font-medium" />
           ) : (
@@ -539,14 +543,14 @@ function BindingApproveBody({
           )}
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Delivered as</span>
+          <span className="text-xs text-muted-foreground">{t("secrets.proposalReview.deliveredAs")}</span>
           <span className="flex items-center gap-1.5">
             <DeliveryBadge configPath={proposal.configPath} />
             <code className="font-mono text-xs">{envKey || proposal.configPath}</code>
           </span>
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Secret</span>
+          <span className="text-xs text-muted-foreground">{t("secrets.proposalReview.secret")}</span>
           <span className="flex items-center gap-1.5">
             <KeyRound className="size-3.5 text-muted-foreground" />
             <span className="font-medium">{secret.name}</span>
@@ -562,12 +566,13 @@ function BindingApproveBody({
             checked={draft.cascade}
             onCheckedChange={(checked) => onChange({ ...draft, cascade: checked === true })}
             className="mt-0.5"
-            aria-label="Also approve the proposed secret"
+            aria-label={t("secrets.proposalReview.cascadeAria")}
           />
           <span className="text-foreground/90">
-            Also approve the proposed secret{" "}
-            <span className="font-medium">{secret.name}</span> and create it in the same step. The
-            binding can’t land without it.
+            {t("secrets.proposalReview.cascadeLabel", {
+              name: secret.name,
+              defaultValue: `Also approve the proposed secret ${secret.name} and create it in the same step. The binding can’t land without it.`,
+            })}
           </span>
         </label>
       ) : null}
@@ -603,22 +608,23 @@ function RejectDialog({
         {proposal ? (
           <>
             <DialogHeader>
-              <DialogTitle>Reject proposal</DialogTitle>
+              <DialogTitle>{t("secrets.proposalReview.rejectTitle", "Reject proposal")}</DialogTitle>
               <DialogDescription>
-                The reason is sent back to{" "}
-                <AgentRefChip agent={proposal.proposedBy} className="text-foreground" />. Dependent
-                bindings are rejected too.
+                {t("secrets.proposalReview.rejectDescription", {
+                  agent: proposal.proposedBy.name,
+                  defaultValue: `The reason is sent back to ${proposal.proposedBy.name}. Dependent bindings are rejected too.`,
+                })}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-1">
-              <Label htmlFor="reject-reason">Reason</Label>
+              <Label htmlFor="reject-reason">{t("secrets.proposalReview.reasonLabel", "Reason")}</Label>
               <Textarea
                 id="reject-reason"
                 value={reason}
                 onChange={(event) => onReasonChange(event.target.value)}
                 rows={3}
                 autoFocus
-                placeholder="Why is this being rejected?"
+                placeholder={t("secrets.proposalReview.reasonPlaceholder", "Why is this being rejected?")}
               />
             </div>
             {error ? (
@@ -628,10 +634,10 @@ function RejectDialog({
             ) : null}
             <DialogFooter>
               <Button variant="ghost" onClick={onCancel} disabled={pending}>
-                Cancel
+                {t("common.cancel", "Cancel")}
               </Button>
               <Button variant="destructive" onClick={onConfirm} disabled={pending || !canConfirm}>
-                {pending ? "Rejecting…" : "Reject"}
+                {pending ? t("secrets.proposalReview.rejecting", "Rejecting…") : t("secrets.proposalReview.reject", "Reject")}
               </Button>
             </DialogFooter>
           </>
@@ -658,6 +664,7 @@ export function ProposalActions({
   disabled?: boolean;
   size?: "sm" | "xs";
 }) {
+  const { t } = useTranslation();
   const blocked = !proposal.viewerCanApprove;
   const heightClass = size === "xs" ? "h-7 px-2 text-xs" : "";
   const approveButton = (
@@ -667,7 +674,7 @@ export function ProposalActions({
       disabled={disabled || blocked}
       onClick={() => onApprove(proposal)}
     >
-      Approve
+      {t("secrets.proposalReview.approve", "Approve")}
     </Button>
   );
   return (
@@ -679,7 +686,7 @@ export function ProposalActions({
               <span tabIndex={0}>{approveButton}</span>
             </TooltipTrigger>
             <TooltipContent className="max-w-72">
-              {proposal.approveBlockReason ?? "You don’t have permission to approve this."}
+              {proposal.approveBlockReason ?? t("secrets.proposalReview.noPermissionApprove", "You don’t have permission to approve this.")}
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -693,7 +700,7 @@ export function ProposalActions({
         disabled={disabled}
         onClick={() => onReject(proposal)}
       >
-        Reject
+        {t("secrets.proposalReview.reject", "Reject")}
       </Button>
     </div>
   );

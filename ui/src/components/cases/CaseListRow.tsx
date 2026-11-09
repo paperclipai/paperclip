@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { CaseSummary } from "@/api/cases";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { EntityRow } from "@/components/EntityRow";
@@ -7,6 +8,7 @@ import { DEFAULT_CASE_COLUMNS, type CaseColumn } from "@/lib/case-list-view";
 import { formatDateTime, relativeTime } from "@/lib/utils";
 
 export function CaseListRow({
+
   caseData,
   projectName,
   search = "",
@@ -17,6 +19,7 @@ export function CaseListRow({
   search?: string;
   columns?: readonly CaseColumn[];
 }) {
+  const { t } = useTranslation();
   const caseHref = useCaseHref();
   const task = caseData.workIssue;
   const show = new Set(columns);
@@ -26,8 +29,8 @@ export function CaseListRow({
     : null;
   const work = task ? <>
     {show.has("phase") && caseData.phase ? <span className="text-xs text-muted-foreground">{caseData.phase}</span> : null}
-    {show.has("assignee") && (assignee ? <AgentIdentity agent={assignee} size="xs" /> : <span className="text-xs text-muted-foreground">Unassigned</span>)}
-  </> : <span className="text-xs text-muted-foreground">{caseData.workIssueId ? "Task unavailable" : "No task linked"}</span>;
+    {show.has("assignee") && (assignee ? <AgentIdentity agent={assignee} size="xs" /> : <span className="text-xs text-muted-foreground">{t("common.unassigned", "Unassigned")}</span>)}
+  </> : <span className="text-xs text-muted-foreground">{caseData.workIssueId ? t("cases.CaseListRow.taskUnavailable", "Task unavailable") : t("cases.CaseListRow.noTaskLinked", "No task linked")}</span>;
   const subtitle = [show.has("identifier") ? caseData.identifier : null, show.has("type") ? caseData.caseType : null,
     show.has("project") ? projectName : null].filter(Boolean);
 

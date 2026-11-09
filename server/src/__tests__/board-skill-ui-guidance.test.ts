@@ -22,7 +22,7 @@ describe("paperclip-board skill web UI guidance", () => {
 
   it("documents the handoff to full search and the search route it opens", () => {
     expect(palette).toMatch(/event\.key === "Enter" && \(event\.metaKey \|\| event\.ctrlKey\)/);
-    expect(palette).toContain("Search all for");
+    expect(palette).toMatch(/(?:Search all for|searchAllFor)/);
     expect(section).toContain("**Search all**");
     expect(section).toContain("Cmd/Ctrl+Enter");
     expect(read("ui/src/App.tsx")).toContain('<Route path="search"');
@@ -31,7 +31,7 @@ describe("paperclip-board skill web UI guidance", () => {
 
   it("keeps the overlay promise to the shortcut and describes the sidebar Search item as full search", () => {
     // The classic sidebar Search item is a link to the full search page, not the overlay.
-    expect(read("ui/src/components/Sidebar.tsx")).toMatch(/<SidebarNavItem to="\/search" label="Search"/);
+    expect(read("ui/src/components/Sidebar.tsx")).toMatch(/<SidebarNavItem to="\/search" label=(?:"Search"|\{t\("common\.search"\)\})/);
     expect(section).toMatch(/sidebar \*\*Search\*\* item[^\n]*opens the full search page/);
     expect(section).not.toMatch(/search icon[^\n]*opens over the current page/i);
   });

@@ -4,6 +4,7 @@ import { Link, Navigate, useParams } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { useTranslation } from "@/i18n";
 import { ProfilesIndex } from "./profiles/ProfilesIndex";
 import { GatewaysTab } from "./GatewaysTab";
 import { PasteConfigTab } from "./PasteConfigTab";
@@ -31,6 +32,7 @@ function renderTab(tab: ToolTabKey, companyId: string) {
 }
 
 export function ToolsAccess() {
+  const { t } = useTranslation();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const params = useParams<{ tab?: string }>();
@@ -40,20 +42,20 @@ export function ToolsAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
+      { label: selectedCompany?.name ?? t("common.company", { defaultValue: "Company" }), href: "/dashboard" },
+      { label: t("tools.access.breadcrumbApps", { defaultValue: "Apps" }), href: "/apps" },
       ...(advanced
-        ? [{ label: "Advanced setup" }]
+        ? [{ label: t("tools.access.breadcrumbAdvanced", { defaultValue: "Advanced setup" }) }]
         : [
-            { label: "Advanced setup", href: advancedTabHref("paste-config") },
-            { label: tabLabel ?? "Developer tools" },
+            { label: t("tools.access.breadcrumbAdvanced", { defaultValue: "Advanced setup" }), href: advancedTabHref("paste-config") },
+            { label: tabLabel ? t(`tools.access.tabs.${activeTab}`, { defaultValue: tabLabel }) : t("tools.access.breadcrumbDevTools", { defaultValue: "Developer tools" }) },
           ]),
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name, advanced, tabLabel]);
+  }, [setBreadcrumbs, selectedCompany?.name, advanced, tabLabel, activeTab, t]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to open advanced setup.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("tools.access.selectOrgPrompt", { defaultValue: "Select an organization to open advanced setup." })}</div>;
   }
 
   if (params.tab === "run-your-own") {
@@ -86,16 +88,17 @@ export function ToolsAccess() {
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 p-4 sm:p-6">
         <header>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-xl font-bold text-foreground">Advanced setup</h1>
+            <h1 className="text-xl font-bold text-foreground">{t("tools.access.headerTitle", { defaultValue: "Advanced setup" })}</h1>
             <span className="inline-flex items-center rounded-full bg-foreground px-2.5 py-0.5 text-(length:--text-micro) font-bold text-background">
-              Advanced
+              {t("tools.access.badgeAdvanced", { defaultValue: "Advanced" })}
             </span>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            For tools that aren't in the gallery. You'll need details from the tool's documentation.
-            Most people never need this — if the app you want is in the gallery,{" "}
+            {t("tools.access.headerSubtitle", {
+              defaultValue: "For tools that aren't in the gallery. You'll need details from the tool's documentation. Most people never need this — if the app you want is in the gallery, ",
+            })}
             <Link to="/apps" className="font-medium text-primary hover:underline">
-              connect it there instead
+              {t("tools.access.connectThereInstead", { defaultValue: "connect it there instead" })}
             </Link>
             .
           </p>
@@ -113,7 +116,7 @@ export function ToolsAccess() {
                   : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
-              {tab.label}
+              {t(`tools.access.tabs.${tab.key === "paste-config" ? "pasteConfig" : tab.key}`, { defaultValue: tab.label })}
             </Link>
           ))}
         </nav>
@@ -122,9 +125,9 @@ export function ToolsAccess() {
 
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Wrench className="h-3.5 w-3.5" />
-          Looking for the developer surface?{" "}
+          {t("tools.access.lookingForDevSurface", { defaultValue: "Looking for the developer surface? " })}
           <Link to={advancedTabHref("profiles")} className="font-medium text-primary hover:underline">
-            Open developer tools
+            {t("tools.access.openDevTools", { defaultValue: "Open developer tools" })}
           </Link>
         </p>
       </div>

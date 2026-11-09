@@ -59,6 +59,7 @@ import {
   FileTree,
 } from "../components/FileTree";
 import { describeError } from "@/api/errors";
+import { t, useTranslation } from "@/i18n";
 
 /**
  * Extract the set of agent/project/task slugs that are "checked" based on
@@ -538,9 +539,10 @@ function ExportPreviewPane({
   orgChartPreviewUrl?: string;
   onSkillClick?: (skill: string) => void;
 }) {
+  const { t } = useTranslation();
   if (!selectedFile || content === null) {
     return (
-      <EmptyState icon={Package} message="Select a file to preview its contents." />
+      <EmptyState icon={Package} message={t("portability.export.selectFilePrompt")} />
     );
   }
 
@@ -577,7 +579,7 @@ function ExportPreviewPane({
           </pre>
         ) : (
           <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 text-sm text-muted-foreground">
-            Binary asset preview is not available for this file type.
+            {t("portability.export.binaryPreviewUnavailable")}
           </div>
         )}
       </div>
@@ -627,6 +629,7 @@ function previewErrorMessage(error: unknown): string {
 }
 
 export function CompanyExport() {
+  const { t } = useTranslation();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -735,8 +738,8 @@ export function CompanyExport() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Export" },
+      { label: t("portability.CompanyExport.settings"), href: "/company/settings" },
+      { label: t("portability.CompanyExport.export") },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
@@ -777,7 +780,7 @@ export function CompanyExport() {
       if (request.requestId !== previewRequestIdRef.current || isAbortError(err)) return;
       pushToast({
         tone: "error",
-        title: "Export failed",
+        title: t("portability.CompanyExport.exportFailed"),
         body: previewErrorMessage(err),
       });
     },
@@ -811,14 +814,14 @@ export function CompanyExport() {
       downloadZip(result, resultCheckedFiles, result.files);
       pushToast({
         tone: "success",
-        title: "Export downloaded",
+        title: t("portability.CompanyExport.exportDownloaded"),
         body: `${resultCheckedFiles.size} file${resultCheckedFiles.size === 1 ? "" : "s"} exported as ${result.rootPath}.zip`,
       });
     },
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Export failed",
+        title: t("portability.CompanyExport.exportFailed"),
         body: describeError(err).body,
       });
     },
@@ -1025,7 +1028,7 @@ export function CompanyExport() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Package} message="Select an organization to export." />;
+    return <EmptyState icon={Package} message={t("portability.export.selectOrgPrompt")} />;
   }
 
   if (exportPreviewMutation.isPending && !exportData) {
@@ -1036,8 +1039,8 @@ export function CompanyExport() {
     return (
       <EmptyState
         icon={Package}
-        title="Export preview cancelled"
-        message="The preview request was cancelled. Your export settings are unchanged."
+        title={t("portability.CompanyExport.exportPreviewCancelled")}
+        message={t("portability.CompanyExport.thePreviewRequestWasCancelledYour")}
         action="Retry preview"
         onAction={startPreviewRequest}
         hideActionIcon
@@ -1049,9 +1052,9 @@ export function CompanyExport() {
     return (
       <EmptyState
         icon={Package}
-        title="Export preview failed"
+        title={t("portability.CompanyExport.exportPreviewFailed")}
         message={previewErrorMessage(exportPreviewMutation.error)}
-        description="Retry the preview. You do not need to reload this page."
+        description={t("portability.CompanyExport.retryThePreviewYouDoNot")}
         action="Retry preview"
         onAction={startPreviewRequest}
         hideActionIcon
@@ -1063,8 +1066,8 @@ export function CompanyExport() {
     return (
       <EmptyState
         icon={Package}
-        title="Export preview unavailable"
-        message="No export preview is loaded."
+        title={t("portability.CompanyExport.exportPreviewUnavailable")}
+        message={t("portability.CompanyExport.noExportPreviewIsLoaded")}
         action="Load preview"
         onAction={startPreviewRequest}
         hideActionIcon
@@ -1085,15 +1088,15 @@ export function CompanyExport() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-4 text-sm">
             <span className="font-medium">
-              {selectedCompany?.name ?? "Organization"} export
+              {selectedCompany?.name ?? t("portability.CompanyExport.organizationFallback")} {t("portability.CompanyExport.exportWord")}
             </span>
             <span className="text-muted-foreground">
-              Exporting {selectedCount.toLocaleString()} of {totalFiles.toLocaleString()} file{totalFiles === 1 ? "" : "s"}
+              {t("portability.CompanyExport.exporting", { selected: selectedCount.toLocaleString(), total: totalFiles.toLocaleString(), count: totalFiles })}
               {selectedCount > 0 && ` (~${formatBytes(estimatedZipBytes)})`}
             </span>
             {warnings.length > 0 && (
               <span className="text-amber-500">
-                {warnings.length} warning{warnings.length === 1 ? "" : "s"}
+                {t("portability.export.warningsCount", { count: warnings.length })}
               </span>
             )}
           </div>
@@ -1110,8 +1113,8 @@ export function CompanyExport() {
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
-              ? "Building export..."
-              : `Export ${selectedCount.toLocaleString()} file${selectedCount === 1 ? "" : "s"}`}
+              ? t("portability.CompanyExport.buildingExport")
+              : t("portability.CompanyExport.exportFiles", { count: selectedCount, n: selectedCount.toLocaleString() })}
           </Button>
         </div>
       </div>
@@ -1128,7 +1131,7 @@ export function CompanyExport() {
       {/* Export fidelity: data the bundle will not carry */}
       {fidelityReport && fidelityReport.warnings.length > 0 && (
         <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-          <h3 className="mb-1.5 text-xs font-medium">Not included in this export</h3>
+          <h3 className="mb-1.5 text-xs font-medium">{t("portability.export.notIncludedInExport")}</h3>
           {fidelityReport.warnings.map((warning) => (
             <div
               key={warning.code}
@@ -1147,11 +1150,11 @@ export function CompanyExport() {
       <div className="grid gap-4 xl:h-(--sz-calc-30) xl:grid-cols-(--gtc-25) xl:gap-0">
         <aside className="flex max-h-(--sz-24rem) flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h2 className="text-base font-semibold">Package files</h2>
+            <h2 className="text-base font-semibold">{t("portability.export.packageFiles")}</h2>
           </div>
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h3 className="mb-2 text-xs font-medium text-muted-foreground">What to include</h3>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label="What to include">
+            <h3 className="mb-2 text-xs font-medium text-muted-foreground">{t("portability.CompanyExport.whatToInclude")}</h3>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label={t("portability.CompanyExport.whatToInclude")}>
               {EXPORT_CATEGORY_ORDER.map((key) => {
                 const isAttachments = key === "attachments";
                 const disabled = isAttachments && !isAttachmentsCategoryEnabled(categories);
@@ -1168,7 +1171,7 @@ export function CompanyExport() {
                     )}
                     title={
                       disabled
-                        ? "Attachments travel with tasks and routines; re-enable one of them to include attachments."
+                        ? t("portability.CompanyExport.attachmentsTravelWithTasksAndRoutines")
                         : undefined
                     }
                   >
@@ -1180,7 +1183,7 @@ export function CompanyExport() {
                       className="accent-foreground"
                       data-export-category={key}
                     />
-                    <span className="min-w-0 truncate">{EXPORT_CATEGORY_LABELS[key]}</span>
+                    <span className="min-w-0 truncate">{t(`portability.export.categories.${key}`, { defaultValue: EXPORT_CATEGORY_LABELS[key] })}</span>
                     <span className="text-xs text-muted-foreground">
                       {countLoaded ? count.toLocaleString() : "—"}
                     </span>
@@ -1189,7 +1192,7 @@ export function CompanyExport() {
               })}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              Task and routine history is opt-in because it can be large.
+              {t("portability.CompanyExport.historyOptIn")}
             </p>
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
@@ -1199,7 +1202,7 @@ export function CompanyExport() {
                 type="text"
                 value={treeSearch}
                 onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search files..."
+                placeholder={t("portability.export.searchFilesPlaceholder")}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 data-page-search-target="true"
               />
@@ -1223,7 +1226,7 @@ export function CompanyExport() {
                   onClick={() => setTaskLimit((prev) => prev + TASKS_PAGE_SIZE)}
                   className="w-full rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent/30 hover:text-foreground transition-colors"
                 >
-                  Show more tasks ({visibleTaskChildren} of {totalTaskChildren})
+                  {t("portability.export.showMoreTasks", { visible: visibleTaskChildren, total: totalTaskChildren })}
                 </button>
               </div>
             )}
@@ -1248,14 +1251,14 @@ export function CompanyExport() {
               <div className="flex max-w-md flex-col items-center gap-3">
                 <LoaderCircle className="h-6 w-6 animate-spin text-muted-foreground" />
                 <div>
-                  <p className="text-sm font-medium">Updating export preview…</p>
+                  <p className="text-sm font-medium">{t("portability.CompanyExport.updatingPreview")}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Large task histories can take a minute. You can untick Tasks or cancel this update.
+                    {t("portability.CompanyExport.largeHistoryNote")}
                   </p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={handleCancelPreview}>
                   <X />
-                  Cancel update
+                  {t("portability.CompanyExport.cancelUpdate")}
                 </Button>
               </div>
             </div>
@@ -1266,14 +1269,14 @@ export function CompanyExport() {
             >
               <div className="flex max-w-md flex-col items-center gap-3">
                 <div>
-                  <p className="text-sm font-medium">Preview update cancelled</p>
+                  <p className="text-sm font-medium">{t("portability.CompanyExport.previewCancelled")}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    The previous preview remains available. Retry when you are ready.
+                    {t("portability.CompanyExport.previousPreview")}
                   </p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={startPreviewRequest}>
                   <RotateCcw />
-                  Retry preview
+                  {t("portability.CompanyExport.retryPreview")}
                 </Button>
               </div>
             </div>
@@ -1285,14 +1288,14 @@ export function CompanyExport() {
             >
               <div className="flex max-w-md flex-col items-center gap-3">
                 <div>
-                  <p className="text-sm font-medium text-destructive">Export preview failed</p>
+                  <p className="text-sm font-medium text-destructive">{t("portability.export.previewFailedTitle", { defaultValue: "Export preview failed" })}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {previewErrorMessage(exportPreviewMutation.error)}
                   </p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={startPreviewRequest}>
                   <RotateCcw />
-                  Retry preview
+                  {t("portability.CompanyExport.retryPreview")}
                 </Button>
               </div>
             </div>

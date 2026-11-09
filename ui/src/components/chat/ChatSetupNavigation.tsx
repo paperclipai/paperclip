@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import type { GitHubAppWizardState } from "@paperclipai/shared";
 import { githubChatApi } from "@/api/githubChat";
@@ -23,7 +24,10 @@ export function ChatSetupSidebar({ NavItem = SidebarNavItem }: { NavItem?: typeo
     : <SetupWizardSidebar />;
 }
 export function ChatSetupNavigation(props: {
+
   labels?: string[]; step: number; availableStep: number; disabled?: boolean; onSelect: (step: number) => void;
 }) {
-  return <SetupWizardNavigation {...props} labels={props.labels ?? ["Choose agent", "Connect provider", "Try it"]} ariaLabel="Connection setup progress" />;
+  const { t } = useTranslation();
+  const defaultLabels = [t("chat.setup.chooseAgent", "Choose agent"), t("chat.setup.connectProvider", "Connect provider"), t("chat.setup.tryIt", "Try it")];
+  return <SetupWizardNavigation {...props} labels={props.labels ?? defaultLabels} ariaLabel={t("chat.setup.progressAria", "Connection setup progress")} />;
 }

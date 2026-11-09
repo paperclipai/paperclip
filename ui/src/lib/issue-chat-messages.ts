@@ -10,6 +10,7 @@ import type {
 } from "@assistant-ui/react";
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
+import { t } from "@/i18n";
 import { formatAssigneeUserLabel } from "./assignees";
 import { isOperatorInterruptedRun } from "./interrupt-handoff";
 import {
@@ -782,18 +783,18 @@ export function formatDurationWords(ms: number | null) {
   if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
   const totalSeconds = Math.max(1, Math.round(ms / 1000));
   if (totalSeconds < 60) {
-    return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
+    return t("common.time.seconds", { count: totalSeconds });
   }
   const totalMinutes = Math.round(totalSeconds / 60);
   if (totalMinutes < 60) {
-    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+    return t("common.time.minutes", { count: totalMinutes });
   }
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   if (minutes === 0) {
-    return `${hours} hour${hours === 1 ? "" : "s"}`;
+    return t("common.time.hours", { count: hours });
   }
-  return `${hours} hour${hours === 1 ? "" : "s"} ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  return `${t("common.time.hours", { count: hours })} ${t("common.time.minutes", { count: minutes })}`;
 }
 
 function runDurationLabel(run: {
@@ -811,24 +812,26 @@ function runDurationLabel(run: {
   const stopReason = typeof run.resultJson?.stopReason === "string" ? run.resultJson.stopReason : null;
   switch (run.status) {
     case "succeeded":
-      return durationText ? `Worked for ${durationText}` : "Finished work";
+      return durationText ? t("issues.chatRun.workedFor", { duration: durationText }) : t("issues.chatRun.finishedWork");
     case "failed":
     case "error":
-      return durationText ? `Failed after ${durationText}` : "Run failed";
+      return durationText ? t("issues.chatRun.failedAfter", { duration: durationText }) : t("issues.chatRun.failed");
     case "timed_out":
-      return durationText ? `Timed out after ${durationText}` : "Run timed out";
+      return durationText ? t("issues.chatRun.timedOutAfter", { duration: durationText }) : t("issues.chatRun.timedOut");
     case "cancelled":
       if (isOperatorInterruptedRun(run.resultJson, run.errorCode)) {
-        return durationText ? `Interrupted by board after ${durationText}` : "Interrupted by board";
+        return durationText
+          ? t("issues.chatRun.interruptedAfter", { duration: durationText })
+          : t("issues.chatRun.interrupted");
       }
       if (stopReason === "paused") {
-        return durationText ? `Paused by board after ${durationText}` : "Paused by board";
+        return durationText ? t("issues.chatRun.pausedAfter", { duration: durationText }) : t("issues.chatRun.paused");
       }
-      return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
+      return durationText ? t("issues.chatRun.cancelledAfter", { duration: durationText }) : t("issues.chatRun.cancelled");
     case "queued":
-      return "Queued";
+      return t("issues.chatRun.queued");
     case "running":
-      return "Working...";
+      return t("issues.chatRun.working");
     default:
       return formatStatusLabel(run.status);
   }

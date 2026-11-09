@@ -60,7 +60,7 @@ describe("CaseFieldsPanel", () => {
     // string
     expect(container.textContent).toContain("hermes-agent-post");
     // number — locale grouped, tabular
-    expect(container.textContent).toContain("1,850");
+    expect(container.textContent).toContain((1850).toLocaleString());
     // string[] — chips
     expect(container.textContent).toContain("ai");
     expect(container.textContent).toContain("launch");

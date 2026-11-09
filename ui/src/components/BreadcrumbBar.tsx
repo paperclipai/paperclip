@@ -17,6 +17,7 @@ import { Fragment, useMemo, type ReactNode } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { cn } from "../lib/utils";
+import { useTranslation } from "@/i18n";
 import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
@@ -54,6 +55,7 @@ function GlobalToolbar({
 }
 
 export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle = taskDetailLayout }: { taskDetailLayout?: boolean; showPropertiesToggle?: boolean }) {
+  const { t } = useTranslation();
   const coordinatorEnabled = useCoordinatorPresentation();
   const {
     breadcrumbs,
@@ -116,14 +118,14 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
       size="icon-sm"
       className="mr-2 shrink-0"
       onClick={toggleSidebar}
-      aria-label="Open sidebar"
+      aria-label={t("nav.breadcrumbBar.openSidebar")}
     >
       <Menu className="h-5 w-5" />
     </Button>
   );
 
   const currentCrumb = breadcrumbs[breadcrumbs.length - 1];
-  if (isMobile && breadcrumbs[0]?.label === "Tasks" && currentCrumb.identifier) {
+  if (isMobile && breadcrumbs[0]?.label === t("issues.issues.tasks") && currentCrumb.identifier) {
     return (
       <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4">
         {menuButton}
