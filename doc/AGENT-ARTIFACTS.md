@@ -35,9 +35,13 @@ JSON output intent is recognized from a direct filename or an explicit output
 destination. Ambiguous descriptions of input files joined by `to` remain text
 requests; use `as`, `into`, or an explicit output file when an artifact is required.
 A `Deliverable:` or `Deliverables` label also states the output. A file named
-on that line, or in the list directly below it, is a requested file. This
-includes web page files such as `index.html` and `styles.css`. Items that
-describe a repository change, pull request, commit, or branch do not count.
+on that line, or in the list directly below it (blank lines between items are
+allowed), is a requested file. This includes relative paths such as
+`dist/index.html` and web page files such as `index.html` and `styles.css`.
+Items that describe a repository change, pull request, commit, or branch do
+not count, nor do files named as inputs (`a comparison of input.csv and
+baseline.csv`), files to be written inline in the reply, or items that say no
+files are created.
 
 The completion gate permits a narrow sentence-bound exception for one requested
 file when the following sentence explicitly qualifies it, for example:

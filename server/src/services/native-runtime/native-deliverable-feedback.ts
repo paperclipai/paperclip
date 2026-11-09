@@ -102,24 +102,30 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
   return deliverableLabelNamesFile(objective) || explicitlyRequestsFileOutputBySentence(objective);
 }
 
-/** A brief that labels its output ("Deliverable:", "## Deliverables") and names
- * a file there has stated the requested result as plainly as a creation verb.
- * Delegated briefs often take this form, so a worker cannot finish with that
- * file left only in its workspace. Web page files count here: the label makes
- * them the output, not a repository file being edited in passing.
- */
 function deliverableLabelNamesFile(objective: string): boolean {
   const lines = objective.replaceAll("\\_", "_").split(/\r?\n/u);
-  const named = /(?:^|[\s(`'"*:])([^\s/()`'"*:]+\.(?:html?|css|md|txt|json|pdf|docx?|xlsx?|csv|pptx?|png|jpe?g|svg|zip))\b/giu;
-  // A repository change names files it edits; it is delivered as a PR or commit.
-  const namesFile = (text: string) => !/\b(?:[Rr]epo(?:sitory)?|[Pp]ull [Rr]equest|PR|[Cc]ommit|[Bb]ranch)\b/u.test(text) && [...text.matchAll(named)].some(match =>
-    !/\b(?:of|about|from|using|reading|no|without)\s+(?:(?:the|a|an|this|that)\s+)?[`'"*]*$/iu.test(text.slice(0, match.index! + match[0].indexOf(match[1]!))));
+  const named = /(?:^|[\s(`'"*:])((?:\.{0,2}\/)?(?:[\w.-]+\/)*[^\s/()`'"*:,;]+\.(?:html?|css|md|txt|json|pdf|docx?|xlsx?|csv|pptx?|png|jpe?g|svg|zip))\b/giu;
+  const repositoryChange = /\b(?:[Rr]epo(?:sitory)?|[Pp]ull [Rr]equest|PR|[Cc]ommit|[Bb]ranch)\b/u;
+  const inputReference = /\b(?:of|about|from|using|reading|comparing|between|no|without)\s+(?:(?:the|a|an|this|that)\s+)?[`'"*]*(?:[^\s,;]+[`'"*]*(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or|vs\.?|versus)\s+)(?:(?:the|a|an|this|that)\s+)?[`'"*]*)*$/iu;
+  const inlineDestination = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block))\b/iu;
+  const noFiles = /\b(?:(?:do not|don['’]t|never)\s+(?:create|make|write|save|produce|attach|upload)\b|(?:no|without(?:\s+(?:any|creating(?:\s+any)?))?)\s+(?:new\s+)?files?\b)/iu;
+  const namesFile = (text: string) => {
+    const matches = [...text.matchAll(named)];
+    if (matches.length === 0 || noFiles.test(text) || repositoryChange.test(text.replace(named, " "))) return false;
+    return matches.some(match => {
+      const start = match.index! + match[0].indexOf(match[1]!);
+      if (inputReference.test(text.slice(0, start))) return false;
+      const clauseStart = Math.max(text.lastIndexOf(",", start), text.lastIndexOf(";", start)) + 1;
+      const clauseEnd = text.slice(start).search(/[,;]/u);
+      return !inlineDestination.test(text.slice(clauseStart, clauseEnd < 0 ? undefined : start + clauseEnd));
+    });
+  };
   for (let index = 0; index < lines.length; index += 1) {
     const label = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?(?:requested\s+)?deliverables?(?:\*\*|__)?\s*(?::(?:\*\*|__)?\s*(.*)|(?:\*\*|__)?\s*)$/iu.exec(lines[index]!);
     if (!label) continue;
     if (namesFile(label[1] ?? "")) return true;
-    // The label's own list: consecutive bullet or numbered items below it.
     for (let item = index + 1; item < lines.length; item += 1) {
+      if (!lines[item]!.trim()) continue;
       const bullet = /^\s*(?:[-*+]|\d+[.)])\s+(.*)$/u.exec(lines[item]!);
       if (!bullet) break;
       if (namesFile(bullet[1]!)) return true;
