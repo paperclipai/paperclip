@@ -1023,6 +1023,16 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("for task RUN-1 the prefix is RUN");
   });
 
+  it("sends a task-tree pause to the person's Pause subtree control instead of imitating it with task edits", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Pausing, stopping or resuming a whole task tree (a parent task and all of its subtasks) is a person's control, not an agent action.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("chooses More task actions, then Pause subtree");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("do not change task statuses or assignees, cancel runs, pause agents, or create tasks or routines to resume it later");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Paperclip has no scheduled resume");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("[<identifier>](/<prefix>/issues/<identifier>)");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("then Pause subtree");
+  });
+
   it("asks which record is meant before changing one of several matches", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("matches several records you can access and nothing in the conversation selects one, ask which one before changing any of them");
     expect(AGENT_CHAT_DIRECTIVE).toContain("link each candidate");
