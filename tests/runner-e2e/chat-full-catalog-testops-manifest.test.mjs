@@ -353,6 +353,27 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "documents-artifacts.revise-delivery",
     "expectedOutcome"
+  ],
+  // Retargeted removed-feature cases (agent-chat.chat-disabled, agents.restore-instructions).
+  [
+    "agent-chat.chat-disabled",
+    "originalQuery"
+  ],
+  [
+    "agent-chat.chat-disabled",
+    "originalContext"
+  ],
+  [
+    "agent-chat.chat-disabled",
+    "expectedOutcome"
+  ],
+  [
+    "agents.restore-instructions",
+    "originalContext"
+  ],
+  [
+    "agents.restore-instructions",
+    "expectedOutcome"
   ]
 ]);
   for (const change of repair.changedFields) {
