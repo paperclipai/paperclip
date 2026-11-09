@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { assertBoard, assertBoardOrgAccess, BOARD_ACCESS_REQUIRED_CODE } from "../routes/authz.js";
 import { AGENT_CHAT_DIRECTIVE } from "../services/agent-conversations.js";
+import { buildOpenApiDocument } from "../routes/openapi.js";
 
 const COMPANY_ID = "10000000-0000-4000-8000-000000000001";
 const AGENT_ID = "20000000-0000-4000-8000-000000000002";
@@ -70,5 +71,12 @@ describe("board-only denial", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("so stop searching for one");
     expect(AGENT_CHAT_DIRECTIVE).toContain("tell the person which control in the Paperclip web app to use, link its page when you know the route");
     expect(AGENT_CHAT_DIRECTIVE).not.toContain("use permitted discovery to identify the supported operator path");
+  });
+
+  it("says in the API catalog who sets up a Claude Managed Agent profile", () => {
+    const post = buildOpenApiDocument().paths["/api/companies/{companyId}/managed-agent-profiles"].post;
+    expect(post["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(post.description).toContain("Board only: agent credentials get 403");
+    expect(post.description).toContain("explicitly acknowledges stateful retention");
   });
 });
