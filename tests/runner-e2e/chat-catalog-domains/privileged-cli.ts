@@ -49,7 +49,8 @@ const create = privilegedDefinition("cli-operations.create-from-cli", "privilege
     const stdout = await runOwnedCli(ctx, argv);
     const cli = JSON.parse(stdout) as Entity;
     const statusIndex = argv.indexOf("--status");
-    state.expectedCliStatus = statusIndex < 0 ? "backlog" : argv[statusIndex + 1];
+    // Without --status the product creates an assigned task as todo (resolveCreateIssueStatusDefault).
+    state.expectedCliStatus = statusIndex < 0 ? "todo" : argv[statusIndex + 1];
     const created = await ctx.input.api.get<Entity[]>(`/api/companies/${fixture.company}/issues`);
     if (reply.tasks.length || created.length !== 1) throw new Error("Actual returned CLI command did not create exactly one later task");
     const result = created[0]!;
