@@ -54,18 +54,20 @@ impl AcpxProviderSession {
         self.generation_has_run_turn
     }
 
+    pub fn restarted_after_turn_from(&self) -> Option<u32> {
+        self.restarted_after_turn_from
+    }
+
     pub fn awaits_run_rebind(&self) -> bool {
         self.prepared_generation.is_some()
     }
 
-    pub fn prepared_from_process_id(&self) -> Option<u32> {
-        self.prepared_generation
-            .as_ref()
-            .map(|(_, process_id)| *process_id)
+    pub fn awaits_next_turn(&self) -> bool {
+        self.prepared_generation.is_some() || self.restarted_after_turn_from.is_some()
     }
 
     pub(super) fn park_tail_is_quiet(&self) -> bool {
-        if self.prepared_generation.is_none() {
+        if !self.awaits_next_turn() {
             return self.transport.buffered_events().len() == 0;
         }
         self.transport.buffered_events().all(|event| {
@@ -78,65 +80,70 @@ impl AcpxProviderSession {
         })
     }
 
-    pub fn can_prepare_next_generation(&self) -> bool {
+    fn at_settled_turn_boundary(&self) -> bool {
         !self.closed
             && self.failure.is_none()
             && !self.transport_terminated
             && !self.runtime_retired
-            && self.generation_has_run_turn
             && self.completed_turn_observed
             && self.prepared_generation.is_none()
             && self.config.candidate_admission.is_none()
             && self.state.active_turn_id().is_none()
             && !self.state.has_pending_requests()
             && !self.state.has_pending_tools()
-            && self.transport.buffered_events().len() == 0
+            && self.park_tail_is_quiet()
     }
 
-    pub fn prepare_next_generation(&mut self, deadline: Instant) -> Result<(), LocalRunnerError> {
+    pub fn can_restart_after_turn(&self) -> bool {
+        self.generation_has_run_turn && self.at_settled_turn_boundary()
+    }
+
+    pub fn can_prepare_next_generation(&self) -> bool {
+        (self.generation_has_run_turn || self.restarted_after_turn_from.is_some())
+            && self.at_settled_turn_boundary()
+    }
+
+    pub fn restart_after_turn(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> Result<(), LocalRunnerError> {
+        if !self.can_restart_after_turn() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider is not at a settled turn boundary",
+            ));
+        }
+        let previous_process_id = self.process_id();
+        if let Err(error) = self.restart_idle_provider(deadline) {
+            return Err(self.fail_closed(error));
+        }
+        self.restarted_after_turn_from = Some(previous_process_id);
+        Ok(())
+    }
+
+    pub fn prepare_next_generation(&mut self, deadline: Instant) -> Result<bool, LocalRunnerError> {
         if !self.can_prepare_next_generation() {
             return Err(LocalRunnerError::invalid(
                 "ACPX provider is not at a reusable generation boundary",
             ));
         }
-        let previous_process_id = self.process_id();
-        let mut tool_bridge = self.tool_bridge.clone();
-        let mut reserved_tool_bridge = self.reserved_tool_bridge.clone();
-        tool_bridge
-            .prepare_turn_after_provider_restart()
-            .and_then(|()| reserved_tool_bridge.prepare_turn_after_provider_restart())
-            .map_err(|error| {
-                LocalRunnerError::invalid(format!(
-                    "ACPX tool receipt rotation before park failed: {error}"
-                ))
-            })?;
-        if let Err(error) = self.restart_idle_provider(Some(deadline)) {
-            return Err(self.fail_closed(error));
-        }
-        if self.state.settled_turn_identity_capacity_reached() {
-            if let Err(error) = self
-                .state
-                .rotate_settled_turn_identities_after_provider_restart()
-            {
+        let restarted = self.generation_has_run_turn;
+        if restarted {
+            self.restart_after_turn(Some(deadline))?;
+            if let Err(error) = self.verify_dormant_session() {
                 return Err(self.fail_closed(error));
             }
+            self.transport.bound_requests_by(None);
         }
-        self.tool_bridge = tool_bridge;
-        self.reserved_tool_bridge = reserved_tool_bridge;
         self.completed_turn_observed = false;
-        if let Err(error) = self.verify_dormant_session() {
-            return Err(self.fail_closed(error));
-        }
-        self.transport.bound_requests_by(None);
-        self.prepared_generation = Some((generation_digest(&self.config), previous_process_id));
-        Ok(())
+        self.prepared_generation = Some(generation_digest(&self.config));
+        Ok(restarted)
     }
 
     pub fn rebind_run(
         &mut self,
         next: &AcpxProviderSessionConfig,
     ) -> Result<bool, LocalRunnerError> {
-        let Some((prepared, _)) = self.prepared_generation.as_ref() else {
+        let Some(prepared) = self.prepared_generation.as_ref() else {
             return Ok(false);
         };
         if self.closed
@@ -194,6 +201,7 @@ impl AcpxProviderSession {
         self.config = next.clone();
         self.catalog_revision = next.catalog_revision;
         self.working_directory = next.working_directory.clone();
+        self.restarted_after_turn_from = None;
         self.prepared_generation = None;
         if let Err(error) = self.verify_dormant_session() {
             return Err(self.fail_closed(error));

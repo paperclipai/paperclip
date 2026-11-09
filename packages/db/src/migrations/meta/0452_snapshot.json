@@ -1,5 +1,5 @@
 {
-  "id": "9de6ee58-419c-437c-bfc0-911b0128dbf5",
+  "id": "64e8be1e-e0cb-4cd8-85e0-0fdcce5eafde",
   "prevId": "b5699366-77c2-48c8-b7dc-658a75de7658",
   "version": "7",
   "dialect": "postgresql",
@@ -17399,7 +17399,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         },
         "company_secret_proposals_secret_proposal_id_company_secret_proposals_id_fk": {
@@ -35839,21 +35839,6 @@
               "expression": "coalesce(\n        \"native_issue_id\"::text,\n        nullif(\"context_snapshot\"->>'issueId', ''),\n        nullif(\"context_snapshot\"->>'taskId', ''),\n        nullif(\"context_snapshot\"->>'taskKey', '')\n      )",
               "asc": true,
               "isExpression": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": true,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_wakeup_request_id_idx": {
-          "name": "heartbeat_runs_wakeup_request_id_idx",
-          "columns": [
-            {
-              "expression": "wakeup_request_id",
-              "isExpression": false,
-              "asc": true,
               "nulls": "last"
             }
           ],

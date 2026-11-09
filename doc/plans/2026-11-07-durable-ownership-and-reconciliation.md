@@ -99,6 +99,12 @@ Restart recovery latency, from `ready` to the recovered run's next provider even
 | codex | 6.5 / 8.0 |
 | opencode | 25.5 / 38.5 |
 
+Since 2026-11-09 this full latency is reported, not judged: the provider's saved-session load (`provider.session.load`) grows with session size and with how many sessions resume at once (Codex at concurrency 6: 3.0–6.3 s of a 5.5–8.5 s recovery). The judged row is Paperclip's own share, `restart_recovery_control_plane`: from `ready` to the start of the provider's session load, or to the next provider event when nothing reloads. It covers claim, prepare, runtime stage and runner launch, which measured 1.2–2.0 s per run with six Codex runs resuming at once (wave `w-20261109T045320-s9807`).
+
+| Adapter | Paperclip share budget (s, p50 / p95) |
+|---|---|
+| claude, codex, opencode | 2.5 / 4.0 |
+
 These budgets measure the product default `lifecycleMode: per_turn`. Phase 1's TTFT work (runner and provider-session reuse, baseline finding 1) should lower them. Lower budgets go in the same table.
 
 ### Phase 1 report-only data: local chaos waves (2026-11-07)

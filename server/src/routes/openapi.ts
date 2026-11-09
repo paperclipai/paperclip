@@ -2359,7 +2359,9 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "Create a chat endpoint",
   description:
-    "Creates one provider bot endpoint bound permanently to one Paperclip agent. Provider setup and verification happen in later calls.",
+    "Creates one provider bot endpoint bound permanently to one Paperclip agent. Provider setup and verification happen in later calls. "
+    + "Chat providers need Chat connectors, and GitHub needs GitHub review bots, turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental. "
+    + "While that setting is off, connections_search shows the provider as unavailable and this call is refused; agents cannot change it. Link that page as [Experimental settings](/<prefix>/company/settings/instance/experimental) and reply.",
   request: {
     params: z.object({ companyId: z.string().uuid() }),
     body: jsonBody(createChatEndpointSchema),
@@ -7120,6 +7122,7 @@ registry.registerPath({
   path: "/api/instance/settings/experimental",
   tags: ["instance"],
   summary: "Get experimental instance settings",
+  description: "Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7128,7 +7131,7 @@ registry.registerPath({
   path: "/api/instance/settings/experimental",
   tags: ["instance"],
   summary: "Update experimental instance settings",
-  description: "Requires instance-admin access or a trusted Cloud stack admin. Operator-hidden settings and Cloud-managed feature restrictions still apply. This does not grant access to other instance administration operations.",
+  description: "Requires instance-admin access or a trusted Cloud stack admin. Operator-hidden settings and Cloud-managed feature restrictions still apply. This does not grant access to other instance administration operations. Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
@@ -8326,6 +8329,7 @@ registry.registerPath({
   path: "/api/issues/{id}/interactions",
   tags: ["issues"],
   summary: "List issue thread interactions",
+  description: "A connection_intent interaction is a connection request card addressed to one person, its addresseeUserId. Only that person can connect or decline it; no other member, board user or agent can resolve it for them.",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -11328,11 +11332,17 @@ registerCurrentRoute({
   body: connectionRequestInputSchema,
 });
 
+const ADDRESSED_CONNECTION_REQUEST = "Person-only: a connection request card is addressed to one person, its addresseeUserId. "
+  + "Only that person, signed in to their own browser, can open its setup, connect their account or decline it. The server refuses every other member, board user and agent, so nobody can finish it for them. "
+  + "When someone else offers to finish it, tell them the addressee must connect their own account from the card on its task, linked as [<identifier>](/<prefix>/issues/<identifier>). "
+  + "Do not create another request for the addressee and do not search for another route.";
+
 registerCurrentRoute({
   method: "get",
   path: "/api/connection-intents/{interactionId}/setup-options",
   tags: ["connection-intents"],
   summary: "Get setup options for an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
 });
 
 registerCurrentRoute({
@@ -11340,6 +11350,7 @@ registerCurrentRoute({
   path: "/api/connection-intents/{interactionId}/phase",
   tags: ["connection-intents"],
   summary: "Update the setup phase for an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
   body: z
     .object({
       phase: z.enum(["requested", "authorizing", "needs_retry"]),
@@ -11361,6 +11372,7 @@ registerCurrentRoute({
   path: "/api/connection-intents/{interactionId}/complete",
   tags: ["connection-intents"],
   summary: "Complete an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
   body: completeConnectionIntentSchema,
 });
 
@@ -11386,6 +11398,7 @@ registerCurrentRoute({
   path: "/api/connection-intents/{interactionId}/decline",
   tags: ["connection-intents"],
   summary: "Decline an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
   body: declineConnectionIntentSchema,
 });
 
@@ -11633,6 +11646,9 @@ registerCurrentRoute({
     "Inspect a curated app's public MCP and OAuth metadata without credentials or registration",
 });
 
+const OWN_MCP_SERVER_KEY = "When a person's own MCP server needs an API key, the person adds it themselves on [Connect your own MCP server](/<prefix>/apps/byo): they enter its URL and type the key into that page's secure field. "
+  + "An agent cannot enter the key and must not ask for it in chat. Link that page and reply instead of creating the connection here.";
+
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
@@ -11640,6 +11656,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/apps/connect",
   tags: ["tool-access"],
   summary: "Create a draft app connection from gallery input",
+  description: OWN_MCP_SERVER_KEY,
   body: connectToolAppSchema,
   responses: {
     200: r.ok(),
@@ -11687,6 +11704,11 @@ registerCurrentRoute({
   },
 });
 
+const QUARANTINED_ACTION_REVIEW = "Catalog entries with status quarantined are new actions that a catalog refresh found and holds for a person's review. "
+  + "No agent can call a quarantined action, through this connection or any other transport, until a person who manages the connection allows it on the app's Permissions page, "
+  + "[Permissions](/<prefix>/apps/<connectionId>/permissions), with this conversation's company prefix and the connection's id. Allowing it is that person's decision, not an agent's. "
+  + "When asked to use a quarantined action, say it is waiting for review, link that page and reply; do not search for another route.";
+
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:read",
@@ -11694,6 +11716,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/apps/attention",
   tags: ["tool-access"],
   summary: "List tool apps needing attention",
+  description: QUARANTINED_ACTION_REVIEW,
 });
 
 registerCurrentRoute({
@@ -11805,6 +11828,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/connections",
   tags: ["tool-access"],
   summary: "Create a tool connection",
+  description: OWN_MCP_SERVER_KEY,
   body: createToolConnectionSchema,
   responses: {
     201: r.ok(),
@@ -11909,6 +11933,7 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/review-counts",
   tags: ["tool-access"],
   summary: "Get pending action request and quarantined catalog entry counts for one connection",
+  description: QUARANTINED_ACTION_REVIEW,
 });
 
 registerCurrentRoute({
@@ -12028,6 +12053,7 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/catalog",
   tags: ["tool-access"],
   summary: "List a tool connection catalog",
+  description: QUARANTINED_ACTION_REVIEW,
 });
 
 registerCurrentRoute({
@@ -12900,9 +12926,16 @@ registerCurrentRoute({
     400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
+const ASSISTANT_CONNECTION_SETUP_PERSON_ONLY = "Person-only: a person connects their own assistant, such as Claude, ChatGPT or another MCP client, in their browser on "
+  + "[Assistant connections](/<prefix>/apps/assistant-connection), with this conversation's company prefix as <prefix>. "
+  + "That page gives the invitation and server URL to paste into the assistant; the assistant then opens a Paperclip consent screen where the person picks the company and approves access. "
+  + "The consent screen offers only access within that person's own role: a read-only member can grant read access but not writes. "
+  + "An agent cannot read this setup or approve consent for anyone: these routes accept only the person's own signed-in browser session. "
+  + "Do not search for another route; link that page, say the person approves access there themselves, and reply.";
 registerCurrentRoute({
   method: "get", path: "/api/mcp/setup", tags: ["tool-gateway"],
   summary: "Read assistant connection setup using a human browser session",
+  description: ASSISTANT_CONNECTION_SETUP_PERSON_ONLY,
   // Available while disabled; returns metadata only and never grants access.
   responses: {
     200: r.ok(z.object({ enabled: z.boolean(), serverUrl: z.string().url(), invitationUrl: z.string().url(), invitation: z.string() })),
@@ -12943,6 +12976,7 @@ for (const suffix of ["/dot-pairing/preview", "/dot-pairing"]) registerCurrentRo
 registerCurrentRoute({
   method: "post", path: "/api/mcp/requests/{id}/consent", tags: ["tool-gateway"],
   summary: "Approve or deny assistant access using a same-origin browser session",
+  description: ASSISTANT_CONNECTION_SETUP_PERSON_ONLY,
   body: mcpConsentSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
@@ -12957,14 +12991,21 @@ registerCurrentRoute({
   body: mcpConsentSchema.extend({ userCode: z.string().min(8).max(12) }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
+const ASSISTANT_CONNECTIONS_PERSON_ONLY = "Personal and person-only: only the signed-in person can list or revoke their own assistant connections, in their browser on "
+  + "[Assistant connections](/<prefix>/apps/assistant-connection), with this conversation's company prefix as <prefix>. "
+  + "An agent cannot do it for them: these routes accept only the person's own signed-in browser session, and the only other revocation is OAuth token revocation sent by the connected assistant itself with its own token. "
+  + "Do not search for another route; link that page and tell the person which connection to revoke. "
+  + "Revoking stops that assistant's further calls; tasks it already created keep their assignees and running work.";
 registerCurrentRoute({
   method: "get", path: "/api/mcp/connections", tags: ["tool-gateway"],
   summary: "List the signed-in person's assistant connections",
+  description: ASSISTANT_CONNECTIONS_PERSON_ONLY,
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 registerCurrentRoute({
   method: "delete", path: "/api/mcp/connections/{id}", tags: ["tool-gateway"],
   summary: "Revoke an assistant connection using a same-origin browser session",
+  description: ASSISTANT_CONNECTIONS_PERSON_ONLY,
   responses: { 204: { description: "Connection revoked" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 

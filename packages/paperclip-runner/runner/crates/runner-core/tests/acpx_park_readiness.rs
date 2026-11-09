@@ -265,8 +265,12 @@ fn hosted_park_acpx_requires_completion_in_this_lifetime_and_exact_authority() {
         ))
         .unwrap();
     settle(&mut executor);
-    assert!(executor.host_park_ready().unwrap());
-    assert!(executor
+    executor.prepare_next_turn().unwrap();
+    assert!(
+        executor.host_park_ready().unwrap(),
+        "a generation restarted at the turn boundary is park-ready"
+    );
+    assert!(!executor
         .prepare_for_park(Instant::now() + Duration::from_secs(20))
         .unwrap());
     assert!(
@@ -477,5 +481,47 @@ fn hosted_park_acpx_does_not_enable_an_unqualified_park_provider() {
     assert!(!executor
         .prepare_for_park(Instant::now() + Duration::from_secs(20))
         .unwrap());
+    executor.shutdown().unwrap();
+}
+
+#[test]
+fn a_turn_end_restart_waits_until_an_abandoned_park_observation_tail_is_delivered() {
+    let (fixture, _config, mut executor, opened) = fixture("claude");
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId":"first", "text":"Complete first work."}),
+        ))
+        .unwrap();
+    settle(&mut executor);
+    fs::write(fixture.0.join("fault"), "slow-snapshot").unwrap();
+    assert!(!executor.host_park_ready().unwrap());
+    fs::write(fixture.0.join("fault"), "").unwrap();
+    let starts = || {
+        fs::read_to_string(fixture.0.join("sidecar.jsonl"))
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("processStart"))
+            .count()
+    };
+    executor.prepare_next_turn().unwrap();
+    assert_eq!(
+        starts(),
+        1,
+        "the old generation's tail is not yet delivered"
+    );
+    assert!(std::process::Command::new("kill")
+        .args(["-0", &opened["processId"].to_string()])
+        .status()
+        .unwrap()
+        .success());
+    let events = executor.poll_events().unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.payload["code"] == "slow_park_observation"));
+    executor.acknowledge_events(events.len()).unwrap();
+    executor.prepare_next_turn().unwrap();
+    assert_eq!(starts(), 2);
     executor.shutdown().unwrap();
 }

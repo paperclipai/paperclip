@@ -204,7 +204,7 @@ function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   lines.push("", "| Pre-turn step | n | p50 | p95 | Adapters |", "|---|---|---|---|---|");
   for (const step of rankPreTurnSteps(runs).slice(0, 25)) lines.push(`| \`${step.step}\` | ${step.n} | ${ms(step.p50)} | ${ms(step.p95)} | ${step.adapters.join(", ")} |`);
   const samples = recoverySamples(runs, faults);
-  lines.push("", "| Adapter | Fault | Disposition | n | Recovery p50 | Recovery p95 | No provider event |", "|---|---|---|---|---|---|---|");
+  lines.push("", "| Adapter | Fault | Disposition | n | Recovery p50 | Recovery p95 | Paperclip share p50 / p95 | No provider event |", "|---|---|---|---|---|---|---|---|");
   const groups = new Map<string, typeof samples>();
   for (const sample of samples) {
     const key = `${sample.adapter}|${sample.kind}|${sample.disposition}`;
@@ -213,7 +213,8 @@ function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   for (const [key, group] of [...groups.entries()].sort()) {
     const [adapter, kind, disposition] = key.split("|");
     const d = distribution(group.flatMap(sample => sample.latencyMs === null ? [] : [sample.latencyMs]));
-    lines.push(`| ${adapter} | ${kind} | ${disposition} | ${d.n} | ${ms(d.p50)} | ${ms(d.p95)} | ${group.length - d.n} |`);
+    const control = distribution(group.flatMap(sample => sample.controlPlaneMs === null ? [] : [sample.controlPlaneMs]));
+    lines.push(`| ${adapter} | ${kind} | ${disposition} | ${d.n} | ${ms(d.p50)} | ${ms(d.p95)} | ${ms(control.p50)} / ${ms(control.p95)} | ${group.length - d.n} |`);
   }
   return `${lines.join("\n")}\n`;
 }

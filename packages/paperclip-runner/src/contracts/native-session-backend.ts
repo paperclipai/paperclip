@@ -217,6 +217,7 @@ export interface NativeSession {
   capabilities(): Promise<NativeSessionCapabilities>;
   /** completionContract is the attaching run's own contract; a retained session must not keep the prior run's. */
   attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void>;
+  beginRunAttachment?(input: { identity: NativeRunIdentity }): boolean;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without suspending provider execution. */
