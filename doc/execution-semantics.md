@@ -3525,6 +3525,10 @@ The recovery model is intentionally conservative:
 - open a board-owned recovery action when the original-owner bound is exhausted or unsafe
 - escalate visibly when the system cannot safely keep going
 
+A successful legacy run does not need disposition repair when its issue was
+closed and then reopened after the run finished. The new request follows its
+own wake path; the old run is not responsible for its new `todo` state.
+
 ## 15. Practical Interpretation
 
 For a board operator, the intended meaning is:

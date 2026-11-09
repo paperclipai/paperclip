@@ -16440,6 +16440,63 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("does not repair a successful run that completed before a human reopened its issue", async () => {
+    const { companyId, agentId, issueId, runId } =
+      await seedStrandedIssueFixture({ status: "todo", runStatus: "succeeded" });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { status: "done", changes: { status: { from: "in_progress", to: "done" } } },
+      createdAt: new Date("2026-03-19T00:04:00.000Z"),
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "responsible-user",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { source: "comment", status: "todo", reopened: true, reopenedFrom: "done" },
+      createdAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    const wakes = await selectRecoveryWakesByAgent(agentId);
+    expect(wakes.filter((wake) => wake.reason === "issue_disposition_repair")).toHaveLength(0);
+    expect(await selectRecoveryActionForIssue(companyId, issueId)).toBeNull();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("todo");
+  });
+
+  it("still repairs a todo issue when its successful run never recorded a disposition", async () => {
+    const { companyId, agentId, issueId } =
+      await seedStrandedIssueFixture({ status: "todo", runStatus: "succeeded" });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "responsible-user",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { source: "comment", status: "todo", reopened: true, reopenedFrom: "done" },
+      createdAt: new Date("2026-03-19T00:01:00.000Z"),
+    });
+
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    const wakes = await selectRecoveryWakesByAgent(agentId);
+    expect(wakes.filter((wake) => wake.reason === "issue_disposition_repair")).toHaveLength(1);
+    expect(await selectRecoveryActionForIssue(companyId, issueId)).toMatchObject({
+      kind: "deliberate_wait_without_target",
+    });
+  });
+
   it("does not replenish exhausted legacy repair from a recent comment", async () => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
