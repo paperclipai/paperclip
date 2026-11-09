@@ -94,7 +94,7 @@ test("chat first open is read-only; concurrent first sends and retries share one
     await idle(request, f.chatPath, 3);
     await page.reload();
     await expect(
-      page.locator('[data-testid="issue-chat-message-row"][data-message-kind="comment"]').getByText("Reply generation 0: Retry once", { exact: true }),
+      page.getByRole("region", { name: "Conversation messages" }).getByText("Reply generation 0: Retry once", { exact: true }),
     ).toBeVisible();
     expect(
       await json(await request.get(`/api/companies/${f.company.id}/issues`)),
