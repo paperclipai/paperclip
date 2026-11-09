@@ -202,7 +202,8 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
           run, companyId: input.fixtures.company.id, leadId: input.fixtures.agent.id, source: result.issue, observation }))) return "Observed provider run failed";
         if (result.runs.length && result.runs.every(run => !["queued", "running"].includes(run.status)) && result.issue?.conversationState === "waiting") settledAt ??= Date.now();
         else settledAt = undefined;
-        return settledAt && Date.now() - settledAt >= 15_000
+        // A passing grade is still inside accept()'s stability window; let it finish.
+        return settledAt && Date.now() - settledAt >= 15_000 && !result.grade.passed
           ? `Settled scenario failed: ${result.grade.checks.filter(check => !check.passed).map(check => check.id).join(", ")}` : undefined;
       }, timeoutDetail: result => result?.grade.checks.filter(check => !check.passed).map(check => check.id).join(", "),
     });
