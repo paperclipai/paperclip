@@ -607,7 +607,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
   const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
-  if (config.managedAiConnection) await stageManagedUserSkills(sharedClaudeConfigDir, mountableSkillEntries);
+  if (config.managedAiConnection && (!executionTargetIsRemote || adapterExecutionTargetUsesManagedHome(executionTarget))) {
+    await stageManagedUserSkills(sharedClaudeConfigDir, mountableSkillEntries);
+  }
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
