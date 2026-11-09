@@ -26,7 +26,8 @@ const executionRunColumns = {
   agentId: heartbeatRuns.agentId,
   driverKind: heartbeatRuns.driverKind,
   errorCode: heartbeatRuns.errorCode,
-  resultJson: sql<Record<string, unknown>>`jsonb_build_object('errorFamily', ${heartbeatRuns.resultJson}->'errorFamily')`,
+  resultJson: sql<Record<string, unknown> | null>`CASE WHEN ${heartbeatRuns.resultJson} IS NULL THEN NULL
+    ELSE jsonb_build_object('errorFamily', ${heartbeatRuns.resultJson}->'errorFamily') END`,
   executionControlDeadlineAt: heartbeatRuns.executionControlDeadlineAt,
   finishedAt: heartbeatRuns.finishedAt,
   lastOutputAt: heartbeatRuns.lastOutputAt,
