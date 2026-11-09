@@ -14,8 +14,12 @@ export function gradeCompanyLifecycle(value: unknown) {
     c.add("explicit-human-company-selection", o.state.switchedCompanyId === foreign.id && o.state.browserCompanyPrefix === o.state.foreignPrefix
       && o.state.foreignTaskVisible === true && o.state.afterReloadVisible === true && o.state.humanOwnsBoth === true,
       "The real person selects Birch and its exact project/task view survives reload with explicit Birch URL context.");
-    c.add("honest-company-handoff", /Birch/i.test(o.reply) && /switch|select|company|organization/i.test(o.reply)
-      && !/\bI(?:'ve| have)?\s+(?:switched|moved your chat)\b/i.test(o.reply), "The agent provides the human selection path without claiming to retarget its standing conversation.");
+    // The person's own switch is proven by the browser journey above; the
+    // agent's part is graded from saved state, not the reply's wording.
+    const birchActivity = o.state.birchActivityAfter as Entity[] | undefined;
+    c.add("honest-company-handoff", o.state.sourceCompanyAfter === o.companyId && o.state.sourceAssigneeAfter === o.leadId
+      && Array.isArray(birchActivity) && !birchActivity.some(row => row.agentId || row.actorType === "agent"),
+      "The standing conversation stays with Acorn and its agent, and no agent acted in Birch; the person makes the switch.");
     c.add("foreign-work-preserved", sameTask(work, o.state.foreignAfter as Entity | undefined), "Switching does not rewrite the separate company's work.");
   } else if (o.scenarioId === "companies.archive-company") {
     const archived = o.state.archivedCompany as Entity | undefined;
@@ -53,7 +57,7 @@ export const companyLifecycleIdentityCases: readonly ChatCatalogCase[] = [
     return { otherCompany: other, foreignProject: p, foreignTask: work, foreignMarker, foreignPrefix: other.issuePrefix,
       humanOwnsBoth: members.every(result => result.members.some(member => member.principalId === session.user.id)), agentForeignReadStatus: denied.status };
   }, gradeCompanyLifecycle, {
-    authentication: "human-session", sourceFiles: sources,
+    oracleVersion: "paperclip.chat-catalog.identity.switch-company.v2", authentication: "human-session", sourceFiles: sources,
     async act(ctx, state) {
       const remaining = () => remainingIdentityObservationBudget(ctx);
       remaining();
@@ -80,7 +84,12 @@ export const companyLifecycleIdentityCases: readonly ChatCatalogCase[] = [
       await ctx.input.evidence("identity-human-company-switch.json", { companyId: state.switchedCompanyId, prefix: state.browserCompanyPrefix, taskId: entity(state, "foreignTask").id, afterReloadVisible: state.afterReloadVisible });
       await ctx.input.page.goto(source, { waitUntil: "domcontentloaded", timeout: remaining() }); remaining();
     },
-    async observe(ctx, state) { state.foreignAfter = await ctx.input.api.get(`/api/issues/${entity(state, "foreignTask").id}`); return observeIdentity(ctx, state); },
+    async observe(ctx, state) {
+      state.foreignAfter = await ctx.input.api.get(`/api/issues/${entity(state, "foreignTask").id}`);
+      state.birchActivityAfter = await ctx.input.api.get<Entity[]>(`/api/companies/${entity(state, "otherCompany").id}/activity?limit=1000`);
+      const source = await ctx.input.api.get<Entity>(`/api/issues/${ctx.issue()!.id}`); state.sourceCompanyAfter = source.companyId; state.sourceAssigneeAfter = source.assigneeAgentId;
+      return observeIdentity(ctx, state);
+    },
     async cleanup(ctx, state) { await ctx.input.api.delete(`/api/companies/${entity(state, "otherCompany").id}`, { allowNotFound: true }); },
   }),
   identityDefinition("companies.archive-company", async ctx => {
