@@ -2241,6 +2241,13 @@ apply. Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
+In an Agent Chat conversation, a successful turn whose status decision committed
+posts its final answer to the conversation even when the task stays held: a
+pending or revision-requested approval, a pending execution stage, or a
+dependency blocker. A held task does not present the turn. Only a pending
+thread interaction (a question or confirmation card) presents the turn in place
+of its prose.
+
 A delegated-task completion callback can finish native execution before its
 accepted final reply is saved. The completion outbox must retain that callback's
 queued target and attempt while the existing presentation selector finds pending
