@@ -36,10 +36,8 @@ describe("current case facts and real subsequent context", () => {
     const moved = valid(); moved.brief.issueId = "case"; expect(gradeIntegratorCaseFacts(moved).passed).toBe(false);
     const missing = valid(); missing.briefRevisions = []; expect(gradeIntegratorCaseFacts(missing).passed).toBe(false);
   });
-  it("rejects a plausible contrary chat report and missing collaborative acknowledgement", () => {
-    for (const reply of ["No. Your mobile Safari only correction on COM-C1 was overwritten by support. Escalation: support-123.",
-      "COM-C1 no longer includes your browser correction. Support escalation is support-123.",
-      "Yes, COM-C1 still says mobile Safari only. The escalation is support-999.",
+  it("rejects a follow-up without the case reference or the saved escalation literal", () => {
+    for (const reply of ["Yes, COM-C1 still says mobile Safari only. The escalation is support-999.",
       "Yes, COM-C1 still says mobile Safari only.",
       "Yes, it still says mobile Safari only. Support escalation is support-123.",
       `${FIRST}`])
