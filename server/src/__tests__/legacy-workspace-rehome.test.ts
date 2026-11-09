@@ -182,6 +182,38 @@ describePostgres("stranded subtasks bound to a parent's held workspace", () => {
     expect((await issue(f.hero.id)).status).toBe("done");
   }, 60_000);
 
+  it("backs off a failing wake so it cannot hold up the others", async () => {
+    const f = await seedSharedFamily();
+    const hero = await f.strand(f.hero.id), pricing = await f.strand(f.pricing.id);
+    expect((await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).sort()).toEqual([f.hero.id, f.pricing.id].sort());
+    const woken: string[] = [];
+    const failing = async (_agentId: string, options: { payload: Record<string, unknown> }) => {
+      if (options.payload.issueId === f.hero.id) throw new Error("agent cannot take wakes now");
+      woken.push(String(options.payload.issueId));
+      return null;
+    };
+
+    await rehomeStrandedLegacyWorkspaceTasks(db, failing as never, { companyId: f.companyId });
+    expect(woken).toEqual([f.pricing.id]);
+    const backedOff = (await action(hero.actionId)).evidence.legacyWorkspaceRehome as Record<string, unknown>;
+    expect(backedOff).toMatchObject({ wake: "pending", wakeFailures: 1 });
+    expect(Number(backedOff.wakeRetryAt)).toBeGreaterThan(Date.now());
+    expect((await action(pricing.actionId)).evidence).toMatchObject({ legacyWorkspaceRehome: { wake: "delivered" } });
+
+    // Not retried before its time; retried once it is due.
+    await rehomeStrandedLegacyWorkspaceTasks(db, failing as never, { companyId: f.companyId });
+    expect(woken).toEqual([f.pricing.id]);
+    const [selected] = await db.selectDistinct({ companyId: issueRecoveryActions.companyId }).from(issueRecoveryActions)
+      .where(and(recoveryActionSweepCondition(), eq(issueRecoveryActions.companyId, f.companyId)));
+    expect(selected).toBeUndefined();
+    await db.update(issueRecoveryActions).set({ evidence: { ...(await action(hero.actionId)).evidence,
+      legacyWorkspaceRehome: { ...backedOff, wakeRetryAt: Date.now() - 1 } } }).where(eq(issueRecoveryActions.id, hero.actionId));
+    await rehomeStrandedLegacyWorkspaceTasks(db, (async (_agentId: string, options: { payload: Record<string, unknown> }) => {
+      woken.push(String(options.payload.issueId)); return null; }) as never, { companyId: f.companyId });
+    expect(woken).toEqual([f.pricing.id, f.hero.id]);
+    expect((await action(hero.actionId)).evidence).toMatchObject({ legacyWorkspaceRehome: { wake: "delivered" } });
+  }, 60_000);
+
   it("keeps a stranded child whose dependency still forbids work", async () => {
     const f = await seedSharedFamily();
     const stranded = await f.strand(f.hero.id);

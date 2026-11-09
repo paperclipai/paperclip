@@ -93,7 +93,8 @@ export function recoveryActionSweepCondition() {
         and stalled.company_id = ${issueRecoveryActions.companyId} and stalled.status = 'blocked')`),
     // A legacy subtask moved to its own workspace whose wake is still owed.
     and(eq(issueRecoveryActions.status, "resolved"),
-      sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`),
+      sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`,
+      sql`coalesce((${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wakeRetryAt}')::bigint, 0) <= (extract(epoch from now()) * 1000)::bigint`),
   )!;
 }
 

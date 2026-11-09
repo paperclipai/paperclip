@@ -11,6 +11,8 @@ export const LEGACY_WORKSPACE_REHOME_SCHEMA = "paperclip.legacy-workspace-rehome
 export const LEGACY_WORKSPACE_REHOME_OUTCOME = "legacy_shared_workspace_rehomed";
 const STRANDED_KIND = "stranded_assigned_issue";
 const BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
+const REHOME_WAKE_RETRY_BASE_MS = 5 * 60_000;
+const REHOME_WAKE_RETRY_MAX_MS = 60 * 60_000;
 // A block set by the stranded escalation lands right after its failed run.
 const BLOCK_OWNERSHIP_SLACK_MS = 60_000;
 
@@ -74,14 +76,19 @@ export async function rehomeStrandedLegacyWorkspaceTasks(db: Db, wake: RehomeWak
 
 async function deliverPendingRehomeWakes(db: Db, wake: RehomeWakeup, scope: { companyId?: string; issueId?: string }) {
   const pending = await db.select({ actionId: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId,
-    issueId: issueRecoveryActions.sourceIssueId, agentId: issues.assigneeAgentId }).from(issueRecoveryActions)
+    issueId: issueRecoveryActions.sourceIssueId, agentId: issues.assigneeAgentId,
+    wakeFailures: sql<number>`coalesce((${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wakeFailures}')::int, 0)`,
+  }).from(issueRecoveryActions)
     .innerJoin(issues, and(eq(issues.companyId, issueRecoveryActions.companyId), eq(issues.id, issueRecoveryActions.sourceIssueId)))
     .where(and(
       scope.companyId ? eq(issueRecoveryActions.companyId, scope.companyId) : undefined,
       scope.issueId ? eq(issueRecoveryActions.sourceIssueId, scope.issueId) : undefined,
       eq(issueRecoveryActions.kind, STRANDED_KIND), eq(issueRecoveryActions.status, "resolved"),
       sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`,
-    )).limit(25);
+      // A wake that failed waits for its retry time, so it cannot hold up the others.
+      sql`coalesce((${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wakeRetryAt}')::bigint, 0) <= ${Date.now()}::bigint`,
+    )).orderBy(sql`coalesce((${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wakeRetryAt}')::bigint, 0)`,
+      issueRecoveryActions.id).limit(25);
   for (const row of pending) {
     // A task that changed since the move no longer owes this wake.
     const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
@@ -102,7 +109,15 @@ async function deliverPendingRehomeWakes(db: Db, wake: RehomeWakeup, scope: { co
         eq(issueRecoveryActions.companyId, row.companyId), eq(issueRecoveryActions.id, row.actionId),
         sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`));
     } catch (error) {
-      logger.warn({ err: error, issueId: row.issueId }, "Moved task wake stays pending for the next sweep");
+      // Back off, up to an hour, so a wake that keeps failing yields to the others.
+      const failures = row.wakeFailures + 1;
+      const retryAt = Date.now() + Math.min(REHOME_WAKE_RETRY_MAX_MS, REHOME_WAKE_RETRY_BASE_MS * 2 ** (failures - 1));
+      await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(jsonb_set(${issueRecoveryActions.evidence},
+        '{legacyWorkspaceRehome,wakeFailures}', ${JSON.stringify(failures)}::jsonb),
+        '{legacyWorkspaceRehome,wakeRetryAt}', ${JSON.stringify(retryAt)}::jsonb)` }).where(and(
+        eq(issueRecoveryActions.companyId, row.companyId), eq(issueRecoveryActions.id, row.actionId),
+        sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`)).catch(() => undefined);
+      logger.warn({ err: error, issueId: row.issueId, retryAt }, "Moved task wake stays pending until its retry time");
     }
   }
 }
