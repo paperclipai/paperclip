@@ -1,4 +1,4 @@
-import { chromium, type Browser, type Locator, type Page } from "@playwright/test";
+import { chromium, type Browser, type ElementHandle, type Page } from "@playwright/test";
 import { UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST } from "./types.js";
 
 export { UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST };
@@ -19,11 +19,9 @@ export function isRetryRequestFor(issueRefs: readonly string[], method: string, 
   return Boolean(match && issueRefs.includes(decodeURIComponent(match[1]!)));
 }
 
-async function retryButtonsBannerFirst(page: Page): Promise<Locator[]> {
-  const all = page.getByRole("button", { name: "Retry", exact: true });
-  const candidates: Array<{ button: Locator; inBanner: boolean }> = [];
-  for (let index = 0; index < await all.count(); index += 1) {
-    const button = all.nth(index);
+async function retryButtonsBannerFirst(page: Page): Promise<ElementHandle[]> {
+  const candidates: Array<{ button: ElementHandle; inBanner: boolean }> = [];
+  for (const button of await page.getByRole("button", { name: "Retry", exact: true }).elementHandles()) {
     if (!await button.isVisible().catch(() => false)) continue;
     const inBanner = await button.evaluate(node => Boolean(node.closest("[role=status], [role=alert]"))).catch(() => false);
     candidates.push({ button, inBanner });

@@ -62,7 +62,7 @@ export class StorageChaos {
   private timer: ReturnType<typeof setInterval> | null = null;
   readonly receipts: StorageFaultReceipt[] = [];
 
-  constructor(private readonly windows: readonly StorageFaultWindow[], private readonly startedAt: number,
+  constructor(private readonly windows: readonly StorageFaultWindow[], private startedAt: number,
     private readonly proxy: { setRules(rules: readonly StorageFaultRule[]): void; clear(): void },
     private readonly record: (kind: string, data: Record<string, unknown>) => void) {}
 
@@ -83,8 +83,10 @@ export class StorageChaos {
     }
   }
 
-  start(intervalMs = 1_000): void {
-    this.timer ??= setInterval(() => this.tick(Date.now()), intervalMs);
+  start(intervalMs = 1_000, at = Date.now()): void {
+    if (this.timer) return;
+    this.startedAt = at;
+    this.timer = setInterval(() => this.tick(Date.now()), intervalMs);
     this.timer.unref?.();
     this.tick(Date.now());
   }

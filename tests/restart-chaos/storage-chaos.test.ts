@@ -54,6 +54,20 @@ describe("storage fault clock and replay", () => {
     expect(applied).toHaveLength(2);
   });
 
+  it("measures window offsets from when it starts, so a replay can start the clock at its task's launch", () => {
+    vi.useFakeTimers({ now: 0 });
+    const windows: StorageFaultWindow[] = [{ kind: "ST1", startMs: 2_000, durationMs: 3_000, rules: [{ fault: { kind: "outage" } }] }];
+    const applied: Array<readonly StorageFaultRule[] | "clear"> = [];
+    const chaos = new StorageChaos(windows, 0, { setRules: rules => applied.push(rules), clear: () => applied.push("clear") }, () => undefined);
+    vi.advanceTimersByTime(60_000);
+    chaos.start(500);
+    vi.advanceTimersByTime(1_500);
+    expect(applied).toEqual([]);
+    vi.advanceTimersByTime(1_000);
+    expect(applied).toEqual([windows[0]!.rules]);
+    chaos.stop();
+  });
+
   it("replays the storage windows that crossed a task, at offsets from its launch", () => {
     const rules: StorageFaultRule[] = [{ fault: { kind: "outage", status: 503 } }];
     const receipts = [
