@@ -5,7 +5,7 @@ import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, agentWakeupRequests, authUsers, budgetPolicies, companies, companyMemberships, costEvents, createDb, heartbeatRuns,
-  issueComments, issues } from "@paperclipai/db";
+  issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
 import { accountRunCost } from "../services/run-cost-accounting.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { requestTaskRetry } from "../services/task-retry.js";
@@ -123,6 +123,19 @@ describePostgres("saved intents while another run's accounting is pending", () =
     db.insert(activityLog).values({ companyId: f.companyId, actorType, actorId: actorType === "agent" ? f.agentId : "person",
       action: "issue.updated", entityType: "issue", entityId: f.issueId,
       details: { source: "native_status_decision", fromStatus: "in_progress", toStatus: "done" } });
+
+  /** An uncertain provider action holds this task's execution. */
+  const holdExecution = (f: { companyId: string; issueId: string; sourceRunId: string }) =>
+    db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", cause: "uncertain_provider_action", ownerType: "board", status: "active",
+      nextAction: "Reconcile the stopped run", fingerprint: `held-comment-blocker:${f.sourceRunId}`,
+      evidence: { runId: f.sourceRunId } }).returning();
+
+  /** Each pass stamps the saved rows it revisits, and reads them oldest first.
+   * Age them so the next pass still reaches this fixture's row. */
+  const ageSavedWakes = (f: { companyId: string }) =>
+    db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) }).where(and(
+      eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
 
   async function settle(f: { companyId: string }) {
     await heartbeat.resumeQueuedRuns();
@@ -520,6 +533,23 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(f.commentId)).toHaveLength(1);
     const again = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(again.violations.filter(row => row.recordId === f.commentId)).toEqual([]);
+  }, 180_000);
+
+  // The other half of the same pass: skipping that delivery must not cost the
+  // assignee's saved message its reopen. The release drain below still owns it.
+  it("still reopens a closed task for the assignee's held message and delivers it once", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await holdExecution(f);
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await closeByAgent(f);
+    for (let pass = 0; pass < 2; pass++) { await ageSavedWakes(f); await settle(f); }
+    expect(await db.select({ reason: agentWakeupRequests.reason }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "skipped")))).toEqual([]);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+    expect(await readWake(f.wakeId)).toMatchObject({ status: "completed" });
+    await ageSavedWakes(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
   }, 180_000);
 
   it("keeps a reconciler pass due when the backstop cannot save a message", async () => {
