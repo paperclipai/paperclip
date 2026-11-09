@@ -113,11 +113,14 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
   async function stored(workspaceId: string) {
     return (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)))[0];
   }
-  it("imports an ordinary managed directory without capturing its enclosing host repository", async () => {
+  it.each([false, true])("imports an ordinary managed directory without capturing its enclosing host repository (task path: %s)", async legacyTask => {
     await git(home, "init", "-q", "-b", "main");
     await fs.writeFile(path.join(home, "host-only.txt"), "outside the workspace\n");
     await git(home, "add", "host-only.txt"); await git(home, "commit", "-qm", "Enclosing host repository");
     const head = await git(home, "rev-parse", "HEAD"), f = await fixture();
+    if (legacyTask) { const cwd = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", f.companyId, f.aliases[0].issue.id);
+      await fs.cp(f.cwd, cwd, { recursive: true }); await db.update(executionWorkspaces).set({ cwd, providerRef: null }).where(eq(executionWorkspaces.id, f.workspaceId)); f.cwd = cwd;
+    }
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
     const authority = readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)!;
