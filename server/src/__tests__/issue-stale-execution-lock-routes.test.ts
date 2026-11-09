@@ -21,6 +21,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -572,5 +573,118 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
     });
+  });
+
+  it("keeps a report's live run bound when its manager tries to move the running task to backlog", async () => {
+    // A lead "pausing" work by editing statuses: before this guard the status
+    // change released the execution lock and left the report's run running,
+    // no longer bound to its task.
+    const { companyId, agentId: reportAgentId, currentRunId: reportRunId } = await seedCompanyAgentAndRuns();
+    const leadAgentId = randomUUID();
+    const leadRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(agents).values({
+      id: leadAgentId,
+      companyId,
+      name: "LaunchLead",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(agents).set({ reportsTo: leadAgentId }).where(eq(agents.id, reportAgentId));
+    await db.insert(heartbeatRuns).values({
+      id: leadRunId,
+      companyId,
+      agentId: leadAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Build the launch website",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: reportAgentId,
+      checkoutRunId: reportRunId,
+      executionRunId: reportRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, reportRunId));
+
+    const res = await request(createApp(agentActor(companyId, leadAgentId, leadRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "backlog" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details).toMatchObject({ code: "issue_status_change_live_run", runId: reportRunId });
+    expect(res.body.error).toContain("More task actions, then Pause subtree");
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      assigneeAgentId: reportAgentId,
+      checkoutRunId: reportRunId,
+      executionRunId: reportRunId,
+    });
+    const run = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, reportRunId)).then((rows) => rows[0]);
+    expect(run?.status).toBe("running");
+  });
+
+  it("rejects a status change whose checked execution lock changed before the write", async () => {
+    // The route checks the lock, then a checkout lands before the write. The
+    // write must not release the newly acquired lock.
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checked out after the check",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    await expect(issueService(db).update(issueId, {
+      status: "backlog",
+      expectedExecutionLock: { executionRunId: null, checkoutRunId: null },
+    })).rejects.toMatchObject({ status: 409, details: { code: "issue_execution_lock_changed" } });
+
+    const row = await db
+      .select({ status: issues.status, checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ status: "in_progress", checkoutRunId: currentRunId, executionRunId: currentRunId });
+
+    // A lock that was released after the check (the route's own confirmed Stop)
+    // does not block the write.
+    await db.update(issues).set({ checkoutRunId: null, executionRunId: null }).where(eq(issues.id, issueId));
+    const updated = await issueService(db).update(issueId, {
+      status: "backlog",
+      expectedExecutionLock: { executionRunId: currentRunId, checkoutRunId: currentRunId },
+    });
+    expect(updated?.status).toBe("backlog");
   });
 });

@@ -110,9 +110,11 @@ export async function preserveLegacyWorkspaceRestoreSources(db: Db, run: Run, so
     // must wait, so no terminal-run sweep can fall back to destruction.
     const prepared = await prepareSandboxStopAndRetain(db, lease);
     if (!prepared) throw new Error("Workspace recovery lease ownership changed before terminal commit.");
+    // The original policy lets the settled hold return a warm sandbox to reuse
+    // (settleRecoveredWorkspaceRestoreHolds). It grants nothing while held.
     await db.update(environmentLeases).set({ leasePolicy: "retain_on_failure",
       metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ workspaceRestoreRecovery: {
-        schema: LEGACY_WORKSPACE_RECOVERY_SCHEMA, runId: run.id,
+        schema: LEGACY_WORKSPACE_RECOVERY_SCHEMA, runId: run.id, originalLeasePolicy: lease.leasePolicy,
       } })}::jsonb`,
     }).where(and(
       eq(environmentLeases.id, prepared.id), eq(environmentLeases.companyId, run.companyId),

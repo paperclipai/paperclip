@@ -29,6 +29,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_responsible_user_ceiling",
   "issue_write_responsible_user_unavailable",
   "issue_write_assignee_run_lock",
+  "issue_status_change_live_run",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
   "issue_write_attribution_spoof_rejected",
@@ -69,6 +70,8 @@ export interface IssueWriteDenialContext {
   assigneeLabel?: string | null;
   /** Target issue identifier, e.g. `TASK-482`. */
   issueIdentifier?: string | null;
+  /** Board path of the target issue, e.g. `/TASK/issues/TASK-482`. */
+  issuePath?: string | null;
   /** Per-run cross-issue influence cap. */
   cap?: number | null;
   /** Attempt count that tripped the cap. */
@@ -220,6 +223,32 @@ export function describeIssueWriteDenial(
           `Comment instead of patching — comments stay open and wake ${assignee} — or ` +
           `wait for the run to release the lock and retry.`,
       };
+
+    case "issue_status_change_live_run": {
+      const identifier = context.issueIdentifier?.trim();
+      const path = context.issuePath?.trim();
+      const taskLink = identifier && path ? `[${identifier}](${path})` : issue;
+      return {
+        code,
+        status: 409,
+        tone: "boundary",
+        boundary: "Live run execution lock",
+        title: "Another run is executing this task",
+        description:
+          `A run is live on ${issue} and holds its execution lock. Changing the status ` +
+          `would release that lock without stopping the run, so the run would keep ` +
+          `going with no task bound to it. Agents cannot stop or interrupt another ` +
+          `agent's run, so this status change is refused.`,
+        whoCanAct:
+          `A board user, or the run of ${assignee} that holds the lock.`,
+        sanctionedPath:
+          `This refusal is final: do not retry with another status, assignee or route. ` +
+          `Reply now and send the person to ${taskLink}. To stop the live run they use its ` +
+          `Stop or Interrupt control there; to hold this task and the tasks under it, they ` +
+          `open the parent task and choose More task actions, then Pause subtree. To pass ` +
+          `a request to the running agent, comment on the task instead.`,
+      };
+    }
 
     case "cross_issue_influence_cap_exceeded": {
       const cap = context.cap ?? 20;
