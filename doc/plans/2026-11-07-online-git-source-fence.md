@@ -44,6 +44,18 @@ publication. Changed descriptors, allocations, owners, aliases, or Git metadata
 reject publication. Prepared sources and unresolved recovery warnings retain
 their original state and evidence. They are not marked finalized or cleared.
 
+A terminal failed run can hold recovery for a separate durable remote workspace
+on the same task. A strict remote-only proof lets the old local source import
+without resolving that recovery. The proof binds the exact run, finalizer,
+action, accepted result, task, remote authority, allocation and any committed
+baseline snapshot. It uses the canonical remote source inspector, takes the
+run's finalizer fence and is rechecked before publication. Mixed legacy/remote
+references, active owners and changed bindings remain blocked. The remote
+source never enters the legacy export list; its dirty state, files, result and
+recovery obligation remain intact. Previous-release prepared references keep
+their original epoch and prior snapshot identity; the baseline need not have
+been created by the held run.
+
 Present nested workspaces must import before their parent. The existing owning
 nested-import path downloads and restores each immutable child snapshot and
 compares it with a fresh source capture before excluding that child. Missing or
