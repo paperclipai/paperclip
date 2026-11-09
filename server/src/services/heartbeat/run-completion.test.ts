@@ -480,12 +480,13 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     { hold: "dependency blocker", reasonCode: "durable_dependency_blocker_bound", replies: true },
     { hold: "finished turn", reasonCode: "conversation_turn_finished", replies: true },
     { hold: "own question card", reasonCode: "governed_response_waiting", replies: false },
+    { hold: "execution stage and own question card", reasonCode: "governed_response_waiting", replies: false },
   ] as const)("posts a waiting conversation turn's accepted answer: $hold", async ({ hold, reasonCode, replies }) => {
     const f = await fixture({ runtimeMode: "native" }, `CNV${randomUUID().slice(0, 6)}`);
     const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Chat with CEO",
       status: "in_progress", assigneeAgentId: f.agent.id, responsibleUserId: "local-board",
       conversationAgentId: f.agent.id, conversationUserId: "local-board", conversationState: "active",
-      ...(hold === "execution stage" ? { executionState: { status: "pending" } } : {}),
+      ...(hold.startsWith("execution stage") ? { executionState: { status: "pending" } } : {}),
     }).returning();
     await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, responsibleUserId: "local-board",
       contextSnapshot: { issueId: issue.id, conversationSessionGeneration: 0 } }).where(eq(heartbeatRuns.id, f.run.id));
@@ -494,7 +495,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
         status: hold === "pending approval" ? "pending" : "revision_requested", payload: { name: "Researcher" } }).returning();
       await db.insert(issueApprovals).values({ companyId: f.run.companyId, issueId: issue.id, approvalId: approval.id });
     }
-    if (hold === "own question card") {
+    if (hold.endsWith("own question card")) {
       await issueThreadInteractionService(db).create(issue, { kind: "ask_user_questions", sourceRunId: f.run.id,
         continuationPolicy: "wake_assignee", payload: { version: 1, questions: [{ id: "model", prompt: "Which model?",
           selectionMode: "single", required: true, options: [{ id: "flash", label: "Flash" }] }] } },
