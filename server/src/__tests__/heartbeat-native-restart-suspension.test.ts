@@ -339,7 +339,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     const providerDispatch = vi.fn(() => { throw new Error("an accepted result must not open another provider turn"); });
     const next = heartbeatService(f.db, { nativeSessionBackendFactory: providerDispatch });
     try {
-      await next.recoverNativeRunsAfterRestart(new Date());
+      await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
     } finally { await next.drainActiveRunExecutions(); }
     expect(providerDispatch).not.toHaveBeenCalled();
 
@@ -376,10 +376,19 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       ...(Object.hasOwn(controller, "hostHash") ? { controllerHostHash: controller.hostHash ?? null } : {}) })
       .where(eq(nativeRunFinalizations.runId, f.runId));
   }
+  function acceptedRunKinds(f: Awaited<ReturnType<typeof seedAcceptedResult>>) {
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === "native_accepted_result_lease");
+    if (!kind?.listForRuns) throw new Error("Native accepted-result run listing required");
+    const listForRuns = kind.listForRuns;
+    return [{ ...kind, listInProgress: async (db: typeof f.db) => ({
+      records: await listForRuns(db, [f.runId]), truncated: false,
+    }) }];
+  }
+
   async function restart(f: Awaited<ReturnType<typeof seedAcceptedResult>>) {
     const providerDispatch = vi.fn(() => { throw new Error("an accepted result must not open another provider turn"); });
     const next = heartbeatService(f.db, { nativeSessionBackendFactory: providerDispatch });
-    try { await next.recoverNativeRunsAfterRestart(new Date()); }
+    try { await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]); }
     finally { await next.drainActiveRunExecutions(); }
     expect(providerDispatch).not.toHaveBeenCalled();
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
@@ -1319,7 +1328,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     await killedController(f, deadController(null));
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
     try {
-      const report = await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+      const report = await runOwnershipReconciliationPass(f.db, { kinds: acceptedRunKinds(f), state: createOwnershipReportState() });
       expect(report.kinds.find(kind => kind.kind === "native_accepted_result_lease"))
         .toMatchObject({ settled: 0, reasons: { process_space_unrecorded: 1 } });
     } finally { vi.unstubAllEnvs(); }
@@ -1336,7 +1345,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
     try {
       const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
-      const report = await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+      const report = await runOwnershipReconciliationPass(f.db, { kinds: acceptedRunKinds(f), state: createOwnershipReportState() });
       expect(report.kinds.find(kind => kind.kind === "native_accepted_result_lease"))
         .toMatchObject({ settled: 0, reasons: { process_space_unrecorded: 1 } });
       const [action] = await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
@@ -1371,18 +1380,18 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     // before the row, or failed). The next reconciler pass settles it.
     const f = await seedAcceptedResult("ACCEPTED-RECONCILER-PASS", (runner) => `${runner}:${randomUUID()}`);
     await killedController(f, deadController(currentProcessSpaceHash()));
-    const readOnly = await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState(), record: false });
+    const readOnly = await runOwnershipReconciliationPass(f.db, { kinds: acceptedRunKinds(f), state: createOwnershipReportState(), record: false });
     expect(readOnly.kinds.find(kind => kind.kind === "native_accepted_result_lease"))
       .toMatchObject({ settled: 0, verdicts: { gone: 1 } });
     const [held] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     expect(held.leaseExpiresAt).toEqual(f.leaseExpiresAt);
     const state = createOwnershipReportState();
-    const first = await runOwnershipReconciliationPass(f.db, { state });
+    const first = await runOwnershipReconciliationPass(f.db, { kinds: acceptedRunKinds(f), state });
     expect(first.kinds.find(kind => kind.kind === "native_accepted_result_lease")).toMatchObject({ settled: 1 });
     const [released] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     expect(released.leaseExpiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
     // Settled records are no longer in progress, so rule I2 never fires.
-    const second = await runOwnershipReconciliationPass(f.db, { state });
+    const second = await runOwnershipReconciliationPass(f.db, { kinds: acceptedRunKinds(f), state });
     expect(second.violations.filter(violation => violation.kind === "native_accepted_result_lease")).toEqual([]);
   }, 60_000);
 
@@ -1391,7 +1400,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     const self = await currentNativeControllerIdentity();
     await killedController(f, { bootId: randomUUID(), pid: process.pid, processStartedAt: self.processStartedAt,
       hostHash: currentProcessSpaceHash() });
-    const report = await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+    const report = await runOwnershipReconciliationPass(f.db, { kinds: acceptedRunKinds(f), state: createOwnershipReportState() });
     expect(report.kinds.find(kind => kind.kind === "native_accepted_result_lease"))
       .toMatchObject({ settled: 0, verdicts: { alive: 1 } });
     const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
@@ -1407,7 +1416,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     try {
       const kind = OWNABLE_KINDS.find(candidate => candidate.id === "native_accepted_result_lease")!;
       expect(await kind.listForRuns!(f.db, [f.runId])).toEqual([]);
-      await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+      await runOwnershipReconciliationPass(f.db, { kinds: acceptedRunKinds(f), state: createOwnershipReportState() });
     } finally { vi.unstubAllEnvs(); }
     expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
   }, 60_000);
