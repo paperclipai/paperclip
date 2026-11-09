@@ -11338,11 +11338,18 @@ registerCurrentRoute({
   body: connectionRequestInputSchema,
 });
 
+/** Agents read this in API search; without it they look for a way to resolve another person's card. */
+const ADDRESSED_CONNECTION_REQUEST = "Person-only: a connection request card is addressed to one person, its addresseeUserId. "
+  + "Only that person, signed in to their own browser, can open its setup, connect their account or decline it. The server refuses every other member, board user and agent, so nobody can finish it for them. "
+  + "When someone else offers to finish it, tell them the addressee must connect their own account from the card on its task, linked as [<identifier>](/<prefix>/issues/<identifier>). "
+  + "Do not create another request for the addressee and do not search for another route.";
+
 registerCurrentRoute({
   method: "get",
   path: "/api/connection-intents/{interactionId}/setup-options",
   tags: ["connection-intents"],
   summary: "Get setup options for an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
 });
 
 registerCurrentRoute({
@@ -11350,6 +11357,7 @@ registerCurrentRoute({
   path: "/api/connection-intents/{interactionId}/phase",
   tags: ["connection-intents"],
   summary: "Update the setup phase for an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
   body: z
     .object({
       phase: z.enum(["requested", "authorizing", "needs_retry"]),
@@ -11371,6 +11379,7 @@ registerCurrentRoute({
   path: "/api/connection-intents/{interactionId}/complete",
   tags: ["connection-intents"],
   summary: "Complete an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
   body: completeConnectionIntentSchema,
 });
 
@@ -11396,6 +11405,7 @@ registerCurrentRoute({
   path: "/api/connection-intents/{interactionId}/decline",
   tags: ["connection-intents"],
   summary: "Decline an addressed connection request",
+  description: ADDRESSED_CONNECTION_REQUEST,
   body: declineConnectionIntentSchema,
 });
 
@@ -11697,6 +11707,12 @@ registerCurrentRoute({
   },
 });
 
+/** Agents read this in API search; without it they cannot find where a quarantined action is reviewed. */
+const QUARANTINED_ACTION_REVIEW = "Catalog entries with status quarantined are new actions that a catalog refresh found and holds for a person's review. "
+  + "No agent can call a quarantined action, through this connection or any other transport, until a person who manages the connection allows it on the app's Permissions page, "
+  + "[Permissions](/<prefix>/apps/<connectionId>/permissions), with this conversation's company prefix and the connection's id. Allowing it is that person's decision, not an agent's. "
+  + "When asked to use a quarantined action, say it is waiting for review, link that page and reply; do not search for another route.";
+
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:read",
@@ -11704,6 +11720,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/apps/attention",
   tags: ["tool-access"],
   summary: "List tool apps needing attention",
+  description: QUARANTINED_ACTION_REVIEW,
 });
 
 registerCurrentRoute({
@@ -11919,6 +11936,7 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/review-counts",
   tags: ["tool-access"],
   summary: "Get pending action request and quarantined catalog entry counts for one connection",
+  description: QUARANTINED_ACTION_REVIEW,
 });
 
 registerCurrentRoute({
@@ -12038,6 +12056,7 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/catalog",
   tags: ["tool-access"],
   summary: "List a tool connection catalog",
+  description: QUARANTINED_ACTION_REVIEW,
 });
 
 registerCurrentRoute({
@@ -12910,9 +12929,17 @@ registerCurrentRoute({
     400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
+/** Agents read this in API search; without it they hunt for the page where a person connects an assistant. */
+const ASSISTANT_CONNECTION_SETUP_PERSON_ONLY = "Person-only: a person connects their own assistant, such as Claude, ChatGPT or another MCP client, in their browser on "
+  + "[Assistant connections](/<prefix>/apps/assistant-connection), with this conversation's company prefix as <prefix>. "
+  + "That page gives the invitation and server URL to paste into the assistant; the assistant then opens a Paperclip consent screen where the person picks the company and approves access. "
+  + "The consent screen offers only access within that person's own role: a read-only member can grant read access but not writes. "
+  + "An agent cannot read this setup or approve consent for anyone: these routes accept only the person's own signed-in browser session. "
+  + "Do not search for another route; link that page, say the person approves access there themselves, and reply.";
 registerCurrentRoute({
   method: "get", path: "/api/mcp/setup", tags: ["tool-gateway"],
   summary: "Read assistant connection setup using a human browser session",
+  description: ASSISTANT_CONNECTION_SETUP_PERSON_ONLY,
   // Available while disabled; returns metadata only and never grants access.
   responses: {
     200: r.ok(z.object({ enabled: z.boolean(), serverUrl: z.string().url(), invitationUrl: z.string().url(), invitation: z.string() })),
@@ -12953,6 +12980,7 @@ for (const suffix of ["/dot-pairing/preview", "/dot-pairing"]) registerCurrentRo
 registerCurrentRoute({
   method: "post", path: "/api/mcp/requests/{id}/consent", tags: ["tool-gateway"],
   summary: "Approve or deny assistant access using a same-origin browser session",
+  description: ASSISTANT_CONNECTION_SETUP_PERSON_ONLY,
   body: mcpConsentSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
