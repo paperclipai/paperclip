@@ -3062,7 +3062,11 @@ describe("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ executionDecision: "approve", comment: "Approved for ship" });
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: policy.stages[0].id,
+        comment: "Approved for ship",
+      });
 
     expect(res.status).toBe(200);
     expect(mockDb.transaction).toHaveBeenCalledTimes(1);
@@ -3151,7 +3155,11 @@ describe("issue comment reopen routes", () => {
       }),
     )
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ executionDecision: "approve", comment: "Review approved" });
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: policy.stages[0].id,
+        comment: "Review approved",
+      });
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({

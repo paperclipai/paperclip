@@ -367,6 +367,7 @@ describe("issue execution policy transitions", () => {
         issue,
         policy,
         executionDecision: "approve",
+        expectedExecutionStageId: reviewStageId,
         requestedAssigneePatch: {},
         actor: { agentId: qaAgentId },
         commentBody: "Review approved",
@@ -397,6 +398,59 @@ describe("issue execution policy transitions", () => {
         actorAgentId: coderAgentId,
         requestedStatus: "done",
       })).toBe(false);
+    });
+
+    it("rejects a lost-response retry after the same actor advanced to the next stage", () => {
+      const repeatedActorPolicy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: qaAgentId }] },
+      ]);
+      const firstStageId = repeatedActorPolicy.stages[0].id;
+      const secondStageId = repeatedActorPolicy.stages[1].id;
+      const firstIssue = {
+        status: "in_review",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+        executionPolicy: repeatedActorPolicy,
+        executionState: {
+          status: "pending" as const,
+          currentStageId: firstStageId,
+          currentStageIndex: 0,
+          currentStageType: "review" as const,
+          currentParticipant: { type: "agent" as const, agentId: qaAgentId },
+          returnAssignee: { type: "agent" as const, agentId: coderAgentId },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      };
+      const first = applyIssueExecutionPolicyTransition({
+        issue: firstIssue,
+        policy: repeatedActorPolicy,
+        executionDecision: "approve",
+        expectedExecutionStageId: firstStageId,
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Approve the review stage",
+      });
+      expect(first.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageId: secondStageId,
+      });
+
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: { ...firstIssue, ...first.patch },
+        policy: repeatedActorPolicy,
+        executionDecision: "approve",
+        expectedExecutionStageId: firstStageId,
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Retry the review-stage approval",
+      })).toThrow(expect.objectContaining({
+        status: 409,
+        details: { code: "execution_stage_changed" },
+      }));
     });
 
     it("lets a reviewer provide loose instructions for the next approval stage", () => {
@@ -502,6 +556,7 @@ describe("issue execution policy transitions", () => {
         },
         policy,
         executionDecision: "approve",
+        expectedExecutionStageId: approvalStageId,
         requestedAssigneePatch: {},
         actor: { userId: ctoUserId },
         commentBody: "Final approval",
@@ -578,6 +633,7 @@ describe("issue execution policy transitions", () => {
         },
         policy,
         executionDecision: "request_changes",
+        expectedExecutionStageId: reviewStageId,
         requestedAssigneePatch: {},
         actor: { agentId: qaAgentId },
         commentBody: "Please fix the rollback case",

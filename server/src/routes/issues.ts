@@ -365,6 +365,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  inspectPendingExecutionStage,
   isLegacyIntermediateExecutionStageApproval,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -14345,7 +14346,18 @@ export function issueRoutes(
     const runId = req.actor.type === "agent" ? req.actor.runId : null;
     if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
     if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
-    if (requestedStatus === undefined || requestedStatus === issue.status) return;
+    const pendingStage = req.body.executionDecision === "approve"
+      ? inspectPendingExecutionStage(issue)
+      : { status: "none" as const };
+    const effectiveRequestedStatus = requestedStatus ?? (
+      pendingStage.status === "valid" &&
+      !pendingStage.hasLaterStages &&
+      pendingStage.currentParticipant.type === "agent" &&
+      pendingStage.currentParticipant.agentId === req.actor.agentId
+        ? "done"
+        : undefined
+    );
+    if (effectiveRequestedStatus === undefined || effectiveRequestedStatus === issue.status) return;
     if (isConversation(issue)) return;
     const keepsAssignment =
       (req.body.assigneeAgentId === undefined || req.body.assigneeAgentId === issue.assigneeAgentId) &&
@@ -14354,6 +14366,17 @@ export function issueRoutes(
     const run = await heartbeat.getRun(runId);
     if (!run || run.runtimeMode !== "native" || run.status !== "running"
       || run.agentId !== req.actor.agentId || run.companyId !== issue.companyId) return;
+    // The decision is durable, but a native run must retain its issue lock
+    // until paperclip_finish reports the run outcome. Defer only the derived
+    // final `done` status; the transition still records the stage approval.
+    if (req.body.executionDecision === "approve" &&
+        requestedStatus === undefined &&
+        pendingStage.status === "valid" &&
+        !pendingStage.hasLaterStages &&
+        pendingStage.currentParticipant.type === "agent" &&
+        pendingStage.currentParticipant.agentId === req.actor.agentId) {
+      return true;
+    }
     // Compatibility only: a legacy reviewer may still send status=done. Let
     // that request reach the policy transition only when the live issue has a
     // valid pending stage owned by this actor and an uncompleted later stage.
@@ -14362,7 +14385,7 @@ export function issueRoutes(
     if (isLegacyIntermediateExecutionStageApproval({
       issue,
       actorAgentId: req.actor.agentId,
-      requestedStatus,
+      requestedStatus: effectiveRequestedStatus,
     })) return;
     // A blocker that the dependency rules reject anyway keeps its specific
     // error; otherwise the run reports the block with paperclip_block.
@@ -14376,7 +14399,7 @@ export function issueRoutes(
       "This run owns the task's execution, so it cannot change the task status directly; doing so would end its access to the task before it reports. " +
         "Report the outcome with paperclip_finish instead: reportedWorkDisposition \"needs_review\" for review, \"done\" when complete, or \"yielded\" with continuation.kind \"monitor\" to wait on a scheduled monitor. " +
         "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
-      { code: "native_run_status_reported_by_finish", requestedStatus },
+      { code: "native_run_status_reported_by_finish", requestedStatus: effectiveRequestedStatus },
     );
   }
 
@@ -14393,9 +14416,15 @@ export function issueRoutes(
         throw unprocessable("executionDecision cannot be combined with status");
       }
       if (req.body?.executionDecision !== undefined && Object.keys(req.body).some(
-        (key) => !["executionDecision", "comment", "commentClientRequestId", "attachmentIds"].includes(key),
+        (key) => !["executionDecision", "expectedExecutionStageId", "comment", "commentClientRequestId", "attachmentIds"].includes(key),
       )) {
         throw unprocessable("executionDecision may only be combined with its decision comment and attachments");
+      }
+      if (req.body?.executionDecision !== undefined && req.body.expectedExecutionStageId === undefined) {
+        throw unprocessable("executionDecision requires expectedExecutionStageId from the task's current executionState");
+      }
+      if (req.body?.expectedExecutionStageId !== undefined && req.body.executionDecision === undefined) {
+        throw unprocessable("expectedExecutionStageId requires executionDecision");
       }
       next();
     },
@@ -14418,7 +14447,8 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
-      await assertNativeRunKeepsOwnExecutionLock(req, existing);
+      const deferFinalStatusToNativeRun =
+        (await assertNativeRunKeepsOwnExecutionLock(req, existing)) === true;
       if (req.body.expectedStatusVersion !== undefined && (
         existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
       )) {
@@ -14499,6 +14529,7 @@ export function issueRoutes(
         reviewInteractionId: requestedReviewInteractionId,
         reviewRequest,
         executionDecision,
+        expectedExecutionStageId,
         reopen: reopenRequested,
         resume: resumeRequested,
         interrupt: interruptRequested,
@@ -14617,12 +14648,13 @@ export function issueRoutes(
         req.body.reviewPolicy !== existing.reviewPolicy;
       const reviewVerdictRequested =
         existing.status === "in_review" &&
-        (updateFields.status === "done" || updateFields.status === "cancelled");
+        (updateFields.status === "done" || updateFields.status === "cancelled" || executionDecision !== undefined);
       const mcpReviewSensitiveMutation = mcpParticipationChange;
       const reviewPolicySensitiveMutationRequested =
         mcpReviewSensitiveMutation || req.body.reviewPolicy !== undefined ||
         updateFields.status === "done" ||
-        updateFields.status === "cancelled";
+        updateFields.status === "cancelled" ||
+        executionDecision !== undefined;
       if (
         (reviewVerdictRequested || reviewPolicyChangeRequested) &&
         existing.reviewPolicy != null &&
@@ -14936,6 +14968,8 @@ export function issueRoutes(
             ? updateFields.status
             : undefined,
         executionDecision,
+        expectedExecutionStageId,
+        deferFinalStatusToNativeRun,
         requestedAssigneePatch: {
           assigneeAgentId: normalizedAssigneeAgentId,
           assigneeUserId:
@@ -15405,7 +15439,8 @@ export function issueRoutes(
         const lockedReviewVerdictRequested =
           lockedExisting.status === "in_review" &&
           (updateFields.status === "done" ||
-            updateFields.status === "cancelled");
+            updateFields.status === "cancelled" ||
+            executionDecision !== undefined);
         if (
           (lockedReviewVerdictRequested || lockedPolicyChangeRequested) &&
           lockedExisting.reviewPolicy != null &&

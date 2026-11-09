@@ -366,6 +366,72 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     expect(userVerdict.body).toMatchObject({ id: issueId, status: "cancelled" });
   });
 
+  it.each([
+    { prefix: "EHU", reviewPolicy: "human_only" as const, recordRequester: false },
+    { prefix: "ENC", reviewPolicy: "not_creator" as const, recordRequester: true },
+  ])("enforces $reviewPolicy for explicit execution-stage decisions", async ({ prefix, reviewPolicy, recordRequester }) => {
+    const seeded = await seedCompany(prefix);
+    const stageId = randomUUID();
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: `${prefix}-1`,
+      reviewPolicy,
+    });
+    await db.update(issues).set({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "approval",
+          participants: [{ id: randomUUID(), type: "agent", agentId: seeded.assigneeAgentId }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "agent", agentId: seeded.assigneeAgentId },
+        returnAssignee: { type: "agent", agentId: seeded.peerAgentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, issueId));
+    if (recordRequester) {
+      await db.insert(activityLog).values({
+        companyId: seeded.companyId,
+        actorType: "agent",
+        actorId: seeded.assigneeAgentId,
+        agentId: seeded.assigneeAgentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: { status: "in_review", _previous: { status: "in_progress" } },
+      });
+    }
+
+    const verdict = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: stageId,
+        comment: "Explicit approval",
+      });
+
+    expect(verdict.status).toBe(403);
+    expect(verdict.body.details).toMatchObject({ code: "review_policy_denied", policy: reviewPolicy });
+    const [persisted] = await db.select({ status: issues.status, executionState: issues.executionState })
+      .from(issues).where(eq(issues.id, issueId));
+    expect(persisted).toMatchObject({
+      status: "in_review",
+      executionState: { status: "pending", currentStageId: stageId },
+    });
+  });
+
   it("does not let an agent bypass human_only by relaxing reviewPolicy in the verdict patch", async () => {
     const seeded = await seedCompany("RLP");
     const issueId = await seedReview({

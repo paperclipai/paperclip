@@ -152,8 +152,8 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 
 If `currentParticipant` matches you, submit an explicit stage decision through the update route:
 
-- Approve: `PATCH /api/issues/{issueId}` with `{ "executionDecision": "approve", "comment": "Approved: …" }`. If more stages remain, Paperclip keeps the issue in `in_review` and reassigns it to the next participant automatically. Only approval of the final stage closes the issue.
-- Request changes: `PATCH` with `{ "executionDecision": "request_changes", "comment": "Changes requested: …" }`. Paperclip records the decision and reassigns to `returnAssignee`.
+- Approve: `PATCH /api/issues/{issueId}` with `{ "executionDecision": "approve", "expectedExecutionStageId": "<executionState.currentStageId>", "comment": "Approved: …" }`. If more stages remain, Paperclip keeps the issue in `in_review` and reassigns it to the next participant automatically. Only approval of the final stage closes the issue.
+- Request changes: `PATCH` with `{ "executionDecision": "request_changes", "expectedExecutionStageId": "<executionState.currentStageId>", "comment": "Changes requested: …" }`. Paperclip records the decision and reassigns to `returnAssignee`. Read the task again before deciding; a stale stage id returns `409 execution_stage_changed`.
 
 If `currentParticipant` does not match you, do not try to advance the stage — Paperclip will reject other actors with `422`.
 

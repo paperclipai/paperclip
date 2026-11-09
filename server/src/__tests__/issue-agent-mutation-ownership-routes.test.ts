@@ -3191,6 +3191,59 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
     });
 
+    it("records an explicit final-stage approval without ending the native run's reporting access", async () => {
+      const approvalStageId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      const executionPolicy = {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          { id: approvalStageId, type: "approval", participants: [{ type: "agent", agentId: ownerAgentId }] },
+        ],
+      };
+      const stagedIssue = makeIssue({
+        status: "in_review",
+        assigneeAgentId: ownerAgentId,
+        executionRunId: ownerRunId,
+        checkoutRunId: ownerRunId,
+        executionPolicy,
+        executionState: {
+          status: "pending",
+          currentStageId: approvalStageId,
+          currentStageIndex: 0,
+          currentStageType: "approval",
+          currentParticipant: { type: "agent", agentId: ownerAgentId },
+          returnAssignee: { type: "agent", agentId: peerAgentId },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      });
+      mockIssueService.getById.mockResolvedValue(stagedIssue);
+      mockIssueService.update.mockImplementation(async (_id, update) => ({ ...stagedIssue, ...update }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({
+        executionDecision: "approve",
+        expectedExecutionStageId: approvalStageId,
+        comment: "Final approval",
+      });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({
+        status: "in_review",
+        executionState: {
+          status: "completed",
+          currentStageId: null,
+          lastDecisionOutcome: "approved",
+        },
+      });
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
+        executionState: { status: "completed" },
+      });
+      expect(mockIssueService.update.mock.calls[0]?.[1]).not.toHaveProperty("status");
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    });
+
     it.each(["in_review", "done"])("rejects recovery resolution changing its own task to %s", async status => {
       mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
         id: recoveryActionId,

@@ -38,9 +38,13 @@ describe("issue validators", () => {
     expect(updateIssueSchema.safeParse({ expectedExecutionPolicy: [] }).success).toBe(false);
   });
   it("accepts only explicit execution-stage decision values", () => {
-    expect(updateIssueSchema.parse({ executionDecision: "approve" }).executionDecision).toBe("approve");
-    expect(updateIssueSchema.parse({ executionDecision: "request_changes" }).executionDecision).toBe("request_changes");
+    const stageId = "11111111-1111-4111-8111-111111111111";
+    expect(updateIssueSchema.parse({ executionDecision: "approve", expectedExecutionStageId: stageId }))
+      .toMatchObject({ executionDecision: "approve", expectedExecutionStageId: stageId });
+    expect(updateIssueSchema.parse({ executionDecision: "request_changes", expectedExecutionStageId: stageId }))
+      .toMatchObject({ executionDecision: "request_changes", expectedExecutionStageId: stageId });
     expect(updateIssueSchema.safeParse({ executionDecision: "done" }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({ expectedExecutionStageId: "not-a-uuid" }).success).toBe(false);
   });
   it("accepts private visibility without adding defaults to updates", () => {
     expect(createIssueSchema.parse({ title: "Private", visibility: "private" }).visibility).toBe("private");

@@ -11,7 +11,7 @@ import type {
   IssueMonitorScheduledBy,
 } from "@paperclipai/shared";
 import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
-import { unprocessable } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
 
 type AssigneeLike = {
   assigneeAgentId?: string | null;
@@ -48,6 +48,8 @@ type TransitionInput = {
   previousPolicy?: IssueExecutionPolicy | null;
   requestedStatus?: string;
   executionDecision?: "approve" | "request_changes";
+  expectedExecutionStageId?: string;
+  deferFinalStatusToNativeRun?: boolean;
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
   allowBoardOverride?: boolean;
@@ -66,6 +68,7 @@ export type PendingExecutionStageInspection =
   | { status: "none" }
   | {
       status: "valid";
+      currentStageId: string;
       currentParticipant: IssueExecutionStagePrincipal;
       hasLaterStages: boolean;
     }
@@ -692,6 +695,7 @@ export function inspectPendingExecutionStage(issue: IssueLike): PendingExecution
     const approvedState = buildCompletedState(state, stage);
     return {
       status: "valid",
+      currentStageId: state.currentStageId,
       currentParticipant: state.currentParticipant,
       hasLaterStages: nextPendingStageAfter(policy, stage, approvedState) !== null,
     };
@@ -728,6 +732,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   const currentStage = input.policy ? findStageById(input.policy, existingState?.currentStageId) : null;
   const requestedStatus = input.requestedStatus;
   const executionDecision = input.executionDecision;
+  const expectedExecutionStageId = input.expectedExecutionStageId;
   const activeStage = currentStage && existingState?.status === PENDING_STATUS ? currentStage : null;
   const effectiveReviewRequest = input.reviewRequest === undefined
     ? existingState?.reviewRequest ?? null
@@ -789,6 +794,15 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (activeStage) {
+    if (executionDecision && !expectedExecutionStageId) {
+      throw unprocessable("executionDecision requires expectedExecutionStageId from the task's current executionState");
+    }
+    if (executionDecision && expectedExecutionStageId !== activeStage.id) {
+      throw conflict(
+        "The execution stage changed before this decision could be applied. Read the task again before deciding.",
+        { code: "execution_stage_changed" },
+      );
+    }
     const currentParticipant =
       existingState?.currentParticipant ??
       selectStageParticipant(activeStage, {
@@ -902,7 +916,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         if (!nextStage) {
           // The explicit operation owns the lifecycle transition. Legacy
           // callers still supply status=done themselves.
-          if (executionDecision === "approve") patch.status = "done";
+          if (executionDecision === "approve" && !input.deferFinalStatusToNativeRun) patch.status = "done";
           patch.executionState = approvedState;
           return {
             patch,

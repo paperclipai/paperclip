@@ -581,7 +581,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     const decide = (comment: string) =>
       request(createApp(boardActor(companyId)))
         .patch(`/api/issues/${issueId}`)
-        .send({ executionDecision: "approve", comment })
+        .send({ executionDecision: "approve", expectedExecutionStageId: reviewStageId, comment })
         .then((response) => response);
     const firstDecision = decide("First concurrent approval");
     const secondDecision = decide("Second concurrent approval");
@@ -647,6 +647,77 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       stageId: reviewStageId,
       outcome: "approved",
     });
+  });
+
+  it("does not let a lost-response retry approve the next stage owned by the same principal", async () => {
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const reviewStageId = randomUUID();
+    const approvalStageId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Sequential staged-decision retry",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          { id: reviewStageId, type: "review", participants: [{ type: "user", userId: "board-user" }] },
+          { id: approvalStageId, type: "approval", participants: [{ type: "user", userId: "board-user" }] },
+        ],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "board-user" },
+        returnAssignee: { type: "agent", agentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+    const decision = {
+      executionDecision: "approve",
+      expectedExecutionStageId: reviewStageId,
+      comment: "Approve the review stage",
+    };
+
+    const first = await request(createApp(boardActor(companyId)))
+      .patch(`/api/issues/${issueId}`)
+      .send(decision);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body.executionState).toMatchObject({
+      status: "pending",
+      currentStageId: approvalStageId,
+      completedStageIds: [reviewStageId],
+    });
+
+    const retry = await request(createApp(boardActor(companyId)))
+      .patch(`/api/issues/${issueId}`)
+      .send(decision);
+    expect(retry.status, JSON.stringify(retry.body)).toBe(409);
+    expect(retry.body.details).toMatchObject({ code: "execution_stage_changed" });
+
+    const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(saved).toMatchObject({
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentStageId: approvalStageId,
+        completedStageIds: [reviewStageId],
+      },
+    });
+    const decisions = await db.select().from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ stageId: reviewStageId, outcome: "approved" });
   });
 
   it("rejects a non-current board done override without closing or skipping stages", async () => {
