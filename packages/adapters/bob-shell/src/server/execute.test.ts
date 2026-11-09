@@ -296,6 +296,31 @@ describe("execute", () => {
     expect((mockRunChildProcess.mock.calls[0][3] as Record<string, unknown>).cwd).toBe("/configured");
   });
 
+  it("does not hand server-only PAPERCLIP_* secrets to the Bob subprocess", async () => {
+    mockRunChildProcess.mockResolvedValue(okResult);
+    const previous = {
+      secret: process.env.PAPERCLIP_AGENT_JWT_SECRET,
+      other: process.env.PAPERCLIP_SECRETS_MASTER_KEY,
+    };
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "server-only-jwt-secret";
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY = "server-only-master-key";
+    try {
+      await execute(makeCtx({ config: { env: { CUSTOM_FLAG: "1" } } }));
+    } finally {
+      if (previous.secret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previous.secret;
+      if (previous.other === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+      else process.env.PAPERCLIP_SECRETS_MASTER_KEY = previous.other;
+    }
+
+    const env = (mockRunChildProcess.mock.calls[0][3] as { env: Record<string, string> }).env;
+    expect(env).not.toHaveProperty("PAPERCLIP_AGENT_JWT_SECRET");
+    expect(env).not.toHaveProperty("PAPERCLIP_SECRETS_MASTER_KEY");
+    expect(env.PAPERCLIP_API_KEY).toBe("token-abc");
+    expect(env.PAPERCLIP_RUN_ID).toBe("run-1");
+    expect(env.CUSTOM_FLAG).toBe("1");
+  });
+
   it("does not resume a session recorded for a different workspace", async () => {
     mockRunChildProcess.mockResolvedValue(okResult);
 

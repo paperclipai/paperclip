@@ -13,6 +13,7 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   runChildProcess,
+  sanitizeInheritedPaperclipEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import { ADAPTER_TYPE } from "../shared/constants.js";
 import { resolveBobCommand } from "./execute.js";
@@ -42,7 +43,11 @@ function probeContext(config: Record<string, unknown>): {
       : process.cwd();
   return {
     cwd,
-    env: ensurePathInEnv({ ...process.env, ...userEnv }) as Record<string, string>,
+    // Sanitized so server-only PAPERCLIP_* secrets never reach the probe.
+    env: ensurePathInEnv({
+      ...sanitizeInheritedPaperclipEnv(process.env),
+      ...userEnv,
+    }) as Record<string, string>,
   };
 }
 

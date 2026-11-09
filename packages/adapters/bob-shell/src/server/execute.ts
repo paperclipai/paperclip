@@ -402,9 +402,12 @@ export async function execute(
   const stdinPrompt = prompt.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
   // ── Build environment ────────────────────────────────────────────────────
+  // Do not spread raw `process.env` here: `runChildProcess` already merges
+  // `sanitizeInheritedPaperclipEnv(process.env)` underneath `opts.env`, and a
+  // raw spread would restore the server-only PAPERCLIP_* secrets it removes
+  // (e.g. PAPERCLIP_AGENT_JWT_SECRET) for the agent subprocess.
   const userEnv = config.env as Record<string, string> | undefined;
   const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
     ...buildPaperclipEnv(ctx.agent),
   };
