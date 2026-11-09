@@ -106,6 +106,8 @@ describe("document text projection", () => {
     expect(projectMarkdownToText("Show \\&amp; and &Amp; and &constructor;").text)
       .toBe("Show &amp; and &Amp; and &constructor;");
     expect(projectMarkdownToText("&AMP; &amp;").text).toBe("& &");
+    expect(projectMarkdownToText("&#00000065; &#x0000041;").text).toBe("&#00000065; &#x0000041;");
+    expect(projectMarkdownToText("&#0000065; &#x000041;").text).toBe("A A");
   });
 });
 

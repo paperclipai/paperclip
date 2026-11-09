@@ -355,7 +355,7 @@ function addInlineMarkdownText(builder: ProjectionBuilder, text: string, sourceO
     }
 
     if (char === "&") {
-      const entity = rest.match(/^&(?:#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/);
+      const entity = rest.match(/^&(?:#\d{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z][a-zA-Z0-9]*);/);
       const decoded = entity ? decodeHtmlEntity(entity[0]) : null;
       if (entity && decoded) {
         for (const unit of decoded.split("")) builder.addChar(unit, absolute, absolute + entity[0].length);
