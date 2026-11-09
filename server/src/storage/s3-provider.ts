@@ -9,6 +9,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { assertSourceFileSize, fileRangeMd5, putS3Multipart, putS3MultipartFile } from "./s3-multipart.js";
 import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
 import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
 import { addAbortSignal, Readable } from "node:stream";
 import { retryS3RequestTimeouts } from "./s3-request-timeout-retry.js";
@@ -121,6 +122,9 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
 
   return {
     id: "s3",
+    immutableObjectNamespace: config.endpoint ? createHash("sha256").update(JSON.stringify(["s3",
+      new URL(config.endpoint).href, region, bucket, prefix, Boolean(config.forcePathStyle),
+    ])).digest("hex") : undefined,
 
     async putObjectConditional(input) {
       const output = await client.send(new PutObjectCommand({
