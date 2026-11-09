@@ -748,6 +748,49 @@ describe("AgentConfigForm environment selector", () => {
     } finally { list.mockRestore(); }
   });
 
+  it.each(["shared-pool", "legacy-router", "both"])("saves a direct account after leaving %s without restoring its pool", async savedBinding => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const { harnessPoolsApi } = await import("../api/harness-pools");
+    const pools = vi.spyOn(harnessPoolsApi, "choices").mockResolvedValue([{ id: "smart", revision: 1, name: "Smart", enabled: true }]);
+    const accounts = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({ currentUserId: "you", canManageConnections: true, connections: [{
+      id: "78306e75-506c-4240-981e-31d8508e33f2", grantId: "93587692-5e38-433e-bc06-7b98957009b2", companyId: "company-1", provider: "openai", method: "subscription", name: "Direct Codex",
+      ownership: "shared", isDefault: false, status: "connected",
+    }] });
+    try {
+      const edited = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "codex" }, runtimeConfig: {
+        ...(savedBinding !== "legacy-router" ? { harnessPool: { poolId: "smart" } } : {}),
+        ...(savedBinding !== "shared-pool" ? { aiConnection: { mode: "router", connectionId: "a8d3a9a3-9866-49d8-93d6-c497ae090d05" } } : {}),
+        heartbeat: { enabled: true, intervalSec: 300 }, debug: { diagnostic: true },
+      } }, { showAdapterTypeField: true, wrapRouter: true });
+      roots.push(edited.root);
+      if (savedBinding === "legacy-router") {
+        const routing = Array.from(edited.container.querySelectorAll("select")).find(select => select.textContent?.includes("Individual account"))!;
+        await act(async () => { routing.value = ""; routing.dispatchEvent(new Event("change", { bubbles: true })); });
+      } else {
+        await clickElement(edited.container.querySelector('[aria-label="Harness"]'));
+        await clickElement(document.querySelector('[role="option"][data-value="codex_local"]'));
+      }
+      await flushReact();
+      const adoption = findButton(edited.container, "Choose a managed connection");
+      if (adoption) await clickElement(adoption);
+      // Legacy router bindings must also stop hiding the direct account picker.
+      const connection = edited.container.querySelector('[aria-label="Connection"]');
+      expect(connection).not.toBeNull();
+      await act(async () => { connection!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+      await flushReact();
+      await clickElement(Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(option => option.textContent?.includes("Direct Codex")) ?? null);
+      await flushReact();
+      const adopt = findButton(document.body, "Use this binding when saved");
+      if (adopt) await clickElement(adopt);
+      await clickByText(edited.container, "Save");
+      const patch = edited.onSave.mock.calls[0]?.[0];
+      expect(JSON.parse(JSON.stringify(patch.runtimeConfig))).toEqual({
+        aiConnection: { mode: "shared", provider: "openai", method: "subscription", connectionId: "78306e75-506c-4240-981e-31d8508e33f2", grantId: "93587692-5e38-433e-bc06-7b98957009b2" },
+        heartbeat: { enabled: true, intervalSec: 300 }, debug: { diagnostic: true },
+      });
+    } finally { pools.mockRestore(); accounts.mockRestore(); }
+  });
+
   it.each([
     { harness: "claude_local", label: "Claude", profile: { provider: "acpx", acpxAgent: "claude" } },
     { harness: "pi_local", label: "Pi", profile: { provider: "acpx", acpxAgent: "pi" } },

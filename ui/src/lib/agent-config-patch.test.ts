@@ -173,4 +173,26 @@ describe("buildAgentUpdatePatch", () => {
       desiredSkills: ["research", "code-review"],
     });
   });
+  it("keeps heartbeat and debug drafts when the same save replaces a pool with an account", () => {
+    const runtimeConfig = {
+      harnessPool: undefined,
+      aiConnection: { mode: "responsible_user", provider: "openai", method: "subscription" },
+      heartbeat: { enabled: true, intervalSec: 300 },
+      debug: { providerTrace: "safe", retained: true },
+      customRuntimeFlag: true,
+    };
+    const patch = buildAgentUpdatePatch(makeAgent(), makeOverlay({
+      runtime: { runtimeConfig },
+      heartbeat: { intervalSec: 900 },
+      debug: { providerTrace: undefined, diagnostic: true },
+    }));
+    expect(patch.runtimeConfig).toEqual({
+      ...runtimeConfig,
+      heartbeat: { enabled: true, intervalSec: 900 },
+      debug: { retained: true, diagnostic: true },
+    });
+    expect(runtimeConfig.heartbeat.intervalSec).toBe(300);
+    expect(runtimeConfig.debug.providerTrace).toBe("safe");
+  });
+
 });

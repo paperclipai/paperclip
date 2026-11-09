@@ -1026,11 +1026,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : "Local";
 
   const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
-    (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
+    selectedRuntime.aiConnection,
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
   const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
     ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
-  const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
+  const modelAiBinding = aiConnectionBindingSchema.safeParse(selectedRuntime.aiConnection).data;
   const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
   const accountScopedLocalCatalog = Boolean(modelAiBinding && ["codex_local", "claude_local"].includes(isRunnerHarness ? harnessType : adapterType));
   const modelCacheIdentity = accountBoundCatalog || accountScopedLocalCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
@@ -1228,7 +1228,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
       const agentId = isCreate ? undefined : props.agent.id;
       const aiConnection = isPoolHarness ? { mode: "router" as const, connectionId: harnessPoolId! } : isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
-        (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
+        selectedRuntime.aiConnection,
       ).data;
       const testRunnerSelection = isCursorCloudRunner
         ? { runner: "paperclip" as const }
@@ -1330,7 +1330,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
   const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
-    (isCreate || !((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection)) &&
+    (isCreate || !selectedRuntime.aiConnection) &&
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
@@ -1821,7 +1821,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay(prev => ({ ...prev, adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { ...config, ...prev.adapterConfig, homeMode: undefined }, runtime: { ...prev.runtime, runtimeConfig: { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: "" } } } }));
                     return;
                   }
-                  if (!isCreate) mark("runtime", "runtimeConfig", { ...selectedRuntime, harnessPool: undefined });
+                  if (!isCreate) mark("runtime", "runtimeConfig", {
+                    ...selectedRuntime,
+                    harnessPool: undefined,
+                    ...(aiRuntimeConnectionBindingSchema.safeParse(selectedRuntime.aiConnection).data?.mode === "router"
+                      ? { aiConnection: undefined } : {}),
+                  });
                   const dot = choice === "openai_dot";
                   const muse = choice === "muse";
                   const external = dot || muse;
@@ -1906,10 +1911,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onRetry={runnerDiscoveryView.retry} />
           )}
           {!isPoolHarness && !isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
-            routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
+            routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse(selectedRuntime.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => {
-              mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding });
+              mark("runtime", "runtimeConfig", { ...selectedRuntime, harnessPool: undefined, aiConnection: binding });
               if (accountBoundCatalog && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
             }} />}
 
