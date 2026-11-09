@@ -10,12 +10,17 @@ use std::os::unix::net::UnixStream;
 struct RetentionExecutor {
     polls: Arc<AtomicUsize>,
     shutdowns: Arc<AtomicUsize>,
+    prepares: Arc<AtomicUsize>,
 }
 impl CommandExecutor for RetentionExecutor {
     fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
         panic!("host control must not execute business commands");
     }
     fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        Ok(true)
+    }
+    fn prepare_for_park(&mut self, _deadline: std::time::Instant) -> Result<bool, DurableRunnerError> {
+        self.prepares.fetch_add(1, Ordering::SeqCst);
         Ok(true)
     }
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
@@ -174,9 +179,11 @@ fn exercise_hosted_loop(blocked_work: Option<bool>) {
     });
     let polls = Arc::new(AtomicUsize::new(0));
     let shutdowns = Arc::new(AtomicUsize::new(0));
+    let prepares = Arc::new(AtomicUsize::new(0));
     let executor = RetentionExecutor {
         polls: polls.clone(),
         shutdowns: shutdowns.clone(),
+        prepares: prepares.clone(),
     };
     let (socket, mut host) = UnixStream::pair().unwrap();
     host.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -201,6 +208,7 @@ fn exercise_hosted_loop(blocked_work: Option<bool>) {
         "parked"
     );
     let parked_polls = polls.load(Ordering::SeqCst);
+    assert_eq!(prepares.load(Ordering::SeqCst), 1);
     // Outlast the ordinary reconnect grace without any polling or shutdown.
     thread::sleep(Duration::from_millis(80));
     assert_eq!(polls.load(Ordering::SeqCst), parked_polls);
@@ -245,6 +253,7 @@ fn exercise_hosted_loop(blocked_work: Option<bool>) {
     finish_tx.send(()).unwrap();
     server.join().unwrap();
     assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(prepares.load(Ordering::SeqCst), 1);
     assert_eq!(
         DurableStateStore::new(&directory)
             .unwrap()

@@ -22,6 +22,9 @@ use crate::provider_bridge::{
 use crate::question_response::validate_question_response;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
+#[path = "acpx_provider_generation.rs"]
+mod generation;
+
 const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
 pub(crate) const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
@@ -353,6 +356,8 @@ pub struct AcpxProviderSession {
     rejected_start_resumable: bool,
     runtime_retired: bool,
     completed_turn_observed: bool,
+    generation_has_run_turn: bool,
+    prepared_generation: Option<(String, u32)>,
 }
 
 pub(crate) fn goal_is_dormant(projection: &Value) -> bool {
@@ -411,6 +416,8 @@ impl AcpxProviderSession {
             rejected_start_resumable: false,
             runtime_retired: false,
             completed_turn_observed: false,
+            generation_has_run_turn: false,
+            prepared_generation: None,
         })
     }
 
@@ -506,10 +513,10 @@ impl AcpxProviderSession {
             || self.failure.is_some()
             || self.transport_terminated
             || self.runtime_retired
-            || !self.completed_turn_observed
+            || !(self.completed_turn_observed || self.prepared_generation.is_some())
             || self.state.active_turn_id().is_some()
             || self.state.has_pending_requests()
-            || self.transport.buffered_events().len() != 0
+            || !self.park_tail_is_quiet()
         {
             return Ok(false);
         }
@@ -529,8 +536,7 @@ impl AcpxProviderSession {
             return Ok(false);
         };
         // Polling still owns every frame observed during these reads.
-        Ok(self.validate_dormant_snapshot(&snapshot).is_ok()
-            && self.transport.buffered_events().len() == 0)
+        Ok(self.validate_dormant_snapshot(&snapshot).is_ok() && self.park_tail_is_quiet())
     }
 
     /// Read the same live sidecar before exposing its in-memory pending ledger.
@@ -654,9 +660,9 @@ impl AcpxProviderSession {
         // provider turn originated a late HTTP callback. Reap the old sidecar
         // and provider before releasing its call-ID tombstones, then resume
         // the same verified persistent session in a fresh process generation.
-        let provider_restarted = self.state.has_settled_turns();
+        let provider_restarted = self.generation_has_run_turn;
         if provider_restarted {
-            if let Err(error) = self.restart_idle_provider() {
+            if let Err(error) = self.restart_idle_provider(None) {
                 return Err(self.fail_closed(error));
             }
         }
@@ -693,6 +699,8 @@ impl AcpxProviderSession {
                 "ACPX reserved tool receipt rotation failed: {error}"
             ))));
         }
+        self.generation_has_run_turn = true;
+        self.prepared_generation = None;
         let response = match self.transport.request_turn_start(
             json!({"turnId":turn_id,"message":message,"performance":performance}),
         ) {
@@ -1307,7 +1315,8 @@ impl AcpxProviderSession {
         Ok(())
     }
 
-    fn restart_idle_provider(&mut self) -> Result<(), LocalRunnerError> {
+    fn restart_idle_provider(&mut self, deadline: Option<Instant>) -> Result<(), LocalRunnerError> {
+        self.transport.bound_requests_by(deadline);
         let suspended = self.transport.request(
             GeneratedAcpxSidecarCommand::SessionSuspend,
             json!({"reason":"ACPX turn receipt epoch rotation"}),
@@ -1322,6 +1331,7 @@ impl AcpxProviderSession {
             &restart_config.transport,
             &restart_config.agent,
         )?;
+        replacement.bound_requests_by(deadline);
         let (replacement_identity, _, turn_controls) =
             match bootstrap(&mut replacement, &restart_config) {
                 Ok(value) => value,
@@ -1340,6 +1350,7 @@ impl AcpxProviderSession {
         self.transport = replacement;
         self.turn_controls = turn_controls;
         self.transport_terminated = false;
+        self.generation_has_run_turn = false;
         Ok(())
     }
 
@@ -2244,6 +2255,8 @@ mod mode_tests {
             rejected_start_resumable: false,
             runtime_retired: false,
             completed_turn_observed: false,
+            generation_has_run_turn: false,
+            prepared_generation: None,
         }
     }
 
