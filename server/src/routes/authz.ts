@@ -48,6 +48,7 @@ const AGENT_PROFILE_TABS: Record<string, [string, string]> = {
 const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray) => [string, string]]> = [
   [/^\/(?:companies\/[^/]+\/)?secrets?(?:[-/]|$)/, () => ["company secrets", "/<prefix>/company/settings/secrets"]],
   [/^\/companies\/[^/]+\/(?:budgets|budget-incidents|costs)(?:\/|$)/, () => ["budgets", "/<prefix>/activity/budgets"]],
+  [/^\/companies\/[^/]+\/(?:prompt-injection-prevention|decision-model|fast-response)(?:\/|$)/, () => ["connection settings", "/<prefix>/company/settings/connections"]],
   [/^\/companies\/[^/]+\/(?:members|invites|join-requests)(?:\/|$)/, () => ["company members", "/<prefix>/company/settings/members"]],
   [/^\/companies\/[^/]+\/(?:tools\/)?gateways(?:\/|$)|^\/tool-gateway\//, () => ["tool gateways", "/<prefix>/apps/gateways"]],
   [/^\/approvals\/([^/]+)/, match => ["the approval", `/<prefix>/approvals/${match[1]}`]],
@@ -76,7 +77,7 @@ export function boardAccessRequired(req: Request) {
   const page = boardControlPage(req);
   const where = page
     ? `They can do it in the Paperclip web app: link [Open ${page[0]}](${page[1]}), with this conversation's company prefix as <prefix>.`
-    : "They can do it in the Paperclip web app or with their own board credentials; link the most specific page you know.";
+    : "They can do it in the Paperclip web app or with their own board credentials. Link a page only if you already know its route; do not search for one.";
   return forbidden("Board access required", {
     code: BOARD_ACCESS_REQUIRED_CODE,
     remediation: `This action is board-only by design and this denial is final: no agent credential, tool or other API route can do it, so do not search for one. Tell the person that a board user must do it. ${where}`,
