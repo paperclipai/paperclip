@@ -28,6 +28,10 @@ export function classifyFailure(error: unknown): FailureClass {
     return "transient_infrastructure";
   if (/secret.*(?:leak|plaintext|redaction)/i.test(message))
     return "secret_leak";
+  // A settled chat-catalog grade lists the oracle's failed check ids. Those ids are
+  // free-form names ("specific-operator-qualification-next-step") and must not be
+  // read as infrastructure words: the oracle rejected the candidate's outcome.
+  if (/\bSettled scenario failed:/.test(message)) return "candidate_failure";
   if (/cleanup|teardown|lease.*release/i.test(message)) {
     return TRANSIENT.test(message)
       ? "transient_infrastructure"
