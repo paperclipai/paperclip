@@ -45,6 +45,8 @@ export function objectStoreServerEnvironment(store: Pick<ObjectStore, "bucket" |
     PAPERCLIP_STORAGE_S3_PREFIX: prefix,
     AWS_ACCESS_KEY_ID: store.accessKeyId,
     AWS_SECRET_ACCESS_KEY: store.secretAccessKey,
+    AWS_SESSION_TOKEN: "",
+    AWS_CREDENTIAL_EXPIRATION: "",
     AWS_EC2_METADATA_DISABLED: "true",
   };
 }
@@ -61,16 +63,19 @@ export async function startMinio(input: { binary: string; root: string; bucket?:
     stdio: ["ignore", "ignore", "pipe"],
   });
   let stderr = "";
+  let spawnError: Error | null = null;
+  child.on("error", error => { spawnError = error; });
   child.stderr?.on("data", chunk => { stderr = `${stderr}${chunk}`.slice(-4_000); });
   const endpoint = `http://127.0.0.1:${port}`;
   const stop = async () => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
+    if (spawnError || child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
     const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
     child.kill("SIGTERM");
     await Promise.race([exited, delay(10_000).then(() => { child.kill("SIGKILL"); return exited; })]);
   };
   const deadline = Date.now() + (input.readyTimeoutMs ?? 30_000);
   for (;;) {
+    if (spawnError) throw new Error(`MinIO could not start from ${input.binary}: ${(spawnError as Error).message}`);
     if (child.exitCode !== null) throw new Error(`MinIO exited before it was ready (${child.exitCode}): ${stderr}`);
     const live = await fetch(`${endpoint}/minio/health/live`).then(response => response.ok).catch(() => false);
     if (live) break;

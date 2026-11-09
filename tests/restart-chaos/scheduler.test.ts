@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCommand, parseReplayRef, waveIdFor } from "./config.js";
+import { parseCommand, parseReplayRef, waveIdFor, publicGitHubUrl } from "./config.js";
 import { chaosLifecycleOverrides } from "./seed.js";
 import { K4_HOLD_RANGE_MS, STORM_GAP_RANGE_MS, createRng, observedFaultSchedule, planStorm, planTasks, planWave, replayWave,
   StormRun, stormActive, stormFaultDue, taskFaultSchedule, type StormState } from "./scheduler.js";
@@ -68,6 +68,11 @@ describe("scheduler determinism", () => {
       "--workspace-repo", repo, "--storage", "s3", "--seed", "5"]);
     if (daytonaR1.mode !== "wave") throw new Error("expected a wave");
     expect(daytonaR1.options).toMatchObject({ env: "daytona", storage: "s3", workloads: ["R1"] });
+    expect(daytonaR1.options.workspaceGitUrl).toMatch(/^https:\/\/github\.com\/.+\.git$/);
+    expect(daytonaR1.options.workspaceCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(publicGitHubUrl("git@github.com:paperclipai/paperclip.git")).toBe("https://github.com/paperclipai/paperclip.git");
+    expect(publicGitHubUrl("https://github.com/paperclipai/paperclip")).toBe("https://github.com/paperclipai/paperclip.git");
+    expect(() => publicGitHubUrl("/Users/me/repo")).toThrow(/GitHub origin/);
     expect(() => parseCommand(["--k4-hold-max-seconds", "601"])).toThrow(/between 120 and 600/);
     expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
   });

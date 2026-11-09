@@ -187,7 +187,13 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (env !== "local" && storage !== "s3") throw new Error("--workspace-repo on Daytona needs --storage s3, so the clone reaches the sandbox as a remote workspace");
     if (options.workloads.some(id => id === "B1" || id === "B5")) throw new Error("--workspace-repo replaces the chaoscli fixture that B1 and B5 need");
     options.workspaceRepo = path.resolve(workspaceRepo);
-    options.workspaceCommit = execFileSync("git", ["-C", options.workspaceRepo, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const git = (...args: string[]) => execFileSync("git", ["-C", options.workspaceRepo!, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    if (env === "daytona") {
+      options.workspaceGitUrl = publicGitHubUrl(git("remote", "get-url", "origin"));
+      options.workspaceCommit = git("rev-parse", "origin/master");
+    } else {
+      options.workspaceCommit = git("rev-parse", "HEAD");
+    }
   }
   // H1 pauses the whole company when its budget hard stop is crossed: no other task can share its
   // wave, its tasks run one at a time, and the hard stop must be on.
@@ -223,6 +229,12 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     options.storageFaultMs = [min * 1000, max * 1000];
   }
   return { mode: "wave", options, keep };
+}
+
+export function publicGitHubUrl(remote: string): string {
+  const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(remote.trim());
+  if (!match) throw new Error(`--workspace-repo on Daytona needs a GitHub origin the sandbox can clone over https; origin is ${remote}`);
+  return `https://github.com/${match[1]}.git`;
 }
 
 export function waveIdFor(seed: number, at = new Date()): string {

@@ -266,7 +266,7 @@ async function main(): Promise<number> {
         ...(plan.tasks.some(task => task.workload === "M1") ? plan.options.adapters : [])])],
       concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents, masks: plan.options.masks,
       fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), workspaceRepo: plan.options.workspaceRepo,
-      workspaceCommit: plan.options.workspaceCommit, waveId: plan.waveId, timeline,
+      workspaceCommit: plan.options.workspaceCommit, workspaceGitUrl: plan.options.workspaceGitUrl, waveId: plan.waveId, timeline,
       adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle),
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });

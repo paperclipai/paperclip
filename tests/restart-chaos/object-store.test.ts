@@ -13,7 +13,16 @@ describe("object store", () => {
     expect(objectStoreServerEnvironment({ bucket: "b", region: "us-east-1", accessKeyId: "k", secretAccessKey: "s" }, "http://127.0.0.1:9", "chaos/w1/"))
       .toEqual({ PAPERCLIP_STORAGE_PROVIDER: "s3", PAPERCLIP_STORAGE_S3_BUCKET: "b", PAPERCLIP_STORAGE_S3_REGION: "us-east-1",
         PAPERCLIP_STORAGE_S3_ENDPOINT: "http://127.0.0.1:9", PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE: "true", PAPERCLIP_STORAGE_S3_PREFIX: "chaos/w1/",
-        AWS_ACCESS_KEY_ID: "k", AWS_SECRET_ACCESS_KEY: "s", AWS_EC2_METADATA_DISABLED: "true" });
+        AWS_ACCESS_KEY_ID: "k", AWS_SECRET_ACCESS_KEY: "s", AWS_SESSION_TOKEN: "", AWS_CREDENTIAL_EXPIRATION: "", AWS_EC2_METADATA_DISABLED: "true" });
+  });
+
+  it("fails fast with the binary's path when MinIO cannot start", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "restart-chaos-minio-bad-"));
+    try {
+      const started = Date.now();
+      await expect(startMinio({ binary: path.join(root, "not-a-binary"), root, readyTimeoutMs: 20_000 })).rejects.toThrow(/could not start from .*not-a-binary/);
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it.skipIf(!binary)("starts a loopback MinIO that honours conditional writes through the fault proxy", async () => {

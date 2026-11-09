@@ -78,6 +78,7 @@ export interface WaveOptions {
   storageFaultMs?: [number, number];
   storageWindows?: import("./storage-chaos.js").StorageFaultWindow[];
   workspaceCommit?: string;
+  workspaceGitUrl?: string;
 }
 
 export interface StormFault {

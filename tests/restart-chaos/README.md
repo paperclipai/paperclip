@@ -199,8 +199,10 @@ an outage a run survives. The windows are logged in the timeline and written to 
 
 With `--env daytona --storage s3`, each task's workspace is a remote workspace: the controller saves
 and restores it through the store, so the faults also hit workspace save, restore and copyback. R1
-(`--workspace-repo`) runs on Daytona only with `--storage s3`; its oracle reads the task's files through
-the board API and runs its commands on a local copy.
+(`--workspace-repo`) runs on Daytona only with `--storage s3`: the project points at the checkout's
+GitHub `origin` over https at its `origin/master` commit, so the sandbox clones the repository and its
+snapshots are Paperclip-sized. Its oracle reads the task's files through the board API and runs its
+commands on a local copy.
 
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
