@@ -124,7 +124,15 @@ export function createRunnerE2EServerStopper(options: {
       if (state.finalRequested || state.restartPromise) return Promise.reject(new Error("Restart already requested or final cleanup active"));
       state.restartPromise = (async () => {
         state.gracefulDeadline = Date.now() + options.forcedTimeoutMs;
-        await state.owner.signal("SIGKILL");
+        try {
+          await state.owner.signal("SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+          if (!exited(child)) child.kill("SIGKILL");
+          while (!exited(child) && Date.now() < state.gracefulDeadline) await wait(25);
+          if (!exited(child)) throw error;
+          options.log(`Warning: SIGKILL of the Paperclip process groups reported EPERM after server pid=${child.pid} exited; continuing cleanup\n`);
+        }
         await stopOnce(child, state, "SIGKILL");
       })();
       return state.restartPromise;

@@ -430,3 +430,56 @@ it.skipIf(process.platform === "win32")("still fails safely when a group stays u
     expect(groupSignals).toEqual([]);
   } finally { owner.stopObserving(); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
 });
+
+function eperm() {
+  return Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+}
+function crashStopper(signalError: () => Error) {
+  const logs: string[] = [];
+  let thrown = false;
+  const stop = createRunnerE2EServerStopper({
+    gracefulTimeoutMs: 2_000, forcedTimeoutMs: 1_000,
+    hasSpawnError: () => false, markExpectedStop: () => {}, log: line => logs.push(line),
+    createOwner: candidate => {
+      const owner = createProcessTreeOwner(candidate);
+      return { ...owner, signal: async (signal, selected) => {
+        if (signal === "SIGKILL" && !thrown) { thrown = true; throw signalError(); }
+        return await owner.signal(signal, selected);
+      } };
+    },
+  });
+  return { stop, logs };
+}
+
+it.skipIf(process.platform === "win32")("finishes a crash restart with a warning when the group kill reports EPERM but the server is dead", async () => {
+  const { entry } = await fixture();
+  const child = start(entry);
+  await once(child, "message");
+  const { stop, logs } = crashStopper(eperm);
+  await stop.watch(child);
+  try {
+    await stop.crashForRestart(child);
+    expect(child.signalCode).toBe("SIGKILL");
+    expect(logs.join("")).toMatch(new RegExp(`Warning: .*EPERM.*pid=${child.pid}`));
+  } finally { await stop.stopAll(); }
+});
+
+it.skipIf(process.platform === "win32")("fails a crash restart when the group kill reports EPERM and the server survives", async () => {
+  const { entry } = await fixture();
+  const child = start(entry);
+  await once(child, "message");
+  const { stop } = crashStopper(eperm);
+  await stop.watch(child);
+  child.kill = () => true;
+  await expect(stop.crashForRestart(child)).rejects.toThrow(/EPERM/);
+  expect([child.exitCode, child.signalCode]).toEqual([null, null]);
+});
+
+it.skipIf(process.platform === "win32")("fails a crash restart on a group kill error other than EPERM", async () => {
+  const { entry } = await fixture();
+  const child = start(entry);
+  await once(child, "message");
+  const { stop } = crashStopper(() => Object.assign(new Error("kill EINVAL"), { code: "EINVAL" }));
+  await stop.watch(child);
+  await expect(stop.crashForRestart(child)).rejects.toThrow(/EINVAL/);
+});
