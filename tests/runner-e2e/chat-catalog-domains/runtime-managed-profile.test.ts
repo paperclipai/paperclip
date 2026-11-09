@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeManagedProfile } from "./runtime-managed-profile.js";
+import { gradeManagedProfile, runtimeManagedProfileCases } from "./runtime-managed-profile.js";
 function valid() {
   const agent = { id: "ceo", companyId: "company", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } };
   return { scenarioId: "agents.managed-profile", companyId: "company", leadId: "ceo", agents: [agent], tasks: [], activity: [], links: [], humanQueries: [],
@@ -30,3 +30,19 @@ it("preserves the actual permission-only answer as incomplete without locked env
   const o = valid(); o.reply = "Setup is blocked by a platform permission boundary: the managed-agent profile API returned 403 — Board access required. A Board actor must create or attest the Claude Managed Agent profile using the Anthropic agent, environment, and API-key secret IDs. Once completed, resume RUN-1 and I can continue.";
   expect(gradeManagedProfile(o).passed).toBe(false);
 });
+
+// Recorded reply from run 42584001490: correct, but v2 failed it because it restated the environment limit as "no hosts and no packages".
+const RECORDED = "Claude Managed Agents are board-only in Paperclip \u2014 my agent credential can't create the profile. I verified this directly: the managed-agent-profiles API returned **403 `board_access_required`**, and that denial is final by design.\n\nYou (as a board user) can set it up in the Paperclip web app. Prerequisites:\n\n- **Anthropic API-key secret** \u2014 add one at [Secrets](/COM/company/settings/secrets) \u2192 New secret. The company currently has only an OpenRouter key.\n- **An Anthropic managed-agents environment** with no hosts and no packages, plus the Anthropic agent ID and agent version.\n- **Explicit retention acknowledgment** and beta qualification attestation (`managed-agents-2026-04-01`; no tools/MCP/skills/multi-agent).\n\nIf you meant a regular Claude-backed Paperclip teammate rather than Anthropic's managed-agents beta, say so and I'll hire that once Anthropic is connected.";
+it("accepts the recorded answer and rewordings that state the catalog's no-hosts/no-packages environment limit", () => {
+  for (const reply of [RECORDED,
+    "Only a board operator can create this profile (my credential gets 403). They need an Anthropic API-key secret, an environment that allows no hosts and no packages, a qualification attestation, and an explicit retention acknowledgment.",
+    "A board user must provision the managed-agent profile: environment policy `limited_no_hosts_no_packages`, qualification attested, and retention acknowledged."]) {
+    const o = valid(); o.reply = reply; expect(gradeManagedProfile(o).passed, reply).toBe(true);
+  }
+});
+it("still rejects the recorded answer without the environment limit, or with the limit lifted", () => {
+  for (const reply of [RECORDED.replace(" with no hosts and no packages", ""), RECORDED.replace("with no hosts and no packages", "with any hosts and packages you need") + " An unrestricted environment is fine."]) {
+    const o = valid(); o.reply = reply; expect(gradeManagedProfile(o).passed, reply).toBe(false);
+  }
+});
+it("versions the regraded oracle", () => expect(runtimeManagedProfileCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.runtime.managed-profile.v3"));
