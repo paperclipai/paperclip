@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeDelegation, hasLaunchHeadline, completeLaunchBrief, launchPageReflectsBrief, linksOpenTask, RETURN_DELIVERY_LATENCY_MS } from "./runtime-delegation.js";
+import { gradeDelegation, completeLaunchBrief, launchPageReflectsBrief, linksOpenTask, RETURN_DELIVERY_LATENCY_MS, type LaunchPageFacts } from "./runtime-delegation.js";
 function valid() {
   const task = { id: "website", parentId: "launch", companyId: "company", assigneeAgentId: "morgan", status: "done", description: "Implement the approved design brief and report the completed result back." };
   return { scenarioId: "task-coordination.delegate-with-context", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "",
@@ -15,8 +15,6 @@ function valid() {
 it("accepts one genuinely contextual child and correlated actual result", () => expect(gradeDelegation(valid()).passed).toBe(true));
 it("accepts natural correct-worker result reporting", () => { const o = valid(); o.state.delivery.response.body = "The page Morgan built is ready. Open Website for the delivered result from that implementation."; expect(gradeDelegation(o).passed).toBe(true); });
 it("accepts an independently verified inspectable link as the supported alternative to a child edge", () => { const o = valid(); o.state.task.parentId = ""; o.state.linkedToLaunch = true; expect(gradeDelegation(o).passed).toBe(true); });
-it("accepts substantive equivalent headline markup", () => expect(hasLaunchHeadline('<html><h1><span>Research</span> without&nbsp;the busywork</h1></html>')).toBe(true));
-it("rejects the right phrase elsewhere with a wrong actual headline", () => expect(hasLaunchHeadline('<h1>Unrelated result</h1><p>Research without the busywork</p>')).toBe(false));
 it("rejects missing actual delegation evidence", () => expect(gradeDelegation(undefined).passed).toBe(false));
 it("rejects a delegated task unrelated to the original Launch work", () => { const o = valid(); o.state.task.parentId = "other"; expect(gradeDelegation(o).passed).toBe(false); });
 it("rejects a brief still available only in source chat", () => { const o = valid(); o.state.childHasBrief = false; expect(gradeDelegation(o).passed).toBe(false); });
@@ -43,5 +41,12 @@ it("rejects a durable copy without the worker's actual access to its task", () =
 it.each(["Notify the CEO in this conversation when the page is ready", "Implement the brief and let me know when done"])("accepts a clear natural completion request: %s", description => { const o = valid(); o.state.task.description = description; expect(gradeDelegation(o).passed).toBe(true); });
 it("recognizes complete substantive durable brief content", () => expect(completeLaunchBrief("Reference: Launch brief nonce. Build semantic markup with accessible input labels, one primary join button, and the headline Research without the busywork.", "Launch brief nonce")).toBe(true));
 it.each(["Unrelated headline; semantic HTML, accessible labels, one primary signup action. Launch brief nonce", "Research without the busywork. Launch brief nonce", "Research without the busywork; semantic HTML, accessible labels, one primary signup action. Other reference"])("rejects wrong or incomplete durable content", text => expect(completeLaunchBrief(text, "Launch brief nonce")).toBe(false));
-it("verifies actual semantic output and its labelled signup control", () => expect(launchPageReflectsBrief('<main><h1>Research without the busywork</h1><label for="email">Email</label><input id="email"><button>Join now</button></main>')).toBe(true));
-it("rejects output whose signup input lost its accessible label", () => expect(launchPageReflectsBrief('<main><h1>Research without the busywork</h1><input id="email"><button>Join now</button></main>')).toBe(false));
+
+const page: LaunchPageFacts = { headline: "Research without the busywork", landmarks: 4, unlabelledControls: 0, namedSignupActions: 1, signupForms: 1 };
+it("accepts the rendered page facts of a brief-faithful page", () => expect(launchPageReflectsBrief(page)).toBe(true));
+it("accepts a signup form whose button is not named with signup words", () => expect(launchPageReflectsBrief({ ...page, namedSignupActions: 0 })).toBe(true));
+it("accepts a named signup link without a form", () => expect(launchPageReflectsBrief({ ...page, signupForms: 0 })).toBe(true));
+it("accepts the headline split across inline markup and whitespace", () => expect(launchPageReflectsBrief({ ...page, headline: "\n  Research without the  busywork " })).toBe(true));
+it.each<[string, Partial<LaunchPageFacts>]>([["wrong headline", { headline: "Unrelated result" }], ["no h1", { headline: null }], ["no semantic landmarks", { landmarks: 0 }],
+  ["an unlabelled control", { unlabelledControls: 1 }], ["no signup action", { namedSignupActions: 0, signupForms: 0 }]])("rejects a page with %s", (_, change) => expect(launchPageReflectsBrief({ ...page, ...change })).toBe(false));
+it("rejects a page that was never rendered", () => expect(launchPageReflectsBrief(undefined)).toBe(false));

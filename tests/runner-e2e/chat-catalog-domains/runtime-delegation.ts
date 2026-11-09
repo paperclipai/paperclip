@@ -1,7 +1,7 @@
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget, chatCatalogOriginalPhaseDeadline } from "../chat-catalog-contract.js";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { ChatQueryAttachmentReceipt } from "../chat-query-attachments.js";
 import { pollUntil } from "../api.js";
@@ -40,20 +40,40 @@ export function launchBriefBrowserOrigin(apiBaseURL: string, browserURL: string,
     || upload.pathname !== `/api/companies/${companyId}/issues/${issueId}/attachments`) throw new Error("Human Launch brief upload escaped its owned browser and target");
   return browser.origin;
 }
-export function hasLaunchHeadline(html: string) {
-  const heading = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
-  return heading?.replace(/<[^>]+>/g, " ").replace(/&nbsp;|&#160;|&#x0*a0;/gi, " ").replace(/\s+/g, " ").trim().toLowerCase() === "research without the busywork";
-}
 export function completeLaunchBrief(context: string, marker: string) {
   return context.includes(marker) && /Research without the busywork/i.test(context) && /\bsemantic\b.{0,30}\b(?:html|markup|structure)\b/i.test(context)
     && /\b(?:accessible|labelled|labeled)\b.{0,30}\b(?:label|input|control|form)|\blabel.{0,30}accessib/i.test(context)
     && /\b(?:primary|one|single)\b.{0,35}\b(?:sign.?up|signup|join|subscribe)\b.{0,30}\b(?:action|cta|button|link)\b/i.test(context);
 }
-export function launchPageReflectsBrief(html: string) {
-  if (!hasLaunchHeadline(html) || !/<(?:main|section|header)\b/i.test(html)
-    || !/<(?:a|button)\b[^>]*>[\s\S]{0,400}?(?:sign.?up|join|subscribe|early access)[\s\S]{0,100}?<\/(?:a|button)>/i.test(html)) return false;
-  return [...html.matchAll(/<input\b[^>]*>/gi)].every(([input]) => /type\s*=\s*["']?hidden\b|aria-label(?:ledby)?\s*=\s*["'][^"']+/i.test(input)
-    || !!input.match(/\bid\s*=\s*["']([^"']+)["']/)?.[1] && [...html.matchAll(/<label\b[^>]*\bfor\s*=\s*["']([^"']+)["']/gi)].some(label => label[1] === input.match(/\bid\s*=\s*["']([^"']+)["']/)?.[1]));
+/** What a person (or assistive technology) gets from Morgan's page, read from the browser's own rendering of the delivered bytes. */
+export type LaunchPageFacts = { headline: string | null; landmarks: number; unlabelledControls: number; namedSignupActions: number; signupForms: number };
+const SIGNUP_ACTION_NAME = /sign.?up|join|subscribe|early access|waitlist|wait list|register|get started/i;
+/** Render the delivered page with every network request blocked and read it like a person would. */
+export async function launchPageFacts(page: Page, html: string): Promise<LaunchPageFacts> {
+  const view = await page.context().newPage();
+  try {
+    await view.route("**/*", route => route.abort());
+    await view.setContent(html, { waitUntil: "domcontentloaded" });
+    const h1 = view.locator("h1").first();
+    const headline = await h1.count() ? (await h1.textContent()) ?? "" : null;
+    const controls = view.locator("input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]), select, textarea");
+    const unlabelledControls = (await controls.evaluateAll(nodes => nodes.map(node => {
+      const element = node as HTMLInputElement, labels = element.labels ? Array.from(element.labels) : [];
+      return labels.some(label => (label.textContent ?? "").trim()) || !!(element.getAttribute("aria-label") ?? "").trim()
+        || (element.getAttribute("aria-labelledby") ?? "").split(/\s+/).some(id => !!id && !!(document.getElementById(id)?.textContent ?? "").trim());
+    }))).filter(labelled => !labelled).length;
+    return {
+      headline, unlabelledControls,
+      landmarks: await view.locator("main, section, header").count(),
+      namedSignupActions: await view.getByRole("button", { name: SIGNUP_ACTION_NAME }).or(view.getByRole("link", { name: SIGNUP_ACTION_NAME })).count(),
+      signupForms: await view.locator("form:has(input[type=email]):has(button:not([type=button]):not([type=reset]), input[type=submit])").count(),
+    };
+  } finally { await view.close(); }
+}
+/** The brief: exact headline, semantic structure, every control labelled, a signup action (named as one, or an email form that submits). */
+export function launchPageReflectsBrief(facts: LaunchPageFacts | undefined) {
+  return !!facts && (facts.headline ?? "").replace(/\s+/g, " ").trim().toLowerCase() === "research without the busywork"
+    && facts.landmarks > 0 && facts.unlabelledControls === 0 && (facts.namedSignupActions > 0 || facts.signupForms > 0);
 }
 export function gradeDelegation(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -124,7 +144,7 @@ export const runtimeDelegationCases = [runtimeDefinition("task-coordination.dele
     humanId: session.user.id, briefCommentId: briefComment.id, briefAttachment: attachment, briefHash: hash(Buffer.from(brief)),
     briefDownloadedHash: hash(await ctx.input.api.getAttachmentContent(attachment.id)), sourceId: ctx.issue()!.id };
 }, gradeDelegation, {
-  oracleVersion: "paperclip.chat-catalog.runtime-delegation.v3",
+  oracleVersion: "paperclip.chat-catalog.runtime-delegation.v4",
   authentication: "human-session", setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 4, attemptTimeoutMs: 900_000,
   sourceFiles: ["chat-catalog-domains/runtime-delegation.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "completion-update-flow.ts", "completion-updates.ts", "registered-artifact.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
@@ -203,7 +223,9 @@ export const runtimeDelegationCases = [runtimeDefinition("task-coordination.dele
       state.task = await ctx.input.api.get<Entity>(`/api/issues/${task.id}`);
       const workerRun = o.runs.find(row => row.agentId === (state.worker as Entity).id);
       if (workerRun) { const [artifact] = await readRegisteredArtifacts(ctx.input.api, task.id, workerRun.id, ["website.html"]);
-        state.actualWebsiteArtifact = artifact?.contentVerified === true && launchPageReflectsBrief(artifact.content)
+        const facts = artifact?.contentVerified === true ? await launchPageFacts(ctx.input.page, artifact.content) : undefined;
+        state.websiteFacts = facts;
+        state.actualWebsiteArtifact = artifact?.contentVerified === true && launchPageReflectsBrief(facts)
           && o.revisions.some(row => row.createdByRunId === workerRun.id && row.createdByAgentId === (state.worker as Entity).id && (row.body ?? "").includes(String(state.marker))
             && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id)); }
     }
