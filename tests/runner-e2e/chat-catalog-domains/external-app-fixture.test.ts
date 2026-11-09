@@ -285,6 +285,7 @@ describe("source-backed app prerequisite correction", () => {
         schemaHash: "original",
       };
     o.reply = "Export is unavailable pending human catalog review.";
+    o.links = ["/ACORN/apps/connection/permissions"];
     Object.assign(o.state, {
       catalogBefore: [original],
       catalogAfter: [
@@ -292,6 +293,7 @@ describe("source-backed app prerequisite correction", () => {
         { id: "export", toolName: "launch_export", status: "quarantined" },
       ],
       exportEntryId: "export",
+      resultPath: "/ACORN/apps/connection/permissions",
       quarantinedBeforeQuery: true,
       quarantineConfiguredBeforeQuery: true,
       quarantineConfiguredAfter: true,
