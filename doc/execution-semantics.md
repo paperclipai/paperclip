@@ -1580,9 +1580,8 @@ from close, it runs `paperclip-runnerd reap-lineage` from the same executable.
 The reaper refuses while runnerd is alive or when runnerd never journalled. It
 signals only processes whose PID and start time still match the journal, and it
 reports `verified` only when none remain. The journal also records how far the
-process table was read. A same-user orphan that leads its own group or session
-and started after that point cannot be attributed, so the reaper refuses
-without signalling it. A failed journal write removes the writer marker, so a
+process table was read. A same-user orphan that started after that point cannot
+be attributed, so the reaper refuses without signalling it. A failed journal write removes the writer marker, so a
 record that may be missing a member never verifies. A verified report ends the session as
 a crash stop with its durable record intact, and recovery continues within the
 normal attempt budget. Any other report keeps the cleanup quarantine below.
