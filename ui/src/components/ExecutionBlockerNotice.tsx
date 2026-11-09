@@ -16,6 +16,17 @@ const recoveryStepText: Record<NonNullable<TaskInterruptionPresentation["recover
   finishing_recovery: "Finishing recovery of saved work",
 };
 
+/** A budget hard stop holds saved work. Only a task that already ran has an
+ * attempt to report; a task refused before its first run just waits. */
+function budgetWaitText(presentation: TaskInterruptionPresentation) {
+  const wait = "It is waiting for the budget to allow new work. Raise the budget in Costs.";
+  return presentation.observedRunId || presentation.sourceRunIds.length
+    ? `Couldn’t finish this attempt. Your message is saved. ${wait}`
+    : `This task has not started. ${wait}`;
+}
+const isBudgetWait = (presentation: TaskInterruptionPresentation | null | undefined) =>
+  presentation?.state === "waiting_for_user" && presentation.userAction === "budget";
+
 const blockerAction: Record<string, string> = {
   blocked: "Blocked: open it to Retry",
   cancelled: "Cancelled: remove or replace it",
@@ -52,6 +63,7 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
     return <ProviderFailureNotice failure={presentation.providerFailure} className={className}
       actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry} data-testid="task-execution-retry">Retry</Button> : undefined}>
       {presentation.state === "retry_scheduled" && <p>{step ? `${step}. ${retryIn}` : "Paperclip will retry automatically."}</p>}
+      {isBudgetWait(presentation) && <p data-testid="task-execution-waiting">It is waiting for the budget to allow new work. Raise the budget in Costs.</p>}
     </ProviderFailureNotice>;
   }
   if (step && presentation?.state === "working") return <div role="status" aria-label="Task status"
@@ -80,12 +92,12 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   // Other person-owned decisions have their own card on the task (approval,
   // project access, ...). A budget hold has none, so name it here and keep the
   // failure visible. The saved attempt starts by itself once the budget allows.
-  if (!optimistic && presentation?.state === "waiting_for_user" && presentation.userAction === "budget") return (
+  if (!optimistic && presentation && isBudgetWait(presentation)) return (
     <div className={cn("pt-4", className)}>
       <div role="status" aria-label="Task status" data-testid="task-execution-waiting"
         className="flex items-center gap-3 rounded-lg bg-destructive/10 p-4 text-sm text-foreground">
         <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />
-        <span className="min-w-0 flex-1">Couldn’t finish this attempt. Your message is saved. It is waiting for the budget to allow new work. Raise the budget in Costs.</span>
+        <span className="min-w-0 flex-1">{budgetWaitText(presentation)}</span>
       </div>
     </div>
   );
