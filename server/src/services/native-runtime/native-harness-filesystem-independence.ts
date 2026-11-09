@@ -742,6 +742,9 @@ async function preserveWebEvidence(db: Db, input: Scope & {
     lastRunId: facts.anchor.id, sourceRunId: facts.source.id, factsDigest: facts.factsDigest,
     sourceCapabilityFingerprint: input.source.fingerprint, localFactsDigest: web.localDigest,
     assetsDigest: digest(bindings), ...bindings, controller, web: web.binding, observedAt: new Date().toISOString() };
+  const previousReceiptState = previous ? { factsDigest: previous.factsDigest,
+    sourceCapabilityFingerprint: previous.sourceCapabilityFingerprint, observedAt: previous.observedAt } : null;
+  if (previousReceiptState && digest({ ...receipt, ...previousReceiptState }) !== previousDigest) fail();
   let published = receipt;
   const publications: ActivityPublication[] = [];
   await db.transaction(async transaction => {
@@ -766,7 +769,7 @@ async function preserveWebEvidence(db: Db, input: Scope & {
       action: "native_harness_filesystem_independence_verified", entityType: "heartbeat_run", entityId: current.anchor.id,
       agentId: current.anchor.agentId, runId: current.anchor.id, details: { scopeDigest: input.scopeDigest, sourceRunId: current.source.id,
         sourceCapabilityFingerprint: receipt.sourceCapabilityFingerprint, factsDigest: receipt.factsDigest, coverage: "web_evidence",
-        ...(previous ? { previousReceiptDigest: previousDigest, previousReceipt: previous } : {}) } }, publications);
+        ...(previousReceiptState ? { previousReceiptDigest: previousDigest, previousReceiptState } : {}) } }, publications);
   });
   for (const publication of publications) publishActivity(publication);
   return { scopeDigest: input.scopeDigest, sourceRunId: facts.source.id, receiptDigest: digest(published) };

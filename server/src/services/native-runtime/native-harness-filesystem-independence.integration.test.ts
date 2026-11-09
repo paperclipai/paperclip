@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { activityLog, agentTaskSessions, agents, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, createDb, environmentLeases,
-  heartbeatRuns, issues, nativeHarnessBackups, nativeRunnerCheckpoints, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+  heartbeatRuns, instanceSettings, issues, nativeHarnessBackups, nativeRunnerCheckpoints, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { describeEmbeddedPostgres } from "../../__tests__/helpers/native-restart.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
@@ -33,6 +33,7 @@ import { nativeToolContractFingerprintForTarget } from "./native-session-resume.
 import { nativeCheckpointRetirement } from "./native-runner-checkpoint-retirement.js";
 import { nativeSha256 } from "./canonical.js";
 import { nativeControllerEvidenceDescriptor, NATIVE_CONTROLLER_WEB_LIMITS, type NativeControllerHistoryManifestEntry } from "./native-controller-archive.js";
+import { logActivity } from "../activity-log.js";
 
 vi.mock("../../build-commit.js", () => ({ readBuildCommit: () => "a".repeat(40) }));
 
@@ -427,11 +428,66 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
       eq(activityLog.action, "native_harness_filesystem_independence_verified")));
     expect(audits).toHaveLength(2);
     expect(audits.find(row => row.details?.previousReceiptDigest === f.first.receiptDigest)?.details)
-      .toMatchObject({ previousReceiptDigest: f.first.receiptDigest, previousReceipt: f.previous, factsDigest: receipt.factsDigest });
+      .toMatchObject({ previousReceiptDigest: f.first.receiptDigest, previousReceiptState: { factsDigest: f.previous.factsDigest,
+        sourceCapabilityFingerprint: f.previous.sourceCapabilityFingerprint, observedAt: f.previous.observedAt }, factsDigest: receipt.factsDigest });
     expect((await preserveNativeHarnessFilesystemIndependence(db, f.input)).receiptDigest).toBe(result.receiptDigest);
     expect(put).not.toHaveBeenCalled();
     expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
       eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(2);
+  });
+
+  it("keeps prior WEB proof reconstructable when activity redaction masks a source path", async () => {
+    const f = await webFixture(), path = `codex-home/${userInfo().username}/notes.txt`;
+    await mkdir(join(f.sourceRoot, "codex-home", userInfo().username));
+    await writeFile(join(f.sourceRoot, path), "preserved local notes");
+    const first = await preserveNativeHarnessFilesystemIndependence(db, f.input);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const previous = run!.runnerProfileJson!.nativeHarnessFilesystemIndependence as Record<string, unknown>;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run!.runnerProfileJson, retainedWarning: "later metadata" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const [settings] = await db.select().from(instanceSettings);
+    await db.update(instanceSettings).set({ general: { ...settings!.general, censorUsernameInLogs: true } }).where(eq(instanceSettings.id, settings!.id));
+    try {
+      await logActivity(db, { companyId: f.input.companyId, actorType: "system", actorId: "redaction-fixture",
+        action: "redaction_fixture", entityType: "heartbeat_run", entityId: f.runId, details: { path } });
+      const [redacted] = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId), eq(activityLog.action, "redaction_fixture")));
+      expect(redacted!.details!.path).not.toBe(path);
+      await preserveNativeHarnessFilesystemIndependence(db, f.input);
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const receipt = current!.runnerProfileJson!.nativeHarnessFilesystemIndependence as Record<string, unknown>;
+      const audits = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+        eq(activityLog.action, "native_harness_filesystem_independence_verified")));
+      const audit = audits.find(row => row.details?.previousReceiptDigest === first.receiptDigest)!.details!;
+      const reconstructed = audit.previousReceipt ?? { ...receipt, ...audit.previousReceiptState as Record<string, unknown> };
+      expect(nativeSha256(reconstructed)).toBe(first.receiptDigest);
+      expect(reconstructed).toEqual(previous);
+      expect(audit).not.toHaveProperty("previousReceipt");
+      expect(audit.previousReceiptState).toEqual({ factsDigest: previous.factsDigest,
+        sourceCapabilityFingerprint: previous.sourceCapabilityFingerprint, observedAt: previous.observedAt });
+      expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { ...current!.runnerProfileJson, retainedWarning: "another metadata update" } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      await preserveNativeHarnessFilesystemIndependence(db, f.input);
+      const [latest] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const history = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+        eq(activityLog.action, "native_harness_filesystem_independence_verified")));
+      expect(history).toHaveLength(3);
+      for (const row of history.filter(row => row.details?.previousReceiptState)) {
+        expect(nativeSha256({ ...latest!.runnerProfileJson!.nativeHarnessFilesystemIndependence as Record<string, unknown>,
+          ...row.details!.previousReceiptState as Record<string, unknown> })).toBe(row.details!.previousReceiptDigest);
+      }
+    } finally { await db.update(instanceSettings).set({ general: settings!.general }).where(eq(instanceSettings.id, settings!.id)); }
+  });
+
+  it("refuses a WEB facts refresh that would drop unknown prior receipt fields", async () => {
+    const f = await staleWebFixture();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const profile = { ...run!.runnerProfileJson, nativeHarnessFilesystemIndependence: { ...f.previous, unknownEvidence: "retain" } };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow("native_harness_filesystem_independence_unverified");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.runnerProfileJson).toEqual(profile);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+      eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(1);
   });
 
   it.each(["wrong-key", "unreadable-archive", "active-source"])("reverifies valid WEB coverage before idempotent preservation: %s", async control => {

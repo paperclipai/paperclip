@@ -127,9 +127,12 @@ has become stale only when fresh source inspection, current-key checkpoint
 validation and ciphertext hash/size readback prove every other binding unchanged.
 It reuses the same archive and takes the existing finalizer, task and run fences before
 comparing the prior receipt digest and replacing it. The company activity log
-retains the full prior receipt and its digest. Changed evidence, concurrent
-invalid receipts and active sources remain blocked; remote recovery obligations
-are unchanged.
+retains the prior facts digest, source witness fingerprint, observation time and
+receipt digest. Those three changed fields must reconstruct the exact prior
+proof from the unchanged current bindings before publication. No source paths
+enter the audit delta; normal activity redaction remains enabled. Changed
+evidence, concurrent invalid receipts and active sources remain blocked; remote
+recovery obligations are unchanged.
 
 Receipt validation adds bounded per-scope database reads to startup eligibility.
 It does not add a recurring scan or network work. Qualification must measure the
