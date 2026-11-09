@@ -377,23 +377,28 @@ describe("report-only ownership reconciliation", () => {
     const runs = { failed: randomUUID(), live: randomUUID() };
     await db.insert(heartbeatRuns).values([run(runs.failed, "failed"), run(runs.live, "running")]);
     const quiesced = { schema: "paperclip.remote-workspace-save-work.v1", activeIds: [], unknown: false, quiescedAt: minutesAgo(30).toISOString() };
-    const ops = { abandoned: randomUUID(), liveRun: randomUUID(), activeInvocation: randomUUID(), unknownWork: randomUUID() };
-    const op = (id: string, runId: string, saveWork: Record<string, unknown>) => ({ id, companyId, heartbeatRunId: runId,
-      phase: "remote_workspace_snapshot", status: "running",
+    const ops = { abandoned: randomUUID(), pendingAbandoned: randomUUID(), liveRun: randomUUID(), activeInvocation: randomUUID(),
+      unknownWork: randomUUID(), notQuiesced: randomUUID(), invalidWork: randomUUID() };
+    const op = (id: string, runId: string, saveWork: Record<string, unknown>, status = "running") => ({ id, companyId, heartbeatRunId: runId,
+      phase: "remote_workspace_snapshot", status,
       metadata: { epoch: 8, boundary: "final", generation: 9, saveWork, exportCleanup: { state: "pending" } } });
     await db.insert(workspaceOperations).values([
       op(ops.abandoned, runs.failed, quiesced),
+      op(ops.pendingAbandoned, runs.failed, quiesced, "pending"),
       op(ops.liveRun, runs.live, quiesced),
       op(ops.activeInvocation, runs.failed, { ...quiesced, activeIds: [randomUUID()], quiescedAt: null }),
       op(ops.unknownWork, runs.failed, { ...quiesced, unknown: true }),
+      op(ops.notQuiesced, runs.failed, { ...quiesced, quiescedAt: null }),
+      op(ops.invalidWork, runs.failed, { ...quiesced, quiescedAt: "" }),
     ]);
     const statuses = async () => Object.fromEntries((await db.select({ id: workspaceOperations.id, status: workspaceOperations.status })
       .from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_snapshot")))
       .map(row => [Object.keys(ops).find(name => ops[name as keyof typeof ops] === row.id), row.status]));
 
     const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
-    expect(kindReport(first, "remote_snapshot_save")).toMatchObject({ inProgress: 4, settled: 1 });
-    expect(await statuses()).toEqual({ abandoned: "failed", liveRun: "running", activeInvocation: "running", unknownWork: "running" });
+    expect(kindReport(first, "remote_snapshot_save")).toMatchObject({ inProgress: 7, settled: 2 });
+    expect(await statuses()).toEqual({ abandoned: "failed", pendingAbandoned: "failed", liveRun: "running", activeInvocation: "running",
+      unknownWork: "running", notQuiesced: "running", invalidWork: "running" });
     const [settled] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, ops.abandoned));
     expect(settled.metadata).toMatchObject({ saveWork: quiesced, exportCleanup: { state: "pending" },
       abandonedSave: { reason: "abandoned_remote_snapshot_save", runId: runs.failed, previousStatus: "running" },

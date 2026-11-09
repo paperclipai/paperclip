@@ -351,12 +351,15 @@ describe("retained source fallback", () => {
     const deferred = await action(f.actionId);
     expect(deferred.status).toBe("active");
     expect(deferred.evidence.retainedSourceFallbackCheck).toMatchObject({ reason: "workspace_operation_running" });
+    // Twelve refusals spend the check budget: no further check is scheduled.
+    await db.update(issueRecoveryActions).set({ evidence: { ...deferred.evidence, retainedSourceFallbackCheck: {
+      ...(deferred.evidence.retainedSourceFallbackCheck as object), checks: 12, nextCheckAt: null } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).not.toContain(f.actionId);
 
     await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
     expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, save.id)))[0])
       .toMatchObject({ status: "failed", metadata: { abandonedSave: { reason: "abandoned_remote_snapshot_save" } } });
-    await db.update(issueRecoveryActions).set({ evidence: { ...deferred.evidence, retainedSourceFallbackCheck: {
-      ...(deferred.evidence.retainedSourceFallbackCheck as object), nextCheckAt: Date.now() - 1 } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    expect((await action(f.actionId)).evidence.retainedSourceFallbackCheck).toBeUndefined();
     await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
     expect(await action(f.actionId)).toMatchObject({ status: "resolved", resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
   }, 60_000);

@@ -1,8 +1,11 @@
-import { and, eq, inArray } from "drizzle-orm";
-import { heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import type { OwnerProof } from "../owner-proof.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { readSaveWork } from "../remote-workspaces.js";
 import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
+import { RETAINED_SOURCE_FALLBACK_CHECK_KEY } from "../workspace-recovery-fallback-discovery.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, isOwnerStampedWorkspaceOperationLive } from "../workspace-operations.js";
 import type { InProgressRecord, SettleOutcome } from "./ownership-registry.js";
 
@@ -117,12 +120,10 @@ export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgre
       .for("update");
     if (!operation) return { settled: false, reason: "attempt_no_longer_in_progress" };
     const metadata = operation.metadata ?? {};
-    const work = metadata.saveWork as { activeIds?: unknown; unknown?: unknown; quiescedAt?: unknown } | undefined;
-    if (!work || !Array.isArray(work.activeIds) || work.activeIds.length > 0 || work.unknown !== false
-      || typeof work.quiescedAt !== "string") return { settled: false, reason: "save_work_unsettled" };
-    if (!operation.heartbeatRunId) return { settled: false, reason: "owner_run_missing" };
-    const [run] = await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, operation.heartbeatRunId), inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES)));
+    const work = readSaveWork(metadata);
+    if (!work || work.unknown || work.activeIds.length > 0 || !work.quiescedAt) return { settled: false, reason: "save_work_unsettled" };
+    const [run] = operation.heartbeatRunId ? await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, operation.heartbeatRunId), inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES))) : [];
     if (!run) return { settled: false, reason: "owner_run_active" };
     const now = context.now;
     const provenance = {
@@ -145,6 +146,17 @@ export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgre
     }).where(and(eq(workspaceOperations.id, operation.id), eq(workspaceOperations.status, operation.status)))
       .returning({ id: workspaceOperations.id });
     if (!row) return { settled: false, reason: "attempt_no_longer_in_progress" };
+    if (operation.executionWorkspaceId) {
+      const rearmed = await tx.update(issueRecoveryActions).set({
+        evidence: sql`${issueRecoveryActions.evidence} - ${RETAINED_SOURCE_FALLBACK_CHECK_KEY}::text`,
+      }).where(and(eq(issueRecoveryActions.companyId, operation.companyId), inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        sql`${issueRecoveryActions.evidence}->${RETAINED_SOURCE_FALLBACK_CHECK_KEY}->>'reason' = 'workspace_operation_running'`,
+        sql`exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
+          and source.id::text = ${issueRecoveryActions.evidence}->>'runId'
+          and source.runner_profile_json#>>'{remoteWorkspace,workspaceId}' = ${operation.executionWorkspaceId})`))
+        .returning({ id: issueRecoveryActions.id });
+      if (rearmed.length) await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
+    }
     const activity = await persistActivity(tx, {
       companyId: operation.companyId, actorType: "system", actorId: "ownership-reconciler",
       action: "workspace_operation.reconciled", entityType: "workspace_operation", entityId: operation.id,
