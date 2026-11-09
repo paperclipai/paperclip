@@ -200,8 +200,16 @@ export const confirmationWorkflowIdentityCases: readonly ChatCatalogCase[] = [
       await waitForAnswerContinuation(ctx, state);
       for (const page of [ctx.input.page, other]) {
         await page.reload({ waitUntil: "domcontentloaded", timeout: remainingIdentityObservationBudget(ctx) });
-        const receipt = page.locator(`#interaction-${entity(state, "original").id}`).getByTestId("task-chat-answered-questions-receipt");
-        await expect(receipt).toBeVisible({ timeout: remainingIdentityObservationBudget(ctx) }); await receipt.locator("summary").click({ timeout: remainingIdentityObservationBudget(ctx) }); await expect(receipt).toContainText("Acorn", { timeout: remainingIdentityObservationBudget(ctx) });
+        // The answered card is either the classic expandable receipt or the
+        // Coordinator workspace's "Answers recorded" link, which jumps to the
+        // human answer rendered in the thread. Check whichever this person sees.
+        const questionId = entity(state, "original").id, card = page.locator(`#interaction-${questionId}`);
+        const classic = card.getByTestId("task-chat-answered-questions-receipt"), coordinator = card.getByRole("link", { name: /^Answers recorded/ });
+        await expect(classic.or(coordinator)).toBeVisible({ timeout: remainingIdentityObservationBudget(ctx) });
+        if (await coordinator.isVisible()) {
+          await coordinator.click({ timeout: remainingIdentityObservationBudget(ctx) });
+          await expect(page.locator(`[id="comment-interaction-response:${questionId}"]`)).toContainText("Acorn", { timeout: remainingIdentityObservationBudget(ctx) });
+        } else { await classic.locator("summary").click({ timeout: remainingIdentityObservationBudget(ctx) }); await expect(classic).toContainText("Acorn", { timeout: remainingIdentityObservationBudget(ctx) }); }
         await expect(page.locator(`#interaction-${entity(state, "original").id}`).getByTestId("task-chat-unanswered-question")).toHaveCount(0, { timeout: remainingIdentityObservationBudget(ctx) });
       }
       state.bothTabsResolved = true;
