@@ -294,7 +294,13 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
       release();
       const responses = await Promise.all(requests);
       expect(responses.every(response => response.status === 200)).toBe(true);
-      if (coalesced) expect((await coalesced).headers["x-paperclip-request-cache"]).toBe("coalesced");
+      if (coalesced) {
+        const shared = await coalesced as { headers: Record<string, string> };
+        expect(shared.headers["x-paperclip-request-cache"]).toBe("coalesced");
+        // The coalesced reader reports the shared read's phases, not only its own access check.
+        expect(shared.headers["server-timing"]).toMatch(/inbox_issues;dur=/);
+        expect(shared.headers["server-timing"]).toMatch(/inbox_issues_query;dur=/);
+      }
       // The aborted snapshot can outlive the seven ordinary reads. A coalesced
       // response waits for that compute to settle before we require a fresh one.
       const settled = await request(app).get(snapshotPath).expect(200);

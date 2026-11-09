@@ -41,7 +41,7 @@ import { setIssueTitle } from "../services/issue-title.js";
 import { setIssueTitleSchema } from "@paperclipai/shared";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
 import { createIssueReadTiming } from "../services/issue-read-timing.js";
-import { createInboxMineTiming } from "../services/inbox-mine-timing.js";
+import { createInboxMineTiming, type InboxMinePhaseDurations } from "../services/inbox-mine-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
 import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
@@ -3045,7 +3045,7 @@ export const ISSUE_LIST_NEXT_OFFSET_HEADER = "X-Paperclip-Next-Offset";
 export const ISSUE_LIST_NEXT_AFTER_ID_HEADER = "X-Paperclip-Next-After-Id";
 
 type IssueListPreparedResponse =
-  | { kind: "inbox"; body: unknown }
+  | { kind: "inbox"; body: unknown; serverTimingPhases?: InboxMinePhaseDurations }
   | {
       kind: "compact";
       body: CompactIssue[];
@@ -8844,9 +8844,8 @@ export function issueRoutes(
     const requestKey = issueListRequestKey({ req, companyId, normalizedQuery: { view: "mine-snapshot" }, route: "GET /api/companies/:companyId/inbox/mine" });
     const coordinated = await coordinateIssueListGet({
       req, companyId, requestKey, allowTtlCache: false, retireOnCompanyChange: true, diagnostics: opts.issueListDiagnostics,
-      compute: async () => ({
-        kind: "inbox",
-        body: { userId, ...await readInboxMine({
+      compute: async () => {
+        const body = { userId, ...await readInboxMine({
           loadIssues: () => timing.time("issues", () => readCompact(listFilters, "index", { timePhase: timing.listPhases })),
           loadFailures: () => timing.time("failures", async () => {
             const permission = await access.decide({ actor: req.actor, action: "company_scope:read", resource: { type: "company", companyId } });
@@ -8866,12 +8865,16 @@ export function issueRoutes(
                 : source === "failures" ? "Could not load failed runs" : "Could not load task context",
             };
           },
-        }) },
-      }),
+        }) };
+        // Requests that coalesce onto this read report its phases too.
+        return { kind: "inbox" as const, body, serverTimingPhases: timing.phases() };
+      },
     });
     res.setHeader("Cache-Control", "private, no-store");
     res.setHeader("X-Paperclip-Request-Cache", coordinated.cacheStatus);
-    res.setHeader("Server-Timing", timing.header());
+    res.setHeader("Server-Timing", timing.header(
+      coordinated.response?.kind === "inbox" ? coordinated.response.serverTimingPhases : undefined,
+    ));
     if (!coordinated.response) {
       res.setHeader("Retry-After", String(coordinated.retryAfterSeconds ?? 1));
       res.status(429).json({ error: "Too many concurrent issue-list requests for this actor/client", retryAfterSeconds: coordinated.retryAfterSeconds ?? 1 });
