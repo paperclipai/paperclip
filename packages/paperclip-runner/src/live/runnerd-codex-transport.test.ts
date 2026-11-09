@@ -6131,8 +6131,12 @@ it.each([
       expect(JSON.parse(report!.slice("native_session_runner_loss_lineage ".length))).toMatchObject({
         verified: true, journals: 1, remaining: [],
       });
-      // The crash stop keeps the durable record for recovery to read.
+      // The crash stop keeps the durable record for recovery to read, and
+      // queues no suspend that the next runnerd on this root would receive.
       expect((await runnerState()).lifecycle).not.toBe("suspended");
+      const control = JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(control.commands.filter((command: { type: string; status: string }) =>
+        command.type === "runner.suspend" && command.status === "pending")).toEqual([]);
     } else {
       await expect(bundle.transport.close()).rejects.toThrow(
         "runner did not durably suspend before checkpoint",
@@ -6145,7 +6149,7 @@ it.each([
       const settlement = diagnostics.find((message) => message.startsWith("native_session_settlement_incomplete "));
       expect(JSON.parse(settlement!.slice("native_session_settlement_incomplete ".length))).toMatchObject({
         runnerSuspended: false,
-        suspensionState: { commandStatus: "pending", runnerIdentityMatches: true },
+        suspensionState: { commandStatus: null },
       });
       // Nothing was signalled without proof.
       expect(processAlive(jobPid)).toBe(true);
