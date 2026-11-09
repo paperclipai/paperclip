@@ -128,6 +128,15 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
+  it("retains inherited quota budget while a live retry has no current failure", () => {
+    const run = { status: "running", scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 3,
+      contextSnapshot: { errorFamily: "provider_quota" }, resultJson: { conversationContinuation: {} } };
+    expect(extracted.failedRunRetryBudgetSpent(run)).toBe(false);
+    expect(extracted.failedRunRetryBudgetSpent({ ...run, scheduledRetryAttempt: 4 })).toBe(true);
+    expect(extracted.failedRunRetryBudgetSpent({ ...run, errorCode: "adapter_failed" })).toBe(true);
+    expect(extracted.failedRunRetryBudgetSpent({ ...run, status: "failed" })).toBe(true);
+  });
+
   it("keeps the quota retry budget until four attempts while ordinary failures stop at two", () => {
     const run = { scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2, errorCode: "provider_quota" };
     expect(extracted.failedRunRetryBudgetSpent(run)).toBe(false);

@@ -1,3 +1,4 @@
+import { hasProviderQuotaRetryBudget } from "../execution-recovery-attempt.js";
 import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
 import { ORPHANED_RUN_LEASE_FAILURE_REASON } from "../environment-run-lease-settlement.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
@@ -2701,7 +2702,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                   ...parseObject(run.resultJson),
                   processLossDiagnostic,
                   ...(restartInterruptedBeforeDispatch
-                    ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+                    ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+                        ...(hasProviderQuotaRetryBudget(run) ? { errorFamily: "provider_quota" } : {}) }
                     : {}),
                 },
                 errorCode: "process_lost",

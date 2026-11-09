@@ -2182,7 +2182,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect((persisted.contextSnapshot as Record<string, unknown>)?.providerQuotaRetryNotBefore ?? null).toBeNull();
     expect((await executionProjectionsForRuns(db, companyId, [persisted.id], now)).get(persisted.id))
       .toMatchObject({ maxAttempts: 5 });
-    await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, persisted.id));
+    await db.update(heartbeatRuns).set({ status: "queued", resultJson: { conversationContinuation: { eligible: true } } }).where(eq(heartbeatRuns.id, persisted.id));
     expect((await executionProjectionsForRuns(db, companyId, [persisted.id], now)).get(persisted.id))
       .toMatchObject({ maxAttempts: 5 });
     await db.update(heartbeatRuns).set({ status: "failed", errorCode: "claude_transient_upstream",

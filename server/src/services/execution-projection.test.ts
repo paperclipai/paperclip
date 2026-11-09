@@ -261,6 +261,13 @@ describe("execution truth projection", () => {
     expect(projectExecution(run({ runtimeMode: "legacy", status: "failed", errorCode: "provider_quota", scheduledRetryAttempt: 3 }), undefined, [], undefined, now)).toMatchObject({ attempt: 4, maxAttempts: 5 });
     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", errorCode: null, scheduledRetryAttempt: 4, contextSnapshot: { errorFamily: "provider_quota" } }), undefined, [], undefined, now)).toMatchObject({ attempt: 5, maxAttempts: 5 });
   });
+  it.each(["queued", "running"] as const)("keeps quota context for a %s retry with continuation metadata", (status) => {
+    expect(projectExecution(run({ runtimeMode: "legacy", status, errorCode: null,
+      resultJson: { conversationContinuation: { eligible: true } },
+      contextSnapshot: { errorFamily: "provider_quota" },
+    }), undefined, [], undefined, now)).toMatchObject({ maxAttempts: 5 });
+  });
+
   it.each([
     { errorCode: "adapter_failed", resultJson: { errorFamily: "transient_upstream" } },
     { errorCode: "adapter_failed", resultJson: null },
