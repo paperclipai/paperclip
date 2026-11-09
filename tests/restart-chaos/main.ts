@@ -469,7 +469,8 @@ async function main(): Promise<number> {
     }
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
     const speed = await (async () => {
-      const childTasks = (await Promise.all(launched.map(observer => observer.childSpeedTasks()))).flat();
+      const childTasks: Awaited<ReturnType<TaskObserver["childSpeedTasks"]>> = [];
+      for (const observer of launched) childTasks.push(...await observer.childSpeedTasks());
       return collectWaveSpeed(api, plan.options.env, [...launched.flatMap(observer => observer.record.issueId
         ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), ...childTasks], faults);
     })().catch(error => { timeline.add("wave_speed_failed", { error: String(error) }); anyFailure = true; return null; });
