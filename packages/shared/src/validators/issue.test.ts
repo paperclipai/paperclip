@@ -426,6 +426,40 @@ describe("issue validators", () => {
     expect(parsed.body).toBe("Progress update\n\nNext action.");
   });
 
+  it("requires a complete execution fence for explicit approval comments", () => {
+    const stageId = "11111111-1111-4111-8111-111111111111";
+    const lastDecisionId = "22222222-2222-4222-8222-222222222222";
+    expect(
+      addIssueCommentSchema.parse({
+        body: "Gate A — APPROVE",
+        executionDecision: "approve",
+        expectedExecutionStageId: stageId,
+        expectedExecutionLastDecisionId: lastDecisionId,
+      }),
+    ).toMatchObject({
+      executionDecision: "approve",
+      expectedExecutionStageId: stageId,
+      expectedExecutionLastDecisionId: lastDecisionId,
+    });
+
+    for (const payload of [
+      { executionDecision: "approve" },
+      { expectedExecutionStageId: stageId },
+      { expectedExecutionLastDecisionId: null },
+      {
+        executionDecision: "approve",
+        expectedExecutionStageId: stageId,
+      },
+    ]) {
+      expect(
+        addIssueCommentSchema.safeParse({
+          body: "Gate A — APPROVE",
+          ...payload,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it("accepts structured issue comment presentation and metadata", () => {
     const parsed = addIssueCommentSchema.parse({
       body: "Paperclip needs a disposition before this issue can continue.",

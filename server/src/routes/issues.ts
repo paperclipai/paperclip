@@ -2087,20 +2087,6 @@ function executionPrincipalsEqual(
     : left.userId === right.userId;
 }
 
-function actorMatchesExecutionParticipant(
-  actor: { actorType: "user" | "agent"; actorId: string },
-  participant: ParsedExecutionState["currentParticipant"] | null,
-) {
-  if (!participant) return false;
-  // Require the actor kind to match the participant kind before comparing ids. Without this
-  // an agent and a user that happen to share an id value would falsely satisfy participant
-  // gating on the auto-approval path.
-  if (participant.type !== actor.actorType) return false;
-  return participant.type === "agent"
-    ? participant.agentId === actor.actorId
-    : participant.userId === actor.actorId;
-}
-
 // Negation/rejection markers that invalidate an otherwise approval-looking heading.
 // Match common phrasings ("NOT APPROVED", "Do not approve", "Not approving", "Changes requested",
 // "Rejected", "Denied", "Blocked") so a reviewer comment intending to reject cannot auto-complete
@@ -15260,6 +15246,11 @@ export function issueRoutes(
       // Only this request may finish a mutation that intentionally stops its
       // own run (for example handing work to a signoff reviewer).
       const issueMutationStopId = randomUUID();
+      let terminalizationRunStopReceipt: {
+        agentId: string;
+        runId: string;
+        stopId: string;
+      } | null = null;
       if (req.actor.source !== "mcp_oauth" && assigneeWillChange && existing.assigneeAgentId) {
         await stopRunnerGoalForOwnershipChange({
           companyId: existing.companyId,
@@ -15380,6 +15371,11 @@ export function issueRoutes(
             );
           }
           interruptedRunId = cancelled.id;
+          terminalizationRunStopReceipt = {
+            agentId: runToStopForTerminalization.agentId,
+            runId: cancelled.id,
+            stopId: issueMutationStopId,
+          };
         }
       }
 
@@ -15436,6 +15432,7 @@ export function issueRoutes(
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
+        terminalizationRunStopReceipt,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       };
       const shouldCollectCompletionPublication =
@@ -19740,26 +19737,33 @@ export function issueRoutes(
       const currentExecutionPolicy = normalizeIssueExecutionPolicy(
         currentIssue.executionPolicy ?? null,
       );
-      const shouldAutoApproveReviewComment =
-        currentIssue.status === "in_review" &&
-        currentExecutionState?.status === "pending" &&
-        actorMatchesExecutionParticipant(
-          actor,
-          currentExecutionState.currentParticipant ?? null,
-        ) &&
-        isApprovalReviewComment(req.body.body);
+      const shouldApplyApprovalCommentDecision =
+        req.body.executionDecision === "approve";
+      if (
+        shouldApplyApprovalCommentDecision &&
+        !isApprovalReviewComment(req.body.body)
+      ) {
+        throw unprocessable(
+          "Comment approval decisions require an approval review marker",
+        );
+      }
 
-      // Persist the comment and the auto-approval state transition atomically when both apply.
+      // Persist the comment and its explicitly fenced approval transition atomically.
       // Without a single transaction, a 422 (or any error) thrown by the status update after the
       // comment is inserted would leave an orphan comment without the corresponding state change.
       let comment: Awaited<ReturnType<typeof svc.addComment>>;
       let goalCommentSteered = false;
       let fastResponseEnqueued = false;
-      if (shouldAutoApproveReviewComment) {
+      if (shouldApplyApprovalCommentDecision) {
         const transition = applyIssueExecutionPolicyTransition({
           issue: currentIssue,
           policy: currentExecutionPolicy,
           requestedStatus: "done",
+          executionDecision: "approve",
+          expectedExecutionStageId: req.body.expectedExecutionStageId,
+          expectedExecutionLastDecisionId:
+            req.body.expectedExecutionLastDecisionId,
+          requireExplicitExecutionDecision: true,
           requestedAssigneePatch: {},
           actor: {
             agentId: actor.agentId ?? null,
@@ -19789,7 +19793,17 @@ export function issueRoutes(
               ? transition.patch.status
               : "done",
           actorAgentId: actor.agentId ?? null,
+          actorRunId: actor.agentId ? actor.runId : null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          expectedExecutionDecisionSnapshot: {
+            status: currentIssue.status,
+            assigneeAgentId: currentIssue.assigneeAgentId,
+            assigneeUserId: currentIssue.assigneeUserId,
+            checkoutRunId: currentIssue.checkoutRunId,
+            executionRunId: currentIssue.executionRunId,
+            executionPolicy: currentIssue.executionPolicy ?? null,
+            executionState: currentIssue.executionState ?? null,
+          },
         };
 
         const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);

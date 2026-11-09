@@ -1179,6 +1179,23 @@ export const addIssueCommentSchema = z.object({
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  /** Explicitly approve the stage identified by the two optimistic fences. */
+  executionDecision: z.literal("approve").optional(),
+  expectedExecutionStageId: z.string().uuid().optional(),
+  expectedExecutionLastDecisionId: z.string().uuid().nullable().optional(),
+}).superRefine((value, ctx) => {
+  const decisionFields = [
+    value.executionDecision !== undefined,
+    value.expectedExecutionStageId !== undefined,
+    value.expectedExecutionLastDecisionId !== undefined,
+  ];
+  if (decisionFields.some(Boolean) && !decisionFields.every(Boolean)) {
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "Comment execution decisions require executionDecision, expectedExecutionStageId, and expectedExecutionLastDecisionId",
+    });
+  }
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;

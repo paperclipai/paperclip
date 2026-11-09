@@ -25,6 +25,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -269,6 +270,256 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       }
     },
   );
+
+  it("accepts only the exact board terminalization stop receipt after run locks are cleared", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const reviewStageId = randomUUID();
+    const stopId = randomUUID();
+    const executionPolicy = {
+      mode: "normal" as const,
+      commentRequired: true,
+      stages: [{
+        id: reviewStageId,
+        type: "review" as const,
+        participants: [{ type: "agent" as const, agentId }],
+      }],
+    };
+    const executionState = {
+      status: "pending" as const,
+      currentStageId: reviewStageId,
+      currentStageIndex: 0,
+      currentStageType: "review" as const,
+      currentParticipant: { type: "agent" as const, agentId },
+      returnAssignee: null,
+      reviewRequest: null,
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    };
+    await db.update(heartbeatRuns).set({
+      status: "cancelled",
+      finishedAt: new Date(),
+      contextSnapshot: { issueId },
+      resultJson: {
+        terminalizationStopConfirmed: true,
+        issueMutationStopId: stopId,
+      },
+    }).where(eq(heartbeatRuns.id, currentRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Board terminalization receipt",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionPolicy,
+      executionState,
+    });
+    const decisionSnapshot = {
+      status: "in_review",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionPolicy,
+      executionState,
+    };
+    const svc = issueService(db);
+
+    await expect(svc.update(issueId, {
+      status: "cancelled",
+      executionState: null,
+      actorUserId: "board-user",
+      expectedExecutionDecisionSnapshot: decisionSnapshot,
+      terminalizationRunStopReceipt: {
+        agentId,
+        runId: currentRunId,
+        stopId: randomUUID(),
+      },
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "agent_run_cancelled" },
+    });
+
+    const updated = await svc.update(issueId, {
+      status: "cancelled",
+      executionState: null,
+      actorUserId: "board-user",
+      expectedExecutionDecisionSnapshot: decisionSnapshot,
+      terminalizationRunStopReceipt: {
+        agentId,
+        runId: currentRunId,
+        stopId,
+      },
+    });
+
+    expect(updated).toMatchObject({
+      status: "cancelled",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionState: null,
+    });
+  });
+
+  it("does not let an approval comment replay decide a later stage owned by the same user", async () => {
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const reviewStageId = randomUUID();
+    const approvalStageId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Approval comment replay",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          { id: reviewStageId, type: "review", participants: [{ type: "user", userId: "board-user" }] },
+          { id: approvalStageId, type: "approval", participants: [{ type: "user", userId: "board-user" }] },
+        ],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "board-user" },
+        returnAssignee: { type: "agent", agentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+    const approval = {
+      body: "## Review: APPROVED\n\nThe review stage is complete.",
+      executionDecision: "approve",
+      expectedExecutionStageId: reviewStageId,
+      expectedExecutionLastDecisionId: null,
+    };
+
+    const first = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/comments`)
+      .send(approval);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+
+    const replay = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/comments`)
+      .send(approval);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(409);
+    expect(replay.body.details).toMatchObject({ code: "execution_stage_changed" });
+
+    const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(saved).toMatchObject({
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentStageId: approvalStageId,
+        completedStageIds: [reviewStageId],
+      },
+    });
+    expect(await db.select().from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId))).toHaveLength(1);
+    expect(await db.select().from(issueComments)
+      .where(eq(issueComments.issueId, issueId))).toHaveLength(1);
+  });
+
+  it("serializes concurrent fenced approval comments and rolls the stale comment back", async () => {
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const reviewStageId = randomUUID();
+    const approvalStageId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Concurrent approval comments",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          { id: reviewStageId, type: "review", participants: [{ type: "user", userId: "board-user" }] },
+          { id: approvalStageId, type: "approval", participants: [{ type: "user", userId: "board-user" }] },
+        ],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "board-user" },
+        returnAssignee: { type: "agent", agentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    let resolveRowLocked!: () => void;
+    let releaseRowLock!: () => void;
+    const rowLocked = new Promise<void>((resolve) => { resolveRowLocked = resolve; });
+    const rowLockRelease = new Promise<void>((resolve) => { releaseRowLock = resolve; });
+    const lockHolder = db.transaction(async (tx) => {
+      await tx.select({ id: issues.id }).from(issues)
+        .where(eq(issues.id, issueId)).for("update");
+      resolveRowLocked();
+      await rowLockRelease;
+    });
+    await rowLocked;
+
+    const decide = (body: string) => request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({
+        body,
+        executionDecision: "approve",
+        expectedExecutionStageId: reviewStageId,
+        expectedExecutionLastDecisionId: null,
+      })
+      .then((response) => response);
+    const firstDecision = decide("## Review: APPROVED\n\nFirst concurrent approval.");
+    const secondDecision = decide("## Review: APPROVED\n\nSecond concurrent approval.");
+
+    try {
+      const deadline = Date.now() + 5_000;
+      let lockWaiters = 0;
+      while (Date.now() < deadline) {
+        const rows = await db.execute(sql`
+          select count(*)::int as count
+          from pg_stat_activity
+          where datname = current_database()
+            and wait_event_type = 'Lock'
+        `);
+        lockWaiters = Number(rows[0]?.count ?? 0);
+        if (lockWaiters >= 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(lockWaiters).toBeGreaterThanOrEqual(2);
+    } finally {
+      releaseRowLock();
+      await lockHolder;
+    }
+
+    const responses = await Promise.all([firstDecision, secondDecision]);
+    expect(responses.filter((response) => response.status === 201)).toHaveLength(1);
+    const stale = responses.filter((response) => response.status === 409);
+    expect(stale).toHaveLength(1);
+    expect(stale[0]?.body.details).toMatchObject({ code: "execution_stage_changed" });
+    expect(await db.select().from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId))).toHaveLength(1);
+    expect(await db.select().from(issueComments)
+      .where(eq(issueComments.issueId, issueId))).toHaveLength(1);
+  });
 
   it("allows the rightful assignee to release after the owning run failed", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();

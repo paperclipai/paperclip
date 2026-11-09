@@ -11214,6 +11214,12 @@ export function issueService(db: Db) {
         /** Server-owned transfer being applied; never accepted from HTTP input. */
         caseHandoffId?: string;
         actorRunStopId?: string | null;
+        /** Server-owned receipt for a different run stopped by terminalization. */
+        terminalizationRunStopReceipt?: {
+          agentId: string;
+          runId: string;
+          stopId: string;
+        } | null;
         actorUserId?: string | null;
         companyGuard?: string;
         workspaceSelectionActor?: AuthorizationActor;
@@ -11319,6 +11325,7 @@ export function issueService(db: Db) {
         actorRunId,
         caseHandoffId,
         actorRunStopId,
+        terminalizationRunStopReceipt,
         actorUserId,
         companyGuard,
         workspaceSelectionActor,
@@ -11629,13 +11636,30 @@ export function issueService(db: Db) {
           actorRunStopId &&
           actorRun.resultJson?.issueMutationStopId === actorRunStopId,
         );
+        const terminalizedRun = terminalizationRunStopReceipt
+          ? await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
+              agentId: terminalizationRunStopReceipt.agentId,
+              runId: terminalizationRunStopReceipt.runId,
+              stopId: terminalizationRunStopReceipt.stopId,
+            })
+          : null;
+        const terminalizedRunStoppedForThisMutation = Boolean(
+          terminalizedRun?.status === "cancelled" &&
+          terminalizationRunStopReceipt &&
+          terminalizedRun.resultJson?.terminalizationStopConfirmed === true &&
+          terminalizedRun.resultJson?.issueMutationStopId ===
+            terminalizationRunStopReceipt.stopId &&
+          terminalizedRun.contextSnapshot?.issueId === receiptExisting.id,
+        );
         const executionLockMatchesSnapshot = (
           actual: string | null,
           expected: string | null,
         ) => actual === expected || Boolean(
-          actorStoppedForThisMutation &&
-          expected === actorRunId &&
-          actual === null,
+          actual === null && (
+            (actorStoppedForThisMutation && expected === actorRunId) ||
+            (terminalizedRunStoppedForThisMutation &&
+              expected === terminalizationRunStopReceipt?.runId)
+          ),
         );
         if (
           expectedExecutionDecisionSnapshot !== undefined &&
