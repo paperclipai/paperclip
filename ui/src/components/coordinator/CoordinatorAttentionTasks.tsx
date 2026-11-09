@@ -16,7 +16,7 @@ export function CoordinatorAttentionTasks({ toolbar }: { toolbar: ReactNode }) {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const feed = useQuery({ queryKey: coordinatorAttentionQueryKey(selectedCompanyId!),
-    queryFn: () => attentionApi.list(selectedCompanyId!, { all: true }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
+    queryFn: () => attentionApi.list(selectedCompanyId!, { all: true, actionableOnly: true }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
   const feedView = useQueryView(feed);
   const waiting = ["loading", "reconnecting"].includes(feedView.kind);
   const items = feed.data?.items ?? [];

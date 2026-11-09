@@ -8,7 +8,7 @@ import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
+const fixture = vi.hoisted(() => ({ approve: vi.fn(async () => ({})), join: vi.fn(async () => ({})), pending: [] as AttentionItem[], history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: fixture.breadcrumbs }) }));
 vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture.openPanel, closePanel: fixture.closePanel, setPanelVisible: fixture.setPanelVisible }) }));
@@ -21,6 +21,8 @@ vi.mock("@/api/attention", () => ({ attentionApi: {
   list: async () => { if (fixture.feedFail) throw new Error("Feed unavailable"); return { items: [...fixture.pending] }; },
   history: async () => { if (fixture.historyFail) throw new Error("History unavailable"); return { items: [...fixture.history], nextCursor: null }; },
 } }));
+vi.mock("@/api/approvals", () => ({ approvalsApi: { approve: fixture.approve, reject: vi.fn(), requestRevision: vi.fn() } }));
+vi.mock("@/api/access", () => ({ accessApi: { approveJoinRequest: fixture.join, rejectJoinRequest: vi.fn() } }));
 vi.mock("motion/react", () => ({
   LayoutGroup: ({ children }: { children: ReactNode }) => children,
   useReducedMotion: () => true,
@@ -198,6 +200,35 @@ describe("Coordinator Needs You", () => {
     expect(container.textContent).not.toContain("You're caught up.");
     await click("PAP-10");
     expect(fixture.navigate).toHaveBeenCalledWith("/PAP/issues/PAP-10");
+  });
+  it("keeps technical failures and dependency notices out of the decision inbox", async () => {
+    fixture.pending.push(...["agent_error_alert", "recovery_action", "blocker_attention", "failed_run", "budget_alert"].map((kind) => ({
+      id: kind, sourceKind: kind, inlineResolvable: true, subject: { id: kind, kind: "agent", title: "Technical cleanup", href: "/agents/worker" },
+      activityAt: new Date().toISOString(),
+    } as unknown as AttentionItem)));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /></MemoryRouter></QueryClientProvider>));
+    await flush();
+    expect(container.querySelectorAll("article")).toHaveLength(3);
+    expect(container.textContent).not.toContain("Technical cleanup");
+    expect(container.textContent).not.toContain("Open to review");
+  });
+  it.each(["approval", "join_request"])("offers a working %s approval action and displays failures", async kind => {
+    fixture.pending = [{ id: kind, sourceKind: kind, inlineResolvable: true, subject: { id: "request-1", kind, title: "Access request" }, activityAt: new Date().toISOString() } as unknown as AttentionItem];
+    const mutation = kind === "approval" ? fixture.approve : fixture.join;
+    mutation.mockRejectedValueOnce(new Error("Permission changed"));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /></MemoryRouter></QueryClientProvider>));
+    await flush();
+    await click("Approve");
+    await flush();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Permission changed");
+    expect(container.textContent).toContain("Access request");
+    await click("Approve");
+    await flush();
+    if (kind === "approval") expect(mutation).toHaveBeenLastCalledWith("request-1", undefined);
+    else expect(mutation).toHaveBeenLastCalledWith("company", "request-1");
+    expect(container.textContent).not.toContain("Permission changed");
   });
   it("keeps a distinct stalled task actionable after its document decision is recorded", async () => {
     fixture.pending = [{ id: "review:task-1", sourceKind: "review", inlineResolvable: true,

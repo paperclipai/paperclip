@@ -2,8 +2,8 @@ import type { AttentionFeed, AttentionFeedQuery, AttentionSummary, AttentionTask
 import { api } from "./client";
 
 export const attentionApi = {
-  summary: (companyId: string) => api.get<AttentionSummary>(`/companies/${companyId}/attention/summary`),
-  taskIndex: (companyId: string) => api.get<AttentionTaskIndex>(`/companies/${companyId}/attention/tasks`),
+  summary: (companyId: string, options: Pick<AttentionFeedQuery, "actionableOnly"> = {}) => api.get<AttentionSummary>(`/companies/${companyId}/attention/summary${options.actionableOnly ? "?actionableOnly=true" : ""}`),
+  taskIndex: (companyId: string, options: Pick<AttentionFeedQuery, "actionableOnly"> = {}) => api.get<AttentionTaskIndex>(`/companies/${companyId}/attention/tasks${options.actionableOnly ? "?actionableOnly=true" : ""}`),
   history: (companyId: string, options: DecisionHistoryQuery = {}) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(options)) if (value !== undefined && value !== "") params.set(key, String(value));
@@ -16,6 +16,7 @@ export const attentionApi = {
    */
   list: (companyId: string, options: AttentionFeedQuery = {}) => {
     const params = new URLSearchParams();
+    if (options.actionableOnly) params.set("actionableOnly", "true");
     if (options.includeDismissed) params.set("includeDismissed", "true");
     if (options.archived) params.set("archived", "true");
     if (options.all) params.set("all", "true");

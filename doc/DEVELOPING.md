@@ -2,6 +2,22 @@
 
 This project can run fully in local dev without setting up PostgreSQL manually.
 
+## Actionable coordinator inbox
+
+The coordinator Inbox, its navigation count and attention task membership use
+the same `actionableOnly=true` attention projection. It includes questions,
+decisions, approvals, access requests, stalled reviews and recovery requests
+with supported resolution controls. Technical recovery requests remain eligible
+when an operator can resolve them through those controls. Notifications that
+only link to an agent or describe an automatic recovery are available in the
+ordinary attention feed and task diagnostics, without increasing this inbox's
+count. Completed and cancelled dependencies are not presented as current blockers.
+
+Inbox controls use the existing domain APIs and retain their company, permission,
+governance and execution ownership checks. A rejected action remains visible with
+the server's reason; opening an agent page or dismissing a notice does not
+certify process cleanup or authorize replay of interrupted work.
+
 ## Persistent case handoffs
 
 The Cases experiment supports prompt-driven agent workflows on one ordinary task.

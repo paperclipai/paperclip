@@ -1,3 +1,5 @@
+import { requiresExecutionReconciliation, isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
+import { isActionableAttention } from "@paperclipai/shared";
 import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, loadNewestSettledConfirmationAt, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -948,6 +950,7 @@ async function blockingIssueMap(
       eq(issues.companyId, companyId),
       eq(issueRelations.type, "blocks"),
       inArray(issueRelations.relatedIssueId, ids),
+      notInArray(issues.status, ["done", "cancelled"]),
       isNull(issues.hiddenAt),
       readCondition,
     ))
@@ -1444,6 +1447,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             status: recovery.status,
             href: recoveryIssue ? issueHref(prefix, recoveryIssue) : sourceIssue ? issueHref(prefix, sourceIssue) : null,
             metadata: {
+              hasResolutionActions: !requiresExecutionReconciliation(recovery.cause) && !isNativeWorkspaceExportRepairCause(recovery.cause),
               kind: recovery.kind,
               cause: recovery.cause,
               ownerType: recovery.ownerType,
@@ -1886,6 +1890,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
       const queueKey = options.queue?.trim() || null;
       const visibleItems = enrichedItems.filter((item) => {
+        if (options.actionableOnly && !isActionableAttention(item)) return false;
         if (options.archived === true ? !item.archivedAt : Boolean(item.archivedAt)) return false;
         if (!includeDismissed && item.snoozedUntil && timestamp(item.snoozedUntil) > now) return false;
         const activity = timestamp(item.activityAt);
@@ -1984,13 +1989,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const feed = await list(companyId, { ...options, all: true, allowUnscopedAll: true }, issueIds);
       return feed.items;
     },
-    summary: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionSummary> => {
+    summary: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor" | "actionableOnly"> = {}): Promise<AttentionSummary> => {
       const { items: _items, nextCursor: _cursor, ...summary } = await list(companyId, {
         ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
       });
       return summary;
     },
-    taskIndex: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionTaskIndex> => {
+    taskIndex: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor" | "actionableOnly"> = {}): Promise<AttentionTaskIndex> => {
       const { items, nextCursor: _cursor, ...summary } = await list(companyId, {
         ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
       });

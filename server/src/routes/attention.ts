@@ -13,6 +13,12 @@ function optionalQueryString(value: unknown, field: string) {
   return value.trim();
 }
 
+function actionableOnlyQuery(value: unknown) {
+  if (value === undefined) return false;
+  if (value !== "true" && value !== "false") throw badRequest("actionableOnly must be true or false");
+  return value === "true";
+}
+
 export function attentionRoutes(db: Db) {
   const router = Router();
   const svc = attentionService(db);
@@ -22,7 +28,7 @@ export function attentionRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     assertBoard(req);
     if (!req.actor.userId) { res.status(403).json({ error: "Board user context required" }); return; }
-    res.json(await svc.summary(companyId, { userId: req.actor.userId, actor: req.actor }));
+    res.json(await svc.summary(companyId, { userId: req.actor.userId, actor: req.actor, actionableOnly: actionableOnlyQuery(req.query.actionableOnly) }));
   });
 
   router.get("/companies/:companyId/attention/tasks", async (req, res) => {
@@ -30,7 +36,7 @@ export function attentionRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     assertBoard(req);
     if (!req.actor.userId) { res.status(403).json({ error: "Board user context required" }); return; }
-    res.json(await svc.taskIndex(companyId, { userId: req.actor.userId, actor: req.actor }));
+    res.json(await svc.taskIndex(companyId, { userId: req.actor.userId, actor: req.actor, actionableOnly: actionableOnlyQuery(req.query.actionableOnly) }));
   });
 
   router.get("/companies/:companyId/attention/history", async (req, res) => {
@@ -73,6 +79,7 @@ export function attentionRoutes(db: Db) {
     if (limit !== undefined && !Number.isInteger(limit)) throw badRequest("limit must be an integer");
     const feed = await svc.list(companyId, {
       userId: req.actor.userId,
+      actionableOnly: actionableOnlyQuery(req.query.actionableOnly),
       includeDismissed,
       actor: req.actor,
       archived,

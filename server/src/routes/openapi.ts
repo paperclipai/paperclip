@@ -6308,10 +6308,12 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/attention",
   tags: ["inbox"],
-  summary: "List decision-only attention feed items",
+  summary: "List attention feed items",
+  description: "Set actionableOnly=true to select requests with supported resolution controls. Use the same filter on summary and tasks for matching counts and task membership. The default feed also includes operational notices. This filter grants no resolution authority.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
+      actionableOnly: z.enum(["true", "false"]).optional(),
       includeDismissed: z.enum(["true", "false"]).optional(),
       archived: z.enum(["true", "false"]).optional(),
       all: z.enum(["true", "false"]).optional(),
@@ -6323,7 +6325,7 @@ registry.registerPath({
       limit: z.coerce.number().int().min(1).max(100).optional(),
     }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 const attentionSummaryResponseSchema = z.object({
@@ -6344,8 +6346,8 @@ for (const [projection, responseSchema] of [
     tags: ["inbox"],
     summary: projection === "summary" ? "Get canonical attention counts" : "Get complete attention task membership",
     description: "Requires a board user with company access. Reads the complete canonical attention set with current task privacy, addressee, dismissal, snooze, and archive rules. Returns counts without decision cards, images, plan bodies, or pagination. The tasks projection also returns distinct accessible task IDs. This read grants no resolution authority.",
-    request: { params: z.object({ companyId: z.string() }) },
-    responses: { 200: r.ok(responseSchema), 401: r.unauthorized, 403: r.forbidden },
+    request: { params: z.object({ companyId: z.string() }), query: z.object({ actionableOnly: z.enum(["true", "false"]).optional() }) },
+    responses: { 200: r.ok(responseSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
   });
 }
 

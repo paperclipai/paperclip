@@ -828,10 +828,11 @@ function ResolverFooter({ toggle, children }: { toggle: ReactNode; children: Rea
   );
 }
 
-function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
+export function ApprovalResolver({ item, companyId, toggle, onResolved }: { item: AttentionItem; companyId: string; toggle: ReactNode; onResolved?: () => void }) {
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
   const invalidate = () => {
+    onResolved?.();
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
   };
@@ -849,10 +850,13 @@ function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; co
   });
   const pending = approve.isPending || reject.isPending || revise.isPending;
 
+  const error = approve.error ?? reject.error ?? revise.error;
+
   // Verb order matches the collapsed row exactly (revise → reject → approve),
   // so expanding never moves the button the operator was already aiming at.
   return (
     <>
+      {error ? <p role="alert" className="text-sm text-destructive">{error.message}</p> : null}
       <Textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
@@ -877,9 +881,10 @@ function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; co
   );
 }
 
-function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
+export function JoinRequestResolver({ item, companyId, toggle, onResolved }: { item: AttentionItem; companyId: string; toggle: ReactNode; onResolved?: () => void }) {
   const queryClient = useQueryClient();
   const invalidate = () => {
+    onResolved?.();
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
   };
@@ -893,7 +898,10 @@ function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem;
   });
   const pending = approve.isPending || reject.isPending;
 
+  const error = approve.error ?? reject.error;
   return (
+    <>
+    {error ? <p role="alert" className="text-sm text-destructive">{error.message}</p> : null}
     <ResolverFooter toggle={toggle}>
       <Button size="sm" variant="destructive" onClick={() => reject.mutate()} disabled={pending}>
         {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
@@ -904,5 +912,6 @@ function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem;
         Approve
       </Button>
     </ResolverFooter>
+    </>
   );
 }

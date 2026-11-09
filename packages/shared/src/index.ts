@@ -2904,3 +2904,5 @@ export {
   TASK_IDENTITY_CHANGED_FIELD,
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
+
+export { isActionableAttention } from "./types/attention.js";

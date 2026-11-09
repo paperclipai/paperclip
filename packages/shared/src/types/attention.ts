@@ -84,6 +84,8 @@ export type AttentionSortMode = "activity" | "decide";
 
 export interface AttentionFeedQuery {
   includeDismissed?: boolean;
+  /** Limit the projection to items with a supported resolution action. */
+  actionableOnly?: boolean;
   archived?: boolean;
   /** Return the complete filtered snapshot in one response. */
   all?: boolean;
@@ -318,4 +320,21 @@ export interface DecisionHistoryQuery {
 export interface DecisionHistoryPage {
   items: DecisionHistoryItem[];
   nextCursor: string | null;
+}
+
+/** Operational alerts stay inspectable without becoming human decision requests. */
+export function isActionableAttention(item: Pick<AttentionItem, "sourceKind" | "inlineResolvable" | "subject">): boolean {
+  if (item.sourceKind === "recovery_action") return item.subject.metadata?.hasResolutionActions === true;
+  if (!item.inlineResolvable) return false;
+  switch (item.sourceKind) {
+    case "approval":
+    case "decision":
+    case "issue_thread_interaction":
+    case "join_request":
+      return true;
+    case "review":
+      return item.subject.kind === "issue" && item.subject.metadata?.reviewAttentionState === "stalled";
+    default:
+      return false;
+  }
 }

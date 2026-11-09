@@ -1985,6 +1985,44 @@ describeEmbeddedPostgres("attention service", () => {
     expect(row?.detail).toMatchObject({ kind: "blocker", blockingIssue: null });
   });
 
+  it.each(["done", "cancelled"])("does not describe a %s dependency as the current blocker", async (status) => {
+    const { companyId } = await seedCompany("STALE");
+    const issueId = await insertIssue({ companyId, identifier: "STALE-1", title: "Needs recovery", status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Inspect runtime recovery" }, blockedTransitionAt: new Date() });
+    const prior = await insertIssue({ companyId, identifier: "STALE-2", title: "Finished dependency", status });
+    await db.insert(issueRelations).values({ companyId, issueId: prior, relatedIssueId: issueId, type: "blocks" });
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const row = feed.items.find(item => item.dedupKey.startsWith(`blocked-owner:${issueId}:`));
+    expect(row?.detail).toMatchObject({ kind: "blocker", blockingIssue: null });
+  });
+
+  it("projects only actionable items into feed, counts and task membership", async () => {
+    const { companyId, workerId, errorAgentId } = await seedCompany("HUM");
+    const issueId = await insertIssue({ companyId, identifier: "HUM-1", title: "Choose scope", status: "todo", assigneeAgentId: workerId });
+    const questionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({ id: questionId, companyId, issueId, kind: "ask_user_questions", status: "pending",
+      title: "Choose scope", createdByAgentId: workerId, addresseeUserId: "board-user", effectiveResolverPolicy: "human_only",
+      payload: { version: 1, questions: [{ id: "scope", prompt: "Which scope?", options: [], selectionMode: "single", required: true, allowOther: true }] } });
+    const recoveryId = randomUUID();
+    await db.insert(issueRecoveryActions).values({ id: recoveryId, companyId, sourceIssueId: issueId,
+      kind: "workspace_validation", status: "active", ownerType: "board", cause: "workspace_branch_diverged",
+      fingerprint: recoveryId, nextAction: "Choose how the task workspace should continue." });
+    const svc = attentionService(db);
+    const operations = await svc.list(companyId, { userId: "board-user", all: true, allowUnscopedAll: true });
+    expect(operations.items.some(item => item.subject.id === errorAgentId)).toBe(true);
+    const options = { userId: "board-user", actionableOnly: true };
+    const feed = await svc.list(companyId, { ...options, all: true, allowUnscopedAll: true });
+    expect(new Set(feed.items.map(item => item.subject.id))).toEqual(new Set([questionId, recoveryId]));
+    expect(feed.totalCount).toBe(2);
+    const summary = await svc.summary(companyId, options);
+    const tasks = await svc.taskIndex(companyId, options);
+    expect(summary.totalCount).toBe(2);
+    expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+    expect(tasks.totalCount).toBe(2);
+    expect(tasks.taskIds).toEqual([issueId]);
+    expect((await svc.list(companyId, { userId: "board-user" })).items.some(item => item.subject.id === errorAgentId)).toBe(true);
+  });
+
   it("does not route pre-rollout human unblock descriptors", async () => {
     const { companyId } = await seedCompany("ATQ");
     const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1);
@@ -2484,6 +2522,12 @@ describeEmbeddedPostgres("attention service", () => {
       runId: null,
     };
 
+    for (const suffix of ["", "/summary", "/tasks"]) {
+      await request(app(board)).get(`/api/companies/${companyId}/attention${suffix}?actionableOnly=invalid`).expect(400);
+      const actionable = await request(app(board)).get(`/api/companies/${companyId}/attention${suffix}?actionableOnly=true`).expect(200);
+      expect(actionable.body.totalCount).toBe(0);
+      await request(app(agent)).get(`/api/companies/${companyId}/attention${suffix}?actionableOnly=true`).expect(403);
+    }
     await request(app(board)).get(`/api/companies/${companyId}/attention`).expect(200);
     const completeFeed = await request(app(board))
       .get(`/api/companies/${companyId}/attention?includeDismissed=true&all=true`)
@@ -2508,7 +2552,7 @@ describeEmbeddedPostgres("attention service", () => {
       .get(`/api/companies/${companyId}/attention?sort=oldest`)
       .expect(400, { error: "sort must be 'activity' or 'decide'" });
     await request(app(agent)).get(`/api/companies/${companyId}/attention`).expect(403);
-  });
+  }, 90_000);
 
   it("omits private issue review items for a non-member board user", async () => {
     const { companyId } = await seedCompany("ATP");

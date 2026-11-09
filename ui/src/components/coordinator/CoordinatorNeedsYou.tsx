@@ -1,3 +1,6 @@
+import { AttentionRecoveryResolver } from "@/components/AttentionRecoveryResolver";
+import { isActionableAttention } from "@paperclipai/shared";
+import { ApprovalResolver, JoinRequestResolver } from "@/components/AttentionQueueRow";
 import { useQueryView } from "@/components/QueryView";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
@@ -100,7 +103,7 @@ export function CoordinatorNeedsYou() {
   useEffect(() => { setSettling([]); setSavedIds(new Set()); }, [selectedCompanyId, userId]);
   const [renderLimit, setRenderLimit] = useState(40);
   const feed = useQuery({ queryKey: coordinatorAttentionQueryKey(selectedCompanyId!),
-    queryFn: () => attentionApi.list(selectedCompanyId!, { all: true }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
+    queryFn: () => attentionApi.list(selectedCompanyId!, { all: true, actionableOnly: true }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
   const feedView = useQueryView(feed);
   const feedWaiting = ["loading", "reconnecting"].includes(feedView.kind);
   const agentQuery = useQuery({ queryKey: queryKeys.agents.list(selectedCompanyId!), queryFn: () => agentsApi.list(selectedCompanyId!), enabled: !!selectedCompanyId });
@@ -134,7 +137,7 @@ export function CoordinatorNeedsYou() {
     const receipts = new Set(recentItems.map((item) => item.id));
     const items = new Map((feed.data?.items ?? []).map((item) => [`${item.sourceKind}:${item.subject.id}`, item]));
     for (const item of settling) if (!items.has(`${item.sourceKind}:${item.subject.id}`)) items.set(`${item.sourceKind}:${item.subject.id}`, item);
-    return [...items].filter(([key]) => settlingIds.has(key) || (!receipts.has(key) && !savedIds.has(key))).map(([, item]) => item);
+    return [...items].filter(([key]) => settlingIds.has(key) || (!receipts.has(key) && !savedIds.has(key))).map(([, item]) => item).filter(isActionableAttention);
   }, [feed.data, settling, settlingIds, recentItems, savedIds]);
   const filtered = useMemo(() => pendingItems.filter((item) => {
     const agentId = String(item.subject.metadata?.createdByAgentId ?? item.subject.metadata?.originAgentId ?? "");
@@ -188,6 +191,11 @@ export function CoordinatorNeedsYou() {
     return () => window.clearTimeout(timer);
   }, [recentItems]);
   const onResolved = (item: AttentionItem) => {
+    if (!["decision", "issue_thread_interaction", "review"].includes(item.sourceKind)) {
+      void feed.refetch();
+      void recent.refetch();
+      return;
+    }
     const id = `${item.sourceKind}:${item.subject.id}`;
     setSavedIds(current => new Set([...current, id]));
     setSettling(current => current.some(entry => entry.id === item.id) ? current : [...current, item]);
@@ -235,9 +243,12 @@ export function CoordinatorNeedsYou() {
           onResolved(item);
         }} />
           : decision ? <DecisionResolver companyId={selectedCompanyId} decisionId={item.subject.id} originIssue={item.relatedIssue} agentMap={agentMap} onResolved={() => onResolved(item)} />
+          : item.sourceKind === "recovery_action" ? <AttentionRecoveryResolver item={item} companyId={selectedCompanyId} agentMap={agentMap} onResolved={() => onResolved(item)} />
+          : item.sourceKind === "approval" ? <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p><ApprovalResolver item={item} companyId={selectedCompanyId} toggle={taskLink} onResolved={() => onResolved(item)} /></>
+          : item.sourceKind === "join_request" ? <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p><JoinRequestResolver item={item} companyId={selectedCompanyId} toggle={taskLink} onResolved={() => onResolved(item)} /></>
           : stalledReview ? <><h2 className="text-lg font-medium">Choose how this task continues</h2><p className="text-sm">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p><StalledReviewActions footerSlot={taskLink} issueId={item.subject.id} companyId={selectedCompanyId} reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)} approveLabel="Mark task done" onResolved={() => { void feed.refetch(); void recent.refetch(); }} /></>
-          : <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p><Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>Open to review<ArrowUpRight className="size-4" /></Button></>}
-        {!interaction && !stalledReview ? taskLink : null}
+          : <div role="alert"><p>This request could not be loaded.</p><Button variant="outline" onClick={() => void feed.refetch()}>Retry</Button></div>}
+        {!interaction && !stalledReview && item.sourceKind !== "approval" && item.sourceKind !== "join_request" ? taskLink : null}
       </article>}
       </CoordinatorTaskMotion>
       </motion.div>;
