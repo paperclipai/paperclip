@@ -2061,6 +2061,70 @@ describe("dispatchLiveEventToSubscribers", () => {
   });
 });
 
+describe("explicit agent chat notification context", () => {
+  function setup() {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" } });
+    client.setQueryData(queryKeys.companies.list("viewer"), { companies: [{ id: "company", issuePrefix: "PAP" }], unauthorized: false });
+    client.setQueryData(queryKeys.agents.list("company"), [{ id: "agent", urlKey: "coder" }]);
+    const key = queryKeys.agentChats.detail("company", "viewer", "agent");
+    const defaultChat = { id: "default-chat", companyId: "company", conversationAgentId: "agent" };
+    const explicitChat = { ...defaultChat, id: "explicit-chat" };
+    client.setQueryData(key, defaultChat);
+    client.setQueryData([...key, explicitChat.id], explicitChat);
+    return { client, key, explicitChat };
+  }
+
+  function suppressed(client: QueryClient, route: string, issueId: string) {
+    return [
+      __liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(client, route, { issueId, runId: `run-${issueId}` }, { isForegrounded: true }),
+      __liveUpdatesTestUtils.shouldSuppressActivityToastForVisibleIssue(client, route, { entityType: "issue", entityId: issueId }, { isForegrounded: true }),
+    ];
+  }
+
+  it("suppresses only the explicit conversation on screen, leaving the default chat notifications visible", () => {
+    const { client } = setup();
+    expect(suppressed(client, "/PAP/chats/coder/explicit-chat", "explicit-chat")).toEqual([true, true]);
+    expect(suppressed(client, "/PAP/chats/coder/explicit-chat", "default-chat")).toEqual([false, false]);
+    client.clear();
+  });
+
+  it("keeps default chat routes unchanged when an explicit conversation is cached", () => {
+    const { client } = setup();
+    expect(suppressed(client, "/PAP/chats/coder", "default-chat")).toEqual([true, true]);
+    expect(suppressed(client, "/PAP/chats/coder", "explicit-chat")).toEqual([false, false]);
+    client.clear();
+  });
+
+  it("uses the routed conversation id before its detail cache loads, without taking the default chat", () => {
+    const { client, key } = setup();
+    client.removeQueries({ queryKey: [...key, "explicit-chat"], exact: true });
+    expect(suppressed(client, "/PAP/chats/agent/explicit-chat", "explicit-chat")).toEqual([true, true]);
+    expect(suppressed(client, "/PAP/chats/agent/explicit-chat", "default-chat")).toEqual([false, false]);
+    client.clear();
+  });
+
+  it.each([
+    { companyId: "other-company" },
+    { conversationAgentId: "other-agent" },
+    { id: "other-chat" },
+  ])("does not suppress notifications for a mismatched explicit conversation cache: %j", mismatch => {
+    const { client, key, explicitChat } = setup();
+    client.setQueryData([...key, "explicit-chat"], { ...explicitChat, ...mismatch });
+    expect(suppressed(client, "/PAP/chats/coder/explicit-chat", "explicit-chat")).toEqual([false, false]);
+    expect(suppressed(client, "/PAP/chats/coder/explicit-chat", "default-chat")).toEqual([false, false]);
+    client.clear();
+  });
+
+  it("does not borrow another company or person's default chat cache", () => {
+    const { client } = setup();
+    expect(suppressed(client, "/OTHER/chats/coder/explicit-chat", "explicit-chat")).toEqual([false, false]);
+    client.setQueryData(queryKeys.auth.session, { user: { id: "other-viewer" } });
+    expect(suppressed(client, "/PAP/chats/coder/explicit-chat", "explicit-chat")).toEqual([false, false]);
+    client.clear();
+  });
+});
+
 describe("task subtree notification context", () => {
   const root = { id: "root", companyId: "company", identifier: "PAP-204", assigneeAgentId: "parent-agent" };
   const descendants = [{ id: "child", identifier: "PAP-205", assigneeAgentId: "child-agent", executionRunId: "child-run" }];

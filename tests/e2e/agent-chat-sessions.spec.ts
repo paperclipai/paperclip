@@ -340,6 +340,9 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     expect(await json(await request.get(chatListPath))).toHaveLength(1);
     expect(await json(await request.get(`/api/companies/${f.company.id}/heartbeat-runs`))).toHaveLength(0);
 
+    const betaDraftEditor = page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]');
+    await betaDraftEditor.fill("First Beta conversation draft");
+
     // Adding the same agent again creates a distinct conversation.
     await compose.click();
     await expect(picker.getByRole("combobox")).toHaveValue("");
@@ -347,6 +350,8 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     await expect(picker.getByRole("option", { name: /^Beta / })).toContainText("New chat");
     await picker.getByRole("combobox").press("Enter");
     await expect(picker).not.toBeVisible();
+    await expect(betaDraftEditor).toHaveText("");
+    await betaDraftEditor.fill("Second Beta conversation draft");
     const betaChats = await json(await request.get(chatListPath));
     expect(betaChats).toHaveLength(2);
     expect(new Set(betaChats.map((chat: { id: string }) => chat.id)).size).toBe(2);
@@ -354,8 +359,14 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     const secondBeta = betaChats.find((chat: { id: string }) => chat.id !== beta.id);
     await sidebar.locator(`a[href$="/${beta.id}"]`).click();
     await expect(page).toHaveURL(new RegExp(`${beta.id}$`));
+    await expect(betaDraftEditor).toContainText("First Beta conversation draft");
+    await betaDraftEditor.fill("");
     await sidebar.locator(`a[href$="/${secondBeta.id}"]`).click();
     await expect(page).toHaveURL(new RegExp(`${secondBeta.id}$`));
+    await expect(betaDraftEditor).toContainText("Second Beta conversation draft");
+    await page.reload();
+    await expect(betaDraftEditor).toContainText("Second Beta conversation draft");
+    await betaDraftEditor.fill("");
 
     await compose.click();
     await picker.getByRole("combobox").fill("Alpha");

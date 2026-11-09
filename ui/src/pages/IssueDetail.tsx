@@ -8643,7 +8643,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   currentUserId={currentUserId}
                   userLabelMap={userLabelMap}
                   userProfileMap={userProfileMap}
-                  draftKey={conversationAgent ? `paperclip:agent-chat-draft:${issue.companyId}:${currentUserId}:${conversationAgent.id}` : `paperclip:issue-comment-draft:${issue.id}`}
+                  draftKey={conversationAgent ? `paperclip:agent-chat-draft:${issue.companyId}:${currentUserId}:${conversationAgent.id}${issue.conversationDefault === false ? `:${issue.id}` : ""}` : `paperclip:issue-comment-draft:${issue.id}`}
                   reassignOptions={commentReassignOptions}
                   currentAssigneeValue={actualAssigneeValue}
                   suggestedAssigneeValue={suggestedAssigneeValue}

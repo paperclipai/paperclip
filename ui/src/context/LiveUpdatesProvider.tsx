@@ -425,9 +425,18 @@ function resolveVisibleIssueRouteContext(
     const agent = queryClient.getQueryData<Agent[]>(queryKeys.agents.list(company.id))
       ?.find(item => item.id === issueRef || agentRouteRef(item) === issueRef);
     if (!agent) return null;
-    const conversation = queryClient.getQueryData<Issue | null>(queryKeys.agentChats.detail(company.id, userId, agent.id));
-    if (!conversation) return null;
-    issueRef = conversation.id;
+    const chatId = segments[2] ? decodeURIComponent(segments[2]) : null;
+    const defaultChatKey = queryKeys.agentChats.detail(company.id, userId, agent.id);
+    const conversation = queryClient.getQueryData<Issue | null>(chatId ? [...defaultChatKey, chatId] : defaultChatKey);
+    if (chatId) {
+      if (conversation === null || conversation && (
+        conversation.id !== chatId || conversation.companyId !== company.id || conversation.conversationAgentId !== agent.id
+      )) return null;
+      issueRef = chatId;
+    } else {
+      if (!conversation) return null;
+      issueRef = conversation.id;
+    }
   }
   const issue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueRef)) ?? null;
   const issueRefs = new Set<string>([issueRef]);

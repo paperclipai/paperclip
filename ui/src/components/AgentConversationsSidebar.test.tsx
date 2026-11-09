@@ -301,3 +301,17 @@ it("combines unread counts across separate conversations for the same contact", 
   expect(container.querySelector('[aria-label="5 unread messages from alice"]')).not.toBeNull();
   expect(container.querySelectorAll('nav[aria-label="Chat history"] a')).toHaveLength(2);
 });
+
+it("marks the unread conversation and keeps its link separate from the default contact", async () => {
+  const key = queryKeys.agentChats.list("company-a", "user-a");
+  const first = { ...chat("alice"), id: "first", title: "First discussion", unreadMessageCount: 2, isUnreadForMe: true };
+  const second = { ...chat("alice"), id: "second", title: "Second discussion", unreadMessageCount: 1, isUnreadForMe: true };
+  client.setQueryData(key, [first, second]);
+  await render();
+  const history = container.querySelector('nav[aria-label="Chat history"]')!;
+  expect(history.querySelector('a[href="/chats/alice/first"] [aria-label="2 unread messages in First discussion"]')).not.toBeNull();
+  expect(history.querySelector('a[href="/chats/alice/second"] [aria-label="1 unread message in Second discussion"]')).not.toBeNull();
+  await act(async () => { client.setQueryData(key, [{ ...first, unreadMessageCount: 0, isUnreadForMe: false }, second]); });
+  await vi.waitFor(() => expect(history.querySelector('[aria-label="2 unread messages in First discussion"]')).toBeNull());
+  expect(history.querySelector('[aria-label="1 unread message in Second discussion"]')).not.toBeNull();
+});

@@ -38,6 +38,7 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { loadDraft, saveDraft, loadDraftSubmission, saveDraftSubmission } from "../lib/composer-draft";
 import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import { markCachedSession } from "../lib/cached-session";
 import { startPersistedQueryCache } from "../lib/persisted-query-cache";
@@ -2084,6 +2085,39 @@ describe("IssueDetail", () => {
     await flushReact();
     expect(mockSetBreadcrumbs.mock.calls.at(-1)![0]).toEqual([{ label: "Chat" }]);
 
+  });
+
+  it("isolates additional conversation drafts and preserves the legacy default through first send", async () => {
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const agent = createAgent();
+    const first = createIssue({ id: "chat-first", conversationAgentId: agent.id, conversationUserId: "user-1", conversationDefault: false });
+    const second = createIssue({ ...first, id: "chat-second" });
+    const show = async (issue: Issue | null) => {
+      mockIssuesApi.get.mockResolvedValue(issue);
+      await act(async () => renderIssueView(<TaskDetailSurface conversation={{ agent, issue, ensureIssue: async () => issue! }} />));
+      await flushReact();
+      return mockIssueChatThreadRender.mock.calls.at(-1)![0].draftKey as string;
+    };
+    const firstKey = await show(first);
+    saveDraft(firstKey, "Unfinished first chat");
+    saveDraftSubmission(firstKey, { attemptId: "61f746ee-430c-4699-a74b-b439904f14f1", reviewed: false });
+    const secondKey = await show(second);
+    expect(loadDraft(secondKey)).toBe("");
+    expect(loadDraftSubmission(secondKey)).toBeNull();
+    saveDraft(secondKey, "Unfinished second chat");
+    expect(await show(first)).toBe(firstKey);
+    expect(loadDraft(firstKey)).toBe("Unfinished first chat");
+    expect(loadDraftSubmission(firstKey)?.attemptId).toBe("61f746ee-430c-4699-a74b-b439904f14f1");
+    expect(loadDraft(secondKey)).toBe("Unfinished second chat");
+    const legacyKey = `paperclip:agent-chat-draft:${first.companyId}:user-1:${agent.id}`;
+    saveDraft(legacyKey, "Existing default draft");
+    expect(await show(null)).toBe(legacyKey);
+    expect(loadDraft(legacyKey)).toBe("Existing default draft");
+    const defaultChat = createIssue({ ...first, id: "default-chat", conversationDefault: true });
+    expect(await show(defaultChat)).toBe(legacyKey);
+    expect(await show({ ...defaultChat, conversationDefault: undefined })).toBe(legacyKey);
+    expect(loadDraft(legacyKey)).toBe("Existing default draft");
   });
 
   it.each(["message", "attachment"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
