@@ -233,6 +233,15 @@ do not establish credential validity or change account access.
 
 Manual: Save a harmless instruction edit, reload, and verify its revision and effect in the next eligible run. Pause and resume the disposable agent; confirm pause prevents new work and does not erase previous runs.
 
+Move an active disposable agent to an agent-owned plugin environment from its
+configuration. Saving automatically pauses execution, waits for stop completion,
+prepares the new environment, and verifies before readiness. No separate Pause
+or Resume action is required. Add a manual or budget hold during the move and
+confirm it prevents automatic resume. The
+[environment plugin regressions](../../server/src/modules/agent-lifecycle/__tests__/environment-plugins.test.ts)
+cover ordering, pending-stop recovery, holds, and failed verification with a
+fixture plugin; live computer provisioning still needs deployment qualification.
+
 For failed setup, use an unavailable model or invalid command on a disposable agent.
 Confirm the profile names the failed verification step and gives a relevant action.
 Check that it explains that verification is paused and offers **Retry now**. Fix the configuration,
