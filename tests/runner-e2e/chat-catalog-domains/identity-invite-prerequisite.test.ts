@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { RunnerApi } from "../api.js";
 import { enrollAuthenticatedPerson, type createAuthenticatedPerson } from "./identity-auth.js";
@@ -48,5 +52,19 @@ describe("invitation enrollment prerequisite quarantine", () => {
     const f = fixture(); f.api.get = vi.fn(async (url: string) => url === "/api/health" ? health : { invites: [] }) as RunnerApi["get"];
     await expect(enrollAuthenticatedPerson(f.api, companyId, f.person, f.secrets)).rejects.toThrow("probe incomplete");
     expect(f.calls).toContain(`/api/invites/${inviteId}/revoke`); expect(f.request).not.toHaveBeenCalled();
+  });
+  it("treats master redactor bytes from before the invitation fix as affected", () => {
+    const masterAfter13742 = "741003f00a55a164074df3e22fca4d060e1177fbdf71e758bb2697f941703c05";
+    expect(invitationRuntimeDisposition({ ...proof, redactorSha256: masterAfter13742 }, proof.apiOrigin, health)).toBe("affected");
+    expect(invitationIncident.affectedRedactorSha256s).not.toContain(invitationIncident.fixedRedactorSha256);
+  });
+  it("pins only redactor bytes that remove invitation bearer paths", async () => {
+    const file = path.resolve(import.meta.dirname, "../../../server/src/middleware/redact-sensitive.ts");
+    const sha = createHash("sha256").update(await readFile(file)).digest("hex");
+    // Branches without the fix hash differently and stay blocked; this checks the pinned bytes themselves.
+    if (sha !== invitationIncident.fixedRedactorSha256) return;
+    const redactor = await import(pathToFileURL(file).href) as { stripSecretBearingUrlParts(value: string): string };
+    for (const url of ["/api/invites/bearer-canary/accept", "/invite/bearer-canary", "https://board.example/invite/bearer-canary?x=1"])
+      expect(redactor.stripSecretBearingUrlParts(url)).not.toContain("bearer-canary");
   });
 });
