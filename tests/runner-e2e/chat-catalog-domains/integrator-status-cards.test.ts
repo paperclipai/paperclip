@@ -160,6 +160,10 @@ it("grades a created card by saved state and its link, not by the reply's wordin
   // A card that has not yet been summarized passes when its compiled query watches Launch.
   const pending = structuredClone(o); pending.cards[0]!.summaryBody = null as unknown as string; pending.cards[0]!.lastGeneratedAt = null as unknown as string;
   expect(gradeIntegratorCards(pending).passed).toBe(true);
+  const companyWide = structuredClone(o); companyWide.cards[0]!.queries = [{ status: ["blocked"] } as unknown as typeof companyWide.cards[0]["queries"][0]];
+  expect(gradeIntegratorCards(companyWide).passed).toBe(true);
+  const otherProject = structuredClone(o); otherProject.cards[0]!.queries = [{ projectId: "research" }];
+  expect(gradeIntegratorCards(otherProject).passed).toBe(false);
   const unwatched = structuredClone(o); unwatched.cards[0]!.fingerprint = {} as typeof unwatched.cards[0]["fingerprint"];
   expect(gradeIntegratorCards(unwatched).passed).toBe(false);
 });

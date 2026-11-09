@@ -100,9 +100,11 @@ export function gradeIntegratorCards(value: unknown) {
       && o.activity.some(event => event.action === "status_card.created" && event.agentId === o.leadId && event.entityId === card.id)
       && [o.leadId, (o.state.worker as Entity | undefined)?.id ?? "missing-worker"].includes(card.agentId ?? ""), "Exactly one authored card is saved with an eligible real summarizer.");
     // The card's purpose is the person's words in a model-written interestPrompt, so it is graded through what the
-    // summarizer compiled from it: a query on the Launch project whose saved fingerprint holds the blocked source task.
-    c.add("compiled-launch-watch-scope", !!card && card.queries.some(query => query.projectId === p?.id) && originals.some(row => !!card.fingerprint?.[row.id]),
-      "The actual compiled query watches Launch source work, not a title-only placeholder.");
+    // summarizer compiled from it: saved queries that are not narrowed to another project, and a product-computed
+    // fingerprint that holds the blocked Launch task. Launch is the fixture company's only project, so a company-wide
+    // blocked-work query is a valid compile of "the launch's biggest blockers".
+    c.add("compiled-launch-watch-scope", !!card && card.queries.length > 0 && card.queries.every(query => !query.projectId || query.projectId === p?.id)
+      && originals.some(row => !!card.fingerprint?.[row.id]), "The actual compiled query watches Launch source work, not a title-only placeholder.");
     c.add("inspectable-card-link", !!card && !!cardLink(o, card.id), "The response links the actual saved card.");
     // Whether the reply calls the summary ready is wording and is not pattern-matched. The saved state must show that
     // any summary on the card came from the summarizer's own successful generation, not a write by the requester.
