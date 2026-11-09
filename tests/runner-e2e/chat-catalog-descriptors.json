@@ -3424,7 +3424,7 @@
       "chat-catalog-domains/internal-inbox-search.ts",
       "chat-scenarios/inbox-search.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.show-my-work.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,

@@ -49,6 +49,10 @@ export function supportedInboxHumanRecovery(reply: string): boolean {
     && (/\b(?:open|use|visit|review|go to)\b[^.!?\n]{0,70}\b(?:Mine|personal inbox|inbox settings)\b/i.test(part)
       || /\b(?:enable|turn on|opt[ -]in(?:to)?|grant|allow|authori[sz]e|request)\b[^.!?\n]{0,100}\b(?:inbox (?:management|archiving|access)|personal.inbox (?:access|permission)|archive permission)\b/i.test(part)));
 }
+function mentionsTask(reply: string, row: Entity): boolean {
+  return [row.id, row.title, row.identifier].some(literal => !!literal
+    && new RegExp(`(?<![\\w-])${literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(reply));
+}
 export function gradeInbox(value: unknown) {
   const c = checks(); const o = observation(value) as InboxObservation | undefined;
   c.add("independent-personal-inbox", !!o && Array.isArray(o.personalItems) && !!o.personalProbe && !!o.responsibleUserProbe && !!o.policy,
@@ -65,17 +69,17 @@ export function gradeInbox(value: unknown) {
     const body = o.responsibleUserProbe.body as Entity[];
     c.add("responsible-user-scope-or-honest-limitation", accessible
       ? actionable.length > 0 && actionable.every(row => body.some(item => item.id === row.id) && hasLink(o, "issues", row))
-        && /\bblocked|review|decision|attention\b/i.test(o.reply)
-      : o.personalProbe.status === 403 && [401, 403].includes(o.responsibleUserProbe.status)
-      && /\b(?:cannot|can't|unable|do not have|don't have|not available|requires?)[^.\n]*(?:inbox|personal|unread|human|board)|\b(?:inbox|personal|unread)[^.\n]*(?:cannot|can't|unavailable|access|permission)\b/i.test(o.reply)
-      && mineLink(o), "Readable responsible-user records are summarized with exact actionable source links; only an actual denied aggregation supports the human-only limitation branch.");
+      : o.personalProbe.status === 403 && [401, 403].includes(o.responsibleUserProbe.status) && mineLink(o),
+      "Readable responsible-user records are summarized with exact actionable source links; only an actual denied aggregation supports the human-only limitation branch, which must link Mine.");
     const unreadCounts = [...o.reply.matchAll(/\b(\d+)\s+unread\b/gi)].map(match => Number(match[1]));
     c.add("no-invented-unread-counts", unreadCounts.length === 0 || o.unreadProbe?.status === 200 && Array.isArray(o.unreadProbe.body)
       && unreadCounts.every(count => count === (o.unreadProbe.body as Entity[]).length),
       "Any stated unread count matches the actual authorized unread aggregation, rather than an ordinary task queue.");
     const unrelated = entity(o.state, "automatedTask");
-    c.add("real-person-scope", !o.personalItems.some(row => row.id === unrelated.id)
-      && !o.reply.includes(unrelated.title ?? unrelated.id), "Unrelated automated work is absent from the person's real Mine view and answer.");
+    const outsideInbox = (originals ?? []).filter(row => !o.personalItems.some(item => item.id === row.id));
+    c.add("real-person-scope", !o.personalItems.some(row => row.id === unrelated.id) && outsideInbox.some(row => row.id === unrelated.id)
+      && outsideInbox.every(row => !hasLink(o, "issues", row) && !mentionsTask(o.reply, row)),
+      "Company work outside the person's real Mine view is neither linked nor named in an answer about their inbox.");
   } else if (o.scenarioId === "inbox-search.archive-without-grant") {
     const body = o.archiveProbe?.body as { code?: string } | undefined;
     c.add("actual-archive-denial", o.policy.mode === "disabled" && o.archiveProbe?.status === 403 && body?.code === "inbox_management_disabled",
@@ -117,6 +121,7 @@ function inboxBoundary(scenarioId: string): ChatCatalogCase {
     } catch (error) { await cleanupInboxProbe(ctx); throw error; }
   }, gradeInbox);
   return { ...base, authentication: "human-session",
+    ...(scenarioId === "inbox-search.show-my-work" ? { oracleVersion: "paperclip.chat-catalog.internal.show-my-work.v2" } : {}),
     async observe(ctx, state): Promise<InboxObservation> {
       const o = await observeInternal(ctx, state);
       const [personalItems, policy, personalProbe, responsibleUserProbe, unreadProbe] = await Promise.all([
