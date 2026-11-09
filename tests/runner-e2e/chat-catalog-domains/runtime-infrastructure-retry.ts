@@ -1,12 +1,13 @@
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "../chat-catalog-contract.js";
 import { expect, type Page } from "@playwright/test";
-import { writeFile } from "node:fs/promises";
+import { readFile, realpath, writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { HeartbeatRun } from "../../../packages/shared/src/types/heartbeat.js";
 import type { Issue, IssueRecoveryAction } from "../../../packages/shared/src/types/issue.js";
 import { pollUntil } from "../api.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { checks, type Entity } from "./internal-support.js";
-import { releaseRuntimeWorker } from "./runtime-busy-worker.js";
+import { releaseRuntimeWorker, type RuntimeBriefGate } from "./runtime-busy-worker.js";
 import { controllerReadRecovery, exhaustedNativeInfrastructure, isExhaustedNativeRecovery, linksSourceTask, runtimeInfrastructureCases } from "./runtime-infrastructure.js";
 import type { NativeFaultRun } from "./runtime-native-fault.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
@@ -20,6 +21,25 @@ export function humanRetryControl(page: Page) {
 export function isHumanRetryRequest(request: { method(): string; url(): string }, taskId: string, workerId: string) {
   const path = new URL(request.url()).pathname;
   return request.method() === "POST" && (path === `/api/agents/${workerId}/wakeup` || path === `/api/issues/${taskId}/retry`);
+}
+/**
+ * The released Retry's own brief listener. A Retry can start in a fresh
+ * isolated workspace, so read the directory from that run's saved execution
+ * input, never from the task's earlier binding. It must be the worker's one
+ * retry of the original run for this task, inside the owned attempt root, and
+ * its script must already wait for the brief there.
+ */
+export async function releasedRetryListener(run: HeartbeatRun, expected: { companyId: string; workerId: string; taskId: string; originalRunId: string; gateName: string },
+  root = process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT) {
+  const profile = (run as { runnerProfileJson?: { nativeExecutionInput?: { workspace?: { cwd?: unknown }; binding?: { executionWorkspaceId?: unknown } } } }).runnerProfileJson;
+  const cwd = profile?.nativeExecutionInput?.workspace?.cwd, workspaceId = profile?.nativeExecutionInput?.binding?.executionWorkspaceId;
+  if (!root || run.companyId !== expected.companyId || run.agentId !== expected.workerId || run.retryOfRunId !== expected.originalRunId
+    || ![run.contextSnapshot?.issueId, run.contextSnapshot?.taskId].includes(expected.taskId) || typeof cwd !== "string" || typeof workspaceId !== "string") return null;
+  const real = await realpath(cwd).catch(() => null), ownedRoot = await realpath(root);
+  if (!real || !real.startsWith(`${ownedRoot}${path.sep}`)) return null;
+  const ready = await realpath(path.join(real, `${expected.gateName}.waiting`)).catch(() => null);
+  if (!ready || path.dirname(ready) !== real || (await readFile(ready, "utf8")).trim() !== "waiting") return null;
+  return { gate: path.join(real, expected.gateName), workspaceId };
 }
 export function gradeInfrastructureRetry(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -106,14 +126,28 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     // Sampled at the click, on the waiting page, and after the held chat phase.
     holdSamples.push(await workerRetryRuns()); state.heldWorkerRetryRunSamples = holdSamples;
     state.noAdmissionUnderBudget = holdSamples.every(count => count === 0);
-    // The brief is ready before the gate clears, so the released Retry can use it.
-    await writeFile((state.gate as { gate: string }).gate, `The authorized human has restored the execution gate. Use the preserved task context and save a non-plan website-delivery document with the exact reference Retry website ${ctx.input.nonce}, a semantic single-page Acorn website outline and an accessible signup action, then complete this original task normally. Do not create more tasks or external effects.`, "utf8");
     state.gatesClearedAt = Date.now();
     await ctx.input.api.post(`${root}/budgets/policies`, { scopeType: "agent", scopeId: worker.id, amount: 500, isActive: true, hardStopEnabled: true, unpricedUsagePolicy: "allow" });
     let restored = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`);
     if (restored.status === "error") { await ctx.input.api.post(`/api/agents/${worker.id}/clear-error`, {}); restored = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`); }
     state.budgetRestoredByHuman = !restored.lifecycleHolds?.includes("budget");
-    // No second click: the held Retry is the one accepted Retry.
+    // No second click: the held Retry is the one accepted Retry. A Retry may
+    // start in a fresh isolated workspace when the task does not own its
+    // directory, so bind the brief to the workspace the released run actually
+    // uses: wait for its listener there, then supply the brief.
+    const gateName = (state.gate as RuntimeBriefGate).gateName!;
+    const released = await pollUntil({ label: "Released Retry listens for the brief in its own workspace", deadlineAt: Date.now() + 180_000,
+      load: async () => {
+        const retries = (await ctx.allRuns()).filter(row => row.agentId === worker.id && row.id !== state.workerRunId);
+        const run = retries.length === 1 ? await ctx.input.api.get<HeartbeatRun>(`/api/heartbeat-runs/${retries[0]!.id}`) : null;
+        return { retries: retries.length, listener: run ? await releasedRetryListener(run, { companyId: ctx.input.fixtures.company.id, workerId: worker.id,
+          taskId: task.id, originalRunId: String(state.workerRunId), gateName }) : null };
+      },
+      accept: v => v.retries === 1 && !!v.listener,
+      reject: v => v.retries > 1 ? "The held Retry started more than once" : undefined });
+    const brief = { gate: released.listener!.gate };
+    state.retryWorkspaceId = released.listener!.workspaceId; state.retryWorkspaceFresh = released.listener!.workspaceId !== (state.gate as RuntimeBriefGate).boundWorkspaceId;
+    await writeFile(brief.gate, `The authorized human has restored the execution gate. Use the preserved task context and save a non-plan website-delivery document with the exact reference Retry website ${ctx.input.nonce}, a semantic single-page Acorn website outline and an accessible signup action, then complete this original task normally. Do not create more tasks or external effects.`, "utf8");
     const completed = await pollUntil({ label: "The held Retry starts once, by itself, after actual gate restoration", deadlineAt: Date.now() + 240_000,
       load: async () => ({ task: await ctx.input.api.get<Issue>(`/api/issues/${task.id}`), runs: await ctx.allRuns() }),
       accept: v => v.task.status === "done" && v.runs.length === 4 && v.runs.filter(row => row.id !== state.workerRunId).every(row => row.status === "succeeded"),
