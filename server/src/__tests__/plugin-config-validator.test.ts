@@ -48,3 +48,52 @@ describe("validateInstanceConfig secret-ref fields", () => {
     });
   });
 });
+
+describe("validateInstanceConfig secret-ref array items", () => {
+  const arraySchema = {
+    type: "object",
+    properties: {
+      keys: { type: "array", items: { type: "string", format: "secret-ref" } },
+      accounts: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { name: { type: "string" }, token: { type: "string", format: "secret-ref" } },
+          required: ["name", "token"],
+          additionalProperties: false,
+        },
+      },
+    },
+    additionalProperties: false,
+  } as unknown as JsonSchema;
+
+  it("accepts bindings the settings form saves in array items and nested array objects", () => {
+    const configJson = {
+      keys: [binding, { ...binding, version: 3 }],
+      accounts: [{ name: "primary", token: binding }],
+    };
+    expect(validateInstanceConfig(configJson, arraySchema)).toEqual({ valid: true });
+    expect(configJson.keys[0]).toEqual(binding);
+    expect(configJson.accounts[0]!.token).toEqual(binding);
+  });
+
+  it("still rejects malformed bindings and wrong types inside arrays", () => {
+    expect(validateInstanceConfig({ keys: [binding, { type: "secret_ref", secretId: "nope" }] }, arraySchema)).toMatchObject({
+      valid: false,
+      errors: [{ field: "/keys/1", message: "must be string" }],
+    });
+    expect(validateInstanceConfig({ accounts: [{ name: binding, token: binding }] }, arraySchema)).toMatchObject({
+      valid: false,
+      errors: [{ field: "/accounts/0/name", message: "must be string" }],
+    });
+  });
+});
+
+describe("validateInstanceConfig secret-ref parsing matches the secrets handler", () => {
+  it("rejects a padded secret id that the secrets handler would also refuse", () => {
+    expect(validateInstanceConfig({ apiKey: { ...binding, secretId: ` ${SECRET_ID} ` } }, schema)).toMatchObject({
+      valid: false,
+      errors: [{ field: "/apiKey", message: "must be string" }],
+    });
+  });
+});

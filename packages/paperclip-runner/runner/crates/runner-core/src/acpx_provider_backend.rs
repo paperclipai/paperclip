@@ -966,6 +966,7 @@ pub struct AcpxCommandExecutor {
     fail_after_state_rename: bool,
     launch_profile: Option<AcpxLaunchProfile>,
     recovery_pending_effects: Option<usize>,
+    failed_turn_end_restart: Option<String>,
 }
 
 // The durable command's turn and the live provider callback have separate IDs.
@@ -1005,6 +1006,7 @@ impl AcpxCommandExecutor {
             session: None,
             restore_checked: false,
             recovery_pending_effects: None,
+            failed_turn_end_restart: None,
             restore_error: None,
             persistence_error: None,
             #[cfg(test)]
@@ -1927,6 +1929,18 @@ impl AcpxCommandExecutor {
 
     fn start_turn(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
         turn_start_request(payload)?;
+        if let Some(error) = self.failed_turn_end_restart.take() {
+            if self.session.is_none()
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.lifecycle == "closed")
+            {
+                return Err(DurableRunnerError::invalid(format!(
+                    "ACPX turn start failed closed: {error}"
+                )));
+            }
+        }
         let reopenable = self.session.is_none()
             && self.state.as_ref().is_some_and(|state| {
                 state.identity.is_some()
@@ -1997,7 +2011,7 @@ impl AcpxCommandExecutor {
         let (provider_process_will_be_replaced, previous_process_id) = self
             .session
             .as_ref()
-            .map(|session| match session.prepared_from_process_id() {
+            .map(|session| match session.restarted_after_turn_from() {
                 Some(process_id) => (true, process_id),
                 None => (session.generation_has_run_turn(), session.process_id()),
             })
@@ -2611,7 +2625,7 @@ impl AcpxCommandExecutor {
             || self
                 .session
                 .as_ref()
-                .is_none_or(AcpxProviderSession::awaits_run_rebind)
+                .is_none_or(AcpxProviderSession::awaits_next_turn)
         {
             return Ok(());
         }
@@ -2622,7 +2636,7 @@ impl AcpxCommandExecutor {
         if self
             .session
             .as_ref()
-            .is_some_and(AcpxProviderSession::awaits_run_rebind)
+            .is_some_and(AcpxProviderSession::awaits_next_turn)
         {
             return Ok(());
         }
@@ -2907,6 +2921,10 @@ impl CommandExecutor for AcpxCommandExecutor {
 
     fn prepare_for_park(&mut self, deadline: Instant) -> Result<bool, DurableRunnerError> {
         self.prepare_session_for_park(deadline)
+    }
+
+    fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
+        self.restart_session_after_turn()
     }
 
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {

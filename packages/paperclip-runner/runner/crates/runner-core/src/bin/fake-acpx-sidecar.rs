@@ -299,6 +299,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     source_pending_completion = Some(turn.to_owned());
                     continue;
                 }
+                if fault == "pending-input" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.input_requested",
+                        &source_run,
+                        turn,
+                        json!({"requestId":"input-at-terminal","questionSet":{
+                            "schema":"paperclip.question_set.v1",
+                            "questions":[{"id":"target","prompt":"Which target?","required":true,
+                                "answerMode":"single_select","options":[{"id":"first","label":"First"}]}]}}),
+                    )?;
+                    next_sequence += 1;
+                }
                 write_turn_event(
                     &mut stdout,
                     next_sequence,

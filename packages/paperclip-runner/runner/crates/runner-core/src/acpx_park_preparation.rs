@@ -1,18 +1,15 @@
 use std::time::Instant;
 
 use super::{
-    await_provider_lifetime_fence, AcpxCommandExecutor, AcpxProviderDescriptor, AcpxProviderSession,
+    await_provider_lifetime_fence, goal_is_dormant, AcpxCommandExecutor, AcpxProviderDescriptor,
+    AcpxProviderSession,
 };
 use crate::durable::DurableRunnerError;
 use crate::provider_bridge::AuthorizedToolSet;
 
 impl AcpxCommandExecutor {
-    pub(super) fn prepare_session_for_park(
-        &mut self,
-        deadline: Instant,
-    ) -> Result<bool, DurableRunnerError> {
-        self.ensure_persistence_healthy()?;
-        let eligible = self.candidate_admission().is_none()
+    fn generation_restartable(&self, session_ready: fn(&AcpxProviderSession) -> bool) -> bool {
+        self.candidate_admission().is_none()
             && self.state.as_ref().is_some_and(|state| {
                 state.descriptor.agent == "claude"
                     && state.lifecycle == "session_open"
@@ -22,12 +19,47 @@ impl AcpxCommandExecutor {
                     && !state.provider_exit_unconfirmed
                     && state.pending_events.is_empty()
                     && state.pending_runtime_requests.is_empty()
+                    && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
             })
-            && self
-                .session
-                .as_ref()
-                .is_some_and(AcpxProviderSession::can_prepare_next_generation);
-        if !eligible {
+            && self.session.as_ref().is_some_and(session_ready)
+    }
+
+    pub(super) fn restart_session_after_turn(&mut self) -> Result<(), DurableRunnerError> {
+        self.ensure_persistence_healthy()?;
+        if !self.generation_restartable(AcpxProviderSession::can_restart_after_turn) {
+            return Ok(());
+        }
+        let session = self.session.as_mut().expect("checked ACPX session");
+        if session.settle_park_observation().is_err()
+            || !self.generation_restartable(AcpxProviderSession::can_restart_after_turn)
+        {
+            return Ok(());
+        }
+        let restarted = self
+            .session
+            .as_mut()
+            .expect("checked ACPX session")
+            .restart_after_turn(None);
+        let Err(error) = restarted else {
+            return Ok(());
+        };
+        let state = self
+            .state
+            .as_mut()
+            .expect("ACPX state remains available after a turn-end restart");
+        state.lifecycle = "closed".to_owned();
+        self.context.provider_turn_id = None;
+        self.session = None;
+        self.failed_turn_end_restart = Some(error.to_string());
+        self.save_state()
+    }
+
+    pub(super) fn prepare_session_for_park(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<bool, DurableRunnerError> {
+        self.ensure_persistence_healthy()?;
+        if !self.generation_restartable(AcpxProviderSession::can_prepare_next_generation) {
             return Ok(false);
         }
         let prepared = self
@@ -36,7 +68,7 @@ impl AcpxCommandExecutor {
             .expect("checked ACPX session")
             .prepare_next_generation(deadline);
         match prepared {
-            Ok(()) => Ok(true),
+            Ok(restarted) => Ok(restarted),
             Err(error) => {
                 self.recover_failed_park_preparation()?;
                 Err(DurableRunnerError::invalid(format!(

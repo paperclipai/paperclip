@@ -1933,10 +1933,32 @@ judged through that boot's row:
 - no row (a boot from before the lease): the record stays unprovable.
 
 A record with a recorded process group stays unprovable across hosts, because
-agent processes may outlive their server. The lease is off on a Railway
-deployment with an exclusive volume, which proves a replaced deployment from its
-own identity. A stateless Railway service keeps it.
-`PAPERCLIP_CONTROLLER_INSTANCE_LEASE=on|off` overrides this.
+agent processes may outlive their server. The lease is enabled on volume-backed
+Railway services too: a process can crash and restart inside the same deployment,
+and some saved ownership records do not contain a deployment identity.
+`PAPERCLIP_CONTROLLER_INSTANCE_LEASE=off` explicitly disables it.
+
+Native execution and restart claims register held preparation with this lease before
+a runner PID or checkpoint exists. Passive identity reads do not register work.
+Restart recovery uses the recorded controller
+boot and last write to prove its owner stopped or to fence it after the existing
+grace period when the PID space is foreign or unknown. Within the same readable
+PID space, the existing process and start-time proof still governs takeover.
+A live owner or a grace period keeps the preparation held, with a
+scheduled recovery check. Repeating the same evidence wait preserves its last-write
+timestamp so the recovery check cannot keep extending its own grace period.
+After owner proof, the normal launch, checkpoint, provider-evidence and admission
+checks still govern resumption; controller fencing alone does not prove an agent
+process stopped or authorize repeating its work.
+
+Older native controller records with no verifiable boot lease remain held. Recovery
+exposes the existing board stop-confirmation action for an unknown or foreign PID
+space. It requires `runtime:confirm_owner_stop` and confirmation of the exact run,
+boot, PID, process start and recorded host. A changed owner rejects the confirmation.
+The receipt only permits normal recovery to inspect and resume the saved work.
+Scoped recovery wakes also select fenced preparations with no runner process or
+checkpoint yet. They use the existing finite expired-run inventory and normal
+restart classifier; a missing checkpoint cannot silently discard that wake.
 
 A record saved before its owner was fully recorded (`no_owner_stamp`,
 `missing_identity`, `process_space_unrecorded`) stays unprovable and is never
@@ -4900,6 +4922,19 @@ dispatch retains a bounded retry obligation rather than losing its deadline.
 Upgrade diagnostics retain their existing `ready` meaning and add bounded retained-pointer
 header evidence. That inventory is preliminary, reports partial coverage, and
 does not certify workspace durability or volume removal.
+
+The upgrade census separates current execution from an old, unowned native
+preparation that recovery explicitly retained as `awaiting_evidence`. This requires
+an observed preparation with no result, failure, process identity, or checkpoint
+header, and an expired, recorded owner from a different controller boot. Such a
+run is counted as `retainedBlockedRuns`, rather than `activeRuns` or
+`recoverableRuns`. It remains unchanged and held for its normal recovery path;
+the observation does not prove that its old controller stopped or authorize
+replay, resource release, or volume removal. A run registered in the current
+process still blocks unless it has positive recovery evidence. Before/after
+execution counters, pending wake operations, drain state, and a truncated census
+continue to prevent readiness. Persisted queued wakes are not deleted by an
+upgrade; the pending wake counter measures in-process admission operations.
 
 `importNativeControllerRecovery` is an internal one-source operation for the
 migration owner while old controller files remain available. It requires the

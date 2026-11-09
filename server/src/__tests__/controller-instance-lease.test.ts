@@ -13,6 +13,7 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../services/environment-lease-
 import { proveOwnerGone, type LocalOwnerStamp } from "../services/owner-proof.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import { beginIdleTrackedWork, readTaskDrain } from "../services/task-admission.js";
+import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "../services/native-runtime/native-restart-recovery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -91,6 +92,24 @@ suite("controller instance lease: a replaced container's records are provable", 
     const live = await otherBoot({ liveForMs: 60_000 });
     registerControllerInstanceDb(db);
     expect(await proveOwnerGone(stampOf(live))).toEqual({ verdict: "alive", reason: "controller_lease_held" });
+  });
+
+  it("tracks native preparation before a runner exists and proves a fenced foreign controller", async () => {
+    const replaced = await otherBoot({ expiredMsAgo: 600_000 });
+    await startHere({}, false);
+    const owner = await currentNativeControllerIdentity();
+    await tickControllerInstanceLease();
+    expect(await db.select().from(controllerInstances).where(eq(controllerInstances.bootId, owner.bootId))).toEqual([]);
+    currentControllerProcessStamp();
+    await tickControllerInstanceLease();
+    expect(await db.select().from(controllerInstances).where(eq(controllerInstances.bootId, owner.bootId))).toHaveLength(1);
+    const decision = await evaluateNativeControllerTakeover({ now: new Date(), owner: {
+      controllerBootId: replaced, controllerPid: 7, controllerHostHash: "old-container",
+      controllerProcessStartedAt: new Date(minutesAgo(15)), updatedAt: new Date(minutesAgo(10)),
+      leaseOwner: "old-preparation", leaseExpiresAt: new Date(minutesAgo(5)),
+    }, isProcessAlive: () => { throw new Error("A foreign PID must not be inspected locally"); } });
+    expect(decision).toEqual({ allowed: true, reason: "controller_fenced" });
+    expect(await proveControllerInstance(db, replaced, null)).toBe("fenced");
   });
 
   it("keeps an owner alive (and watched) through the grace, and for work written after an idle lapse", async () => {
@@ -396,7 +415,7 @@ suite("controller instance lease: a replaced container's records are provable", 
     expect(lost).toHaveBeenCalledWith("fenced");
   });
 
-  it("records a graceful stop, and is off on a volume-exclusive Railway deployment or when disabled", async () => {
+  it("records a graceful stop and keeps native preparation fencing on volume-exclusive deployments", async () => {
     await startHere();
     await stopControllerInstanceLease(db);
     expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("stopped");
@@ -410,7 +429,7 @@ suite("controller instance lease: a replaced container's records are provable", 
     expect(controllerInstanceLeaseEnabled()).toBe(true);
     vi.stubEnv("RAILWAY_VOLUME_ID", "v");
     vi.stubEnv("RAILWAY_VOLUME_MOUNT_PATH", "/data");
-    expect(controllerInstanceLeaseEnabled()).toBe(false);
+    expect(controllerInstanceLeaseEnabled()).toBe(true);
     vi.stubEnv("PAPERCLIP_CONTROLLER_INSTANCE_LEASE", "on");
     expect(controllerInstanceLeaseEnabled()).toBe(true);
     vi.unstubAllEnvs();

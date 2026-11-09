@@ -576,6 +576,16 @@ describe("openapi routes", () => {
     expect(dismiss.description).toContain("viewers may dismiss their own");
   });
 
+  it("tells agents that Agent Chat is always on instead of advertising a retired toggle", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const experimental = res.body.paths["/api/instance/settings/experimental"];
+    for (const operation of [experimental.get, experimental.patch]) {
+      expect(operation.description).toContain("Agent Chat is always on");
+      expect(operation.description).toContain("enableAgentChat is a retired compatibility key");
+      expect(operation.description).toContain("tell them it is already on");
+    }
+  });
+
   it("tells agents that archiving keeps a status card and where a person restores it", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const patch = res.body.paths["/api/status-cards/{id}"].patch;
