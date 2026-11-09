@@ -58,6 +58,7 @@ export function AiConnectionSelect({
     .filter(
       (c) =>
         c.companyId === requirement.companyId &&
+        (!explicitAccount || c.provider === requirement.provider) &&
         isAiConnectionCompatible(
           c,
           adapterType,

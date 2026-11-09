@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AiManagedConnectionSummary } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AiConnectionSelect } from "./AiConnectionSelect";
 import { HarnessPoolMemberFields, type HarnessPoolMemberDraft } from "./HarnessPoolMemberFields";
 import type { AiProviderSetup } from "./AiProviderSetup";
 
@@ -162,4 +163,57 @@ it.each([
   await mount({ id: "member", harness: { type: "codex" }, model: "" });
   await open("Connection"); await choose("First");
   expect(latest.connection).toBeUndefined();
+});
+
+
+it.each([
+  { harness: "claude_code" as const, provider: "anthropic" as const },
+  { harness: "codex" as const, provider: "openai" as const },
+])("only offers $provider accounts for the $harness pool harness", async ({ harness, provider }) => {
+  mocks.accounts.mockResolvedValue({ currentUserId: "owner", canManageConnections: true, connections: [
+    account("First", { provider: "openrouter", method: "api_key", routing: { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] } }),
+    account("Second", { provider }),
+  ] });
+  await mount({ id: "member", harness: { type: harness }, model: "" });
+  await open("Connection");
+  const options = [...document.querySelectorAll('[role="option"]')];
+  expect(options.some(option => option.textContent?.includes("First"))).toBe(false);
+  await choose("Second");
+  expect(latest.connection).toMatchObject({ connectionId: ids.Second!.id, provider });
+});
+
+it.each([
+  { harness: "claude_code" as const, provider: "anthropic" as const },
+  { harness: "codex" as const, provider: "openai" as const },
+])("marks a saved OpenRouter account incompatible for the $harness pool harness", async ({ harness, provider }) => {
+  const saved = { ...binding("First"), provider: "openrouter" as const, method: "api_key" as const };
+  mocks.accounts.mockResolvedValue({ currentUserId: "owner", canManageConnections: true, connections: [
+    account("First", { provider: "openrouter", method: "api_key", routing: { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] } }),
+    account("Second", { provider }),
+  ] });
+  await mount({ id: "member", harness: { type: harness }, connection: saved, model: "" });
+  await open("Connection");
+  const option = [...document.querySelectorAll('[role="option"]')].find(item => item.textContent?.includes("First"));
+  expect(option?.getAttribute("aria-disabled")).toBe("true");
+  expect(option?.textContent).toContain("Incompatible");
+  await choose("Second");
+  expect(latest.connection).toMatchObject({ connectionId: ids.Second!.id, provider });
+});
+
+it.each([false, true])("keeps OpenRouter selectable for OpenCode pool members (routing=%s)", async routed => {
+  mocks.accounts.mockResolvedValue({ currentUserId: "owner", canManageConnections: true, connections: [
+    account("First", { provider: "openrouter", method: "api_key", ...(routed ? { routing: { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] } as const } : {}) }),
+  ] });
+  await mount({ id: "member", harness: { type: "opencode" }, model: "" });
+  await open("Connection"); await choose("First");
+  expect(latest.connection).toMatchObject({ connectionId: ids.First!.id, provider: "openrouter", method: "api_key" });
+});
+
+it.each(["claude_local", "codex_local"])("preserves ordinary routed OpenRouter selection for %s outside pools", async adapterType => {
+  const onChange = vi.fn();
+  flushSync(() => root.render(<AiConnectionSelect adapterType={adapterType} requirement={{ companyId: "company", provider: adapterType === "claude_local" ? "anthropic" : "openai" }}
+    currentUserId="owner" agentId="agent" agentName="Agent" onConnect={() => {}} onChange={onChange}
+    connections={[account("First", { provider: "openrouter", method: "api_key", routing: { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] } })]} />));
+  await open("Connection"); await choose("First");
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ connectionId: ids.First!.id, provider: "openrouter", method: "api_key" }));
 });
