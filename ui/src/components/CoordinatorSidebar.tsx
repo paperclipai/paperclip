@@ -164,6 +164,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
               className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/coordinator-new:opacity-100 group-focus-within/coordinator-new:opacity-100 pointer-coarse:opacity-100 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>}
           </div>
           <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />
+          {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} rail={rail} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>More</span></button></FlyoutTrigger>
@@ -186,9 +187,6 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
           </FlyoutContent>
         </Flyout>
       </div>
-      {orderedPins.length > 0 && <div className="design-sidebar-pins"><SidebarSection label="Pinned">
-        <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} rail={rail} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />
-      </SidebarSection></div>}
       {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
       {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents">
         <RecentNavigationList>
