@@ -7263,6 +7263,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
     const commandDeadline = Date.now() + turnStartTimeoutMs;
+    const heldCalls = this.#core;
+    if (heldCalls && !heldCalls.semanticToolResultsSettled()) {
+      await heldCalls.recoverPendingSemanticInputs();
+      while (heldCalls.semanticToolResultsInFlight() && Date.now() < commandDeadline) {
+        this.#assertStartupOpen();
+        this.#throwIfFailed();
+        await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      this.#assertStartupOpen();
+      this.#throwIfFailed();
+    }
     const compactionTurn = params[COMPACTION_TURN] === true;
     const compactionPayload = compactionTurn ? runnerdCompactionTurnPayload(this.options.provider ?? "codex") : null;
     const input = Array.isArray(params.input) ? params.input.map(record) : [];

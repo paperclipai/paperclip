@@ -764,6 +764,14 @@ describe("remote controller restart adoption", () => {
       await rm(stateBase, { recursive: true, force: true });
     }
   });
+  it("answers a local run's held Paperclip tool calls after a restart (restart chaos t101)", async () => {
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    await createRunnerdBackend({ db: leaseDb(execution), execution, runnerInstanceId: "runner" });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    expect((state.createTransport.mock.calls.at(-1)![0] as { recoverSemanticToolInput?: unknown }).recoverSemanticToolInput)
+      .toEqual(expect.any(Function));
+  });
   it("rejects a replaced sandbox before reading or mutating it", async () => {
     const { execute, target } = fixture();
     target.sandboxLeaseAcquisition.providerLeaseId = "replacement";

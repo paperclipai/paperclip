@@ -16500,11 +16500,11 @@ async function createRunnerdBackendWithinSessionClaim(
         stateDirectory: root,
         runnerBinary: controllerRunnerBinary,
         runnerArtifact: input.controllerPersistence?.runnerArtifact ?? providerPackAuthority?.runnerArtifact,
-        recoverSemanticToolInput: input.controllerPersistence ? call => {
+        recoverSemanticToolInput: call => {
           const current = sessionToolAuthorityEpochs.get(sessionScopeId);
           if (!current || current.runId !== call.correlation.runId) throw new Error("native_tool_authority_epoch_revoked");
           return current.recover({ tool: call.operationId, callId: call.callId, arguments: call.input });
-        } : undefined,
+        },
         codexCommand: remoteCodexBinary ?? undefined,
         sourceCodexHome: remoteTarget
           ? resolveSourceCodexHome(resolveNativeProviderEnvironment(input.execution.provider, runnerEnvironment))

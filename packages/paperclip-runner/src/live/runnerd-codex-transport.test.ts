@@ -1398,6 +1398,53 @@ it("refuses a terminal call that arrives before a held call's result (restart ch
   }
 }, 20_000);
 
+it("answers a held call before starting the next turn (restart chaos t101)", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-held-before-turn-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  bundle.transport.setServerRequestHandler(vi.fn(async () => ({ success: true, contentItems: [] })));
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: codexSemanticToolSpecs() });
+    const order: string[] = [];
+    let held = true;
+    let inFlightChecks = 0;
+    vi.spyOn(core, "semanticToolResultsSettled").mockImplementation(() => !held);
+    vi.spyOn(core, "recoverPendingSemanticInputs").mockImplementation(async () => {
+      order.push("recover");
+    });
+    vi.spyOn(core, "semanticToolResultsInFlight").mockImplementation(() => {
+      inFlightChecks += 1;
+      if (inFlightChecks < 3) return true;
+      if (held) order.push("answered");
+      held = false;
+      return false;
+    });
+    const queueCommand = core.queueCommand.bind(core);
+    vi.spyOn(core, "queueCommand").mockImplementation((type, ...rest) => {
+      order.push(type);
+      return queueCommand(type, ...rest);
+    });
+    const turnStarted = expectTurnStarted(bundle.transport.notifications()[Symbol.asyncIterator]());
+    void turnStarted.catch(() => undefined);
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Continue after the restart." }] });
+    await turnStarted;
+    expect(order.indexOf("recover")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("recover")).toBeLessThan(order.indexOf("answered"));
+    expect(order.indexOf("answered")).toBeLessThan(order.indexOf("turn.start"));
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
   async (mode) => {
