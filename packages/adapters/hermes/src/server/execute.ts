@@ -52,6 +52,7 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { configureHermesRuntimeTools } from "./runtime-tools-config.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
 
 // ---------------------------------------------------------------------------
@@ -504,6 +505,20 @@ export async function execute(
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
 
+  // Hermes consumes MCP server definitions from config.yaml. Expose only the
+  // current Paperclip runtime-tool bundle through a temporary profile overlay;
+  // leave the user's persistent config and the selected Hermes profile intact.
+  const runtimeToolsConfig = await configureHermesRuntimeTools(env.HERMES_HOME, ctx.runtimeTools);
+  if (runtimeToolsConfig) {
+    env.HERMES_HOME = runtimeToolsConfig.homeDir;
+    if (toolsets) {
+      const toolsetIndex = args.indexOf("-t");
+      if (toolsetIndex >= 0) {
+        args[toolsetIndex + 1] = [...new Set([...toolsets.split(","), runtimeToolsConfig.toolset])].join(",");
+      }
+    }
+  }
+
   // Scope the overlay to this child process. Read the current bundle on every
   // invocation; never infer its availability from a persisted session ID.
   // Preserve an operator's explicit overlay before Paperclip's instructions.
@@ -582,14 +597,20 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+  const result = await (async () => {
+    try {
+      return await runChildProcess(ctx.runId, hermesCmd, args, {
+        cwd,
+        env,
+        timeoutSec,
+        graceSec,
+        onLog: wrappedOnLog,
+        onSpawn: ctx.onSpawn,
+      });
+    } finally {
+      await runtimeToolsConfig?.cleanup();
+    }
+  })();
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
