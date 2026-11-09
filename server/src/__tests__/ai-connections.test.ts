@@ -2230,7 +2230,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       ...input,
       adapterType: "claude_local",
       responsibleUserId: owner,
-      binding: { provider: "anthropic", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId },
+      binding: { provider: "anthropic", method: "api_key", mode: "delegated", connectionId: account.connectionId, grantId: account.grantId },
       config: { env: { HOME: configuredHome, CLAUDE_CONFIG_DIR: configuredConfigDir } },
     });
     try {

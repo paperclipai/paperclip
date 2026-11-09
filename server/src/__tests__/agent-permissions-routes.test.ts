@@ -511,9 +511,14 @@ describe("agent permission routes", () => {
     mockAgentService.list.mockResolvedValue([
       {
         ...baseAgent,
+        harnessVerifiedDigest: "private-verification-proof",
+        harnessVerifiedAt: new Date("2026-11-09T00:00:00Z"),
         adapterConfig: {
           command: "pnpm agent:run",
           env: {
+            PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: "cache",
+            PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED: "true",
+            PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_DAYS: "14",
             LEGACY_VALUE: plaintextValue,
             PLAIN_VALUE: { type: "plain", value: plaintextValue },
             SECRET_REFERENCE: {
@@ -553,6 +558,11 @@ describe("agent permission routes", () => {
       },
     });
     expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+    expect(res.body[0]).not.toHaveProperty("harnessVerifiedDigest");
+    expect(res.body[0]).not.toHaveProperty("harnessVerifiedAt");
+    expect(res.body[0].adapterConfigDefaults).toMatchObject({
+      profileImportMode: "cache", transcriptRetentionEnabled: true, transcriptRetentionDays: 14,
+    });
   }, 20_000);
 
   // Mutation routes echo the stored row back, so they leak the same values the

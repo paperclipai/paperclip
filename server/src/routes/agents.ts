@@ -2971,13 +2971,15 @@ export function agentRoutes(
   ): T {
     if (!agent || typeof agent !== "object") return agent;
     // A raw row must not carry the server-only harness verification digest.
-    const { harnessVerifiedDigest: _digest, harnessVerifiedAt: _verifiedAt, ...publicAgent } = agent as Record<string, unknown>;
-    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return publicAgent as T;
+    const publicAgent = { ...agent };
+    Reflect.deleteProperty(publicAgent, "harnessVerifiedDigest");
+    Reflect.deleteProperty(publicAgent, "harnessVerifiedAt");
+    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return publicAgent;
     return {
       ...publicAgent,
       adapterConfig: redactAgentAdapterConfig(agent.adapterConfig as Record<string, unknown>),
       adapterConfigDefaults: agentAdapterConfigDisplayDefaults(agent.adapterConfig as Record<string, unknown>),
-    } as T;
+    };
   }
 
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
