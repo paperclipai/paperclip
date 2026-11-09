@@ -15,8 +15,9 @@ it.each(["backup instance restore snapshot", "database backups list restore"])("
   expect(description).toContain("separate, empty PostgreSQL database, never over the live one");
 });
 
-// The route answers a successful manual backup with 201, so the catalog must not document a 200.
-it("documents the status the backup route returns on success", () => {
+// The route answers a successful manual backup with 201. This guards the published document, which agents and
+// clients read; the registration and the CREATED_OPERATIONS fixup in openapi.ts both supply that 201.
+it("publishes the status the backup route returns on success", () => {
   const responses = buildOpenApiDocument().paths["/api/instance/database-backups"].post.responses;
   expect(Object.keys(responses)).toContain("201");
   expect(Object.keys(responses)).not.toContain("200");
