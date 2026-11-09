@@ -588,6 +588,8 @@ Agent configuration and runtime endpoints:
 
 ```sh
 npx paperclipai agent permissions:update <agent-id> --payload-json '{"canCreateAgents":true,"canCreateSkills":true,"canAssignTasks":true}'
+npx paperclipai agent permission:grant <agent-id> commentary:view
+npx paperclipai agent permission:revoke <agent-id> commentary:view
 npx paperclipai agent configuration <agent-id>
 npx paperclipai agent config-revisions <agent-id>
 npx paperclipai agent config-revision:get <agent-id> <revision-id>
@@ -604,6 +606,13 @@ npx paperclipai agent instructions-file:get <agent-id> --path AGENTS.md
 npx paperclipai agent instructions-file:put <agent-id> --path AGENTS.md --content-file ./AGENTS.md
 npx paperclipai agent instructions-file:delete <agent-id> --path AGENTS.md --yes
 ```
+
+`permission:grant` and `permission:revoke` require a Board login with
+`users:manage_permissions` in the agent's company. They change one permission
+key and preserve all other grants. A grant applies without starting a new run.
+Granting a key replaces that key's scope with an unscoped company grant;
+revoking removes the key. Use `agent get <agent-id> --json` to inspect
+`access.grants`. These commands do not reactivate an inactive membership.
 
 Agent config, instructions, skills, project env, environment, secret, and workspace edits affect the next run. Active runs finish with the config they started with. When a saved session, reused workspace, or sandbox lease no longer matches the effective next-run config, Paperclip may start fresh execution and records non-sensitive freshness categories in run result JSON and workspace operation logs.
 
