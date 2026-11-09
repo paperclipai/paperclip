@@ -49,6 +49,7 @@ const RESULT_TRIGGER_EVENTS = new Set(["run.result.proposed", "run.result.accept
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
 export const CHILD_WAKE_GRACE_MS = 60_000;
+export const CHILD_STALL_CHECK_MS = 10_000;
 
 export function childrenPending(children: ReadonlyArray<{ status: string | null }> | null): boolean {
   return !children || children.some(child => !["done", "cancelled", "blocked"].includes(child.status ?? ""));
@@ -167,6 +168,7 @@ export class TaskObserver {
   issue: Json | null = null;
   private restCandidateSince: number | null = null;
   private childrenSettledAt: number | null = null;
+  private childStallCheckedAt: number | null = null;
   private stallSince: number | null = null;
   /** First sample of the current stretch with the server ready (H1 holds the pause across it). */
   private readySince: number | null = null;
@@ -409,6 +411,10 @@ export class TaskObserver {
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();
     await this.governanceStep(sample, now);
+    if (await this.observeChildStalls(now)) {
+      this.restCandidateSince = null;
+      this.childrenSettledAt = null;
+    }
     if (await this.maybeFollowUp(sample, now)) {
       // The comment response is not the agent's answer: require fresh samples.
       this.restCandidateSince = null;
@@ -518,11 +524,6 @@ export class TaskObserver {
       const blocked = (children ?? []).filter(child => child.status === "blocked").map(child => child.id);
       if (!pending && blocked.length && this.childrenSettledAt === null) {
         this.timeline.add("task_child_blocked", { taskId: this.plan.taskId, childIssueIds: blocked });
-        this.record.stalledChildren = [...new Set([...(this.record.stalledChildren ?? []), ...blocked])];
-        if (await this.retryBlockedChildren(blocked, now)) {
-          this.restCandidateSince = null;
-          return;
-        }
       }
       this.childrenSettledAt = pending ? null : (this.childrenSettledAt ?? now);
       if (pending || now - this.childrenSettledAt! < CHILD_WAKE_GRACE_MS) {
@@ -545,10 +546,31 @@ export class TaskObserver {
   }
 
   /** Exactly one click, with the same body ui/src/hooks/useTaskRetry.ts sends. */
+  private async observeChildStalls(now: number): Promise<boolean> {
+    if (this.plan.workload !== "M1" || !this.record.issueId) return false;
+    if (this.childStallCheckedAt !== null && now - this.childStallCheckedAt < CHILD_STALL_CHECK_MS) return false;
+    this.childStallCheckedAt = now;
+    const rows = await this.api.get<Json[]>(`/api/companies/${this.lab.companyId}/issues?view=index&parentIds=${encodeURIComponent(this.record.issueId)}&limit=20`)
+      .catch(() => null);
+    const blocked = (Array.isArray(rows) ? rows : []).filter(row => row.parentId === this.record.issueId && row.status === "blocked").map(row => String(row.id));
+    for (const childIssueId of blocked) {
+      const recovery = await this.api.get<Json>(`/api/issues/${childIssueId}/recovery-actions`).catch(() => null);
+      const actions = Array.isArray(recovery?.actions) ? recovery.actions as Json[] : [];
+      const latest = (recovery?.active as Json | null | undefined) ?? actions[0] ?? null;
+      const recoveryActionId = typeof latest?.id === "string" ? latest.id : null;
+      const stalls = this.record.childStalls ??= [];
+      if (!stalls.some(stall => stall.childIssueId === childIssueId && stall.recoveryActionId === recoveryActionId)) {
+        stalls.push({ childIssueId, recoveryActionId });
+        this.timeline.add("task_child_stalled", { taskId: this.plan.taskId, childIssueId, recoveryActionId });
+      }
+    }
+    return this.retryBlockedChildren(blocked, now);
+  }
+
   private async retryBlockedChildren(childIds: readonly string[], now: number): Promise<boolean> {
     let clicked = false;
     for (const childIssueId of childIds) {
-      if ((this.record.childRetries ?? []).some(attempt => attempt.childIssueId === childIssueId)) continue;
+      if ((this.record.childRetries ?? []).some(attempt => attempt.childIssueId === childIssueId && attempt.accepted)) continue;
       const child = await this.api.get<Json>(`/api/issues/${childIssueId}`).catch(() => null);
       const interruption = child?.interruption as Json | null | undefined;
       if (interruption?.canRetry !== true) continue;
@@ -567,7 +589,6 @@ export class TaskObserver {
       this.timeline.add("task_child_retry_clicked", { taskId: this.plan.taskId, ...attempt });
       clicked = clicked || attempt.accepted === true;
     }
-    if (clicked) this.childrenSettledAt = null;
     return clicked;
   }
 
@@ -811,7 +832,7 @@ export class TaskObserver {
       files, commands, workspacePath,
       ...(this.plan.workload === "B5" ? { benchProgressObserved: this.record.benchProgressSeen?.length ?? 0 } : {}),
       ...(definition.collect.childDocuments ? { children: await this.collectChildren(issueId),
-        stalledChildren: this.record.stalledChildren ?? [], stallWakes: await this.collectStallWakes(issueId) } : {}),
+        childStalls: this.record.childStalls ?? [], stallWakes: await this.collectStallWakes(issueId) } : {}),
       ...(this.plan.workload === "G1" ? { approvals: await this.collectApprovals(issueId) } : {}),
       ...(this.plan.workload === "H1" ? await this.finalPauseCheck(issueId) : {}),
       ...(this.record.governance ? { governance: this.record.governance } : {}),

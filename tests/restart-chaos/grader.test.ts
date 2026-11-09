@@ -226,12 +226,16 @@ describe("T-oracles", () => {
     const withChildRetry = { ...done, childRetries: [{ childIssueId: "c2", at: 1, observedRunId: "r", httpStatus: 200, accepted: true, error: null }] };
     expect(gradeR3(done)).toMatchObject({ verdict: "n/a" });
     expect(gradeR3(withChildRetry)).toMatchObject({ verdict: "fail", detail: "retry_needed_on_subtask_1 (c2)" });
-    const stalled = { issueStatus: "done", documents: {}, agentComments: [], files: {}, commands: {}, workspacePath: null, stalledChildren: ["c2"] };
-    expect(stallWakeChecks({ ...stalled, stallWakes: [{ stalledIssueId: "c2", recoveryActionId: "a1" }] } as never)[0]).toMatchObject({ ok: true });
-    expect(stallWakeChecks({ ...stalled, stallWakes: [] } as never)[0]).toMatchObject({ ok: false, detail: "stalled=1 wakes=0 unwoken=c2" });
-    expect(stallWakeChecks({ ...stalled, stallWakes: [{ stalledIssueId: "c2", recoveryActionId: "a1" }, { stalledIssueId: "c2", recoveryActionId: "a1" }] } as never)[0])
-      .toMatchObject({ ok: false });
-    expect(stallWakeChecks({ ...stalled, stalledChildren: [] } as never)).toEqual([]);
+    const stalled = { issueStatus: "done", documents: {}, agentComments: [], files: {}, commands: {}, workspacePath: null,
+      childStalls: [{ childIssueId: "c2", recoveryActionId: "a1" }] };
+    const wakeA1 = { stalledIssueId: "c2", recoveryActionId: "a1" };
+    expect(stallWakeChecks({ ...stalled, stallWakes: [wakeA1] } as never)[0]).toMatchObject({ ok: true });
+    expect(stallWakeChecks({ ...stalled, stallWakes: [] } as never)[0]).toMatchObject({ ok: false, detail: "stalls=1 wakes=0 unwoken=c2:a1" });
+    expect(stallWakeChecks({ ...stalled, stallWakes: [wakeA1, wakeA1] } as never)[0]).toMatchObject({ ok: false });
+    const twoStalls = { ...stalled, childStalls: [...stalled.childStalls, { childIssueId: "c2", recoveryActionId: "a2" }] };
+    expect(stallWakeChecks({ ...twoStalls, stallWakes: [wakeA1] } as never)[0]).toMatchObject({ ok: false, detail: "stalls=2 wakes=1 unwoken=c2:a2" });
+    expect(stallWakeChecks({ ...twoStalls, stallWakes: [wakeA1, { stalledIssueId: "c2", recoveryActionId: "a2" }] } as never)[0]).toMatchObject({ ok: true });
+    expect(stallWakeChecks({ ...stalled, childStalls: [] } as never)).toEqual([]);
   });
 
   it("grades B1 by running the tests and the CLI", () => {

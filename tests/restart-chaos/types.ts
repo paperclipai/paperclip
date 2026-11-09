@@ -222,7 +222,7 @@ export interface OracleArtifacts {
   /** B5: distinct `.bench/progress` values the harness itself saw while the task was live. */
   benchProgressObserved?: number;
   children?: Array<{ id: string; title?: string | null; status: string | null; assigneeAgentId: string | null; documents: Record<string, string | null> }>;
-  stalledChildren?: string[];
+  childStalls?: Array<{ childIssueId: string; recoveryActionId: string | null }>;
   stallWakes?: Array<{ stalledIssueId: string | null; recoveryActionId: string | null }>;
   /** G1: approvals linked to the task. */
   approvals?: Array<{ id: string; status: string; title: string | null }>;
@@ -290,7 +290,7 @@ export interface TaskRecord {
   lastFaultAt?: number;
   restSnapshotError?: string;
   priorRetries?: RetryAttempt[];
-  stalledChildren?: string[];
+  childStalls?: Array<{ childIssueId: string; recoveryActionId: string | null }>;
   childRetries?: Array<RetryAttempt & { childIssueId: string }>;
   workspaceMovedTo?: string;
   /** Set when the pre-fault snapshot could not read the workspace; R2 then fails visibly. */

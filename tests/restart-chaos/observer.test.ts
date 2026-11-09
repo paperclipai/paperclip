@@ -111,7 +111,7 @@ describe("TaskObserver", () => {
   it("clicks the board Retry on a blocked subtask, as a user would, and keeps watching the parent", async () => {
     let childStatus = "blocked";
     const base = fakeApi({ "parentIds=": () => [{ id: "c1", parentId: "i1", status: "done" }, { id: "c2", parentId: "i1", status: childStatus }],
-      "/documents/": () => null, "/api/issues/c2": () => ({ id: "c2", status: childStatus,
+      "/documents/": () => null, "/recovery-actions": () => ({ active: { id: "a1" }, actions: [] }), "/api/issues/c2": () => ({ id: "c2", status: childStatus,
         interruption: { canRetry: childStatus === "blocked", observedRunId: "child-run" } }) }, "blocked");
     const childRetries: string[] = [];
     const api = { ...base.api, get: base.api.get.bind(base.api),
@@ -127,7 +127,7 @@ describe("TaskObserver", () => {
     await restWindow();
     expect(childRetries).toEqual(["/api/issues/c2/retry"]);
     expect(observer.record.childRetries).toMatchObject([{ childIssueId: "c2", accepted: true, observedRunId: "child-run" }]);
-    expect(observer.record.stalledChildren).toEqual(["c2"]);
+    expect(observer.record.childStalls).toEqual([{ childIssueId: "c2", recoveryActionId: "a1" }]);
     now += CHILD_WAKE_GRACE_MS;
     await restWindow();
     expect(observer.done).toBe(false);
