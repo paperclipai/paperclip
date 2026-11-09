@@ -105,6 +105,16 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
     expect(snapshot.contextIssues.find(row => row.id === resolvedTask.id)?.interruption).toMatchObject({ state: "resolved", canRetry: false });
     expect(snapshot.failureRuns.map(run => run.agentId)).not.toContain(supersededAgent.id);
     expect(snapshotResponse.headers["cache-control"]).toBe("private, no-store");
+    const timingPhases = new Map((snapshotResponse.headers["server-timing"] ?? "").split(", ").map((entry: string) => {
+      const match = /^([a-z_]+);dur=(\d+\.\d)$/.exec(entry);
+      expect(match, entry).not.toBeNull();
+      return [match![1]!, Number(match![2])] as const;
+    }));
+    for (const phase of [
+      "paperclip_inbox", "inbox_access", "inbox_issues", "inbox_parents", "inbox_failures", "inbox_failure_context",
+      "inbox_issues_query", "inbox_issues_labels", "inbox_issues_user_stats", "inbox_issues_read_stats",
+      "inbox_issues_last_activity", "inbox_issues_archives", "inbox_issues_live_descendants",
+    ]) expect(timingPhases.get(phase), phase).toBeGreaterThanOrEqual(0);
     expect(snapshot).not.toHaveProperty("failureError");
     expect(snapshot).not.toHaveProperty("contextError");
   });
