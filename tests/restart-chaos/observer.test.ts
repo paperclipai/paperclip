@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { isBoardStall, CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childrenPending, listWorkspaceFiles } from "./observer.js";
+import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childrenPending, listWorkspaceFiles } from "./observer.js";
 import { gradeTask } from "./grader.js";
 import { createFixtureRepository, type ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
@@ -114,7 +114,11 @@ describe("TaskObserver", () => {
       "/documents/": () => null, "/recovery-actions": () => ({ active: { id: "a1", status: "active", ownerType: "board" }, actions: [] }), "/api/issues/c2": () => ({ id: "c2", status: childStatus,
         interruption: { canRetry: childStatus === "blocked", observedRunId: "child-run" } }) }, "blocked");
     const childRetries: string[] = [];
-    const api = { ...base.api, get: base.api.get.bind(base.api),
+    const api = { ...base.api, async get(route: string) {
+        if (route === "/api/issues/i1") return { id: "i1", status: "blocked", stalledDependencies: childStatus === "blocked"
+          ? [{ stalledIssueId: "c2", relation: "child", recoveryAction: { id: "a1", status: "active", ownerType: "board" } }] : [] };
+        return base.api.get(route);
+      },
       async post(route: string, body: unknown) {
         if (route === "/api/issues/c2/retry") { childRetries.push(route); childStatus = "in_progress"; return { accepted: true }; }
         return (base.api as unknown as { post(route: string, body: unknown): Promise<unknown> }).post(route, body);
@@ -217,10 +221,11 @@ describe("TaskObserver", () => {
   it.each([
     ["agent-owned interrupted session", { id: "a-agent", status: "cancelled", ownerType: "agent" }],
     ["system reconciliation resolved as cancelled", { id: "a-system", status: "resolved", ownerType: "system", outcome: "cancelled" }],
-  ])("records no stall for a blocked subtask whose recovery does not need the board (%s), but still clicks its Retry", async (_name, action) => {
+  ])("records no stall for a blocked subtask the product does not list as stalled (%s), but still clicks its Retry", async (_name, action) => {
     let childStatus = "blocked";
     const base = fakeApi({ "parentIds=": () => [{ id: "c1", parentId: "i1", status: "done" }, { id: "c2", parentId: "i1", status: childStatus }],
       "/documents/": () => null, "/recovery-actions": () => ({ active: null, actions: [action] }),
+      "/api/issues/i1": route => route === "/api/issues/i1" ? { id: "i1", status: "blocked", stalledDependencies: [] } : null,
       "/api/issues/c2": () => ({ id: "c2", status: childStatus, interruption: { canRetry: childStatus === "blocked", observedRunId: "child-run" } }) }, "blocked");
     const childRetries: string[] = [];
     const api = { ...base.api, get: base.api.get.bind(base.api), async post(route: string, body: unknown) {
@@ -279,19 +284,6 @@ describe("fixture repository", () => {
     const record = parseBenchRecord(await readFile(path.join(root, ".bench", "run-abcd1234.txt"), "utf8"));
     expect(record?.result).toBe(BENCH_EXPECTED);
   }, 60_000);
-});
-
-describe("isBoardStall", () => {
-  it("counts only recovery actions that need the board, as the stall wake does", () => {
-    expect(isBoardStall({ status: "active", ownerType: "board" })).toBe(true);
-    expect(isBoardStall({ status: "escalated", ownerType: "agent" })).toBe(true);
-    expect(isBoardStall({ status: "resolved", ownerType: "board", outcome: "blocked" })).toBe(true);
-    expect(isBoardStall({ status: "active", ownerType: "agent" })).toBe(false);
-    expect(isBoardStall({ status: "cancelled", ownerType: "agent" })).toBe(false);
-    expect(isBoardStall({ status: "resolved", ownerType: "system", outcome: "cancelled" })).toBe(false);
-    expect(isBoardStall({ status: "resolved", ownerType: "board", outcome: "cancelled" })).toBe(false);
-    expect(isBoardStall(null)).toBe(false);
-  });
 });
 
 describe("childrenPending", () => {
