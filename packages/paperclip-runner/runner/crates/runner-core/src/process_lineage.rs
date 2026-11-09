@@ -129,7 +129,7 @@ impl LineageState {
         state
     }
 
-    fn journal_record(&self, writer: ProcessIdentity) -> JournalRecord {
+    fn journal_record(&self, writer: ProcessIdentity, sampled_through: u64) -> JournalRecord {
         let sorted = |map: &HashMap<i32, u64>| {
             let mut entries: Vec<(i32, u64)> = map.iter().map(|(k, v)| (*k, *v)).collect();
             entries.sort_unstable();
@@ -144,6 +144,7 @@ impl LineageState {
             members: sorted(&self.members),
             groups: sorted(&self.groups),
             sessions: sorted(&self.sessions),
+            sampled_through,
         }
     }
 
@@ -282,9 +283,17 @@ fn observe_now(state: &Mutex<LineageState>, journal: Option<&Journal>) -> Option
     let table = read_process_table()?;
     let observation = state.observe(&table);
     if let Some(journal) = journal {
-        // A failed write keeps the previous record and is retried on the
-        // next read: the content differs from what was last written.
-        let _ = journal.write(&state);
+        // Every process this read listed started no later than its newest
+        // start time. A process born after it was not seen by this read.
+        let sampled_through = table
+            .entries()
+            .iter()
+            .map(|entry| entry.started)
+            .max()
+            .unwrap_or(0);
+        // A failed write withdraws the writer marker (see Journal::write), so
+        // no reaper can claim proof from the stale record on disk.
+        let _ = journal.write(&state, sampled_through);
     }
     Some(observation)
 }
@@ -338,6 +347,11 @@ struct JournalRecord {
     members: Vec<(i32, u64)>,
     groups: Vec<(i32, u64)>,
     sessions: Vec<(i32, u64)>,
+    /// The newest process start time the recording read had listed. A
+    /// process that started later was never seen, so the record cannot
+    /// account for it.
+    #[serde(default)]
+    sampled_through: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -349,9 +363,23 @@ struct WriterMarker {
 /// One supervised process's journal file.
 struct Journal {
     path: PathBuf,
+    marker: PathBuf,
     writer: ProcessIdentity,
-    last: Mutex<String>,
+    last: Mutex<JournalWrite>,
 }
+
+#[derive(Default)]
+struct JournalWrite {
+    /// The membership last written, without `sampled_through`.
+    membership: String,
+    sampled_through: u64,
+    at: Option<Instant>,
+}
+
+/// How often an unchanged record is rewritten only to advance
+/// `sampled_through`. A shorter interval narrows the window a reaper must
+/// treat as unsampled, at one small write per interval.
+const SAMPLED_THROUGH_REFRESH: Duration = Duration::from_secs(1);
 
 impl Journal {
     fn create(state: &LineageState) -> io::Result<Option<Self>> {
@@ -361,25 +389,48 @@ impl Journal {
         let sequence = JOURNAL_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let journal = Self {
             path: directory.join(format!("lineage-{}-{sequence}.json", writer.pid)),
+            marker: directory.join(format!("writer-{}.json", writer.pid)),
             writer: *writer,
-            last: Mutex::new(String::new()),
+            last: Mutex::new(JournalWrite::default()),
         };
-        journal.write(state)?;
+        // Nothing the root starts can predate the root itself.
+        let sampled_through = state.root.map_or(0, |(_, started)| started);
+        journal.write(state, sampled_through)?;
         Ok(Some(journal))
     }
 
-    fn write(&self, state: &LineageState) -> io::Result<()> {
-        let contents =
-            serde_json::to_string(&state.journal_record(self.writer)).map_err(io::Error::other)?;
+    /// Writes the record when membership changed, or when only
+    /// `sampled_through` advanced and the last write is older than the
+    /// refresh interval. A failed write removes the writer marker: removal
+    /// needs no free space, and without the marker no reaper can verify this
+    /// runnerd's lineage from a record that may be missing a member.
+    fn write(&self, state: &LineageState, sampled_through: u64) -> io::Result<()> {
+        let membership = serde_json::to_string(&state.journal_record(self.writer, 0))
+            .map_err(io::Error::other)?;
         let mut last = self
             .last
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *last == contents {
+        let advanced = sampled_through > last.sampled_through
+            && last
+                .at
+                .is_none_or(|at| at.elapsed() >= SAMPLED_THROUGH_REFRESH);
+        if last.membership == membership && !advanced {
             return Ok(());
         }
-        write_private_atomically(&self.path, contents.as_bytes())?;
-        *last = contents;
+        let sampled_through = sampled_through.max(last.sampled_through);
+        let written = serde_json::to_string(&state.journal_record(self.writer, sampled_through))
+            .map_err(io::Error::other)
+            .and_then(|contents| write_private_atomically(&self.path, contents.as_bytes()));
+        if let Err(error) = written {
+            let _ = fs::remove_file(&self.marker);
+            return Err(error);
+        }
+        *last = JournalWrite {
+            membership,
+            sampled_through,
+            at: Some(Instant::now()),
+        };
         Ok(())
     }
 
@@ -492,6 +543,8 @@ pub fn reap_journals(
         return ReapReport::refused("journal_unreadable");
     };
     let mut journals: Vec<(PathBuf, LineageState)> = Vec::new();
+    // The oldest point after which the dead runnerd's sampler saw nothing.
+    let mut unsampled_since: Option<u64> = None;
     for entry in listing {
         let Ok(entry) = entry else {
             return ReapReport::refused("journal_unreadable");
@@ -512,6 +565,13 @@ pub fn reap_journals(
         };
         if record.writer != marker.writer && record.writer.is_alive() {
             continue;
+        }
+        if record.writer == marker.writer {
+            unsampled_since = Some(
+                unsampled_since.map_or(record.sampled_through, |since: u64| {
+                    since.min(record.sampled_through)
+                }),
+            );
         }
         journals.push((path, LineageState::from_journal_record(&record)));
     }
@@ -539,6 +599,21 @@ pub fn reap_journals(
             unresolved.extend(observation.unresolved);
         }
         if live.is_empty() && unresolved.is_empty() {
+            // A tool that left its session after the last read, and whose
+            // parents have exited, is in no recorded group or session: it is
+            // an orphan that leads its own. Its ownership cannot be proven
+            // either way, so it is never signalled, and the proof is refused.
+            if let Some(since) = unsampled_since {
+                let escaped = unattributed_orphan_leaders(&table, since, &journals);
+                if !escaped.is_empty() {
+                    return ReapReport {
+                        journals: count,
+                        signalled: signalled.len(),
+                        remaining: escaped,
+                        ..ReapReport::refused("unattributed_orphan")
+                    };
+                }
+            }
             for (path, _) in &journals {
                 let _ = fs::remove_file(path);
             }
@@ -577,6 +652,45 @@ pub fn reap_journals(
         }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Live orphans (parent PID 1) of this user that lead their own group or
+/// session, started no earlier than `since`, and belong to no journal.
+fn unattributed_orphan_leaders(
+    table: &LiveProcessTable,
+    since: u64,
+    journals: &[(PathBuf, LineageState)],
+) -> Vec<i32> {
+    let mut pids: Vec<i32> = table
+        .entries()
+        .iter()
+        .filter(|entry| {
+            !entry.zombie
+                && entry.ppid == 1
+                && entry.started >= since
+                && !journals
+                    .iter()
+                    .any(|(_, state)| state.members.get(&entry.pid) == Some(&entry.started))
+                && (entry.pgid == entry.pid || table.session_of(entry.pid) == Some(entry.pid))
+                && owned_by_this_user(entry.pid)
+        })
+        .map(|entry| entry.pid)
+        .collect();
+    pids.sort_unstable();
+    pids
+}
+
+#[cfg(target_os = "linux")]
+fn owned_by_this_user(pid: i32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(format!("/proc/{pid}"))
+        .is_ok_and(|metadata| metadata.uid() == rustix::process::geteuid().as_raw())
+}
+
+/// macOS lists only processes whose details this user can read.
+#[cfg(not(target_os = "linux"))]
+fn owned_by_this_user(_pid: i32) -> bool {
+    true
 }
 
 /// Records a supervised process's lineage from spawn until it is reaped.
@@ -897,7 +1011,7 @@ mod tests {
             pid: 10,
             started: 5,
         };
-        let record = state.journal_record(writer);
+        let record = state.journal_record(writer, 0);
         let json = serde_json::to_string(&record).unwrap();
         let restored: JournalRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.writer, writer);
@@ -917,10 +1031,13 @@ mod tests {
     #[test]
     fn an_unknown_root_start_is_never_journalled_as_an_identity() {
         let state = LineageState::new(100);
-        let record = state.journal_record(ProcessIdentity {
-            pid: 10,
-            started: 5,
-        });
+        let record = state.journal_record(
+            ProcessIdentity {
+                pid: 10,
+                started: 5,
+            },
+            0,
+        );
         assert_eq!(record.root, None);
     }
 
@@ -1046,7 +1163,7 @@ mod tests {
             .join(format!("lineage-{}-0.json", writer.pid));
         fs::write(
             &journal,
-            serde_json::to_vec(&state.journal_record(writer)).unwrap(),
+            serde_json::to_vec(&state.journal_record(writer, newest_start())).unwrap(),
         )
         .unwrap();
 
@@ -1074,6 +1191,136 @@ mod tests {
             .join(JOURNAL_DIRECTORY_NAME)
             .join(format!("writer-{}.json", writer.pid))
             .exists());
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    /// The newest start time a table read lists now, as the sampler records.
+    fn newest_start() -> u64 {
+        read_process_table()
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|entry| entry.started)
+            .max()
+            .unwrap()
+    }
+
+    /// A tool forked and left its session after the dead runnerd's last
+    /// read, and its parents are gone: nothing recorded leads to it. The reap
+    /// must not claim proof, and must not signal a process it cannot
+    /// attribute.
+    #[test]
+    fn reaping_refuses_an_orphan_leader_born_after_the_last_sample() {
+        let directory = temporary_directory("escape");
+        let writer = exited_writer();
+        write_marker(&directory, writer);
+        let provider = exited_writer();
+        let mut state = LineageState::default();
+        state.root = Some((provider.pid, provider.started));
+        let journal = directory
+            .join(JOURNAL_DIRECTORY_NAME)
+            .join(format!("lineage-{}-0.json", writer.pid));
+        fs::write(
+            &journal,
+            serde_json::to_vec(&state.journal_record(writer, newest_start())).unwrap(),
+        )
+        .unwrap();
+        // The wrapper starts a job in a new session and exits at once, so
+        // the job is re-parented to init.
+        let pid_file = directory.join("orphan.pid");
+        let status = std::process::Command::new("perl")
+            .args([
+                "-e",
+                "use POSIX (); exit 0 if fork(); POSIX::setsid() or die; open(my $f, '>', \"$ARGV[0].tmp\") or die; print $f $$; close $f; rename(\"$ARGV[0].tmp\", $ARGV[0]) or die; open(STDIN, '<', '/dev/null'); open(STDOUT, '>', '/dev/null'); open(STDERR, '>', '/dev/null'); exec '/bin/sh', '-c', 'while :; do sleep 1; done'",
+                &pid_file.display().to_string(),
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let orphan = loop {
+            if let Some(entry) = fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+                .and_then(|pid| paperclip_process_table::read(pid).entry())
+                .filter(|entry| entry.ppid == 1)
+            {
+                break entry;
+            }
+            assert!(Instant::now() < deadline, "orphan job did not start");
+            thread::sleep(Duration::from_millis(20));
+        };
+        let report = reap_journals(
+            &directory,
+            writer.pid,
+            Duration::ZERO,
+            Duration::from_secs(5),
+        );
+        let alive = ProcessIdentity {
+            pid: orphan.pid,
+            started: orphan.started,
+        }
+        .is_alive();
+        if let Some(group) = rustix::process::Pid::from_raw(orphan.pgid) {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        }
+        let _ = fs::remove_dir_all(&directory);
+        assert_eq!(report.reason, Some("unattributed_orphan"), "{report:?}");
+        assert!(!report.verified);
+        assert!(report.remaining.contains(&orphan.pid), "{report:?}");
+        assert!(alive, "an unattributed process is never signalled");
+    }
+
+    /// A record that could not be written may be missing a member. The
+    /// failure withdraws the writer marker, so no reap can verify.
+    #[test]
+    fn a_failed_journal_write_withdraws_the_writer_marker() {
+        let directory = temporary_directory("write-failure");
+        let writer = exited_writer();
+        write_marker(&directory, writer);
+        let marker = directory
+            .join(JOURNAL_DIRECTORY_NAME)
+            .join(format!("writer-{}.json", writer.pid));
+        let journal = Journal {
+            path: directory.join("missing").join("lineage.json"),
+            marker: marker.clone(),
+            writer,
+            last: Mutex::new(JournalWrite::default()),
+        };
+        assert!(journal.write(&LineageState::new(100), 1).is_err());
+        assert!(!marker.exists());
+        let report = reap_journals(&directory, writer.pid, Duration::ZERO, Duration::ZERO);
+        assert_eq!(report.reason, Some("journal_unavailable"));
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn an_unchanged_record_is_rewritten_only_to_advance_sampled_through() {
+        let directory = temporary_directory("refresh");
+        let path = directory.join(JOURNAL_DIRECTORY_NAME).join("lineage.json");
+        let journal = Journal {
+            path: path.clone(),
+            marker: directory.join("marker"),
+            writer: ProcessIdentity {
+                pid: 10,
+                started: 5,
+            },
+            last: Mutex::new(JournalWrite::default()),
+        };
+        let state = LineageState::new(100);
+        let read = || {
+            serde_json::from_slice::<JournalRecord>(&fs::read(&path).unwrap())
+                .unwrap()
+                .sampled_through
+        };
+        journal.write(&state, 7).unwrap();
+        assert_eq!(read(), 7);
+        // Within the refresh interval an advance alone is not written.
+        journal.write(&state, 9).unwrap();
+        assert_eq!(read(), 7);
+        journal.last.lock().unwrap().at = Some(Instant::now() - SAMPLED_THROUGH_REFRESH);
+        journal.write(&state, 9).unwrap();
+        assert_eq!(read(), 9);
         let _ = fs::remove_dir_all(&directory);
     }
 }
