@@ -7643,18 +7643,67 @@ export function issueService(db: Db) {
     }
 
     for (const blockerIssueId of blockerIssueIds) {
-      const queue = [...(adjacency.get(issueId) ?? [])];
+      // Breadth-first search from the issue being updated along existing
+      // "blocks" edges, remembering how each issue was reached so the
+      // denial can name the existing chain that the new edge would close.
+      const previous = new Map<string, string>();
+      const queue = [issueId];
       const visited = new Set<string>([issueId]);
       while (queue.length > 0) {
         const current = queue.shift()!;
-        if (current === blockerIssueId) {
-          throw unprocessable("Blocking relations cannot contain cycles");
+        for (const next of adjacency.get(current) ?? []) {
+          if (visited.has(next)) continue;
+          visited.add(next);
+          previous.set(next, current);
+          if (next === blockerIssueId) {
+            const chain = [next];
+            while (chain[0] !== issueId) chain.unshift(previous.get(chain[0])!);
+            throw await blockingCycleError(companyId, chain, dbOrTx);
+          }
+          queue.push(next);
         }
-        if (visited.has(current)) continue;
-        visited.add(current);
-        queue.push(...(adjacency.get(current) ?? []));
       }
     }
+  }
+
+  /**
+   * Builds the 422 for a dependency that would close a blocking cycle.
+   * `chain` runs from the issue being updated to the requested blocker along
+   * existing "blocks" edges. The message names the existing order, says that
+   * nothing changed, and says the existing order must not be dropped or
+   * reversed without the requester's choice: a bare "cycle" denial left
+   * agents to guess, and they swapped the existing dependency.
+   *
+   * The chain can pass through issues the caller cannot read, and this
+   * service has no request to decide read access. It therefore names issues
+   * by identifier only, the same fields a locked relation stub exposes, and
+   * never by title.
+   */
+  async function blockingCycleError(companyId: string, chain: string[], dbOrTx: DbReader) {
+    const rows = await dbOrTx
+      .select({ id: issues.id, identifier: issues.identifier })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, chain)));
+    const identifierById = new Map(rows.map((row) => [row.id, row.identifier]));
+    const label = (id: string) => identifierById.get(id) ?? id;
+    const issueLabel = label(chain[0]!);
+    const blockerLabel = label(chain[chain.length - 1]!);
+    // Each issue in the chain already waits for the one before it.
+    const existingOrder = chain
+      .slice(1)
+      .map((id, index) => `${label(id)} waits for ${label(chain[index]!)}`)
+      .join(", and ");
+    return unprocessable(
+      `Blocking relations cannot contain cycles: ${existingOrder}, so ${issueLabel} cannot also wait for ${blockerLabel}. ` +
+        "No dependencies were changed and the existing ones are kept. " +
+        "Do not remove or reverse an existing dependency to make this fit; ask whoever requested the change which order they want and change dependencies only after they choose.",
+      {
+        code: "blocking_cycle",
+        issueId: chain[0],
+        requestedBlockerIssueId: chain[chain.length - 1],
+        existingChain: chain.map((id) => ({ id, identifier: identifierById.get(id) ?? null })),
+      },
+    );
   }
 
   async function syncBlockedByIssueIds(

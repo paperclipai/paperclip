@@ -1898,12 +1898,12 @@ export function secretService(db: Db | DbTransaction) {
     }).sort((left, right) => left.key.localeCompare(right.key));
   }
 
-  async function resolveSecretVersion(
+  async function resolveSecretVersionIdentity(
     companyId: string,
     secretId: string,
     version: number | "latest",
     context?: SecretBindingContext,
-  ): Promise<number> {
+  ): Promise<{ version: number; identityEpoch: number }> {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
@@ -1920,7 +1920,13 @@ export function secretService(db: Db | DbTransaction) {
     if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
       throw unprocessable("Secret version is not active", { code: "version_inactive" });
     }
-    return resolvedVersion;
+    return { version: resolvedVersion, identityEpoch: secret.aiSessionEpoch };
+  }
+
+  async function resolveSecretVersion(
+    companyId: string, secretId: string, version: number | "latest", context?: SecretBindingContext,
+  ): Promise<number> {
+    return (await resolveSecretVersionIdentity(companyId, secretId, version, context)).version;
   }
 
   async function normalizeEnvConfig(
@@ -4115,6 +4121,8 @@ export function secretService(db: Db | DbTransaction) {
         externalRef?: string | null;
         providerVersionRef?: string | null;
         providerConfigId?: string | null;
+        /** Internal authenticated refresh only; HTTP schemas cannot set this. */
+        preserveAiSessionEpoch?: boolean;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
@@ -4662,6 +4670,7 @@ export function secretService(db: Db | DbTransaction) {
     getByKey,
     resolveSecretValue,
     resolveSecretVersion,
+    resolveSecretVersionIdentity,
     resolveSecretValueForAgentAccess,
     listAgentSecretAccess,
     resolveSecretValueForEphemeralAccess,

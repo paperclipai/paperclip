@@ -919,6 +919,19 @@ export class CodexHarnessSession
     };
   }
 
+  async settleCancelledTurn(input: { turnId: string; reason: string }) {
+    this.assertProtocolIntegrity();
+    if (this.activeTurnId !== null && this.activeTurnId !== input.turnId) return null;
+    const receipt = await this.transport.settleCancelledTurn?.(input) ?? null;
+    this.assertProtocolIntegrity();
+    if (receipt) {
+      this.cancelPendingRequests("session_closed");
+      this.activeTurnId = null;
+      this.eventQueue.close();
+    }
+    return receipt;
+  }
+
   // `force` is part of the contract. Codex closes the same way with or without it.
   async close(input: { reason: string; force?: boolean }): Promise<void> {
     this.cancelPendingRequests("session_closed");

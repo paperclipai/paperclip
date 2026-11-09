@@ -92,6 +92,12 @@ returns as soon as the drain is proved; it adds no fixed delay to a ready Runner
 
 ## ACPX checkpoints after a rejected turn start
 
+Recovered ACPX shutdown uses the same bounded five-second lifetime-fence proof
+as suspension. It waits for a transient listener holder to release the original
+quorum, then returns immediately when cleanup is proved. A timeout leaves
+`providerExitUnconfirmed` set and refuses reuse. Live-session shutdown and normal
+task dispatch keep their existing paths.
+
 A matching `turn.start` response with `SESSION_RESUME_REQUIRED` and
 `retryable: true` can retain the exact saved conversation. The session must have
 no active turn, pending request or buffered event. The saved identity must still

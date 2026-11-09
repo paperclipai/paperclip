@@ -23,6 +23,7 @@ import type {
   PersistedHarnessProviderIdentity,
   PersistedHarnessSession,
   PersistedHarnessTurnTerminal,
+  CancelledTurnSettlement,
 } from "./harness-driver.js";
 
 export interface NativeSessionBackendDescriptor {
@@ -70,7 +71,7 @@ export interface PersistedNativeSession {
   terminalTurns?: PersistedHarnessTurnTerminal[];
   /** Control-plane disposition bound to the exact committed tool event. It is
    * independent of the interaction's later answer and proves no provider terminal. */
-  governedWait?: { sourceEvent: PrpEvent; result: PrpStructuredRunResult };
+  governedWait?: { sourceEvent: PrpEvent; result: PrpStructuredRunResult; settlement?: CancelledTurnSettlement };
 
   /** At-most-once marker for resultless disposition repair or restart continuation. */
   dispositionOnlyRecoveryConsumed?: boolean;
@@ -266,6 +267,7 @@ export interface NativeSession {
     reason: string;
     signal: AbortSignal;
   }): NativeSessionCancellation;
+  settleCancelledTurn?(input: { turnId: string; reason: string }): Promise<CancelledTurnSettlement | null>;
   resolveRuntimeRequest?(input: {
     commandId?: string;
     requestId: string;
@@ -341,6 +343,14 @@ export class NativeProviderSideEffectPendingError extends Error {
   constructor(reason: string) {
     super(`native_session_recovery_failed: ${reason}`);
     this.name = "NativeProviderSideEffectPendingError";
+  }
+}
+
+export class NativeGovernedWaitSettlementPendingError extends Error {
+  readonly code = "native_governed_wait_settlement_pending";
+  constructor(options?: ErrorOptions) {
+    super("The waiting state is saved; confirming shutdown of the previous execution is still pending.", options);
+    this.name = "NativeGovernedWaitSettlementPendingError";
   }
 }
 

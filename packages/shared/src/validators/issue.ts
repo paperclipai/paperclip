@@ -1683,7 +1683,7 @@ export const requestConfirmationToolActionPayloadSchema = z.object({
   previewMarkdown: z.string().trim().min(1).max(20000),
   argumentsSummaryJson: z.string().max(20000),
   argumentsHash: z.string().trim().min(1).max(255),
-  expiresAt: z.string().datetime({ offset: true }),
+  expiresAt: z.string().datetime({ offset: true }).nullable(),
 });
 
 export const requestConfirmationSecretProposalPayloadSchema = z.object({

@@ -60,6 +60,15 @@ describe("seedChaosLab workspace isolation", () => {
     expect(skipping.calls.some(call => call.method === "GET" && call.route.startsWith("/api/agents/"))).toBe(false);
   });
 
+  it("registers a remote git source, with no host folder, for a Daytona workspace repository", async () => {
+    const { api, calls } = fakeApi(body => ({ ...body }));
+    await seedChaosLab({ api, env: "local", adapters: ["codex"], concurrency: 2, budgetCents: 3_000, fixtureRoot: path.join(fixtureRoot, "remote"),
+      waveId: "w-test", timeline: new Timeline(null), workspaceGitUrl: "https://github.com/paperclipai/paperclip.git", workspaceCommit: "a".repeat(40) });
+    const project = calls.find(call => call.method === "POST" && call.route.endsWith("/projects"));
+    expect((project!.body as { workspace: unknown }).workspace).toEqual({ name: "Primary", sourceType: "git_repo",
+      repoUrl: "https://github.com/paperclipai/paperclip.git", repoRef: "a".repeat(40), isPrimary: true });
+  });
+
   // RC-21: the project's git_worktree policy is gated behind the instance's
   // isolated-workspaces setting. Without it every repo task ran in the shared
   // primary checkout, so concurrent tasks wrote into one tree.
