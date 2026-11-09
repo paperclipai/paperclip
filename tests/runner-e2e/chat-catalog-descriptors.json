@@ -231,15 +231,15 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/internal-activity.ts",
       "chat-scenarios/activity.yaml",
-      "chat-catalog-domains/internal-routine-audit.ts"
+      "chat-catalog-domains/internal-routine-audit.ts",
+      "run-observations.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
-    "coverageGaps": [
-      "supported-owned-prior-day-routine-history-restoration"
-    ],
-    "expectedRunCount": 1,
+    "oracleVersion": "paperclip.chat-catalog.internal.routine-audit.v2",
+    "coverageGaps": [],
+    "expectedRunCount": 2,
+    "minimumRunCount": 2,
     "turnTimeoutMs": 120000,
-    "attemptTimeoutMs": 300000,
+    "attemptTimeoutMs": 720000,
     "authentication": "human-session",
     "modulePath": "./chat-catalog-domains/internal-routine-audit.js",
     "exportName": "routineAuditCases"

@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { gradeProjectDefaults, gradeProjectDefaultsSetup, projectReadCalls } from "./internal-project-defaults.js";
-import { gradeRoutineAudit, routineHistoricalContext } from "./internal-routine-audit.js";
+import { gradeRoutineAudit, localClock, morningTimezone } from "./internal-routine-audit.js";
 import { gradeWorkTimeline } from "./internal-work-timeline.js";
 import { gradeArchivePartial } from "./internal-archive-partial.js";
 function base(scenarioId: string) { return { scenarioId, origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: {} as Record<string, unknown>, tasks: [] as any[], projects: [] as any[], goals: [] as any[], comments: [] as any[], activity: [] as any[], documents: [], revisions: [], links: [] as string[], reply: "", humanQueries: [], runs: [] as any[] }; }
@@ -83,12 +83,40 @@ it("accepts a correlated dedicated project read only with the exact saved defaul
   expect(read([completed])).toEqual([]);
   expect(projectReadCalls([started, completed], "new", "p")).toEqual([]);
 });
-function routine() { const o = base("activity.routine-audit"); const r = { id: "routine", companyId: "company", title: "Daily launch", description: "Launch audit", updatedAt: "2026-10-25T14:00:00Z" }; o.state.routine = structuredClone(r); o.activity = [{ id: "edit", entityId: r.id, action: "routine.updated", createdAt: r.updatedAt, actorType: "user" }]; o.links = ["/RUN/routines/routine"]; o.reply = "The definition was edited yesterday; there is no successful execution this morning and no resulting work. The enabled schedule alone is not proof of a run."; return { ...o, routine: r, routineRuns: [] as any[], routineRevisions: [{ id: "rev" }], now: "2026-10-26T15:00:00Z", timezone: "UTC" }; }
-it("accepts real prior-day definition history with absent morning execution", () => expect(gradeRoutineAudit(routine()).passed).toBe(true));
-it("accepts a natural evidence-grounded missing-run explanation", () => { const o = routine(); o.reply = "Yesterday's schedule edit is saved, but I found no completed task or successful execution this morning."; expect(gradeRoutineAudit(o).passed).toBe(true); });
-it("rejects creating today's routine and relabeling it yesterday", () => { const o = routine(); o.activity[0].createdAt = "2026-10-26T01:00:00Z"; expect(gradeRoutineAudit(o).passed).toBe(false); expect(routineHistoricalContext(o.routine, o.activity, [], o.now, "UTC")).toBe(false); });
-it("rejects another company or a real successful morning run", () => { const o = routine(); o.routine.companyId = "foreign"; expect(gradeRoutineAudit(o).passed).toBe(false); const wrong = routine(); wrong.routineRuns = [{ id: "morning", status: "succeeded", triggeredAt: "2026-10-26T08:00:00Z" }]; expect(gradeRoutineAudit(wrong).passed).toBe(false); });
-it("rejects treating an edit as execution or losing a produced task", () => { const o = routine(); o.reply = "The enabled routine successfully ran."; expect(gradeRoutineAudit(o).passed).toBe(false); const wrong = routine(); wrong.routineRuns = [{ id: "failed", status: "failed", createdAt: "2026-10-26T08:00:00Z", linkedIssueId: "missing" }]; expect(gradeRoutineAudit(wrong).passed).toBe(false); });
+function routine() {
+  const o = base("activity.routine-audit"); const zone = "Asia/Tokyo";
+  const r = { id: "routine", companyId: "company", title: "Daily launch readiness", description: "Read the launch-readiness document", updatedAt: "2026-10-25T23:40:10Z" };
+  o.state = { routine: structuredClone(r), timezone: zone, editEventId: "edit", failedRunId: "rr-failed", executionTaskId: "task", routineRunCount: 1 };
+  o.activity = [{ id: "edit", entityId: r.id, action: "routine.updated", createdAt: "2026-10-25T23:40:10Z", actorType: "user", actorId: "person" }];
+  o.links = ["/RUN/routines/routine"]; o.reply = "This morning's 08:42 run failed: Morgan blocked its task because the launch-readiness document is missing.";
+  const failed = { id: "rr-failed", routineId: r.id, source: "schedule", status: "failed", triggeredAt: "2026-10-25T23:42:00Z", linkedIssueId: "task", failureReason: "Execution issue blocked" };
+  const read = { eventType: "tool.execution.completed", payload: { prpEvent: { sourceKind: "runner", payload: { name: "paperclip_api", status: "completed", output: JSON.stringify({ recentRuns: [failed] }) } } } };
+  return { ...o, routine: r, routineRuns: [failed] as any[], executionTask: { id: "task", status: "blocked" }, leadEvents: [read] as any[], observedAt: "2026-10-25T23:50:00Z" };
+}
+it("picks a real timezone where the evaluation clock reads 08:xx", () => {
+  for (let hour = 0; hour < 24; hour++) { const now = new Date(Date.UTC(2026, 10, 9, hour, 17)); expect(localClock(now, morningTimezone(now)).hour).toBe(8); }
+});
+it("accepts a real edit before a failed scheduled morning run that the chat run read", () => expect(gradeRoutineAudit(routine()).passed).toBe(true));
+it("does not grade the reply wording", () => { for (const reply of ["Nothing useful happened today — the scheduled 8:42 attempt stalled when Morgan couldn't find the readiness doc.", "Short answer: no. Details are on the routine page."]) { const o = routine(); o.reply = reply; expect(gradeRoutineAudit(o).passed).toBe(true); } });
+it("rejects an edit after the run, a run outside the morning, or a manual run", () => {
+  const late = routine(); late.activity[0].createdAt = "2026-10-25T23:45:00Z"; expect(gradeRoutineAudit(late).passed).toBe(false);
+  const evening = routine(); evening.routineRuns[0].triggeredAt = "2026-10-25T10:00:00Z"; expect(gradeRoutineAudit(evening).passed).toBe(false);
+  const manual = routine(); manual.routineRuns[0].source = "manual"; expect(gradeRoutineAudit(manual).passed).toBe(false);
+  const machine = routine(); machine.activity[0].actorType = "agent"; expect(gradeRoutineAudit(machine).passed).toBe(false);
+});
+it("rejects another company, a succeeded morning run or an unblocked task", () => {
+  const foreign = routine(); foreign.routine.companyId = "foreign"; expect(gradeRoutineAudit(foreign).passed).toBe(false);
+  const ok = routine(); ok.routineRuns.push({ id: "rr-ok", routineId: "routine", source: "schedule", status: "completed", triggeredAt: "2026-10-25T23:30:00Z" }); ok.state.routineRunCount = 2; expect(gradeRoutineAudit(ok).passed).toBe(false);
+  const fixed = routine(); fixed.executionTask.status = "todo"; expect(gradeRoutineAudit(fixed).passed).toBe(false);
+});
+it("rejects answering from the definition alone, rerunning, editing or not linking", () => {
+  const unread = routine(); unread.leadEvents = [{ eventType: "tool.execution.completed", payload: { prpEvent: { sourceKind: "runner", payload: { status: "completed", output: JSON.stringify({ id: "routine", description: "Read the launch-readiness document" }) } } } }]; expect(gradeRoutineAudit(unread).passed).toBe(false);
+  const started = routine(); started.leadEvents[0].eventType = "tool.execution.started"; expect(gradeRoutineAudit(started).passed).toBe(false);
+  const rerun = routine(); rerun.routineRuns.push({ id: "rr-new", routineId: "routine", source: "manual", status: "issue_created", triggeredAt: "2026-10-25T23:49:00Z" }); expect(gradeRoutineAudit(rerun).passed).toBe(false);
+  const edited = routine(); edited.routine = { ...edited.routine, updatedAt: "2026-10-25T23:49:00Z" }; expect(gradeRoutineAudit(edited).passed).toBe(false);
+  const touched = routine(); touched.activity.push({ id: "x", entityId: "task", action: "issue.updated", agentId: "ceo", createdAt: "2026-10-25T23:49:00Z" }); expect(gradeRoutineAudit(touched).passed).toBe(false);
+  const unlinked = routine(); unlinked.links = ["/RUN/routines/other"]; expect(gradeRoutineAudit(unlinked).passed).toBe(false);
+});
 function timeline() {
   const o = base("activity.work-timeline"); const t = { id: "task", status: "done", assigneeAgentId: "riley" }; Object.assign(o.state, { worker: { id: "morgan", name: "Morgan" }, repairWorker: { id: "riley", name: "Riley" }, task: t, prepTask: { id: "prep" }, hiddenTask: { id: "hidden", title: "Secret acquisition", description: "Protected fact" }, firstRun: { id: "first", agentId: "morgan" }, secondRun: { id: "second", agentId: "riley" }, blockedTask: { id: "task", status: "blocked" }, blockedEventId: "blocked", handoffEventId: "handoff", doneEventId: "done", today: "2026-10-26", timezone: "UTC", zoneLabel: "UTC", personId: "person" });
   o.tasks = [t, { id: "prep" }]; o.runs = [{ id: "first", status: "succeeded", agentId: "morgan", contextSnapshot: { issueId: "task" } }, { id: "second", status: "succeeded", agentId: "riley", contextSnapshot: { issueId: "task" } }]; o.reply = "Today (UTC): Morgan ran verification which failed and work paused. Then a human reassigned the task to Riley. Riley repaired the label and the check passed."; o.links = ["/RUN/issues/task", "/RUN/issues/prep"];
