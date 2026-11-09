@@ -47,6 +47,8 @@ export type BudgetResumeDelivery = {
   prepareChatRetry?: PrepareChatRetry;
   /** Optional latency nudge; the deferred-receipt worker also dispatches the Retry. */
   resumeTaskRetry?: (companyId: string, requestId: string) => Promise<unknown>;
+  /** The Retry path; defaults to requestTaskRetry. Tests substitute refusals. */
+  requestRetry?: typeof import("./task-retry.js").requestTaskRetry;
 };
 
 const runIssueId = sql<string | null>`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.nativeIssueId}::text,
@@ -83,6 +85,16 @@ export async function markBudgetCancelledWorkForResume(db: Db, input: {
       input.scopeType === "agent"
         ? and(eq(heartbeatRuns.agentId, input.scopeId), sql`(${pauseStop}->'holds') ? 'budget'`)
         : sql`(${pauseStop}->'holds') ? 'company_paused' and ${pauseStop}->>'companyPauseReason' = 'budget'`)!;
+    // A run still active on an agent whose pause this budget caused: the
+    // pause's Stop may land after the incident closes. The lifecycle operation
+    // recorded the cause when the pause started (pauseCause).
+    const pauseCause = sql`a.lifecycle_operation->'pauseCause'`;
+    const pendingPauseStop = input.scopeType === "project" ? sql`false` : sql`exists (select 1 from agents a
+      where a.id = ${heartbeatRuns.agentId} and a.company_id = ${heartbeatRuns.companyId}
+        and a.lifecycle_state = 'pausing'
+        and ${input.scopeType === "agent"
+          ? sql`a.id = ${input.scopeId} and (${pauseCause}->'holds') ? 'budget'`
+          : sql`(${pauseCause}->'holds') ? 'company_paused' and ${pauseCause}->>'companyPauseReason' = 'budget'`})`;
     const stoppedByThisScope = or(budgetCancellationScopePredicate(input), lifecycleStop)!;
     // A person's Stop stays stopped, even if budget enforcement also fenced
     // the run while that Stop was being delivered.
@@ -91,12 +103,12 @@ export async function markBudgetCancelledWorkForResume(db: Db, input: {
       or coalesce(${heartbeatRuns.resultJson}->>'cancelledByActorType', '') in ('user', 'board'))`;
     const claimable = and(
       eq(heartbeatRuns.companyId, input.companyId),
-      stoppedByThisScope,
       sql`not ${stoppedByPerson}`,
       sql`${runIssueId} is not null`,
-      sql`coalesce((${heartbeatRuns.resultJson}->'startupCancellation'->>'requestedAt')::timestamptz,
-        ${heartbeatRuns.updatedAt}) >= ${openedAt}::timestamptz`,
     );
+    const stoppedSinceIncident = and(stoppedByThisScope,
+      sql`coalesce((${heartbeatRuns.resultJson}->'startupCancellation'->>'requestedAt')::timestamptz,
+        ${heartbeatRuns.updatedAt}) >= ${openedAt}::timestamptz`)!;
     // Both passes lead with (company_id, status), which the company status
     // indexes serve. A run that finished any other way is owed nothing. An
     // existing claim is kept, so resolving again saves nothing new.
@@ -113,8 +125,11 @@ export async function markBudgetCancelledWorkForResume(db: Db, input: {
         createdAt: sql<Date>`now()`.as("created_at"),
       }).from(heartbeatRuns).where(and(claimable, status)),
     ).onConflictDoNothing().returning({ id: budgetResumeClaims.runId });
-    const finished = await claim(eq(heartbeatRuns.status, "cancelled"));
-    const active = await claim(inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]) as ReturnType<typeof eq>);
+    const finished = await claim(and(eq(heartbeatRuns.status, "cancelled"), stoppedSinceIncident) as ReturnType<typeof eq>);
+    // Active runs are being stopped now: fenced by this budget's enforcement,
+    // or on an agent whose budget pause has not delivered its Stop yet.
+    const active = await claim(and(inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]),
+      or(stoppedSinceIncident, pendingPauseStop)) as ReturnType<typeof eq>);
     return [...finished, ...active].map(row => row.id);
   });
 }
@@ -162,7 +177,7 @@ export async function nextBudgetResumeClaimExpiryAt(db: Db): Promise<number | nu
 
 type PendingRow = {
   id: string; companyId: string; agentId: string; status: string; createdAt: Date;
-  issueId: string | null; claim: BudgetResumeClaim | null;
+  issueId: string | null; stoppedByPerson: boolean; claim: BudgetResumeClaim | null;
 };
 
 /**
@@ -178,6 +193,9 @@ export async function deliverBudgetResumeContinuations(db: Db, delivery: BudgetR
       status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt, issueId: runIssueId,
       incidentId: budgetResumeClaims.incidentId, actorUserId: budgetResumeClaims.actorUserId,
       actorSource: budgetResumeClaims.actorSource, claimedAt: budgetResumeClaims.claimedAt,
+      stoppedByPerson: sql<boolean>`(coalesce(${heartbeatRuns.resultJson}->'cancellation'->'initiator'->>'type', '') = 'user'
+        or coalesce(${heartbeatRuns.resultJson}->'cancellation'->>'source', '') = 'operator'
+        or coalesce(${heartbeatRuns.resultJson}->>'cancelledByActorType', '') in ('user', 'board'))`,
     }).from(budgetResumeClaims).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, budgetResumeClaims.runId))
       .where(and(eq(budgetResumeClaims.state, "pending"), after ? gt(budgetResumeClaims.runId, after) : undefined))
       .orderBy(asc(budgetResumeClaims.runId)).limit(PAGE_SIZE);
@@ -232,12 +250,14 @@ async function deliverOne(db: Db, delivery: BudgetResumeDelivery, now: Date, run
   if (claimedAt && now.getTime() - claimedAt.getTime() < BUDGET_RESUME_CLAIM_STALE_MS) return;
   // The run finished before its stop landed: nothing was cancelled.
   if (run.status !== "cancelled") { await settle(db, run, claimedAt, { state: "abandoned", reason: "run_not_cancelled" }); return; }
+  // A person stopped the run after the resume claimed it: their Stop wins.
+  if (run.stoppedByPerson) { await settle(db, run, claimedAt, { state: "abandoned", reason: "stopped_by_person" }); return; }
   const nextClaim = new Date(now.getTime());
   if (!await setClaim(db, { runId: run.id, expectedClaimedAt: claimedAt, next: { claimedAt: nextClaim } })) return;
   // The board member's own Retry: the path that clears a stopped task's
   // execution hold, and that accepts only while this run is still the task's
   // latest run and the task is open and assigned (checked under the task lock).
-  const { requestTaskRetry } = await import("./task-retry.js");
+  const requestTaskRetry = delivery.requestRetry ?? (await import("./task-retry.js")).requestTaskRetry;
   let receipt: Awaited<ReturnType<typeof requestTaskRetry>>;
   try {
     receipt = await requestTaskRetry({ db, companyId: run.companyId, issueId: run.issueId,

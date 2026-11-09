@@ -6,6 +6,7 @@ import {
 } from "@paperclipai/db";
 import { budgetService } from "./budgets.js";
 import { heartbeatService } from "./heartbeat.js";
+import { HttpError } from "../errors.js";
 import {
   deliverBudgetResumeContinuations, hasPendingBudgetResume, markBudgetCancelledWorkForResume,
 } from "./budget-resume-continuation.js";
@@ -38,21 +39,22 @@ describe.skipIf(!support.supported)("resuming after a budget hard stop", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedScope(label: string) {
+  async function seedScope(label: string, scopeType: "company" | "agent" = "company") {
     const [company] = await db.insert(companies).values({ name: `Budget ${label}`,
       issuePrefix: `B${randomUUID().slice(0, 4).toUpperCase()}` }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Worker" }).returning();
-    const [policy] = await db.insert(budgetPolicies).values({ companyId: company.id, scopeType: "company",
-      scopeId: company.id, windowKind: "calendar_month_utc", amount: 1, hardStopEnabled: true, isActive: true }).returning();
+    const scopeId = scopeType === "agent" ? agent.id : company.id;
+    const [policy] = await db.insert(budgetPolicies).values({ companyId: company.id, scopeType,
+      scopeId, windowKind: "calendar_month_utc", amount: 1, hardStopEnabled: true, isActive: true }).returning();
     const [incident] = await db.insert(budgetIncidents).values({ companyId: company.id, policyId: policy.id,
-      scopeType: "company", scopeId: company.id, metric: "billed_cents", windowKind: "calendar_month_utc",
+      scopeType, scopeId, metric: "billed_cents", windowKind: "calendar_month_utc",
       windowStart: new Date(Date.now() - 86_400_000), windowEnd: new Date(Date.now() + 86_400_000),
       thresholdType: "hard", amountLimit: 1, amountObserved: 0, createdAt: new Date(Date.now() - 60_000) }).returning();
     return { company, agent, policy, incident };
   }
 
   async function seedTask(scope: Awaited<ReturnType<typeof seedScope>>, options: {
-    budgetStop?: boolean; lifecycleStop?: "budget" | "manual"; issueStatus?: string; runStatus?: string; laterRun?: boolean;
+    budgetStop?: boolean; lifecycleStop?: "budget" | "agentBudget" | "manual"; issueStatus?: string; runStatus?: string; laterRun?: boolean;
   } = {}) {
     const { company, agent, policy } = scope;
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Long task",
@@ -65,6 +67,7 @@ describe.skipIf(!support.supported)("resuming after a budget hard stop", () => {
         cancellation: { reason: "Agent lifecycle stop requested", source: "control_plane", expected: true,
           initiator: { type: "system" } },
         pauseStop: options.lifecycleStop === "budget" ? { holds: ["company_paused"], companyPauseReason: "budget" }
+          : options.lifecycleStop === "agentBudget" ? { holds: ["budget"], companyPauseReason: null }
           : { holds: ["manual"], companyPauseReason: null },
         startupCancellation: { requestedAt: new Date(Date.now() - 40_000).toISOString(), errorCode: "cancelled" },
       } : options.budgetStop === false ? { stopReason: "cancelled" } : { startupCancellation: {
@@ -185,6 +188,59 @@ describe.skipIf(!support.supported)("resuming after a budget hard stop", () => {
     await deliverBudgetResumeContinuations(db);
     expect(await continuations(scope.company.id)).toEqual([expect.objectContaining({
       payload: expect.objectContaining({ issueId: task.issue.id }) })]);
+  });
+
+  it("continues a run an agent-scope budget pause stopped through the lifecycle stop", async () => {
+    const scope = await seedScope("agent-lifecycle-stop", "agent");
+    const task = await seedTask(scope, { lifecycleStop: "agentBudget" });
+    await resume(scope);
+    await deliverBudgetResumeContinuations(db);
+    expect(await continuations(scope.company.id)).toEqual([expect.objectContaining({
+      payload: expect.objectContaining({ issueId: task.issue.id }) })]);
+  });
+
+  it("continues a run whose budget pause Stop lands after the resume", async () => {
+    const scope = await seedScope("late-pause-stop", "agent");
+    // The budget pause started (its cause is on the lifecycle operation), but
+    // the lifecycle worker has not stopped the run yet when the board resumes.
+    await db.update(agents).set({ lifecycleState: "pausing", lifecycleHolds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0,
+        pauseCause: { holds: ["budget"], companyPauseReason: null } } }).where(eq(agents.id, scope.agent.id));
+    const task = await seedTask(scope, { budgetStop: false, runStatus: "running" });
+    await resume(scope);
+    expect(await claimOf(task.run.id)).toMatchObject({ state: "pending" });
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), resultJson: {
+      cancellation: { reason: "Agent lifecycle stop requested", source: "control_plane", expected: true, initiator: { type: "system" } },
+      pauseStop: { holds: ["budget"], companyPauseReason: null } } }).where(eq(heartbeatRuns.id, task.run.id));
+    await deliverBudgetResumeContinuations(db);
+    expect(await continuations(scope.company.id)).toHaveLength(1);
+  });
+
+  it("does not continue a run a person stopped after the resume claimed it", async () => {
+    const scope = await seedScope("later-person-stop");
+    const task = await seedTask(scope, { runStatus: "running" });
+    await resume(scope);
+    expect(await claimOf(task.run.id)).toMatchObject({ state: "pending" });
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), resultJson: {
+      ...(task.run.resultJson ?? {}),
+      cancellation: { reason: "Stopped by board", source: "operator", expected: true, initiator: { type: "user", id: "board-user" } } },
+    }).where(eq(heartbeatRuns.id, task.run.id));
+    await deliverBudgetResumeContinuations(db);
+    expect(await continuations(scope.company.id)).toEqual([]);
+    expect(await claimOf(task.run.id)).toMatchObject({ state: "abandoned", reason: "stopped_by_person" });
+  });
+
+  it("releases the claim on a retryable Retry refusal, and settles it on a permanent one", async () => {
+    const scope = await seedScope("retry-refusals");
+    const task = await seedTask(scope);
+    await resume(scope);
+    const busy = vi.fn(async () => { throw new HttpError(409, "busy", { code: "task_retry_busy", retryable: true }); });
+    await deliverBudgetResumeContinuations(db, { requestRetry: busy as never });
+    expect(busy).toHaveBeenCalledOnce();
+    expect(await claimOf(task.run.id)).toMatchObject({ state: "pending", claimedAt: null });
+    const refused = vi.fn(async () => { throw new HttpError(409, "no", { code: "chat_failed_run_retry_not_authorized" }); });
+    await deliverBudgetResumeContinuations(db, { requestRetry: refused as never });
+    expect(await claimOf(task.run.id)).toMatchObject({ state: "abandoned", reason: "chat_failed_run_retry_not_authorized" });
   });
 
   it("never claims a run a manual agent pause stopped", async () => {
