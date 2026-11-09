@@ -471,6 +471,9 @@ export function TaskChatComposer({
         : [],
   );
   const attachmentsRef = useRef(attachments);
+  // Keep upload receipts durable while the optimistic message owns the preview.
+  // A rejected or uncertain send returns these same attachments to the draft.
+  const [sendingAttachmentIds, setSendingAttachmentIds] = useState<ReadonlySet<string> | null>(null);
   function setAttachments(
     update:
       | ComposerAttachment[]
@@ -869,8 +872,9 @@ export function TaskChatComposer({
   const attachedRefs = attachments.filter(
     (item) => item.status === "attached" && item.contentPath && !item.inline,
   );
-  const imageAttachments = attachments.filter(item => isImage(item) && !item.inline);
-  const visibleAttachments = attachments.filter(
+  const draftAttachments = attachments.filter(item => !sendingAttachmentIds?.has(item.id));
+  const imageAttachments = draftAttachments.filter(item => isImage(item) && !item.inline);
+  const visibleAttachments = draftAttachments.filter(
     (item) => (!item.inline || item.status !== "attached") && !isImage(item),
   );
   // Sending mid-upload would silently drop the pending file from the comment;
@@ -1030,6 +1034,7 @@ export function TaskChatComposer({
       else clearDraft(draftKey);
     }
     setBody("");
+    setSendingAttachmentIds(new Set(submittedAttachments.map(item => item.id)));
     setSubmitting(true);
     let attemptId: string | null = null;
     let request: ComposerSendRequest | null = null;
@@ -1133,6 +1138,7 @@ export function TaskChatComposer({
       setBody(restoredBody);
     } finally {
       if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
+      setSendingAttachmentIds(null);
       setSubmitting(false);
     }
   }

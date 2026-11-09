@@ -1467,7 +1467,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                 runSettings: composerSettings,
                 onRunSettingsChange: setComposerSettings,
                 header:
-                  hasTitle || isSubIssueMode || durableCreate.pending || resendError ? (
+                  hasTitle || isSubIssueMode || (durableCreate.pending && durableCreate.status !== "sending") || resendError ? (
                     <div className="mb-3 flex flex-col gap-2 text-xs">
                       {durableCreate.pending && durableCreate.status !== "sending" ? (
                         <PendingSendNotice

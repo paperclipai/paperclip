@@ -42,6 +42,7 @@ import { budgetService, budgetServiceInTransaction, recheckAdmittedRunBudgetRead
 import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInTransaction } from "../../../services/budget-reservations.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { isUnstartedTaskQuestionAnswer } from "../../../services/unstarted-task-question-answer.js";
+import { isVerifiedDependencyInteractionResponse } from "../../../services/queued-interaction-response.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
@@ -488,8 +489,12 @@ export function createPostgresRunDispatchAdapter(
             .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, input.companyId),
               eq(agentWakeupRequests.id, input.wakeupRequestId))).then(rows => rows[0]?.actor ?? null) : null })
       : false;
+    const responseAdmitted = readiness && !readiness.isDependencyReady
+      && input.contextSnapshot.dependencyBlockedInteraction === true
+      && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId,
+        issueId, agentId: input.agentId, context: input.contextSnapshot });
     facts.dependenciesBlocked =
-      readiness && !readiness.isDependencyReady && !stallAdmitted
+      readiness && !readiness.isDependencyReady && !stallAdmitted && !responseAdmitted
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,
@@ -680,6 +685,10 @@ export function createPostgresRunDispatchAdapter(
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
       isResolvedInteractionContinuation,
+      isDependencyBlockedInteractionResponse: Boolean(isResolvedInteractionContinuation && issue?.status === "blocked"
+        && context.dependencyBlockedInteraction === true
+        && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId, issueId,
+          agentId: input.agentId, context })),
       isUnstartedTaskQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "todo" &&
         await isUnstartedTaskQuestionAnswer(dbOrTx, { companyId: input.companyId, issueId, interactionId: context.interactionId })),
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")

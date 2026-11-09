@@ -151,6 +151,17 @@ export async function nativeCompletionFeedback(
       "The done report includes unfinished work, failed verification, or an outstanding decision. Finish the work or report the concrete blocker/reviewer request. No human completion approval was created.",
     );
   }
+  const stage = record(issue.executionState), participant = record(stage.currentParticipant);
+  if (stage.status === "pending" && participant.type === "agent" && participant.agentId === run.agentId &&
+      issue.executionRunId === run.id && ["done", "needs_review"].includes(result.reportedWorkDisposition)) {
+    // The active review/approval participant decides the stage on the task
+    // itself. A finish report cannot record that decision, so accepting it
+    // would leave the stage pending with nobody left to decide it.
+    const stageType = typeof stage.currentStageType === "string" ? stage.currentStageType : "review";
+    throw new Error(`You are the active ${stageType} participant on this task. A finish report does not record your ${stageType} decision, so this report was not accepted. ` +
+      `To approve, record the decision first with paperclip_call_api operationId "PATCH /api/issues/{id}" for this task and {"status":"done","comment":"<your decision and the evidence you checked>"}, then report this run with paperclip_finish. ` +
+      "To request changes, or if you cannot decide, report the required changes or the concrete blocker with paperclip_block.");
+  }
   if (["done", "cancelled"].includes(issue.status)) {
     return `Report accepted; task is already ${issue.status}. This report will not reopen it.`;
   }

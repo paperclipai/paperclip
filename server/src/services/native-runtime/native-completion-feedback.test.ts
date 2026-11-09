@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, documentRevisions, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issues, issueThreadInteractions, issueTreeHolds, issueDocuments } from "@paperclipai/db";
+import { agents, companies, createDb, documentRevisions, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issueExecutionDecisions, issues, issueThreadInteractions, issueTreeHolds, issueDocuments } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { documentService } from "../documents.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
+import { executionStageApprovedByRun } from "./native-run-finalizer.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 
 const done: PrpStructuredRunResult = {
@@ -43,6 +44,37 @@ describe("native final-response feedback", () => {
     } }) as { downloadPath: string };
     return { ...done, evidence: [{ ref: `${receipt.downloadPath}#download` }] };
   }
+  it("sends the active review participant to record its stage decision before reporting", async () => {
+    const value = await fixture(), stageId = randomUUID(), otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId: value.companyId, name: "Implementer", adapterType: "paperclip_runner", status: "active" });
+    const pending = { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: value.agentId }, returnAssignee: { type: "agent", agentId: otherAgentId },
+      completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null };
+    await db.update(issues).set({ status: "in_review", executionState: pending }).where(eq(issues.id, value.issueId));
+    // The retained failure: the reviewer's finish was accepted while its own
+    // stage stayed pending, and nothing it could call afterwards decided it.
+    await expect(nativeCompletionFeedback(db, value.runId, done)).rejects.toThrow(/active review participant[\s\S]*PATCH \/api\/issues\/\{id\}/);
+    await expect(nativeCompletionFeedback(db, value.runId, { ...done, reportedWorkDisposition: "needs_review" })).rejects.toThrow("does not record your review decision");
+    // Someone else's pending stage is still explained, not attributed to this run.
+    await db.update(issues).set({ executionState: { ...pending, currentParticipant: { type: "agent", agentId: otherAgentId } } }).where(eq(issues.id, value.issueId));
+    await expect(nativeCompletionFeedback(db, value.runId, done)).resolves.toContain("configured review stage is still pending");
+    // Once the participant's approval is recorded, its report is accepted.
+    await db.update(issues).set({ executionState: { ...pending, status: "completed", completedStageIds: [stageId], lastDecisionId: randomUUID(), lastDecisionOutcome: "approved" } }).where(eq(issues.id, value.issueId));
+    await expect(nativeCompletionFeedback(db, value.runId, done)).resolves.not.toContain("review stage");
+  });
+  it("binds final-stage approval authority to the decision row this run wrote", async () => {
+    const value = await fixture(), stageId = randomUUID(), decisionId = randomUUID();
+    const run = { id: value.runId, companyId: value.companyId, agentId: value.agentId };
+    const completed = { status: "completed", currentStageId: null, completedStageIds: [stageId], lastDecisionId: decisionId, lastDecisionOutcome: "approved" };
+    await db.insert(issueExecutionDecisions).values({ id: decisionId, companyId: value.companyId, issueId: value.issueId, stageId, stageType: "review",
+      actorAgentId: value.agentId, outcome: "approved", body: "Approved: verified.", createdByRunId: value.runId });
+    expect(await executionStageApprovedByRun(db, run, { id: value.issueId, executionState: completed })).toBe(true);
+    // Another run's decision, a pending stage, or a changes request grants nothing.
+    expect(await executionStageApprovedByRun(db, { ...run, id: randomUUID() }, { id: value.issueId, executionState: completed })).toBe(false);
+    expect(await executionStageApprovedByRun(db, run, { id: value.issueId, executionState: { ...completed, status: "pending" } })).toBe(false);
+    expect(await executionStageApprovedByRun(db, run, { id: value.issueId, executionState: { ...completed, lastDecisionOutcome: "changes_requested" } })).toBe(false);
+    expect(await executionStageApprovedByRun(db, run, { id: value.issueId, executionState: { ...completed, lastDecisionId: randomUUID() } })).toBe(false);
+  });
   it("rejects a duplicate approval report for the exact pending tool-action card", async () => {
     const value = await fixture(), interactionId = randomUUID();
     await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: value.companyId, issueId: value.issueId,

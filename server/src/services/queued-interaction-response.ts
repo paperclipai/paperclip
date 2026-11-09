@@ -71,6 +71,24 @@ export function queuedInteractionSteeringBody(interaction: {
 
 export type QueuedInteractionResponse = NonNullable<Awaited<ReturnType<typeof readQueuedInteractionResponse>>>;
 
+/** A stored human answer can reach its assignee while dependency work stays blocked. */
+export async function isVerifiedDependencyInteractionResponse(db: Pick<Db, "select">, input: {
+  companyId: string; issueId: string; agentId: string; context: unknown;
+}): Promise<boolean> {
+  const id = queuedInteractionId(input.context);
+  if (!id) return false;
+  const context = record(input.context);
+  const [interaction] = await db.select({ status: issueThreadInteractions.status, kind: issueThreadInteractions.kind,
+    resolvedByUserId: issueThreadInteractions.resolvedByUserId, resolvedAt: issueThreadInteractions.resolvedAt })
+    .from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.id, id), eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.issueId), eq(issueThreadInteractions.createdByAgentId, input.agentId),
+    )).limit(1);
+  return Boolean(interaction?.resolvedByUserId && interaction.resolvedAt
+    && interaction.status === context.interactionStatus
+    && (context.interactionKind === undefined || interaction.kind === context.interactionKind));
+}
+
 export async function readQueuedInteractionResponse(db: Db, companyId: string, issueId: string, payload: unknown) {
   const id = queuedInteractionId(payload);
   if (!id) return null;

@@ -3,6 +3,15 @@ import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinaliza
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 
+export function isPreDispatchResourceWait(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "runtimeMode" | "status" | "errorCode" | "resultJson">): boolean {
+  const evidence = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  return run.runtimeMode === "legacy" && run.status === "cancelled" && evidence?.providerWorkStarted === false &&
+    (run.errorCode === "workspace_busy" && evidence.kind === "workspace_wait" ||
+      ["ai_connection_busy", "ai_connection_pool_exhausted", "provider_limit_wait"].includes(run.errorCode ?? "") &&
+      evidence.kind === "ai_connection_wait");
+}
+
 export function executionStartedEventPredicate() {
   return or(isNotNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType,
     ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, "harness.ready", "session.started",

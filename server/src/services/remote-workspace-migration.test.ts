@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { activityLog, agents, environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, completionContracts, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
   executionWorkspaceRepositories, executionWorkspaceRuntimeLeases, executionWorkspaces, issueRecoveryActions, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
@@ -16,7 +16,7 @@ import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { migrateWorkspaceTrees } from "./remote-workspace-migration-batch.js";
-import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
+import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace, migrateRemoteWorkspaceCohort } from "./remote-workspace-migration.js";
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-workspace-snapshot-storage.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import * as workspaceArchive from "./remote-workspace-snapshot-archive.js";
@@ -35,7 +35,7 @@ import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { captureGitWorkspaceContents, readManagedCheckoutContents } from "./git-workspace-contents.js";
 import { isolatedRemoteSourcePath } from "./isolated-remote-workspace-source.js";
 import { verifiedGitCacheSource } from "./git-workspace-restoration.js";
-import { withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { withIndependentWorkspaceSourceLocks, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { inspectOnlineWorkspaceSource } from "./online-workspace-source.js";
 
 const execute = promisify(execFile);
@@ -76,6 +76,84 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     return { companyId, workspaceId, issueId: issue!.id, cwd };
   }
   async function workspace(id: string) { return (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id)))[0]!; }
+  async function queuedFixture() {
+    const original = await seed();
+    vi.stubEnv("PAPERCLIP_HOME", await fs.realpath(root));
+    const cwd = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", original.companyId, original.issueId);
+    await fs.mkdir(path.dirname(cwd), { recursive: true }); await fs.rename(original.cwd, cwd);
+    await db.update(executionWorkspaces).set({ cwd, providerRef: cwd }).where(eq(executionWorkspaces.id, original.workspaceId));
+    return { ...original, cwd };
+  }
+  async function sourceWriter(companyId: string, issueIds: string[]) {
+    let entered!: () => void, release!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const done = withIndependentWorkspaceSourceLocks(db, { companyId, issueIds }, async () => { entered(); await held; });
+    await ready;
+    return { release, done };
+  }
+  const queuedBackends = async () => db.execute(sql`select pid from pg_stat_activity where datname=current_database()
+    and wait_event_type='Lock' and query like 'select pg_advisory_xact_lock%'`);
+  it.each(["single", "cohort"] as const)("commits a queued %s import after the finite source writer releases", async kind => {
+    const f = await queuedFixture(), writer = await sourceWriter(f.companyId, [f.issueId]);
+    let settled = false;
+    const importing = (kind === "single"
+      ? migrateRemoteWorkspace({ db, storage, ...f, apply: true, sourceLockWaitMs: 5000 })
+      : migrateRemoteWorkspaceCohort({ db, storage, companyId: f.companyId, workspaceIds: [f.workspaceId],
+        apply: true, signal: AbortSignal.timeout(10_000), sourceLockWaitMs: 5000 }))
+      .then(value => ({ value }), error => ({ error })).finally(() => { settled = true; });
+    try {
+      await expect.poll(async () => (await queuedBackends()).length, { timeout: 2000 }).toBe(1);
+      expect(settled).toBe(false);
+      expect(await db.select().from(workspaceOperations)).toHaveLength(0);
+      writer.release(); await writer.done;
+      expect(await importing).toMatchObject({ value: { applied: true } });
+      expect(await db.select().from(workspaceOperations)).toEqual([expect.objectContaining({ status: "succeeded" })]);
+      expect(await db.select().from(executionWorkspaceSnapshots)).toEqual([expect.objectContaining({ status: "committed" })]);
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).not.toBeNull();
+      expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+    } finally { writer.release(); await writer.done; await importing; }
+  });
+  it.each(["timeout", "abort"] as const)("leaves the original and journal intact on queued admission %s", async mode => {
+    const f = await queuedFixture(), before = await workspace(f.workspaceId);
+    const writer = await sourceWriter(f.companyId, [f.issueId]), abort = new AbortController(), reason = new Error("cancel queued import");
+    const importing = migrateRemoteWorkspace({ db, storage, ...f, apply: true, sourceLockWaitMs: mode === "timeout" ? 300 : 5000,
+      signal: abort.signal }).then(value => ({ value }), error => ({ error }));
+    try {
+      await expect.poll(async () => (await queuedBackends()).length, { timeout: 2000 }).toBe(1);
+      const cancelledAt = performance.now();
+      if (mode === "abort") abort.abort(reason);
+      expect(await importing).toMatchObject({ error: mode === "abort" ? reason : expect.objectContaining({ message: "workspace_source_busy" }) });
+      expect(performance.now() - cancelledAt).toBeLessThan(2000);
+      expect(await workspace(f.workspaceId)).toEqual(before);
+      expect(await db.select().from(workspaceOperations)).toHaveLength(0);
+      expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
+      expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+      expect(await queuedBackends()).toHaveLength(0);
+    } finally { writer.release(); await writer.done; await importing; }
+    await expect(withIndependentWorkspaceSourceLocks(db, { companyId: f.companyId, issueIds: [f.issueId] }, async () => true, true)).resolves.toBe(true);
+  });
+  it("bounds the whole source queue and releases keys acquired before a later timeout or abort", async () => {
+    for (const mode of ["timeout", "abort"] as const) {
+      const companyId = randomUUID(), issueIds = [randomUUID(), randomUUID()].sort();
+      const first = await sourceWriter(companyId, [issueIds[0]]), second = await sourceWriter(companyId, [issueIds[1]]);
+      const abort = new AbortController(), reason = new Error("cancel partial admission"), startedAt = performance.now();
+      const waiting = withIndependentWorkspaceSourceLocks(db, { companyId, issueIds }, async () => "unexpected", true,
+        { waitMs: mode === "timeout" ? 600 : 5000, signal: abort.signal }).then(value => ({ value }), error => ({ error }));
+      try {
+        await expect.poll(async () => (await queuedBackends()).length).toBe(1);
+        if (mode === "timeout") await new Promise(resolve => setTimeout(resolve, 350));
+        first.release(); await first.done;
+        await expect.poll(async () => (await queuedBackends()).length).toBe(1);
+        await expect.poll(() => withIndependentWorkspaceSourceLocks(db, { companyId, issueIds: [issueIds[0]] }, async () => false, true)
+          .catch(() => true)).toBe(true);
+        if (mode === "abort") abort.abort(reason);
+        expect(await waiting).toMatchObject({ error: mode === "abort" ? reason : expect.objectContaining({ message: "workspace_source_busy" }) });
+        expect(performance.now() - startedAt).toBeLessThan(mode === "timeout" ? 850 : 2000);
+        await expect(withIndependentWorkspaceSourceLocks(db, { companyId, issueIds: [issueIds[0]] }, async () => true, true)).resolves.toBe(true);
+      } finally { first.release(); second.release(); await Promise.all([first.done, second.done, waiting]); }
+    }
+  });
   async function pendingRepository(f: Awaited<ReturnType<typeof seed>>) {
     const [repository] = await db.insert(executionWorkspaceRepositories).values({ companyId: f.companyId,
       executionWorkspaceId: f.workspaceId, requestedByIssueId: f.issueId, repositoryIdentity: "https://example.invalid/pending.git",
