@@ -26,10 +26,16 @@ const exhaustedStopProofWait = sql`(${issueRecoveryActions.evidence}#>>'{systemR
   and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}' = 'recheck_evidence')`;
 
 /** An exhausted unproven-stop hold whose next bounded re-arm is pending. Holds
- * saved by older releases carry no marker and are due immediately. */
+ * saved by older releases carry no marker and are due immediately. A finalizer
+ * owner whose lease is not live waits for the abandoned-owner settlement (the
+ * attempt would refuse it, and the passive sweep revisits the hold after it);
+ * a live one makes the re-arm due at its expiry (stopProofRearmDueAt). */
 export function stopProofRearmPendingCondition() {
   return sql`(${issueRecoveryActions.status} in ('active', 'escalated')
     and ${exhaustedStopProofWait}
+    and not exists (select 1 from native_run_finalizations finalizer
+      where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id::text = ${issueRecoveryActions.evidence}->>'runId'
+        and finalizer.lease_owner is not null and coalesce(finalizer.lease_expires_at <= now(), true))
     and ${issueRecoveryActions.evidence}->'retainedSourceFallback' is null
     and ${issueRecoveryActions.evidence}->'executionReconciliation' is null
     and ${stopProofRearms} < ${STOP_PROOF_MAX_REARMS})`;

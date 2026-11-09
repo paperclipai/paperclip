@@ -54,8 +54,9 @@ export async function rearmExhaustedStopProof(db: Db, input: WorkspaceRecoverySo
     const at = new Date(now);
     if (!terminalWorkspaceRunStates.includes(run.status) || !run.finishedAt || adapterExecutionControls.has(run.id)
       || (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > at)
-      // The same fence as runOwnerFenceHeldSql: an owner with a live lease.
-      || (coordinator?.leaseOwner && coordinator.leaseExpiresAt && coordinator.leaseExpiresAt > at)) return null;
+      // The attempt refuses any recorded finalizer owner (inspectWorkspaceRecoverySource);
+      // a stale one is released by the abandoned-owner settlement first.
+      || coordinator?.leaseOwner) return null;
     const marker = readStopProofRecovery(action.evidence);
     const rearms = marker?.rearms ?? 0;
     if (rearms >= STOP_PROOF_MAX_REARMS || (marker?.nextRearmAt ?? 0) > now) return null;

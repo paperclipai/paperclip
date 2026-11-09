@@ -3,16 +3,19 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { activityLog, environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { readRemoteWorkspaceWriterHold, remoteWorkspaceHoldRefusesStart } from "./remote-workspace-writer-hold.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { adoptSystemRecovery } from "./system-recovery.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
+import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
 import { RETAINED_SOURCE_FALLBACK_OUTCOME } from "./workspace-recovery-fallback.js";
 import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { reconcileRetainedWorkspaces, recoverRetainedWorkspace, retainedWorkspaceCandidates } from "./workspace-recovery.js";
-import { acceptedRemoteExport, action, connectionString, db, run, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
+import { acceptedRemoteExport, action, connectionString, db, run, seed, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
 
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
@@ -179,5 +182,69 @@ describe("exhausted stop-proof holds", () => {
     await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
     expect(await action(f.actionId)).toMatchObject({ status: "resolved", resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
     expect(await parentHold(f)).toEqual({ kind: "free" });
+  }, 60_000);
+
+  /** Exhausts a saved-work recovery with the Nov 5 evidence shape: one attempt, `agent_stop_unconfirmed`, window spent. */
+  async function exhaustStopWait(actionId: string, runId: string) {
+    const prior = await action(actionId);
+    const current = readSystemRecovery(prior.evidence)!;
+    const firstFailureAt = Date.now() - 5 * 86_400_000;
+    await db.update(issueRecoveryActions).set({ evidence: { ...prior.evidence,
+      systemRecovery: { ...current, revision: current.revision + 3, state: "exhausted", attempts: 1, retriesUsed: 0, attemptId: randomUUID(),
+        firstFailureAt, deadlineAt: firstFailureAt + 30 * 60_000, nextAttemptAt: null,
+        failure: { code: "agent_stop_unconfirmed", retryClass: "recheck_evidence", evidenceFingerprint: "e".repeat(64) } },
+      workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId, status: "blocked", stage: "verifying_stop",
+        attempt: 1, attemptLimit: 6, retryable: true, requestIds: [] } } }).where(eq(issueRecoveryActions.id, actionId));
+  }
+
+  it("re-arms an exhausted restore hold too, through the worker's own discovery", async () => {
+    // A restore hold (native continuation reconciliation), not a workspace export.
+    const f = await seed("native", true);
+    await adoptSystemRecovery(db, f);
+    expect((await action(f.actionId)).cause).toBe("native_continuation_requires_reconciliation");
+    await exhaustStopWait(f.actionId, f.runId);
+
+    expect(await nextWorkspaceRecoveryAt(db)).toBeLessThanOrEqual(Date.now());
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).toContain(f.actionId);
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
+
+    const rearmed = await action(f.actionId);
+    expect(rearmed.evidence.stopProofRecovery).toMatchObject({ rearms: 1 });
+    expect(readSystemRecovery(rearmed.evidence)).toMatchObject({ state: "complete" });
+    expect(rearmed.ownerType).toBe("system");
+  }, 60_000);
+
+  it("leaves a stale finalizer owner to the abandoned-owner settlement instead of spending re-arms", async () => {
+    const f = await exhaustedStopProofHold();
+    await db.update(nativeRunFinalizations).set({ leaseOwner: `native-finalizer:${randomUUID()}`, leaseExpiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).not.toContain(f.actionId);
+    const next = await nextWorkspaceRecoveryAt(db);
+    expect(next === null || next > Date.now()).toBe(true);
+    await recoverRetainedWorkspace(f.input);
+    const held = await action(f.actionId);
+    expect(held.evidence.stopProofRecovery).toBeUndefined();
+    expect(readSystemRecovery(held.evidence)?.state).toBe("exhausted");
+
+    // Once that settlement releases the owner, the hold is due again.
+    await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).toContain(f.actionId);
+  }, 60_000);
+
+  it("wakes the workspace recovery worker when a stop receipt is recorded", async () => {
+    const f = await acceptedRemoteExport("retained");
+    const woken: string[] = [];
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.workspaceRecovery, () => woken.push("workspace-recovery"));
+    try {
+      const [active] = await db.update(environmentLeases).set({ status: "active", releasedAt: null, cleanupStatus: null,
+        metadata: { ...f.lease.metadata, remoteExecutionTermination: undefined } }).where(eq(environmentLeases.id, f.lease.id)).returning();
+      const stopping = await prepareSandboxStopAndRetain(db, active);
+      expect(stopping).not.toBeNull();
+      woken.length = 0;
+      expect(await settleStopOnlyCleanup(db, stopping!, { attemptId: String(stopping!.metadata?.pendingCleanupAttemptId ?? randomUUID()),
+        receipt: { providerLeaseId: f.providerLeaseId, state: "stopped" } })).not.toBeNull();
+      await vi.waitFor(() => expect(woken.length).toBeGreaterThan(0), { timeout: 5_000 });
+    } finally { stop(); }
   }, 60_000);
 });
