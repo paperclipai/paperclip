@@ -288,6 +288,40 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
   });
 
+  // Chaos wave s9802 t02: a follow-up run refused by a quarantined cleanup
+  // before any launch carried its predecessor's runner identity. Its debt
+  // waited ten minutes, then settled as unknown unpriced usage, and the
+  // blocking policy paused the company and held the board's Retry.
+  it.each([
+    { label: "settles at once without a charge", inherited: true, ownStart: false },
+    { label: "keeps the debt pending for its own recorded runner start", inherited: true, ownStart: true },
+    { label: "keeps the debt pending for an identity it did not record as inherited", inherited: false, ownStart: false },
+  ])("$label: a run that only carries its predecessor's runner identity", async ({ inherited, ownStart }) => {
+    const f = await fixture({ unpricedUsagePolicy: "block", processPid: 11356, failureCode: "native_session_cleanup_quarantined" });
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+    if (ownStart) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.run.id, agentId: f.agentId,
+      seq: 1, eventType: "native.process_start_requested", stream: "system" });
+    await db.update(heartbeatRuns).set({ errorCode: "native_session_cleanup_quarantined",
+      runnerProfileJson: inherited ? { inheritedProcessIdentityRunId: randomUUID() } : {},
+      usageJson: { accountingReceiptSourceId: f.sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false,
+        accountingReceiptUnavailable: true, accountingReceiptSourceFences: {},
+        ledgerScope: { issueId: f.issue.id, projectId: null, billingCode: null } } })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    const settled = await accountRunCost(db, f.run.id);
+    if (!inherited || ownStart) {
+      expect(settled).toBe(false);
+      expect((await f.readRun()).costAccountingPending).toBe(true);
+      return;
+    }
+    expect(settled).toBe(true);
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    expect(await f.charges()).toEqual([]);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await f.block()).toBeNull();
+  });
+
   it("keeps the debt pending while the provider process identity is still recorded", async () => {
     const f = await fixture({ processPid: 424242 });
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });

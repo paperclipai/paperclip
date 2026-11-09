@@ -1019,6 +1019,13 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               : {}),
             nativeExecutionInput:
               lockedProfile.nativeExecutionInput ?? nativeExecution,
+            ...(typeof lockedProfile.inheritedProcessIdentityRunId === "string"
+              ? { inheritedProcessIdentityRunId: lockedProfile.inheritedProcessIdentityRunId }
+              : lockedRun.processPid == null && lockedRun.processGroupId == null && lockedRun.processStartedAt == null
+                && previousNativeRun?.nativeSessionId === nativeSessionId
+                && (previousNativeRun.processPid != null || previousNativeRun.processGroupId != null)
+                ? { inheritedProcessIdentityRunId: previousNativeRun.id }
+                : {}),
             nativeResourceDisposition: providerResourceDispositionForRun,
             nativeToolContractFingerprint:
               nativeToolContractFingerprintForTarget(
