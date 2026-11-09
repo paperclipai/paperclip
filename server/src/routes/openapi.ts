@@ -12957,14 +12957,21 @@ registerCurrentRoute({
   body: mcpConsentSchema.extend({ userCode: z.string().min(8).max(12) }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
+const ASSISTANT_CONNECTIONS_PERSON_ONLY = "Personal and person-only: only the signed-in person can list or revoke their own assistant connections, in their browser on "
+  + "[Assistant connections](/<prefix>/apps/assistant-connection), with this conversation's company prefix as <prefix>. "
+  + "An agent cannot do it for them: these routes accept only the person's own signed-in browser session, and the only other revocation is OAuth token revocation sent by the connected assistant itself with its own token. "
+  + "Do not search for another route; link that page and tell the person which connection to revoke. "
+  + "Revoking stops that assistant's further calls; tasks it already created keep their assignees and running work.";
 registerCurrentRoute({
   method: "get", path: "/api/mcp/connections", tags: ["tool-gateway"],
   summary: "List the signed-in person's assistant connections",
+  description: ASSISTANT_CONNECTIONS_PERSON_ONLY,
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 registerCurrentRoute({
   method: "delete", path: "/api/mcp/connections/{id}", tags: ["tool-gateway"],
   summary: "Revoke an assistant connection using a same-origin browser session",
+  description: ASSISTANT_CONNECTIONS_PERSON_ONLY,
   responses: { 204: { description: "Connection revoked" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
