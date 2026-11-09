@@ -64,4 +64,19 @@ describe("oracle for a remote workspace", () => {
     expect(artifacts.commands.node_test).toMatchObject({ exitCode: 0 });
     expect(artifacts.commands.slug?.stdout).toContain("hello-chaos-world");
   }, 60_000);
+
+  it("skips the local pre-fault listing for a workspace that lives in the sandbox, instead of failing R2", async () => {
+    const api = {
+      baseUrl,
+      async get(route: string) { return route.endsWith("/runs") ? [] : { id: "i1", status: "in_progress", currentExecutionWorkspace: { cwd: "/home/daytona/workspaces/not-on-this-host" } }; },
+      async post() { return { id: "i1", identifier: "CHA-1" }; },
+    } as unknown as ChaosApi;
+    const observer = new TaskObserver(plan, api, lab, new Timeline(null), { serverReady: true, faultInProgress: false });
+    await observer.launch();
+    await observer.poll(observer.record.createdAt! + 1_000);
+    await observer.snapshotBeforeFault();
+    expect(observer.record).toMatchObject({ preFaultFiles: null, remoteWorkspace: true });
+    expect(observer.record.preFaultSnapshotError).toBeUndefined();
+  });
 });
+
