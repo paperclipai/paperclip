@@ -5,6 +5,7 @@ import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
+  experimentalApiDocs,
   experimentalApiPaths,
   experimentalApiQueries,
 } from "./experimental-api-paths.js";
@@ -13282,16 +13283,16 @@ for (const [method, path, body, summary] of [
 for (const [method, path, body] of experimentalApiPaths) {
   const query = experimentalApiQueries[`${method.toUpperCase()} ${path}`];
   const metadata = experimentalApiMetadata[`${method.toUpperCase()} ${path}`];
+  const docs = experimentalApiDocs[`${method.toUpperCase()} ${path}`];
   registry.registerPath({
     method,
     path,
     tags: ["Experimental"],
-    summary: `${method.toUpperCase()} ${path
+    summary: docs?.summary ?? `${method.toUpperCase()} ${path
       .replace(/\{[^}]+\}/g, "")
       .replace(/\/api\//, "")
       .replaceAll("/", " ")}`,
-    description:
-      "Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies.",
+    description: `${docs ? `${docs.description} ` : ""}Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies.`,
     request: {
       params: z.object(
         Object.fromEntries(
