@@ -3,7 +3,7 @@ import { expect } from "@playwright/test";
 import { pollUntil } from "../api.js";
 import { checks } from "./internal-support.js";
 import { probeAgentPermission } from "./identity-support.js";
-import { runtimeDefinition, runtimeObservation, observeRuntime, openRuntimeAgentProfile, type RuntimeAgent } from "./runtime-support.js";
+import { agentLink, runtimeDefinition, runtimeObservation, observeRuntime, openRuntimeAgentProfile, type RuntimeAgent } from "./runtime-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 export function gradePauseAgent(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
@@ -17,15 +17,22 @@ export function gradePauseAgent(value: unknown) {
     "The real profile Pause control persists suspension and confirms the original process stopped.");
   c.add("human-attribution", o.activity.some(row => row.action === "agent.paused" && row.entityId === worker.id
     && row.actorType === "user" && !row.agentId), "The pause audit belongs to the authorized human.");
-  c.add("pending-human-step-honest", /profile|pause button|pause control|you can pause|you.*pause/i.test(o.reply)
-    && /stop|settle|current|existing|running/i.test(o.reply) && !/I(?:'ve| have)? (?:now )?paused/i.test(o.reply),
-    "The reply identifies the exact human step and explains how existing execution settles without falsely claiming the pause.");
+  // Graded from saved state and the rendered link, never from reply wording.
+  c.add("still-running-before-human", o.state.beforeHumanStatus !== "paused" && o.state.beforeHumanLifecycleState !== "paused"
+    && o.state.workerRunStatusBeforeHuman === "running", "Morgan was still running when the person took over, so chat did not pause Morgan.");
+  c.add("no-agent-pause-write", !o.activity.some(row => row.entityId === worker.id && row.actorType === "agent"
+    && ["agent.paused", "agent.updated", "agent.terminated"].includes(String(row.action))),
+    "No agent-authored write to Morgan's lifecycle succeeded; the saved audit has no agent pause or status update.");
+  const profile = agentLink(o, worker);
+  c.add("reply-links-morgan-profile", !!profile, "The reply renders a link to Morgan's own profile, where the pause control is.");
+  c.add("human-followed-reply-link", !!profile && o.state.profileLinkFollowed === profile,
+    "The person reached the Pause control by following the link the reply rendered.");
   c.add("exact-agent-identity", !!current && current.companyId === o.companyId, "The actual human control affects the same saved Morgan identity.");
   return c.result();
 }
 export const runtimeLifecycleCases = [runtimeDefinition("agents.pause-agent", ctx => busyRuntimeWorker(ctx, { observationDeadlineAt: chatCatalogOriginalPhaseDeadline(ctx) }), gradePauseAgent, {
   sourceFiles: ["chat-catalog-domains/runtime-agent-lifecycle.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/agents.yaml"],
-  expectedRunCount: 2, attemptTimeoutMs: 600_000,
+  oracleVersion: "paperclip.chat-catalog.runtime-pause.v3", expectedRunCount: 2, attemptTimeoutMs: 600_000,
   setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "real-busy-worker", "worker-task-scope"] },
   async verifySetup(ctx, state) {
     const c = checks(); const worker = state.worker as RuntimeAgent;
@@ -47,13 +54,19 @@ export const runtimeLifecycleCases = [runtimeDefinition("agents.pause-agent", ct
       accept: value => chatCatalogNativePhaseIsTimely(ctx) && value.source?.conversationState === "waiting" && value.runs.some(run => run.agentId === ctx.input.fixtures.agent.id && run.status === "succeeded")
         && value.runs.find(run => run.id === state.workerRunId)?.status === "running" });
     const worker = state.worker as RuntimeAgent;
-    state.beforeHumanStatus = (await ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`)).status;
+    const beforeHuman = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`);
+    state.beforeHumanStatus = beforeHuman.status; state.beforeHumanLifecycleState = beforeHuman.lifecycleState;
+    state.workerRunStatusBeforeHuman = (await ctx.allRuns()).find(run => run.id === state.workerRunId)?.status;
     state.agentPauseStatus = await probeAgentPermission(ctx, `/api/agents/${worker.id}/pause`, "POST", {});
     const o = await observeRuntime(ctx, state);
     const source = ctx.input.page.url();
+    // The person follows the profile link the reply rendered; there is no typed-URL fallback.
+    const href = agentLink(o, worker);
+    if (!href) throw new Error("The reply rendered no link to Morgan's profile for the person to follow");
     await openRuntimeAgentProfile(ctx, worker, o);
-    // The profile keeps Pause in its actions menu (#19535), next to Terminate.
-    await ctx.input.page.getByRole("button", { name: `Open actions for ${worker.name}`, exact: true }).click();
+    state.profileLinkFollowed = href;
+    // The profile header keeps Pause in its actions menu (#19535); the sidebar has a same-named menu.
+    await ctx.input.page.locator("header").getByRole("button", { name: `Open actions for ${worker.name}`, exact: true }).click();
     await ctx.input.page.getByRole("button", { name: "Pause", exact: true }).click();
     await pollUntil({ label: "Morgan pause confirmed after native process cleanup", deadlineAt: Date.now() + 90_000,
       load: async () => ({ worker: await ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`), runs: await ctx.allRuns() }),
