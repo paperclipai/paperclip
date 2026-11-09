@@ -92,9 +92,10 @@ export function createExternalReviewWaitReader(db: Db, companyId: string,
     const requested = [...new Set(issueIds)];
     const missing = requested.filter(issueId => !byIssueId.has(issueId));
     if (missing.length) {
-      const read = list(db, companyId, missing);
+      const read = list(db, companyId, missing)
+        .then(waits => new Map(waits.map(wait => [wait.issueId, wait])));
       for (const issueId of missing) {
-        byIssueId.set(issueId, read.then(waits => waits.find(wait => wait.issueId === issueId) ?? null));
+        byIssueId.set(issueId, read.then(waits => waits.get(issueId) ?? null));
       }
     }
     const waits = await Promise.all(requested.map(issueId => byIssueId.get(issueId)!));
