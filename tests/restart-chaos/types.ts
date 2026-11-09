@@ -40,6 +40,7 @@ export interface WaveOptions {
   daytonaReuseLease?: boolean;
   /** `--k4-hold-max-seconds`: upper end of the seeded K4 hold (default 300 s, cap 600 s). */
   k4HoldMaxMs?: number;
+  faultAfterMs?: number;
   /**
    * Known product signatures this wave deliberately masks. "rc06" keeps the
    * company budget amount but disables its hard stop, so a stuck
