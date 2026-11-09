@@ -903,6 +903,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             notifications.poll(&config, &mut state, &store);
         }
         let mut sent_source_seq = state.acked_source_seq;
+        let replayed_through_source_seq = state.highest_source_seq();
         let mut ack_persistence = CumulativeAckPersistence::default();
 
         let mut lifecycle_after_reply = CommandLifecycle::Continue;
@@ -1060,7 +1061,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             continue;
         }
         let mut control_frame_consumed = false;
-        let mut quiet_through_source_seq = state.highest_source_seq();
+        let mut quiet_through_source_seq = replayed_through_source_seq;
         loop {
             if !config.max_runtime.is_zero() && started.elapsed() >= config.max_runtime {
                 break;
