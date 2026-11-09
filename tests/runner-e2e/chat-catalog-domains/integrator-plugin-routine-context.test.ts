@@ -54,3 +54,9 @@ it.each(["foreign-reader", "denied-reader", "changed-routine", "new-run", "wrong
   if (kind === "existing-description") c.source.description = "Prior context";
   await expect(prepareManagedRoutineContext(c.ctx, r.plugin, r.routine)).rejects.toThrow(); expect(c.evidence).not.toHaveBeenCalled();
 });
+it("accepts the CEO's read when only the reader-specific canChangeResponsibleUser flag differs", async () => {
+  const r = resources(), c = context();
+  const boardRead = { ...r.routine, canChangeResponsibleUser: true } as RoutineDetail;
+  reads.routine = { ...r.routine, canChangeResponsibleUser: false };
+  await expect(prepareManagedRoutineContext(c.ctx, r.plugin, boardRead)).resolves.toMatchObject({ ceoRoutineStatus: 200 });
+});
