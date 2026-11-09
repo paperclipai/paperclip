@@ -1,4 +1,5 @@
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
+import { isGovernancePauseStop } from "../governance-pause-stop.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
@@ -11608,7 +11609,14 @@ async function executePaperclipNativeSessionWithinScope(
           stopIntent.scope === "run" &&
           typeof stopIntent.intentAuditId === "string" && stopIntent.intentAuditId.length > 0 &&
           ["pending", "acknowledged"].includes(String(stopIntent.dispatchState));
+        // A governance pause (budget, company or agent pause) Stop is the same
+        // kind of intentional stop. The fence records its cancellation before
+        // dispatch, so judge it whether or not the terminal write has landed;
+        // resume continues it (budget-resume-continuation.ts).
+        const governancePauseStop = !!stoppedRun && hasAcknowledgedNativeRunStopReceipt(stoppedRun)
+          && isGovernancePauseStop({ status: "cancelled", resultJson: stoppedRun.resultJson });
         if (stoppedRun && (pendingStartupStop || hasAcknowledgedNativeStopIntent(stoppedRun) || hasAcknowledgedNativeReassignmentStopIntent(stoppedRun)
+          || governancePauseStop
           || (error instanceof NativeCancellationPendingRecoveryError && hasAcknowledgedNativeRunStopReceipt(stoppedRun)))) {
           const [settled] = await writeExecutionControl(input.db, [DELIVERY_QUEUES.executionFinalization, DELIVERY_QUEUES.accounting], tx => tx.update(nativeRunFinalizations).set({
             phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null,
