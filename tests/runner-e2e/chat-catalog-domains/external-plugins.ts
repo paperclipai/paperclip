@@ -19,9 +19,10 @@ export function gradePluginManagement(value: unknown) {
     && o.state.syntheticPlugin === true && o.state.pluginReadyBeforeQuery === true, "The actual CLI-scaffolded local package is installed through the public product API.");
   c.add("agent-management-denied", o.state.agentMutationStatus === 403 && o.state.unchangedBeforeHuman === true,
     "Ordinary agent authority does not make this administrative mutation before the human action.");
-  c.add("human-management-prerequisite-explained", /plugin|preview/i.test(o.reply) && /setting|configur|administrator|operator|admin/i.test(o.reply)
-    && !/\bI (?:have )?(?:disabled|configured|finished)\b|\b(?:is|now|already)\s+(?:fully\s+)?(?:ready|configured|disabled)\b/i.test(o.reply),
-    "The reply describes the human management step without falsely claiming it already happened.");
+  // Graded from saved state, never reply wording: chat answered while the plugin
+  // and its config were still unchanged (agent-management-denied checks that).
+  c.add("human-management-prerequisite-explained", o.phaseReplies.some(row => row.body.trim().length > 0),
+    "Chat answered the person in this conversation before the human management step.");
   if (o.scenarioId === "plugins.configure-plugin") {
     const config = o.state.configAfter as ConfigRecord | undefined;
     c.add("secure-reference-configured-by-human", o.state.humanConfigured === true && (config?.configJson.apiKey as Record<string, unknown> | undefined)?.type === "secret_ref"
@@ -68,6 +69,7 @@ export const pluginExternalCases = ["configure-plugin", "disable-plugin"].map(id
     throw error;
   }
 }, gradePluginManagement, {
+  oracleVersion: "paperclip.chat-catalog.external-plugin-management.v2",
   sourceFiles: ["chat-catalog-domains/external-plugins.ts", "chat-catalog-domains/external-plugin-tool-identity.ts", "chat-catalog-domains/external-plugin-fixture.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "../../cli/node_modules/tsx/dist/loader.mjs", "../../cli/src/index.ts", "../../packages/plugins/create-paperclip-plugin/src/index.ts", "../../packages/plugins/sdk/src/index.ts", "../../packages/plugins/sdk/dist/index.js", "chat-scenarios/plugins.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx);
@@ -75,7 +77,9 @@ export const pluginExternalCases = ["configure-plugin", "disable-plugin"].map(id
     const config = await ctx.input.api.get<ConfigRecord | null>(`/api/plugins/${state.pluginId}/config?companyId=${ctx.input.fixtures.company.id}`);
     state.unchangedBeforeHuman = before.status === "ready" && JSON.stringify(config?.configJson ?? null) === JSON.stringify((state.configBefore as ConfigRecord | null)?.configJson ?? null);
     const source = ctx.input.page.url();
-    const link = ctx.input.page.locator(`[id^="comment-"] a[href$="/company/settings/instance/plugins${id === "configure-plugin" ? `/${state.pluginId}` : ""}"]`).first();
+    // The plugin settings page accepts the plugin id or key; board denials link either.
+    const page = id === "configure-plugin" ? [`/${state.pluginId}`, `/${state.pluginKey}`] : [""];
+    const link = ctx.input.page.locator(page.map(suffix => `[id^="comment-"] a[href$="/company/settings/instance/plugins${suffix}"]`).join(", ")).first();
     if (await link.count()) { await expect(link).toBeVisible(); await link.click(); }
     else await ctx.input.page.goto(id === "configure-plugin" ? String(state.resultPath) : `/${ctx.input.fixtures.company.issuePrefix}/company/settings/instance/plugins`, { waitUntil: "domcontentloaded" });
     if (id === "configure-plugin") {

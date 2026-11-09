@@ -33,14 +33,18 @@ export async function createPreviewFixture(ctx: ChatCatalogContext) {
     const manifest = previewFixtureManifest(key);
     const marker = `Synthetic website preview ${ctx.input.nonce}`;
     const manifestSource = `export default ${JSON.stringify(manifest)};\n`;
+    // Secret-ref config holds the SDK's { type: "secret_ref", secretId, version } binding.
+    // The preview route reports configured only when the bound value actually resolves;
+    // the value itself never leaves the worker.
     const workerSource = `import {definePlugin,runWorker} from ${JSON.stringify(sdkUrl)};
-let configured=false;
+let configured=false,context;
+const bound=value=>!!value&&typeof value==='object'&&value.type==='secret_ref'&&typeof value.secretId==='string'&&value.secretId.length>0;
 const plugin=definePlugin({
- async setup(ctx){ctx.jobs.register('preview-refresh',async()=>{});ctx.tools.register('preview',{displayName:'Preview website',description:'Read the synthetic preview',parametersSchema:{type:'object',properties:{},additionalProperties:false}},async()=>({content:${JSON.stringify(marker)}}));},
- async onConfigChanged(config){configured=typeof config.apiKey==='string'&&config.apiKey.length>0;},
- async onValidateConfig(config){return {valid:typeof config.apiKey==='string'&&config.apiKey.length>0,message:'Choose the preview credential securely.'};},
+ async setup(ctx){context=ctx;ctx.jobs.register('preview-refresh',async()=>{});ctx.tools.register('preview',{displayName:'Preview website',description:'Read the synthetic preview',parametersSchema:{type:'object',properties:{},additionalProperties:false}},async()=>({content:${JSON.stringify(marker)}}));},
+ async onConfigChanged(config){configured=bound(config.apiKey);},
+ async onValidateConfig(config){return {valid:bound(config.apiKey),message:'Choose the preview credential securely.'};},
  async onHealth(){return {status:configured?'ok':'degraded',message:configured?'Synthetic preview configured':'Preview credential is missing'};},
- async onApiRequest(input){return {body:{companyId:input.companyId,marker:${JSON.stringify(marker)},configured}};}
+ async onApiRequest(input){let usable=false;try{const config=await context.config.get(input.companyId);usable=bound(config.apiKey)&&(await context.secrets.resolve(config.apiKey,{companyId:input.companyId,configPath:'apiKey'})).length>0;}catch{usable=false;}return {body:{companyId:input.companyId,marker:${JSON.stringify(marker)},configured:usable}};}
 });export default plugin;runWorker(plugin,import.meta.url);\n`;
     await mkdir(path.join(packageRoot, "dist"), { recursive: true });
     await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "@paperclip-eval/website-preview", version: "0.1.0", type: "module", private: true, paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js" } }));

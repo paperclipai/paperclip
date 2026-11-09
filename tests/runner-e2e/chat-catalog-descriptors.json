@@ -3816,7 +3816,7 @@
       "../../packages/plugins/sdk/dist/index.js",
       "chat-scenarios/plugins.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external-plugin-management.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -3839,7 +3839,7 @@
       "../../packages/plugins/sdk/dist/index.js",
       "chat-scenarios/plugins.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external-plugin-management.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -3861,7 +3861,7 @@
       "../../packages/plugins/sdk/dist/index.js",
       "chat-scenarios/plugins.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external-plugin-install.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -4971,7 +4971,7 @@
       "../../packages/plugins/sdk/dist/index.js",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v8",
+    "oracleVersion": "paperclip.chat-catalog.external-least-scope-delivery.v9",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 1,
     "minimumRunCount": 3,
