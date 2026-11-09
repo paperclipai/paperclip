@@ -164,7 +164,6 @@ export function AgentProviderConnection({
     enabled: !managedAccount && !advanced && adapterType !== "antigravity_runtime",
   });
   const canUseLocalCli = !managedAccount && localEnvironment
-    && health.data?.deploymentMode === "local_trusted"
     && (adapterType === "claude_local" || adapterType === "codex_local");
   const checkingLocalCli = canUseLocalCli && auth.isPending;
   const localCliReady = canUseLocalCli && auth.data?.localCli === "present"

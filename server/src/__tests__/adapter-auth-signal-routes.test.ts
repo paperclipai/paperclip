@@ -183,7 +183,7 @@ describe("adapter auth-signal route", () => {
     ]);
     agentRoutes = routes.agentRoutes;
     errorHandler = middleware.errorHandler;
-  });
+  }, process.platform === "win32" ? 120_000 : 30_000);
 
   afterEach(() => {
     vi.clearAllMocks();
@@ -196,6 +196,38 @@ describe("adapter auth-signal route", () => {
     expect(res.status).toBe(200);
     expect(res.body.localCli).toBe("present");
     expect(mockLocalCli).toHaveBeenCalledExactlyOnceWith(type);
+  });
+
+  it.each(["claude_local", "codex_local"])("detects %s host login for an authenticated instance administrator", async type => {
+    currentActor = { ...boardActor(OWNER_A), source: "session", isInstanceAdmin: true };
+    mockEnvironmentService.getById.mockResolvedValue({ id: ENVIRONMENT_1, companyId: COMPANY_1, driver: "local", envVars: {} });
+    const res = await request(await createApp()).get(authSignalPath(COMPANY_1, type, ENVIRONMENT_1));
+    expect(res.status).toBe(200);
+    expect(res.body.localCli).toBe("present");
+    expect(mockLocalCli).toHaveBeenCalledExactlyOnceWith(type);
+  });
+
+  it("does not inspect a local CLI for an authenticated non-administrator", async () => {
+    currentActor = { ...boardActor(OWNER_A), source: "session", isInstanceAdmin: false };
+    mockEnvironmentService.getById.mockResolvedValue({ id: ENVIRONMENT_1, companyId: COMPANY_1, driver: "local", envVars: {} });
+    const res = await request(await createApp()).get(authSignalPath(COMPANY_1, "codex_local", ENVIRONMENT_1));
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty("localCli");
+    expect(mockLocalCli).not.toHaveBeenCalled();
+  });
+
+  it.each(["sandbox", "agent", "cloud"])("does not inspect administrator host credentials for a %s target", async scope => {
+    currentActor = { ...boardActor(OWNER_A), source: "session", isInstanceAdmin: true };
+    if (scope === "agent") currentActor = { type: "agent", agentId: "agent-1", companyId: COMPANY_1 };
+    if (scope !== "sandbox") {
+      mockEnvironmentService.getById.mockResolvedValue({ id: ENVIRONMENT_1, companyId: COMPANY_1, driver: "local", envVars: {} });
+    }
+    if (scope === "cloud") vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", "fixture");
+    try {
+      const res = await request(await createApp()).get(authSignalPath(COMPANY_1, "codex_local", ENVIRONMENT_1));
+      expect(res.body).not.toHaveProperty("localCli");
+      expect(mockLocalCli).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it.each(["authenticated", "sandbox", "foreign"])("does not inspect the host CLI for %s requests", async scope => {

@@ -4515,7 +4515,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(document.body.textContent).not.toContain("Start sign-in again");
       }
 
-      it.each(providers)("reuses signed-in %s CLI for the first agent", async (adapterType, _provider, source) => {
+      it.each(providers.flatMap(([adapterType, _provider, source]) =>
+        (["local_trusted", "authenticated"] as const).map(deploymentMode => ({ adapterType, source, deploymentMode })),
+      ))("reuses signed-in $adapterType CLI for the first agent in $deploymentMode mode", async ({ adapterType, source, deploymentMode }) => {
+        localHealth.get.mockResolvedValue({ deploymentMode, localAiLoginSupported: true });
         mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present", localCli: "present" });
         const { root } = await openStep4({ adapterType });
         try {
@@ -4984,13 +4987,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
-    it("hides the panel when the resolved login environment driver is not sandbox", async () => {
+    it("checks host CLI status without showing the sandbox login panel for a local environment", async () => {
       mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
       mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });
       expect(document.body.textContent).not.toContain("Sign in to Anthropic");
-      expect(mockAgentsApi.getAdapterAuthSignal).not.toHaveBeenCalled();
+      expect(mockAgentsApi.getAdapterAuthSignal).toHaveBeenCalledWith("company-new", "claude_local", LOCAL_ENVIRONMENT.id);
       await act(async () => root.unmount());
     });
 

@@ -358,7 +358,7 @@ export type AdapterAuthSignal = "present" | "absent" | "unknown";
 
 export interface AdapterAuthSignalResponse {
   status: AdapterAuthSignal;
-  /** Subscription login owned by the local operator, only for local-trusted execution. */
+  /** Host subscription login, only exposed to the local operator or an authenticated instance administrator. */
   localCli?: AdapterAuthSignal;
 }
 

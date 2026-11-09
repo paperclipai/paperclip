@@ -3691,9 +3691,13 @@ export function agentRoutes(
       }
 
       const body: AdapterAuthSignalResponse = { status };
-      // Host sign-ins belong to the local operator, never to a remote user or
-      // an agent caller. Sandbox credentials must be checked in the sandbox.
-      if ((options.deploymentMode ?? "local_trusted") === "local_trusted" && req.actor.type === "board") {
+      // Host sign-ins belong to the machine operator. An authenticated instance
+      // administrator can reuse them over Tailscale too; ordinary members and
+      // agent callers cannot. Managed cloud and sandbox credentials stay separate.
+      const isHostOperator = req.actor.type === "board" && (
+        (options.deploymentMode ?? "local_trusted") === "local_trusted" || req.actor.isInstanceAdmin === true
+      );
+      if (isHostOperator && !isCloudManagedInstance()) {
         const environment = environmentId ? await environmentsSvc.getById(environmentId) : null;
         if (!environmentId || environment?.driver === "local") {
           body.localCli = await readLocalCliAuthSignal(type);

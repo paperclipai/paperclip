@@ -1102,7 +1102,6 @@ function OnboardingWizardInner({
   }, [effectiveOnboardingOpen, createdCompanyId, adapterType, credentialMode, step]);
 
   const canUseLocalCli = resolvedLoginEnvironment?.driver === "local"
-    && localLoginHealth.data?.deploymentMode === "local_trusted"
     && (adapterType === "claude_local" || adapterType === "codex_local");
   const canShowAdapterLogin = Boolean(
     adapterCaps.login != null &&

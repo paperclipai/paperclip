@@ -30,10 +30,11 @@ Every employee is an agent. When you create a company, you start by defining the
 
 First-agent setup offers **Connect Claude** and **Connect Codex** immediately
 after creating a company. An optional name defaults to **Chief of staff**.
-On a local-trusted instance, setup detects existing Claude Code and Codex CLI
-subscription logins before starting browser sign-in. Local agents reuse the
+For the local operator or an authenticated instance administrator on a self-hosted
+instance (including Tailscale access), setup detects existing Claude Code and
+Codex CLI subscription logins before starting browser sign-in. Local agents reuse the
 CLI's login; no managed account import is required. This also applies when
-adding agents later. Remote users and sandbox environments use their own
+adding agents later. Other users, managed cloud, and sandbox environments use their own
 connection flow. Paperclip verifies the connection before completing
 the hire. Temporary local sign-in status failures receive up to three retries;
 expired or failed provider attempts require a new sign-in.

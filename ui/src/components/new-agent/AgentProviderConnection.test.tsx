@@ -153,8 +153,10 @@ function openProvider() {
   );
 }
 describe("AgentProviderConnection reuse", () => {
-  it.each(["claude_local", "codex_local"] as const)("reuses the signed-in %s CLI without creating a login", async adapterType => {
-    const { test, connected } = await mount(adapterType, false, false, false, false, false, undefined, true, "local_trusted", true, undefined, "present");
+  it.each((["claude_local", "codex_local"] as const).flatMap(adapterType =>
+    (["local_trusted", "authenticated"] as const).map(deploymentMode => ({ adapterType, deploymentMode })),
+  ))("reuses the signed-in $adapterType CLI in $deploymentMode mode without creating a login", async ({ adapterType, deploymentMode }) => {
+    const { test, connected } = await mount(adapterType, false, false, false, false, false, undefined, true, deploymentMode, true, undefined, "present");
     openProvider();
     await vi.waitFor(() => expect(host.textContent).toContain("Using your signed-in"));
     click("Connect");

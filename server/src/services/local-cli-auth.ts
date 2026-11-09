@@ -4,7 +4,7 @@ import type { AdapterAuthSignal } from "@paperclipai/shared";
 
 /** Detect subscription credentials in the same home used by local adapters.
  * Never returns or imports credentials: the CLI retains ownership of its login.
- * Call only after authorizing local-trusted board access and a local target.
+ * Call only after authorizing host-operator board access and a local target.
  */
 export async function readLocalCliAuthSignal(adapterType: string): Promise<AdapterAuthSignal> {
   try {
