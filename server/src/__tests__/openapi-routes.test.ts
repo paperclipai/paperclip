@@ -390,6 +390,26 @@ describe("openapi routes", () => {
     for (const code of ["200", "400", "401", "403", "404"]) expect(operation.responses[code]).toBeDefined();
   });
 
+  it("documents task-tree controls as board-only and names the human page", () => {
+    const spec = buildOpenApiSpec() as any;
+    const boardSecurity = [{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }];
+    for (const [path, method] of [
+      ["/api/issues/{id}/tree-control/state", "get"],
+      ["/api/issues/{id}/tree-control/preview", "post"],
+      ["/api/issues/{id}/tree-holds", "get"],
+      ["/api/issues/{id}/tree-holds", "post"],
+      ["/api/issues/{id}/tree-holds/{holdId}", "get"],
+      ["/api/issues/{id}/tree-holds/{holdId}/release", "post"],
+    ] as const) {
+      const operation = spec.paths[path][method];
+      expect(operation.security).toEqual(boardSecurity);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    }
+    const create = spec.paths["/api/issues/{id}/tree-holds"].post.description as string;
+    expect(create).toContain("Pause subtree");
+    expect(create).toContain("/{prefix}/issues/{identifier}");
+  });
+
   it("documents owned conversation reads and exact revision access separately", () => {
     const spec = buildOpenApiSpec() as any;
     const boardSecurity = [{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }];
