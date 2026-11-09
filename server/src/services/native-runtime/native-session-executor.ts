@@ -8078,6 +8078,12 @@ export function nativeSessionFailureSourceCode(
     // terminal message; it needs a model choice, not a generic provider failure.
     if (!error.recoverable && /^native_provider_model_rejected:/.test(error.message))
       return "native_provider_model_rejected";
+    // The event stream closed because the runner process itself exited. The
+    // runner transport names that cause first in the closed-stream message; it
+    // is runner loss, not a provider verdict on its session.
+    if (error.providerCode === "notification_transport_failed"
+      && /^Notification transport failed closed: native_runner_process_exited: /.test(error.message))
+      return "native_runner_process_exited";
     return "native_provider_terminal_failed";
   }
   if (error instanceof NativeSessionProtocolIntegrityError)
