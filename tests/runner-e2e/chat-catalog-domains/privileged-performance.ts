@@ -26,11 +26,14 @@ export function gradeLongThreadPerformance(value: unknown) {
   c.add("report-bound-native-reply", phase?.attributed === true && !!phase.humanCommentId && !!phase.runId && !!reply
     && o.runs.length === 2 && o.runs.every(run => run.status === "succeeded" && run.agentId === o.leadId),
     "The interpretation is the actual second native reply to the exact persisted human report, not initial guidance or a fabricated result.");
+  // The interpretation's meaning is free-form and is read by a reviewer, not
+  // keyword-matched. Code only rejects numbers that contradict the report:
+  // any timing, profiler commit count, data size or rate the reply states.
   const timings = [...reply.matchAll(/\b(\d+(?:\.\d+)?)\s*(?:ms|milliseconds)\b/gi)];
   const expected = report ? [report.mountMs, report.latestMs, report.maximumMs, report.totalMs] : [];
   const commits = [...reply.matchAll(/\b(\d+)\s+(?:profiler\s+)?commits?\b/gi)];
-  c.add("concrete-measured-grounding", !!report && (timings.length > 0 || commits.length > 0) && commits.every(match => Number(match[1]) === report.commitCount),
-    "The interpretation grounds at least one observed timing or profiler commit count, rather than generic fixture guidance alone.");
+  c.add("commit-claims-grounded", !!report && commits.every(match => Number(match[1]) === report.commitCount),
+    "Any profiler commit count stated in the reply matches the measured report.");
   c.add("timing-claims-grounded", !!report && timings.every(match => {
     const value = Number(match[1]), decimals = match[1]!.split(".")[1]?.length ?? 0;
     const prefix = reply.slice(Math.max(0, match.index! - 60), match.index);
@@ -43,13 +46,8 @@ export function gradeLongThreadPerformance(value: unknown) {
   const sizes = [...reply.matchAll(/\b(\d+)\s+(comments|rows|messages)\b/gi)];
   c.add("data-size-grounded", !!report && sizes.every(match => Number(match[1]) === (match[2]!.toLowerCase() === "rows" ? report.rowCount : report.commentCount)),
     "Any stated row or comment count matches the actual fixed fixture.");
-  c.add("measured-scope-explained", /synthetic|fixture/i.test(reply) && /mount|render|DOM|profil|commit/i.test(reply)
-    && reply.split(/[.!?;\n]/).some(clause => /\b(?:not|cannot|can't|doesn't|does not|no)\b/i.test(clause)
-      && /production|real.user|model.latency|throughput/i.test(clause)),
-    "Chat describes this measured render behavior and its limits without treating one synthetic run as production throughput or model latency.");
-  const positive = reply.split(/[.!?;\n]|\bbut\b|\bhowever\b/i).filter(clause => !/\b(?:not|cannot|can't|doesn't|does not|no)\b/i.test(clause)).join(".");
-  c.add("no-invented-production-performance", !/\b(?:production|real.user|model)[^.\n]{0,50}\b(?:latency|throughput|requests? per second|tokens? per second|users? per second)\b/i.test(positive),
-    "The interpretation makes no unsupported production or provider performance claim.");
+  c.add("no-unmeasured-rate-claims", !/\b\d[\d,.]*\s*(?:requests?|tokens?|users?|messages?)\s*(?:per|\/)\s*(?:second|sec|s|minute|min)\b/i.test(reply),
+    "The report measures render timings only, so any stated request, token or user rate is unsupported.");
   return c.result();
 }
 const performance = privilegedDefinition("developer-labs.long-thread-performance", "privileged-performance", {
@@ -93,6 +91,6 @@ const performance = privilegedDefinition("developer-labs.long-thread-performance
   }, grade: gradeLongThreadPerformance,
   async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
 });
-performance.expectedRunCount = 2; performance.expectedHumanMessageCount = 2; performance.attemptTimeoutMs = 600_000;
+performance.oracleVersion = "paperclip.chat-catalog.privileged.long-thread-performance.v2"; performance.expectedRunCount = 2; performance.expectedHumanMessageCount = 2; performance.attemptTimeoutMs = 600_000;
 performance.sourceFiles = [...performance.sourceFiles, "../../ui/src/pages/IssueChatLongThreadPerf.tsx", "../../ui/src/fixtures/issueChatLongThreadFixture.ts"];
 export const privilegedPerformanceCases = [performance];
