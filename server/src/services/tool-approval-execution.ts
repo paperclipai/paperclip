@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { toolActionRequests, toolInvocations, type Db } from "@paperclipai/db";
 import type { ToolRedactedValueSummary } from "@paperclipai/shared";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
+import { TOOL_APPROVAL_CONNECTION_MESSAGE, TOOL_APPROVAL_CONNECTION_REQUIRED } from "./tool-approval-connection.js";
 
 export type ToolApprovalClaim = { actionRequestId: string; invocationId: string; claimedAt: Date };
 export type ToolTestOutcome = {
@@ -37,7 +38,7 @@ export async function claimToolTestApproval(db: Db, actionRequestId: string, inv
 }
 
 /** Return only this still-undispatched claim to its existing approval queue. */
-export async function releaseToolApproval(db: Db, claim: ToolApprovalClaim) {
+export async function releaseToolApproval(db: Db, claim: ToolApprovalClaim, connectionRevision?: string) {
   return db.transaction(async tx => {
     const [invocation] = await tx.select().from(toolInvocations)
       .where(eq(toolInvocations.id, claim.invocationId)).for("update");
@@ -48,6 +49,12 @@ export async function releaseToolApproval(db: Db, claim: ToolApprovalClaim) {
       request?.status !== "executing" || request.companyId !== invocation.companyId ||
       request.updatedAt.getTime() !== claim.claimedAt.getTime()) return false;
     await notifyToolReviewChange(tx, request.companyId);
+    if (connectionRevision !== undefined) {
+      await tx.update(toolInvocations).set({ errorCode: TOOL_APPROVAL_CONNECTION_REQUIRED,
+        errorMessage: TOOL_APPROVAL_CONNECTION_MESSAGE,
+        policyExplanation: { ...invocation.policyExplanation, approvalConnectionWait: connectionRevision },
+        updatedAt: new Date() }).where(eq(toolInvocations.id, invocation.id));
+    }
     await tx.update(toolActionRequests).set({ status: "approved", updatedAt: new Date() })
       .where(eq(toolActionRequests.id, request.id));
     return true;
@@ -87,7 +94,8 @@ export async function startToolInvocation(db: Db, invocationId: string, claim?: 
     if (invocationId !== claim.invocationId || invocation?.status !== "awaiting_approval" || invocation.startedAt !== null ||
       request?.status !== "executing" || request.invocationId !== invocationId || request.companyId !== invocation.companyId ||
       request.updatedAt.getTime() !== claim.claimedAt.getTime()) return false;
-    await tx.update(toolInvocations).set({ status: "executing", approvalState: "approved", startedAt: now, updatedAt: now })
+    await tx.update(toolInvocations).set({ status: "executing", approvalState: "approved", startedAt: now, updatedAt: now,
+      errorCode: null, errorMessage: null })
       .where(eq(toolInvocations.id, invocationId));
     return true;
   });

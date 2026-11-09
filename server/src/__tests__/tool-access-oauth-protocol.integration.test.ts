@@ -7,10 +7,16 @@ import { join } from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, companyMemberships, createDb, connectionGrants, toolCatalogEntries, toolConnections, toolOauthStates } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { agents, companies, companyMemberships, createDb, connectionGrants, heartbeatRuns, issues, toolActionRequests, toolCatalogEntries, toolConnections, toolOauthStates, toolPolicies } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
+import { createToolGatewayService } from "../services/tool-gateway.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
+import { secretService } from "../services/secrets.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerToolReviewRecoveryWork } from "../services/tool-review-recovery-work.js";
+import { writeToolConnectionHealthChange } from "../services/tool-connection-health-notifications.js";
 import { errorHandler } from "../middleware/index.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -35,7 +41,12 @@ describe("tool OAuth over local HTTP", () => {
     if (keyDir) await rm(keyDir, { recursive: true, force: true });
   });
 
-  it.each(["none", "client_secret_basic"] as const)("registers, exchanges, and activates a %s client through the routes", async (authMethod) => {
+  it.each([
+    { authMethod: "none", grantKind: "organization" },
+    { authMethod: "client_secret_basic", grantKind: "organization" },
+    { authMethod: "none", grantKind: "user" },
+    { authMethod: "client_secret_basic", grantKind: "user" },
+  ] as const)("approves a $grantKind $authMethod OAuth action after refresh and delayed review", async ({ authMethod, grantKind }) => {
     const userId = `oauth-user-${randomUUID()}`;
     const [company] = await db.insert(companies).values({
       name: "OAuth protocol fixture", issuePrefix: `O${randomUUID().slice(0, 5)}`,
@@ -66,7 +77,7 @@ describe("tool OAuth over local HTTP", () => {
           token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register`,
           code_challenge_methods_supported: ["S256"],
           token_endpoint_auth_methods_supported: [authMethod],
-          scopes_supported: ["tools.read", "offline_access"],
+          scopes_supported: ["tools.write", "offline_access"],
           grant_types_supported: ["authorization_code", "refresh_token"],
         });
       }
@@ -85,7 +96,7 @@ describe("tool OAuth over local HTTP", () => {
           currentRefreshToken = "fixture-refresh-rotated";
         }
         return json({ access_token: currentAccessToken, refresh_token: currentRefreshToken,
-          expires_in: 3600, token_type: "Bearer", scope: "tools.read offline_access" });
+          expires_in: 3600, token_type: "Bearer", scope: "tools.write offline_access" });
       }
       if (path === "/mcp") {
         if (req.headers.authorization !== `Bearer ${currentAccessToken}`) {
@@ -97,9 +108,13 @@ describe("tool OAuth over local HTTP", () => {
           res.writeHead(202).end();
           return;
         }
+        if (rpc.method === "tools/call") {
+          return json({ jsonrpc: "2.0", id: rpc.id,
+            result: { content: [{ type: "text", text: "Reviewed action completed" }] } });
+        }
         return json({ jsonrpc: "2.0", id: rpc.id, result: rpc.method === "initialize"
           ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } }
-          : { tools: [{ name: "read_fixture", description: "Read fixture state", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }] },
+          : { tools: [{ name: "create_fixture", description: "Create fixture page", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: false } }] },
         });
       }
       json({}, 404);
@@ -117,7 +132,7 @@ describe("tool OAuth over local HTTP", () => {
       app.use(errorHandler);
 
       const connected = await request(app).post(`/api/companies/${company.id}/tools/apps/connect`)
-        .send({ link: `${origin}/mcp`, name: "Local OAuth" }).expect(201);
+        .send({ link: `${origin}/mcp`, name: "Local OAuth", grantKind }).expect(201);
       const authorization = new URL(connected.body.auth.startUrl);
       expect(authorization.origin).toBe(origin);
       expect(authorization.searchParams.get("client_id")).toBe("fixture-client");
@@ -129,7 +144,11 @@ describe("tool OAuth over local HTTP", () => {
 
       const completed = await request(app).get("/api/tools/oauth/callback")
         .query({ state, code: "fixture-code", iss: origin }).expect(200);
-      expect(completed.body.catalog).toEqual([expect.objectContaining({ toolName: "read_fixture", riskLevel: "read" })]);
+      expect(completed.body.catalog).toEqual([expect.objectContaining({ toolName: "create_fixture", riskLevel: "write" })]);
+      if (grantKind === "user") {
+        await request(app).post(`/api/companies/${company.id}/tools/apps/${connected.body.connectionId}/finalize-oauth-access`)
+          .send({ grantKind }).expect(200);
+      }
       await request(app).post(`/api/companies/${company.id}/tools/apps/${connected.body.connectionId}/finish`)
         .send({ enabledCatalogEntryIds: completed.body.catalog.map((entry: { id: string }) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents" }).expect(200);
 
@@ -137,9 +156,10 @@ describe("tool OAuth over local HTTP", () => {
       expect(connection).toMatchObject({ companyId: company.id, status: "active", enabled: true, ownership: "dcr" });
       expect(connection.config.oauth).toMatchObject({ clientId: "fixture-client", clientTokenEndpointAuthMethod: authMethod, clientIssuer: origin });
       expect(JSON.stringify(connection.config)).not.toMatch(/fixture-(access|refresh|secret)/);
-      expect(connection.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(expect.arrayContaining(["oauth.access_token", "oauth.refresh_token"]));
+      if (grantKind === "organization") expect(connection.credentialSecretRefs.map((ref) => ref.configPath))
+        .toEqual(expect.arrayContaining(["oauth.access_token", "oauth.refresh_token"]));
       expect(await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connection.id)))
-        .toEqual([expect.objectContaining({ toolName: "read_fixture", status: "active", reviewedByUserId: userId })]);
+        .toEqual([expect.objectContaining({ toolName: "create_fixture", status: "active", reviewedByUserId: userId })]);
       const tokenCall = calls.find((call) => call.path === "/token")!;
       const tokenBody = new URLSearchParams(tokenCall.body);
       expect(tokenBody.get("code")).toBe("fixture-code");
@@ -151,10 +171,32 @@ describe("tool OAuth over local HTTP", () => {
       expect(calls.some((call) => call.path === "/mcp" && call.authorization === "Bearer fixture-access")).toBe(true);
       expect(calls.filter((call) => call.path === "/register")).toHaveLength(1);
 
-      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connection.id));
+      const [grant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.connectionId, connection.id), eq(connectionGrants.kind, grantKind)));
       const consentedAt = grant.providerTenant?.oauth?.consentedAt;
       expect(consentedAt).toEqual(expect.any(String));
       expect(Number.isFinite(Date.parse(consentedAt!))).toBe(true);
+      const [agent] = await db.insert(agents).values({ companyId: company.id, name: "OAuth approval agent",
+        role: "engineer", adapterType: "process" }).returning();
+      const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Delayed OAuth approval",
+        status: "in_progress", assigneeAgentId: agent.id }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+        invocationSource: "assignment", status: "running", contextSnapshot: { issueId: issue.id } }).returning();
+      await initializeRunIdentity(db, { companyId: company.id, runId: run.id, issueId: issue.id,
+        responsibleUserId: userId, cause: "instruction" });
+      await db.insert(toolPolicies).values({ companyId: company.id, name: "Review OAuth actions",
+        policyType: "require_approval", selectors: { connectionId: connection.id } });
+      const signingSecret = "oauth-protocol-approval-signing-secret";
+      const gateway = createToolGatewayService(db, { toolActionSigningSecret: signingSecret });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find(entry => entry.connectionId === connection.id)!;
+      expect(tool).toBeDefined();
+      for (const action of ["after refresh", "tomorrow", "connection repair", "changed authorization"]) {
+        await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name,
+          parameters: { action, sharingPolicy: { mode: "domain", domain: "paperclip.ing" } } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+      }
+      const pendingActions = await db.select().from(toolActionRequests).where(eq(toolActionRequests.issueId, issue.id));
+      expect(pendingActions).toHaveLength(4);
       await db.update(connectionGrants).set({ providerTenant: {
         ...grant.providerTenant,
         oauth: { ...grant.providerTenant?.oauth, accessTokenExpiresAt: new Date(0).toISOString() },
@@ -191,6 +233,69 @@ describe("tool OAuth over local HTTP", () => {
       expect(allExchanges).toHaveLength(3);
       expect(new URLSearchParams(allExchanges[2].body).get("refresh_token")).toBe("fixture-refresh-rotated");
       expect(calls.filter(call => call.path === "/register")).toHaveLength(1);
+      // Rebuild the gateway after the requesting run ends. The durable request,
+      // rather than the original session or its old tokens, owns execution.
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
+      const restarted = createToolGatewayService(db, { toolActionSigningSecret: signingSecret });
+      const approve = (id: string) => restarted.approveActionRequest({ companyId: company.id,
+        actionRequestId: id, actor: { userId } });
+      const [currentGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+      const catalog = completed.body.catalog[0];
+      for (const change of ["tool", "destination", "scopes", "consent"]) {
+        try {
+          if (change === "tool") await db.update(toolCatalogEntries).set({ versionHash: "new tool definition" })
+            .where(eq(toolCatalogEntries.id, catalog.id));
+          else if (change === "destination") await db.update(toolConnections).set({
+            config: { ...connection.config, url: `${origin}/different-target` },
+          }).where(eq(toolConnections.id, connection.id));
+          else await db.update(connectionGrants).set({ providerTenant: { ...currentGrant.providerTenant,
+            oauth: { ...currentGrant.providerTenant?.oauth,
+              ...(change === "scopes" ? { scopes: ["tools.admin"] } : { consentedAt: "2026-11-10T00:00:00Z" }) },
+          } }).where(eq(connectionGrants.id, grant.id));
+          await expect(approve(pendingActions[3].id)).rejects.toMatchObject({ reasonCode: "approved_tool_target_changed" });
+          expect(calls.filter(call => call.path === "/mcp" && JSON.parse(call.body).method === "tools/call")).toHaveLength(0);
+        } finally {
+          await db.update(toolCatalogEntries).set({ versionHash: catalog.versionHash }).where(eq(toolCatalogEntries.id, catalog.id));
+          await db.update(toolConnections).set({ config: connection.config }).where(eq(toolConnections.id, connection.id));
+          await db.update(connectionGrants).set({ providerTenant: currentGrant.providerTenant }).where(eq(connectionGrants.id, grant.id));
+        }
+      }
+      await expect(approve(pendingActions[0].id)).resolves.toMatchObject({ status: "executed" });
+      await expect(approve(pendingActions[0].id)).resolves.toMatchObject({ status: "executed" });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 25 * 60 * 60_000);
+        await expect(approve(pendingActions[1].id)).resolves.toMatchObject({ status: "executed" });
+      } finally { vi.useRealTimers(); }
+      await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
+        .where(eq(connectionGrants.id, grant.id));
+      await expect(approve(pendingActions[2].id)).resolves.toMatchObject({ status: "approved" });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        canReconcile: () => true, onError: error => { throw error; } });
+      try {
+        await registerToolReviewRecoveryWork(coordinator, restarted, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBeNull();
+        await expect(restarted.recoverApprovedActionReviews(company.id)).resolves.toMatchObject({ retry: false });
+        // The supported connection writer wakes recovery after commit. No
+        // second approval or agent run is needed for the same authorization.
+        await writeToolConnectionHealthChange(db, { companyId: company.id, id: connection.id }, async tx => {
+          await tx.update(connectionGrants).set({ status: "active", updatedAt: new Date(Date.now() + 1) })
+            .where(eq(connectionGrants.id, grant.id));
+        });
+        await vi.waitFor(async () => {
+          expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pendingActions[2].id)))[0].status)
+            .toBe("executed");
+        }, { timeout: 5000, interval: 25 });
+      } finally { await coordinator.stop(); }
+      const accessRef = currentGrant.credentialSecretRefs.find(ref => ref.configPath === "oauth.access_token")!;
+      await secretService(db).rotate(accessRef.secretId, { value: "manually-replaced-token" }, { userId });
+      await expect(approve(pendingActions[3].id)).rejects.toMatchObject({ reasonCode: "approved_tool_target_changed" });
+      const executions = calls.filter(call => call.path === "/mcp" && JSON.parse(call.body).method === "tools/call");
+      expect(executions).toHaveLength(3);
+      expect(executions.map(call => JSON.parse(call.body).params.arguments.action).sort())
+        .toEqual(["after refresh", "connection repair", "tomorrow"]);
+      for (const execution of executions) expect(JSON.parse(execution.body).params.arguments.sharingPolicy)
+        .toEqual({ mode: "domain", domain: "paperclip.ing" });
     } finally {
       provider.closeAllConnections();
       await new Promise<void>((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));

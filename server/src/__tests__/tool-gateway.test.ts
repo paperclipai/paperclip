@@ -3919,7 +3919,7 @@ rl.on("line", (line) => {
             previewMarkdown: approvalRequest.previewMarkdown,
             argumentsSummaryJson: expect.stringContaining('"value":"original"'),
             argumentsHash: approvalRequest.canonicalArgumentsHash,
-            expiresAt: approvalRequest.expiresAt!.toISOString(),
+            expiresAt: null,
           },
         },
       });
@@ -4404,7 +4404,7 @@ rl.on("line", (line) => {
       expect(freshRequest).toBeTruthy();
       expect(freshRequest!.status).toBe("pending");
       expect(freshRequest!.signedArguments).not.toBeNull();
-      expect(freshRequest!.expiresAt).not.toBeNull();
+      expect(freshRequest!.expiresAt).toBeNull();
 
       // The tool never executed while the approval stayed pending.
       expect(fake.requests).toHaveLength(0);

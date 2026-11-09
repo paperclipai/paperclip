@@ -244,6 +244,32 @@ writer and finalization holds remain until ordinary snapshot publication and
 cleanup complete. This fallback does not remove source files, rerun provider
 work, or solve capacity failure while creating the workspace archive itself.
 
+### Delayed tool approvals
+
+Ordinary tool reviews have no implicit one-hour deadline. A person may approve
+the saved action after the requesting run ends or the server restarts. Explicit
+action deadlines and terminal-task expiry still apply. The shared interaction
+payload represents the absence of a deadline with `toolAction.expiresAt = null`.
+
+New connected-tool snapshots bind the reviewed arguments, tool contract,
+connection settings, credential owner, consent and permissions. Authenticated
+OAuth refresh preserves the vault's credential identity epoch; manual credential
+replacement and new consent do not. Token versions and refresh timestamps may
+change without invalidating the action. Fixed credential versions and non-OAuth
+credentials retain their exact-version checks. Earlier signed snapshots retain
+their original strict comparison and saved deadlines; the server does not infer
+continuity for historical rotations or revive already-expired requests.
+
+If sign-in is required before dispatch, the accepted decision remains saved.
+The card shows that approval is waiting for the app connection and links to its
+repair surface. Recovery waits without a recurring timer and wakes on committed
+connection changes or startup. It checks the exact saved action and current
+authority again. Repair under the same authorization can continue automatically;
+new consent, changed permissions or changed credentials require a new review.
+The existing execution claim and result receipt prevent repeated approval from
+dispatching the action twice. Uncertain provider outcomes retain the existing
+no-replay recovery contract.
+
 ### Answered Slack conversations
 
 An accepted scheduled-monitor yield remains unfinished task work. Its committed
