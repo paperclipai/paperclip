@@ -1835,6 +1835,20 @@ describe("company portability", () => {
     expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(expect.any(String), "agent", importedId, "agents:create", false, null);
   });
 
+  it("asks the importing actor for hiring authority before an import creates agents", async () => {
+    const portability = companyPortabilityService({} as any);
+    const include = { company: true, agents: true, projects: false, issues: false, skills: false };
+    const exported = await portability.exportBundle("company-1", { include });
+    agentSvc.list.mockResolvedValue([]);
+    const assertCanCreateAgents = vi.fn(async () => { throw new Error("hiring denied"); });
+
+    await expect(portability.importBundle({ source: { type: "inline", files: exported.files, rootPath: exported.rootPath }, include,
+      target: { mode: "new_company", newCompanyName: "Denied import" }, collisionStrategy: "rename", agents: "all" }, null,
+      { mode: "agent_safe", assertCanCreateAgents })).rejects.toThrow("hiring denied");
+    expect(assertCanCreateAgents).toHaveBeenCalledTimes(1);
+    expect(agentSvc.create).not.toHaveBeenCalled();
+  });
+
   it("removes an existing hiring grant when an update import restores a CEO's denial", async () => {
     const denial = { actorType: "user", actorId: "source-board-user", at: "2026-11-08T00:00:00.000Z" };
     const [fixture] = await agentSvc.list();

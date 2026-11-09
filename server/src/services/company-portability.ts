@@ -764,6 +764,8 @@ type ImportBehaviorOptions = {
   mode?: ImportMode;
   sourceCompanyId?: string | null;
   pauseAutomations?: boolean;
+  /** Runs before writes when the import would create agents; throws to refuse. */
+  assertCanCreateAgents?: () => Promise<void>;
 };
 
 type AgentLike = {
@@ -5289,6 +5291,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {
       throw unprocessable(`Import preview has errors: ${plan.preview.errors.join("; ")}`);
+    }
+    if (options?.assertCanCreateAgents && plan.preview.plan.agentPlans.some((entry) => entry.action === "create")) {
+      await options.assertCanCreateAgents();
     }
     if (
       mode === "agent_safe"
