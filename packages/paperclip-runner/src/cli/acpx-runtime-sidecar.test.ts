@@ -1095,8 +1095,7 @@ describe("qualified ACPX runtime sidecar", () => {
       await send(4,"turn.start",{turnId:"shutdown-turn",message:"Test pending calls."});
       await sidecar.next(frame=>frame.eventType === "runtime.tool_called" && (frame.payload as Record<string,unknown>).callId === "pending-2");
       await send(5,"tool.resolve",{turnId:"shutdown-turn",callId:"resolved",result:{private:"PRIVATE_RESPONSE_BODY"}});
-      if(trigger === "stdin") await sidecar.close();
-      else { sidecar.signal(trigger); await sidecar.next(frame=>frame.eventType === "runtime.turn_terminal"); await sidecar.close(); }
+      await expect(sidecar.shutdown(trigger)).resolves.toEqual({code:0, signal:null});
       expect(sidecar.stderr()).toContain("sidecar_shutdown_requested");
       const observation = await sidecar.next(frame=>frame.eventType === "runtime.diagnostic" && (frame.payload as Record<string,unknown>).code === "sidecar_shutdown_requested");
       expect(observation).toMatchObject({runId:"shutdown-run",turnId:"shutdown-turn"});
@@ -1792,6 +1791,7 @@ class SidecarProcess {
   readonly #signals: Array<() => void> = [];
   #stderr = "";
   #closed = false;
+  readonly #exit: Promise<{code:number|null;signal:NodeJS.Signals|null}>;
 
   constructor(options: {loader?:string;environment?:Record<string,string>} = {}) {
     this.#child = spawn(
@@ -1799,6 +1799,7 @@ class SidecarProcess {
       [...(options.loader ? ["--import","tsx","--import",options.loader] : []), fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url))],
       { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, LANG: "C.UTF-8", ...options.environment } },
     );
+    this.#exit = new Promise(resolve => this.#child.once("exit", (code, signal) => resolve({code,signal})));
     let stdout = "";
     this.#child.stdout.setEncoding("utf8");
     this.#child.stdout.on("data", (chunk: string) => {
@@ -1823,8 +1824,18 @@ class SidecarProcess {
     this.#child.stdin.write(`${JSON.stringify(value)}\n`);
   }
 
-  signal(signal: "SIGTERM" | "SIGINT"): void {
-    this.#child.kill(signal);
+  async shutdown(trigger: "stdin" | "SIGTERM" | "SIGINT") {
+    if (trigger === "stdin") this.#child.stdin.end();
+    else this.#child.kill(trigger);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.#exit,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Sidecar did not exit without forced cleanup")), 5000);
+        }),
+      ]);
+    } finally { clearTimeout(timer); }
   }
 
   stderr(): string {
@@ -1864,7 +1875,7 @@ class SidecarProcess {
   }
 
   async close(): Promise<void> {
-    if (this.#closed) return;
+    if (this.#closed || this.#child.exitCode !== null || this.#child.signalCode !== null) return;
     this.#closed = true;
     this.#child.stdin.end();
     const exit = new Promise<void>((resolve) => {

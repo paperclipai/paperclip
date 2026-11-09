@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 
 const MAX_SHUTDOWN_TOOL_SAMPLES = 16;
 
-/** No arguments, results, tool names, or raw provider identities cross this boundary. */
 export function sidecarShutdownSnapshot(
   reason: string,
   tools: ReadonlyMap<string, { startedAt: number }>,
@@ -15,7 +14,6 @@ export function sidecarShutdownSnapshot(
     .sort((left, right) => left[1].startedAt - right[1].startedAt)
     .slice(0, MAX_SHUTDOWN_TOOL_SAMPLES)
     .map(([callId, pending]) => ({
-      // Correlate with runtime.tool_called by hashing its callId offline.
       callIdSha256: createHash("sha256").update(callId).digest("hex"),
       elapsedMs: Math.max(0, Math.floor(now - pending.startedAt)),
     }));

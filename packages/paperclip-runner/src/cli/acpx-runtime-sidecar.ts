@@ -227,8 +227,6 @@ process.once("SIGINT", () => {
 function requestShutdown(reason: string): void {
   if (shutdownRequested) return;
   shutdownRequested = true;
-  // Snapshot before queued shutdown or provider cancellation removes waiters.
-  // stderr remains useful if the controller can no longer read event frames.
   diagnostic("sidecar_shutdown_requested", JSON.stringify(sidecarShutdownSnapshot(
     reason, tools, inputs.size, permissions.size, normalizingTools.size,
   )));
