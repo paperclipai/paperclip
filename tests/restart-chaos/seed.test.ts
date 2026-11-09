@@ -185,8 +185,10 @@ describe("waitForAgentsReady", () => {
   });
 
   it("fails the wave when an agent fails verification or never becomes ready", async () => {
-    const failed = { get: async () => ({ lifecycleState: "verifying", lifecycleError: "hello probe failed", lifecycleOperation: { retryRequired: true } }) } as unknown as ChaosApi;
-    await expect(waitForAgentsReady(failed, { claude: { id: "a2" } }, new Timeline(null), 5_000, 1)).rejects.toThrow(/hello probe failed/);
+    const failed = { get: async () => ({ lifecycleState: "verifying", lifecycleError: "hello probe failed" }) } as unknown as ChaosApi;
+    const started = Date.now();
+    await expect(waitForAgentsReady(failed, { claude: { id: "a2" } }, new Timeline(null), 5_000, 1, undefined, 20)).rejects.toThrow(/failed lifecycle verification: hello probe failed/);
+    expect(Date.now() - started).toBeLessThan(2_000);
     const rejected = { get: async () => ({ lifecycleState: "rejected", lifecycleError: "hire rejected" }) } as unknown as ChaosApi;
     await expect(waitForAgentsReady(rejected, { claude: { id: "a2" } }, new Timeline(null), 5_000, 1)).rejects.toThrow(/hire rejected/);
     const stuck = { get: async () => ({ lifecycleState: "verifying" }) } as unknown as ChaosApi;
