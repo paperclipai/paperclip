@@ -85,7 +85,7 @@ describe("saved card state and truthful generation controls", () => {
     expect(gradeIntegratorCards({ ...handed, runs: [...handed.runs, { id: "late", agentId: "morgan", status: "running" }] }).passed).toBe(false);
     const leadWrote = structuredClone(handed); leadWrote.activity.push({ id: "lead-write", action: "status_card.updated", entityId: "card", agentId: "ceo" } as typeof handed.activity[number]);
     expect(gradeIntegratorCards(leadWrote).passed).toBe(false);
-    const otherOwner = structuredClone(handed); otherOwner.tasks[1]!.assigneeAgentId = "riley";
+    const otherOwner = structuredClone(handed); (otherOwner.tasks[1] as { assigneeAgentId?: string }).assigneeAgentId = "riley";
     expect(gradeIntegratorCards(otherOwner).passed).toBe(false);
   });
   it("rejects author evasion, stealth cloning, and unrouted replies", () => {

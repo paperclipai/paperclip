@@ -22,13 +22,14 @@ async function observeHistory(ctx: ChatCatalogContext, state: Record<string, unk
   return { ...o, state: { ...state, unavailableTextInvented: !!unavailable && o.reply.includes(unavailable) } };
 }
 function historyObservation(value: unknown): HistoryObservation | undefined { const o = value as HistoryObservation; return observation(value) && !!o.caseRecord && Array.isArray(o.caseEvents) && Array.isArray(o.handoffs) && !!o.diagnosis && Array.isArray(o.diagnosisRevisions) ? o : undefined; }
-function oldDiagnosis(text: string) { return /event (?:handler|binding|listener)/i.test(text) && /preliminary|hypothes|initial|suspect/i.test(text) && !/not (?:a )?(?:preliminary |initial )?(?:event|hypothes)/i.test(text); }
-function newDiagnosis(text: string) { return /overlay/i.test(text) && /tap|touch/i.test(text) && /intercept|block|cover/i.test(text) && !/(?:does not|doesn't|cannot|can't) (?:intercept|block)|no overlay/i.test(text); }
 export function gradeIntegratorCaseHistory(value: unknown) {
   const c = checks(); const o = historyObservation(value); c.add("public-case-revision-and-attribution-evidence", !!o, "Requires actual task document revisions, saved case audit and real native handoff provenance."); if (!o) return c.result();
   const original = o.state.case as CaseRecord; const morgan = o.state.worker as Entity; const riley = o.state.reviewer as Entity;
-  const first = historyObservation(o.state.firstHistory); const initial = o.diagnosisRevisions.find(rev => rev.createdByAgentId === morgan.id && oldDiagnosis(rev.body));
-  const changed = o.diagnosisRevisions.find(rev => rev.createdByAgentId === riley.id && newDiagnosis(rev.body));
+  const first = historyObservation(o.state.firstHistory); // Identify the revisions by author and order, not by the fixture workers' wording
+  // ("event-handler" with a hyphen failed an "event handler" pattern).
+  const byNumber = [...o.diagnosisRevisions].sort((a, b) => a.revisionNumber - b.revisionNumber);
+  const initial = byNumber.find(rev => rev.createdByAgentId === morgan.id && rev.body.trim().length > 0);
+  const changed = byNumber.find(rev => rev.createdByAgentId === riley.id && rev.body.trim().length > 0 && !!initial && rev.revisionNumber > initial.revisionNumber);
   c.add("real-before-and-after-document-authorship", !!initial && !!changed && initial.id !== changed.id && initial.revisionNumber < changed.revisionNumber && o.diagnosis.issueId === original.workIssueId
     && [initial, changed].every(rev => o.runs.some(run => run.id === rev.createdByRunId && run.agentId === rev.createdByAgentId && run.contextSnapshot?.issueId === original.workIssueId && run.status === "succeeded" && run.runtimeMode === "native")),
     "Morgan's initial task-owned diagnosis and Riley's subsequent correction originate from different genuine native executions, not synthetic revision or actor fields.");
@@ -77,7 +78,7 @@ export const integratorCaseHistoryCases = [integratorDefinition("cases", "cases.
   const row = state.case as CaseRecord; const task = state.task as Issue;
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier}`, task.title);
-}, { expectedRunCount: 5, expectedHumanMessageCount: 2, attemptTimeoutMs: 1_200_000, cleanup, oracleVersion: "paperclip.chat-catalog.integrator.case-history.v2",
+}, { expectedRunCount: 5, expectedHumanMessageCount: 2, attemptTimeoutMs: 1_200_000, cleanup, oracleVersion: "paperclip.chat-catalog.integrator.case-history.v3",
   sourceFiles: ["chat-catalog-domains/integrator-case-history.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"],
   async act(ctx, state) {
     const first = await pollUntil({ label: "canonical diagnosis history answer before distinct missing-history question", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000), intervalMs: 1000,
