@@ -923,13 +923,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // message, Retry, or recovery it carries; keep it queued. Settling
       // accounting re-notifies run dispatch. A reached hard stop is the board's.
       if (!run.startedAt && !(await isBoardOwnedBudgetBlock(db, run.companyId, budgetBlock))) return null;
-      await cancelRunInternal(run.id, budgetBlock.reason);
-      // Record which budget stopped this queued run, so Raise budget and resume
-      // continues it (budget-resume-continuation.ts). The run is terminal now.
+      // Record which budget stops this queued run, so Raise budget and resume
+      // continues it (budget-resume-continuation.ts). Saved before the cancel
+      // so a crash between them cannot lose it; the resume matches it only
+      // against a recorded cancellation with this same reason.
+      const budgetAdmissionStop = { scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
+        reason: budgetBlock.reason.slice(0, 512) };
       await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
-        || jsonb_build_object('budgetAdmissionStop', jsonb_build_object('scopeType', ${budgetBlock.scopeType}::text,
-          'scopeId', ${budgetBlock.scopeId}::text))` })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled")));
+        || jsonb_build_object('budgetAdmissionStop', ${JSON.stringify(budgetAdmissionStop)}::jsonb)` })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, run.status)));
+      await cancelRunInternal(run.id, budgetBlock.reason, { resultJson: { budgetAdmissionStop } });
       return null;
     }
 

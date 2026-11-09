@@ -8,7 +8,7 @@ import { budgetService } from "./budgets.js";
 import { heartbeatService } from "./heartbeat.js";
 import { HttpError } from "../errors.js";
 import {
-  deliverBudgetResumeContinuations, hasPendingBudgetResume, markBudgetCancelledWorkForResume,
+  deliverBudgetResumeContinuations, hasDeliverableBudgetResume, hasPendingBudgetResume, markBudgetCancelledWorkForResume,
 } from "./budget-resume-continuation.js";
 import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase,
@@ -243,16 +243,51 @@ describe.skipIf(!support.supported)("resuming after a budget hard stop", () => {
     expect(await claimOf(task.run.id)).toMatchObject({ state: "abandoned", reason: "chat_failed_run_retry_not_authorized" });
   });
 
-  it("continues a queued run that admission cancelled for this budget", async () => {
-    const scope = await seedScope("admission-stop");
+  async function admissionStopped(label: string, cancellationReason: string) {
+    const scope = await seedScope(label);
     const task = await seedTask(scope, { budgetStop: false });
+    const reason = "Company cannot start work because its budget hard-stop is still exceeded.";
     await db.update(heartbeatRuns).set({ resultJson: { stopReason: "cancelled",
+      cancellation: { reason: cancellationReason, source: "control_plane", expected: true, initiator: { type: "system" } },
       startupCancellation: { requestedAt: new Date(Date.now() - 30_000).toISOString(), errorCode: "cancelled" },
-      budgetAdmissionStop: { scopeType: "company", scopeId: scope.company.id } } }).where(eq(heartbeatRuns.id, task.run.id));
+      budgetAdmissionStop: { scopeType: "company", scopeId: scope.company.id, reason } } }).where(eq(heartbeatRuns.id, task.run.id));
+    return { scope, task, reason };
+  }
+
+  it("continues a queued run that admission cancelled for this budget", async () => {
+    const { scope, task } = await admissionStopped("admission-stop",
+      "Company cannot start work because its budget hard-stop is still exceeded.");
     await resume(scope);
     await deliverBudgetResumeContinuations(db);
     expect(await continuations(scope.company.id)).toEqual([expect.objectContaining({
       payload: expect.objectContaining({ issueId: task.issue.id }) })]);
+  });
+
+  it("never claims an admission-stamped run that another reason cancelled", async () => {
+    // Admission saves its stamp before it cancels. A crash between them leaves
+    // a queued, stamped run that may later be cancelled for something else.
+    const { scope, task } = await admissionStopped("admission-other", "Cancelled because the agent no longer exists");
+    await resume(scope);
+    expect(await claimOf(task.run.id)).toBeUndefined();
+  });
+
+  it("waits for a paused agent to resume before filing its Retry", async () => {
+    // A connected chat refuses a Retry while the resume is still lifting the
+    // agent's hold; that refusal must not abandon the continuation.
+    const scope = await seedScope("agent-resuming");
+    const task = await seedTask(scope);
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, scope.agent.id));
+    await resume(scope);
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, scope.agent.id));
+    const requestRetry = vi.fn(async () => ({ accepted: true, requestId: null }));
+    await deliverBudgetResumeContinuations(db, { requestRetry: requestRetry as never });
+    expect(requestRetry).not.toHaveBeenCalled();
+    expect(await hasDeliverableBudgetResume(db)).toBe(false);
+    expect(await claimOf(task.run.id)).toMatchObject({ state: "pending", claimedAt: null });
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, scope.agent.id));
+    expect(await hasDeliverableBudgetResume(db)).toBe(true);
+    await deliverBudgetResumeContinuations(db, { requestRetry: requestRetry as never });
+    expect(requestRetry).toHaveBeenCalledOnce();
   });
 
   it("never claims a run a manual agent pause stopped", async () => {

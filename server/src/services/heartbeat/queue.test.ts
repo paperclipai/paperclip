@@ -827,7 +827,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
     });
     expect(await createHeartbeatQueue(db, deps).claimQueuedRun({ ...run, responsibleUserId: "queue-test-user" })).toBeNull();
-    expect(deps.cancelRunInternal).toHaveBeenCalledWith(run.id, expect.stringContaining("budget"));
+    expect(deps.cancelRunInternal).toHaveBeenCalledWith(run.id, expect.stringContaining("budget"), expect.anything());
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].resultJson)
       .toMatchObject({ budgetAdmissionStop: { scopeType: "company", scopeId: company.id } });
   });

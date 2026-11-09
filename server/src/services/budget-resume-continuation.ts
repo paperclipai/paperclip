@@ -1,5 +1,5 @@
 import { and, asc, eq, gt, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
-import { budgetResumeClaims, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, budgetResumeClaims, heartbeatRuns, type Db } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -35,6 +35,10 @@ import { AGENT_LIFECYCLE_STOP_REASON } from "./governance-pause-stop.js";
 export const BUDGET_RESUME_CLAIM_STALE_MS = 60_000;
 const PAGE_SIZE = 25;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+/** Agent statuses that cannot take a Retry yet but may later: a resume still
+ * lifting the agent's hold, or an approval. Their claims wait, unclaimed, and
+ * the agent's status change wakes delivery (`notifyBudgetResumeAgentReady`). */
+const WAITING_AGENT_STATUSES = ["paused", "pending_approval"] as const;
 
 type BudgetResumeClaim = {
   incidentId: string; actorUserId: string; actorSource: string | null; claimedAt: Date | null;
@@ -96,9 +100,13 @@ export async function markBudgetCancelledWorkForResume(db: Db, input: {
           ? sql`a.id = ${input.scopeId} and (${pauseCause}->'holds') ? 'budget'`
           : sql`(${pauseCause}->'holds') ? 'company_paused' and ${pauseCause}->>'companyPauseReason' = 'budget'`})`;
     // A queued run that admission cancelled for this budget's board-owned block.
+    // Admission saves the stamp before it cancels; the recorded cancellation
+    // must carry the stamp's reason, so a stamped run that later ran, or was
+    // cancelled for another reason, never matches.
     const admissionStop = and(
       sql`${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'scopeType' = ${input.scopeType}`,
-      sql`${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'scopeId' = ${input.scopeId}`)!;
+      sql`${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'scopeId' = ${input.scopeId}`,
+      sql`${heartbeatRuns.resultJson}->'cancellation'->>'reason' = ${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'reason'`)!;
     const stoppedByThisScope = or(budgetCancellationScopePredicate(input), lifecycleStop, admissionStop)!;
     // A person's Stop stays stopped, even if budget enforcement also fenced
     // the run while that Stop was being delivered.
@@ -163,8 +171,10 @@ export async function hasPendingBudgetResume(db: Db) {
 export async function hasDeliverableBudgetResume(db: Db, now = new Date()) {
   const [row] = await db.select({ id: budgetResumeClaims.runId }).from(budgetResumeClaims)
     .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, budgetResumeClaims.runId))
+    .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
     .where(and(eq(budgetResumeClaims.state, "pending"),
       notInArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]),
+      notInArray(agents.status, [...WAITING_AGENT_STATUSES]),
       or(isNull(budgetResumeClaims.claimedAt),
         lte(budgetResumeClaims.claimedAt, new Date(now.getTime() - BUDGET_RESUME_CLAIM_STALE_MS))))).limit(1);
   return Boolean(row);
@@ -180,7 +190,7 @@ export async function nextBudgetResumeClaimExpiryAt(db: Db): Promise<number | nu
 }
 
 type PendingRow = {
-  id: string; companyId: string; agentId: string; status: string; createdAt: Date;
+  id: string; companyId: string; agentId: string; agentStatus: string; status: string; createdAt: Date;
   issueId: string | null; stoppedByPerson: boolean; claim: BudgetResumeClaim | null;
 };
 
@@ -194,13 +204,14 @@ export async function deliverBudgetResumeContinuations(db: Db, delivery: BudgetR
   for (;;) {
     const page = await db.select({
       id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
-      status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt, issueId: runIssueId,
+      agentStatus: agents.status, status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt, issueId: runIssueId,
       incidentId: budgetResumeClaims.incidentId, actorUserId: budgetResumeClaims.actorUserId,
       actorSource: budgetResumeClaims.actorSource, claimedAt: budgetResumeClaims.claimedAt,
       stoppedByPerson: sql<boolean>`(coalesce(${heartbeatRuns.resultJson}->'cancellation'->'initiator'->>'type', '') = 'user'
         or coalesce(${heartbeatRuns.resultJson}->'cancellation'->>'source', '') = 'operator'
         or coalesce(${heartbeatRuns.resultJson}->>'cancelledByActorType', '') in ('user', 'board'))`,
     }).from(budgetResumeClaims).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, budgetResumeClaims.runId))
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
       .where(and(eq(budgetResumeClaims.state, "pending"), after ? gt(budgetResumeClaims.runId, after) : undefined))
       .orderBy(asc(budgetResumeClaims.runId)).limit(PAGE_SIZE);
     if (!page.length) return;
@@ -256,6 +267,10 @@ async function deliverOne(db: Db, delivery: BudgetResumeDelivery, now: Date, run
   if (run.status !== "cancelled") { await settle(db, run, claimedAt, { state: "abandoned", reason: "run_not_cancelled" }); return; }
   // A person stopped the run after the resume claimed it: their Stop wins.
   if (run.stoppedByPerson) { await settle(db, run, claimedAt, { state: "abandoned", reason: "stopped_by_person" }); return; }
+  // The resume is still lifting the agent's hold (a connected chat refuses a
+  // Retry for a paused agent). Wait without claiming; the agent's status
+  // change wakes delivery.
+  if ((WAITING_AGENT_STATUSES as readonly string[]).includes(run.agentStatus)) return;
   const nextClaim = new Date(now.getTime());
   if (!await setClaim(db, { runId: run.id, expectedClaimedAt: claimedAt, next: { claimedAt: nextClaim } })) return;
   // The board member's own Retry: the path that clears a stopped task's
@@ -293,6 +308,15 @@ async function deliverOne(db: Db, delivery: BudgetResumeDelivery, now: Date, run
   if (receipt.requestId && !receipt.chatActionId && delivery.resumeTaskRetry)
     await delivery.resumeTaskRetry(run.companyId, receipt.requestId).catch(error =>
       logger.warn({ err: error, runId: run.id }, "Budget resume Retry remains queued"));
+}
+
+/** Wake budget delivery when an agent becomes able to take work and a
+ * resume claim waits on it. Runs inside the agent's status-change transaction. */
+export async function notifyBudgetResumeAgentReady(tx: Db, agentId: string) {
+  const [pending] = await tx.select({ id: budgetResumeClaims.runId }).from(budgetResumeClaims)
+    .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, budgetResumeClaims.runId))
+    .where(and(eq(heartbeatRuns.agentId, agentId), eq(budgetResumeClaims.state, "pending"))).limit(1);
+  if (pending) await notifyDeliveryWork(tx, DELIVERY_QUEUES.budgetEnforcement);
 }
 
 /** Wake the continuation worker after budget Stops land. */
