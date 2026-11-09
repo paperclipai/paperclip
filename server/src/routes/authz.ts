@@ -48,7 +48,7 @@ const AGENT_PROFILE_TABS: Record<string, [string, string]> = {
 const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray) => [string, string]]> = [
   [/^\/(?:companies\/[^/]+\/)?secrets?(?:[-/]|$)/, () => ["company secrets", "/<prefix>/company/settings/secrets"]],
   [/^\/companies\/[^/]+\/(?:budgets|budget-incidents|costs)(?:\/|$)/, () => ["budgets", "/<prefix>/activity/budgets"]],
-  [/^\/companies\/[^/]+\/(?:prompt-injection-prevention|decision-model|fast-response)(?:\/|$)/, () => ["connection settings", "/<prefix>/company/settings/connections"]],
+  [/^\/companies\/[^/]+\/(?:prompt-injection-prevention|decision-model)(?:\/|$)/, () => ["connection settings", "/<prefix>/company/settings/connections"]],
   [/^\/companies\/[^/]+\/(?:members|invites|join-requests)(?:\/|$)/, () => ["company members", "/<prefix>/company/settings/members"]],
   [/^\/companies\/[^/]+\/(?:tools\/)?gateways(?:\/|$)|^\/tool-gateway\//, () => ["tool gateways", "/<prefix>/apps/gateways"]],
   [/^\/approvals\/([^/]+)/, match => ["the approval", `/<prefix>/approvals/${match[1]}`]],
