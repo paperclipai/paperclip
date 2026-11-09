@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { setTimeout } from "node:timers/promises";
+import { exerciseWorkspaceIsolation } from "./workspace-isolation-smoke.mjs";
 
 if (process.env.PAPERMARKETING_TEST_ONLY !== "1" || process.env.COMPOSE_PROJECT_NAME !== "papermarketing-qualification") {
   throw new Error("This smoke test requires the disposable papermarketing-qualification stack.");
@@ -31,9 +32,12 @@ assert.equal(inspect.NetworkSettings.Ports["3100/tcp"][0].HostIp, "127.0.0.1");
 assert.equal(inspect.Config.Env.find(value => value.startsWith("PAPERCLIP_BUILD_COMMIT=")), `PAPERCLIP_BUILD_COMMIT=${process.env.GITHUB_SHA}`);
 
 const marker = randomUUID();
+const verifyAfterRestart = await exerciseWorkspaceIsolation({ base, compose });
 compose("exec", "-T", "--user", "node", "app", "node", "-e",
   "require('fs').writeFileSync('/paperclip/qualification-marker', process.argv[1])", marker);
-compose("restart", "app");
+compose("stop", "app");
+compose("restart", "db");
+compose("up", "-d", "--no-build", "--wait", "--wait-timeout", "240");
 const deadline = Date.now() + 120_000;
 for (;;) {
   try { await health(); break; } catch (error) {
@@ -43,4 +47,5 @@ for (;;) {
 }
 assert.equal(compose("exec", "-T", "--user", "node", "app", "node", "-e",
   "process.stdout.write(require('fs').readFileSync('/paperclip/qualification-marker','utf8'))"), marker);
+await verifyAfterRestart();
 console.log("PASS: authenticated boot, UI, anonymous denial, loopback binding, image identity and volume persistence.");

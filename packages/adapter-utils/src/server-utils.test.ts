@@ -57,6 +57,15 @@ it("reserves identity credentials even for mixed-case inherited or configured ke
   for (const key of keys) expect(isForbiddenConfigEnvKey(key)).toBe(true);
 });
 
+it("removes inherited control-plane secrets regardless of environment key case", () => {
+  expect(sanitizeInheritedPaperclipEnv({
+    DATABASE_URL: "server-db", database_url: "server-db-lowercase",
+    BETTER_AUTH_SECRET: "session-signing", Better_Auth_Secret: "session-signing-mixed",
+    Paperclip_Tool_Action_Signing_Secret: "tool-signing",
+    PATH: "/usr/bin", PAPERCLIP_RUNTIME_API_URL: "http://localhost:3100",
+  })).toEqual({ PATH: "/usr/bin", PAPERCLIP_RUNTIME_API_URL: "http://localhost:3100" });
+});
+
 describe("runtime connection tool delivery", () => {
   const access = {
     version: 1 as const,
@@ -627,6 +636,27 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it("does not expose inherited server credentials to a real child, while honoring explicit agent bindings", async () => {
+    const previous = { DATABASE_URL: process.env.DATABASE_URL, BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET };
+    process.env.DATABASE_URL = "qualification-server-db";
+    process.env.BETTER_AUTH_SECRET = "qualification-server-auth";
+    try {
+      const bindings: Record<string, string>[] = [{}, { DATABASE_URL: "qualification-workspace-db" }];
+      for (const env of bindings) {
+        const result = await runChildProcess(randomUUID(), process.execPath, ["-e",
+          "process.stdout.write(JSON.stringify({db:process.env.DATABASE_URL??null,auth:process.env.BETTER_AUTH_SECRET??null}))",
+        ], { cwd: process.cwd(), env, timeoutSec: 5, graceSec: 1, onLog: async () => {} });
+        expect(result.exitCode).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({ db: env.DATABASE_URL ?? null, auth: null });
+      }
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),

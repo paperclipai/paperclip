@@ -87,6 +87,9 @@ jobs:
             command: pnpm -r typecheck
           - check: build
             command: pnpm build
+          # This package owns a separate suite outside the root Vitest projects.
+          - check: runner-tests
+            command: pnpm --filter @paperclipai/paperclip-runner test
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

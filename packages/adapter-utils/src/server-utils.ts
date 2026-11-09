@@ -3531,14 +3531,18 @@ export function sanitizeInheritedPaperclipEnv(
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.PAPERCLIPAI_CMD;
   for (const key of Object.keys(env)) {
-    if (AGENT_IDENTITY_ENV_KEYS.includes(key.toUpperCase())) {
+    const upperKey = key.toUpperCase();
+    // These belong to the control plane, never implicitly to a workspace's
+    // child process. Explicit agent bindings are merged separately by the caller.
+    if (upperKey === "DATABASE_URL" || upperKey === "BETTER_AUTH_SECRET"
+      || AGENT_IDENTITY_ENV_KEYS.includes(upperKey)) {
       delete env[key];
       continue;
     }
-    if (!key.startsWith("PAPERCLIP_")) continue;
-    if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
-    if (key === "PAPERCLIP_LISTEN_HOST") continue;
-    if (key === "PAPERCLIP_LISTEN_PORT") continue;
+    if (!upperKey.startsWith("PAPERCLIP_")) continue;
+    if (upperKey === "PAPERCLIP_RUNTIME_API_URL") continue;
+    if (upperKey === "PAPERCLIP_LISTEN_HOST") continue;
+    if (upperKey === "PAPERCLIP_LISTEN_PORT") continue;
     delete env[key];
   }
   return env;

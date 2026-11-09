@@ -94,6 +94,11 @@ O isolamento de trabalhadores por workspace, sem credenciais do servidor e sem
 acesso a diretórios de outros workspaces, continua uma etapa de qualificação antes
 de declarar o MVP completo. Não há montagem do socket Docker nesta composição.
 
+O caminho comum de subprocessos remove `DATABASE_URL` e `BETTER_AUTH_SECRET`
+herdados do servidor. Isso evita a transmissão implícita dessas duas credenciais;
+não impede acesso ao sistema de arquivos ou a outros processos do mesmo host.
+Uma conexão explicitamente configurada para o agente continua sendo transmitida.
+
 Contas de assinatura devem ser conectadas apenas pelos métodos suportados pelo
 provedor e pelo harness. A existência de uma opção de login não comprova consumo
 pela assinatura. Validar isso com as próprias contas no teste posterior. OpenRouter
@@ -103,3 +108,17 @@ equivalente. Geração de imagem e vídeo depende das ferramentas conectadas.
 O build de imagem, o primeiro boot e a restauração devem ser homologados em Linux.
 Consultar o relatório do incremento para distinguir verificações executadas de
 passos preparados. A telemetria upstream fica desabilitada nesta composição.
+
+## Qualificação automatizada, sem deploy
+
+O workflow `papermarketing qualification` executa a suíte Vitest completa em
+partições, typecheck, build e a imagem `production`. A imagem é carregada apenas
+no runner temporário do GitHub; não há publicação em registro nem deploy.
+
+O teste `scripts/papermarketing/image-smoke.mjs` exige explicitamente o projeto
+Compose `papermarketing-qualification` e `PAPERMARKETING_TEST_ONLY=1`. Cria dados
+artificiais, usuários, dois workspaces, chaves de agente e os 12 tipos de marketing;
+verifica permissões, referências a segredos e persistência após reiniciar o banco
+e o aplicativo. Os usuários de workspace não são administradores da instância.
+Nenhuma conta LLM é conectada e nenhum modelo é invocado. Ao terminar, a CI
+remove somente os contêineres e volumes desse projeto de teste.
