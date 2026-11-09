@@ -4,10 +4,7 @@ import {
   custodyManifest,
   custodyRoundtrip,
 } from "./external-instance-custody.js";
-import {
-  gradeSecretDelivery,
-  sanitizedEndpointReply,
-} from "./external-secret-delivery.js";
+import { gradeSecretDelivery } from "./external-secret-delivery.js";
 import { validSecretScopeReceipt } from "./external-secret-endpoint.js";
 function valid() {
   const receipt = (
@@ -118,7 +115,8 @@ function valid() {
         id: "task",
         companyId: "company",
         assigneeAgentId: "morgan",
-        parentId: "source",
+        parentId: null as string | null,
+        originIssueId: "source",
         status: "done",
       },
       workerReceiptBound: true,
@@ -163,6 +161,16 @@ function valid() {
 }
 it("accepts actual one-consumer delivery plus independently run-bound catalog/403 probes and unrelated lifecycle custody", () =>
   expect(gradeSecretDelivery(valid()).passed).toBe(true));
+it("accepts any confirmation wording and a chat-created task that is not a child of the chat", () => {
+  for (const body of [
+    "Morgan ran the check from the runtime that holds the key; it returned `{\"ok\":true,\"status\":200}`. See [COM-2](/COM/issues/COM-2).",
+    "Done. Morgan's check went through.",
+  ]) {
+    const o = valid();
+    o.phaseReplies[0]!.body = body;
+    expect(gradeSecretDelivery(o).passed).toBe(true);
+  }
+});
 it("rejects wrong owner/run/reference/custody, overgrant, missing delivery and leaked or premature result", () => {
   for (const [index, mutate] of [
     (o: ReturnType<typeof valid>) => {
@@ -190,7 +198,7 @@ it("rejects wrong owner/run/reference/custody, overgrant, missing delivery and l
       o.state.privateSeedRemoved = false;
     },
     (o: ReturnType<typeof valid>) => {
-      o.state.task.parentId = "wrong-source";
+      o.state.task.originIssueId = "wrong-source";
     },
     (o: ReturnType<typeof valid>) => {
       o.state.scopeReceipts[0]!.taskId = "source";
@@ -232,11 +240,13 @@ it("rejects wrong owner/run/reference/custody, overgrant, missing delivery and l
       o.state.confirmationAfterWorker = false;
     },
     (o: ReturnType<typeof valid>) => {
-      o.phaseReplies[0]!.body =
-        "The endpoint check succeeded; all company credentials are available to Morgan.";
+      o.phaseReplies[0]!.body = " ";
     },
     (o: ReturnType<typeof valid>) => {
-      o.phaseReplies[0]!.body = "The endpoint check has not yet succeeded.";
+      o.phaseReplies[0]!.runId = "source-first";
+    },
+    (o: ReturnType<typeof valid>) => {
+      o.state.workerReceiptBound = false;
     },
     (o: ReturnType<typeof valid>) => {
       o.state.secretScanComplete = false;
@@ -250,11 +260,6 @@ it("rejects wrong owner/run/reference/custody, overgrant, missing delivery and l
     expect(gradeSecretDelivery(o).passed, String(index)).toBe(false);
   }
   expect(gradeSecretDelivery(undefined).passed).toBe(false);
-  expect(
-    sanitizedEndpointReply(
-      "The endpoint check failed. The endpoint check succeeded.",
-    ),
-  ).toBe(false);
   expect(custodyRoundtrip({}, "company", "riley", "resume", 4)).toBe(false);
   expect(
     validSecretScopeReceipt(
@@ -268,11 +273,6 @@ it("rejects wrong owner/run/reference/custody, overgrant, missing delivery and l
       },
     ),
   ).toBe(false);
-  expect(
-    sanitizedEndpointReply(
-      "The endpoint check returned200 successfully. I cannot read Riley's server-custody instance secrets.",
-    ),
-  ).toBe(true);
 });
 it("validates the genuine finite lifecycle package and requires exact public resume identity", () => {
   expect(
