@@ -995,3 +995,6 @@ long cause chains stop at the same four-object limit.
 
 This only improves the recorded cause. Event acknowledgement, replay integrity,
 the bounded stall policy, and operator recovery requirements stay unchanged.
+
+A later successful continuation does not establish the cause of an earlier
+failure that recorded only `Error`.
