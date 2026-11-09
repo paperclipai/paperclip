@@ -47,9 +47,20 @@ export function activeStorageWindow(windows: readonly StorageFaultWindow[], elap
   return windows.find(window => elapsedMs >= window.startMs && elapsedMs < window.startMs + window.durationMs) ?? null;
 }
 
+export interface StorageFaultReceipt { kind: StorageFaultKind; startedAt: number; endedAt: number | null; rules: StorageFaultRule[] }
+
+export function replayStorageWindows(receipts: readonly StorageFaultReceipt[], taskCreatedAt: number, endedAt: number): StorageFaultWindow[] {
+  return receipts.flatMap(receipt => {
+    const start = Math.max(receipt.startedAt, taskCreatedAt);
+    const end = receipt.endedAt ?? endedAt;
+    return end > start ? [{ kind: receipt.kind, startMs: start - taskCreatedAt, durationMs: end - start, rules: receipt.rules }] : [];
+  });
+}
+
 export class StorageChaos {
   private applied: StorageFaultWindow | null = null;
-  readonly receipts: Array<{ kind: StorageFaultKind; startedAt: number; endedAt: number | null }> = [];
+  private timer: ReturnType<typeof setInterval> | null = null;
+  readonly receipts: StorageFaultReceipt[] = [];
 
   constructor(private readonly windows: readonly StorageFaultWindow[], private readonly startedAt: number,
     private readonly proxy: { setRules(rules: readonly StorageFaultRule[]): void; clear(): void },
@@ -67,12 +78,19 @@ export class StorageChaos {
     this.applied = active;
     if (active) {
       this.proxy.setRules(active.rules);
-      this.receipts.push({ kind: active.kind, startedAt: now, endedAt: null });
+      this.receipts.push({ kind: active.kind, startedAt: now, endedAt: null, rules: active.rules });
       this.record("storage_fault_started", { kind: active.kind, durationMs: active.durationMs, rules: active.rules });
     }
   }
 
+  start(intervalMs = 1_000): void {
+    this.timer ??= setInterval(() => this.tick(Date.now()), intervalMs);
+    this.timer.unref?.();
+    this.tick(Date.now());
+  }
+
   stop(now = Date.now()): void {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (!this.applied) return;
     this.proxy.clear();
     const receipt = this.receipts.at(-1);

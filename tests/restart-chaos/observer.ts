@@ -194,7 +194,7 @@ export class TaskObserver {
     private readonly supervisor: { serverReady: boolean; faultInProgress: boolean; serverBuild?: "upgrade_from" | "current" },
     /** Paths oracle commands may not read: the operator's home, the instance root (secrets key, database) and results. */
     private readonly protectedRoots: readonly string[] = [os.homedir()],
-    private readonly board: { clickRetry(issue: string): Promise<UiRetryClick> } | null = null) {
+    private readonly board: { clickRetry(identifier: string, issueId: string): Promise<UiRetryClick> } | null = null) {
     this.record = { plan, issueId: null, identifier: null, createdAt: null, launchError: null, samples: [], retry: null,
       restAt: null, finalStatus: null, deadlineAt: null, timedOut: false, followUp: null, faultIds: [], sweep: null,
       preFaultFiles: null, lostFiles: null };
@@ -667,7 +667,7 @@ export class TaskObserver {
   private async clickRetry(issueRef: string, issueId: string, observedRunId: string | null, now: number): Promise<RetryAttempt> {
     const attempt: RetryAttempt = { at: now, observedRunId, httpStatus: null, accepted: null, error: null };
     if (this.board) {
-      const click = await this.board.clickRetry(issueRef);
+      const click = await this.board.clickRetry(issueRef, issueId);
       Object.assign(attempt, { via: "ui", httpStatus: click.httpStatus, accepted: click.accepted, error: click.error, bannerText: click.bannerText });
       if (click.accepted) attempt.acceptedAt = Math.max(now, Date.now());
       return attempt;

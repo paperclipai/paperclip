@@ -42,6 +42,7 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
   let rules: StorageFaultRule[] = [];
   const counts: StorageProxyCounts = { requests: 0, injected: 0, byMethod: {}, byStatus: {} };
   const sockets = new Set<Socket>();
+  const delayed = new Set<ReturnType<typeof setTimeout>>();
   const agent = new Agent({ keepAlive: true });
   const note = (method: string, status: number | "reset", injected: boolean) => {
     counts.requests += 1;
@@ -56,7 +57,11 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
       outgoing.writeHead(response.statusCode ?? 502, response.headers);
       response.pipe(outgoing);
     });
-    upstream.on("error", () => { if (!outgoing.headersSent) outgoing.writeHead(502).end(); else outgoing.destroy(); });
+    upstream.on("error", () => {
+      if (outgoing.headersSent) { outgoing.destroy(); return; }
+      note(incoming.method ?? "GET", 502, false);
+      outgoing.writeHead(502).end();
+    });
     incoming.on("aborted", () => upstream.destroy());
     outgoing.on("close", () => { if (!outgoing.writableFinished) upstream.destroy(); });
     incoming.pipe(upstream);
@@ -69,7 +74,14 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
     if (fault.kind === "latency") {
       const delay = fault.ms + Math.round((fault.jitterMs ?? 0) * random());
       incoming.pause();
-      setTimeout(() => { incoming.resume(); forward(incoming, outgoing); }, delay);
+      const timer = setTimeout(() => {
+        delayed.delete(timer);
+        if (outgoing.destroyed || incoming.destroyed) return;
+        incoming.resume();
+        forward(incoming, outgoing);
+      }, delay);
+      delayed.add(timer);
+      outgoing.on("close", () => { clearTimeout(timer); delayed.delete(timer); });
       return;
     }
     if (fault.kind === "errors" && random() >= fault.rate) { forward(incoming, outgoing); return; }
@@ -92,6 +104,8 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
     setRules(next: readonly StorageFaultRule[]) { rules = next.map(rule => ({ ...rule })); },
     clear() { rules = []; },
     async close() {
+      for (const timer of delayed) clearTimeout(timer);
+      delayed.clear();
       const closed = once(server, "close"); server.close(); agent.destroy();
       for (const socket of sockets) socket.destroy();
       await closed;

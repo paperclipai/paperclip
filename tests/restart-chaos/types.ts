@@ -76,6 +76,7 @@ export interface WaveOptions {
   storage?: "s3";
   storageFaults?: Array<"ST1" | "ST2" | "ST3">;
   storageFaultMs?: [number, number];
+  storageWindows?: import("./storage-chaos.js").StorageFaultWindow[];
   workspaceCommit?: string;
 }
 

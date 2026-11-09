@@ -72,4 +72,21 @@ describe("storage fault proxy", () => {
     proxy.setRules([{ fault: { kind: "reset" } }]);
     await expect(fetch(`${proxy.endpoint}/bucket/a`)).rejects.toThrow();
   });
+
+  it("cancels a delayed request when the client goes away and counts store connection failures", async () => {
+    const store = await upstream();
+    const proxy = await proxyFor(store.endpoint, () => 0);
+    proxy.setRules([{ fault: { kind: "latency", ms: 400 } }]);
+    const controller = new AbortController();
+    const pending = fetch(`${proxy.endpoint}/bucket/late`, { signal: controller.signal }).catch(() => null);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    controller.abort();
+    await pending;
+    await new Promise(resolve => setTimeout(resolve, 600));
+    expect(store.seen).toEqual([]);
+    const dead = await proxyFor("http://127.0.0.1:1");
+    expect((await fetch(`${dead.endpoint}/bucket/a`)).status).toBe(502);
+    expect(dead.counts()).toMatchObject({ requests: 1, byStatus: { 502: 1 } });
+  });
 });
+

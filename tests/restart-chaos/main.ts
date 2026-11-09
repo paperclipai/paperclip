@@ -15,7 +15,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi, isSocketTypeOfServiceRace } from "./api.js";
 import { BoardUi } from "./board-ui.js";
 import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
-import { StorageChaos, planStorageFaults } from "./storage-chaos.js";
+import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
@@ -58,6 +58,11 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     const observed = crossed ? observedFaultSchedule(crossed.createdAt, crossed.faultIds, faults, command.ref.taskId) : [];
     if (!observed.length) console.warn("Replay: no recorded fault sequence for this task; using its planned fault only.");
     let plan = replayWave(source, command.ref, Date.now(), command.overrides, observed);
+    if (source.options.storage === "s3" && crossed?.createdAt) {
+      const receipts = await readFile(path.join(sourceDir, "storage-faults.json"), "utf8").then(text => JSON.parse(text) as StorageFaultReceipt[]).catch(() => []);
+      const ended = Math.max(crossed.createdAt, ...receipts.map(receipt => receipt.endedAt ?? 0));
+      plan = { ...plan, options: { ...plan.options, storageWindows: replayStorageWindows(receipts, crossed.createdAt, ended) } };
+    }
     // K14: a task that launched after the upgrade replays on the current build.
     const launchBuild = graded?.record.serverBuildAtLaunch ?? logged?.[command.ref.taskId]?.serverBuildAtLaunch;
     if (plan.options.upgradeFrom && launchBuild === "current") plan = replayOnCurrentBuild(plan);
@@ -275,10 +280,11 @@ async function main(): Promise<number> {
     let lastDoneAt = Date.now();
     // K13: storm faults fire on their own clock while tasks keep launching; then the storm drains.
     const storm = plan.storm ? new StormRun(plan.storm, Date.now()) : null;
-    if (storageProxy && plan.options.storageFaults?.length) {
-      const windows = planStorageFaults({ kinds: plan.options.storageFaults, seed: plan.seed,
+    if (storageProxy && (plan.options.storageWindows?.length || plan.options.storageFaults?.length)) {
+      const windows = plan.options.storageWindows ?? planStorageFaults({ kinds: plan.options.storageFaults!, seed: plan.seed,
         spanMs: plan.storm?.durationMs ?? plan.tasks.length * 4 * 60_000, ...(plan.options.storageFaultMs ? { durationMs: plan.options.storageFaultMs } : {}) });
       storageChaos = new StorageChaos(windows, Date.now(), storageProxy, (kind, data) => timeline.add(kind, data));
+      storageChaos.start();
       timeline.add("storage_faults_planned", { windows: windows.map(window => `${window.kind}@${window.startMs}ms+${window.durationMs}ms`) });
     }
     if (storm) timeline.add("storm_started", { durationMs: storm.plan.durationMs, plannedFaults: storm.plan.faults.length });
@@ -395,7 +401,6 @@ async function main(): Promise<number> {
         await next.launch();
         if (!next.done) active.push(next);
       }
-      storageChaos?.tick(now);
       await Promise.all(active.filter(observer => now - (lastPoll.get(observer) ?? 0) >= plan.options.pollMs).map(async observer => {
         lastPoll.set(observer, now);
         await observer.poll(now);
@@ -539,7 +544,7 @@ async function main(): Promise<number> {
   } finally {
     // Best effort for an interrupted or failed wave; the server may already be down.
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
-    await board?.close();
+    await board?.close().catch(() => undefined);
     // A failure here (for example writing the report) must not skip stopping the controller and Postgres.
     try { if (sweeper) try {
       const owned = sweeper as DaytonaWaveSweeper;
