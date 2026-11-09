@@ -21,6 +21,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -645,5 +646,36 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     const run = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, reportRunId)).then((rows) => rows[0]);
     expect(run?.status).toBe("running");
+  });
+
+  it("rejects a status change whose checked execution lock changed before the write", async () => {
+    // The route checks the lock, then a checkout lands before the write. The
+    // write must not release the newly acquired lock.
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checked out after the check",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    await expect(issueService(db).update(issueId, {
+      status: "backlog",
+      expectedExecutionLock: { executionRunId: null, checkoutRunId: null },
+    })).rejects.toMatchObject({ status: 409, details: { code: "issue_execution_lock_changed" } });
+
+    const row = await db
+      .select({ status: issues.status, checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ status: "in_progress", checkoutRunId: currentRunId, executionRunId: currentRunId });
   });
 });

@@ -10605,9 +10605,12 @@ export function issueRoutes(
 
         if (sourceStatusChanged) {
           await assertNativeRunKeepsOwnExecutionLock(req, lockedIssue, sourceIssueStatus);
+          // The source row is locked in this transaction, so the check holds until the write.
           await assertAgentStatusChangeKeepsLiveRunBound(req, lockedIssue, {
             requestedStatus: sourceIssueStatus,
             assigneeWillChange: false,
+            stopsGoalOnCompletion: false,
+            refreshLock: false,
           });
           const safeHandBack =
             outcome === "restored" &&
@@ -14394,16 +14397,22 @@ export function issueRoutes(
   }
 
   /**
-   * A status change away from `in_progress` (or any change on a task a run is
-   * executing) releases the execution lock without stopping the run. When an
-   * agent other than the lock-holding run asks for it, the run keeps going but
-   * is no longer bound to its task: the effect of interrupting another agent's
-   * run, which agents are not allowed to do (run cancel and tree pause are
-   * board-only). Refuse it before any side effect, with a final denial that
-   * sends the person to the controls that really stop or hold the work.
+   * A status change releases the execution lock without stopping the run that
+   * holds it (the service clears the lock for any status other than
+   * `in_progress`, even when the status is unchanged). When an agent other than
+   * the lock-holding run asks for it, the run keeps going but is no longer
+   * bound to its task: the effect of interrupting another agent's run, which
+   * agents are not allowed to do (run cancel and tree pause are board-only).
+   * Refuse it before any side effect, with a final denial that sends the person
+   * to the controls that really stop or hold the work.
    *
    * Paths that stop the run themselves stay open: cancelling the task,
-   * reassigning it, and completing a task whose Runner goal is paused first.
+   * reassigning it, and (only where the caller pauses the goal first, which the
+   * PATCH route does) completing a task whose Runner goal is active.
+   *
+   * Returns the lock the decision was based on, so the caller can make the
+   * write conditional on it (`expectedExecutionLock`); null when the change
+   * does not release a lock under this rule.
    */
   async function assertAgentStatusChangeKeepsLiveRunBound(
     req: Request,
@@ -14416,23 +14425,36 @@ export function issueRoutes(
       checkoutRunId: string | null;
       executionRunId: string | null;
     },
-    change: { requestedStatus: unknown; assigneeWillChange: boolean },
-  ) {
-    if (req.actor.type !== "agent") return;
+    change: {
+      requestedStatus: unknown;
+      assigneeWillChange: boolean;
+      /** The caller pauses an active Runner goal (and stops its run) before completing the task. */
+      stopsGoalOnCompletion: boolean;
+      /** Re-read the lock instead of trusting a snapshot taken earlier in the request. */
+      refreshLock: boolean;
+    },
+  ): Promise<{ executionRunId: string | null; checkoutRunId: string | null } | null> {
+    if (req.actor.type !== "agent") return null;
     const { requestedStatus } = change;
-    if (typeof requestedStatus !== "string" || requestedStatus === issue.status) return;
-    if (requestedStatus === "in_progress" || requestedStatus === "cancelled") return;
-    if (change.assigneeWillChange) return;
+    if (typeof requestedStatus !== "string") return null;
+    if (requestedStatus === "in_progress" || requestedStatus === "cancelled") return null;
+    if (change.assigneeWillChange) return null;
+    const current = change.refreshLock ? (await svc.getById(issue.id)) ?? issue : issue;
+    const lock = {
+      executionRunId: current.executionRunId ?? null,
+      checkoutRunId: current.checkoutRunId ?? null,
+    };
     const actorRunId = req.actor.runId?.trim() || null;
-    const lockRunIds = [...new Set([issue.executionRunId, issue.checkoutRunId])]
+    const lockRunIds = [...new Set([lock.executionRunId, lock.checkoutRunId])]
       .filter((runId): runId is string => Boolean(runId) && runId !== actorRunId);
     for (const runId of lockRunIds) {
       const run = await heartbeat.getRun(runId);
       if (!run || run.companyId !== issue.companyId || run.id === actorRunId) continue;
       if (run.status !== "running" && run.status !== "queued") continue;
-      if (requestedStatus === "done" && issue.assigneeAgentId) {
+      if (change.stopsGoalOnCompletion && requestedStatus === "done" && issue.assigneeAgentId) {
         const goal = await runnerGoals.projection(issue.companyId, issue.id, issue.assigneeAgentId);
-        if (goal?.goal && goal.goal.status !== "complete") return;
+        // Terminalization pauses the goal and stops this run before the write.
+        if (goal?.goal && goal.goal.status !== "complete") return null;
       }
       const company = await companiesSvc.getById(issue.companyId).catch(() => null);
       const identifier = issue.identifier?.trim() || null;
@@ -14449,6 +14471,7 @@ export function issueRoutes(
         issuePath,
       });
     }
+    return lock;
   }
 
   router.patch(
@@ -15206,9 +15229,11 @@ export function issueRoutes(
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
-      await assertAgentStatusChangeKeepsLiveRunBound(req, existing, {
+      const checkedExecutionLock = await assertAgentStatusChangeKeepsLiveRunBound(req, existing, {
         requestedStatus: updateFields.status,
         assigneeWillChange,
+        stopsGoalOnCompletion: true,
+        refreshLock: true,
       });
       const isAgentReturningIssueToCreator =
         req.actor.type === "agent" &&
@@ -15410,6 +15435,7 @@ export function issueRoutes(
         workspaceSelectionActor: req.actor,
         expectedExecutionPolicy,
         expectedStatusVersion,
+        ...(checkedExecutionLock ? { expectedExecutionLock: checkedExecutionLock } : {}),
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,

@@ -3311,6 +3311,29 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
+    it("refuses repeating the current status, which also releases the lock", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", executionRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue({ ...liveRun, status: "queued" });
+
+      const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "todo" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "issue_status_change_live_run", requestedStatus: "todo" });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("makes an allowed agent status change conditional on the lock it checked", async () => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...liveRun, status: "succeeded" });
+
+      const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "backlog" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
+        status: "backlog",
+        expectedExecutionLock: { executionRunId: ownerRunId, checkoutRunId: ownerRunId },
+      });
+    });
+
     it("still lets the lead edit other fields of the running task", async () => {
       const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Renamed by lead" });
 
