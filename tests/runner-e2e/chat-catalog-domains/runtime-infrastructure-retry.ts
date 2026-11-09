@@ -58,7 +58,16 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     const taskURL = `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`;
     await ctx.input.page.goto(taskURL, { waitUntil: "domcontentloaded" });
     const retry = humanRetryControl(ctx.input.page); await expect(retry).toBeVisible(); state.retryVisible = true;
-    await ctx.input.api.post(`${root}/budgets/policies`, { scopeType: "agent", scopeId: worker.id, amount: 0, isActive: true, hardStopEnabled: true, unpricedUsagePolicy: "block" });
+    // A zero amount disables enforcement. Hold with a real cap and one explicit
+    // synthetic accounting receipt over it, imported through the public path;
+    // this is not model/provider spend. Restoring 500 cents later lifts it.
+    await ctx.input.api.post(`${root}/budgets/policies`, { scopeType: "agent", scopeId: worker.id, amount: 100, isActive: true, hardStopEnabled: true, unpricedUsagePolicy: "allow" });
+    const budgetReceipt = await ctx.input.api.post<{ id: string }>(`${root}/cost-events`, { agentId: worker.id, provider: "synthetic-eval-import", biller: "synthetic-eval-import",
+      model: "imported-fixture-receipt", billingType: "metered_api", costStatus: "reported", costCents: 125, inputTokens: 0, outputTokens: 0,
+      occurredAt: new Date().toISOString(), idempotencyKey: `retry-exhausted-held:${ctx.input.nonce}` });
+    if (typeof budgetReceipt.id !== "string" || !budgetReceipt.id) throw new Error("Missing public synthetic accounting fixture receipt");
+    await ctx.input.evidence("runtime-retry-imported-budget-context.json", { agentId: worker.id, receiptId: budgetReceipt.id, origin: "public-imported-synthetic-fixture",
+      importedFixtureCostCents: 125, hardCapCents: 100, modelProviderUsage: "Not model/provider usage; explicit public synthetic accounting fixture" });
     const held = await pollUntil({ label: "Real current budget hold before first human Retry", deadlineAt: Date.now() + 45_000, load: () => ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`), accept: row => row.lifecycleHolds?.includes("budget") === true });
     state.budgetHeldBeforeRetry = held.lifecycleHolds?.includes("budget") === true;
     const rejected = ctx.input.page.waitForResponse(r => isHumanRetryRequest(r.request(), task.id, worker.id));
