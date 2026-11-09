@@ -150,7 +150,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_ref }}
         run: node trusted/scripts/preview-artifacts.mjs pack source packages "$SOURCE_SHA"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: preview-packages
           overwrite: true
@@ -246,7 +246,7 @@ jobs:
             CLI_TOOLS_CACHE_EPOCH=${{ env.TOOLS_EPOCH }}
           labels: |
             org.opencontainers.image.revision=${{ inputs.source_ref }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: preview-image
           overwrite: true
@@ -310,7 +310,7 @@ jobs:
           REQUEST_ID: ${{ inputs.request_id }}
           PREVIEW_MIGRATOR: ${{ inputs.preview_migrator }}
         run: node scripts/preview-artifacts.mjs result "$SOURCE_SHA" "$REQUEST_ID"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: stack-deploy-result
           overwrite: true
@@ -465,7 +465,7 @@ jobs:
       # resolution used for this build before release tooling restores the
       # tracked lockfile or rewrites workspace versions.
       - name: Save canary smoke lockfile
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: canary-smoke-lockfile-${{ github.sha }}
           path: pnpm-lock.yaml
@@ -581,7 +581,7 @@ jobs:
 
       - name: Upload failed canary onboarding diagnostics
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: canary-onboarding-smoke-${{ needs.publish_canary.outputs.canary_version }}
           if-no-files-found: warn
