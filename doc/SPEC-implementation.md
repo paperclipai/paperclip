@@ -2423,6 +2423,13 @@ contract, setup, recovery, boundaries, and qualification status.
 
 ### Native task completion
 
+A durable question or approval handoff survives a missing provider shutdown
+notification. Paperclip settles its yielded result once the provider terminal
+or exact host-owned shutdown proves stopped execution and settled tool outcomes.
+Until then it retains the saved handoff and explains the shutdown hold. Recovery
+must not repeat completed work or release an overlapping execution. See
+`doc/execution-semantics.md` for the bounded settlement and restart contract.
+
 For ordinary low-risk tasks, accept the current agent's structured `done` claim
 subject to explicit workflow constraints. Missing independent evidence or a
 `needs_review` label alone must not create a human approval. Require a concrete

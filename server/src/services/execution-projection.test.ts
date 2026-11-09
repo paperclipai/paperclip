@@ -275,6 +275,14 @@ describe("execution truth projection", () => {
   it("includes the original legacy attempt in the displayed incident budget", () => {
     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryAttempt: 1 }), undefined, [], undefined, now)).toMatchObject({ attempt: 2, maxAttempts: 3 });
   });
+  it("keeps saved governed work in shutdown reconciliation without offering a new attempt", () => {
+    expect(project(
+      run({ status: "failed", errorCode: "native_governed_wait_settlement_pending" }),
+      coordinator({ phase: "retryable_failure", failureCode: "native_governed_wait_settlement_pending",
+        nextAttemptAt: new Date(now.getTime() + 30_000) }),
+    )).toMatchObject({ phase: "finishing", label: "Finishing shutdown", permittedActions: ["inspect_run"],
+      nextAction: "The work and waiting state are saved. Paperclip is confirming shutdown before continuing." });
+  });
   it("shows pending interaction only after productive work has stopped", () => {
     expect(
       project(run(), coordinator(), [{ kind: "connection_intent" }]).phase,

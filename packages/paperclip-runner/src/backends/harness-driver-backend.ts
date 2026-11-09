@@ -776,6 +776,12 @@ class HarnessNativeSession implements NativeSession {
     this.#explicitlyCancelled = true;
   }
 
+  settleCancelledTurn(input: { turnId: string; reason: string }) {
+    this.#assertProtocolIntegrity();
+    if (!this.#explicitlyCancelled) throw new Error("native_turn_cancellation_required");
+    return this.#withProtocolIntegrity(() => this.#session.settleCancelledTurn?.(input) ?? null);
+  }
+
   cancel(input: { reason: string; signal: AbortSignal }) {
     if (input.signal.aborted) {
       throw (

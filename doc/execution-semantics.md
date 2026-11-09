@@ -4101,13 +4101,33 @@ run's wait marker along with its terminal, result and pending-request authority.
 Already-numbered cancellation acknowledgements and cancelled/expired runtime requests
 are retained during shutdown so recovery can replay a contiguous journal. They
 carry no permission to start work. Stream closure, stream failure or drain timeout
-after complete usage leaves the saved wait unfinalized until a provider terminal
-is retained; complete token counters alone cannot certify a stopped provider.
-Codex governed-wait settlement allows up to 30 seconds for its interruption
-terminal, matching the transport command window. The caller's execution deadline
-can shorten that window. An interrupt acknowledgement alone is not terminal proof.
-A timeout, missing accounting, or an unproven provider terminal remains a failure;
-the saved wait does not certify successful provider execution.
+after complete usage leaves the saved wait unfinalized until execution is proven
+stopped; complete token counters alone cannot certify that boundary. Codex allows
+up to 30 seconds for its interruption terminal, matching the transport command
+window; the caller's execution deadline can shorten it. After that bounded drain,
+a supporting driver uses its existing owned shutdown.
+For Runner, this requires exact run/session/turn identity, provider settlement,
+durable event drain, settled semantic tool outcomes and verified Runner
+suspension. An interrupt acknowledgement, process signal or ordinary close
+promise alone is insufficient. This proof settles the saved yielded result
+without asserting provider success or complete accounting. The stopped session
+is retired from warm reuse.
+
+The checkpoint may add a shutdown settlement receipt to the existing governed
+wait. Previous checkpoints without it follow the same terminal-or-shutdown
+settlement path. Recovery validates the original triggering event and receipt
+binding, rejects later turns and failed provider terminals, and completes the
+same saved handoff without starting a model turn, even if its question has been
+answered. A crash after receipt persistence retains that proof. Late settlement
+after controller cancellation cannot publish a result.
+
+If shutdown cannot be proven, the run retains its checkpoint and the named
+`native_governed_wait_settlement_pending` condition. The existing bounded
+same-run recovery schedule owns further settlement; it grants no replacement
+or tool replay. The task explains that work is saved and shutdown is pending.
+Exhausted or gated recovery holds continuation and names the shutdown problem.
+Actual provider failures and integrity failures retain their existing meaning.
+Accounting keeps its separate receipt and reconciliation requirements.
 
 An exact governed-cancellation terminal with an explicit turn ID may return its
 durable event receipt before postcommit accounting and output observers finish.
