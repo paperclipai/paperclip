@@ -107,9 +107,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
     );
   }
 
-  const timestamp = coordinator && brief.createdAt
-    ? <CoordinatorRelativeTime value={brief.createdAt} />
-    : formatTaskChatTimestamp(brief.createdAt);
+  const timestamp = formatTaskChatTimestamp(brief.createdAt);
   return (
     <div
       className={cn(
