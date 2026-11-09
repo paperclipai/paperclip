@@ -38,6 +38,15 @@ describe("ordinary task interruption", () => {
     expect(container.querySelector("a, details, input, textarea")).toBeNull();
     expect(container.textContent).not.toMatch(/service attention|process|receipt|workspace/i);
   });
+  it("keeps the failure visible and names the gate while a saved Retry waits on the budget", async () => {
+    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "budget", canRetry: false });
+    const notice = container.querySelector('[data-testid="task-execution-waiting"]');
+    expect(notice?.textContent).toContain("Couldn’t finish this attempt. Your message is saved.");
+    expect(notice?.textContent).toContain("waiting for the budget to allow new work");
+    // The saved Retry starts by itself; a second Retry would only duplicate it.
+    expect(container.querySelector("button")).toBeNull();
+  });
+
   it("shows persisted backoff with a usable Retry", async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-20T00:00:00Z"));
     await render({ ...failed, state: "retry_scheduled", nextRetryAt: "2026-10-20T00:00:30Z" });
