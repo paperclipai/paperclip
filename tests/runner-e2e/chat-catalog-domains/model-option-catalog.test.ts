@@ -4,7 +4,7 @@ import {openRouterCatalogScope, modelChoiceMatches, observedModelChoices, public
 function valid() {
   const config = {provider:"opencode",model:"openrouter/deepseek/deepseek-v4.1-flash-1017",env:{OPENROUTER_API_KEY:{type:"secret_ref",secretId:"company-openrouter-reference",version:"latest"}}};
   const worker = {id:"morgan",companyId:"company",adapterType:"paperclip_runner",defaultEnvironmentId:"owned",adapterConfig:structuredClone(config)}, lead={...structuredClone(worker),id:"ceo"};
-  return {scenarioId:"runs-adapters.list-model-options",companyId:"company",leadId:"ceo",state:{worker,admittedModels:[{id:"opencode/big-pickle",label:"builtin"}],discoveryStatus:200,agentRuntimeInventoryStatus:403,secretScanComplete:true,secretLeaked:false,
+  return {scenarioId:"runs-adapters.list-model-options",companyId:"company",leadId:"ceo",state:{worker,admittedModels:[{id:"opencode/big-pickle",label:"builtin"}],discoveryStatus:200,agentDiscoveryReads:1,agentRuntimeInventoryStatus:403,secretScanComplete:true,secretLeaked:false,
     publicOpenRouterCatalog:[{id:config.model,label:"current"},{id:"openrouter/openai/gpt-5.3-codex",label:"catalog"},{id:"openrouter/anthropic/claude-sonnet-5.5",label:"catalog"}],publicCatalogStatus:200,publicCatalogScope:openRouterCatalogScope("company","ceo",worker,lead)},
     agents:[structuredClone(worker),lead],tasks:[],links:[],activity:[],runs:[],humanQueries:[],reply:"Morgan's configured model is `openrouter/deepseek/deepseek-v4.1-flash-1017`. The native options include `opencode/big-pickle`. The public OpenRouter catalog also lists `gpt-5.3-codex` and `anthropic/claude-sonnet-5.5`; availability depends on the selected account/key and environment. Not all catalog models are qualified or tested."};
 }
