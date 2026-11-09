@@ -2,7 +2,7 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, pluginManagedResources, plugins, routineRuns, routines, workAssessments } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, completionContracts, createDb, heartbeatRuns, issueThreadInteractions, issues, nativeRunFinalizations, nativeRunResults, pluginManagedResources, plugins, routineRuns, routines, statusDecisions, workAssessments } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { routineService } from "../routines.js";
@@ -72,6 +72,29 @@ if (!support.supported) console.warn(`Skipping native routine status tests: ${su
     expect(saved.completedAt !== null).toBe(status !== "in_progress");
     const replay = await commit(f, status); expect(replay.replayed).toBe(true); expect(replay.decision.id).toBe(first.decision.id);
     expect((await db.select().from(routineRuns).where(eq(routineRuns.id, f.invocationId)))[0]).toEqual(saved);
+  });
+  it("retains the native decision author when requesting a protected agent reviewer", async () => {
+    const f = await seed(), reviewer = randomUUID();
+    await db.insert(agents).values({ id: reviewer, companyId, name: "Protected reviewer", adapterType: "process", status: "active",
+      permissions: { interactions: { canReceiveAssignmentsFromAgents: false } } });
+    const requestReview = () => commitNativeStatusDecision({ db, companyId, issueId: f.issueId, runId: f.runId, assessmentId: f.assessmentId,
+      priorStatus: "in_progress", priorStatusVersion: f.priorStatusVersion, priorDecisionId: f.priorDecisionId,
+      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "preserve", toStatus: "in_progress",
+        reasonCode: "review_requested", unblockDescriptor: null, effects: [{ kind: "bind_reviewer", ownerAgentId: reviewer,
+          ownerUserId: null, prompt: "Review this work" }] },
+    });
+    await expect(requestReview()).rejects.toMatchObject({ status: 403, details: expect.objectContaining({ actorAgentId: agentId,
+      permission: "canReceiveAssignmentsFromAgents" }) });
+    expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId))).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, reviewer))).toEqual([]);
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, f.issueId))).toEqual([]);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_progress");
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", failureCode: "agent_interaction_denied", nextAttemptAt: null });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("running");
+    await db.update(agents).set({ permissions: {} }).where(eq(agents.id, reviewer));
+    await expect(requestReview()).rejects.toMatchObject({ status: 403,
+      details: expect.objectContaining({ permission: "canReceiveAssignmentsFromAgents" }) });
   });
   it.each(["ordinary", "wrong-invocation", "wrong-issue", "foreign-company"])("does not settle an invocation with %s custody", async mode => {
     const f = await seed(mode); const [before] = await db.select().from(routineRuns).where(eq(routineRuns.id, f.invocationId));

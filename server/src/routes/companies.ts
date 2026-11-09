@@ -1171,6 +1171,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const actor = getActorInfo(req);
     const result = await portability.importBundle(body, req.actor.type === "board" ? req.actor.userId : null, {
       mode: "agent_safe",
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      actorAgentCompanyId: req.actor.type === "agent" ? req.actor.companyId : null,
       sourceCompanyId: companyId,
       pauseAutomations: body.pauseAutomations === true,
       // An agent importing new agents is hiring, so it needs agents:create
