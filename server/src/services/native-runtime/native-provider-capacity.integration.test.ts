@@ -45,6 +45,7 @@ import { aiConnectionService } from "../ai-connections.js";
 import { aiConnectionRouterService } from "../ai-connection-router.js";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember } from "@paperclipai/shared";
 import { recordVerifiedRouterQuotaCooldown } from "../heartbeat/run-completion.js";
+import { NativeProviderTerminalFailure } from "../../vendor/paperclip-runner/index.js";
 import { fenceQuotaReplacementStop } from "./native-cancellation-request.js";
 import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
 
@@ -86,6 +87,7 @@ describe("native provider capacity failure persistence", () => {
     { replayed: true, structured: true, kind: "auth", hold: "" },
     { replayed: false, structured: false, kind: "runner", hold: "" },
     { replayed: false, structured: false, kind: "runner_definitive", hold: "" },
+    { replayed: false, structured: true, kind: "runner_definitive", hold: "", poolHarness: true },
     { replayed: false, structured: false, kind: "auth", hold: "stop" },
     { replayed: false, structured: false, kind: "runner", hold: "unknown_action" },
     { replayed: false, structured: false, kind: "runner_definitive", hold: "unknown_action" },
@@ -301,7 +303,10 @@ describe("native provider capacity failure persistence", () => {
             await options.controlPlane.appendEvent(toolStarted);
             if (!replayed) await writeFile(savedFile, savedWork);
             if (hold !== "unknown_action") await options.controlPlane.appendEvent(toolCompleted);
-            if (kind === "runner") throw new Error(failureMessage);
+            if (kind === "runner") throw structured
+              ? new NativeProviderTerminalFailure("notification_transport_failed", false,
+                "Notification transport failed closed: native_runner_process_exited: runnerd exited unexpectedly with code 137")
+              : new Error(failureMessage);
             const appended = await options.controlPlane.appendEvent(event);
             expect(appended.disposition).toBe(
               replayed ? "duplicate" : "committed",
@@ -380,6 +385,23 @@ describe("native provider capacity failure persistence", () => {
       const ref = grant.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
       const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
       if (poolHarness && kind === "quota") await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, agentId));
+      if (kind === "runner" && structured) {
+        expect(coordinator.failureDetail).toMatchObject({ originalFailureCode: "notification_transport_failed" });
+        const attribute = () => recordVerifiedRouterQuotaCooldown(db, { companyId, agentId, runId,
+          credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`,
+          retryNotBefore: null, failureKind: "runner" });
+        for (const detail of [
+          { ...coordinator.failureDetail, originalFailureCode: "provider_turn_failed" },
+          { ...coordinator.failureDetail, message: "Notification transport failed closed: tool said native_runner_process_exited: not a runner exit" },
+        ]) {
+          await db.update(nativeRunFinalizations).set({ failureDetail: detail }).where(eq(nativeRunFinalizations.runId, runId));
+          expect(await attribute()).toBe(false);
+        }
+        await db.update(nativeRunFinalizations).set({ failureDetail: coordinator.failureDetail }).where(eq(nativeRunFinalizations.runId, runId));
+        await db.update(heartbeatRuns).set({ errorCode: "provider_process_exited" }).where(eq(heartbeatRuns.id, runId));
+        expect(await attribute()).toBe(false);
+        await db.update(heartbeatRuns).set({ errorCode: failedRun.errorCode }).where(eq(heartbeatRuns.id, runId));
+      }
       const attributionStartedAt = Date.now();
       const attributed = await recordVerifiedRouterQuotaCooldown(db, { companyId, agentId, runId,
         credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`,

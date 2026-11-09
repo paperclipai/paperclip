@@ -3,7 +3,8 @@ import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { nativePoolFailureKind } from "../native-runtime/native-pool-failure.js";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { isContextCompactionRun } from "../context-compaction.js";
-import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
+import { NativeProviderTerminalFailure, providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
+import { nativeSessionFailureSourceCode } from "../native-runtime/native-session-executor.js";
 import { createHash } from "node:crypto";
 import { extractClaudeRetryNotBefore, isClaudeProviderQuotaError } from "@paperclipai/adapter-claude-local/server";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
@@ -133,8 +134,16 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
       const [owner] = await tx.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, run.companyId),
         eq(nativeRunFinalizations.runId, run.id)));
       if (!owner || owner.phase !== "terminal_failure" || owner.leaseOwner || owner.resultId ||
-          nativePoolFailureKind(owner.failureCode) !== (input.failureKind ?? "quota") ||
-          (input.failureKind === "runner" && owner.failureDetail?.originalFailureCode !== run.errorCode)) return false;
+          nativePoolFailureKind(owner.failureCode) !== (input.failureKind ?? "quota")) return false;
+      if (input.failureKind === "runner") {
+        const detail = parseObject(owner.failureDetail);
+        const originalCode = readNonEmptyString(detail.originalFailureCode);
+        const classifiedCode = originalCode === "notification_transport_failed"
+          ? nativeSessionFailureSourceCode(new NativeProviderTerminalFailure(originalCode, detail.recoverable === true,
+            typeof detail.message === "string" ? detail.message : ""))
+          : originalCode;
+        if (classifiedCode !== run.errorCode) return false;
+      }
     }
     const context = parseObject(run.contextSnapshot);
     const selection = parseObject(context.aiRouterSelection);
