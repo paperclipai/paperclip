@@ -757,7 +757,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   // H1 bug B: a budget pause stopped the agent's run, and the release blocked
   // the task behind a reconciliation incident with no control. A pause is an
   // intentional stop; resuming continues the task.
-  it.each(["Agent lifecycle stop requested", "Cancelled due to budget pause"])(
+  it.each(["Agent lifecycle stop requested", "Cancelled due to budget pause", "Cancelled due to agent pause"])(
     "keeps a native task's status and opens no incident when a pause stopped its run (%s)", async (reason) => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
