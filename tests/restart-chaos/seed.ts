@@ -22,16 +22,14 @@ export interface ChaosLab {
 }
 
 export const DAYTONA_AGENT_READY_TIMEOUT_MS = 10 * 60_000;
-export const LIFECYCLE_ERROR_GRACE_MS = 90_000;
 const TERMINAL_LIFECYCLE_STATES = new Set(["rejected", "terminating", "cleaning_up", "terminated"]);
 
 /** Create the `chaos-sandbox` git repository: python CLI, one failing test, bench.sh. */
 export async function waitForAgentsReady(api: ChaosApi, agents: Partial<Record<string, { id: string; createdAt?: number }>>, timeline: Timeline,
-  timeoutMs = 4 * 60_000, pollMs = 1_000, cancelled: () => boolean = () => false, errorGraceMs = LIFECYCLE_ERROR_GRACE_MS): Promise<void> {
+  timeoutMs = 4 * 60_000, pollMs = 1_000, cancelled: () => boolean = () => false): Promise<void> {
   const started = Date.now();
   const pending = new Map(Object.entries(agents).flatMap(([adapter, agent]) => agent ? [[adapter, agent] as const] : []));
   const lastProblem = new Map<string, string>();
-  const errorSince = new Map<string, { error: string; updatedAt: unknown; at: number }>();
   while (pending.size) {
     if (cancelled()) throw new Error("Harness interrupted while waiting for agents to finish verification");
     for (const [adapter, { id: agentId, createdAt }] of [...pending]) {
@@ -47,17 +45,13 @@ export async function waitForAgentsReady(api: ChaosApi, agents: Partial<Record<s
         timeline.add("seed_agent_ready", { adapter, agentId, readyAfterMs: Date.now() - (createdAt ?? started) });
         pending.delete(adapter);
       } else if (lifecycleError) {
-        const previous = errorSince.get(adapter);
-        const unchanged = previous?.error === lifecycleError && previous.updatedAt === agent.updatedAt;
-        const since = unchanged ? previous!.at : Date.now();
-        if (previous?.error !== lifecycleError) timeline.add("seed_agent_lifecycle_error", { adapter, agentId, error: lifecycleError });
-        errorSince.set(adapter, { error: lifecycleError, updatedAt: agent.updatedAt, at: since });
-        lastProblem.set(adapter, `last lifecycle error: ${lifecycleError}`);
-        if (TERMINAL_LIFECYCLE_STATES.has(String(agent.lifecycleState)) || Date.now() - since > errorGraceMs) {
+        if (TERMINAL_LIFECYCLE_STATES.has(String(agent.lifecycleState))) {
           throw new Error(`Agent ${adapter} (${agentId}) failed lifecycle verification: ${lifecycleError}`);
         }
-      } else {
-        errorSince.delete(adapter);
+        if (lastProblem.get(adapter) !== `last lifecycle error: ${lifecycleError}`) {
+          timeline.add("seed_agent_lifecycle_error", { adapter, agentId, error: lifecycleError });
+        }
+        lastProblem.set(adapter, `last lifecycle error: ${lifecycleError}`);
       }
     }
     if (!pending.size) return;
