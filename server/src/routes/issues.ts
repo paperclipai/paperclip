@@ -10605,6 +10605,10 @@ export function issueRoutes(
 
         if (sourceStatusChanged) {
           await assertNativeRunKeepsOwnExecutionLock(req, lockedIssue, sourceIssueStatus);
+          await assertAgentStatusChangeKeepsLiveRunBound(req, lockedIssue, {
+            requestedStatus: sourceIssueStatus,
+            assigneeWillChange: false,
+          });
           const safeHandBack =
             outcome === "restored" &&
             sourceIssueStatus === "todo" &&
@@ -14389,6 +14393,64 @@ export function issueRoutes(
     );
   }
 
+  /**
+   * A status change away from `in_progress` (or any change on a task a run is
+   * executing) releases the execution lock without stopping the run. When an
+   * agent other than the lock-holding run asks for it, the run keeps going but
+   * is no longer bound to its task: the effect of interrupting another agent's
+   * run, which agents are not allowed to do (run cancel and tree pause are
+   * board-only). Refuse it before any side effect, with a final denial that
+   * sends the person to the controls that really stop or hold the work.
+   *
+   * Paths that stop the run themselves stay open: cancelling the task,
+   * reassigning it, and completing a task whose Runner goal is paused first.
+   */
+  async function assertAgentStatusChangeKeepsLiveRunBound(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      identifier?: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      checkoutRunId: string | null;
+      executionRunId: string | null;
+    },
+    change: { requestedStatus: unknown; assigneeWillChange: boolean },
+  ) {
+    if (req.actor.type !== "agent") return;
+    const { requestedStatus } = change;
+    if (typeof requestedStatus !== "string" || requestedStatus === issue.status) return;
+    if (requestedStatus === "in_progress" || requestedStatus === "cancelled") return;
+    if (change.assigneeWillChange) return;
+    const actorRunId = req.actor.runId?.trim() || null;
+    const lockRunIds = [...new Set([issue.executionRunId, issue.checkoutRunId])]
+      .filter((runId): runId is string => Boolean(runId) && runId !== actorRunId);
+    for (const runId of lockRunIds) {
+      const run = await heartbeat.getRun(runId);
+      if (!run || run.companyId !== issue.companyId || run.id === actorRunId) continue;
+      if (run.status !== "running" && run.status !== "queued") continue;
+      if (requestedStatus === "done" && issue.assigneeAgentId) {
+        const goal = await runnerGoals.projection(issue.companyId, issue.id, issue.assigneeAgentId);
+        if (goal?.goal && goal.goal.status !== "complete") return;
+      }
+      const company = await companiesSvc.getById(issue.companyId).catch(() => null);
+      const identifier = issue.identifier?.trim() || null;
+      const issuePath = company?.issuePrefix && identifier
+        ? `/${company.issuePrefix}/issues/${identifier}`
+        : null;
+      const labels = await issueWriteDenialLabels(req, issue);
+      const { body } = issueWriteDenialResponse("issue_status_change_live_run", { ...labels, issuePath });
+      throw conflict(body.error, {
+        ...body.details,
+        issueId: issue.id,
+        runId: run.id,
+        requestedStatus,
+        issuePath,
+      });
+    }
+  }
+
   router.patch(
     "/issues/:id",
     (req, _res, next) => {
@@ -15144,6 +15206,10 @@ export function issueRoutes(
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
+      await assertAgentStatusChangeKeepsLiveRunBound(req, existing, {
+        requestedStatus: updateFields.status,
+        assigneeWillChange,
+      });
       const isAgentReturningIssueToCreator =
         req.actor.type === "agent" &&
         !!req.actor.agentId &&
