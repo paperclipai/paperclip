@@ -2,6 +2,7 @@ import { LiveTranscriptInterests, DISCONNECTED_TRANSCRIPT_STREAM } from "../lib/
 import { resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChangesTaskIdentity } from "@paperclipai/shared";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
+import { isLiveReconciledQuery } from "../lib/live-reconcile";
 import {
   createContext,
   useCallback,
@@ -2313,7 +2314,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     if (wasHidden.current) {
       wasHidden.current = false;
       // Reconcile events missed while hidden, including completed runs/issues.
-      void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+      void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
     }
 
     let closed = false;
@@ -2340,7 +2341,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       if (closed || pollTimer !== null) return;
       // Visible queries still need fresh state when realtime is unavailable.
       pollTimer = window.setInterval(() => {
-        void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+        void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
       }, DISCONNECTED_POLL_INTERVAL_MS);
     };
 
@@ -2372,7 +2373,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       socket = nextSocket;
       let recoveryActive = true;
       const recoverQueries = createLiveQueryRecovery(queryClient,
-        () => !closed && recoveryActive && socket === nextSocket && getPageVisibility().visible);
+        () => !closed && recoveryActive && socket === nextSocket && getPageVisibility().visible,
+        { predicate: isLiveReconciledQuery });
 
       nextSocket.onopen = () => {
         if (closed || socket !== nextSocket) {
@@ -2392,10 +2394,11 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         hasOpenedSocket.current = true;
         void queryClient.invalidateQueries({
           type: "active",
-          ...(initialHealthyOpen ? { predicate: (query) => {
+          predicate: initialHealthyOpen ? (query) => {
             const key = JSON.stringify(query.queryKey);
-            return key !== JSON.stringify(queryKeys.auth.session) && key !== JSON.stringify(queryKeys.health);
-          } } : {}),
+            return isLiveReconciledQuery(query)
+              && key !== JSON.stringify(queryKeys.auth.session) && key !== JSON.stringify(queryKeys.health);
+          } : isLiveReconciledQuery,
         }, { cancelRefetch: false });
         reconnectAttempt = 0;
       };
@@ -2409,7 +2412,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           const parsed = JSON.parse(raw) as LiveEvent;
           if (transcripts.receive(parsed, recoverQueries)) {
             if ((parsed as { type: string }).type === "live.resync") {
-              void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+              void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
             }
             return;
           }
