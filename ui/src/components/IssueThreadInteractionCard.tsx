@@ -54,6 +54,7 @@ import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceE
 import { CoordinatorTaskCommitment } from "./coordinator/CoordinatorTaskCommitment";
 
 import { DecisionCardFooter } from "./DecisionCardFooter";
+import { ToolActionAuditHashCopy } from "./ToolActionAuditHashCopy";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -1847,12 +1848,12 @@ function RequestToolActionCard({
       {isPending ? inspectableArguments ? (
         <details className="mt-3">
           <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-            Arguments and audit hash
+            Arguments
           </summary>
           <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">
             {payload.argumentsSummaryJson}
           </pre>
-          <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{payload.argumentsHash}</p>
+          <ToolActionAuditHashCopy hash={payload.argumentsHash} />
         </details>
       ) : <p className="mt-3 text-xs text-muted-foreground">Request arguments are unavailable.</p> : null}
       {isPending ? (

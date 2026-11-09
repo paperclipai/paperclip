@@ -14,4 +14,14 @@ describe("parseUnifiedDiffLines", () => {
       { kind: "context", text: "keep" },
     ]);
   });
+  it("preserves CRLF changed lines after a no-newline marker", () => {
+    const parsed = parseUnifiedDiffLines("@@ -1 +1 @@\r\n-old\r\n\\ No newline at end of file\r\n+++ new\r\n");
+    expect(parsed).toMatchObject({ added: 1, removed: 1 });
+    expect(parsed.lines).toEqual([
+      { kind: "hunk", text: "@@ -1 +1 @@" },
+      { kind: "remove", text: "old" },
+      { kind: "add", text: "++ new" },
+    ]);
+  });
+
 });

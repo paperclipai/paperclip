@@ -25,6 +25,7 @@ import type {
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
   IssueRecoveryActionOwnerType,
+  IssueBlockerStallRelation,
   IssueRecoveryActionStatus,
   IssueWorkMode,
   IssueThreadInteractionContinuationPolicy,
@@ -212,6 +213,12 @@ export interface DocumentRevision {
   /** Writer provenance; reading a revision does not grant access to the run. */
   createdByRunId?: string | null;
   createdAt: Date;
+}
+
+export interface ExactDocumentRevision extends DocumentRevision {
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  isLatest: boolean;
 }
 
 export interface LegacyPlanDocument {
@@ -617,6 +624,23 @@ export interface IssueUnblockDescriptor {
   action: string;
 }
 
+/** Wake context of `issue_blocker_stalled`: the stalled issue and the recovery action it waits on. */
+export interface IssueBlockerStalledWakeContext {
+  stalledIssueId: string;
+  stalledIssueIdentifier: string | null;
+  stalledIssueTitle: string;
+  stalledIssueStatus: string;
+  relation: IssueBlockerStallRelation;
+  recoveryAction: {
+    id: string;
+    kind: string;
+    cause: string;
+    status: string;
+    ownerType: string;
+    nextAction: string;
+  };
+}
+
 export interface IssueRecoveryAction {
   /** Read-only activity of the exact native run named by the wake policy. */
   nativeRunActivity?: {
@@ -969,6 +993,8 @@ export interface Issue {
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
+  /** Children and blockers stalled on a recovery action that needs the board (issue detail only). */
+  stalledDependencies?: IssueBlockerStalledWakeContext[];
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   executionBlocker?: ExecutionBlocker | null;
   interruption?: TaskInterruptionPresentation | null;
@@ -991,6 +1017,7 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  unreadMessageCount?: number;
   archivedAt?: Date | null;
   archivedByActorType?: "user" | "agent" | null;
   archivedByAgentId?: string | null;
@@ -1217,6 +1244,8 @@ export interface IssueCommentMetadata {
   };
   /** Producer-classified diagnostics; task interruption UI owns system repair. */
   recoveryResponsibility?: "system" | "user";
+  /** Generated file-preparation receipt; presentation only, never authorization. */
+  attachmentPreparation?: { attachmentId: string };
   /** Inbound channel attribution; never an authorization input. */
   sourceChannel?: ChatProvider;
   sourceRunId?: string | null;

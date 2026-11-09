@@ -34,6 +34,7 @@ import { latestReasoningHeadline } from "./reasoning-summary";
 import { toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
+import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
 type ToolActivity = Extract<Activity, { kind: "tool" }>;
@@ -105,7 +106,7 @@ function providerTrailing(item: Extract<Activity, { kind: "protocol" }>): Pick<A
   return {};
 }
 
-function presentation(item: Activity, active: boolean): ActivityRowPresentation | null {
+function presentation(item: Activity, active: boolean, taskLabel?: string): ActivityRowPresentation | null {
   if (item.kind === "tool") {
     const tool = toolPresentation(item);
     const running =
@@ -119,7 +120,7 @@ function presentation(item: Activity, active: boolean): ActivityRowPresentation 
             ? tool.runningLabel
             : tool.completedLabel;
     const terminal = tool.family === "terminal";
-    const subject = item.target?.trim();
+    const subject = withTaskReference(item.target?.trim() || undefined, taskLabel);
     // With a concrete subject, the verb alone reads better: "Read README.md".
     // A finished command needs no verb at all: the icon and "$" say it ran.
     // A failure or stop keeps its marker ("Read · failed") unless an exit
@@ -219,7 +220,36 @@ function ActivityContent({
   item: Activity;
   active: boolean;
 }) {
-  const row = presentation(item, active);
+  if (item.kind === "tool" && item.taskRefId) {
+    return <TaskReferenceActivityContent item={item} taskRefId={item.taskRefId} active={active} />;
+  }
+  return <ActivityRowContent item={item} active={active} />;
+}
+
+/** A tool row about one task names it by identifier, resolved from its UUID. */
+function TaskReferenceActivityContent({
+  item,
+  taskRefId,
+  active,
+}: {
+  item: Activity;
+  taskRefId: string;
+  active: boolean;
+}) {
+  const taskLabel = useTaskReferenceLabel(taskRefId);
+  return <ActivityRowContent item={item} active={active} taskLabel={taskLabel} />;
+}
+
+function ActivityRowContent({
+  item,
+  active,
+  taskLabel,
+}: {
+  item: Activity;
+  active: boolean;
+  taskLabel?: string;
+}) {
+  const row = presentation(item, active, taskLabel);
   const shimmer = useTaskChatShimmer(item.id);
   if (!row) return null;
   const Icon = row.icon;

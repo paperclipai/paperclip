@@ -10,6 +10,8 @@ import {
   nativeRunPreparationStarts,
   recordFailedSkillPreparation,
   recordNativeProviderPerformanceSpans,
+  recordNativeRunnerStartupStep,
+  resolveNativeTimeToFirstTokenStart,
   NATIVE_RUN_SPAN_EVENT_TYPE,
   NATIVE_RUN_TRACE_SCHEMA_VERSION,
 } from "./native-run-trace.js";
@@ -503,4 +505,141 @@ it.each(["start", "context", "attribute", "status", "end"])("keeps execution and
   expect(work).toHaveBeenCalledOnce();
   expect(failedWork).toHaveBeenCalledOnce();
   for (const span of spans) expect(span.end).toHaveBeenCalledOnce();
+});
+
+describe("time to first token anchor", () => {
+  const prep = (name: string, startedAtMs: number) => ({
+    name, parentName: "task.provider_session", startedAtMs, endedAtMs: startedAtMs + 5,
+  });
+
+  it("falls back to run creation when no earlier accepted input is known", () => {
+    expect(resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: 1_000, preparationSpans: [prep("heartbeat.queue", 1_000)], wakeRequestedAtMs: null,
+    })).toEqual({ startedAtMs: 1_000, anchor: "run_created" });
+  });
+
+  it("names the comment or answered question that already anchors the trace", () => {
+    expect(resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: 900, preparationSpans: [prep("comment.to_run_created", 900)], wakeRequestedAtMs: 950,
+    })).toEqual({ startedAtMs: 900, anchor: "comment" });
+    expect(resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: 800, preparationSpans: [prep("question_response.to_run_created", 800)], wakeRequestedAtMs: null,
+    })).toEqual({ startedAtMs: 800, anchor: "question_response" });
+  });
+
+  it("names run creation when a comment was coalesced into an already-queued run", () => {
+    expect(resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: 1_000,
+      preparationSpans: [prep("heartbeat.queue", 1_000), prep("comment.to_run_created", 1_400)],
+      wakeRequestedAtMs: null,
+    })).toEqual({ startedAtMs: 1_000, anchor: "run_created" });
+  });
+
+  it("moves back to an earlier accepted wake request (deferred or coalesced wakes)", () => {
+    expect(resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: 5_000, preparationSpans: [prep("heartbeat.queue", 5_000)], wakeRequestedAtMs: 2_000,
+    })).toEqual({ startedAtMs: 2_000, anchor: "wake_request" });
+  });
+
+  it("ignores invalid wake request times", () => {
+    for (const wakeRequestedAtMs of [Number.NaN, -1, 6_000]) {
+      expect(resolveNativeTimeToFirstTokenStart({
+        traceStartedAtMs: 5_000, preparationSpans: [], wakeRequestedAtMs,
+      })).toEqual({ startedAtMs: 5_000, anchor: "run_created" });
+    }
+  });
+
+  it("persists the anchor on the run-log span", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const trace = createNativeRunTrace({
+      runId: "ttft-run", startedAtMs: 5_000,
+      traceContext: createRecordingTraceContext().traceContext,
+      onEvent: async (event) => { events.push(event); },
+    });
+    const start = resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: trace.traceStartedAtMs, preparationSpans: [], wakeRequestedAtMs: 4_000,
+    });
+    await trace.record({
+      name: "task.time_to_first_token", parentName: "task.provider_session",
+      startedAtMs: start.startedAtMs, endedAtMs: 7_000, attributes: { eventKind: "agentMessage", anchor: start.anchor },
+    });
+    const span = events.find((event) => (event.payload as Record<string, unknown>)?.span === "task.time_to_first_token");
+    expect(span?.payload).toMatchObject({ durationMs: 3_000, startOffsetMs: -1_000, anchor: "wake_request", eventKind: "agentMessage" });
+  });
+});
+
+describe("deferred diagnostics", () => {
+  it("never blocks the caller and settles before the trace finishes", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const trace = createNativeRunTrace({
+      runId: "deferred-run", startedAtMs: 1_000,
+      traceContext: createRecordingTraceContext().traceContext,
+      onEvent: async (event) => { events.push(event); },
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    trace.defer(async () => {
+      await gate;
+      await trace.record({ name: "task.time_to_first_token", parentName: "task.provider_session", startedAtMs: 1_000, endedAtMs: 2_000 });
+    });
+    // Later work keeps flowing while the deferred read is pending.
+    await trace.record({ name: "response.first_nonempty_text", startedAtMs: 2_000, endedAtMs: 2_000 });
+    const span = (name: string) => events.some((event) => (event.payload as Record<string, unknown>)?.span === name);
+    expect(span("response.first_nonempty_text")).toBe(true);
+    expect(span("task.time_to_first_token")).toBe(false);
+    const finished = trace.finish("ok");
+    release();
+    await finished;
+    const names = events.map((event) => (event.payload as Record<string, unknown>)?.span);
+    expect(names.indexOf("task.time_to_first_token")).toBeGreaterThan(-1);
+    expect(names.indexOf("task.time_to_first_token")).toBeLessThan(names.indexOf("task.provider_session.measured"));
+  });
+
+  it("ignores a failed deferred diagnostic and work deferred after finish", async () => {
+    const trace = createNativeRunTrace({ runId: "deferred-fail", traceContext: createRecordingTraceContext().traceContext });
+    trace.defer(async () => { throw new Error("diagnostic failed"); });
+    await expect(trace.finish("ok")).resolves.toBeUndefined();
+    const late = vi.fn(async () => {});
+    trace.defer(late);
+    await Promise.resolve();
+    expect(late).not.toHaveBeenCalled();
+  });
+});
+
+describe("local runner startup sub-steps", () => {
+  it("records each step beneath runner.session.startup without blocking the caller", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    let releaseSink!: () => void;
+    const sinkGate = new Promise<void>((resolve) => { releaseSink = resolve; });
+    const { traceContext, spans } = createRecordingTraceContext();
+    const trace = createNativeRunTrace({
+      runId: "startup-steps", startedAtMs: 1_000, traceContext,
+      onEvent: async (event) => { await sinkGate; events.push(event); },
+    });
+    const startup = trace.start("runner.session.startup", { parentName: "task.provider_session", startedAtMs: 1_000 });
+    // Synchronous and detached: a stalled run-log sink cannot delay turn.start.
+    recordNativeRunnerStartupStep(trace, { name: "runner.runtime.stage", mode: "bootstrap", startedAtMs: 1_000, endedAtMs: 1_200, outcome: "ok" });
+    recordNativeRunnerStartupStep(trace, { name: "runner.process.launch", mode: "bootstrap", startedAtMs: 1_200, endedAtMs: 1_900, outcome: "ok" });
+    recordNativeRunnerStartupStep(trace, { name: "provider.session.load", mode: "resume", startedAtMs: 1_900, endedAtMs: 4_000, outcome: "failed" });
+    expect(events).toHaveLength(0);
+    const ended = trace.end(startup, { endedAtMs: 4_000 });
+    const finished = trace.finish("ok");
+    releaseSink();
+    await ended;
+    await finished;
+    const payloads = events.map((event) => event.payload as Record<string, unknown>);
+    const step = (name: string) => payloads.find((payload) => payload.span === name);
+    expect(step("runner.runtime.stage")).toMatchObject({ parentSpan: "runner.session.startup", startOffsetMs: 0, durationMs: 200, outcome: "ok", mode: "bootstrap", target: "local" });
+    expect(step("runner.process.launch")).toMatchObject({ parentSpan: "runner.session.startup", startOffsetMs: 200, durationMs: 700, outcome: "ok" });
+    expect(step("provider.session.load")).toMatchObject({ parentSpan: "runner.session.startup", durationMs: 2_100, outcome: "failed", mode: "resume" });
+    expect(events.find((event) => (event.payload as Record<string, unknown>).span === "provider.session.load")?.level).toBe("warn");
+    expect(spans.find((span) => span.name === "runner.process.launch")?.parentName).toBe("runner.session.startup");
+    // Settled before the root measurement closes.
+    const names = payloads.map((payload) => payload.span);
+    expect(names.indexOf("provider.session.load")).toBeLessThan(names.indexOf("task.provider_session.measured"));
+  });
+
+  it("is a no-op without a trace", () => {
+    expect(() => recordNativeRunnerStartupStep(undefined, { name: "runner.process.launch", mode: "bootstrap", startedAtMs: 1, endedAtMs: 2, outcome: "ok" })).not.toThrow();
+  });
 });

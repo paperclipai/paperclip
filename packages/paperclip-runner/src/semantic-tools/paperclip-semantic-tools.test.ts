@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createCapabilityProviderNeutralBinding } from "./provider-neutral.js";
 import { createSkillAction } from "../protocol-actions/create-skill.js";
+import { getAgentInstructionHistoryAction } from "../protocol-actions/get-agent-instruction-history.js";
+import { restoreAgentInstructionsAction } from "../protocol-actions/restore-agent-instructions.js";
 
 import type { PaperclipSemanticActionBinding } from "./types.js";
 import { PaperclipSemanticDispatcher } from "./paperclip-dispatcher.js";
@@ -93,6 +95,7 @@ describe("run-scoped semantic tool authority", () => {
       expect(description).toMatch(/existing skill.*import.*install/i);
       expect(description).toMatch(/source provenance/i);
       expect(description).toMatch(/search_api.*call_api/);
+      expect(description).toMatch(/SKILL\.md is in a local directory.*even when the company library has no match.*instead of copying/);
       expect(description).toContain("does not assign");
     }
     expect(live.inputSchema).toEqual(authored.inputSchema);
@@ -646,3 +649,15 @@ class MemoryIdempotencyStore implements PaperclipSemanticIdempotencyStore {
     this.#tokenToScope.delete(token);
   }
 }
+
+describe("instruction history contracts", () => {
+  it("say current saves record no history and only listed pre-upgrade revisions restore", () => {
+    const live = createCapabilityProviderNeutralBinding("live_codex").contracts;
+    const history = live.find(tool => tool.name === "get_agent_instruction_history")!.description;
+    const restore = live.find(tool => tool.name === "restore_agent_instructions")!.description;
+    for (const description of [history, getAgentInstructionHistoryAction.live.descriptor.description])
+      expect(description).toMatch(/Current saves keep only the current file and add no revision, so an empty list means Paperclip retains no earlier version/);
+    for (const description of [restore, restoreAgentInstructionsAction.live.descriptor.description])
+      expect(description).toContain("Only revisions returned by get_agent_instruction_history can be restored.");
+  });
+});

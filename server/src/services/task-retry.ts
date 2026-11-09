@@ -56,6 +56,17 @@ const taskRetryIntentSchema = z.object({
   boardMessageOrigin: z.object({ commentId: z.string().uuid(), identityContextId: z.string().uuid() }).optional(),
 });
 export type TaskRetryIntent = z.infer<typeof taskRetryIntentSchema>;
+
+/** Dispatch declines a Retry intent for this reason when its own requester,
+ * not the task's shared state, prevents it from starting; a click by a user
+ * with access replaces it. An edited saved board message
+ * (`retry_source_changed`) is terminal: only new input continues. */
+export const DECLINED_TASK_RETRY_REASONS = ["retry_authority_denied"] as const;
+export function isDeclinedTaskRetry(payload: Record<string, unknown> | null | undefined) {
+  const wait = payload?.executionWait;
+  const reason = wait && typeof wait === "object" && !Array.isArray(wait) ? (wait as Record<string, unknown>).reason : null;
+  return DECLINED_TASK_RETRY_REASONS.some(value => value === reason);
+}
 export function readTaskRetryIntent(payload: Record<string, unknown> | null | undefined): TaskRetryIntent | null {
   const result = taskRetryIntentSchema.safeParse(payload?.taskRetry);
   return result.success ? result.data : null;
@@ -257,8 +268,13 @@ function admitTaskRetry(input: TaskRetryRequest) {
       if (sameRequest.payload?.issueId !== issue.id || sameRequest.requestedByActorId !== input.actorId)
         throw conflict("This retry request belongs to a different task or user.");
       const intent = readTaskRetryIntent(sameRequest.payload);
+      const [coalescedRun] = sameRequest.status === "coalesced" && sameRequest.runId
+        ? await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, sameRequest.runId)))
+        : [];
       return { requestId: intent?.canonicalIntentId ?? sameRequest.id, accepted: true, stale: false,
-        observedRunId: intent?.sourceRunId ?? null, chatActionId: intent?.chatActionId };
+        observedRunId: intent?.sourceRunId ?? null, chatActionId: intent?.chatActionId,
+        ...(coalescedRun?.status === "scheduled_retry" ? { scheduledRetryRunId: coalescedRun.id } : {}) };
     }
     const [latest] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, issue.companyId),
       or(eq(heartbeatRuns.issueId, issue.id), eq(heartbeatRuns.nativeIssueId, issue.id),
@@ -266,7 +282,7 @@ function admitTaskRetry(input: TaskRetryRequest) {
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
     if (["done", "cancelled"].includes(issue.status) || !issue.assigneeAgentId || !latest ||
         latest.agentId !== issue.assigneeAgentId || input.observedRunId !== latest.id) {
-      return { requestId: null, accepted: false, stale: true, observedRunId: latest?.id ?? null };
+      return { requestId: null, accepted: false, stale: true, observedRunId: latest?.id ?? null, chatActionId: undefined };
     }
     let active = (await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
@@ -313,6 +329,22 @@ function admitTaskRetry(input: TaskRetryRequest) {
     })) {
       await tx.update(agentWakeupRequests).set({ status: "failed", finishedAt: new Date(), updatedAt: new Date() })
         .where(eq(agentWakeupRequests.id, active.id));
+      active = undefined;
+    }
+    // Dispatch declined this unadmitted intent for a reason bound to the intent
+    // itself (its requester's access or saved source), so it can never start.
+    // A new deliberate click (new key) replaces it with a fresh attempt under the
+    // clicker's current authority instead of joining it. Waits on shared state
+    // (cleanup, recovery, an active run) keep coalescing: that intent starts by
+    // itself once the gate clears. The restart hook never replaces a user's click.
+    let replacedRequestId: string | undefined;
+    if (active && !busy && !active.runId && active.status === "deferred_issue_execution" &&
+        input.initiatedBy !== "restart_recovery" && activeIntent && !activeIntent.chatActionId &&
+        !activeIntent.queuedChatRequestId && isDeclinedTaskRetry(active.payload)) {
+      await tx.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_replaced",
+        finishedAt: new Date(), updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, active.id),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), sql`${agentWakeupRequests.runId} is null`));
+      replacedRequestId = active.id;
       active = undefined;
     }
     const id = randomUUID();
@@ -400,9 +432,11 @@ function admitTaskRetry(input: TaskRetryRequest) {
       actorId: restartRecovery ? "restart-recovery" : input.actorId,
       action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
       details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy),
+        ...(replacedRequestId ? { replacedRequestId } : {}),
         ...(restartRecovery ? { initiatedBy: "restart_recovery", onBehalfOfUserId: input.actorId } : {}) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
-      chatActionId: intent.chatActionId };
+      chatActionId: intent.chatActionId,
+      ...(!active && latest.status === "scheduled_retry" ? { scheduledRetryRunId: latest.id } : {}) };
   }, { companyId: input.companyId });
 }
 

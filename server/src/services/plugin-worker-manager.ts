@@ -832,6 +832,12 @@ export interface PluginWorkerManager {
   retireStartup?(contextId: string): Promise<void>;
   /** Subscribe after a worker successfully applies live company configuration. */
   onConfigApplied(listener: () => void): () => void;
+  /**
+   * Subscribe to every worker `ready`: first start, crash respawn, and a
+   * replacement handle from a restart. Unlike `getWorker(id).on("ready")`, it
+   * survives the handle being replaced. Returns the unsubscribe function.
+   */
+  onWorkerReady?(listener: (pluginId: string) => void): () => void;
   inspectIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<{
     backgroundWork: "none" | "present" | "unknown"; pluginIds: string[];
     catalogGeneration?: string;
@@ -4044,6 +4050,7 @@ export function createPluginWorkerManager(
   };
   const startupWorkers = () => new Set([...workers.values(), ...retiredStartupWorkers]);
   const configApplied = new Set<() => void>();
+  const workerReady = new Set<(pluginId: string) => void>();
   let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
@@ -4062,6 +4069,10 @@ export function createPluginWorkerManager(
     onConfigApplied(listener) {
       configApplied.add(listener);
       return () => { configApplied.delete(listener); };
+    },
+    onWorkerReady(listener) {
+      workerReady.add(listener);
+      return () => { workerReady.delete(listener); };
     },
     async inspectIdleSleep(hold) {
       if (startupLocks.size) return { backgroundWork: "unknown", pluginIds: [] };
@@ -4113,6 +4124,12 @@ export function createPluginWorkerManager(
       idleWorkerManifests.set(handle, pluginIdleManifestGeneration(options.manifest));
       if (existing) retainStartupWorker(existing);
       workers.set(pluginId, handle);
+      handle.on("ready", (payload) => {
+        for (const listener of [...workerReady]) {
+          try { listener(payload.pluginId); }
+          catch (err) { log.warn({ err, pluginId: payload.pluginId }, "worker ready listener failed"); }
+        }
+      });
 
       // Subscribe to crash/ready events for live event forwarding
       if (managerOptions?.onWorkerEvent) {

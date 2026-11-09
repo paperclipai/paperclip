@@ -1,3 +1,25 @@
+import type { Agent } from "@paperclipai/shared";
+import { ONBOARDING_AGENT_STEP } from "./onboarding-route";
+
+/** Resume only the draft this browser saved, while no completed agent exists. */
+export function dashboardOnboardingOptions(
+  companyId: string,
+  agents: Pick<Agent, "id" | "companyId" | "pauseReason" | "status">[] | undefined,
+  rawDraft: string | null,
+): { companyId: string; initialStep: 3 | 4 } | null {
+  if (!agents) return null;
+  if (agents.length === 0) return { companyId, initialStep: ONBOARDING_AGENT_STEP };
+  if (agents.some(agent => agent.pauseReason !== "setup" || agent.status === "terminated")) return null;
+  try {
+    const draft = JSON.parse(rawDraft ?? "null");
+    if (draft?.createdCompanyId !== companyId || draft.createdAgentId
+      || !agents.some(agent => agent.id === draft.setupAgentId && agent.companyId === companyId)) return null;
+    return { companyId, initialStep: 4 };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Which companies have already been offered onboarding automatically.
  *

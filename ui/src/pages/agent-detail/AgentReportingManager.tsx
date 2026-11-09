@@ -53,7 +53,7 @@ export function AgentReportingManager({ agent }: { agent: Agent }) {
         disabled={disabled}
         disabledAgentIds={invalidManagerIds(agent.id, agents)}
         trigger={<button type="button" disabled={disabled} aria-label={manager ? "Change manager" : "Choose manager"}
-          className={`${manager ? "agent-identity-chip inline-flex size-7 shrink-0 items-center justify-center rounded-md" : agentIdentityChipClass} disabled:cursor-not-allowed disabled:opacity-50`}>
+          className={`${manager ? "agent-identity-chip inline-flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-foreground transition-colors" : agentIdentityChipClass} disabled:cursor-not-allowed disabled:opacity-50`}>
           {manager ? <Pencil className="size-3.5" aria-hidden /> : <><UserRound className="size-5 text-muted-foreground" aria-hidden /><span>{agent.reportsTo ? "Manager unavailable" : "No manager"}</span></>}
         </button>}
       />

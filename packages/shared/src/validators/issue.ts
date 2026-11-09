@@ -591,6 +591,29 @@ export const resumeWorkspaceFinalizationSchema = z.object({
   stopEvidence: z.string().trim().min(20).max(12000),
 }).strict();
 
+/** Board attestation that a native run's previous server stopped, for a
+ * controller row an ephemeral server cannot judge by PID. */
+export const confirmNativeControllerStoppedSchema = z.object({
+  actionId: z.string().guid(),
+  runId: z.string().guid(),
+  stopEvidence: z.string().trim().min(20).max(12000),
+}).strict();
+
+export const confirmRunStoppedSchema = z.object({
+  runId: z.string().guid(),
+  stopEvidence: z.string().trim().min(20).max(12000),
+}).strict();
+
+/** Board attestation that the owner of a record Paperclip cannot judge (saved
+ * before owners were recorded) has stopped, so recovery may settle the record. */
+export const confirmOwnerGoneSchema = z.object({
+  actionId: z.string().guid(),
+  recordId: z.string().guid(),
+  stopEvidence: z.string().trim().min(20).max(12000),
+  /** The record version the board saw (`evidence.recordUpdatedAt`); required when the request names one. */
+  recordVersion: z.string().datetime({ offset: true }).optional(),
+}).strict();
+
 export const retryWorkspaceExportSchema = z.object({
   actionId: z.string().guid(),
   runId: z.string().guid(),
@@ -629,6 +652,8 @@ export const resolveIssueRecoveryActionSchema = z
       .object({
         runId: z.string().guid(),
         providerStopped: z.literal(true),
+        controllerStopped: z.literal(true).optional(),
+        controllerAuthorityDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
         actionOutcome: z.enum(["completed", "not_performed", "mixed"]),
         outcomeEvidence: z.string().trim().min(20).max(12000),
         workspaceRepairEvidence: z.string().trim().min(20).max(12000).optional(),
@@ -645,10 +670,20 @@ export const resolveIssueRecoveryActionSchema = z
     if (value.workspaceBaseRef && (!value.actionId || value.outcome !== "restored" || value.sourceIssueStatus !== "todo" || value.executionReconciliation)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceBaseRef"], message: "Branch repair must retry the exact recovery action" });
     }
+    const reconciliation = value.executionReconciliation;
+    const controllerContainment = reconciliation?.controllerStopped !== undefined
+      || reconciliation?.controllerAuthorityDigest !== undefined;
+    if (controllerContainment && (!value.actionId || value.outcome !== "restored"
+      || reconciliation?.controllerStopped !== true || !reconciliation?.controllerAuthorityDigest)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["executionReconciliation"],
+        message: "Controller containment requires the exact recovery action, both stop confirmations, and its authority digest" });
+      return;
+    }
     if (value.outcome === "restored") {
-      // A retained-source repair records evidence without changing task state.
-      // The route verifies the exact server-owned source and unchanged status.
-      if (value.executionReconciliation?.workspaceRepairEvidence) return;
+      // Source repair and complete controller containment record evidence
+      // without changing task state. The route checks the exact locked source,
+      // unchanged status, board authority, lease expiry, and cleanup evidence.
+      if (value.executionReconciliation?.workspaceRepairEvidence || controllerContainment) return;
       if (
         value.sourceIssueStatus !== "todo" &&
         value.sourceIssueStatus !== "done" &&
@@ -771,6 +806,10 @@ const createIssueBaseSchema = z.object({
     .strict()
     .optional()
     .nullable(),
+  /**
+   * Inherit the project and workspace strategy of this issue. The new task never
+   * shares the source issue's realized workspace; it gets its own from the project base.
+   */
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
@@ -1109,6 +1148,7 @@ export const issueCommentMetadataSchema = z
       contentHash: z.string().regex(/^[a-f0-9]{64}$/),
     }).strict().optional(),
     recoveryResponsibility: z.enum(["system", "user"]).optional(),
+    attachmentPreparation: z.object({ attachmentId: z.uuid() }).strict().optional(),
     sourceChannel: z.enum(CHAT_PROVIDERS).optional(),
     sourceRunId: z.string().guid().nullable().optional(),
     authorizationReason: z

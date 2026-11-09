@@ -118,8 +118,10 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+const toastMocks = vi.hoisted(() => ({ pushToast: vi.fn() }));
+
 vi.mock("../context/ToastContext", () => ({
-  useToastActions: () => ({ pushToast: vi.fn() }),
+  useToastActions: () => ({ pushToast: toastMocks.pushToast }),
 }));
 
 vi.mock("../context/DialogContext", () => ({
@@ -1326,6 +1328,36 @@ describe("Inbox toolbar", () => {
     } finally { await act(() => root.unmount()); client.clear(); }
   });
 
+  it.each([
+    ["a replaced attempt", { accepted: false, stale: true, requestId: null }, "already replaced"],
+    ["a held scheduled retry", { accepted: true, stale: false, requestId: "retry",
+      scheduledRetry: { outcome: "gate_suppressed", message: "The company budget is paused." } }, "The company budget is paused."],
+  ])("shows why an Inbox Retry did not start work for %s and does not open the task as if it did", async (_label, result, reason) => {
+    routerMock.location.pathname = "/inbox/recent";
+    const task = createIssue({ id: "task-1", title: "Failed task" });
+    const failure = createFailedRun({ issueId: task.id, responsibleUserId: "local-board" });
+    setFailureRuns([failure]);
+    apiMocks.issuesList.mockResolvedValue([{ ...task, interruption: { intentId: "intent", responsibility: "system",
+      state: "failed", nextRetryAt: null, canRetry: true, userAction: null, sourceRunIds: [failure.id], observedRunId: failure.id } }]);
+    apiMocks.retryTask.mockResolvedValue({ ...result, presentation: null });
+    toastMocks.pushToast.mockClear();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      const retry = await vi.waitFor(() => {
+        const button = Array.from(container.querySelectorAll("button")).find(candidate => candidate.textContent === "Retry");
+        expect(button).toBeTruthy();
+        return button!;
+      });
+      await act(async () => retry.click());
+      await vi.waitFor(() => expect(toastMocks.pushToast).toHaveBeenCalledWith(expect.objectContaining({
+        tone: "error", body: expect.stringContaining(reason) })));
+      expect(apiMocks.retryTask).toHaveBeenCalledWith(task.id, expect.objectContaining({ observedRunId: failure.id }));
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
   it("upgrades cached parent metadata when the same task becomes a failure context", async () => {
     routerMock.location.pathname = "/inbox/recent";
     const parent = createIssue({ id: "parent", title: "Parent metadata", listProjection: "index" });
@@ -1663,7 +1695,8 @@ describe("Inbox toolbar", () => {
     });
   });
 
-  it("does not indent unread rows: the mark-read dot overlays the shared task-row gutter", async () => {
+  it.each([true, false])("uses bold titles without unread dots (Streamlined UI=%s)", async streamlined => {
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined });
     routerMock.location.pathname = "/inbox/mine";
     // Two sibling leaf rows, one unread and one read, so their leading columns
     // are directly comparable.
@@ -1700,33 +1733,17 @@ describe("Inbox toolbar", () => {
 
     const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
     const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
-    const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
-    // The canonical spacer reserves the disclosure column on every leaf row.
-    const hasLeadingSpacer = (row: Element) =>
-      !!row.querySelector('[data-slot="task-row-disclosure-spacer"]');
-    // The overlay anchor is present on read AND unread Inbox rows without
-    // consuming a layout column.
-    const dotSlot = (row: Element) =>
-      row.querySelector('[data-testid="issue-row-unread-slot"]');
-
     const unreadRow = rowFor("Unread inbox row")!;
     const readRow = rowFor("Read inbox row")!;
-
-    // Both rows share the canonical task-row geometry. The dot is absolutely
-    // positioned in the row gutter, so Inbox does not gain a column that Tasks
-    // lacks and unread state cannot shift status/title alignment.
-    const unreadSlot = dotSlot(unreadRow);
-    const readSlot = dotSlot(readRow);
-    expect(unreadSlot).not.toBeNull();
-    expect(readSlot).not.toBeNull();
-    expect(unreadSlot?.className).toContain("absolute");
-    // Only the unread row carries the dot button; the read slot is empty.
-    expect(markReadButton(unreadSlot!)).not.toBeNull();
-    expect(readSlot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
-    expect(hasLeadingSpacer(unreadRow)).toBe(true);
-
-    // Read rows keep the same spacer, so both rows line up.
-    expect(hasLeadingSpacer(readRow)).toBe(true);
+    expect(unreadRow.querySelector('[data-slot="task-row-title"]')?.className).toContain("font-semibold");
+    expect(readRow.querySelector('[data-slot="task-row-title"]')?.className).not.toContain("font-semibold");
+    expect(container.querySelector('[data-testid="issue-row-unread-slot"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+    if (streamlined) {
+      for (const row of [unreadRow, readRow]) {
+        expect(row.querySelector('[data-slot="task-row-disclosure-spacer"]')).not.toBeNull();
+      }
+    }
 
     act(() => {
       root.unmount();

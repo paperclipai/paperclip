@@ -17,6 +17,7 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
+import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const text = (v: unknown) => (typeof v === "string" ? v : null);
@@ -333,6 +334,27 @@ export function projectExecution(
         "The task was closed or reassigned before delivery. Inspect the current task owner and status.";
       return set("failed", "Continuation cancelled");
     }
+    const reconciliation = recoveryAction.evidence.executionReconciliation;
+    if (recoveryAction.cause === "native_restart_recovery_blocked"
+      && recoveryAction.evidence.reason === "controller_process_space_unverified"
+      && recoveryAction.evidence.continuationDelivery === "not_requested"
+      && reconciliation && typeof reconciliation === "object" && !Array.isArray(reconciliation)
+      && "runId" in reconciliation && reconciliation.runId === run.id
+      && "controllerStopped" in reconciliation && reconciliation.controllerStopped === true
+      && "providerStopped" in reconciliation && reconciliation.providerStopped === true
+      && "controllerAuthorityDigest" in reconciliation && typeof reconciliation.controllerAuthorityDigest === "string" && /^[0-9a-f]{64}$/.test(reconciliation.controllerAuthorityDigest)) {
+      const continuation = recoveryAction.evidence.explicitUserContinuation as
+        { previousRunId?: unknown; runId?: unknown } | undefined;
+      const explicitSuccessor = text(continuation?.runId);
+      if (continuation?.previousRunId === run.id && explicitSuccessor && explicitSuccessor !== run.id) {
+        projection.successorRunId = explicitSuccessor;
+        projection.nextAction = null;
+        return set("completed", "Continued in another run");
+      }
+      projection.cause = null;
+      projection.nextAction = "The original execution was contained and its action outcomes reviewed. Use Retry to request another attempt.";
+      return set("failed", "Execution contained");
+    }
     const deliveredRunId = text(recoveryAction.evidence.continuationRunId);
     projection.successorRunId = deliveredRunId;
     projection.cause = null;
@@ -454,6 +476,16 @@ export function projectExecution(
     projection.cause = "task_drain";
     projection.nextAction = "This turn will start automatically when maintenance finishes.";
     return set("queued", "Waiting for maintenance");
+  }
+  // Process-local, like the drain: while this server starts, recovers, or
+  // shuts down, its full queued-run pass has not run (or no longer runs).
+  const serverPhase = getStartupRecoveryState().phase;
+  if (run.status === "queued" && serverPhase !== "ready") {
+    projection.cause = "server_restarting";
+    projection.nextAction = serverPhase === "draining"
+      ? "The server is restarting for an update. This turn starts automatically on the replacement server."
+      : "The server restarted and is finishing recovery. This turn starts automatically when recovery completes.";
+    return set("queued", "Waiting for server restart");
   }
   if (run.status === "queued" && waitingForPredecessor) {
     projection.cause = "previous_run_settling";

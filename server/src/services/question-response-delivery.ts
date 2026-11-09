@@ -1212,6 +1212,7 @@ export function questionResponseDeliveryService(
                   interactionId: interaction.id,
                   interactionKind: interaction.kind,
                   interactionStatus: interaction.status,
+                  mutation: "interaction",
                   sourceCommentId: continuationSourceCommentId,
                   sourceRunId: interaction.sourceRunId,
                   externalChatContinuation: externalChatBoundary,

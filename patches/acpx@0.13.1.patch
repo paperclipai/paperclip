@@ -20,7 +20,7 @@ index 5e2113ac0a1a92c99322cf01e5c106760a0b0dbf..45aff03c37427071de49b45eb0361a9a
    private setSessionModelThroughConfig;
    private setSessionModelThroughLegacyMethod;
 diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
-index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..b29bee391efcdc1ca9c37e9608cc34f527fe428e 100644
+index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..25d957b502a8680ff3e4d64356dc32bf99684b7a 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
 @@ -6,7 +6,7 @@ import os from "node:os";
@@ -841,8 +841,8 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..b29bee391efcdc1ca9c37e9608cc34f5
  }
  async function replayFreshSessionPreferences(params) {
 -	if (!params.createdFreshSession) return {
-+	// A load acknowledgement can reset the model even when the conversation survives.
-+	// Retained connections have no new model acknowledgement to replay.
++	// A load acknowledgement can reset the model or config options even when the conversation survives.
++	// Retained connections have no new acknowledgement to replay.
 +	if (params.reusingLoadedSession) return {
  		modelReplay: { replayed: false },
  		configReplay: { replayed: false }
@@ -855,15 +855,6 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..b29bee391efcdc1ca9c37e9608cc34f5
  			client: params.client,
  			sessionId: params.sessionId,
  			desiredModeId: params.desiredModeId,
-@@ -6219,7 +6539,7 @@ async function replayFreshSessionPreferences(params) {
- 			verbose: params.verbose,
- 			suppressWarnings: params.suppressWarnings
- 		});
--		configReplay = await replayDesiredConfigOptions({
-+		if (params.createdFreshSession) configReplay = await replayDesiredConfigOptions({
- 			client: params.client,
- 			record: params.record,
- 			sessionId: params.sessionId,
 @@ -6435,6 +6755,27 @@ async function withConnectedSession(options) {
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;

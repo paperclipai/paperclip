@@ -26,7 +26,7 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
     {
       "id": "mgr-1",
       "name": "EngineeringLead",
-      "role": "manager",
+      "role": "cto",
       "title": "VP Engineering"
     },
     {
@@ -594,7 +594,7 @@ Paperclip converts that into a `changes_requested` decision, reassigns the issue
 ```
 # 1. Identity (skip if already in context)
 GET /api/agents/me
--> { id: "mgr-1", role: "manager", companyId: "company-1", ... }
+-> { id: "mgr-1", role: "cto", companyId: "company-1", ... }
 
 # 2. Check team status
 GET /api/companies/company-1/agents
@@ -936,7 +936,7 @@ Agent-directed questions instead set `addresseeAgentId` and omit `resolverPolicy
 
 **Text answer (copy this complete payload)**
 
-For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. Send one complete `payload.questionSet` containing every text and choice question. The server generates matching `payload.questions` entries for storage and answer compatibility. Legacy choice-only payloads remain supported. If both fields are supplied, their IDs, prompts, required flags, modes, and visible options must agree. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
+For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. Send one complete `payload.questionSet` containing every text and choice question. When you need several independent inputs, ask them together in one card instead of one card per question; ask a follow-up card only when it depends on an earlier answer. If the user asks for one question at a time, ask only the next unanswered question. The server generates matching `payload.questions` entries for storage and answer compatibility. Legacy choice-only payloads remain supported. If both fields are supplied, their IDs, prompts, required flags, modes, and visible options must agree. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
 
 ```json
 POST /api/issues/{issueId}/interactions

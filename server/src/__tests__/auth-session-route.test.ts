@@ -11,17 +11,18 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { assertCompanyAccess } from "../routes/authz.js";
 
 function queryResult<T>(rows: T) {
-  return Object.assign(Promise.resolve(rows), { for: () => Promise.resolve(rows) });
+  return Object.assign(Promise.resolve(rows), {
+    for: () => Promise.resolve(rows),
+    orderBy: () => ({ limit: () => Promise.resolve(rows) }),
+  });
 }
 
-function createSelectChain(rows: unknown[]) {
+function createSelectChain(rows: unknown[] | ((table: unknown) => unknown[])) {
   return {
-    from() {
-      return {
-        where() {
-          return queryResult(rows);
-        },
-      };
+    from(table: unknown) {
+      const selected = typeof rows === "function" ? rows(table) : rows;
+      const where = () => queryResult(selected);
+      return { where, innerJoin: () => ({ where }) };
     },
   };
 }
@@ -255,16 +256,8 @@ describe("actorMiddleware authenticated session profile", () => {
       },
     };
     const db = {
-      select: vi.fn(() => ({
-        from: (table: unknown) => ({
-          where: () =>
-            queryResult(
-              table === companies
-                ? [{ name: "paperclip-stack-purple-rain" }]
-                : [],
-            ),
-        }),
-      })),
+      select: vi.fn(() => createSelectChain(table => table === companies
+        ? [{ name: "paperclip-stack-purple-rain" }] : [])),
       insert: vi.fn((table: unknown) => {
         if (table !== activityLog) return insertChain;
         return {
@@ -352,14 +345,8 @@ describe("actorMiddleware authenticated session profile", () => {
       },
     };
     const db = {
-      select: vi.fn(() => ({
-        from: (table: unknown) => ({
-          where: () =>
-            queryResult(
-              table === instanceUserRoles && state.staleInstanceAdminRow ? [{ id: "stale-role-row" }] : [],
-            ),
-        }),
-      })),
+      select: vi.fn(() => createSelectChain(table =>
+        table === instanceUserRoles && state.staleInstanceAdminRow ? [{ id: "stale-role-row" }] : [])),
       insert: vi.fn(() => insertChain),
       delete: vi.fn((table: unknown) => ({
         where: () => {

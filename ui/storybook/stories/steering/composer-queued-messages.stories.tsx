@@ -4,6 +4,7 @@ import { expect, userEvent, within } from "storybook/test";
 import type { IssueQueuedCommentEntry, IssueQueuedCommentQueue } from "@paperclipai/shared";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
+import { QUEUED_MESSAGE_AUTO_STEER_DELAY_MS } from "@/components/task-chat/queued-message-auto-steer";
 import { composerAgentAppearance, composerAgents } from "../../prototypes/composer-model-picker/fixtures";
 
 const agentMap = new Map(composerAgents.map((agent) => [agent.id, {
@@ -43,9 +44,11 @@ type QueueStoryProps = {
   steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"];
   initialEdit: boolean;
   mobile: boolean;
+  /** Production delay before an eligible queued message is steered automatically. */
+  autoSteer: boolean;
 };
 
-function QueuedComposer({ protocol, steeringDisposition, initialEdit, mobile }: QueueStoryProps) {
+function QueuedComposer({ protocol, steeringDisposition, initialEdit, mobile, autoSteer }: QueueStoryProps) {
   const [entries, setEntries] = useState(initialEntries);
   const [editingId, setEditingId] = useState<string | null>(initialEdit ? "queued-1" : null);
   const [sent, setSent] = useState<string[]>([]);
@@ -89,6 +92,8 @@ function QueuedComposer({ protocol, steeringDisposition, initialEdit, mobile }: 
             onSteer={async (id) => { remove(id); setNotice("Message steered into the active turn."); }}
             onInterrupt={async () => { setRunning(false); setNotice("The active turn was interrupted."); }}
             onDiscard={async (id) => { remove(id); setNotice("Queued message discarded."); }}
+            editingCommentId={editingId}
+            autoSteerDelayMs={autoSteer ? QUEUED_MESSAGE_AUTO_STEER_DELAY_MS : null}
           /> : null}
           <div className="relative z-10">
             <TaskChatComposer
@@ -108,7 +113,7 @@ function QueuedComposer({ protocol, steeringDisposition, initialEdit, mobile }: 
               } : null}
               onSaveQueuedEdit={async (id, body) => {
                 setEntries((current) => current.map((entry) => entry.comment.id === id
-                  ? { ...entry, comment: { ...entry.comment, body } }
+                  ? { ...entry, comment: { ...entry.comment, body, updatedAt: new Date() } }
                   : entry));
                 setEditingId(null);
               }}
@@ -145,7 +150,7 @@ const meta = {
       "boundary": "fixtures"
     },
   },
-  args: { protocol: "paperclip_runner_v1", steeringDisposition: "available", initialEdit: false, mobile: false },
+  args: { protocol: "paperclip_runner_v1", steeringDisposition: "available", initialEdit: false, mobile: false, autoSteer: false },
 } satisfies Meta<typeof QueuedComposer>;
 
 export default meta;
@@ -165,5 +170,19 @@ export const LegacyInterrupt: Story = { args: { protocol: "legacy" } };
 export const SteeringUnavailable: Story = { args: { steeringDisposition: "unsupported" } };
 export const MobileQueue: Story = {
   args: { mobile: true },
+  globals: { viewport: { value: "mobile", isRotated: false } },
+};
+/** Codex and Pi: a queued follow-up counts down, then joins the live turn unless edited or cancelled. */
+export const AutoSteerCountdown: Story = {
+  args: { autoSteer: true },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.getByTestId("task-chat-queued-auto-steer-queued-2")).toHaveTextContent(/Sending in \ds/);
+    await userEvent.click(page.getByTestId("task-chat-queued-auto-steer-cancel-queued-2"));
+    await expect(page.getByTestId("task-chat-queued-steer-queued-2")).toBeVisible();
+  },
+};
+export const AutoSteerCountdownMobile: Story = {
+  args: { autoSteer: true, mobile: true },
   globals: { viewport: { value: "mobile", isRotated: false } },
 };

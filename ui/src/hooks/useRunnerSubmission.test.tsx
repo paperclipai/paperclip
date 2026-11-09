@@ -39,3 +39,28 @@ it("settles a newer saved message while the same Retry explanation remains visib
     await act(async () => root.unmount()); container.remove(); vi.useRealTimers();
   }
 });
+
+it("ends reopened startup on a later completion, but keeps a normal terminal note idle", async () => {
+  const container = document.createElement("div"); document.body.append(container);
+  const root = createRoot(container);
+  function View({ status }: { status: string }) {
+    const submission = useRunnerSubmission({ issueId: "task", agentId: "agent", agent: { status: "idle" },
+      issueStatus: status, runId: null, comments: [] });
+    return <><button onClick={() => submission.begin("message", undefined, true)}>Reopen</button>
+      <button onClick={() => submission.begin("note")}>Note</button>
+      {submission.pending && <span>Starting response</span>}</>;
+  }
+  try {
+    await act(async () => root.render(<View status="done" />));
+    await act(async () => container.querySelectorAll("button")[1].click());
+    expect(container.textContent).not.toContain("Starting response");
+    await act(async () => container.querySelector("button")!.click());
+    expect(container.textContent).toContain("Starting response");
+    await act(async () => root.render(<View status="todo" />));
+    expect(container.textContent).toContain("Starting response");
+    await act(async () => root.render(<View status="done" />));
+    expect(container.textContent).not.toContain("Starting response");
+  } finally {
+    await act(async () => root.unmount()); container.remove();
+  }
+});

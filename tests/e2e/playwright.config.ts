@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { defineConfig } from "@playwright/test";
 
 // Use a dedicated port so e2e tests always start their own server in local_trusted mode,
@@ -79,7 +80,7 @@ export default defineConfig({
       ...process.env,
       NODE_ENV: "test",
       PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")} --import=${path.resolve(import.meta.dirname, "fixtures/ai-connection-provider.mjs")}`,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")).href} --import=${pathToFileURL(path.resolve(import.meta.dirname, "fixtures/ai-connection-provider.mjs")).href}`,
       PORT: String(PORT),
       PAPERCLIP_OPEN_ON_LISTEN: "false",
       PAPERCLIP_API_URL: BASE_URL,
@@ -97,6 +98,9 @@ export default defineConfig({
   outputDir: "./test-results",
   reporter: [
     ["list"], ["html", { open: "never", outputFolder: "./playwright-report" }],
+    ...(process.env.GITHUB_ACTIONS === "true"
+      ? [[path.resolve(import.meta.dirname, "../../scripts/ci/oversized-test-files-playwright.mjs")] as [string]]
+      : []),
     ...(process.env.PAPERCLIP_CI_PROFILE === "true"
       ? [[path.resolve(import.meta.dirname, "../../scripts/ci-profile/playwright-reporter.mjs")] as [string]]
       : []),

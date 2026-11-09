@@ -4,10 +4,10 @@ import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
-import { SystemRecoveryFailure } from "./system-recovery-state.js";
+import { readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
-import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
+import { LEGACY_WORKSPACE_RECOVERY_SCHEMA, SETTLED_WORKSPACE_RESTORE_HOLD_KEY } from "./workspace-restore-recovery-state.js";
 import { ENVIRONMENT_LEASE_POLICIES, EXECUTION_RECONCILIATION_CAUSES, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLeasePolicy,
   type WorkspaceSourceVerificationFailure } from "@paperclipai/shared";
 
@@ -167,7 +167,11 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
       && lease.leasePolicy === "reuse_by_environment" && ["released", "retained"].includes(lease.status);
     const reusableExport = descriptor && (acceptedExportResult || remoteDescriptor && remoteAuthority)
       && ["reuse_by_environment", "reuse_by_execution_workspace"].includes(lease.leasePolicy);
-    if (!["retain_on_failure", "ephemeral"].includes(lease.leasePolicy) && !reusableExport && !preparingRetention)
+    // A completed recovery returned its settled hold to warm reuse. Reading
+    // that saved source back stays verifiable; it authorizes nothing new.
+    const settledHold = lease.leasePolicy === "reuse_by_environment" && readSystemRecovery(action.evidence)?.state === "complete"
+      && (lease.metadata?.[SETTLED_WORKSPACE_RESTORE_HOLD_KEY] as { runId?: unknown } | undefined)?.runId === run.id;
+    if (!["retain_on_failure", "ephemeral"].includes(lease.leasePolicy) && !reusableExport && !preparingRetention && !settledHold)
       throw invalid("lease_policy_not_retained", lease.leasePolicy);
     if (typeof remoteCwd !== "string" || !remoteCwd.startsWith("/")) throw invalid("lease_cwd_invalid");
     if (descriptor && lease.providerLeaseId !== descriptor.providerLeaseId) throw invalid("allocation_reference_mismatch");
@@ -186,9 +190,8 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     const priors = predecessorRuns.length ? await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, predecessorRuns))) : [];
     const priorOwners = predecessorRuns.length ? await db.select({ runId: nativeRunFinalizations.runId,
-      phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
-        eq(nativeRunFinalizations.companyId, input.companyId), inArray(nativeRunFinalizations.runId, predecessorRuns),
-        eq(nativeRunFinalizations.issueId, input.issueId))) : [];
+      issueId: nativeRunFinalizations.issueId, phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.companyId, input.companyId), inArray(nativeRunFinalizations.runId, predecessorRuns))) : [];
     for (const predecessor of predecessors) {
       const prior = priors.find(item => item.id === predecessor.heartbeatRunId);
       const priorReference = readNativeWorkspaceSyncReference(prior?.runnerProfileJson?.nativeWorkspaceSync);
@@ -199,7 +202,8 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
         : priorRemote?.state === "saved" && Boolean(priorRemote.snapshotId) && Boolean(remoteDescriptor)
           && priorRemote.epoch < remoteDescriptor!.epoch;
       const priorOwner = priorOwners.find(item => item.runId === predecessor.heartbeatRunId);
-      if (!prior || prior.runtimeMode !== "native" || prior.agentId !== run.agentId || prior.nativeIssueId !== input.issueId ||
+      if (!prior || prior.runtimeMode !== "native" || prior.agentId !== run.agentId ||
+          !predecessor.issueId || prior.nativeIssueId !== predecessor.issueId || priorOwner?.issueId !== predecessor.issueId ||
           !terminalWorkspaceRunStates.includes(prior.status) || adapterExecutionControls.has(prior.id) ||
           (prior.controllerLeaseExpiresAt && prior.controllerLeaseExpiresAt > new Date()) ||
           !priorOwner || priorOwner.leaseOwner || !["committed", "terminal_failure", "applied"].includes(priorOwner.phase) ||

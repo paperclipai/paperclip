@@ -12,10 +12,14 @@ const report = {
   evidence: [], verification: [],
 };
 
+type RpcResponse = {
+  result: { isError?: boolean; tools: Array<{ name: string; inputSchema: unknown }> };
+};
+
 async function rpc(bridge: OpenCodeMcpBridge, id: number, method: string, params?: unknown) {
   return (await fetch(bridge.url, { method: "POST", headers: {
     Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json",
-  }, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) })).json();
+  }, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) })).json() as Promise<RpcResponse>;
 }
 
 it("binds closed rejection shapes to the actual offered finish schema without recording values", async () => {
@@ -23,7 +27,7 @@ it("binds closed rejection shapes to the actual offered finish schema without re
   const bridge = await startOpenCodeMcpBridge({ handler, onDiagnostic: message => messages.push(message) });
   bridges.push(bridge);
   const listed = await rpc(bridge, 1, "tools/list");
-  const schema = listed.result.tools.find((tool: { name: string }) => tool.name === "paperclip_finish").inputSchema;
+  const schema = listed.result.tools.find((tool: { name: string }) => tool.name === "paperclip_finish")!.inputSchema;
   const digest = createHash("sha256").update(JSON.stringify(schema)).digest("hex");
   for (const [index, input] of [report, { ...report, continuation: null }].entries()) {
     const result = await rpc(bridge, index + 2, "tools/call", { name: "paperclip_finish", arguments: input });

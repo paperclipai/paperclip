@@ -176,6 +176,13 @@ let openParams: AcpxSidecarOpenParams | null = null;
 let claudeCompactionCount = 0;
 let runId: string | null = null;
 let turnId: string | null = null;
+let turnStartedInProcess = false;
+/**
+ * A restored session runs in a new provider process whose MCP request ids
+ * restart. The controller keys semantic calls by run and call id, so prefix
+ * this process's ids to keep them distinct from calls earlier in the run.
+ */
+let callIdNamespace: string | null = null;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
 let requestSequence = 0;
@@ -374,6 +381,9 @@ async function dispatch(
     );
     host = openedHost;
     openParams = params;
+    callIdNamespace = params.expectedIdentity === undefined
+      ? null
+      : `r${randomUUID().replaceAll("-", "").slice(0, 12)}`;
     emit("runtime.process", {
       role: "sidecar",
       pid: process.pid,
@@ -393,6 +403,7 @@ async function dispatch(
   if (request.command === "run.attach") {
     requireHost();
     if (turnId) throw new Error("cannot attach a run during an active turn");
+    if (turnStartedInProcess) throw new Error("cannot attach another run after this sidecar started a turn");
     const attachedTools = parseTools(request.params.tools);
     if (
       canonicalJson(attachedTools) !== canonicalJson(openParams?.tools ?? [])
@@ -415,6 +426,7 @@ async function dispatch(
     const currentTurnId = boundedIdentity(request.params.turnId, "turnId");
     const activeAgent = openParams!.agent;
     turnId = currentTurnId;
+    turnStartedInProcess = true;
     turnControls.begin(currentTurnId);
     let runtimeTurn: AcpxRuntimeTurn;
     const extensions = bindAcpxExtensionTurn({
@@ -821,7 +833,10 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
   if (!activeTurnId || !activeRunId || call.signal.aborted) {
     throw new Error("ACPX tool call is not bound to an active turn");
   }
-  const callId = boundedIdentity(call.callId, "callId");
+  const providerCallId = boundedIdentity(call.callId, "callId");
+  const callId = callIdNamespace === null
+    ? providerCallId
+    : boundedIdentity(`${callIdNamespace}:${providerCallId}`, "callId");
   if (tools.has(callId) || normalizingTools.has(callId)) throw new Error("ACPX tool call is duplicated");
   const operationId = boundedIdentity(call.tool, "operationId");
   if (tools.size + normalizingTools.size >= MAX_PENDING_TOOLS) {

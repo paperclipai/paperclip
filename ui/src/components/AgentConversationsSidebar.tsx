@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { AgentConversationSidebar } from "./AgentConversationSidebar";
 import { queryViewKind } from "./QueryView";
 import { useAgentChatNavigation, useOpenAgentChat } from "@/hooks/useAgentChatNavigation";
@@ -8,26 +9,48 @@ import { useQueries } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { resourceMembershipState, useResourceMemberships } from "@/hooks/useResourceMemberships";
+import { useDialogActions } from "@/context/DialogContext";
+import { AgentChatPin, useAgentChatPins } from "./AgentChatPin";
 
 /** Account- and company-scoped data for the secondary chat navigation. */
 export function AgentConversationsSidebar({ onConversationOpened }: { onConversationOpened?: () => void } = {}) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
+  const agentChatPins = useAgentChatPins();
+  const unreadMessageCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const chat of chats.data ?? []) {
+      if (chat.conversationAgentId && chat.unreadMessageCount) {
+        counts.set(chat.conversationAgentId, (counts.get(chat.conversationAgentId) ?? 0) + chat.unreadMessageCount);
+      }
+    }
+    return counts;
+  }, [chats.data]);
   const openChat = useOpenAgentChat(companyId, userId, true);
   const navigate = useNavigate();
+  const { openNewAgent } = useDialogActions();
   const memberships = useResourceMemberships(companyId);
   const { isMobile, setSidebarOpen } = useSidebar();
   const { pathname } = useLocation();
   const activeRef = pathname.split("/chats/")[1]?.split("/")[0];
   const roster = agents.data ?? [];
   // The active roster excludes terminated agents, but their history remains readable.
+  const rosterIds = new Set(roster.map(agent => agent.id));
   const missingIds = agents.isSuccess ? [...new Set((chats.data ?? [])
-    .flatMap(chat => chat.conversationAgentId && !roster.some(agent => agent.id === chat.conversationAgentId) ? [chat.conversationAgentId] : []))] : [];
+    .flatMap(chat => chat.conversationAgentId && !rosterIds.has(chat.conversationAgentId) ? [chat.conversationAgentId] : []))] : [];
   const historyAgents = useQueries({ queries: missingIds.map(id => ({
     queryKey: queryKeys.agents.detail(id), queryFn: () => agentsApi.get(id, companyId!),
   })) });
   const byId = new Map(roster.map(agent => [agent.id, agent]));
   for (const result of historyAgents) if (result.data) byId.set(result.data.id, result.data);
   const active = [...byId.values()].find(agent => agent.id === activeRef || (agent.status !== "terminated" && encodeURIComponent(agentRouteRef(agent)) === activeRef));
+  const activeId = active?.id;
+  const existingChatAgentIds = useMemo(() => {
+    const ids = (chats.data ?? []).flatMap(chat => chat.conversationAgentId ? [chat.conversationAgentId] : []);
+    if (activeId && !ids.includes(activeId)) ids.unshift(activeId);
+    return ids;
+  }, [chats.data, activeId]);
+  const unreadAgentIds = useMemo(() => (chats.data ?? [])
+    .flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []), [chats.data]);
   const conversations = (chats.data ?? []).flatMap(chat => {
     const agent = chat.conversationAgentId ? byId.get(chat.conversationAgentId) : undefined;
     return agent ? [agent] : [];
@@ -48,9 +71,11 @@ export function AgentConversationsSidebar({ onConversationOpened }: { onConversa
   return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={[...uniqueConversations, ...teammates]} availableAgents={roster}
     chats={(chats.data ?? []).flatMap(chat => { const agent = chat.conversationAgentId ? byId.get(chat.conversationAgentId) : undefined; return agent ? [{ chat, agent }] : []; })}
     onSelectHistory={() => { if (isMobile) setSidebarOpen(false); }}
-    existingChatAgentIds={[]}
+    existingChatAgentIds={existingChatAgentIds}
     activeId={active?.id} previews={previews}
-    unreadAgentIds={(chats.data ?? []).filter(chat => chat.isUnreadForMe).flatMap(chat => chat.conversationAgentId ? [chat.conversationAgentId] : [])}
+    unreadAgentIds={unreadAgentIds}
+    unreadMessageCounts={unreadMessageCounts}
+    onCreateAgent={openNewAgent} renderAgentAction={agent => <AgentChatPin agent={agent} pins={agentChatPins} />}
     // Loaded chats stay listed through an outage (the banner covers it); an
     // outage before the first load is a skeleton, and only a real failure is an error.
     loading={[agents, chats, session].some(query => { const kind = queryViewKind(query); return kind === "loading" || kind === "reconnecting"; })}

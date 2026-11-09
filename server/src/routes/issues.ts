@@ -1,3 +1,4 @@
+import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
@@ -39,11 +40,15 @@ import { resolveConfirmationFromComment } from "../services/confirmation-comment
 import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
+import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
+import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
+import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
+import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
-import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
+import { deliverConversationComments, heldConversationComments, isConversation } from "../services/agent-conversations.js";
 import { assertOnboardingFirstTaskDependenciesAllowed } from "../services/onboarding-first-task-admission.js";
 import { resolveChatTaskAssignment } from "../services/chat-task-assignment.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -122,6 +127,9 @@ import {
   recoverWorkspaceSchema,
   taskRetrySchema,
   resumeWorkspaceFinalizationSchema,
+  confirmNativeControllerStoppedSchema,
+  confirmRunStoppedSchema,
+  confirmOwnerGoneSchema,
   runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -279,6 +287,7 @@ import {
   assertCompanyAccess,
   getAccessibleResource,
   getActorInfo,
+  issueNotFoundBody,
 } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -386,6 +395,7 @@ import {
   resolveIssueReviewRequester,
 } from "../services/issue-review-policy.js";
 import {
+  addressedHumanOnlyDenialMessage,
   evaluateIssueThreadInteractionResolverAudience,
   issueThreadInteractionAttentionAgentAllowed,
   type IssueThreadInteractionResolverAudienceDecision,
@@ -414,6 +424,20 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+/**
+ * Sent only to a caller that did not write the queued comment: its author is the
+ * only one who can discard it, and no board, admin or agent override exists. Say so with the task link, so an agent that tried can
+ * relay the human route at once instead of searching for another endpoint.
+ */
+function queuedCommentAuthorOnlyDenial(issue: { identifier?: string | null }) {
+  const identifier = issue.identifier ?? null;
+  const prefix = identifier && /^[A-Z][A-Z0-9]*-\d+$/.test(identifier) ? identifier.split("-")[0] : null;
+  const where = identifier && prefix ? `[${identifier}](/${prefix}/issues/${identifier})` : "its task";
+  return `Only the author of a queued comment can discard it, from that queued message's menu on ${where}. `
+    + "This denial is final: no board, admin or agent override exists, so do not try other routes. "
+    + `Tell the author to discard it there.`;
+}
+
 const queuedCommentMutationTargetSchema = z.object({
   queueId: z.string().min(1),
   revision: z.string().min(1),
@@ -546,6 +570,7 @@ function applyCreateIssueStatusDefault(
 
 function noopTaskWatchdogService(): TaskWatchdogService {
   return {
+    readIdleSchedule: async () => ({ blocked: true, state: "unavailable", deadlines: [] }),
     getActiveForIssue: async () => null,
     listActiveSummariesForIssues: async () => new Map(),
     upsertForIssue: async () => {
@@ -1425,6 +1450,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "chat_task_completed",
   "issue_assigned",
   "issue_blockers_resolved",
+  "issue_blocker_stalled",
   "issue_commented",
   "issue_comment_mentioned",
   "issue_dependencies_blocked",
@@ -3000,6 +3026,19 @@ const ISSUE_LIST_STORM_WINDOW_MS = 500;
 const ISSUE_LIST_STORM_THRESHOLD = 4;
 const ISSUE_LIST_MAX_ACTOR_CLIENT_INFLIGHT = 8;
 
+/** Page position of a capped issue-list response, exposed as response headers. */
+export type IssueListPagination = {
+  limit: number;
+  hasMore: boolean;
+  nextOffset: number | null;
+  nextAfterId: string | null;
+};
+
+export const ISSUE_LIST_HAS_MORE_HEADER = "X-Paperclip-Has-More";
+export const ISSUE_LIST_LIMIT_HEADER = "X-Paperclip-Limit";
+export const ISSUE_LIST_NEXT_OFFSET_HEADER = "X-Paperclip-Next-Offset";
+export const ISSUE_LIST_NEXT_AFTER_ID_HEADER = "X-Paperclip-Next-After-Id";
+
 type IssueListPreparedResponse =
   | { kind: "inbox"; body: unknown }
   | {
@@ -3007,11 +3046,21 @@ type IssueListPreparedResponse =
       body: CompactIssue[];
       etag: string;
       cacheControl: string;
+      pagination?: IssueListPagination;
     }
   | {
       kind: "full";
       body: unknown[];
+      pagination?: IssueListPagination;
     };
+
+function setIssueListPaginationHeaders(res: Response, pagination: IssueListPagination | undefined) {
+  if (!pagination) return;
+  res.setHeader(ISSUE_LIST_HAS_MORE_HEADER, String(pagination.hasMore));
+  res.setHeader(ISSUE_LIST_LIMIT_HEADER, String(pagination.limit));
+  if (pagination.nextOffset !== null) res.setHeader(ISSUE_LIST_NEXT_OFFSET_HEADER, String(pagination.nextOffset));
+  if (pagination.nextAfterId !== null) res.setHeader(ISSUE_LIST_NEXT_AFTER_ID_HEADER, pagination.nextAfterId);
+}
 
 type IssueListCacheStatus = "miss" | "hit" | "coalesced" | "stale" | "retry";
 
@@ -5181,7 +5230,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: Parameters<typeof decideIssueAccess>[1] & { identifier?: string | null },
-    options: { allowBreakGlass?: boolean } = {},
+    options: { allowBreakGlass?: boolean; finalForAgents?: boolean } = {},
   ) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
@@ -5194,7 +5243,9 @@ export function issueRoutes(
       await recordIssueBreakGlassRead(req, issue);
       return true;
     }
-    res.status(404).json({ error: "Issue not found" });
+    // Must match the missing-task body on the same route, or the 404 would
+    // reveal that a private task exists.
+    res.status(404).json(options.finalForAgents ? issueNotFoundBody(req) : { error: "Issue not found" });
     return false;
   }
 
@@ -5961,6 +6012,16 @@ export function issueRoutes(
     return false;
   }
 
+  /** The addressee's display name, so a denial relayed in chat can name who resolves the card. */
+  async function addresseeDisplayName(userId: string) {
+    try {
+      const [row] = await db.select({ name: authUsers.name }).from(authUsers).where(eq(authUsers.id, userId)).limit(1);
+      return typeof row?.name === "string" && row.name.trim() ? row.name.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+
   function denyIssueThreadInteractionResolution(
     res: Response,
     input: {
@@ -6157,13 +6218,18 @@ export function issueRoutes(
             payload?.secretProposal !== undefined),
       });
     if (!decision.allowed) {
+      const addresseeUserId = decision.code === "interaction_human_only" && typeof decision.details?.addresseeUserId === "string"
+        ? decision.details.addresseeUserId
+        : null;
+      const addresseeName = addresseeUserId ? await addresseeDisplayName(addresseeUserId) : null;
       return denyIssueThreadInteractionResolution(res, {
         status: decision.status,
         code: decision.code,
-        message: decision.message,
+        message: addresseeName ? addressedHumanOnlyDenialMessage(addresseeName, decision.details?.askerIsNotAddressee === true) : decision.message,
         details: {
           effectiveResolverPolicy: decision.effectiveResolverPolicy,
           ...(decision.details ?? {}),
+          ...(addresseeName ? { addresseeName } : {}),
         },
       });
     }
@@ -7592,12 +7658,14 @@ export function issueRoutes(
         ? queueState.response
         : await readQueuedInteractionResponse(input.executor as Db, input.issue.companyId, input.issue.id, wake.payload)
       : null;
-    const comments = await queueCommentsForWake(
+    // Messages the active run took into its first turn are no longer queued.
+    const claimedByFirstTurn = queueState?.state === "deferred" ? firstTurnClaimedCommentIds(input.activeRun) : new Set<string>();
+    const comments = (await queueCommentsForWake(
       input.executor,
       input.issue.id,
       wake,
       response,
-    );
+    )).filter((comment) => !claimedByFirstTurn.has(comment.id));
     const assignedAgent = input.issue.assigneeAgentId
       ? await input.executor
           .select({ adapterType: agents.adapterType })
@@ -8013,7 +8081,7 @@ export function issueRoutes(
           "This issue is linked to a closed workspace that cannot be reopened.",
       });
     } else {
-      res.status(409).json({ error: result.message });
+      res.status(409).json({ error: result.message, ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}) });
     }
     return null;
   }
@@ -8527,16 +8595,47 @@ export function issueRoutes(
     res.json(summaries);
   });
 
-  async function prepareIssueListForActor(req: Request, companyId: string, listFilters: IssueFilters, view: string | undefined): Promise<IssueListPreparedResponse> {
+  async function prepareIssueListForActor(
+    req: Request,
+    companyId: string,
+    listFilters: IssueFilters,
+    view: string | undefined,
+    options: { reportPagination?: boolean } = {},
+  ): Promise<IssueListPreparedResponse> {
     const compactView = view === "compact" || view === "index" || view === "rows";
-    const rawResult = await svc.list(companyId, listFilters);
-    const visibleRows = await actorCanReadCompanyScope(req, companyId)
+    const canReadCompanyScope = await actorCanReadCompanyScope(req, companyId);
+    // Pagination describes the raw query page. An actor whose rows are filtered
+    // after the query (for example a low-trust agent) gets no pagination: the
+    // raw page's cursor and has-more state would reveal tasks it cannot read.
+    const pageLimit = options.reportPagination && canReadCompanyScope && typeof listFilters.limit === "number"
+      ? listFilters.limit
+      : null;
+    // Probe one row past the page so a capped response can say more exist.
+    const probedResult = await svc.list(
+      companyId,
+      pageLimit === null ? listFilters : { ...listFilters, limit: pageLimit + 1 },
+    );
+    const hasMore = pageLimit !== null && probedResult.length > pageLimit;
+    const rawResult = hasMore ? probedResult.slice(0, pageLimit!) : probedResult;
+    // An id cursor is valid only when the query is ordered by id alone.
+    // oneChildPerParent orders by parentId first, so it pages by offset.
+    const cursorOrder = listFilters.sortField === "id"
+      && listFilters.sortDir === "asc"
+      && !listFilters.offset
+      && !listFilters.oneChildPerParent;
+    const pagination: IssueListPagination | undefined = pageLimit === null ? undefined : {
+      limit: pageLimit,
+      hasMore,
+      nextOffset: hasMore && !listFilters.afterId ? (listFilters.offset ?? 0) + pageLimit : null,
+      nextAfterId: hasMore && cursorOrder ? rawResult[rawResult.length - 1]?.id ?? null : null,
+    };
+    const visibleRows = canReadCompanyScope
       ? rawResult
       : await filterIssuesForActor(req, rawResult);
     const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);
     if (view === "index") {
       const body = result.map((issue) => ({ ...toCompactIssue(issue), listProjection: "index" as const }));
-      return { kind: "compact", body, etag: compactIssueListEtag(body), cacheControl: "private, must-revalidate" };
+      return { kind: "compact", body, etag: compactIssueListEtag(body), cacheControl: "private, must-revalidate", pagination };
     }
     const issueIds = result.map((issue) => issue.id);
     const interruptions = await taskInterruptionPresentations(db, companyId, result);
@@ -8574,6 +8673,7 @@ export function issueRoutes(
         body: compactResult,
         etag: compactIssueListEtag(compactResult),
         cacheControl: "private, must-revalidate",
+        pagination,
       };
     }
     const [handoffStates, recoveryActionByIssue] = await Promise.all([
@@ -8604,6 +8704,7 @@ export function issueRoutes(
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         interruption: interruptions.get(issue.id) ?? null,
       })),
+      pagination,
     };
   }
 
@@ -8967,7 +9068,7 @@ export function issueRoutes(
       allowTtlCache: view === "compact",
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
-        return prepareIssueListForActor(req, companyId, listFilters, view);
+        return prepareIssueListForActor(req, companyId, listFilters, view, { reportPagination: true });
       },
     });
 
@@ -8993,6 +9094,9 @@ export function issueRoutes(
       return;
     }
 
+    if (coordinated.response.kind !== "inbox") {
+      setIssueListPaginationHeaders(res, coordinated.response.pagination);
+    }
     if (coordinated.response.kind === "compact") {
       res.setHeader("Cache-Control", coordinated.response.cacheControl);
       res.setHeader("ETag", coordinated.response.etag);
@@ -9691,9 +9795,10 @@ export function issueRoutes(
       res,
       timing.time("lookup", () => getIssueById(req, id)),
       "Issue not found",
+      issueNotFoundBody(req),
     );
     if (!issue) return;
-    if (!(await timing.time("authorization", () => assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true })))) return;
+    if (!(await timing.time("authorization", () => assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true, finalForAgents: true })))) return;
     // Saved cards are structural conversation data. Include their local
     // projection before first paint, independently of slow recovery, workspace
     // and related-task enrichment. This never refreshes external providers.
@@ -9751,7 +9856,7 @@ export function issueRoutes(
       timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
       timing.time("created_from", () => resolveVisibleIssueCreationSource(req, issue)),
     ]);
-    const [recoveryActionsByRelationIssue, revalidatedActiveRecoveryAction, mentionedProjects] = await Promise.all([
+    const [recoveryActionsByRelationIssue, revalidatedActiveRecoveryAction, mentionedProjects, stalledDependencies] = await Promise.all([
       timing.time("relation_recovery", () => relationRecoveryActionMap(recoveryActionsSvc, issue.companyId, relations)),
       timing.time("revalidate_recovery", () => revalidateActiveSourceRecoveryForRead({
         issue,
@@ -9762,6 +9867,14 @@ export function issueRoutes(
       timing.time("mentioned_projects", () => mentionedProjectIds.length > 0
         ? projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
         : Promise.resolve([])),
+      // Children and blockers stalled on the board, shown on this page so the
+      // board can act without opening each one. Unreadable issues are omitted.
+      timing.time("stalled_dependencies", async () => {
+        const stalled = await listStalledDependencies(db, { companyId: issue.companyId, issueId: issue.id });
+        if (stalled.length === 0) return stalled;
+        const readable = await readableIssueEdgeIds(req, issue.companyId, stalled.map(entry => entry.stalledIssueId));
+        return stalled.filter(entry => readable.has(entry.stalledIssueId));
+      }),
     ]);
     const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
       relations, recoveryActionsByRelationIssue,
@@ -9788,6 +9901,8 @@ export function issueRoutes(
       interruption: await taskInterruptionPresentation(db, issue),
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
+      // Always present, so a cleared stall replaces the cached list.
+      stalledDependencies,
       blockedBy: visibleRelations.blockedBy,
       blocks: visibleRelations.blocks,
       relatedWork: visibleReferenceSummary,
@@ -9993,10 +10108,25 @@ export function issueRoutes(
     const receipt = await requestTaskRetry({ db, companyId: issue.companyId, issueId: issue.id,
       ...req.body, actorId: getActorInfo(req).actorId, actorSource: req.actor.source,
       prepareChatRetry: opts.chatRunRetries?.prepareFailedChatRunRetry });
-    res.status(receipt.accepted ? 202 : 200).json({ ...receipt, presentation: await taskInterruptionPresentation(db, issue) });
+    const actor = getActorInfo(req);
+    const scheduledRetryRunId = "scheduledRetryRunId" in receipt ? receipt.scheduledRetryRunId : undefined;
+    const scheduledRetry = scheduledRetryRunId
+      ? await heartbeat.retryScheduledRetryNow({ issueId: issue.id, actor: { actorType: actor.actorType, actorId: actor.actorId } })
+      : null;
+    if (scheduledRetry) {
+      await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        action: "issue.scheduled_retry_retry_now", entityType: "issue", entityId: issue.id,
+        agentId: scheduledRetry.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+        runId: scheduledRetry.scheduledRetry?.runId ?? scheduledRetryRunId ?? null,
+        details: { outcome: scheduledRetry.outcome, message: scheduledRetry.message, source: "task_retry" } });
+    }
+    res.status(receipt.accepted ? 202 : 200).json({ ...receipt,
+      ...(scheduledRetry ? { scheduledRetry: { outcome: scheduledRetry.outcome, message: scheduledRetry.message } } : {}),
+      presentation: await taskInterruptionPresentation(db, issue) });
     // The receipt commits before dispatch. Maintenance redelivers it after a
     // crash or a lost response; this nudge only reduces perceived latency.
-    if (receipt.chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(receipt.chatActionId).catch(err =>
+    const chatActionId = "chatActionId" in receipt ? receipt.chatActionId : undefined;
+    if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Connected task Retry remains queued"));
     else if (receipt.accepted && receipt.requestId) void heartbeat.resumeTaskRetry(issue.companyId, receipt.requestId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Task Retry remains queued"));
@@ -10021,6 +10151,59 @@ export function issueRoutes(
     const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     const receipt = await resumeNativeWorkspaceAfterOwnerStop({ db, companyId: issue.companyId, issueId: issue.id,
+      ...req.body, actorId: getActorInfo(req).actorId });
+    res.status(202).json(receipt);
+  });
+
+  router.post("/issues/:id/recovery-actions/confirm-run-stopped", validate(confirmRunStoppedSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const { confirmUnidentifiedLocalRunnerStopped, UnidentifiedRunnerStopRefusedError } = await import("../services/native-local-process-stop.js");
+    const actor = getActorInfo(req);
+    let receipt: Awaited<ReturnType<typeof confirmUnidentifiedLocalRunnerStopped>>;
+    try {
+      receipt = await confirmUnidentifiedLocalRunnerStopped(db, { companyId: issue.companyId, issueId: issue.id,
+        runId: req.body.runId, actorId: actor.actorId });
+    } catch (error) {
+      if (error instanceof UnidentifiedRunnerStopRefusedError) throw conflict(error.message, { code: error.code });
+      throw error;
+    }
+    await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      action: "issue.run_stop_confirmed", entityType: "issue", entityId: issue.id, runId: receipt.runId,
+      details: { runId: receipt.runId, alreadyStopped: receipt.alreadyStopped, stopEvidence: req.body.stopEvidence } });
+    const { promoteDeferredWorkIntents } = await import("../services/work-intent-outbox.js");
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: issue.companyId, trigger: "lock_released", issueId: issue.id }));
+    const parked = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      eq(agentWakeupRequests.reason, "task_retry"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`));
+    for (const wake of parked) {
+      await heartbeat.resumeTaskRetry(issue.companyId, wake.id).catch(err =>
+        logger.warn({ err, issueId: issue.id, requestId: wake.id }, "Task Retry remains queued after the stop was confirmed"));
+    }
+    res.json({ ...receipt, presentation: await taskInterruptionPresentation(db, issue) });
+  });
+
+  router.post("/issues/:id/recovery-actions/confirm-controller-stopped", validate(confirmNativeControllerStoppedSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const receipt = await confirmNativeControllerStopped({ db, companyId: issue.companyId, issueId: issue.id,
+      ...req.body, actorId: getActorInfo(req).actorId });
+    res.status(202).json(receipt);
+  });
+
+  router.post("/issues/:id/recovery-actions/confirm-owner-gone", validate(confirmOwnerGoneSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const receipt = await confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId: issue.companyId, issueId: issue.id,
       ...req.body, actorId: getActorInfo(req).actorId });
     res.status(202).json(receipt);
   });
@@ -10113,6 +10296,12 @@ export function issueRoutes(
         assertBoard(req);
         const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: existing.companyId } });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      }
+      if (executionReconciliation?.controllerStopped !== undefined || executionReconciliation?.controllerAuthorityDigest !== undefined) {
+        assertBoard(req);
+        const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
+          resource: { type: "company", companyId: existing.companyId } });
+        if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
       }
       const actor = getActorInfo(req);
       const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
@@ -10236,6 +10425,11 @@ export function issueRoutes(
           { source: "recovery_action_resolution" },
         );
 
+        if (activeRecoveryAction.kind === "active_run_watchdog" && activeRecoveryAction.ownerType === "board"
+          && activeRecoveryAction.cause === "native_restart_recovery_blocked"
+          && activeRecoveryAction.evidence.reason === "controller_process_space_unverified"
+          && (!executionReconciliation?.controllerStopped || !executionReconciliation.controllerAuthorityDigest))
+          throw conflict("Confirm the original controller and provider stopped and review their action outcomes before resolving this hold.");
         const workspaceRetry = outcome === "restored" && sourceIssueStatus === "todo"
           ? await prepareRestrictedWorkspaceRetry(tx as unknown as Db, lockedIssue, activeRecoveryAction)
           : null;
@@ -10289,8 +10483,16 @@ export function issueRoutes(
           throw conflict("Unsafe workspace export recovers automatically without another provider turn.", { code: "workspace_export_automatic_recovery" });
         }
 
+        if ((outcome === "restored" || outcome === "false_positive") && activeRecoveryAction.cause === OWNER_UNPROVABLE_CAUSE) {
+          throw conflict("Confirm that the previous server stopped to release this resource.", { code: "ownership_owner_stop_required" });
+        }
+
+        if ((outcome === "restored" || outcome === "false_positive") && activeRecoveryAction.cause === NATIVE_CONTROLLER_HOST_UNVERIFIED) {
+          throw conflict("Confirm that the previous server stopped to resume this run.", { code: "native_controller_stop_required" });
+        }
+
         if ((outcome === "restored" || outcome === "false_positive") && activeRecoveryAction.cause === "native_workspace_finalization_owner_unverified") {
-          throw conflict("Verify the previous controller and its copyback processes stopped, then use Resume saved result.", { code: "workspace_owner_stop_required" });
+          throw conflict("Paperclip is still confirming that the previous server stopped. Saving resumes without repeating the agent's work.", { code: "workspace_owner_stop_required" });
         }
 
         if (outcome === "restored" && isNativeWorkspaceExportRepairCause(activeRecoveryAction.cause)) {
@@ -10357,7 +10559,21 @@ export function issueRoutes(
           }
         }
 
-        if (
+        const controllerContainment = executionReconciliation?.controllerStopped === true
+          || executionReconciliation?.controllerAuthorityDigest !== undefined;
+        if (controllerContainment) {
+          assertBoard(req);
+          const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
+            resource: { type: "company", companyId: lockedIssue.companyId } });
+          if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
+          if (outcome !== "restored" || sourceIssueStatus !== lockedIssue.status || !actionId
+            || activeRecoveryAction.id !== actionId || workspaceBaseRef || workspaceRetry)
+            throw conflict("Containment only records the original execution. Keep the task unchanged, then use Retry separately.");
+          await validateExecutionReconciliation({ db: tx as unknown as Db, companyId: lockedIssue.companyId,
+            issueId: lockedIssue.id, agentId: lockedIssue.assigneeAgentId,
+            sourceRunId: activeRecoveryAction.evidence.runId, decision: executionReconciliation,
+            controllerContainment: { actionId, actorId: actor.actorId } });
+        } else if (
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
         ) {
@@ -10379,7 +10595,7 @@ export function issueRoutes(
         }
 
         let chatRetry: { actionId: string; issueId: string } | null = null;
-        if (outcome === "restored" && sourceIssueStatus === "todo") {
+        if (!controllerContainment && outcome === "restored" && sourceIssueStatus === "todo") {
           const [chatBinding] = await tx
             .select({ id: chatConversations.id })
             .from(chatConversations)
@@ -10434,6 +10650,7 @@ export function issueRoutes(
             chatRetry
               ? { kind: "chat_failed_run_retry", actionId: chatRetry.actionId }
               : undefined,
+            controllerContainment ? { controllerContainmentOnly: true } : undefined,
           );
         }
         let issue = lockedIssue;
@@ -10461,6 +10678,13 @@ export function issueRoutes(
 
         if (sourceStatusChanged) {
           await assertNativeRunKeepsOwnExecutionLock(req, lockedIssue, sourceIssueStatus);
+          // The source row is locked in this transaction, so the check holds until the write.
+          await assertAgentStatusChangeKeepsLiveRunBound(req, lockedIssue, {
+            requestedStatus: sourceIssueStatus,
+            assigneeWillChange: false,
+            stopsGoalOnCompletion: false,
+            refreshLock: false,
+          });
           const safeHandBack =
             outcome === "restored" &&
             sourceIssueStatus === "todo" &&
@@ -10582,7 +10806,7 @@ export function issueRoutes(
           issue = updatedIssue;
         }
 
-        const recordedOutcome =
+        const recordedOutcome = controllerContainment ? "restored" :
           outcome === "restored" &&
           issue.status === "todo" &&
           activeRecoveryAction.returnOwnerAgentId != null &&
@@ -13242,9 +13466,11 @@ export function issueRoutes(
       // Do not auto-wake the onboarding first task. Nothing should run and no
       // token should be spent until the user types: the greeting is posted above
       // (deterministic, no LLM) and the user's first comment wakes the assignee
-      // through the normal comment path. Every other create path keeps its wake.
+      // through the normal comment path. A task created already done or
+      // cancelled is a record, not work: like restoring an assignee on closed
+      // work, it must not wake the assignee. Every other create keeps its wake.
 
-      if (!isOnboardingFirstTask) {
+      if (!isOnboardingFirstTask && !isClosedIssueStatus(issue.status)) {
         void queueIssueAssignmentWakeup({
           heartbeat,
           issue,
@@ -13859,7 +14085,9 @@ export function issueRoutes(
       svc.getById(id),
       "Issue not found",
     );
-    if (!issue) return;
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
 
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({
@@ -14241,6 +14469,84 @@ export function issueRoutes(
         "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
       { code: "native_run_status_reported_by_finish", requestedStatus },
     );
+  }
+
+  /**
+   * A status change releases the execution lock without stopping the run that
+   * holds it (the service clears the lock for any status other than
+   * `in_progress`, even when the status is unchanged). When an agent other than
+   * the lock-holding run asks for it, the run keeps going but is no longer
+   * bound to its task: the effect of interrupting another agent's run, which
+   * agents are not allowed to do (run cancel and tree pause are board-only).
+   * Refuse it before any side effect, with a final denial that sends the person
+   * to the controls that really stop or hold the work.
+   *
+   * Paths that stop the run themselves stay open: cancelling the task,
+   * reassigning it, and (only where the caller pauses the goal first, which the
+   * PATCH route does) completing a task whose Runner goal is active.
+   *
+   * Returns the lock the decision was based on, so the caller can make the
+   * write conditional on it (`expectedExecutionLock`); null when the change
+   * does not release a lock under this rule.
+   */
+  async function assertAgentStatusChangeKeepsLiveRunBound(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      identifier?: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      checkoutRunId: string | null;
+      executionRunId: string | null;
+    },
+    change: {
+      requestedStatus: unknown;
+      assigneeWillChange: boolean;
+      /** The caller pauses an active Runner goal (and stops its run) before completing the task. */
+      stopsGoalOnCompletion: boolean;
+      /** Re-read the lock instead of trusting a snapshot taken earlier in the request. */
+      refreshLock: boolean;
+    },
+  ): Promise<{ executionRunId: string | null; checkoutRunId: string | null } | null> {
+    if (req.actor.type !== "agent") return null;
+    const { requestedStatus } = change;
+    if (typeof requestedStatus !== "string") return null;
+    if (requestedStatus === "in_progress" || requestedStatus === "cancelled") return null;
+    if (change.assigneeWillChange) return null;
+    const current = change.refreshLock ? (await svc.getById(issue.id)) ?? issue : issue;
+    const lock = {
+      executionRunId: current.executionRunId ?? null,
+      checkoutRunId: current.checkoutRunId ?? null,
+    };
+    const actorRunId = req.actor.runId?.trim() || null;
+    const lockRunIds = [...new Set([lock.executionRunId, lock.checkoutRunId])]
+      .filter((runId): runId is string => Boolean(runId) && runId !== actorRunId);
+    for (const runId of lockRunIds) {
+      const run = await heartbeat.getRun(runId);
+      if (!run || run.companyId !== issue.companyId || run.id === actorRunId) continue;
+      if (run.status !== "running" && run.status !== "queued") continue;
+      if (change.stopsGoalOnCompletion && requestedStatus === "done" && issue.assigneeAgentId) {
+        const goal = await runnerGoals.projection(issue.companyId, issue.id, issue.assigneeAgentId);
+        // Terminalization pauses the goal and stops this run before the write.
+        if (goal?.goal && goal.goal.status !== "complete") return null;
+      }
+      const company = await companiesSvc.getById(issue.companyId).catch(() => null);
+      const identifier = issue.identifier?.trim() || null;
+      const issuePath = company?.issuePrefix && identifier
+        ? `/${company.issuePrefix}/issues/${identifier}`
+        : null;
+      const labels = await issueWriteDenialLabels(req, issue);
+      const { body } = issueWriteDenialResponse("issue_status_change_live_run", { ...labels, issuePath });
+      throw conflict(body.error, {
+        ...body.details,
+        issueId: issue.id,
+        runId: run.id,
+        requestedStatus,
+        issuePath,
+      });
+    }
+    return lock;
   }
 
   router.patch(
@@ -14998,6 +15304,12 @@ export function issueRoutes(
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
+      const checkedExecutionLock = await assertAgentStatusChangeKeepsLiveRunBound(req, existing, {
+        requestedStatus: updateFields.status,
+        assigneeWillChange,
+        stopsGoalOnCompletion: true,
+        refreshLock: true,
+      });
       const isAgentReturningIssueToCreator =
         req.actor.type === "agent" &&
         !!req.actor.agentId &&
@@ -15198,6 +15510,7 @@ export function issueRoutes(
         workspaceSelectionActor: req.actor,
         expectedExecutionPolicy,
         expectedStatusVersion,
+        ...(checkedExecutionLock ? { expectedExecutionLock: checkedExecutionLock } : {}),
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
@@ -16894,10 +17207,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/admin/force-release", async (req, res) => {
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board access required" });
-      return;
-    }
+    assertBoard(req);
     if (!req.actor.userId) {
       throw forbidden("Board user context required");
     }
@@ -17056,12 +17366,38 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const queue = await buildQueuedCommentQueue({
+    const actor = getActorInfo(req);
+    let queue = await buildQueuedCommentQueue({
       executor: db,
       issue,
       activeRun: await resolveActiveIssueRun(issue, { queueStateOnly: true }),
-      actor: getActorInfo(req),
+      actor,
     });
+    // A chat message held by the agent's daily limit has no wake receipt yet:
+    // show it as saved and waiting, with the reason, instead of as sent.
+    const held = await heldConversationComments(db, issue);
+    if (held && (queue.state !== null || queue.entries.length > 0)) {
+      // Earlier queued work keeps its controls; held messages join it read-only.
+      const queuedIds = new Set(queue.entries.map(entry => entry.comment.id));
+      const extra = held.comments.filter(comment => !queuedIds.has(comment.id));
+      const snapshot = buildQueuedCommentQueueSnapshot({
+        issueId: issue.id, queueId: null, state: "deferred", activeRunId: null,
+        protocol: queue.protocol, steeringDisposition: "unsupported", comments: extra,
+        actorType: actor.actorType, actorId: actor.actorId,
+      });
+      queue = { ...queue, executionWait: queue.executionWait ?? { reason: held.hold.reason, message: held.hold.message },
+        entries: [...queue.entries, ...snapshot.entries.map((entry, index) => ({
+          ...entry, position: queue.entries.length + index, canEdit: false, canDiscard: false }))] };
+    } else if (held) {
+      const snapshot = buildQueuedCommentQueueSnapshot({
+        issueId: issue.id, queueId: null, state: "deferred", activeRunId: null,
+        protocol: queue.protocol, steeringDisposition: "unsupported", comments: held.comments,
+        executionWait: { reason: held.hold.reason, message: held.hold.message },
+        actorType: actor.actorType, actorId: actor.actorId,
+      });
+      // The outbox owns delivery; there is no queue to edit, send or discard.
+      queue = { ...snapshot, entries: snapshot.entries.map(entry => ({ ...entry, canEdit: false, canDiscard: false })) };
+    }
     res.json(
       await runRedactions.redactForIssue(issue.companyId, issue.id, queue),
     );
@@ -17146,19 +17482,16 @@ export function issueRoutes(
         }
       }
       const actor = getActorInfo(req);
-      const runToInterrupt = await db.transaction(async (tx) => {
+      const interruptPlan = await db.transaction(async (tx): Promise<{ firstTurnRunId: string } | { runToInterrupt: string | null }> => {
         const locked = await lockQueuedCommentState({
           tx, issue, actor, queueId: req.body.queueId, targetRunId: req.body.targetRunId ?? undefined,
           allowStoppedTarget: true,
         });
         assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
-        const freshResponse = locked.queue.entries.some(entry => entry.source?.requiresFreshSession);
-        // The UI offers Send whenever no turn is running. The issue's run may
-        // still be waiting to start or to retry: it has no turn to interrupt,
-        // so save the click and deliver the queue as soon as that run stops.
-        const previousRunNotRunning = !locked.activeRun || locked.activeRun.status !== "running";
-        const stoppedNativeQueue = locked.queue.protocol === "paperclip_runner_v1" && previousRunNotRunning;
-        if ((locked.queue.protocol !== "legacy" && !freshResponse && !stoppedNativeQueue) || locked.state !== "deferred" ||
+        // Explicit Interrupt is also the fallback when a native turn cannot
+        // accept steering. Cancellation and ordinary admission still own Stop
+        // confirmation, cleanup, and delivery; this click only records intent.
+        if (locked.state !== "deferred" ||
             !locked.queue.entries.length ||
             (locked.activeRun && locked.activeRun.agentId !== locked.wake.agentId)) {
           throw conflict("This queue does not support interruption");
@@ -17166,19 +17499,31 @@ export function issueRoutes(
         if (locked.activeRun?.status === "running" && locked.activeRun.id !== req.body.targetRunId) {
           throw conflict("The queued message targets a stale run", { code: "queued_comment_stale_target" });
         }
+        // A run that has not started its first provider turn takes these
+        // messages into that turn. Stopping it would only discard its setup.
+        if (locked.activeRun && !issue.conversationAgentId && issue.executionRunId === locked.activeRun.id &&
+            deferredWakeJoinsFirstTurn(locked.wake, locked.activeRun) &&
+            await firstTurnTakesAllQueuedComments(tx, { companyId: issue.companyId, issueId: issue.id,
+              responsibleUserId: locked.activeRun.responsibleUserId,
+              commentIds: queuedCommentIdsFromWakePayload(locked.wake.payload) }) &&
+            await runAcceptsFirstTurnQueuedInput(tx, locked.activeRun)) {
+          return { firstTurnRunId: locked.activeRun.id };
+        }
         // The click is durable fresh user intent, including when the message
         // predates a failed run's stop. Keep its content and original attribution.
         await notifyDeferredExecutionWork(tx, { companyId: issue.companyId, requestId: locked.wake.id });
         await tx.update(agentWakeupRequests).set({
           payload: { ...readObject(locked.wake.payload), queuedCommentInterrupt: {
             actorId: actor.actorId, requestedAt: new Date().toISOString(),
-            ...(freshResponse && locked.queue.protocol === "paperclip_runner_v1" && locked.activeRun?.status === "running"
+            ...(locked.queue.protocol === "paperclip_runner_v1" && locked.activeRun?.status === "running"
               ? { targetRunId: locked.activeRun.id } : {}),
           } },
           updatedAt: new Date(),
         }).where(eq(agentWakeupRequests.id, locked.wake.id));
-        return locked.activeRun?.status === "running" ? locked.activeRun.id : null;
+        return { runToInterrupt: locked.activeRun?.status === "running" ? locked.activeRun.id : null };
       });
+      const firstTurnRunId = "firstTurnRunId" in interruptPlan ? interruptPlan.firstTurnRunId : null;
+      const runToInterrupt = "runToInterrupt" in interruptPlan ? interruptPlan.runToInterrupt : null;
       // Never hold the issue lock while joining the adapter. Queue edits and
       // discards stay authoritative until the dispatcher claims the successor.
       const options = operatorInterruptCancelOptions({ issueId: issue.id, actor });
@@ -17187,18 +17532,23 @@ export function issueRoutes(
         suppressImmediateRecovery: true,
         resultJson: { ...options.resultJson, queuedCommentInterruptQueueId: req.body.queueId },
       });
-      await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
+      if (!firstTurnRunId) await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
         agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
         action: "issue.queued_comments_interrupted", entityType: "issue", entityId: issue.id,
-        details: { queueId: req.body.queueId, targetRunId: req.body.targetRunId },
+        details: { queueId: req.body.queueId, targetRunId: req.body.targetRunId,
+          ...(firstTurnRunId ? { deliveredWithFirstTurnOfRunId: firstTurnRunId } : {}) },
       });
       const currentIssue = await svc.getById(issue.id);
       const queue = await buildQueuedCommentQueue({
         executor: db, issue: currentIssue ?? issue,
         activeRun: await resolveActiveIssueRun(currentIssue ?? issue), actor,
       });
+      if (firstTurnRunId && queue.state === "deferred" && queue.entries.length > 0) {
+        queue.executionWait = { reason: "first_turn_pending",
+          message: "The agent is still starting. These messages will be included in its first turn." };
+      }
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
@@ -17489,6 +17839,25 @@ export function issueRoutes(
     "/issues/:id/queued-comments/:commentId",
     validate(queuedCommentMutationTargetSchema),
     async (req, res) => {
+      if (req.actor.type === "agent") {
+        // Agents never use this board route. Check visibility first so a denial
+        // never confirms a task the agent cannot read.
+        const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+        if (!issue) return;
+        if (!(await assertIssueReadAllowed(req, res, issue))) return;
+        const comment = await svc.getComment(req.params.commentId as string);
+        if (!comment || comment.issueId !== issue.id) {
+          res.status(404).json({ error: "Comment not found" });
+          return;
+        }
+        if (comment.authorAgentId && comment.authorAgentId === req.actor.agentId) {
+          throw forbidden(
+            "Agents discard their own queued comments with "
+              + `DELETE /api/issues/${issue.id}/comments/${comment.id}?mode=cancel, not this board route.`,
+          );
+        }
+        throw forbidden(queuedCommentAuthorOnlyDenial(issue));
+      }
       assertBoard(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
@@ -18777,8 +19146,9 @@ export function issueRoutes(
       : false;
     if (deleteMode === "cancel" || pendingQueueWake || isLegacyQueuedComment) {
       if (!actorOwnsComment) {
+        if (!(await assertIssueReadAllowed(req, res, issue))) return;
         res.status(403).json({
-          error: "Only the comment author can cancel queued comments",
+          error: queuedCommentAuthorOnlyDenial(issue),
         });
         return;
       }

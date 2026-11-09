@@ -175,7 +175,7 @@ test.describe("Onboarding wizard", () => {
     // its provider's login pseudo-terminal capability — this reproduces the
     // gate a real sandbox-backed instance would already pass, without
     // changing any other field the rest of the page depends on.
-    const FAKE_SANDBOX_ENVIRONMENT_ID = "e2e-fake-sandbox-environment";
+    const FAKE_SANDBOX_ENVIRONMENT_ID = "c0e01740-05eb-41ea-bdbe-6358b712e26f";
     const FAKE_SANDBOX_PROVIDER = "e2e-fake-provider";
 
     await page.route("**/environments", async (route) => {
@@ -231,14 +231,36 @@ test.describe("Onboarding wizard", () => {
       }),
     );
 
+    await page.route("**/api/adapters?**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("environmentId") !== FAKE_SANDBOX_ENVIRONMENT_ID) return route.continue();
+      url.searchParams.delete("environmentId");
+      const response = await route.fetch({ url: url.toString() });
+      expect(response.ok()).toBe(true);
+      await route.fulfill({ response });
+    });
+
+    let persistedAgentId = "";
+    let persistedAgentStatus = 0;
+    await page.route("**/api/agents/*", async route => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      const body = route.request().postDataJSON();
+      if (body.defaultEnvironmentId !== FAKE_SANDBOX_ENVIRONMENT_ID) return route.continue();
+      const response = await route.fetch({ postData: JSON.stringify({ ...body, defaultEnvironmentId: null }) });
+      persistedAgentId = new URL(route.request().url()).pathname.split("/").at(-1)!;
+      persistedAgentStatus = response.status();
+      await route.fulfill({ response });
+    });
+
     // The sign-in Connect now starts. Stubbed so the card is deterministic:
     // the session start answers, and the guarded prompt read hands back an
     // authorization URL for the card's link row.
+    let loginStarts = 0;
     await page.route("**/setup-token-login-sessions", (route) =>
       route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
-          sessionId: "e2e-setup-token-session",
+          sessionId: `e2e-setup-token-session-${++loginStarts}`,
           status: "pending",
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
         }),
@@ -253,11 +275,11 @@ test.describe("Onboarding wizard", () => {
         }),
       }),
     );
-    await page.route("**/setup-token-login-sessions/e2e-setup-token-session", (route) =>
+    await page.route(/\/setup-token-login-sessions\/e2e-setup-token-session-\d+$/, (route) =>
       route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
-          sessionId: "e2e-setup-token-session",
+          sessionId: route.request().url().split("/").at(-1),
           status: "pending",
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
         }),
@@ -336,11 +358,54 @@ test.describe("Onboarding wizard", () => {
     const cardLink = page.getByRole("link", { name: /^Sign in to / });
     await expect(cardLink).toBeVisible({ timeout: 15_000 });
     await expect(cardLink).toHaveAttribute("href", /claude\.ai\/oauth\/authorize/);
+    await expect.poll(() => persistedAgentStatus).toBe(200);
+    const persisted = await page.request.get(`/api/agents/${persistedAgentId}`);
+    expect(persisted.ok()).toBe(true);
+    expect(await persisted.json()).toMatchObject({ id: persistedAgentId, name: "Ada", defaultEnvironmentId: null });
     await expect(
       page.getByRole("button", { name: /^Sign in to / }),
     ).toBeEnabled({ timeout: 15_000 });
     // No "Use saved login" here: the hire step applies a stored login itself.
     await expect(page.getByRole("button", { name: "Use saved login" })).toHaveCount(0);
+    expect(hireCalled).toBe(false);
+
+    let cancellations = 0;
+    await page.route("**/setup-token-login-sessions/*/cancel", async route => {
+      cancellations++;
+      await route.fulfill({ status: 204 });
+    });
+    const back = page.getByRole("button", { name: "Back", exact: true });
+    await back.click();
+    await expect(source).toHaveAttribute("aria-checked", "false");
+    await expect.poll(() => cancellations).toBe(1);
+    await page.evaluate(() => {
+      const state = window as typeof window & { cancelledLoginPrompts: number };
+      state.cancelledLoginPrompts = 0;
+      const fetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.endsWith("/prompt")) init?.signal?.addEventListener("abort", () => { state.cancelledLoginPrompts++; }, { once: true });
+        return fetch(input, init);
+      };
+    });
+    let finishPrompt!: () => void;
+    let promptStarted!: () => void;
+    const pendingPrompt = new Promise<void>(resolve => { finishPrompt = resolve; });
+    const promptRequest = new Promise<void>(resolve => { promptStarted = resolve; });
+    await page.route("**/setup-token-login-sessions/*/prompt", async route => {
+      promptStarted();
+      await pendingPrompt;
+      await route.fulfill({ json: { authorizationUrl: "https://claude.ai/oauth/authorize?late=true", transportAdvisory: null } }).catch(() => {});
+    });
+    await source.click();
+    await promptRequest;
+    await back.click();
+    await expect.poll(() => page.evaluate(() => (window as typeof window & { cancelledLoginPrompts: number }).cancelledLoginPrompts)).toBe(1);
+    finishPrompt();
+    await expect(source).toHaveAttribute("aria-checked", "false");
+    await expect.poll(() => cancellations).toBe(2);
+    await expect(cardInstruction).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
     expect(hireCalled).toBe(false);
 
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);

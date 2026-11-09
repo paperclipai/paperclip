@@ -34,6 +34,7 @@ import { agentInstructionsService, agentInstructionsBundleMode } from "../agent-
 import { agentInstructionRevisionService } from "../agent-instruction-revisions.js";
 import { toolAccessService } from "../tool-access.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
+import { rehydratePreservedRuntimeSkill } from "./runtime-skill-preservation.js";
 
 const MAX_ASSET_FILES = 10_000;
 const MAX_ASSET_BYTES = 64 * 1024 * 1024;
@@ -203,8 +204,10 @@ export async function rehydratePinnedSkillAssets(
   binding: { companyId: string; runId: string; agentId: string },
   context: NativeRuntimeContextSnapshot,
 ): Promise<NativeRuntimeContextSnapshot> {
-  if (!context.skills.some(skill => skill.versionId)) return context;
+  if (!context.skills.length) return context;
   const [run] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId,
+    id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+    nativeIssueId: heartbeatRuns.nativeIssueId, runnerProfileJson: heartbeatRuns.runnerProfileJson,
     contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.agentId, binding.agentId)));
   if (!run) throw new Error("Skill recovery has no matching admitted run");
@@ -215,7 +218,15 @@ export async function rehydratePinnedSkillAssets(
   const pins = run.contextSnapshot?.skillVersions;
   const skills: NativeRuntimeContextSnapshot["skills"] = [];
   for (const skill of context.skills) {
-    if (!skill.versionId) { skills.push(skill); continue; }
+    if (!skill.versionId) {
+      // Newly admitted local assets remain usable during an ordinary rolling
+      // upgrade. A migrated asset uses its exact durable receipt on cold hosts.
+      const preserved = run.runnerProfileJson?.nativeRuntimeSkillPreservation;
+      if (!preserved) { skills.push(skill); continue; }
+      const bundle = await rehydratePreservedRuntimeSkill(db, run, skill, materializeSkillAsset);
+      skills.push({ ...skill, bundle });
+      continue;
+    }
     if (pins !== undefined && (!pins || typeof pins !== "object" || Array.isArray(pins)
       || (pins as Record<string, unknown>)[skill.key] !== skill.versionId)) {
       throw new Error("Skill recovery differs from the admitted version selection");

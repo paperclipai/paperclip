@@ -98,6 +98,15 @@ describe("bundleRuntime", () => {
     expect(JSON.parse(stdout)).toEqual({ copied: 42, enrollmentReady: false });
   });
 
+  it("packages the finite online workspace entry without starting the app", async () => {
+    const onlineWorkspaceMigrationEntry = path.join(root, "server", "dist", "online.js");
+    write(onlineWorkspaceMigrationEntry, 'import { values } from "@paperclipai/fixture"; console.log(JSON.stringify({ migrated: values.doubled, enrollmentReady: false }));');
+    const outdir = path.join(root, "server", "dist-runtime");
+    await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir, onlineWorkspaceMigrationEntry });
+    const { stdout } = await execFileAsync(process.execPath, [path.join(outdir, "online-workspace-migration.mjs")], { timeout: 30_000 });
+    expect(JSON.parse(stdout)).toEqual({ migrated: 42, enrollmentReady: false });
+  });
+
   it("bundles workspace TypeScript and runs with plain node", async () => {
     const outdir = path.join(root, "server", "dist-runtime");
     const summary = await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir });
