@@ -587,11 +587,13 @@ export class TaskObserver {
     const rows = await this.api.get<Json[]>(`/api/companies/${this.lab.companyId}/issues?view=index&parentIds=${encodeURIComponent(this.record.issueId)}&limit=20`)
       .catch(() => null);
     const blocked = (Array.isArray(rows) ? rows : []).filter(row => row.parentId === this.record.issueId && row.status === "blocked").map(row => String(row.id));
-    for (const childIssueId of blocked) {
-      const recovery = await this.api.get<Json>(`/api/issues/${childIssueId}/recovery-actions`).catch(() => null);
-      const actions = Array.isArray(recovery?.actions) ? recovery.actions as Json[] : [];
-      const latest = (recovery?.active as Json | null | undefined) ?? actions[0] ?? null;
-      const recoveryActionId = typeof latest?.id === "string" ? latest.id : null;
+    const parent = await this.api.get<Json>(`/api/issues/${this.record.issueId}`).catch(() => null);
+    const stalled = Array.isArray(parent?.stalledDependencies) ? parent.stalledDependencies as Json[] : [];
+    for (const dependency of stalled) {
+      if (dependency.relation !== "child" || typeof dependency.stalledIssueId !== "string") continue;
+      const action = (dependency.recoveryAction ?? null) as Json | null;
+      const childIssueId = dependency.stalledIssueId;
+      const recoveryActionId = typeof action?.id === "string" ? action.id : null;
       const stalls = this.record.childStalls ??= [];
       if (!stalls.some(stall => stall.childIssueId === childIssueId && stall.recoveryActionId === recoveryActionId)) {
         stalls.push({ childIssueId, recoveryActionId });
