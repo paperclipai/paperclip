@@ -267,7 +267,7 @@ import {
   remoteRecoveryProbeReason,
 } from "./remote-runner-recovery-diagnostics.js";
 import { readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS } from "./remote-runner-recovery-probe.js";
-import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledControllerCommand, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
 import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
@@ -5458,7 +5458,7 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
     }
     if (!isSettledRemoteWarmControlState(settledControl, identity)) {
       // Closed vocabulary only: known command types and statuses, never payloads.
-      const unsettled = settledCommands.filter(command => command.status !== "completed")
+      const unsettled = settledCommands.filter(command => !isSettledControllerCommand(command))
         .map(command => `${retirementReasonName("commandType", command.type)}.${retirementReasonName("commandStatus", command.status)}`);
       return refuse(unsettled.length > 0 ? `journal_commands_unsettled(${[...new Set(unsettled)].slice(0, 4).join(",")})`
         : "journal_terminal_unsettled");

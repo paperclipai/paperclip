@@ -31,10 +31,17 @@ function postTerminalEvents(control: Record<string, unknown>): unknown[] {
 /** A session is settled when its commands finished and nothing is live or waiting.
  * Events after the terminal describe the past, so refusing cannot undo them: they
  * are reported instead. Every event must still authenticate as this session's. */
+const RUNNER_LIFECYCLE_COMMAND_TYPES = new Set(["runner.suspend", "runner.drain", "runner.shutdown"]);
+
+export function isSettledControllerCommand(command: Record<string, unknown>): boolean {
+  return command.status === "completed" || ((command.status === "failed" || command.status === "rejected") &&
+    !RUNNER_LIFECYCLE_COMMAND_TYPES.has(String(command.type)));
+}
+
 export function isSettledRemoteWarmControlState(control: Record<string, unknown>, identity: Record<string, unknown>): boolean {
   const commands = control.commands;
   const events = control.committedEvents;
-  if (!Array.isArray(commands) || commands.some(command => record(command).status !== "completed") ||
+  if (!Array.isArray(commands) || commands.some(command => !isSettledControllerCommand(record(command))) ||
       !Array.isArray(events) || Object.entries(identity).some(([key, value]) => record(control.identity)[key] !== value)) return false;
   const terminalIndex = events.findLastIndex(event => record(event).eventType === "run.terminal");
   if (terminalIndex < 0) return false;
