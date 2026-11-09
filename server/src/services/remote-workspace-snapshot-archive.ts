@@ -325,6 +325,7 @@ async function workspaceArchive(input: {
     const format = (await git(repo, ["rev-parse", "--show-object-format"])).trim();
     if (!["sha1", "sha256"].includes(format)) fail("unsupported_git_setting");
     const zlib = await import("node:zlib");
+    const { pipeline } = await import("node:stream/promises");
     const objects = await gitStatePath(repo, "objects");
     const listing = async (directory: string) => fs.readdir(directory)
       .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return [] as string[]; throw error; });
@@ -333,9 +334,11 @@ async function workspaceArchive(input: {
       for (const rest of (await listing(path.join(objects, prefix))).filter(name => loose.test(name)).sort()) {
         check();
         const hash = crypto.createHash(format);
-        try {
-          for await (const bytes of createReadStream(path.join(objects, prefix, rest), { signal: input.signal }).pipe(zlib.createInflate())) hash.update(bytes);
-        } catch (error) { if ((error as Error)?.name === "AbortError") throw error; fail("invalid_git_repository"); }
+        // pipeline forwards read errors and cancellation from both streams and
+        // closes them; only damaged zlib data names the entry as damaged Git.
+        await pipeline(createReadStream(path.join(objects, prefix, rest), { signal: input.signal }), zlib.createInflate(),
+          async (inflated: AsyncIterable<Buffer>) => { for await (const bytes of inflated) hash.update(bytes); },
+        ).catch((error: NodeJS.ErrnoException) => { if (/^Z_/u.test(error?.code ?? "")) fail("invalid_git_repository"); throw error; });
         if (hash.digest("hex") !== prefix + rest) fail("invalid_git_repository");
       }
     }
