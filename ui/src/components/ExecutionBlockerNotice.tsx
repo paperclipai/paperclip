@@ -82,7 +82,7 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   }
   if (!optimistic && presentation?.userAction === "confirm_run_stopped" && presentation.observedRunId && issueId && companyId) {
     const runId = presentation.observedRunId;
-    return <PreviousServerStopConfirmation runId={runId} formId={runId} issueId={issueId} companyId={companyId}
+    return <PreviousServerStopConfirmation key={`${issueId}:${runId}`} runId={runId} formId={runId} issueId={issueId} companyId={companyId}
       className={className} confirmStop={stopEvidence => issuesApi.confirmRunStopped(issueId, { runId, stopEvidence })}
       copy={{ waiting: presentation.retryWait?.message ?? "Paperclip can't confirm that the previous run stopped. Your message is saved.",
         question: "How did you confirm that no agent is still working on this task?",

@@ -27,9 +27,9 @@ describe("confirming that an unidentified previous run stopped", () => {
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); client.clear(); });
 
-  async function mount(value: TaskInterruptionPresentation = presentation) {
+  async function mount(value: TaskInterruptionPresentation = presentation, issueId = "issue-1") {
     await act(async () => root.render(<QueryClientProvider client={client}>
-      <ExecutionBlockerNotice presentation={value} canRetry onRetry={() => undefined} issueId="issue-1" companyId="company-1" />
+      <ExecutionBlockerNotice presentation={value} canRetry onRetry={() => undefined} issueId={issueId} companyId="company-1" />
     </QueryClientProvider>));
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
   }
@@ -56,6 +56,21 @@ describe("confirming that an unidentified previous run stopped", () => {
     expect(api.confirmRunStopped).toHaveBeenCalledExactlyOnceWith("issue-1", { runId: "run-1",
       stopEvidence: "No codex process for this task is running on the server host." });
     expect(container.textContent).toContain("Starting your Retry");
+  });
+
+  it("starts a fresh confirmation when the page moves to another task's run", async () => {
+    await mount();
+    await click("Confirm it stopped");
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(textarea, "Evidence written for the first task's run only.");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await mount({ ...presentation, sourceRunIds: ["run-2"], observedRunId: "run-2" }, "issue-2");
+    expect(container.querySelector("textarea")).toBeNull();
+    await click("Confirm it stopped");
+    expect(container.querySelector("textarea")!.value).toBe("");
   });
 
   it("does not offer the confirmation to someone who cannot confirm a stop", async () => {

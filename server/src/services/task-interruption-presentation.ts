@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { unidentifiedLocalLaunchRefusal } from "./native-local-process-stop.js";
 import { agents, agentWakeupRequests, approvals, chatActions, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
@@ -63,6 +64,7 @@ type ProjectionState = {
   approval: boolean;
   /** A board-owned workspace-owner fence on this run that no automatic proof has released. */
   ownerStopRequired?: boolean;
+  unidentifiedLaunchConfirmable?: boolean;
   /** The latest wake for a task with no run yet, when admission refused it. */
   admissionWait?: { id: string; status: string; reason: string | null; agentId: string };
   retryDependencies?: RetryDependencies;
@@ -270,7 +272,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     return { ...base, intentId: retryWait.id, state: "working",
       retryWait: { reason: "dependency_blocked", message: dependencyRetryWaitMessage(dependencies) } };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason === "process_identity_missing"
-      && run.runtimeMode === "native" && !run.processPid && !run.processGroupId)
+      && input.unidentifiedLaunchConfirmable)
     return { ...base, responsibility: "user", state: "waiting_for_user", canRetry: false, userAction: "confirm_run_stopped",
       retryWait: { reason: "process_identity_missing", message: UNIDENTIFIED_RUNNER_STOP_MESSAGE } };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
@@ -526,6 +528,12 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const projectMap = new Map(projectRows.map(project => [project.id, project]));
   const pauses = new Set(pauseRows.map(row => row.issueId)), approvalsSet = new Set(approvalRows.map(row => row.issueId));
   const admissionWaitMap = byIssue(admissionWaits);
+  const confirmableLaunches = new Set<string>();
+  for (const [issueId, wait] of retryWaitMap) {
+    const run = runMap.get(issueId);
+    if (run && wait.sourceRunId === run.id && wait.executionWaitReason === "process_identity_missing"
+        && await unidentifiedLocalLaunchRefusal(db, run) === null) confirmableLaunches.add(issueId);
+  }
   const now = Date.now();
   for (const issue of selected) {
     const required = requirements.get(issue.id);
@@ -540,6 +548,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
       ownerStopRequired: ownerStopRequired.has(`${issue.id}:${facts.run?.id}`),
+      unidentifiedLaunchConfirmable: confirmableLaunches.has(issue.id),
       admissionWait: admissionWaitMap.get(issue.id),
       retryDependencies: retryDependencyMap.get(issue.id),
     }, now);

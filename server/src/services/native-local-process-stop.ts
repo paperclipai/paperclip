@@ -150,6 +150,33 @@ export class UnidentifiedRunnerStopRefusedError extends Error {
   }
 }
 
+type UnidentifiedLaunchRun = Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runtimeMode" | "status" | "finishedAt" | "processPid" | "processGroupId">;
+
+export async function unidentifiedLocalLaunchRefusal(db: Db, run: UnidentifiedLaunchRun):
+  Promise<{ code: string; message: string } | "already_stopped" | null> {
+  if (run.runtimeMode !== "native" || !run.finishedAt || !FINISHED_RUN_STATUSES.has(run.status))
+    return { code: "run_not_finished", message: "Only a finished run's stop can be confirmed." };
+  if (run.processPid || run.processGroupId)
+    return { code: "process_identity_recorded", message: "This run recorded its process. Paperclip verifies that process itself." };
+  const [latest] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      isNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
+    )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  if (latest?.eventType === LOCAL_PROCESS_STOPPED) return "already_stopped";
+  if (latest?.eventType !== PROCESS_START_REQUESTED)
+    return { code: "no_unidentified_launch", message: "This run has no unconfirmed runner launch to stop." };
+  if (latest.payload?.hostname !== os.hostname())
+    return { code: "launch_on_other_host", message: "The runner was launched on another host. Confirm the stop there." };
+  const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases)
+    .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
+  if (leases.some(lease => lease.provider !== "local"))
+    return { code: "remote_environment", message: "This run used a remote environment. Its environment cleanup confirms the stop." };
+  return null;
+}
+
 export async function confirmUnidentifiedLocalRunnerStopped(db: Db, input: {
   companyId: string; issueId: string; runId: string; actorId: string;
 }): Promise<{ runId: string; alreadyStopped: boolean }> {
@@ -158,38 +185,25 @@ export async function confirmUnidentifiedLocalRunnerStopped(db: Db, input: {
     .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   if (!run || ![run.issueId, run.nativeIssueId, record(run.contextSnapshot).issueId].includes(input.issueId))
     return refuse("run_not_found", "This run does not belong to the task.");
-  if (run.runtimeMode !== "native" || !run.finishedAt || !FINISHED_RUN_STATUSES.has(run.status))
-    return refuse("run_not_finished", "Only a finished run's stop can be confirmed.");
-  if (run.processPid || run.processGroupId)
-    return refuse("process_identity_recorded", "This run recorded its process. Paperclip verifies that process itself.");
-  const [latest] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
-    .from(heartbeatRunEvents).where(and(
-      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-      isNull(heartbeatRunEvents.sourceEventId),
-      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
-    )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
-  if (latest?.eventType === LOCAL_PROCESS_STOPPED) return { runId: run.id, alreadyStopped: true };
-  if (latest?.eventType !== PROCESS_START_REQUESTED)
-    return refuse("no_unidentified_launch", "This run has no unconfirmed runner launch to stop.");
-  if (latest.payload?.hostname !== os.hostname())
-    return refuse("launch_on_other_host", "The runner was launched on another host. Confirm the stop there.");
-  const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases)
-    .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
-  if (leases.some(lease => lease.provider !== "local"))
-    return refuse("remote_environment", "This run used a remote environment. Its environment cleanup confirms the stop.");
+  const refusal = await unidentifiedLocalLaunchRefusal(db, run);
+  if (refusal === "already_stopped") return { runId: run.id, alreadyStopped: true };
+  if (refusal) return refuse(refusal.code, refusal.message);
   const { noLocalRunnerProcessForRun } = await import("./native-runtime/native-session-executor.js");
   if (!await noLocalRunnerProcessForRun(run.id))
     return refuse("runner_still_running", "A runner for this run is still running on this host. Stop it first.");
-  await appendHeartbeatRunEvent(db, {
-    companyId: run.companyId,
-    runId: run.id,
-    agentId: run.agentId,
-    eventType: LOCAL_PROCESS_STOPPED,
-    stream: "system",
-    level: "info",
-    message: "A board operator confirmed that this run's runner and its agent processes have stopped.",
-    payload: { processPid: null, processGroupId: null, processStartedAt: null, basis: "operator_attested",
-      attestedByUserId: input.actorId },
+  await db.transaction(async tx => {
+    await appendHeartbeatRunEvent(tx as unknown as Db, {
+      companyId: run.companyId,
+      runId: run.id,
+      agentId: run.agentId,
+      eventType: LOCAL_PROCESS_STOPPED,
+      stream: "system",
+      level: "info",
+      message: "A board operator confirmed that this run's runner and its agent processes have stopped.",
+      payload: { processPid: null, processGroupId: null, processStartedAt: null, basis: "operator_attested",
+        attestedByUserId: input.actorId },
+    });
+    await notifyDeliveryWork(tx as unknown as Db, DELIVERY_QUEUES.accounting, run.companyId);
   });
   return { runId: run.id, alreadyStopped: false };
 }

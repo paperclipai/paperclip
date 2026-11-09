@@ -8,14 +8,17 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, agentWakeupRequests, applyPendingMigrations, companies, companyMemberships, createDb,
-  heartbeatRunEvents, heartbeatRuns, issues,
+  environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issues, subscribeDatabaseWork,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { hasNativeLocalProcessStop, PROCESS_START_REQUESTED } from "../services/native-local-process-stop.js";
+
+const LOCAL_PROCESS_STOPPED = "native.local_process_stopped";
 import { taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 
 const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_CONFIRM_RUN_STOPPED_TEST_DATABASE_URL");
@@ -52,7 +55,7 @@ describe.skipIf(!support.supported)("confirming that an unidentified local run s
     memberships: [{ companyId, membershipRole, status: "active" }], isInstanceAdmin: false, source: "session",
   });
 
-  async function seed() {
+  async function seed(options: { hostname?: string; launch?: boolean } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: `S${companyId.slice(0, 5).toUpperCase()}` });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user",
@@ -65,8 +68,8 @@ describe.skipIf(!support.supported)("confirming that an unidentified local run s
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, nativeIssueId: issueId,
       runtimeMode: "native", status: "failed", errorCode: "adapter_failed", invocationSource: "assignment",
       startedAt: new Date(finishedAt.getTime() - 90_000), finishedAt, contextSnapshot: { issueId } });
-    await appendHeartbeatRunEvent(db, { companyId, runId, agentId, eventType: PROCESS_START_REQUESTED,
-      stream: "system", level: "info", message: "launch requested", payload: { hostname: os.hostname() } });
+    if (options.launch !== false) await appendHeartbeatRunEvent(db, { companyId, runId, agentId, eventType: PROCESS_START_REQUESTED,
+      stream: "system", level: "info", message: "launch requested", payload: { hostname: options.hostname ?? os.hostname() } });
     const wakeId = randomUUID();
     const [wake] = await db.insert(agentWakeupRequests).values({ id: wakeId, companyId, agentId, source: "on_demand", triggerDetail: "manual",
       reason: "task_retry", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "board-user",
@@ -84,11 +87,15 @@ describe.skipIf(!support.supported)("confirming that an unidentified local run s
       userAction: "confirm_run_stopped", observedRunId: f.runId, retryWait: { reason: "process_identity_missing" } });
     expect(before?.retryWait?.message).toContain("a board operator can confirm");
 
+    const accountingWakes: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.accounting, event => { accountingWakes.push(event); });
     const res = await request(app(board(f.companyId))).post(`/api/issues/${f.issueId}/recovery-actions/confirm-run-stopped`)
-      .send({ runId: f.runId, stopEvidence: "No codex process for this task is running on the server host." });
+      .send({ runId: f.runId, stopEvidence: "No codex process for this task is running on the server host." })
+      .then(response => { unsubscribe(); return response; }, error => { unsubscribe(); throw error; });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({ runId: f.runId, alreadyStopped: false });
+    expect(accountingWakes).toContain("settled");
     expect(await hasNativeLocalProcessStop(db, f.companyId, f.runId)).toBe(true);
     const [wakeAfter] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
     expect(wakeAfter!.status).toBe("coalesced");
@@ -120,6 +127,48 @@ describe.skipIf(!support.supported)("confirming that an unidentified local run s
     } finally {
       const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
     }
+  });
+
+  it.each([
+    ["no_unidentified_launch", () => seed({ launch: false })],
+    ["launch_on_other_host", () => seed({ hostname: "another-server" })],
+    ["process_identity_recorded", async () => {
+      const f = await seed();
+      await db.update(heartbeatRuns).set({ processPid: 424242 }).where(eq(heartbeatRuns.id, f.runId));
+      return f;
+    }],
+    ["remote_environment", async () => {
+      const f = await seed();
+      const environmentId = randomUUID();
+      await db.insert(environments).values({ id: environmentId, companyId: f.companyId, name: "Sandbox", driver: "sandbox",
+        status: "active", config: { provider: "fake" } });
+      await db.insert(environmentLeases).values({ companyId: f.companyId, environmentId, issueId: f.issueId,
+        heartbeatRunId: f.runId, status: "released", provider: "daytona", providerLeaseId: "sandbox-1", releasedAt: new Date() });
+      return f;
+    }],
+  ] as const)("keeps the verification wait and refuses the confirmation when it cannot clear it (%s)", async (code, arrange) => {
+    const f = await arrange();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const presentation = (await taskInterruptionPresentations(db, f.companyId, [issue!])).get(f.issueId);
+    expect(presentation).toMatchObject({ userAction: null, canRetry: true, retryWait: { reason: "process_identity_missing" } });
+    expect(presentation?.retryWait?.message).not.toContain("a board operator can confirm");
+    const res = await request(app(board(f.companyId))).post(`/api/issues/${f.issueId}/recovery-actions/confirm-run-stopped`)
+      .send({ runId: f.runId, stopEvidence: "No codex process for this task is running on the server host." });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({ details: { code } });
+    expect(await hasNativeLocalProcessStop(db, f.companyId, f.runId)).toBe(false);
+  });
+
+  it("reports a stop that was already recorded without recording another", async () => {
+    const f = await seed();
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: f.agentId, eventType: LOCAL_PROCESS_STOPPED,
+      stream: "system", level: "info", message: "stopped", payload: { processPid: null, processGroupId: null, processStartedAt: null } });
+    const res = await request(app(board(f.companyId))).post(`/api/issues/${f.issueId}/recovery-actions/confirm-run-stopped`)
+      .send({ runId: f.runId, stopEvidence: "No codex process for this task is running on the server host." });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ runId: f.runId, alreadyStopped: true });
+    expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.runId),
+      eq(heartbeatRunEvents.eventType, LOCAL_PROCESS_STOPPED)))).toHaveLength(1);
   });
 
   it("lets only a board member with change access confirm the stop", async () => {
