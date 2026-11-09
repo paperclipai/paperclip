@@ -170,9 +170,6 @@ describe("explicit task-document output", () => {
 });
 
 describe("deliverable labels that name files", () => {
-  // The delegated brief from a real first-website run: the worker finished with
-  // index.html and styles.css only in its workspace and the gate did not ask it
-  // to publish them.
   const delegatedBrief = [
     "Build a simple, polished static marketing website that introduces the business, Acorn Notes.",
     "",
@@ -189,6 +186,25 @@ describe("deliverable labels that name files", () => {
     "## Deliverables\n- `index.html`\n- `styles.css`",
     "**Deliverable:** report.pdf",
     "Requested deliverable:\n1. summary.csv with one row per team",
+    "Deliverable: dist/index.html",
+    "Deliverable: reports/summary.csv",
+    "Deliverables:\n- src/styles.css\n- ./site/index.html",
+    "## Deliverables\n\n- index.html\n- styles.css",
+    "Deliverables:\n\n- A landing page\n\n- index.html with the hero section",
+    "Deliverable: branch-report.pdf",
+    "Deliverable: commit-history.csv covering the last release",
+    "Deliverable: a comparison of input.csv and baseline.csv, saved as comparison.csv",
+    "Deliverable: report.pdf, with a short summary in the reply",
+    "Deliverable: index.html and a short summary in the reply",
+    "Deliverable: index.html plus a summary inline in chat",
+    "Deliverable: index.html; do not upload it externally",
+    "Deliverable: an updated report.pdf",
+    "Deliverable: update report.pdf and publish it",
+    "Deliverable: update report.pdf, then attach the updated report.pdf",
+    "Deliverable: index.html with a short summary in the reply",
+    "Deliverable: a summary in the reply and index.html",
+    "Deliverable: a short explanation; do not create notes.md, but attach report.pdf",
+    "Deliverables:\n- report.pdf, do not attach it to an email",
   ])("requires publication for a labelled file output: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(true);
   });
@@ -201,6 +217,26 @@ describe("deliverable labels that name files", () => {
     "Deliverables:\n- Repository change to styles.css",
     "Deliverable:\n\nindex.html is mentioned after the list ended.",
     "Deliverable quality matters more than speed for index.html.",
+    "Deliverable: Write result.json inline in your response as a code block; do not create any files.",
+    "Deliverable: result.json as a code block in the reply",
+    "Deliverables:\n- notes.md content inline in the chat",
+    "Deliverable: a comparison of input.csv and baseline.csv",
+    "Deliverable: a summary of a.csv, b.csv and c.csv",
+    "Deliverable: differences between old.json and new.json",
+    "Deliverable: a pull request on the feature branch that updates dist/index.html",
+    "Deliverables:\n\n- A summary in chat\n\nNotes:\n- index.html is the current page",
+    "Deliverable: a review of https://example.com/index.html",
+    "Deliverable: summary.md in the reply; do not create any new files",
+    "Deliverable: notes.txt without creating any files",
+    "Deliverable: update styles.css so the header is blue",
+    "Deliverables:\n- Edit the existing `index.html` to add a footer",
+    "Deliverable: a short explanation; do not create report.pdf",
+    "Deliverable: never write a separate summary.md",
+    "Deliverable: index.html with its contents inline in the reply",
+    "Deliverables: index.html and styles.css inline in the reply",
+    "Deliverable: update styles.css; do not publish it",
+    "Deliverable: update styles.css and send a short summary in the reply",
+    "Deliverable: index.html with the full markup inline in the reply",
   ])("does not treat this as a labelled file output: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(false);
   });

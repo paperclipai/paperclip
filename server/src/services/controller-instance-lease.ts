@@ -72,6 +72,7 @@ function holdsStampedWorkSql(bootId: string) {
         and metadata->'pendingCleanupController'->>'bootId' = ${bootId}))
     or exists (select 1 from sandbox_creation_operations where state = 'pending' and metadata->'creationController'->>'bootId' = ${bootId})
     or exists (select 1 from workspace_operations where status in ('running', 'pending') and metadata->'finalizeOwner'->>'bootId' = ${bootId})
+    or exists (select 1 from workspace_operations where status = 'running' and metadata->'commandOwner'->>'bootId' = ${bootId})
     or exists (select 1 from agents where lifecycle_operation->'leaseHolder'->>'bootId' = ${bootId})
     or exists (select 1 from native_run_finalizations where lease_owner is not null
       and lease_holder->>'token' = lease_owner and lease_holder->>'bootId' = ${bootId})

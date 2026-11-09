@@ -419,9 +419,24 @@ export async function evaluateNativeControllerTakeover(input: {
 }): Promise<NativeControllerTakeoverDecision> {
   const { owner, now } = input;
   if (input.remoteLeaseFenced) {
-    return owner.leaseExpiresAt && owner.leaseExpiresAt > now
-      ? { allowed: false, reason: "remote_controller_lease_live" }
-      : { allowed: true, reason: "remote_controller_lease_released_or_expired" };
+    if (!owner.leaseExpiresAt || owner.leaseExpiresAt <= now) {
+      return { allowed: true, reason: "remote_controller_lease_released_or_expired" };
+    }
+    // The lease fences a second live controller from driving the same remote
+    // runner. When the lease holder recorded this exact process space, the
+    // shared prover can show it is gone (a hard restart), so the takeover need
+    // not wait out the lease. A controller in another process space (another
+    // container or host) is never probed here: its lease must expire. The
+    // one-release null-host fallback is never enough for a remote runner.
+    const sameProcessSpace = Object.prototype.hasOwnProperty.call(owner, "controllerHostHash")
+      && typeof owner.controllerHostHash === "string"
+      && owner.controllerHostHash !== UNKNOWN_PROCESS_SPACE
+      && owner.controllerHostHash === currentProcessProbe().processSpace;
+    if (sameProcessSpace && owner.controllerPid) {
+      const local = await evaluateNativeControllerTakeover({ ...input, remoteLeaseFenced: false, requireStoppedController: true });
+      if (local.allowed && !local.legacyHostFallback) return { allowed: true, reason: `remote_lease_${local.reason}` };
+    }
+    return { allowed: false, reason: "remote_controller_lease_live" };
   }
   if ((!owner.leaseOwner || !owner.leaseExpiresAt) && !input.requireStoppedController) {
     return { allowed: true, reason: "unowned" };
@@ -1367,6 +1382,11 @@ export async function claimNativeRestartRecoveries(input: {
       // backend may spawn a runner, and a remote runner exchanges commands only
       // through a Postgres controller checkpoint. With neither, nothing reached
       // a runner. The previous controller is gone (takeover was allowed above).
+      const pendingInheritedRequests = Array.isArray(checkpointRecord.pendingRuntimeRequests)
+        && checkpointRecord.pendingRuntimeRequests.length > 0;
+      const continuedSessionOnly = hasCheckpoint && checkpointIdentityMatches && providerEvents.length === 0
+        && !pendingInheritedRequests && checkpointRecord.activeTurnId == null && checkpointRecord.semanticResult == null
+        && checkpointRecord.terminal == null;
       const remoteRunnerNeverLaunched = !unclaimedBootstrap && remoteWorkspace?.state === "prepared" && !pluginTask
         && !durableAuthority && stagedAttachment === null
         && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
@@ -1381,9 +1401,9 @@ export async function claimNativeRestartRecoveries(input: {
             && row.coordinator.failureDetail?.recoveryMode === "bootstrap_retry" && !row.coordinator.leaseOwner)
         && !row.coordinator.failureDetail?.successorRunId
         && !row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt
-        && !row.run.sessionIdBefore && !row.run.sessionIdAfter
+        && (!row.run.sessionIdBefore || continuedSessionOnly) && !row.run.sessionIdAfter
         && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
-        && !hasCheckpoint && !hasProviderEvidence
+        && (continuedSessionOnly || (!hasCheckpoint && !hasProviderEvidence))
         && !(await hasNativeExecutionStartEvidence(tx, row.run));
       // A settled retry starts new work, so it needs the same current
       // admission as the resumption reconciler: task pause, agent status,
@@ -1473,7 +1493,8 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessAlive: providerProcesses.livePids.length > 0,
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
-        hasCheckpoint: hasCheckpoint && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly),
+        hasCheckpoint: hasCheckpoint && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly)
+          && !remoteRunnerNeverLaunched,
         stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&

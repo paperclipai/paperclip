@@ -7616,7 +7616,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/managed-agent-profiles",
   tags: ["agents"],
   summary: "Create or operator-attest a Claude Managed Agent profile",
-  description: "Board only: agent credentials get 403. A Claude Managed Agent runs on Anthropic's managed-agents beta. A board operator creates the company profile with an Anthropic API-key secret and a limited environment (no hosts, no packages), attests its qualification and explicitly acknowledges stateful retention before it can be enabled. There is no web page for this: the board user runs the CLI command `paperclipai managed-agent setup --profile-key <key> --display-name <name> --api-key-secret-id <secretId> --acknowledge-retention` with ANTHROPIC_API_KEY set in their shell (add --probe for a read-only qualification check first). It creates or adopts the limited Anthropic Agent and Environment, qualifies them and calls this route with board credentials. The secret itself is added on the company Secrets page, /<prefix>/company/settings/secrets.",
+  description: "Board only: agent credentials get 403. A Claude Managed Agent runs on Anthropic's managed-agents beta. A board operator creates the company profile with an Anthropic API-key secret and a limited environment (no hosts, no packages), attests its qualification and explicitly acknowledges stateful retention before it can be enabled. There is no web page for this: the board user runs the CLI command `paperclipai managed-agent setup --company-id <companyId> --profile-key <key> --display-name <name> --api-key-secret-id <secretId> --acknowledge-retention` with ANTHROPIC_API_KEY set in their shell (add --probe for a read-only qualification check first). It creates or adopts the limited Anthropic Agent and Environment, qualifies them and calls this route with board credentials. The secret itself is added on the company Secrets page, /<prefix>/company/settings/secrets.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(
@@ -11882,7 +11882,8 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/connections",
   tags: ["tool-access"],
   summary: "Create a tool connection",
-  description: "Saves a connection as given without checking that its server answers. To connect an MCP server from its URL, use POST /api/companies/{companyId}/tools/apps/connect with link instead: it checks the server first, and a fresh setup saves no connection when the server cannot be reached." + " " + OWN_MCP_SERVER_KEY + " " + OWN_MCP_SERVER_KEY,
+  description: "Saves a connection as given without checking that its server answers. To connect an MCP server from its URL, use POST /api/companies/{companyId}/tools/apps/connect with link instead: it checks the server first, and a fresh setup saves no connection when the server cannot be reached. "
+    + OWN_MCP_SERVER_KEY,
   body: createToolConnectionSchema,
   responses: {
     201: r.ok(),

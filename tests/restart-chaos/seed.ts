@@ -56,6 +56,7 @@ export function cloneWorkspaceRepository(source: string, directory: string, comm
       throw new Error(`--workspace-repo ${source} no longer has commit ${commit} that this wave used`, { cause: error });
     }
   }
+  git("remote", "remove", "origin");
   return directory;
 }
 

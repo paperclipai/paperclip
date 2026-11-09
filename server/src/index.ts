@@ -85,7 +85,7 @@ import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { setSentryRunLinkResolver } from "./sentry-links.js";
 import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
-import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
+import { verifyStoppedNativeSessionForAutomaticReplacement } from "./services/native-runtime/native-session-executor.js";
 import { registerNativeCleanupReleaseWake } from "./services/native-runtime/native-cleanup-release-wake.js";
 import { logNativeCleanupQuarantines } from "./services/native-runtime/native-cleanup-quarantine-log.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
@@ -1396,7 +1396,7 @@ async function startServerWithDatabaseTeardown(
     { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     ...(heartbeat ? [
-      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement, onSettled: () => invalidateNativeReplacementDiscovery(db), settleEmptyWhilePaused: true },
+      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForAutomaticReplacement(db, run) }), next: executionSchedule.replacement, onSettled: () => invalidateNativeReplacementDiscovery(db), settleEmptyWhilePaused: true },
       { queue: DELIVERY_QUEUES.executionContinuation, run: async () => {
         await deliverReconciledExecutions(db, heartbeat.wakeup);
         await deliverPendingPauseResumes(db, heartbeat.wakeup);

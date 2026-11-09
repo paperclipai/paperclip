@@ -337,7 +337,7 @@ describe("openapi routes", () => {
       expect(operation.description).toContain("Board only");
       expect(operation.description).toContain("There is no web page");
     }
-    expect(route.post.description).toContain("paperclipai managed-agent setup");
+    expect(route.post.description).toContain("paperclipai managed-agent setup --company-id <companyId>");
     expect(route.post.description).toContain("--acknowledge-retention");
   });
 

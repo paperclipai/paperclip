@@ -7,7 +7,7 @@ import { errorHandler } from "../middleware/index.js";
 import { getAccessibleResource, issueNotFoundBody, ISSUE_NOT_VISIBLE_CODE } from "../routes/authz.js";
 import { buildOpenApiDocument } from "../routes/openapi.js";
 import { withMcpConnectionFailure } from "../services/mcp-connection-failure.js";
-import { unreachableServerRemediation } from "../services/tool-access/catalog/failures.js";
+import { googleWorkspaceServicesUnavailable, unreachableServerRemediation } from "../services/tool-access/catalog/failures.js";
 
 const COMPANY_ID = "10000000-0000-4000-8000-000000000001";
 const OTHER_COMPANY_ID = "10000000-0000-4000-8000-000000000009";
@@ -67,6 +67,19 @@ describe("agent refusals that are final", () => {
     const error = await refusedConnection("ECONNREFUSED");
     expect(unreachableServerRemediation(error, { actorType: "user" })).toEqual({});
     expect(unreachableServerRemediation(new Error("tool list was invalid"), { actorType: "agent" })).toEqual({});
+  });
+
+  it("keeps the unreachable-server remediation when every Google Workspace service fails", async () => {
+    const aggregate = googleWorkspaceServicesUnavailable(["gmail", "docs"], [
+      await refusedConnection("ECONNREFUSED"),
+      await refusedConnection("ECONNREFUSED"),
+    ]);
+    expect(aggregate.details).toMatchObject({ code: "google_workspace_services_unavailable" });
+    const { remediation } = unreachableServerRemediation(aggregate, { actorType: "agent" }) as { remediation: string };
+    expect(remediation).toContain("nothing accepted the connection");
+    expect(remediation).toContain("Reply now");
+    const unclassified = googleWorkspaceServicesUnavailable(["gmail"], [new Error("tool list was invalid")]);
+    expect(unreachableServerRemediation(unclassified, { actorType: "agent" })).toEqual({});
   });
 
   it("returns the MCP remediation in the error body an agent receives", async () => {

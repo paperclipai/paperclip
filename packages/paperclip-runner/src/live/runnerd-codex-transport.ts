@@ -7262,7 +7262,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (!Number.isSafeInteger(turnStartTimeoutMs) || turnStartTimeoutMs <= 0) {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
-    const commandDeadline = Date.now() + turnStartTimeoutMs;
+    let commandDeadline = Date.now() + turnStartTimeoutMs;
+    const heldCalls = this.#core;
+    if (typeof heldCalls?.semanticToolResultsSettled === "function" && !heldCalls.semanticToolResultsSettled()) {
+      let recovering = true;
+      void Promise.resolve(heldCalls.recoverPendingSemanticInputs())
+        .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))))
+        .finally(() => { recovering = false; });
+      while (recovering && Date.now() < commandDeadline) {
+        this.#assertStartupOpen();
+        this.#throwIfFailed();
+        await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      this.#assertStartupOpen();
+      this.#throwIfFailed();
+      if (recovering) throw new Error("native_turn_start_held_tool_calls_unresolved: recovering an earlier turn's held Paperclip tool calls did not finish before the turn-start deadline");
+      commandDeadline = Date.now() + turnStartTimeoutMs;
+    }
     const compactionTurn = params[COMPACTION_TURN] === true;
     const compactionPayload = compactionTurn ? runnerdCompactionTurnPayload(this.options.provider ?? "codex") : null;
     const input = Array.isArray(params.input) ? params.input.map(record) : [];

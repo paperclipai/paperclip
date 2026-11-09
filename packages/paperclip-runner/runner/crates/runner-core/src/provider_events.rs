@@ -2349,7 +2349,7 @@ fn safe_acpx_location(value: Option<&Value>, allow_create_target: bool) -> Value
         .unwrap_or_default();
     if raw_path.is_empty()
         || raw_path.starts_with('/')
-        || raw_path.contains('\0')
+        || !crate::tool_file_changes::is_single_line_path(raw_path)
         || raw_path.split('/').any(|segment| segment == "..")
     {
         return Value::Null;
@@ -2866,6 +2866,48 @@ mod tests {
                 Value::Null,
             );
         }
+    }
+
+    #[test]
+    fn drops_a_location_whose_path_breaks_a_line() {
+        for location in [
+            "packages/shared/src/chaos/slug.ts\n<parameter name=\"content\">export function chaosSlug() {}",
+            "src/a.ts\rsrc/b.ts",
+            "src/a.ts\u{2028}tail",
+            "src/a.ts\u{2029}tail",
+            "src/a\tb.ts",
+        ] {
+            assert_eq!(
+                safe_acpx_location(
+                    Some(&json!({
+                        "path": location,
+                        "pathBoundary": "paperclip.workspace_relative_display.v2",
+                        "pathAttestation": "paperclip.workspace_create_target.v1"
+                    })),
+                    true,
+                ),
+                Value::Null,
+                "location {location:?}",
+            );
+        }
+        let events = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({
+                "type": "tool_call", "toolCallId": "toolu_write", "tag": "tool_call_update",
+                "status": "in_progress", "title": "Write",
+                "locations": [{
+                    "path": "packages/shared/src/chaos/slug.ts\n<parameter name=\"content\">export function chaosSlug() {}",
+                    "pathBoundary": "paperclip.workspace_relative_display.v2"
+                }],
+                "fileChanges": [{"path": "src/a.ts\nsrc/b.ts", "operation": "modify"}],
+            }),
+            Some("edit"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(events[0].payload["target"], Value::Null);
+        assert!(events[0].payload.get("fileChanges").is_none());
     }
 
     #[test]

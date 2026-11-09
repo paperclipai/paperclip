@@ -163,12 +163,7 @@ export function opencodeSessionDirectoryName(normalizedSessionId: string) {
   return safe && safe !== "." && safe !== ".." ? safe : null;
 }
 
-/**
- * The instance directories that hold every run's state, keyed by what the
- * launch may keep. A local instance shares one OS user between all agents, so
- * without this one agent's shell reads another run's provider database, run
- * log or the instance's database files.
- */
+/** The attempt instance's directories that hold every run's state. */
 export function instanceRunStatePaths(instanceRoot: string) {
   const runner = path.join(instanceRoot, "runtime", "paperclip-runner");
   return {
