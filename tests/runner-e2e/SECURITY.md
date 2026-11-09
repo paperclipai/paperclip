@@ -363,11 +363,9 @@ each wrapped runnerd launch. In CI a missing or ineffective sandbox stops the
 attempt. Landlock does not hide that a path exists (`stat` still works); it
 denies reading and listing.
 
-Each runnerd launch is also scoped to its own run. Every agent in a local
-instance runs as the same OS user, so without this one agent's shell can read
-another run's saved session (its OpenCode database and configuration), run log
-or provider trace, the instance's database files (including `pg_wal`) and its
-secrets. The launcher passes the instance root to the server entry, and each
+Each runnerd launch is also scoped to its own run, so an eval agent learns
+nothing about the case from another run's saved session, run log or provider
+trace, or from the attempt instance's database files and secrets. The launcher passes the instance root to the server entry, and each
 runnerd launch additionally hides the instance's `durable-sessions/`,
 `runner/`, `control-plane/` and `opencode/` directories under
 `runtime/paperclip-runner/`, and `data/run-logs/`, `data/provider-traces/`,
