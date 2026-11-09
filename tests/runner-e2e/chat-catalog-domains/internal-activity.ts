@@ -105,19 +105,31 @@ export function statesObservationTime(reply: string, runs: ReadonlyArray<{ start
   if (!starts.length) return false;
   const ends = runs.map(run => Date.parse(run.finishedAt ?? run.startedAt ?? "")).filter(Number.isFinite);
   const from = Math.min(...starts) - OBSERVATION_SLACK_MS; const to = Math.max(...ends) + OBSERVATION_SLACK_MS;
-  const allowed = new Set<string>();
+  const allowedClock = new Set<string>(); const allowedDated = new Set<string>();
   try {
     for (const timeZone of new Set(["UTC", timezone])) {
-      const format = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-      for (let at = from; at <= to; at += 60_000) allowed.add(format.format(new Date(at)));
+      const clock = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+      const day = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+      for (let at = from; at <= to; at += 60_000) {
+        const time = clock.format(new Date(at)); allowedClock.add(time); allowedDated.add(`${day.format(new Date(at))} ${time}`);
+      }
     }
   } catch { return false; }
-  const prose = reply.replace(/\]\([^)]*\)/g, "]");
-  return [...prose.matchAll(/(?<![\d:])(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?!\d)(?:\s*([ap])\.?m\.?(?![a-z]))?/gi)].some(match => {
+  let prose = reply.replace(/\]\([^)]*\)/g, "]");
+  let stated = false;
+  // A full timestamp is judged as a whole: with an offset it must be an instant inside the window; without one, its date and minute must match a zone.
+  prose = prose.replace(/\b(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?(?!\d|:\d)/gi, (whole, date: string, hour: string, minute: string, offset?: string) => {
+    if (offset) {
+      const at = Date.parse(whole.replace(" ", "T"));
+      stated ||= Number.isFinite(at) && at >= from - 60_000 && at <= to;
+    } else stated ||= allowedDated.has(`${date} ${hour}:${minute}`);
+    return " ";
+  });
+  return stated || [...prose.matchAll(/(?<![\d:])(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?!\d)(?:\s*([ap])\.?m\.?(?![a-z]))?/gi)].some(match => {
     const hour = Number(match[1]); const minute = match[2]!; const meridiem = match[3]?.toLowerCase();
     if (hour > 23 || Number(minute) > 59 || meridiem && (hour < 1 || hour > 12)) return false;
-    const hours = meridiem ? [hour % 12 + (meridiem === "p" ? 12 : 0)] : hour <= 12 ? [hour, (hour + 12) % 24] : [hour];
-    return hours.some(value => allowed.has(`${String(value).padStart(2, "0")}:${minute}`));
+    const value = meridiem ? hour % 12 + (meridiem === "p" ? 12 : 0) : hour;
+    return allowedClock.has(`${String(value).padStart(2, "0")}:${minute}`);
   });
 }
 
