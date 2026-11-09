@@ -47,6 +47,11 @@ column decoders, including the lossless payload codec. Callers still wait for
 the durable write before they publish or acknowledge the event. Native-source
 replay and retry-exhaustion deduplication retain their existing transaction path.
 
+All event writers reconcile the stored sequence cursor with the highest persisted
+sequence plus one while serializing updates on the run row. A stale cursor cannot
+reuse a persisted sequence, and a cursor already ahead of the log never moves
+backward. Existing events and replay receipts remain intact.
+
 ## Legacy case handoff cleanup
 
 `legacy.case_handoff_cleanup_intent` records local cleanup ownership before
