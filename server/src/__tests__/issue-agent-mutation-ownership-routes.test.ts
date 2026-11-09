@@ -3155,6 +3155,10 @@ describe("agent issue mutation checkout ownership", () => {
         mockIssueService.getById.mockResolvedValue(issue);
         mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch }));
         const db = createRunContextDb();
+        const inserted: Array<{ table: string; values: Record<string, unknown> }> = [];
+        db.insert = vi.fn((table: Parameters<typeof getTableName>[0]) => ({ values: vi.fn(async (values: Record<string, unknown>) => {
+          inserted.push({ table: getTableName(table), values });
+        }) })) as typeof db.insert;
 
         const res = await request(createApp(runActor(), db)).patch(`/api/issues/${issueId}`)
           .send({ status: "done", comment: "Approved: verified the heading and signup action." });
@@ -3165,7 +3169,10 @@ describe("agent issue mutation checkout ownership", () => {
         // run's execution lock before paperclip_finish reports the outcome.
         expect(patch).not.toHaveProperty("status");
         expect(patch.executionState).toMatchObject({ status: "completed", lastDecisionOutcome: "approved", lastDecisionId: expect.any(String) });
-        expect(db.insert).toHaveBeenCalled();
+        // The finalizer's completion authority reads exactly this row (executionStageApprovedByRun).
+        const decision = inserted.find(row => row.table === "issue_execution_decisions")?.values;
+        expect(decision).toMatchObject({ id: patch.executionState.lastDecisionId, companyId, issueId, stageId: finalStage, outcome: "approved",
+          actorAgentId: ownerAgentId, createdByRunId: ownerRunId, body: "Approved: verified the heading and signup action." });
       });
 
       it("rechecks the review policy under the issue lock for the deferred approval", async () => {
