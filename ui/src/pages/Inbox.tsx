@@ -205,6 +205,8 @@ const INBOX_ISSUE_LIST_LIMIT = 100;
 const INBOX_HOT_PATH_STALE_MS = 30_000;
 // Stable fallback so memos over unloaded or disabled issue reads do not rerun on every render.
 const NO_ISSUES: Issue[] = [];
+/** Bounds an optional read that can hold task rows hidden; a timeout reveals rows and retries in the background. */
+const INBOX_OPTIONAL_READ_TIMEOUT_MS = 10_000;
 const INBOX_COLLECTION_KEY = "inbox";
 
 type StreamlinedInboxViewState = InboxFilterPreferences & {
@@ -959,22 +961,28 @@ function StreamlinedInbox({
   const {
     data: approvals,
     isLoading: isApprovalsLoading,
+    failureCount: approvalsFailureCount,
     error: approvalsError,
   } = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
-    queryFn: () => approvalsApi.list(selectedCompanyId!),
+    queryFn: ({ signal }) =>
+      approvalsApi.list(selectedCompanyId!, undefined, { signal, timeoutMs: INBOX_OPTIONAL_READ_TIMEOUT_MS }),
     enabled: !!selectedCompanyId,
   });
 
   const {
     data: joinRequests = [],
     isLoading: isJoinRequestsLoading,
+    failureCount: joinRequestsFailureCount,
     error: joinRequestsError,
   } = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId!),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        return await accessApi.listJoinRequests(selectedCompanyId!, "pending_approval");
+        return await accessApi.listJoinRequests(selectedCompanyId!, "pending_approval", undefined, {
+          signal,
+          timeoutMs: INBOX_OPTIONAL_READ_TIMEOUT_MS,
+        });
       } catch (err) {
         if (err instanceof ApiError && (err.status === 403 || err.status === 401)) {
           return [];
@@ -1160,9 +1168,14 @@ function StreamlinedInbox({
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const { data: companyMembers, isLoading: isMembersLoading } = useQuery({
+  const {
+    data: companyMembers,
+    isLoading: isMembersLoading,
+    failureCount: membersFailureCount,
+  } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
-    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    queryFn: ({ signal }) =>
+      accessApi.listUserDirectory(selectedCompanyId!, { signal, timeoutMs: INBOX_OPTIONAL_READ_TIMEOUT_MS }),
     enabled: !!selectedCompanyId,
   });
   const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
@@ -2549,12 +2562,22 @@ function StreamlinedInbox({
   const workspaceDataAffectsRows = groupBy === "workspace"
     || (visibleIssueColumnSet.has("workspace") && availableIssueColumnSet.has("workspace"))
     || normalizedSearchQuery.length > 0;
+  // Approvals and join requests sort in among task rows by time, so a late arrival would push
+  // rows down. Wait for their first bounded attempt only; a failure or timeout reveals rows.
+  const approvalsAffectRows = tab !== "blocked" && (tab !== "all" || showApprovalsCategory);
+  const joinRequestsAffectRows = tab !== "blocked" && (tab !== "all" || showJoinRequestsCategory);
+  const isApprovalsFirstAttemptPending = isApprovalsLoading && approvalsFailureCount === 0;
+  const isJoinRequestsFirstAttemptPending = isJoinRequestsLoading && joinRequestsFailureCount === 0;
+  // User names only fill row text, except when they name and order assignee groups.
+  const userLabelsAffectRows = groupBy === "assignee";
+  const isMembersFirstAttemptPending = isMembersLoading && membersFailureCount === 0;
   const initialSourcesSettled =
     ![sourceSearchView, mineIssuesView, touchedIssuesView].some(view => view.kind === "reconnecting") &&
-    !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading &&
+    !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading &&
+    !(userLabelsAffectRows && isMembersFirstAttemptPending) &&
     !(workspaceDataAffectsRows && isWorkspacesLoading) &&
-    !isJoinRequestsLoading &&
-    !isApprovalsLoading &&
+    !(joinRequestsAffectRows && isJoinRequestsFirstAttemptPending) &&
+    !(approvalsAffectRows && isApprovalsFirstAttemptPending) &&
     !isDashboardLoading &&
     !isContextIssuesLoading &&
     !isContextIssuesPlaceholder &&
