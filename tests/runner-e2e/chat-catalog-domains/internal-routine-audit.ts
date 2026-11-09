@@ -3,7 +3,7 @@ import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { collectRunEvents } from "../run-observations.js";
 import { fixtureWorker, makeDefinition } from "./internal-definition.js";
-import { checks, companyPath, entity, observation, observeInternal, project, type Entity, type InternalObservation } from "./internal-support.js";
+import { checks, companyPath, entity, hasLink, internalResultLink, observation, observeInternal, project, verifyInternalResult, type Entity, type InternalObservation } from "./internal-support.js";
 
 interface RoutineRun extends Entity { routineId?: string; source?: string; triggeredAt?: string; completedAt?: string | null; linkedIssueId?: string | null; failureReason?: string | null }
 interface RunEvent { seq?: number; eventType?: string; payload?: Record<string, unknown> | null }
@@ -32,18 +32,31 @@ export function morningTimezone(now: Date) {
 function morning(instant: string | undefined, timezone: string, observedAt: string) {
   return !!instant && localDay(instant, timezone) === localDay(observedAt, timezone) && localClock(new Date(instant), timezone).hour < 12;
 }
+/** Product reads whose response carries the routine's run records (status and failure reason). */
+export const ROUTINE_EXECUTION_OPERATIONS = ["GET /api/routines/{id}/runs", "GET /api/routines/{id}", "GET /api/companies/{companyId}/routines"] as const;
+function prp(row: RunEvent) {
+  const envelope = (row.payload?.prpEvent ?? {}) as Record<string, unknown>;
+  return { envelope, payload: (envelope.payload ?? {}) as Record<string, unknown> };
+}
 /**
- * The chat run read the failed scheduled invocation through a product tool:
- * its routine-run id appears only in execution records (routine detail recent
- * runs, routine run history, the execution task's origin, or run activity).
- * Tool outputs are product data; the agent's own wording is never matched.
+ * The chat run read the failed scheduled invocation through the product: a
+ * successful read of the routine's run records (routine runs, routine detail
+ * recent runs, or the routine list's last run), recorded by operation id
+ * because call_api redacts payloads, or a tool output carrying the failed
+ * routine-run id. The agent's own wording is never matched.
  */
 export function readFailedExecution(events: readonly RunEvent[], failedRunId: string) {
   return !!failedRunId && events.some(row => {
-    const envelope = (row.payload?.prpEvent ?? {}) as Record<string, unknown>; const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const { envelope, payload } = prp(row);
+    const item = (payload.item ?? {}) as Record<string, unknown>; const result = (item.result ?? {}) as Record<string, unknown>;
+    if (item.type === "tool_result" && result.ok === true && result.status === 200
+      && (ROUTINE_EXECUTION_OPERATIONS as readonly unknown[]).includes(result.apiOperationId)) return true;
     return row.eventType === "tool.execution.completed" && envelope.sourceKind === "runner" && payload.status === "completed"
       && typeof payload.output === "string" && payload.output.includes(failedRunId);
   });
+}
+function routineLinks(o: InternalObservation, routineId: string) {
+  return o.links.filter(href => { try { const u = new URL(href, o.origin); return u.origin === new URL(o.origin).origin && u.pathname.split("/").includes(routineId) && u.pathname.includes("/routines/"); } catch { return false; } });
 }
 export function gradeRoutineAudit(value: unknown) {
   const c = checks(); const o = observation(value) as RoutineAudit | undefined;
@@ -62,9 +75,9 @@ export function gradeRoutineAudit(value: unknown) {
     && !o.activity.some(row => row.agentId === o.leadId && (row.entityId === original.id || row.entityId === failed?.linkedIssueId)),
   "The audit neither manufactures a run, edits the routine, nor changes the failed execution's task.");
   c.add("read-actual-execution-record", readFailedExecution(o.leadEvents, o.state.failedRunId),
-    "The chat run read the failed invocation itself (routine runs, routine detail, its execution task or run activity), not only the definition or edit history.");
-  const linked = o.links.some(href => { try { const u = new URL(href, o.origin); return u.origin === new URL(o.origin).origin && u.pathname.split("/").includes(original.id) && u.pathname.includes("/routines/"); } catch { return false; } });
-  c.add("routine-linked", linked, "The answer links the real routine so the person can inspect its history.");
+    "The chat run read the routine's run records (runs, detail recent runs or list last run), not only the definition or edit history.");
+  c.add("routine-or-execution-linked", routineLinks(o, original.id).length > 0 || (!!o.executionTask && hasLink(o, "issues", o.executionTask)),
+    "The answer links the real routine or the failed run's execution task, so the person can inspect the evidence.");
   return c.result();
 }
 const ORIGINAL_DESCRIPTION = "Post a three-line launch readiness summary as a comment on this task, then mark this task done.";
@@ -108,7 +121,7 @@ function routineAudit(): ChatCatalogCase {
     await ctx.input.evidence("chat-catalog-routine-audit-setup.json", { companyId: ctx.input.fixtures.company.id, timezone, trigger, edit, runs: outcome.runs, task: outcome.task, now });
     return { project: p, worker: { id: worker.id }, routine: saved, timezone, editEventId: edit.id, failedRunId: failed.id, executionTaskId: failed.linkedIssueId, routineRunCount: outcome.runs.length, now };
   }, gradeRoutineAudit);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.routine-audit.v2", authentication: "human-session", expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 720_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.routine-audit.v3", authentication: "human-session", expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 720_000,
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-routine-audit.ts", "run-observations.ts"],
     async observe(ctx, state): Promise<RoutineAudit> {
       const id = entity(state, "routine").id; const o = await observeInternal(ctx, state); const leadEvents: RunEvent[] = [];
@@ -117,7 +130,17 @@ function routineAudit(): ChatCatalogCase {
       return { ...o, routine: await ctx.input.api.get(`/api/routines/${id}`), routineRuns: await ctx.input.api.get(`/api/routines/${id}/runs`),
         executionTask: await ctx.input.api.get<Entity>(`/api/issues/${String(state.executionTaskId)}`), leadEvents, observedAt: new Date().toISOString() };
     },
-    async verifyResult(ctx, state, value) { const o = value as RoutineAudit; const href = o.links.find(link => { try { return new URL(link, o.origin).pathname.split("/").includes(entity(state, "routine").id); } catch { return false; } }); if (!href) throw new Error("Missing actual routine result link"); const source = ctx.input.page.url(); try { await ctx.input.page.goto(new URL(href, o.origin).href); await expect(ctx.input.page.getByRole("heading", { name: entity(state, "routine").title!, exact: true }).first()).toBeVisible(); } finally { await ctx.input.page.goto(source); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); } },
+    async verifyResult(ctx, state, value) {
+      const o = value as RoutineAudit; const routine = entity(state, "routine"); const source = ctx.input.page.url();
+      for (const href of routineLinks(o, routine.id)) {
+        await internalResultLink(ctx, o, href).first().click();
+        await ctx.input.page.waitForURL(url => url.pathname.split("/").includes(routine.id));
+        await expect(ctx.input.page.getByRole("heading", { name: routine.title!, exact: true }).first()).toBeVisible();
+        await ctx.input.page.goto(source); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
+      }
+      if (o.executionTask && hasLink(o, "issues", o.executionTask)) await verifyInternalResult(ctx, state, { ...o, tasks: o.tasks.filter(row => row.id === o.executionTask!.id) });
+      else if (!routineLinks(o, routine.id).length) throw new Error("Missing actual routine or execution task result link");
+    },
   };
 }
 export const routineAuditCases: readonly ChatCatalogCase[] = [routineAudit()];
