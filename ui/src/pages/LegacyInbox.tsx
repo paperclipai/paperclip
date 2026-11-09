@@ -2188,7 +2188,7 @@ export function Inbox() {
             const pathId = issue.identifier ?? issue.id;
             const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue));
             rememberIssueDetailLocationState(pathId, detailState);
-            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
+            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue, history: true });
             act.navigate(createIssueDetailPath(pathId), { state: detailState });
           } else if (item) {
             if (item.kind === "issue") {
@@ -2197,7 +2197,7 @@ export function Inbox() {
                 withIssueDetailHeaderSeed(issueLinkState, item.issue),
               );
               rememberIssueDetailLocationState(pathId, detailState);
-              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue });
+              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue, history: true });
               act.navigate(createIssueDetailPath(pathId), { state: detailState });
             } else if (item.kind === "approval") {
               act.navigate(`/approvals/${item.approval.id}`);
