@@ -7,7 +7,7 @@ vi.mock("@playwright/test", () => ({ expect: (node: any) => ({ toBeVisible: asyn
 vi.mock("./external-provider.js", () => ({ startNotesProvider: async () => port.provider, connectNotes: async () => ({ connectionId: "connection", write: ["write"] }) }));
 vi.mock("./identity-support.js", () => ({ openStandingChat: async () => ({ id: "source" }), probeAgentPermission: async () => 403, cleanupIdentityProbes: vi.fn() }));
 vi.mock("../chat-query-attachments.js", () => ({ uploadFactualQueryAttachment: async () => ({ issueId: "source" }), chatQueryWithAttachments: (query: string) => query, verifyChatQueryAttachments: async () => true }));
-vi.mock("./external-support.js", async original => ({ ...await original<typeof import("./external-support.js")>(), observeExternal: async () => ({ phaseReplies: port.replies }) }));
+vi.mock("./external-support.js", async original => ({ ...await original<typeof import("./external-support.js")>(), observeExternal: async () => ({ phaseReplies: port.replies, connections: [{ id: "connection", name: "Synthetic Launch Notes" }] }) }));
 vi.mock("./external-app-review-probe.js", () => ({ probeReviewApproval: vi.fn(async () => ({status: 403, code: "interaction_governed_action_denied", boundaryUnchanged: true, keyRevoked: true})) }));
 import { appReviewExternalCases } from "./external-app-review.js";
 afterEach(() => vi.restoreAllMocks());
@@ -27,7 +27,7 @@ function fixture(wrongDispatch = false) {
   const decide = () => {
     if (!opened || !inspected) throw Error("Human cannot decide before inspecting the bound full proposal");
     if (index > 0) { const sent = wrongDispatch ? text + " Unreviewed addition." : text; calls.push({ method: "tools/call", name: "launch_update", authorized: true, arguments: { text: sent } }); if (index === 2) written = sent; }
-    resolved.add(index); port.replies.push({ runId: `reply${index}`, body: ["You declined; no update was sent.", "The provider failed; no change was applied.", "The launch update was applied successfully."][index] });
+    resolved.add(index); port.replies.push({ runId: `reply${index}`, body: ["You declined; no update was sent to Synthetic Launch Notes.", "Synthetic Launch Notes failed; no change was applied.", "The launch update was applied in Synthetic Launch Notes."][index] });
   };
   port.provider = { calls, failWrites: vi.fn(), allowWrites: vi.fn(), close: vi.fn(async () => {}), written: () => written };
   port.advance = () => { index++; opened = false; inspected = false; };
