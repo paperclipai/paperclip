@@ -7570,6 +7570,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/managed-agent-profiles",
   tags: ["agents"],
   summary: "Create or operator-attest a Claude Managed Agent profile",
+  description: "Board only: agent credentials get 403. A Claude Managed Agent runs on Anthropic's managed-agents beta. A board operator creates the company profile with an Anthropic API-key secret and a limited environment (no hosts, no packages), attests its qualification and explicitly acknowledges stateful retention before it can be enabled.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(
