@@ -1297,6 +1297,22 @@ describe("agent permission routes", () => {
     expect(mockApprovalService.create).not.toHaveBeenCalled();
   });
 
+  it("keeps the plain denial on agents:create checks that are not hiring", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "agents:create",
+      action: input.action,
+      reason: input.action === "agents:create" ? "deny_missing_grant" : "allow_test",
+      explanation: input.action === "agents:create" ? "Missing permission: agents:create." : "Allowed in test.",
+    }));
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_jwt" });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/adapters/process/test-environment`)
+      .send({ adapterConfig: {} }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: agents:create.");
+  });
+
   it.each(["agents", "agent-hires"])("rejects agent-supplied Codex host commands before resolving the runner via %s", async (route) => {
     mockAccessService.hasPermission.mockResolvedValue(true);
     mockInstanceSettingsService.get.mockRejectedValue(new Error("Denied requests must not inspect execution targets"));

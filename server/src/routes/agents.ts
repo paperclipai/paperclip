@@ -1418,7 +1418,7 @@ export function agentRoutes(
     );
   }
 
-  async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
+  async function assertCanCreateAgentsForCompany(req: Request, companyId: string, options?: { hiring?: true }) {
     assertCompanyAccess(req, companyId);
     const decision = await access.decide({
       actor: req.actor,
@@ -1428,7 +1428,7 @@ export function agentRoutes(
     if (!decision.allowed) {
       // An agent denied hiring otherwise searches other routes for an override.
       // Say the denial is final and where a person can act instead.
-      const explanation = req.actor.type === "agent" && decision.reason === "deny_missing_grant"
+      const explanation = options?.hiring && req.actor.type === "agent" && decision.reason === "deny_missing_grant"
         ? `${decision.explanation} This agent cannot hire or create agents, and no other route overrides this denial. A board user can hire the agent directly, or turn on hiring for this agent on its permissions page.`
         : decision.explanation;
       throw forbidden(explanation, authorizationDeniedDetails(decision));
@@ -4444,7 +4444,7 @@ export function agentRoutes(
 
   const handleAgentHire = async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
-    await assertCanCreateAgentsForCompany(req, companyId);
+    await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const {
       desiredSkills: requestedDesiredSkills,
@@ -4828,7 +4828,7 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertCanCreateAgentsForCompany(req, companyId);
+    await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
 
     const company = await db
       .select()
@@ -5050,7 +5050,7 @@ export function agentRoutes(
       // another agent to hire through.
       const savedCanCreateAgents = normalizeAgentPermissions(existing.permissions, { role: existing.role }).canCreateAgents;
       if (typeof req.body.canCreateAgents === "boolean" && req.body.canCreateAgents !== savedCanCreateAgents) {
-        await assertCanCreateAgentsForCompany(req, existing.companyId);
+        await assertCanCreateAgentsForCompany(req, existing.companyId, { hiring: true });
       }
     } else {
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);

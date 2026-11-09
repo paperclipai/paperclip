@@ -118,6 +118,7 @@ import {
   validatePaperclipRunnerMuseConfig,
 } from "./native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
+import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial } from "../lib/agent-permissions.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
@@ -4265,6 +4266,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           },
         ) as Record<string, unknown>;
         const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: true }) as Record<string, unknown>;
+        // A CEO's recorded hiring denial is a board choice, so it survives the
+        // round trip even though export otherwise drops false values.
+        const exportedHiringDenial = agent.role === "ceo" ? ceoHiringDenial(agent.permissions) : null;
+        if (exportedHiringDenial) Object.assign(portablePermissions, { canCreateAgents: false, [CEO_HIRING_DENIAL_KEY]: exportedHiringDenial });
         const portablePermissionGrants = permissionGrantsByAgentId.get(agent.id) ?? [];
         const agentEnvInputs = dedupeEnvInputs(
           envInputs
@@ -5265,6 +5270,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     // the declared count is the only signal that distinguishes it from a
     // deliberately small bundle. Reject the fragment rather than importing it.
     assertInlineSourceComplete(input.source);
+    // The importing board user brings a CEO's recorded hiring denial with the
+    // package; create and configuration writes never take one from input.
+    const applyImportedCeoHiringDenial = async <T extends { id: string; role: string }>(agent: T, permissions: unknown) => {
+      if (agent.role !== "ceo" || !ceoHiringDenial(permissions)) return null;
+      return await agents.updatePermissions(agent.id, { canCreateAgents: false, [CEO_HIRING_DENIAL_KEY]: {
+        actorType: "user", actorId: actorUserId ?? null, at: new Date().toISOString(),
+      } }) as T | null;
+    };
     const mode = resolveImportMode(options);
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {
@@ -5704,6 +5717,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             let updated = await agents.update(planAgent.existingAgentId, {
               ...patch,
             });
+            if (updated) updated = await applyImportedCeoHiringDenial(updated, manifestAgent.permissions) ?? updated;
             if (!updated) {
               warnings.push(`Skipped update for missing agent ${planAgent.existingAgentId}.`);
               resultAgents.push({
@@ -5754,6 +5768,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ...automationPausePatch,
             status: pauseAutomations ? "paused" : "idle",
           }, { createdByUserId: actorUserId });
+          created = await applyImportedCeoHiringDenial(created, manifestAgent.permissions) ?? created;
           await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
           await access.setPrincipalPermission(
             targetCompany.id,

@@ -31,6 +31,7 @@ const agentSvc = {
   getById: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
+  updatePermissions: vi.fn(),
 };
 
 const accessSvc = {
@@ -651,6 +652,26 @@ describe("company portability", () => {
     expect(Object.keys(exported.files).some((filePath) => filePath.startsWith("skills/"))).toBe(false);
     expect(exported.manifest.skills).toEqual([]);
     expect(asTextFile(exported.files["agents/claudecoder/AGENTS.md"])).toContain(`- "${paperclipKey}"`);
+  });
+
+  it("exports a CEO's recorded hiring denial and drops an unrecorded false", async () => {
+    const denial = { actorType: "user", actorId: "board-user", at: "2026-11-08T00:00:00.000Z" };
+    const ceo = (id: string, name: string, permissions: Record<string, unknown>) => ({
+      id, companyId: "company-1", name, status: "idle", role: "ceo", title: null, icon: null, reportsTo: null, capabilities: null,
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, permissions, metadata: null,
+    });
+    agentSvc.list.mockResolvedValue([
+      ceo("denied-ceo", "DeniedCeo", { canCreateAgents: false, canCreateSkills: true, ceoHiringDeniedBy: denial }),
+      ceo("open-ceo", "OpenCeo", { canCreateAgents: true, canCreateSkills: true }),
+    ]);
+
+    const exported = await companyPortabilityService({} as any).exportBundle("company-1", {
+      include: { company: true, agents: true, projects: false, issues: false, skills: false },
+    });
+
+    const permissions = (slug: string) => exported.manifest.agents.find((agent: { slug: string }) => agent.slug === slug)?.permissions;
+    expect(permissions("deniedceo")).toMatchObject({ canCreateAgents: false, ceoHiringDeniedBy: denial });
+    expect(permissions("openceo")).not.toHaveProperty("ceoHiringDeniedBy");
   });
 
   it("refuses to read external instruction roots without an instance-admin export grant", async () => {
@@ -1790,6 +1811,26 @@ describe("company portability", () => {
       target: { mode: "new_company", newCompanyName: "Imported personas" }, collisionStrategy: "rename", agents: "all" }, "user-1");
     expect(agentSvc.create).toHaveBeenCalled();
     for (const [, input] of agentSvc.create.mock.calls) expect(input.appearance).toEqual(appearance);
+  });
+
+  it("restores a CEO's recorded hiring denial on import, stamped by the importing user", async () => {
+    const denial = { actorType: "user", actorId: "source-board-user", at: "2026-11-08T00:00:00.000Z" };
+    const source = await agentSvc.list();
+    agentSvc.list.mockResolvedValue([{ ...source[0], role: "ceo", permissions: { canCreateAgents: false, canCreateSkills: true, ceoHiringDeniedBy: denial } }]);
+    const portability = companyPortabilityService({} as any);
+    const include = { company: true, agents: true, projects: false, issues: false, skills: false };
+    const exported = await portability.exportBundle("company-1", { include });
+
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({ ...input, id: `imported-${input.name}` }));
+    agentSvc.updatePermissions.mockImplementation(async (id: string, permissions: Record<string, unknown>) => ({ id, role: "ceo", permissions }));
+    await portability.importBundle({ source: { type: "inline", files: exported.files, rootPath: exported.rootPath }, include,
+      target: { mode: "new_company", newCompanyName: "Imported CEO" }, collisionStrategy: "rename", agents: "all" }, "user-1");
+
+    expect(agentSvc.updatePermissions).toHaveBeenCalledWith(expect.stringMatching(/^imported-/), {
+      canCreateAgents: false,
+      ceoHiringDeniedBy: expect.objectContaining({ actorType: "user", actorId: "user-1", at: expect.any(String) }),
+    });
   });
 
   it("reads env inputs back from .paperclip.yaml during preview import", async () => {
