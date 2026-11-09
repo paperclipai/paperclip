@@ -278,6 +278,58 @@ describe("Daytona idle eligibility", () => {
     expect(await plugin.definition.onIdleDrain!(signal)).toBe("none");
   });
 
+  describe("a sandbox in a state change during workspace realize", () => {
+    const realize = (timeoutMs = 300_000) => plugin.definition.onEnvironmentRealizeWorkspace!({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      config: { timeoutMs, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-transition", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+      workspace: { localPath: "/tmp/workspace" },
+    } as never);
+    const stateChangeInProgress = () => Object.assign(new Error("Sandbox state change in progress"), { statusCode: 409 });
+
+    it("waits for a stopping sandbox to settle, then starts it", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => { sandbox.state = "stopped"; });
+      sandbox.start.mockImplementation(async () => {
+        if (sandbox.state !== "stopped") throw stateChangeInProgress();
+        sandbox.state = "started";
+      });
+      await expect(realize()).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+      expect(sandbox.fs.createFolder).toHaveBeenCalledWith("/home/daytona/paperclip-workspace", "755");
+    });
+
+    it("retries a start the provider rejected while its state was changing", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopped" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValueOnce(stateChangeInProgress())
+        .mockImplementationOnce(async () => { sandbox.state = "started"; });
+      await expect(realize()).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(sandbox.start).toHaveBeenCalledTimes(2);
+    });
+
+    it("gives up when the state change outlasts the start deadline", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValue(stateChangeInProgress());
+      await expect(realize(1_000)).rejects.toThrow("Sandbox state change in progress");
+      expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
+    });
+
+    it("fails other start errors at once", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopped" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValue(new Error("quota exceeded"));
+      await expect(realize()).rejects.toThrow("quota exceeded");
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("keeps a stale stopped reply from clearing a start that finished during the read", async () => {
     const sandbox = createMockSandbox({ state: "stopped" });
     mockGet.mockResolvedValue(sandbox);

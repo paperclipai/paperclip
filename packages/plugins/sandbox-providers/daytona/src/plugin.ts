@@ -637,7 +637,39 @@ async function terminateAtProvider<T>(scope: SandboxScope, operation: string, ac
 // restart, so the next command opens a fresh session instead of sending a dead
 // id and failing with "session not found". A running sandbox keeps its live
 // session, so the id is left in place when no restart happens.
+const SANDBOX_TRANSITION_STATES: ReadonlySet<string> = new Set([
+  "starting", "stopping", "restoring", "archiving", "creating", "pending_build", "pulling_snapshot", "building_snapshot", "resizing",
+]);
+const SANDBOX_TRANSITION_POLL_MS = 1_000;
+
+function isSandboxStateChangeInProgress(error: unknown): boolean {
+  return /state change in progress/i.test(error instanceof Error ? error.message : String(error));
+}
+
+async function waitOutSandboxTransition(sandbox: Sandbox, deadline: number, readTimeoutMs: number): Promise<void> {
+  while (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS));
+    await withLivenessTimeout("sandbox.refreshData", readTimeoutMs, () => sandbox.refreshData());
+  }
+}
+
 async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number, scope: SandboxScope): Promise<void> {
+  const deadline = Date.now() + timeoutSeconds * 1_000;
+  const readTimeoutMs = Math.min(scope.config.livenessTimeoutMs, 30_000);
+  for (;;) {
+    await waitOutSandboxTransition(sandbox, deadline, readTimeoutMs);
+    try {
+      await startSettledSandbox(sandbox, timeoutSeconds, scope);
+      return;
+    } catch (error) {
+      if (!isSandboxStateChangeInProgress(error) || Date.now() >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS));
+      await withLivenessTimeout("sandbox.refreshData", readTimeoutMs, () => sandbox.refreshData());
+    }
+  }
+}
+
+async function startSettledSandbox(sandbox: Sandbox, timeoutSeconds: number, scope: SandboxScope): Promise<void> {
   if (sandbox.state === "started") return;
   sandboxHandleSessionStore.clear(scope);
   // Bound the lifecycle call just past its own SDK deadline. A normal slow start
