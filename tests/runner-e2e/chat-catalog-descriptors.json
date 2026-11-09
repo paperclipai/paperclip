@@ -234,7 +234,7 @@
       "chat-catalog-domains/internal-routine-audit.ts",
       "run-observations.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.routine-audit.v2",
+    "oracleVersion": "paperclip.chat-catalog.internal.routine-audit.v3",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "minimumRunCount": 2,

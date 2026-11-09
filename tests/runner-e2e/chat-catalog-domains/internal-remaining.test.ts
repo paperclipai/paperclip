@@ -91,13 +91,21 @@ function routine() {
   o.links = ["/RUN/routines/routine"]; o.reply = "This morning's 08:42 run failed: Morgan blocked its task because the launch-readiness document is missing.";
   const failed = { id: "rr-failed", routineId: r.id, source: "schedule", status: "failed", triggeredAt: "2026-10-25T23:42:00Z", linkedIssueId: "task", failureReason: "Execution issue blocked" };
   const read = { eventType: "tool.execution.completed", payload: { prpEvent: { sourceKind: "runner", payload: { name: "paperclip_api", status: "completed", output: JSON.stringify({ recentRuns: [failed] }) } } } };
-  return { ...o, routine: r, routineRuns: [failed] as any[], executionTask: { id: "task", status: "blocked" }, leadEvents: [read] as any[], observedAt: "2026-10-25T23:50:00Z" };
+  return { ...o, routine: r, routineRuns: [failed] as any[], executionTask: { id: "task", identifier: "RUN-1", status: "blocked" }, leadEvents: [read] as any[], observedAt: "2026-10-25T23:50:00Z" };
 }
 it("picks a real timezone where the evaluation clock reads 08:xx", () => {
   for (let hour = 0; hour < 24; hour++) { const now = new Date(Date.UTC(2026, 10, 9, hour, 17)); expect(localClock(now, morningTimezone(now)).hour).toBe(8); }
 });
 it("accepts a real edit before a failed scheduled morning run that the chat run read", () => expect(gradeRoutineAudit(routine()).passed).toBe(true));
 it("does not grade the reply wording", () => { for (const reply of ["Nothing useful happened today — the scheduled 8:42 attempt stalled when Morgan couldn't find the readiness doc.", "Short answer: no. Details are on the routine page."]) { const o = routine(); o.reply = reply; expect(gradeRoutineAudit(o).passed).toBe(true); } });
+it("accepts a redacted call_api read of the routine runs and a link to the blocked execution task", () => {
+  const o = routine(); o.links = ["/RUN/issues/RUN-1"];
+  o.leadEvents = [{ eventType: "item.completed", payload: { prpEvent: { sourceKind: "runner", payload: { item: { type: "tool_result", result: { ok: true, status: 200, data: "***REDACTED***", apiOperationId: "GET /api/companies/{companyId}/routines" } } } } } }] as any[];
+  expect(gradeRoutineAudit(o).passed).toBe(true);
+  const definitionOnly = structuredClone(o); definitionOnly.leadEvents[0].payload.prpEvent.payload.item.result.apiOperationId = "GET /api/routines/{id}/revisions"; expect(gradeRoutineAudit(definitionOnly).passed).toBe(false);
+  const failedRead = structuredClone(o); failedRead.leadEvents[0].payload.prpEvent.payload.item.result.status = 403; expect(gradeRoutineAudit(failedRead).passed).toBe(false);
+  const otherTask = structuredClone(o); otherTask.links = ["/RUN/issues/RUN-2"]; expect(gradeRoutineAudit(otherTask).passed).toBe(false);
+});
 it("rejects an edit after the run, a run outside the morning, or a manual run", () => {
   const late = routine(); late.activity[0].createdAt = "2026-10-25T23:45:00Z"; expect(gradeRoutineAudit(late).passed).toBe(false);
   const evening = routine(); evening.routineRuns[0].triggeredAt = "2026-10-25T10:00:00Z"; expect(gradeRoutineAudit(evening).passed).toBe(false);
