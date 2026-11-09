@@ -1084,6 +1084,16 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<agentId>/runs/<runId>");
   });
 
+  it("tells chat how to link projects and to link only the workspace pages a tool result gives", () => {
+    const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/<Route\s+path="projects\/:projectId"/);
+    expect(AGENT_CHAT_DIRECTIVE).toContain("agent profiles, projects) uses that same prefix");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("For a project, link /<prefix>/projects/<projectId>.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("When a tool result gives a record's href, such as a project or a workspace, link that href; a workspace without an href has no page on this instance");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/projects/<projectId>");
+  });
+
   it("says the task-chat lab exists only under pnpm dev in the person's own checkout", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("Some developer labs, including the task-chat interaction lab at /<prefix>/dev/task-chat-lab, are registered only in a development build of the UI");
     expect(AGENT_CHAT_DIRECTIVE).not.toContain("Developer labs, such as");

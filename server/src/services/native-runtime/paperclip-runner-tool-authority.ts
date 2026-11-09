@@ -851,7 +851,8 @@ export class PaperclipRunnerToolAuthority {
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
         const token = this.#apiToken(context);
         if (!apiUrl || !token) throw new Error("Workspace tool authentication is unavailable");
-        return callTaskWorkspaceTool({ name: call.tool, arguments: input, apiUrl, token, companyId: this.binding.companyId, issueId: this.binding.issueId, workspaceRoot: this.binding.workspaceRoot });
+        return callTaskWorkspaceTool({ name: call.tool, arguments: input, apiUrl, token, companyId: this.binding.companyId, issueId: this.binding.issueId, workspaceRoot: this.binding.workspaceRoot,
+          workspacePagePrefix: ["get_workspace", "list_workspaces"].includes(call.tool) ? await this.#workspacePagePrefix() : null });
       }
       case "create_project":
       case "list_project_repositories":
@@ -861,7 +862,8 @@ export class PaperclipRunnerToolAuthority {
         if (!apiUrl || !token) throw new Error("Project tool authentication is unavailable");
         return callProjectTool({ name: call.tool, arguments: input, apiUrl, token,
           companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
-          conversation: Boolean(context.issue.conversationAgentId) });
+          conversation: Boolean(context.issue.conversationAgentId),
+          companyPrefix: call.tool === "list_projects" ? await this.#companyPagePrefix() : null });
       }
       case "search_api": return searchRunnerApi(call.arguments);
       case "hire_agent": {
@@ -1077,6 +1079,19 @@ export class PaperclipRunnerToolAuthority {
   }) {
     return nativeRunKeyScope({ contextSnapshot: context.run.contextSnapshot,
       issueId: this.binding.issueId, workMode: context.issue.workMode });
+  }
+
+  /** Company prefix for page hrefs in tool results, so chat replies link real pages. */
+  async #companyPagePrefix() {
+    const [row] = await this.db.select({ issuePrefix: companies.issuePrefix }).from(companies)
+      .where(eq(companies.id, this.binding.companyId));
+    return row?.issuePrefix ?? null;
+  }
+
+  /** Workspace pages are routed only while isolated workspaces are enabled. */
+  async #workspacePagePrefix() {
+    return (await instanceSettingsService(this.db).getExperimental()).enableIsolatedWorkspaces
+      ? this.#companyPagePrefix() : null;
   }
 
   #apiToken(context: {
