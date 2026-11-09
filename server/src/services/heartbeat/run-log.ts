@@ -1,6 +1,6 @@
 import { appendWithByteCap, MAX_EXCERPT_BYTES, parseObject } from "../../adapters/utils.js";
 import { REDACTED_EVENT_VALUE, redactSensitiveText, sanitizeRecord } from "../../redaction.js";
-import { redactInvitationTokens } from "../../middleware/redact-sensitive.js";
+import { redactInvitationTokens } from "../../middleware/invitation-token-redaction.js";
 import { redactCurrentUserText, redactCurrentUserValue, type CurrentUserRedactionOptions } from "../../log-redaction.js";
 
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
