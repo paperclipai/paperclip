@@ -3792,12 +3792,31 @@ export function issueRoutes(
   async function assertCrossIssueInfluenceWithinRunCap(
     req: Request,
     res: Response,
-    issue: { id: string; identifier?: string | null; companyId: string },
+    issue: {
+      id: string;
+      identifier?: string | null;
+      companyId: string;
+      assigneeAgentId?: string | null;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
+    },
     kind: CrossIssueInfluenceKind,
   ) {
     if (req.actor.type !== "agent") return true;
     if (!req.actor.agentId || !req.actor.runId)
       throw crossIssueInfluenceRunContextError();
+
+    // If the agent is the assignee and this run owns the checkout/execution lock,
+    // allow the write without cross-issue influence counting. The run's
+    // contextSnapshot may not yet carry the issueId (e.g. timer wakeup adopted
+    // via checkout), but the issue row proves ownership.
+    if (
+      issue.assigneeAgentId === req.actor.agentId &&
+      (issue.checkoutRunId === req.actor.runId ||
+        issue.executionRunId === req.actor.runId)
+    ) {
+      return true;
+    }
 
     // The counter transaction locks and validates the persisted run before it
     // derives the source issue. Never trust the API-key run header by itself.
@@ -3814,7 +3833,7 @@ export function issueRoutes(
 
     const labels = await issueWriteDenialLabels(req, {
       identifier: issue.identifier ?? null,
-      assigneeAgentId: null,
+      assigneeAgentId: issue.assigneeAgentId ?? null,
     });
     res.status(429).json(
       crossIssueInfluenceLimitError(decision, {
