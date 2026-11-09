@@ -1802,8 +1802,10 @@ function StandardConnectionSetupFlow({
       // A capability refresh must replace the stale gallery entry as well as
       // its method, while preserving the chosen audience and wizard step.
       setEntry(requestedEntry);
-      setConnectionMethodKey(initialMethod?.key ?? "");
-      setConfigValues(defaultMethodConfig(initialMethod));
+      if (!(selectedGitHubPat && methods.some((candidate) => candidate.key === connectionMethodKey))) {
+        setConnectionMethodKey(initialMethod?.key ?? "");
+        setConfigValues(defaultMethodConfig(initialMethod));
+      }
     }
 
     if (automaticOAuth && (
@@ -1828,6 +1830,7 @@ function StandardConnectionSetupFlow({
     connectorEnrollmentQuery.data?.configured,
     connectorEnrollmentQuery.isLoading,
     connectionMethodKey,
+    selectedGitHubPat,
     credentialSource,
     entry?.slug,
     entryAdvertisesManagedConnector,

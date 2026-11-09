@@ -1949,6 +1949,24 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
   });
 
+  it("preserves the chosen GitHub PAT when a pending gallery refresh enables managed sign-in", async () => {
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    await render();
+    let finishRefresh!: (value: { apps: typeof GITHUB_MANAGED[] }) => void;
+    listGalleryMock.mockReturnValueOnce(new Promise((resolve) => { finishRefresh = resolve; }));
+    await act(async () => { buttonByText("Try again")!.click(); });
+    await act(async () => { buttonByText("Use a GitHub personal access token")!.click(); });
+    await flushReact();
+    const token = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(token).not.toBeNull();
+    await act(async () => { setInputValue(token!, "github_pat_test"); });
+    await act(async () => { finishRefresh({ apps: [GITHUB_MANAGED] }); });
+    await flushReact();
+    expect(container.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe("github_pat_test");
+    expect(container.textContent).not.toContain("Continue to GitHub");
+  });
+
   it("keeps GitHub sign-in intent when enrollment recovery reveals an unavailable profile", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
