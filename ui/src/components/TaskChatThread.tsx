@@ -55,6 +55,7 @@ import {
   taskChatStatusRelevance,
   withoutHistoricalRunStatus,
 } from "@/components/task-chat/status-relevance";
+import { selectBudgetedTranscriptRuns } from "@/components/task-chat/transcript-reveal-budget";
 import {
   assembleThreadItems,
   attachSettledTurns,
@@ -3224,20 +3225,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       : logsAreInitiallyHydrating;
   });
   const transcriptHistoryPending = pendingTranscriptRuns.length > 0;
-  // Only these may stop holding the reveal after the budget: live output
-  // streams into the tail, and settled compact output becomes a fixed control.
-  // Other settled runs insert output around saved replies, so they keep waiting.
-  // A live run with steering or timeline anchors also keeps waiting: its
-  // pre-anchor segments enter the main chronology above the anchored messages.
-  const budgetedTranscriptRuns = pendingTranscriptRuns
-    .filter((run) => {
-      if (isTerminalRunStatus(run.status)) return compactTranscriptDeferral;
-      const anchors = isNativePaperclipRunnerRun(run)
-        ? steeringAnchorsByRun.get(run.id)
-        : legacyTimelineAnchorsByRun.get(run.id);
-      return (anchors?.length ?? 0) === 0;
-    })
-    .map((run) => ({ runId: run.id, settled: isTerminalRunStatus(run.status) }));
+  // Only these may stop holding the reveal after the budget. See
+  // selectBudgetedTranscriptRuns for the live, steered and settled rules.
+  const budgetedTranscriptRuns = selectBudgetedTranscriptRuns(pendingTranscriptRuns, {
+    compactDeferral: compactTranscriptDeferral,
+    hasTimelineAnchors: (run) => ((isNativePaperclipRunnerRun(run)
+      ? steeringAnchorsByRun.get(run.id)
+      : legacyTimelineAnchorsByRun.get(run.id))?.length ?? 0) > 0,
+  });
   // The budget timer reads the runs that are still pending when it fires, so
   // a transcript that hydrates early does not restart the budget.
   const budgetedTranscriptRunsRef = useRef(budgetedTranscriptRuns);

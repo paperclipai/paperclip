@@ -953,6 +953,25 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
     } finally { vi.useRealTimers(); }
   });
 
+  it("defers every slow settled run of a large compact task at the budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const linkedRuns = Array.from({ length: 300 }, (_, index) => ({
+        ...retryRun, runId: `failed-run-${index}`, status: "failed",
+        createdAt: new Date(Date.parse(retryRun.createdAt) + index * 60_000).toISOString(),
+        startedAt: new Date(Date.parse(retryRun.createdAt) + index * 60_000).toISOString(),
+      }));
+      render(<TaskChatThread issueId="large-slow-task" compactHistory onAdd={async () => {}} onExpandHistory={vi.fn()}
+        comments={createLongThreadComments()} linkedRuns={linkedRuns} />);
+      expect(transcriptHookCalls().at(-1)?.length).toBeGreaterThan(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      expect(historyLoading()).toBe(true);
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(false);
+      expect(transcriptHookCalls().at(-1)).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("keeps the transcript budget when another transcript hydrates first", async () => {
     vi.useFakeTimers();
     try {
