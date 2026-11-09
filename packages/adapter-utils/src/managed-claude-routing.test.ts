@@ -9,6 +9,12 @@ describe("managed Claude routing environment", () => {
     expect(result.CLAUDE_CODE_USE_BEDROCK).toBe("");
   });
 
+  it.each(["AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_BEDROCK", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME"])("pins or clears %s", (key) => {
+    expect(managedClaudeRoutingEnvironment({ [key]: "https://selected.invalid" }, "linux")[key]).toBe("https://selected.invalid");
+    expect(managedClaudeRoutingEnvironment({}, "linux")[key]).toBe("");
+    expect(managedClaudeRoutingEnvironment({ [key.toLowerCase()]: "https://selected.invalid" }, "win32")[key]).toBe("https://selected.invalid");
+  });
+
   it("preserves case-insensitive Windows environment variables", () => {
     const result = managedClaudeRoutingEnvironment({ https_proxy: "http://proxy.invalid" }, "win32");
     expect(result.HTTPS_PROXY).toBe("http://proxy.invalid");

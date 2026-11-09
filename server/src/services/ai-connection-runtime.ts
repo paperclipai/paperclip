@@ -54,6 +54,7 @@ export const AI_AUTH_ENV_KEYS = [
   "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_USE_VERTEXAI",
   "GEMINI_HOME", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_ACCESS_TOKEN", "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
   "HERMES_HOME", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+  "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_BEDROCK", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
   "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
 
   "ANTHROPIC_API_KEY",
@@ -132,7 +133,7 @@ export async function assertManagedAiProjectAuth(
         ? [".codex/config.toml"]
         : [];
   const pattern =
-    "apiKeyHelper|ANTHROPIC_BASE_URL|ANTHROPIC_BEDROCK_BASE_URL|CLAUDE_CODE_USE_[A-Z_]+|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider[[:space:]]*=|env_key[[:space:]]*=|experimental_bearer_token|cli_auth_credentials_store";
+    "apiKeyHelper|AWS_ENDPOINT_URL(_BEDROCK(_RUNTIME)?)?|ANTHROPIC_BASE_URL|ANTHROPIC_BEDROCK_BASE_URL|CLAUDE_CODE_USE_[A-Z_]+|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider[[:space:]]*=|env_key[[:space:]]*=|experimental_bearer_token|cli_auth_credentials_store";
   if (target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && files.length) {
     const description = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "describe" }));
     if (description.kind !== "description" || description.projectAuthCheckVersion !== 1) {
@@ -155,7 +156,7 @@ while :; do
   for relative in "$@"; do
     file="$directory/$relative"
     if test -f "$file"; then
-      grep -Eq "$pattern" "$file"
+      grep -Eiq "$pattern" "$file"
       result=$?
       if test "$result" -eq 0; then exit 42; fi
       if test "$result" -ne 1; then exit 43; fi
@@ -193,7 +194,7 @@ done`,
       try {
         const content = await readFile(path.join(directory, relative), "utf8");
         if (
-          /apiKeyHelper|ANTHROPIC_BASE_URL|ANTHROPIC_BEDROCK_BASE_URL|CLAUDE_CODE_USE_[A-Z_]+|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
+          /apiKeyHelper|AWS_ENDPOINT_URL(_BEDROCK(_RUNTIME)?)?|ANTHROPIC_BASE_URL|ANTHROPIC_BEDROCK_BASE_URL|CLAUDE_CODE_USE_[A-Z_]+|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/i.test(
             content,
           )
         ) {

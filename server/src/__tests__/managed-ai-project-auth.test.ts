@@ -2,10 +2,14 @@ import { mkdtemp, mkdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { assertManagedAiProjectAuth } from "../services/ai-connection-runtime.js";
+import { assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 
 describe("managed Claude project routing", () => {
-  it.each(["ANTHROPIC_BASE_URL", "ANTHROPIC_BEDROCK_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"])("rejects project routing override %s for every managed Claude route", async (key) => {
+  it.each(["AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_BEDROCK", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME"])("removes saved %s overrides before applying a managed connection", (key) => {
+    expect(stripAiAuthBindings({ [key]: "https://project.invalid", KEEP: "value" })).toEqual({ KEEP: "value" });
+  });
+
+  it.each(["AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_BEDROCK", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "ANTHROPIC_BASE_URL", "ANTHROPIC_BEDROCK_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].flatMap((key) => [key, key.toLowerCase()]))("rejects project routing override %s for every managed Claude route", async (key) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-routing-test-"));
     try {
       await mkdir(path.join(root, ".claude"));
