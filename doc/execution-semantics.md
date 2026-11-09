@@ -3611,6 +3611,9 @@ An absent, changed, pending, or agent-resolved response grants no such exception
 That bounded response remains a continuation after a workspace or AI-account wait,
 so final dispatch still verifies it. Finishing a dependency during preparation
 does not turn the admitted response into an attempt to check out the task.
+Task interruption notices ignore Retry receipts for a superseded run. A later
+successful conversation must not inherit the old failure banner. This read-only
+projection neither retires Retry authority nor acknowledges independent saved input.
 
 Snapshot preservation and native copyback are distinct receipts. A historical
 workspace recovered as an immutable snapshot does not make its old native sync
