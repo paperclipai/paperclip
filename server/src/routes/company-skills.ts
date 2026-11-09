@@ -6,12 +6,13 @@ import { adoptProjectSkillRepository, projectSkillRepositories, skillSourceSyncS
 import { skillAccessRequestContext, skillAccessService } from "../services/skill-access.js";
 import { skillSourceService, type SkillSourceContext } from "../services/skill-sources.js";
 import { skillSourceGitHubReader } from "../services/skill-source-github-access.js";
+import { diffGitHubSkillUpdate } from "../services/skill-update-diff.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { skillSourceCreateSchema, skillSourceDiscoverySchema, skillSourcePreviewSchema, skillSourceSelectionSchema, skillSourceSettingsSchema, skillSourceBranchesQuerySchema, projectSkillSourceAdoptSchema, skillSourceDisconnectSchema } from "@paperclipai/shared";
 import type { ActivityPublication } from "../services/activity-log.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { once } from "node:events";
-import type { SkillSourceDiscoveryEvent } from "@paperclipai/shared";
+import type { SkillSourceDiscoveryEvent, SkillSourceUpdateDiff } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, companySkills, companySkillMutationReceipts } from "@paperclipai/db";
@@ -1220,6 +1221,30 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
       res.status(404).json({ error: "Skill not found" });
       return;
     }
+    res.json(result);
+  });
+
+  // Shows exactly what a pending tracked-source update would change, so a
+  // reviewer never has to compare two full snapshots by eye.
+  router.get("/companies/:companyId/skills/:skillId/update-diff", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    const unsupported = (reason: string, currentRef: string | null = null): SkillSourceUpdateDiff => ({ supported: false, reason, currentRef, latestRef: null, files: [] });
+    const skill = await svc.getById(companyId, skillId);
+    if (!skill) { res.status(404).json({ error: "Skill not found" }); return; }
+    const managed = await sourceSvc.sourceForSkill(companyId, skillId);
+    const entry = managed?.entries.find(row => row.skillId === skillId);
+    if (!managed || !entry) { res.json(unsupported("Only skills installed from a tracked GitHub source have an update diff.", skill.sourceRef ?? null)); return; }
+    if (!managed.enabled || entry.selection !== "selected") { res.json(unsupported("Source is disconnected. Reconnect it in Skills → Sources.", skill.sourceRef ?? null)); return; }
+    const currentRef = skill.sourceRef ?? null;
+    if (!currentRef || !/^[a-f0-9]{40}$/i.test(currentRef)) { res.json(unsupported("The installed source revision is unknown.", currentRef)); return; }
+    const read = skillSourceGitHubReader(db, companyId, req.actor, managed.connectionId);
+    const latest = await read(`/repos/${managed.fullName}/commits/${encodeURIComponent(managed.trackingRef)}`) as { sha: string };
+    const files = latest.sha.toLowerCase() === currentRef.toLowerCase() ? [] : await diffGitHubSkillUpdate({
+      repositoryUrl: managed.repositoryUrl, packageMode: managed.packageMode, skillPath: entry.path, installedCommitSha: currentRef, latestCommitSha: latest.sha,
+    }, read);
+    const result: SkillSourceUpdateDiff = { supported: true, reason: null, currentRef, latestRef: latest.sha, files };
     res.json(result);
   });
 

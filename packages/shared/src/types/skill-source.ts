@@ -43,6 +43,22 @@ export interface SkillSourceFilePreview {
   truncated: boolean;
   commitSha: string;
 }
+/** One file that differs between the installed and latest tracked source revisions. */
+export interface SkillSourceUpdateDiffFile {
+  path: string;
+  change: 'added' | 'removed' | 'modified';
+  /** Binary files and files too large to compare carry no line diff. */
+  binary: boolean;
+  /** Unified line diff ("-" installed, "+" latest), or null when not comparable. */
+  diff: string | null;
+}
+export interface SkillSourceUpdateDiff {
+  supported: boolean;
+  reason: string | null;
+  currentRef: string | null;
+  latestRef: string | null;
+  files: SkillSourceUpdateDiffFile[];
+}
 export interface SkillSourceEntry {
   id: string;
   sourceId: string;
