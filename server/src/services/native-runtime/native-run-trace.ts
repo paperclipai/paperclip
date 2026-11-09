@@ -434,6 +434,9 @@ export function createNativeRunTrace(input: {
           durationMs,
           outcome,
           ...attributes,
+          // The span's own start time. The row can be written late (deferred
+          // diagnostics), so readers must not infer the start from its write time.
+          wallStartedAtMs: startedAtMs,
         },
       });
     } catch {

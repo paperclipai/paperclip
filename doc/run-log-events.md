@@ -64,6 +64,11 @@ instance run log and add no first-party Telemetry or OpenTelemetry export.
 
 ## Provider-pack preparation timing
 
+Every `run.performance.span` payload also carries `wallStartedAtMs`, the span's own
+start time in epoch milliseconds (since 2026-11-09). Span rows can be written late
+through deferred diagnostics, so readers take a span's start from this field (or
+from the trace start plus `startOffsetMs`), never from the row's write time.
+
 `run.performance.span` also records `task.time_to_first_token` once per native
 dispatch at the first newly committed deliverable text: assistant or reasoning
 `item.delta`/`item.completed`, a redaction tail released at completion, or an

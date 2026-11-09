@@ -153,15 +153,19 @@ export function spanTraceStartMs(run: BaselineRun): number | null {
   return earliest;
 }
 
-/** Stamps each provider session load with its wall-clock start, from the span's
- * own offset (never its write time). Call on the raw run, before outage removal
- * rewrites offsets. */
+/** Stamps each provider session load with its wall-clock start (`wallStartMs`).
+ * The server writes the span's own start as `wallStartedAtMs`; runs logged before
+ * that field existed fall back to the trace start plus the span's offset, never to
+ * its write time. Call on the raw run, before outage removal rewrites offsets. */
 export function stampProviderLoadStarts(run: BaselineRun): BaselineRun {
   const anchor = spanTraceStartMs(run);
-  if (anchor === null) return run;
-  return { ...run, events: run.events.map(event => event.eventType === "run.performance.span" && event.payload?.span === "provider.session.load"
-    && Number.isFinite(Number(event.payload.startOffsetMs)) && event.payload.wallStartMs === undefined
-    ? { ...event, payload: { ...event.payload, wallStartMs: anchor + Number(event.payload.startOffsetMs) } } : event) };
+  return { ...run, events: run.events.map(event => {
+    if (event.eventType !== "run.performance.span" || event.payload?.span !== "provider.session.load" || event.payload.wallStartMs !== undefined) return event;
+    const logged = Number(event.payload.wallStartedAtMs);
+    const offset = Number(event.payload.startOffsetMs);
+    const start = Number.isFinite(logged) ? logged : anchor !== null && Number.isFinite(offset) ? anchor + offset : null;
+    return start === null ? event : { ...event, payload: { ...event.payload, wallStartMs: start } };
+  }) };
 }
 
 export function recoverySamples(runs: readonly BaselineRun[], faults: readonly BaselineFault[]): RecoverySample[] {

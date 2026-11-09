@@ -175,6 +175,15 @@ describe("speed budget checks in the native run trace", () => {
       restartTotalMs: control + 3_000, providerLoadMs: 3_000 })]);
   });
 
+  it("logs each span's own start time in its run-log row", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const trace = createNativeRunTrace({ runId: "run-1", startedAtMs: 1_000, onEvent: async event => { events.push(event); } });
+    await trace.record({ name: "provider.session.load", startedAtMs: 4_000, endedAtMs: 9_000 });
+    await trace.finish("ok");
+    expect(events.find(event => (event.payload as Record<string, unknown>)?.span === "provider.session.load")?.payload)
+      .toMatchObject({ startOffsetMs: 3_000, durationMs: 5_000, wallStartedAtMs: 4_000 });
+  });
+
   it("judges a recovery before the run finishes, so a later detach for restart keeps the warning", async () => {
     const control = LOCAL_SPEED_BUDGETS.codex.restart_recovery_control_plane.p95Ms + 1_000;
     // The load span arrives after the provider event: judged when it is recorded.

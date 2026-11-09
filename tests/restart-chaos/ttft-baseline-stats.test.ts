@@ -139,6 +139,16 @@ describe("restart recovery split", () => {
     ]);
   });
 
+  it("uses the start the server logged even when every span row was written late", () => {
+    const readyAt = Date.parse(at(10_000));
+    // All rows deferred by 8 s, so no write time can anchor the trace.
+    const late = (span: string, offset: number, duration: number) => ({ eventType: "run.performance.span", createdAt: at(offset + duration + 8_000),
+      payload: { span, startOffsetMs: offset, durationMs: duration, wallStartedAtMs: Date.parse(at(offset)) } });
+    const recovered = run("r1", "restart", [late("heartbeat.queue", 0, 100), { eventType: "session.resumed", createdAt: at(16_400) },
+      late("provider.session.load", 11_500, 4_500)]);
+    expect(recoverySamples([recovered], [{ kind: "K2", readyAt, runIds: ["r1"] }])[0]).toMatchObject({ controlPlaneMs: 1_500, providerLoadMs: 4_900 });
+  });
+
   it("takes the load start from the span's offset, not its (possibly deferred) write time", () => {
     const readyAt = Date.parse(at(10_000));
     // The load span's run-log row is written 5 s late, after the provider event.
