@@ -498,6 +498,8 @@ describeEmbeddedPostgres("status card routes", () => {
     const res = await request(app).post(`/api/status-cards/${card.id}/refresh`).send({ full: true });
     expect(res.status).toBe(202);
     expect(res.body.enqueued).toBe(true);
+    // The queued refresh carries the card's page, so the requester can link it instead of waiting for the summary.
+    expect(res.body.card.href).toBe(`/${company.issuePrefix}/status/${card.id}`);
   });
 
   it("requires tasks:assign for mutations", async () => {
