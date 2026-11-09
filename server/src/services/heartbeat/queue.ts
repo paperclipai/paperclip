@@ -357,6 +357,14 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
   );
 }
 
+/** Agent Chat outbox receipts. The outbox, not a skipped receipt, owns a capped message. */
+const CONVERSATION_COMMENT_KEY_PREFIX = "conversation-comment:";
+function dailyLimitConversationRefusal(cap: { reason: string; observed: number; limit: number }) {
+  // No receipt is written, so the person's message stays owed in the outbox
+  // until the limit resets (agent-conversations.ts conversationDeliveryHold).
+  return conflict("Agent reached its daily limit", { reason: cap.reason, observed: cap.observed, limit: cap.limit });
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -4431,6 +4439,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 message: "The agent has reached its daily limit. Your message is saved until work can resume." };
               return deferBlockedExecution(executionBlocker);
             }
+            if (opts.idempotencyKey?.startsWith(CONVERSATION_COMMENT_KEY_PREFIX)) throw dailyLimitConversationRefusal(dailyCapBlock);
             const now = new Date();
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
@@ -4840,6 +4849,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         tx,
       );
       if (dailyCapBlock) {
+        if (opts.idempotencyKey?.startsWith(CONVERSATION_COMMENT_KEY_PREFIX)) throw dailyLimitConversationRefusal(dailyCapBlock);
         const now = new Date();
         await tx.insert(agentWakeupRequests).values({
           ...durableReceiptFields,

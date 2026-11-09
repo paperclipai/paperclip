@@ -48,7 +48,7 @@ import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesA
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
-import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
+import { deliverConversationComments, heldConversationComments, isConversation } from "../services/agent-conversations.js";
 import { assertOnboardingFirstTaskDependenciesAllowed } from "../services/onboarding-first-task-admission.js";
 import { resolveChatTaskAssignment } from "../services/chat-task-assignment.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -17291,12 +17291,27 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const queue = await buildQueuedCommentQueue({
+    const actor = getActorInfo(req);
+    let queue = await buildQueuedCommentQueue({
       executor: db,
       issue,
       activeRun: await resolveActiveIssueRun(issue, { queueStateOnly: true }),
-      actor: getActorInfo(req),
+      actor,
     });
+    // A chat message held by the agent's daily limit has no wake receipt yet:
+    // show it as saved and waiting, with the reason, instead of as sent.
+    const held = queue.state === null && queue.entries.length === 0
+      ? await heldConversationComments(db, issue) : null;
+    if (held) {
+      const snapshot = buildQueuedCommentQueueSnapshot({
+        issueId: issue.id, queueId: null, state: "deferred", activeRunId: null,
+        protocol: queue.protocol, steeringDisposition: "unsupported", comments: held.comments,
+        executionWait: { reason: held.hold.reason, message: held.hold.message },
+        actorType: actor.actorType, actorId: actor.actorId,
+      });
+      // The outbox owns delivery; there is no queue to edit, send or discard.
+      queue = { ...snapshot, entries: snapshot.entries.map(entry => ({ ...entry, canEdit: false, canDiscard: false })) };
+    }
     res.json(
       await runRedactions.redactForIssue(issue.companyId, issue.id, queue),
     );

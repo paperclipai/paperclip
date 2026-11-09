@@ -4612,7 +4612,8 @@ export function recoveryService(
         }
         if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
         {
-          if (await deliverConversationComments(db, issue, deps.enqueueWakeup) === "deferred") {
+          if (await deliverConversationComments(db, issue, deps.enqueueWakeup,
+            { onDeferredDeadline: opts?.onDeferredDeadline }) === "deferred") {
             result.skipped += 1;
             continue;
           }
