@@ -430,7 +430,8 @@ function admitTaskRetry(input: TaskRetryRequest) {
         ...(replacedRequestId ? { replacedRequestId } : {}),
         ...(restartRecovery ? { initiatedBy: "restart_recovery", onBehalfOfUserId: input.actorId } : {}) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
-      chatActionId: intent.chatActionId };
+      chatActionId: intent.chatActionId,
+      ...(!active && latest.status === "scheduled_retry" ? { scheduledRetryRunId: latest.id } : {}) };
   }, { companyId: input.companyId });
 }
 

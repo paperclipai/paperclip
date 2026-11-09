@@ -39,6 +39,26 @@ describe("optimistic task Retry", () => {
     expect(container.textContent).not.toContain("Thinking");
     expect(container.textContent).not.toContain("Taking longer");
   });
+  it.each([
+    ["a replaced attempt", { requestId: null, accepted: false, stale: true }, "already replaced, so Retry did not start new work"],
+    ["a scheduled retry held by a gate", { requestId: "retry", accepted: true, stale: false,
+      scheduledRetry: { outcome: "gate_suppressed" as const, message: "The company budget is paused." } }, "The company budget is paused."],
+    ["a scheduled retry still waiting", { requestId: "retry", accepted: true, stale: false,
+      scheduledRetry: { outcome: "waiting" as const, message: "The retry is waiting for the workspace." } }, "waiting for the workspace"],
+  ])("shows why Retry did not start work for %s", async (_label, result, reason) => {
+    vi.mocked(issuesApi.retryTask).mockResolvedValue({ ...result, presentation: null } as Awaited<ReturnType<typeof issuesApi.retryTask>>);
+    await render();
+    await act(async () => container.querySelector("button")!.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(reason);
+    expect(container.textContent).not.toContain("Thinking");
+  });
+  it("shows nothing extra when Retry promoted the scheduled run", async () => {
+    vi.mocked(issuesApi.retryTask).mockResolvedValue({ requestId: "retry", accepted: true, stale: false,
+      scheduledRetry: { outcome: "promoted", message: "Retry promoted" }, presentation: null });
+    await render();
+    await act(async () => container.querySelector("button")!.click());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
   it("refreshes the inspected file recovery after an accepted Retry", async () => {
     vi.mocked(issuesApi.retryTask).mockResolvedValue({ requestId: "retry", accepted: true, stale: false,
       observedRunId: "failed-run", presentation: null } as Awaited<ReturnType<typeof issuesApi.retryTask>>);
