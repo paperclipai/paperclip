@@ -2391,7 +2391,7 @@ export class DurablePrpControlPlane {
 
   semanticToolResultsInFlight(): boolean {
     return this.#pendingSemanticCalls.size > 0 || this.#store.state.commands.some(
-      (command) => command.type === "semantic_tool.result" && command.status !== "completed");
+      (command) => command.type === "semantic_tool.result" && command.status === "pending");
   }
 
   /** A reusable close requires every admitted callback's exact durable result. */

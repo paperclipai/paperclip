@@ -7262,17 +7262,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (!Number.isSafeInteger(turnStartTimeoutMs) || turnStartTimeoutMs <= 0) {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
-    const commandDeadline = Date.now() + turnStartTimeoutMs;
+    let commandDeadline = Date.now() + turnStartTimeoutMs;
     const heldCalls = this.#core;
-    if (heldCalls && !heldCalls.semanticToolResultsSettled()) {
-      await heldCalls.recoverPendingSemanticInputs();
-      while (heldCalls.semanticToolResultsInFlight() && Date.now() < commandDeadline) {
+    if (typeof heldCalls?.semanticToolResultsSettled === "function" && !heldCalls.semanticToolResultsSettled()) {
+      let recovering = true;
+      void Promise.resolve(heldCalls.recoverPendingSemanticInputs())
+        .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))))
+        .finally(() => { recovering = false; });
+      while ((recovering || heldCalls.semanticToolResultsInFlight()) && Date.now() < commandDeadline) {
         this.#assertStartupOpen();
         this.#throwIfFailed();
         await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
       }
       this.#assertStartupOpen();
       this.#throwIfFailed();
+      commandDeadline = Date.now() + turnStartTimeoutMs;
     }
     const compactionTurn = params[COMPACTION_TURN] === true;
     const compactionPayload = compactionTurn ? runnerdCompactionTurnPayload(this.options.provider ?? "codex") : null;

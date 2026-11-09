@@ -1405,27 +1405,28 @@ it("answers a held call before starting the next turn (restart chaos t101)", asy
   const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
     return core = new OriginalCore(options);
   });
+  const order: string[] = [];
+  const recovered = vi.fn(async (call: { callId: string }) => {
+    order.push(`recover:${call.callId}`);
+    await new Promise<void>((resolveRead) => setTimeout(resolveRead, 50));
+    return { result: { success: true, contentItems: [{ type: "inputText", text: "brief body" }] } };
+  });
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory, recoverSemanticToolInput: recovered,
   });
   bundle.transport.setServerRequestHandler(vi.fn(async () => ({ success: true, contentItems: [] })));
   try {
     await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: codexSemanticToolSpecs() });
-    const order: string[] = [];
-    let held = true;
-    let inFlightChecks = 0;
-    vi.spyOn(core, "semanticToolResultsSettled").mockImplementation(() => !held);
-    vi.spyOn(core, "recoverPendingSemanticInputs").mockImplementation(async () => {
-      order.push("recover");
-    });
-    vi.spyOn(core, "semanticToolResultsInFlight").mockImplementation(() => {
-      inFlightChecks += 1;
-      if (inFlightChecks < 3) return true;
-      if (held) order.push("answered");
-      held = false;
-      return false;
-    });
+    const identity = core.store.state.identity;
+    const correlation = { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
+      turnId: identity.turnId, itemId: identity.itemId };
+    core.store.state.committedEvents.unshift({ sourceSeq: 0, sourceEventId: "held-read-input", eventType: "semantic_tool.input",
+      priority: 1, deliveryCount: 1, logicalEffectCount: 1, envelope: { payload: { runId: identity.runId,
+        normalizedSessionId: identity.normalizedSessionId, sourceEventId: "held-read-input", eventType: "semantic_tool.input",
+        itemId: identity.itemId, payload: { semantic_tool: { callId: "exec-held-read", operationId: "read_document",
+          input: { key: "brief" }, correlation } } } } });
+    expect(core.semanticToolResultsSettled()).toBe(false);
     const queueCommand = core.queueCommand.bind(core);
     vi.spyOn(core, "queueCommand").mockImplementation((type, ...rest) => {
       order.push(type);
@@ -1435,9 +1436,12 @@ it("answers a held call before starting the next turn (restart chaos t101)", asy
     void turnStarted.catch(() => undefined);
     await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Continue after the restart." }] });
     await turnStarted;
-    expect(order.indexOf("recover")).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf("recover")).toBeLessThan(order.indexOf("answered"));
-    expect(order.indexOf("answered")).toBeLessThan(order.indexOf("turn.start"));
+    expect(recovered).toHaveBeenCalledOnce();
+    expect(order.slice(0, 2)).toEqual(["recover:exec-held-read", "semantic_tool.result"]);
+    expect(order.indexOf("semantic_tool.result")).toBeLessThan(order.indexOf("turn.start"));
+    const result = core.store.state.commands.find(command => command.type === "semantic_tool.result");
+    expect(result).toMatchObject({ payload: { callId: "exec-held-read", operationId: "read_document" } });
+    expect(result!.status).not.toBe("pending");
   } finally {
     coreSpy.mockRestore();
     await bundle.transport.close().catch(() => undefined);
