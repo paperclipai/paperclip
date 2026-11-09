@@ -994,6 +994,13 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
   });
 
+  it("tells chat that instruction saves keep no history, so an undo with no listed revision asks instead of reconstructing", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Saving instructions does not record earlier versions");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("an empty history means no earlier text is retained");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("do not reconstruct it from the current file, its wording, or the activity log");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("say plainly that no earlier version was saved, and ask the person for the text they want");
+  });
+
   it("points chat at the teams catalog for ready-made teams and stops the search there", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("Ready-made teams are installable packages in Paperclip's teams catalog");
     expect(AGENT_CHAT_DIRECTIVE).toContain("list the catalog with GET /api/teams/catalog");
