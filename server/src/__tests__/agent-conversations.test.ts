@@ -994,6 +994,15 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
   });
 
+  it("points chat at the teams catalog for ready-made teams and stops the search there", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Ready-made teams are installable packages in Paperclip's teams catalog");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("list the catalog with GET /api/teams/catalog");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("do not look for others in package registries, repositories or the web");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/teams-catalog/<the team's id>");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("GET /api/teams/catalog");
+  });
+
   it("tells chat where a person can hire when the agent cannot", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("send the person to the hire form at /<prefix>/agents/new");
     expect(AGENT_CHAT_DIRECTIVE).toContain("to your own /permissions page, where they can turn on hiring for you");

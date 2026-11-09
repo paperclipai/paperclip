@@ -222,6 +222,17 @@ describe("runner API catalog", () => {
     expect(operation.description).toMatch(/agent credential/i);
     expect(operation.description).toMatch(/supervisor/i);
   });
+  it("finds the teams catalog when asked for a ready-made team", () => {
+    const operation = searchRunnerApi({ query: "ready-made team", limit: 1 }).results[0]!;
+    expect(operation.operationId).toBe("GET /api/teams/catalog");
+    expect(operation.description).toMatch(/only source of ready-made teams/i);
+    expect(operation.description).toContain("/<prefix>/teams-catalog/<team id>");
+    expect(operation.parameters.map(parameter => parameter.name)).toContain("q");
+    const preview = runnerApiOperation("POST /api/companies/{companyId}/teams/catalog/{catalogId}/preview")!;
+    expect(preview.description).toMatch(/creates no resources/i);
+    const install = runnerApiOperation("POST /api/companies/{companyId}/teams/catalog/{catalogId}/install")!;
+    expect(install.description).toMatch(/permission to create agents/i);
+  });
   it("discovers where to save project defaults without rewriting existing tasks", () => {
     const operation = searchRunnerApi({ query: "save project defaults", limit: 1 }).results[0]!;
     expect(operation.operationId).toBe("PATCH /api/projects/{id}");
