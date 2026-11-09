@@ -4,6 +4,7 @@ import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
+  experimentalApiDocs,
   experimentalApiPaths,
   experimentalApiQueries,
 } from "./experimental-api-paths.js";
@@ -51,6 +52,7 @@ import {
   updateAgentSchema,
   updatePrimaryAgentSchema,
   updateAgentPermissionsSchema,
+  updateAgentPermissionGrantSchema,
   addAgentProjectAccessSchema,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
@@ -262,6 +264,7 @@ import {
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
   confirmOwnerGoneSchema,
+  confirmRunStoppedSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -1429,6 +1432,15 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "PATCH /api/agents/{id}/permission-grants",
+  // Budget changes are board-only (assertBoard in routes/costs.ts).
+  "POST /api/companies/{companyId}/budgets/policies",
+  "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
+  "PATCH /api/companies/{companyId}/budgets",
+  "PATCH /api/agents/{agentId}/budgets",
+  // Approval decisions are board-only (assertBoard in routes/approvals.ts).
+  "POST /api/approvals/{id}/approve",
+  "POST /api/approvals/{id}/reject",
   "GET /api/agents/{id}/project-access",
   "POST /api/agents/{id}/project-access",
   "GET /api/issues/{id}/pending-questions",
@@ -1475,13 +1487,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/import/jobs/{jobId}",
   "POST /api/board-claim/{token}/claim",
   "GET /api/cli-auth/me",
-  "POST /api/companies/{companyId}/invites",
-  "GET /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
-  "GET /api/companies/{companyId}/join-requests",
-  "POST /api/companies/{companyId}/join-requests/{requestId}/approve",
-  "POST /api/companies/{companyId}/join-requests/{requestId}/reject",
-  "GET /api/companies/{companyId}/members",
   "PATCH /api/companies/{companyId}/members/{memberId}",
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
@@ -1573,6 +1579,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-identity-links/request-access",
   "POST /api/chat-endpoints/{endpointId}/publications/{publicationId}/resolve",
   "POST /api/chat-endpoints/{endpointId}/actions/{actionId}/resolve",
+  "GET /api/issues/{id}/tree-control/state",
+  "POST /api/issues/{id}/tree-control/preview",
+  "GET /api/issues/{id}/tree-holds",
+  "POST /api/issues/{id}/tree-holds",
+  "GET /api/issues/{id}/tree-holds/{holdId}",
+  "POST /api/issues/{id}/tree-holds/{holdId}/release",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -3127,6 +3139,14 @@ registry.registerPath({
 
 // ─── Teams Catalog ──────────────────────────────────────────────────────────
 
+/** Ready-made teams are found here, so these entries must match how people ask for them. */
+const TEAM_CATALOG_DESCRIPTIONS: Record<string, string> = {
+  "/api/teams/catalog":
+    "Lists Paperclip's ready-made teams: installable team packages, not agents already in a company. Each entry gives its name, description, roles (agentSlugs), project and routine counts, required skills (requiredSkills) and configuration inputs (envInputs). This catalog is the only source of ready-made teams; choose by description and roles rather than an exact name. Optional q filters by text in names, descriptions and tags. The web app has no teams catalog page; people browse it with the paperclipai teams browse CLI command.",
+  "/api/companies/{companyId}/teams/catalog/{catalogId}/preview":
+    "Shows what installing a catalog team would add to this company: planned agents, projects, routines and skills, and any name or slug conflicts with existing resources. Creates no resources, so it is also allowed in Ask and Plan modes. Company members and agents in the company can preview.",
+};
+
 for (const route of [
   ["get", "/api/teams/catalog", "List catalog teams"],
   ["get", "/api/teams/catalog/{catalogId}/files", "Get catalog team file"],
@@ -3152,8 +3172,16 @@ for (const route of [
     path: route[1],
     tags: ["teams"],
     summary: route[2],
+    ...(route[1] === "/api/teams/catalog" ? {
+      query: z.object({
+        q: z.string().optional().describe("Case-insensitive text matched against team names, descriptions and tags."),
+        kind: z.string().optional().describe("Catalog kind, such as bundled or optional."),
+        category: z.string().optional().describe("Catalog category, such as software-development."),
+      }),
+    } : {}),
+    ...(TEAM_CATALOG_DESCRIPTIONS[route[1]] ? { description: TEAM_CATALOG_DESCRIPTIONS[route[1]] } : {}),
     ...(route[1].endsWith("/install") ? {
-      description: "Imports team resources; HTTP success does not prove every required skill is ready. Read warnings for post-import failures and skillPreparations for required sources; a preparation plan is not proof of installation. Report unresolved requirements as partial completion and preserve existing resources. Use the actual returned portabilityImport agents and projects for company-scoped resource links. Before repeating an uncertain install, inspect installed teams and saved resource identities rather than creating another copy. resourceLinks provides canonical company-scoped hrefs for actual saved agents, projects and routines, including reused resources; share these links with the installation outcome.",
+      description: "Installs a catalog team into this company. Requires a board user with permission to create agents, or an agent with permission to create agents; without it, a board user can run paperclipai teams install <team id> --company-id <companyId>. Imports team resources; HTTP success does not prove every required skill is ready. Read warnings for post-import failures and skillPreparations for required sources; a preparation plan is not proof of installation. Report unresolved requirements as partial completion and preserve existing resources. Use the actual returned portabilityImport agents and projects for company-scoped resource links. Before repeating an uncertain install, inspect installed teams and saved resource identities rather than creating another copy. resourceLinks provides canonical company-scoped hrefs for actual saved agents, projects and routines, including reused resources; share these links with the installation outcome.",
       responses: { 201: r.ok(z.object({ resourceLinks: z.array(z.object({
         kind: z.enum(["agent", "project", "routine"]), id: z.string(), name: z.string(), href: z.string(),
       })) }).passthrough()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
@@ -3420,6 +3448,10 @@ registry.registerPath({
   path: "/api/companies/{companyId}/status-cards",
   tags: ["status-cards"],
   summary: "Create a status card",
+  description: "Creates a saved status card on the company's Status page: a live summary of the tasks the interestPrompt describes. "
+    + "agentId names the agent that writes its summary; without it the built-in Summarizer is used when configured. "
+    + "The response is returned before any summary exists: the card's summarizer compiles its query and writes the first summary in its own run. "
+    + "Do not wait or poll for it; reply now with the returned href as a Markdown link, which opens the card at /<prefix>/status/<cardId>.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createStatusCardSchema),
@@ -3473,6 +3505,10 @@ registerCurrentRoute({
   path: "/api/status-cards/{id}/refresh",
   tags: ["status-cards"],
   summary: "Refresh a status card",
+  description: "Queues a refresh; it does not return a new summary. The card's summarizer agent writes the update in its own generation run, after which the card's lastGeneratedAt and summary change. "
+    + "Do not sleep or poll for it: reply now that the refresh is queued, with the returned card.href as a Markdown link where the person sees the update. "
+    + "alreadyGenerating means an earlier refresh is still running. enqueued false without alreadyGenerating means this request started no run: "
+    + "if card.lastGeneratedAt is newer than before your request, a concurrent refresh already finished; otherwise the card's refresh policy deferred it, and card.state says why (such as paused_budget or paused_hours).",
   body: refreshStatusCardSchema,
 });
 
@@ -3726,8 +3762,15 @@ registry.registerPath({
   method: "get",
   path: "/api/agents/me/inbox/mine",
   tags: ["agents"],
-  summary: "Get current agent assigned inbox items",
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  summary: "List a person's Mine inbox tasks",
+  description: "Agent read of one board user's personal inbox: the tasks that person participated in and has not archived, the same set as their Mine list, which they open at /<prefix>/inbox/mine. Use it when a person asks what is in their inbox or needs their attention; it is not your own work queue (GET /api/agents/me/inbox-lite) and a company-wide task search is not a substitute. userId is required: use the person's user id, such as the authorUserId of their message.",
+  request: {
+    query: z.object({
+      userId: z.string().min(1).describe("The person's user id, such as the authorUserId of their message. Required."),
+      status: z.string().optional().describe("Comma-separated task statuses; defaults to the Mine list statuses (cancelled excluded)."),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -3794,6 +3837,16 @@ registry.registerPath({
     body: jsonBody(updateAgentPermissionsSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/agents/{id}/permission-grants",
+  tags: ["agents"],
+  summary: "Grant or revoke one explicit agent permission",
+  description: "Board-only. Requires users:manage_permissions in the agent's company. Enables an unscoped grant or removes that permission key without replacing other grants. Does not reactivate inactive memberships or start agent work. Writes an activity record in the same transaction.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(updateAgentPermissionGrantSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 const agentProjectAccessResponse = z.object({ projectIds: z.array(z.string().uuid()), canManage: z.boolean() });
@@ -3871,7 +3924,7 @@ registry.registerPath({
 });
 
 for (const operation of [
-  { suffix: "history", summary: "List immutable instruction revisions", query: z.object({ path: z.string().optional(), cursor: z.string().uuid().optional() }) },
+  { suffix: "history", summary: "List pre-upgrade instruction revisions. Current saves record no revision history; an empty list means no earlier version is retained", query: z.object({ path: z.string().optional(), cursor: z.string().uuid().optional() }) },
   { suffix: "revision/{revisionId}", summary: "Read exact instruction content at a revision", query: z.object({ path: z.string().optional() }) },
   { suffix: "diff", summary: "Compare instruction revisions (exact common prefix, removed, added, suffix)", query: z.object({ path: z.string().optional(), from: z.string().uuid(), to: z.string().uuid() }) },
 ]) {
@@ -4123,11 +4176,12 @@ registry.registerPath({
   path: "/api/companies/{companyId}/adapters/{type}/models",
   tags: ["adapters"],
   summary: "List models for an adapter type and runner provider",
+  description: "Answers which models an agent's runtime can select. For a paperclip_runner agent, pass its adapterConfig.provider, its adapterConfig.acpxAgent when the provider is acpx, and its defaultEnvironmentId; the response is that runtime's own list. An OpenCode agent whose model starts with openrouter/ uses an OpenRouter key: list those choices with type opencode_local and provider=openrouter. That list is OpenRouter's public catalog, so whether a model works depends on the key's account and is not a qualification. With those inputs, these calls answer the question: report the options with that caveat and reply, rather than enumerating providers through other routes, the shell or the web.",
   request: {
     params: z.object({ companyId: z.string(), type: z.string() }),
     query: z.object({
       provider: z
-        .enum(["codex", "acpx", "opencode", "claude_managed", "aws_agentcore"])
+        .enum(["codex", "acpx", "opencode", "claude_managed", "aws_agentcore", "openrouter"])
         .optional(),
       environmentId: z.string().optional(),
       refresh: z.string().optional(),
@@ -4319,6 +4373,29 @@ registry.registerPath({
     query: z.object({ ids: z.string().min(1).describe("One to five comma-separated task UUIDs; repeated query parameters are rejected") }),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issues/chat-bootstrap",
+  tags: ["issues"],
+  summary: "Read what the task chat needs before its first frame, for up to ten tasks",
+  description: "Accepts only the ids query parameter: one to ten comma-separated task UUIDs or identifiers, normalized (UUID lowercase, identifier uppercase) and deduplicated. Returns { items } in request order; each item has the normalized ref plus issue (GET /issues/{id}?view=core), recentComments (/recent-comments), commentInputFacts (/activity?view=comment-inputs for the recent comments), recentActivity (/activity?view=recent), recentRuns (/runs?view=recent), interactions, attachments, liveRuns and activeRun, each in that endpoint's shape. Missing, foreign and unreadable tasks are omitted. Read-only, without break-glass; private, no-store. Task-bridge keys are rejected.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ ids: z.string().min(1).describe("One to ten comma-separated task UUIDs or identifiers; other query parameters are rejected") }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{ref}/chat-bootstrap",
+  tags: ["issues"],
+  summary: "Read what the task chat needs before its first frame, for one task",
+  description: "The single-task form of /companies/{companyId}/issues/chat-bootstrap for a hard load of a task URL. Returns one item (not wrapped in items), identical to the batch item for the same ref. 404 when the task is missing or unreadable. Read-only, without break-glass; private, no-store.",
+  request: { params: z.object({ ref: z.string().describe("A task UUID or identifier") }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -6038,6 +6115,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
   tags: ["costs"],
   summary: "Resolve a budget incident",
+  description: "Board only: agent credentials get 403, so an agent cannot raise a limit or resume a budget-stopped agent. A board user chooses the new amount and resumes on the Budgets page: link [Open budgets](/<prefix>/activity/budgets) with this conversation's company prefix as <prefix>, and reply.",
   request: {
     params: z.object({ companyId: z.string(), incidentId: z.string() }),
     body: jsonBody(resolveBudgetIncidentSchema),
@@ -6076,6 +6154,7 @@ registry.registerPath({
   path: "/api/agents/{agentId}/budgets",
   tags: ["costs"],
   summary: "Update agent budget",
+  description: "Board only: agent credentials get 403. A board user changes the limit on the agent's budget tab: link [Open budget](/<prefix>/agents/<agentId>/budgets) with this conversation's company prefix as <prefix>, and reply.",
   request: {
     params: z.object({ agentId: z.string() }),
     body: jsonBody(updateBudgetSchema),
@@ -7222,6 +7301,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/invites",
   tags: ["access"],
   summary: "List company invites",
+  description: "Board members or agents holding users:invite in this company. Lists invite records; it never returns invite tokens.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -7231,6 +7311,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/invites",
   tags: ["access"],
   summary: "Create a company invite",
+  description: "Board members or agents holding users:invite in this company. Creates a shareable join link (inviteUrl) that the person who should join opens; it does not send email and has no email field. Write the returned inviteUrl as a Markdown link in your reply. Membership starts only after the person accepts the link (and a join request is approved when required). humanRole defaults to operator.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createCompanyInviteSchema),
@@ -7243,6 +7324,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/join-requests",
   tags: ["access"],
   summary: "List company join requests",
+  description: "Board members or agents holding joins:approve in this company.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -7252,6 +7334,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/join-requests/{requestId}/approve",
   tags: ["access"],
   summary: "Approve a company join request",
+  description: "Board members or agents holding joins:approve in this company.",
   request: {
     params: z.object({ companyId: z.string(), requestId: z.string() }),
   },
@@ -7263,6 +7346,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/join-requests/{requestId}/reject",
   tags: ["access"],
   summary: "Reject a company join request",
+  description: "Board members or agents holding joins:approve in this company.",
   request: {
     params: z.object({ companyId: z.string(), requestId: z.string() }),
   },
@@ -7309,6 +7393,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members",
   tags: ["access"],
   summary: "List company members",
+  description: "Board members or agents holding users:manage_permissions in this company. Returns each member's role, status and explicit grants. Changing a member's role, grants or status stays board-only: A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -7318,6 +7403,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}",
   tags: ["access"],
   summary: "Update a company member status or role",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(updateCompanyMemberSchema),
@@ -7335,6 +7421,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}/role-and-grants",
   tags: ["access"],
   summary: "Update a company member role and explicit grants",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(updateCompanyMemberWithPermissionsSchema),
@@ -7352,6 +7439,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}/archive",
   tags: ["access"],
   summary: "Archive a company member",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(archiveCompanyMemberSchema),
@@ -7369,6 +7457,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}/permissions",
   tags: ["access"],
   summary: "Update explicit company member permissions",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(updateMemberPermissionsSchema),
@@ -7554,6 +7643,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/managed-agent-profiles",
   tags: ["agents"],
   summary: "List Claude Managed Agent profiles for a company",
+  description: "Board only: agent credentials get 403. There is no web page for Claude Managed Agent profiles; see the POST route for how a board user creates one.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
@@ -7563,7 +7653,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/managed-agent-profiles",
   tags: ["agents"],
   summary: "Create or operator-attest a Claude Managed Agent profile",
-  description: "Board only: agent credentials get 403. A Claude Managed Agent runs on Anthropic's managed-agents beta. A board operator creates the company profile with an Anthropic API-key secret and a limited environment (no hosts, no packages), attests its qualification and explicitly acknowledges stateful retention before it can be enabled.",
+  description: "Board only: agent credentials get 403. A Claude Managed Agent runs on Anthropic's managed-agents beta. A board operator creates the company profile with an Anthropic API-key secret and a limited environment (no hosts, no packages), attests its qualification and explicitly acknowledges stateful retention before it can be enabled. There is no web page for this: the board user runs the CLI command `paperclipai managed-agent setup --company-id <companyId> --profile-key <key> --display-name <name> --api-key-secret-id <secretId> --acknowledge-retention` with ANTHROPIC_API_KEY set in their shell (add --probe for a read-only qualification check first). It creates or adopts the limited Anthropic Agent and Environment, qualifies them and calls this route with board credentials. The secret itself is added on the company Secrets page, /<prefix>/company/settings/secrets.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(
@@ -8509,6 +8599,7 @@ registry.registerPath({
   path: "/api/issues/{id}/tree-holds",
   tags: ["issues"],
   summary: "Create an issue tree hold",
+  description: "Board-only. An agent cannot pause, cancel or resume a task tree, and this denial is final for agents. A person pauses the parent task and all of its subtasks on the company-prefixed task page /{prefix}/issues/{identifier}: More task actions, then Pause subtree. The person resumes it later on the same page with Resume subtree. Link that task page. Moving tasks to backlog or changing assignees is not a tree pause.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createIssueTreeHoldSchema),
@@ -11083,6 +11174,15 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/recovery-actions/confirm-run-stopped",
+  tags: ["issues"],
+  summary: "Confirm that a local run whose process was never recorded stopped, so its parked Retry can start",
+  body: confirmRunStoppedSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/recovery-actions/confirm-owner-gone",
   tags: ["issues"],
   summary: "Confirm that the unrecorded server holding a stuck recovery record stopped, so recovery can release it",
@@ -11828,7 +11928,8 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/connections",
   tags: ["tool-access"],
   summary: "Create a tool connection",
-  description: OWN_MCP_SERVER_KEY,
+  description: "Saves a connection as given without checking that its server answers. To connect an MCP server from its URL, use POST /api/companies/{companyId}/tools/apps/connect with link instead: it checks the server first, and a fresh setup saves no connection when the server cannot be reached. "
+    + OWN_MCP_SERVER_KEY,
   body: createToolConnectionSchema,
   responses: {
     201: r.ok(),
@@ -13194,16 +13295,16 @@ for (const [method, path, body, summary] of [
 for (const [method, path, body] of experimentalApiPaths) {
   const query = experimentalApiQueries[`${method.toUpperCase()} ${path}`];
   const metadata = experimentalApiMetadata[`${method.toUpperCase()} ${path}`];
+  const docs = experimentalApiDocs[`${method.toUpperCase()} ${path}`];
   registry.registerPath({
     method,
     path,
     tags: ["Experimental"],
-    summary: `${method.toUpperCase()} ${path
+    summary: docs?.summary ?? `${method.toUpperCase()} ${path
       .replace(/\{[^}]+\}/g, "")
       .replace(/\/api\//, "")
       .replaceAll("/", " ")}`,
-    description:
-      "Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies.",
+    description: `${docs ? `${docs.description} ` : ""}Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies.`,
     request: {
       params: z.object(
         Object.fromEntries(

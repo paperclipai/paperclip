@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,7 +13,9 @@ import type {
   TaskSample,
 } from "./types.js";
 import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
+import type { UiRetryClick } from "./board-ui.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
+import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
 
@@ -51,6 +53,14 @@ export const REST_CONFIRM_MS = 12_000;
 export const CHILD_WAKE_GRACE_MS = 60_000;
 export const CHILD_STALL_CHECK_MS = 10_000;
 export const STOP_CONTINUE_AFTER_MS = 20_000;
+
+type ChildSpeedTask = { issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> };
+
+export async function childSpeedTasksInTurn(observers: ReadonlyArray<{ childSpeedTasks(): Promise<ChildSpeedTask[]> }>): Promise<ChildSpeedTask[]> {
+  const tasks: ChildSpeedTask[] = [];
+  for (const observer of observers) tasks.push(...await observer.childSpeedTasks());
+  return tasks;
+}
 
 export function childrenPending(children: ReadonlyArray<{ status: string | null }> | null): boolean {
   return !children || children.some(child => !["done", "cancelled", "blocked"].includes(child.status ?? ""));
@@ -184,7 +194,8 @@ export class TaskObserver {
     private readonly timeline: Timeline,
     private readonly supervisor: { serverReady: boolean; faultInProgress: boolean; serverBuild?: "upgrade_from" | "current" },
     /** Paths oracle commands may not read: the operator's home, the instance root (secrets key, database) and results. */
-    private readonly protectedRoots: readonly string[] = [os.homedir()]) {
+    private readonly protectedRoots: readonly string[] = [os.homedir()],
+    private readonly board: { clickRetry(identifier: string, issueId: string): Promise<UiRetryClick> } | null = null) {
     this.record = { plan, issueId: null, identifier: null, createdAt: null, launchError: null, samples: [], retry: null,
       restAt: null, finalStatus: null, deadlineAt: null, timedOut: false, followUp: null, faultIds: [], sweep: null,
       preFaultFiles: null, lostFiles: null };
@@ -348,7 +359,7 @@ export class TaskObserver {
       case "stop": {
         const stop = this.record.stop;
         if (!stop) return null;
-        return stop.error ? "missed" : stop.at;
+        return stop.error || stop.missed ? "missed" : stop.at;
       }
       case "result": {
         // B8: the run that received the follow-up has accepted its result but
@@ -386,7 +397,11 @@ export class TaskObserver {
     // One task's snapshot failure must not end the wave; R2 fails with the reason.
     try {
       const workspace = await this.workspacePath();
-      if (workspace) { this.record.preFaultFiles = await listWorkspaceFiles(workspace); this.record.preFaultWorkspacePath = workspace; }
+      if (workspace && this.lab.environmentKind !== "local" && !await access(workspace).then(() => true, () => false)) {
+        this.record.remoteWorkspace = true;
+      } else if (workspace) {
+        this.record.preFaultFiles = await listWorkspaceFiles(workspace); this.record.preFaultWorkspacePath = workspace;
+      }
     } catch (error) {
       this.record.preFaultSnapshotError = error instanceof Error ? error.message : String(error);
       this.timeline.add("pre_fault_snapshot_failed", { taskId: this.plan.taskId, error: this.record.preFaultSnapshotError });
@@ -414,6 +429,7 @@ export class TaskObserver {
     if (this.done || !this.record.issueId) return;
     const sample = await this.sample(now);
     this.record.samples.push(sample);
+    await this.captureRemoteFilesAtDone(sample);
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();
     await this.governanceStep(sample, now);
@@ -501,10 +517,15 @@ export class TaskObserver {
   }
 
   private async maybeStop(sample: TaskSample, now: number): Promise<boolean> {
-    if (!this.definition.stopBeforeFollowUp || this.record.stop || this.plan.followUpAfterMs === null || !sample.reachable) return false;
+    if (!this.definition.stopBeforeFollowUp || this.record.stop || this.plan.followUpAfterMs === null || !sample.serverReady) return false;
     if (now < this.record.createdAt! + this.plan.followUpAfterMs) return false;
     const running = (sample.runs ?? []).find(run => run.status === "running");
-    if (!running) return false;
+    if (!running) {
+      if (!isResting(sample)) return false;
+      this.record.stop = { at: now, runId: null, httpStatus: null, error: null, missed: true };
+      this.timeline.add("task_stop_missed", { taskId: this.plan.taskId, status: sample.issueStatus ?? null });
+      return true;
+    }
     const stop: NonNullable<TaskRecord["stop"]> = { at: now, runId: running.id, httpStatus: null, error: null };
     try {
       await this.api.post(`/api/heartbeat-runs/${running.id}/cancel`, { cancellationRequestId: randomUUID() });
@@ -588,6 +609,7 @@ export class TaskObserver {
       .catch(() => null);
     const blocked = (Array.isArray(rows) ? rows : []).filter(row => row.parentId === this.record.issueId && row.status === "blocked").map(row => String(row.id));
     const parent = await this.api.get<Json>(`/api/issues/${this.record.issueId}`).catch(() => null);
+    if (!parent) this.childStallCheckedAt = null;
     const stalled = Array.isArray(parent?.stalledDependencies) ? parent.stalledDependencies as Json[] : [];
     for (const dependency of stalled) {
       if (dependency.relation !== "child" || typeof dependency.stalledIssueId !== "string") continue;
@@ -611,8 +633,8 @@ export class TaskObserver {
     const startedBeforeContinue = [...runs.values()].filter(run => run.id !== stop.runId && run.createdAt
       && !(continueCommentId && (run.wakeCommentIds ?? []).includes(continueCommentId))
       && Date.parse(run.createdAt) > stop.at && (continueAt === null || Date.parse(run.createdAt) < continueAt)).map(run => run.id);
-    return { runId: stop.runId, runStatus: runs.get(stop.runId)?.status ?? null, runsStartedBeforeContinue: startedBeforeContinue,
-      continuePosted: Boolean(this.record.followUp?.commentId) };
+    return { runId: stop.runId, runStatus: stop.runId ? runs.get(stop.runId)?.status ?? null : null, runsStartedBeforeContinue: startedBeforeContinue,
+      continuePosted: Boolean(this.record.followUp?.commentId), ...(stop.missed ? { missed: true } : {}) };
   }
 
   private async retryBlockedChildren(childIds: readonly string[], now: number): Promise<boolean> {
@@ -623,16 +645,8 @@ export class TaskObserver {
       const interruption = child?.interruption as Json | null | undefined;
       if (interruption?.canRetry !== true) continue;
       const observedRunId = typeof interruption.observedRunId === "string" ? interruption.observedRunId : null;
-      const attempt: RetryAttempt & { childIssueId: string } = { childIssueId, at: now, observedRunId, httpStatus: null, accepted: null, error: null };
-      try {
-        const result = await this.api.post<{ accepted?: boolean }>(`/api/issues/${childIssueId}/retry`, { idempotencyKey: randomUUID(), observedRunId });
-        attempt.httpStatus = 200;
-        attempt.accepted = result?.accepted === true;
-        attempt.acceptedAt = Math.max(now, Date.now());
-      } catch (error) {
-        attempt.httpStatus = error instanceof ChaosApiError ? error.status : null;
-        attempt.error = error instanceof Error ? error.message : String(error);
-      }
+      const childRef = typeof child?.identifier === "string" ? child.identifier : childIssueId;
+      const attempt: RetryAttempt & { childIssueId: string } = { childIssueId, ...await this.clickRetry(childRef, childIssueId, observedRunId, now) };
       (this.record.childRetries ??= []).push(attempt);
       this.timeline.add("task_child_retry_clicked", { taskId: this.plan.taskId, ...attempt });
       clicked = clicked || attempt.accepted === true;
@@ -651,10 +665,22 @@ export class TaskObserver {
 
   private async retry(sample: TaskSample, now: number): Promise<RetryAttempt> {
     const observedRunId = sample.interruption?.observedRunId ?? (this.issue?.executionBlocker?.runId as string | undefined) ?? null;
+    const attempt = await this.clickRetry(this.record.identifier ?? this.record.issueId!, this.record.issueId!, observedRunId, now);
+    this.timeline.add("task_retry_clicked", { taskId: this.plan.taskId, ...attempt });
+    return attempt;
+  }
+
+  private async clickRetry(issueRef: string, issueId: string, observedRunId: string | null, now: number): Promise<RetryAttempt> {
     const attempt: RetryAttempt = { at: now, observedRunId, httpStatus: null, accepted: null, error: null };
+    if (this.board) {
+      const click = await this.board.clickRetry(issueRef, issueId);
+      Object.assign(attempt, { via: "ui", httpStatus: click.httpStatus, accepted: click.accepted, error: click.error, bannerText: click.bannerText });
+      if (click.accepted) attempt.acceptedAt = Math.max(now, Date.now());
+      return attempt;
+    }
+    attempt.via = "api";
     try {
-      const result = await this.api.post<{ accepted?: boolean }>(`/api/issues/${this.record.issueId}/retry`,
-        { idempotencyKey: randomUUID(), observedRunId });
+      const result = await this.api.post<{ accepted?: boolean }>(`/api/issues/${issueId}/retry`, { idempotencyKey: randomUUID(), observedRunId });
       attempt.httpStatus = 200;
       attempt.accepted = result?.accepted === true;
       attempt.acceptedAt = Math.max(now, Date.now());
@@ -662,8 +688,18 @@ export class TaskObserver {
       attempt.httpStatus = error instanceof ChaosApiError ? error.status : null;
       attempt.error = error instanceof Error ? error.message : String(error);
     }
-    this.timeline.add("task_retry_clicked", { taskId: this.plan.taskId, ...attempt });
     return attempt;
+  }
+
+  private async remoteWorkspaceFile(issueId: string, relative: string): Promise<string | null> {
+    const captured = this.record.remoteFiles?.[relative];
+    return typeof captured === "string" ? captured : await readRemoteWorkspaceFile(this.api, issueId, relative);
+  }
+
+  private async captureRemoteFilesAtDone(sample: TaskSample): Promise<void> {
+    const wanted = this.definition.collect.files(this.plan.nonce);
+    if (!wanted.length || this.lab.environmentKind === "local" || sample.issueStatus !== "done" || !this.record.issueId) return;
+    await captureRemoteWorkspaceFiles(this.api, this.record.issueId, wanted, this.record.remoteFiles ??= {});
   }
 
   async workspacePath(): Promise<string | null> {
@@ -805,7 +841,7 @@ export class TaskObserver {
       runsStartedWhilePaused: governance.runsStartedWhilePaused });
   }
 
-  async childSpeedTasks(): Promise<Array<{ issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }>> {
+  async childSpeedTasks(): Promise<ChildSpeedTask[]> {
     if (!this.definition.collect.childDocuments || !this.record.issueId) return [];
     const rows = await this.api.get<Json[]>(`/api/companies/${this.lab.companyId}/issues?view=index&parentIds=${encodeURIComponent(this.record.issueId)}&limit=20`);
     const tasks: Array<{ issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }> = [];
@@ -862,15 +898,29 @@ export class TaskObserver {
     }
     const files: Record<string, string | null> = {};
     const commands: OracleArtifacts["commands"] = {};
-    if (workspacePath) {
-      for (const relative of definition.collect.files(this.plan.nonce)) {
-        files[relative] = await readFile(path.join(workspacePath, relative), "utf8").catch(() => null);
-      }
-      // Agent-editable code: run it sandboxed, away from the operator's home directory.
+    const runCommands = async (cwd: string) => {
       for (const command of definition.collect.commands) {
         const argv = typeof command.argv === "function" ? command.argv(this.plan.nonce) : command.argv;
-        commands[command.name] = await runOracleCommand(argv, workspacePath, { protectedRoots: this.protectedRoots,
+        commands[command.name] = await runOracleCommand(argv, cwd, { protectedRoots: this.protectedRoots,
           readableFiles: argv[0] === process.execPath ? [process.execPath] : [] });
+      }
+    };
+    const wanted = definition.collect.files(this.plan.nonce);
+    if (workspacePath && await access(workspacePath).then(() => true, () => false)) {
+      for (const relative of wanted) files[relative] = await readFile(path.join(workspacePath, relative), "utf8").catch(() => null);
+      await runCommands(workspacePath);
+    } else if (workspacePath && wanted.length) {
+      const staged = await mkdtemp(path.join(os.tmpdir(), "restart-chaos-oracle-"));
+      try {
+        for (const relative of wanted) {
+          files[relative] = await this.remoteWorkspaceFile(issueId, relative);
+          if (files[relative] === null) continue;
+          await mkdir(path.dirname(path.join(staged, relative)), { recursive: true });
+          await writeFile(path.join(staged, relative), files[relative]!);
+        }
+        await runCommands(staged);
+      } finally {
+        await rm(staged, { recursive: true, force: true });
       }
     }
     return {

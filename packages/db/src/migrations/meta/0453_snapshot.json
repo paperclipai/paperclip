@@ -1,5 +1,5 @@
 {
-  "id": "9de6ee58-419c-437c-bfc0-911b0128dbf5",
+  "id": "d54bfeb4-dedb-4f8b-9195-a4d4aa67d71f",
   "prevId": "64e8be1e-e0cb-4cd8-85e0-0fdcce5eafde",
   "version": "7",
   "dialect": "postgresql",
@@ -35562,6 +35562,27 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_company_native_workspace_idx": {
+          "name": "heartbeat_runs_company_native_workspace_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"runner_profile_json\"->'nativeWorkspaceSync'->>'workspaceId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_company_issue_created_idx": {
           "name": "heartbeat_runs_company_issue_created_idx",
           "columns": [
@@ -35839,21 +35860,6 @@
               "expression": "coalesce(\n        \"native_issue_id\"::text,\n        nullif(\"context_snapshot\"->>'issueId', ''),\n        nullif(\"context_snapshot\"->>'taskId', ''),\n        nullif(\"context_snapshot\"->>'taskKey', '')\n      )",
               "asc": true,
               "isExpression": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": true,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_wakeup_request_id_idx": {
-          "name": "heartbeat_runs_wakeup_request_id_idx",
-          "columns": [
-            {
-              "expression": "wakeup_request_id",
-              "isExpression": false,
-              "asc": true,
               "nulls": "last"
             }
           ],

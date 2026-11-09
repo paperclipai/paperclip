@@ -1612,7 +1612,7 @@ function StreamlinedIssuesList({
           // navigate so keyboard-driven opens paint from cache instantly, the
           // same way pointer hover/click does through the issue link. Mirrors
           // the inbox Enter handler.
-          void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
+          void prefetchIssueDetailForNavigation(queryClient, pathId, { issue, history: true });
           navigate(createIssueDetailPath(pathId), { state: detailState });
           break;
         }

@@ -26,6 +26,7 @@ import { resolveCodexCommand } from "../drivers/codex/codex-command.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
 import { readLinuxProcessStartedAt } from "./linux-process-start.js";
+import { reapExitedRunnerLineage } from "./runner-lineage-reap.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -3905,6 +3906,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #resolveHandlerReady!: () => void;
   #core: DurablePrpControlPlane | null = null;
   #handle: RunnerProcessHandle | null = null;
+  /** The runnerd handle that exited on its own while the session was open. */
+  #lostRunnerHandle: RunnerProcessHandle | null = null;
   #adoptedRunnerMonitor: NodeJS.Timeout | null = null;
   #adoptedRunnerAuthenticated = false;
   #pump: NodeJS.Timeout | null = null;
@@ -3995,6 +3998,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #closedSignal: Promise<void>;
   #resolveClosedSignal!: () => void;
   #closePromise: Promise<void> | null = null;
+  #shutdownSettled = false;
   #probeRetirement: Promise<void> | null = null;
   readonly prepareConversationResume?: CodexAppServerTransport["prepareConversationResume"];
   #detachPromise: Promise<void> | null = null;
@@ -5185,8 +5189,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return false;
   }
 
+  // Release shares the warm admission budget: a turn-end restart can delay the drain receipt.
   async #drainSettledProviderEventsBeforeSuspend(
-    timeoutMs = 1_000,
+    timeoutMs = coldAdmissionTimeoutMs(this.options.provider, this.options.acpxAgent, false),
     providerStopConfirmed = false,
   ): Promise<boolean> {
     const core = this.#core;
@@ -5236,6 +5241,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     this.#closePromise ??= this.#closeOnce();
     return this.#closePromise;
+  }
+
+  async settleCancelledTurn(input: { turnId: string; reason: string }) {
+    const core = this.#core;
+    if (!core || this.#controllerDetachedForRestart || this.#releaseEpisode || this.#turnStartResponsePending
+      || (this.controllerAcceptedCompletedTurnId() ?? this.#turnId) !== input.turnId) return null;
+    const identity = structuredClone(core.store.state.identity);
+    await this.close(input.reason);
+    if (!this.#shutdownSettled || this.#controllerDetachedForRestart || this.#core !== core
+      || !recoveryIdentityMatches(core.store.state.identity, identity)) return null;
+    return { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, turnId: input.turnId };
   }
 
   retireProbeResources(timeoutMs?: number): Promise<void> {
@@ -5404,6 +5420,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let providerDrained = false;
     let cleanupProviderStopConfirmed = false;
     let suspensionRequired = false;
+    // runnerd exited on its own, unsuspended, while the session was open: it
+    // was lost (killed or crashed), not stopped or broken by this close.
+    let runnerLost = false;
     let lastSuspensionState: Record<string, unknown> | null = null;
     let suspensionState: {
       commandStatus: string | null;
@@ -5452,7 +5471,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // their authority is safe to rotate; require the same exact suspension
       // barrier even when there is no remote checkpoint callback.
       suspensionRequired = true;
-      runnerSuspended = await awaitRunnerSuspensionBarrier({
+      // A runnerd lost while the session was open can never answer. A queued
+      // suspend would stay pending in the saved control-plane state and reach
+      // the next runnerd on this root as a stale terminal command.
+      const lostLocalRunner = this.#handle !== null && this.#lostRunnerHandle === this.#handle
+        && !this.options.runnerProcessLauncher && !adoptedRunner;
+      runnerSuspended = !lostLocalRunner && await awaitRunnerSuspensionBarrier({
         commands: () => this.#core?.store.state.commands ?? [],
         queueSuspend: (commandId) => {
           this.#core?.queueCommand("runner.suspend", {}, commandId, true);
@@ -5467,6 +5491,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         pump: () => this.#pumpEventsSafely(),
         deadline: closeDeadline,
       });
+      runnerLost = !runnerSuspended && this.#handle !== null && this.#lostRunnerHandle === this.#handle;
       if (!runnerSuspended) {
         const command = [...this.#core.store.state.commands].reverse().find(
           (candidate) => candidate.type === "runner.suspend",
@@ -5590,7 +5615,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#controlPlaneCheckpoint = null;
       this.#controlPlaneRelease = null;
     }
-    if (suspensionRequired && !runnerSettled) {
+    // A lost local runnerd cannot suspend, and its provider and tools were
+    // re-parented when it died. When runnerd's own lineage journal proves
+    // every one of them stopped, nothing owns the state root any more: the
+    // session ends as a crash stop, and recovery decides from the durable
+    // record how to continue. Anything less keeps the quarantine below.
+    const runnerLossReaped = suspensionRequired && !runnerSettled && preparationConfirmed
+      && !runnerSuspended && runnerLost
+      && await this.#reapLostLocalRunnerLineage(closeDeadline);
+    if (suspensionRequired && !runnerSettled && !runnerLossReaped) {
       const settlement = {
         runnerSuspended,
         providerDrained,
@@ -5612,6 +5645,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (!preparationConfirmed) {
       throw new Error(`Native runner ${attachmentPending ? "attachment" : "startup"} cleanup is unconfirmed; recovery state retained.`);
     }
+    this.#shutdownSettled = runnerSettled;
     if (this.#ownsRoot && !adoptedRunner) {
       rmSync(this.#root, { recursive: true, force: true });
     }
@@ -7262,7 +7296,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (!Number.isSafeInteger(turnStartTimeoutMs) || turnStartTimeoutMs <= 0) {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
-    const commandDeadline = Date.now() + turnStartTimeoutMs;
+    let commandDeadline = Date.now() + turnStartTimeoutMs;
+    const heldCalls = this.#core;
+    if (typeof heldCalls?.semanticToolResultsSettled === "function" && !heldCalls.semanticToolResultsSettled()) {
+      let recovering = true;
+      void Promise.resolve(heldCalls.recoverPendingSemanticInputs())
+        .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))))
+        .finally(() => { recovering = false; });
+      while (recovering && Date.now() < commandDeadline) {
+        this.#assertStartupOpen();
+        this.#throwIfFailed();
+        await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      this.#assertStartupOpen();
+      this.#throwIfFailed();
+      if (recovering) throw new Error("native_turn_start_held_tool_calls_unresolved: recovering an earlier turn's held Paperclip tool calls did not finish before the turn-start deadline");
+      commandDeadline = Date.now() + turnStartTimeoutMs;
+    }
     const compactionTurn = params[COMPACTION_TURN] === true;
     const compactionPayload = compactionTurn ? runnerdCompactionTurnPayload(this.options.provider ?? "codex") : null;
     const input = Array.isArray(params.input) ? params.input.map(record) : [];
@@ -8242,8 +8292,32 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
   }
 
+  /** True only when a runnerd this transport spawned on this host has exited
+   * and its journalled provider and tool processes are proven stopped. */
+  async #reapLostLocalRunnerLineage(closeDeadline: number): Promise<boolean> {
+    const handle = this.#handle;
+    const runnerPid = handle?.child.pid;
+    // A launcher-owned runnerd may run elsewhere (a remote sandbox), and an
+    // adopted runnerd is not this process's child, so its exit is not ours to
+    // confirm. Only a direct local spawn is reaped here.
+    if (!handle || runnerPid === undefined || this.options.runnerProcessLauncher
+      || this.options.adoptExistingRunner || !(await this.#runnerHasExited())) return false;
+    const report = await reapExitedRunnerLineage({
+      runnerBinaryPath: this.options.runnerBinary
+        ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary()),
+      stateDirectory: this.options.runnerStateDirectory ?? resolve(this.#root, "runner"),
+      runnerPid,
+      // A small floor keeps the proof possible when close already used its budget.
+      timeoutMs: Math.max(5_000, closeDeadline - Date.now()),
+    });
+    this.#diagnostic(`native_session_runner_loss_lineage ${JSON.stringify(report ?? { verified: false, reason: "report_unavailable" })}`);
+    return report?.verified === true;
+  }
+
   async #runnerHasExited(): Promise<boolean> {
-    if (this.#handle) return this.#handle.isExitConfirmed?.() ?? this.#handle.child.exitCode !== null;
+    // A runnerd killed by a signal reports exitCode null and its signalCode.
+    if (this.#handle) return this.#handle.isExitConfirmed?.()
+      ?? (this.#handle.child.exitCode !== null || (this.#handle.child.signalCode ?? null) !== null);
     const adoptedRunner = this.options.adoptExistingRunner;
     if (!adoptedRunner) return true;
     return !(await adoptedRunner.isAlive());
@@ -8330,6 +8404,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         const detail = result.stderr.trim() || result.stdout.trim();
         if (detail) this.#diagnostic(detail.slice(-4_096));
         this.#publish();
+        // runnerd exited on its own while the session was still open, without
+        // a clean suspend: it was lost (killed or crashed). Close may reap its
+        // journalled lineage. An exit during close is never treated as loss.
+        if (!this.#closed && exitConfirmed && !(result.code === 0 &&
+          this.#core?.store.state.committedEvents.some((event) => event.eventType === "runner.suspending")))
+          this.#lostRunnerHandle = handle;
         if (this.#closed || this.#failure !== null || this.#handle !== handle || (this.#releaseEpisode && !this.#releaseEpisode.claimed))
           return;
         // A per-turn runner exits after its terminal suffix is durably ACKed.

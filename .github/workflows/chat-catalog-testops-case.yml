@@ -165,7 +165,12 @@ jobs:
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ inputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: refs/heads/codex/chat-catalog-master-integration
           PAPERCLIP_PLAYWRIGHT_CHANNEL: chrome
-        run: pnpm test:e2e:runner -- --id "${{ fromJSON(inputs.cell).executionId }}" --max-parallel 1 --max-automatic-retries 0 > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
+          PAPERCLIP_RUNNER_E2E_SELECTED_ID: ${{ fromJSON(inputs.cell).executionId }}
+        run: |
+          # Agents can read any process's argv in /proc; keep the case id off the command line.
+          selector=(--id "$PAPERCLIP_RUNNER_E2E_SELECTED_ID")
+          if grep -q PAPERCLIP_RUNNER_E2E_SELECTED_ID tests/runner-e2e/selectors.ts 2>/dev/null; then selector=(); fi
+          pnpm test:e2e:runner -- "${selector[@]}" --max-parallel 1 --max-automatic-retries 0 > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
       - name: Retain original evidence after success or failure
         if: always() && steps.cell_credentials.outcome == 'success'
         env: *cell_session
