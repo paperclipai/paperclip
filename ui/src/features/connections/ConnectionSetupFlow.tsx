@@ -1122,11 +1122,15 @@ function StandardConnectionSetupFlow({
     && !connectionMethodSupportsAutomaticOAuth(candidate),
   );
   const selectedCustomOAuth = Boolean(customOAuthMethod && connectionMethodKey === customOAuthMethod.key);
+  const githubPatMethod = entry?.slug === "github"
+    ? entry.methods.find((candidate) => candidate.key === "mcp-key" && candidate.auth === "api_key")
+    : undefined;
+  const selectedGitHubPat = Boolean(githubPatMethod && connectionMethodKey === githubPatMethod.key);
   const selectedRuntimeAuth = Boolean(fullRequestedDefinition?.methods.some(candidate =>
     candidate.transport === "runtime_auth" && candidate.ai
     && candidate.key === (connectionMethodKey || requestedMethodKey),
   ));
-  const requestedDefinitionUsesManagedConnector = !selectedCustomOAuth && !selectedRuntimeAuth && Boolean(
+  const requestedDefinitionUsesManagedConnector = !selectedCustomOAuth && !selectedRuntimeAuth && !selectedGitHubPat && Boolean(
     fullRequestedDefinition?.methods.some((candidate) =>
       candidate.oauthStrategy === "paperclip_cloud_connector"
       || candidate.oauthStrategy === "paperclip_id_connector"
@@ -2611,6 +2615,11 @@ function StandardConnectionSetupFlow({
               Use your own {entry.name} OAuth app
             </Button>
           ) : null}
+          {githubPatMethod ? (
+            <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(githubPatMethod.key)}>
+              Use a GitHub personal access token
+            </Button>
+          ) : null}
           <div className="mt-6 flex items-center justify-between gap-3">
             <Button type="button" variant="ghost" onClick={backToGallery}>Back</Button>
             <Button type="button" disabled={galleryQuery.isFetching} onClick={() => void galleryQuery.refetch()}>
@@ -2639,6 +2648,11 @@ function StandardConnectionSetupFlow({
             {customOAuthMethod ? (
               <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
                 Use your own {entry.name} OAuth app
+              </Button>
+            ) : null}
+            {githubPatMethod ? (
+              <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(githubPatMethod.key)}>
+                Use a GitHub personal access token
               </Button>
             ) : null}
 

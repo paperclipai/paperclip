@@ -70,6 +70,12 @@ A self-hosted instance needs one Paperclip Cloud approval before its first
 managed connection. After approval, setup returns to the connect screen and continues to
 GitHub without another instance approval or a service restart.
 
+To connect without Paperclip Cloud, choose **Use a GitHub personal access token**
+on the enrollment screen, enter a fine-grained PAT, and select which agents may
+use it. The token is stored in the instance's secret system and sent to GitHub
+for authorized requests. The same option is available when managed GitHub sign-in
+is unavailable. A PAT connection does not provide the Cloud webhook inbox.
+
 If an unapproved enrollment link expires, return to setup and select
 **Continue**. Paperclip asks the server for a valid link. The server reuses a
 live pending enrollment or replaces an expired one; this does not revoke or
