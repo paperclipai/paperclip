@@ -11515,6 +11515,11 @@ registerCurrentRoute({
 
 // --- Tool access -------------------------------------------------------------
 
+/** Where a person manages a company model service; agents relay this page instead of guessing a settings route. */
+function companyModelServiceSettingsPage(section: string, condition = "") {
+  return `People who manage connections configure, enable and test this in the ${section} section of the company-prefixed /company/settings/connections page; link it as a Markdown link to /<prefix>/company/settings/connections, not the general /company/settings page.${condition} Agent credentials cannot change or test it.`;
+}
+
 for (const [method, suffix, summary] of [
   ["get", "", "Get prompt injection settings and eligible shared OpenRouter connections; non-managers receive no settings or choices"],
   ["put", "", "Configure opt-in prompt injection model checks as a board connection manager"],
@@ -11522,7 +11527,7 @@ for (const [method, suffix, summary] of [
   ["post", "/test", "Classify two fixed billed samples using saved settings as a board connection manager; fallback is not a passing model test"],
 ] as const) registerCurrentRoute({
   method, path: `/api/companies/{companyId}/prompt-injection-prevention${suffix}`,
-  tags: ["prompt-injection-prevention"], summary,
+  tags: ["prompt-injection-prevention"], summary, description: companyModelServiceSettingsPage("Prompt Injection Prevention"),
   ...(method === "put" ? { body: updatePromptInjectionPreventionSchema } : {}),
   ...(method === "post" ? { body: z.object({}).strict() } : {}),
   ...(suffix === "/models" ? { query: z.object({ connectionId: z.string().uuid() }) } : {}),
@@ -11537,6 +11542,7 @@ for (const [method, suffix, summary] of [
   ["post", "/test", "Generate a fixed billed fast response sample"],
   ["get", "/history", "List fast response accounting and publication outcomes"],
 ] as const) registerCurrentRoute({ method, path: `/api/companies/{companyId}/fast-response${suffix}`, tags: ["fast-responses"], summary,
+  description: companyModelServiceSettingsPage("Fast response", " The section is shown only while an instance admin has fast responses turned on in /<prefix>/company/settings/instance/experimental."),
   ...(method === "put" ? { body: updateFastResponseSchema } : {}), responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable } });
 
 const observabilitySignalReceiptSchema = z.object({
@@ -11576,26 +11582,31 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Get decision settings, compatible connections, and manager capability",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "put", path: "/api/companies/{companyId}/decision-model", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Configure the company decision model as a connection manager", body: updateDecisionModelSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model/availability", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Check local decision configuration and caller authorization without contacting a provider",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "post", path: "/api/companies/{companyId}/decision-model/test", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Run the fixed billed three-question setup test as a connection manager",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model/history", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "List decision metadata and charges with authorized task links",
   query: costReportQuerySchema.extend({ limit: z.coerce.number().int().min(1).max(500).optional() }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
