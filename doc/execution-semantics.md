@@ -4885,6 +4885,19 @@ Upgrade diagnostics retain their existing `ready` meaning and add bounded retain
 header evidence. That inventory is preliminary, reports partial coverage, and
 does not certify workspace durability or volume removal.
 
+The upgrade census separates current execution from an old, unowned native
+preparation that recovery explicitly retained as `awaiting_evidence`. This requires
+an observed preparation with no result, failure, process identity, or checkpoint
+header, and an expired, recorded owner from a different controller boot. Such a
+run is counted as `retainedBlockedRuns`, rather than `activeRuns` or
+`recoverableRuns`. It remains unchanged and held for its normal recovery path;
+the observation does not prove that its old controller stopped or authorize
+replay, resource release, or volume removal. A run registered in the current
+process still blocks unless it has positive recovery evidence. Before/after
+execution counters, pending wake operations, drain state, and a truncated census
+continue to prevent readiness. Persisted queued wakes are not deleted by an
+upgrade; the pending wake counter measures in-process admission operations.
+
 `importNativeControllerRecovery` is an internal one-source operation for the
 migration owner while old controller files remain available. It requires the
 admitted configuration digest and exact supervisor snapshot, locks the issue,
