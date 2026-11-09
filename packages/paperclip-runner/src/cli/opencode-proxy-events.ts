@@ -19,16 +19,6 @@ export function openCodeProxyToolNotification(input: {
   } };
 }
 
-/**
- * runnerd reads this proxy's frames in order, only after its controller
- * acknowledges earlier events, and saves its whole durable provider state
- * (including every tool result retained in the turn) for each frame it reads.
- * Its Codex facade turns only assistant text deltas into events; it discards
- * every other `item/delta`. OpenCode reports reasoning and tool output one
- * token at a time, so forwarding those deltas queued each tool call behind
- * hundreds of discarded frames, and the wait grew with every result the turn
- * retained. Completed reasoning and tool items still arrive as item/completed.
- */
 export function shouldForwardOpenCodeProxyItem(input: {
   eventType?: string;
   turnId?: string;
