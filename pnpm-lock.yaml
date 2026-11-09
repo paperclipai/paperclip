@@ -46,7 +46,7 @@ patchedDependencies:
     hash: 25xv27loodfejozcsygclyiyau
     path: patches/acpx@0.13.1.patch
   embedded-postgres@18.1.0-beta.16:
-    hash: 55uhvnotpqyiy37rn3pqpukhei
+    hash: kdcv7jktfkjeobz3aaelnxgkqa
     path: patches/embedded-postgres@18.1.0-beta.16.patch
   postgres@3.4.9:
     hash: 6q4cic6qawywsyeo2spgnjamda
@@ -145,7 +145,7 @@ importers:
         version: 0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda))
       embedded-postgres:
         specifier: ^18.1.0-beta.16
-        version: 18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei)
+        version: 18.1.0-beta.16(patch_hash=kdcv7jktfkjeobz3aaelnxgkqa)
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -417,7 +417,7 @@ importers:
         version: 0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda))
       embedded-postgres:
         specifier: ^18.1.0-beta.16
-        version: 18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei)
+        version: 18.1.0-beta.16(patch_hash=kdcv7jktfkjeobz3aaelnxgkqa)
       postgres:
         specifier: ^3.4.9
         version: 3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)
@@ -521,6 +521,9 @@ importers:
       '@openai/codex':
         specifier: 0.160.0
         version: 0.160.0
+      '@openai/codex-native':
+        specifier: npm:@openai/codex@0.166.0
+        version: '@openai/codex@0.166.0'
       acpx:
         specifier: 0.13.1
         version: 0.13.1(patch_hash=25xv27loodfejozcsygclyiyau)
@@ -950,6 +953,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.31.0
         version: 1.31.0(zod@4.6.7)
+      '@openai/codex-native':
+        specifier: npm:@openai/codex@0.166.0
+        version: '@openai/codex@0.166.0'
       '@openrouter/ai-sdk-provider':
         specifier: 3.1.0
         version: 3.1.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
@@ -1057,7 +1063,7 @@ importers:
         version: 0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda))
       embedded-postgres:
         specifier: ^18.1.0-beta.16
-        version: 18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei)
+        version: 18.1.0-beta.16(patch_hash=kdcv7jktfkjeobz3aaelnxgkqa)
       express:
         specifier: ^5.1.0
         version: 5.2.1
@@ -3453,6 +3459,47 @@ packages:
 
   '@openai/codex@0.160.0-win32-x64':
     resolution: {integrity: sha512-/gCFcuOmGlQkgGivWCtY8BNEDixh70Pue0HZOk9S8bj2vUIE1GLD9zcNB/KqqDJmn0S+lIttauLpzQnw6HOCHA==}
+    engines: {node: '>=16'}
+    cpu: [x64]
+    os: [win32]
+
+  '@openai/codex@0.166.0':
+    resolution: {integrity: sha512-2Szlp1l1cz5TX1ccpX4Zok3DZrot9xeZe0km+6/1v8JmqxADwyJxKBJah4dBymkwtS25j/u6dipJusTOI97Z8Q==}
+    engines: {node: '>=16'}
+    hasBin: true
+
+  '@openai/codex@0.166.0-darwin-arm64':
+    resolution: {integrity: sha512-5fWH6qqUInACcRADIewjlnRxDb4QLe0uriwehiZz0+viuAAB8I+WWefqw4xwHvyKaxeiGX4uK56+vrgfvFk3FQ==}
+    engines: {node: '>=16'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@openai/codex@0.166.0-darwin-x64':
+    resolution: {integrity: sha512-Vj5wXJPizKmrzNtnRNQf9PP6FJkG3iJU/UO3NE4WvkENZGoQfmImdwf4MVRI5NgwjSuC6LT0HbBRHPVVnwGHuw==}
+    engines: {node: '>=16'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@openai/codex@0.166.0-linux-arm64':
+    resolution: {integrity: sha512-w0ScAsBr9aZKtIFrh6HN6KU2yjKKeSCzYfbb7DB0Ccj4BYPzeZtUeQprbycLCwuX3AFQdbdjapmLho2iot74jQ==}
+    engines: {node: '>=16'}
+    cpu: [arm64]
+    os: [linux]
+
+  '@openai/codex@0.166.0-linux-x64':
+    resolution: {integrity: sha512-CxDm3+D1cpbGJeHrdzINoG+3wn9BVncP4qpZaaNYkxe8iPtRJOYyCJnnPoVjWRIBvI9vPKbRoifsMSA5xDaUpw==}
+    engines: {node: '>=16'}
+    cpu: [x64]
+    os: [linux]
+
+  '@openai/codex@0.166.0-win32-arm64':
+    resolution: {integrity: sha512-LWO1cyGlxbKgeUM7QJ1a6QMSsJi++3PqgIi6BmIUBoj/kzZqRIR69UDMQgeU/9izzJFYMSbwt++lHnUFyjQXlA==}
+    engines: {node: '>=16'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@openai/codex@0.166.0-win32-x64':
+    resolution: {integrity: sha512-NS8Ps5oG5r19pCrMCUXwUqOui6odnUIoBlQkrjCJ+h1k6KiwCzC/+mI9d3nSZCqFoVONPBTmqyq8NYq3YaFGyA==}
     engines: {node: '>=16'}
     cpu: [x64]
     os: [win32]
@@ -11693,6 +11740,33 @@ snapshots:
   '@openai/codex@0.160.0-win32-x64':
     optional: true
 
+  '@openai/codex@0.166.0':
+    optionalDependencies:
+      '@openai/codex-darwin-arm64': '@openai/codex@0.166.0-darwin-arm64'
+      '@openai/codex-darwin-x64': '@openai/codex@0.166.0-darwin-x64'
+      '@openai/codex-linux-arm64': '@openai/codex@0.166.0-linux-arm64'
+      '@openai/codex-linux-x64': '@openai/codex@0.166.0-linux-x64'
+      '@openai/codex-win32-arm64': '@openai/codex@0.166.0-win32-arm64'
+      '@openai/codex-win32-x64': '@openai/codex@0.166.0-win32-x64'
+
+  '@openai/codex@0.166.0-darwin-arm64':
+    optional: true
+
+  '@openai/codex@0.166.0-darwin-x64':
+    optional: true
+
+  '@openai/codex@0.166.0-linux-arm64':
+    optional: true
+
+  '@openai/codex@0.166.0-linux-x64':
+    optional: true
+
+  '@openai/codex@0.166.0-win32-arm64':
+    optional: true
+
+  '@openai/codex@0.166.0-win32-x64':
+    optional: true
+
   '@openrouter/ai-sdk-provider@3.1.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
     dependencies:
       ai: 7.0.130(zod@4.6.7)
@@ -14714,7 +14788,7 @@ snapshots:
 
   elkjs@0.9.3: {}
 
-  embedded-postgres@18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei):
+  embedded-postgres@18.1.0-beta.16(patch_hash=kdcv7jktfkjeobz3aaelnxgkqa):
     dependencies:
       async-exit-hook: 2.0.1
       pg: 8.18.0
