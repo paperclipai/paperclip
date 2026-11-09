@@ -2,14 +2,15 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues,
+  agents, agentWakeupRequests, assets, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueAttachments,
+  issueComments, issues,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { undeliveredLegacyUserCommentIds } from "../explicit-native-continuation.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import {
-  claimFirstTurnQueuedInput, firstTurnClaimedCommentIds, runAcceptsFirstTurnQueuedInput,
+  claimFirstTurnQueuedInput, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput,
 } from "./first-turn-queued-input.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -145,5 +146,43 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
     await queueMessage(f, "mine");
     await db.update(agentWakeupRequests).set({ requestedByActorId: "someone-else" }).where(eq(agentWakeupRequests.companyId, f.companyId));
     expect(await claimFirstTurnQueuedInput(db, binding(f, f.runId))).toBeNull();
+  });
+  it("seals on a one-connection pool without waiting for a second connection", async () => {
+    const f = await seed();
+    await queueMessage(f, "secret-free follow-up");
+    const single = createDb(database.connectionString, { maxConnections: 1 });
+    try {
+      const sealed = await Promise.race([
+        claimFirstTurnQueuedInput(single, binding(f, f.runId)),
+        new Promise<"stuck">((resolve) => setTimeout(() => resolve("stuck"), 5_000)),
+      ]);
+      expect(sealed).toContain("secret-free follow-up");
+    } finally {
+      await single.$client.end({ timeout: 1 });
+    }
+  });
+
+  it("leaves a message with files on its own delivery path so the files reach the agent", async () => {
+    const f = await seed();
+    await queueMessage(f, "text only");
+    const withFile = await queueMessage(f, "see the attached screenshot");
+    const [asset] = await db.insert(assets).values({ companyId: f.companyId, provider: "local_disk",
+      objectKey: `${f.companyId}/screenshot`, originalFilename: "screenshot.png", contentType: "image/png",
+      byteSize: 1, sha256: "0".repeat(64) }).returning();
+    await db.insert(issueAttachments).values({ companyId: f.companyId, issueId: f.issueId, assetId: asset!.id,
+      issueCommentId: withFile });
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    const queuedIds = (wake!.payload?._paperclipWakeContext as { wakeCommentIds: string[] }).wakeCommentIds;
+    // Interrupt keeps its meaning for this queue: the first turn cannot take all of it.
+    expect(await firstTurnTakesAllQueuedComments(db, { companyId: f.companyId, commentIds: queuedIds })).toBe(false);
+    const firstTurn = await claimFirstTurnQueuedInput(db, binding(f, f.runId));
+    expect(firstTurn).toContain("text only");
+    expect(firstTurn).not.toContain("see the attached screenshot");
+    const run = await readRun(f.runId);
+    expect(firstTurnClaimedCommentIds(run).has(withFile)).toBe(false);
+    await accept(f, f.runId);
+    // Still owed after the turn: release promotion delivers it with its file.
+    expect([...await deliveredQueuedCommentIds(db, { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId,
+      commentIds: [withFile] })]).toEqual([]);
   });
 });

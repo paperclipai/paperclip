@@ -44,7 +44,7 @@ import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } fro
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
-import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
+import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
@@ -17290,6 +17290,8 @@ export function issueRoutes(
         // messages into that turn. Stopping it would only discard its setup.
         if (locked.activeRun && !issue.conversationAgentId && issue.executionRunId === locked.activeRun.id &&
             deferredWakeJoinsFirstTurn(locked.wake, locked.activeRun) &&
+            await firstTurnTakesAllQueuedComments(tx, { companyId: issue.companyId,
+              commentIds: queuedCommentIdsFromWakePayload(locked.wake.payload) }) &&
             await runAcceptsFirstTurnQueuedInput(tx, locked.activeRun)) {
           return { firstTurnRunId: locked.activeRun.id };
         }

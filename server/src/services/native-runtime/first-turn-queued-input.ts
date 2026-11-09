@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, heartbeatRunEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRunEvents, heartbeatRuns, issueAttachments, issueComments, issues } from "@paperclipai/db";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
 
 import { queuedCommentIdsFromWakePayload } from "../issue-queued-comment-queue.js";
@@ -139,7 +139,11 @@ async function readQueuedMessages(
     eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
     inArray(issueComments.id, input.commentIds), eq(issueComments.authorUserId, input.responsibleUserId),
     isNull(issueComments.authorAgentId), isNull(issueComments.createdByRunId),
-    isNull(issueComments.deletedAt)));
+    isNull(issueComments.deletedAt),
+    // The prompt carries text only. A message with files keeps its own
+    // delivery, which stages those files for the turn that reads it.
+    sql`not exists (select 1 from ${issueAttachments} where ${issueAttachments.companyId} = ${input.companyId}
+      and ${issueAttachments.issueCommentId} = ${issueComments.id})`));
   const delivered = input.excludeDelivered
     ? await deliveredQueuedCommentIds(tx, { companyId: input.companyId, issueId: input.issueId, agentId: input.agentId,
       commentIds: rows.map(row => row.id) })
@@ -162,9 +166,11 @@ export async function claimFirstTurnQueuedInput(
   db: Db,
   binding: { companyId: string; runId: string; issueId: string; agentId: string },
 ): Promise<string | null> {
-  const render = async (messages: QueuedMessage[]) => messages.length === 0 ? null : renderFirstTurnQueuedInput(
-    await createRunSecretRedactionRegistry(db).redactForIssue(binding.companyId, binding.issueId, messages));
   return db.transaction(async (tx) => {
+    // Redact on this transaction's own connection: a second pool connection
+    // while the seal holds its locks can wait forever on a one-connection pool.
+    const render = async (messages: QueuedMessage[]) => messages.length === 0 ? null : renderFirstTurnQueuedInput(
+      await createRunSecretRedactionRegistry(tx as unknown as Db).redactForIssue(binding.companyId, binding.issueId, messages));
     // Lock in the queue routes' order (task, queue, run) so a concurrent
     // Interrupt and this seal serialize instead of deadlocking.
     const [issue] = await tx.select({ conversationAgentId: issues.conversationAgentId, executionRunId: issues.executionRunId })
@@ -235,4 +241,18 @@ export async function runAcceptsFirstTurnQueuedInput(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     inArray(heartbeatRunEvents.eventType, [...PROVIDER_TURN_ACCEPTED_EVENT_TYPES]))).limit(1);
   return !accepted;
+}
+
+/**
+ * True when the first turn can take every one of these queued messages. A
+ * message with files keeps its own delivery, so Interrupt must still apply.
+ */
+export async function firstTurnTakesAllQueuedComments(
+  tx: Pick<Db, "select">,
+  input: { companyId: string; commentIds: string[] },
+): Promise<boolean> {
+  if (input.commentIds.length === 0) return false;
+  const [withFiles] = await tx.select({ id: issueAttachments.id }).from(issueAttachments).where(and(
+    eq(issueAttachments.companyId, input.companyId), inArray(issueAttachments.issueCommentId, input.commentIds))).limit(1);
+  return !withFiles;
 }
