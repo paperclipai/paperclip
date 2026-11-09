@@ -33,7 +33,7 @@ import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error
 import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
 import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
-import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
+import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
 import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
 import { logger } from "../../middleware/logger.js";
@@ -816,6 +816,8 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.failRun(f.failure(outage));
     expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE,
+      error: STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE });
   });
 
   it("keeps an ordinary adapter failure on the normal recovery path", async () => {

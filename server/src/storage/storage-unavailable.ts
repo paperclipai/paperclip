@@ -9,6 +9,8 @@ export const STORAGE_UNAVAILABLE_WAIT_RETRY_REASON = "storage_unavailable_wait";
 
 export const STORAGE_UNAVAILABLE_MESSAGE = "File storage was unavailable, so this attempt stopped before it could save its work. Paperclip will retry automatically when storage is back.";
 
+export const STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE = "File storage stayed unavailable through every automatic retry, so Paperclip stopped retrying this task. Retry once storage is back.";
+
 export const STORAGE_UNAVAILABLE_RETRY = {
   retryReason: STORAGE_UNAVAILABLE_WAIT_RETRY_REASON, wakeReason: "storage_unavailable_retry", maxAttempts: 10, delayMs: 60_000,
 } as const;

@@ -19,7 +19,7 @@ import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, findEnvironmentProviderUnavailab
 import { REPOSITORY_CATALOG_UNAVAILABLE_CODE, findRepositoryCatalogUnavailableError } from "../repository-catalog-unavailable-error.js";
 import { findWorkspaceProviderFailure } from "../workspace-provider-failure.js";
 import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
-import { isStorageUnavailableError, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
+import { isStorageUnavailableError, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
@@ -1294,6 +1294,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           return null;
         })
         : null;
+      if (storageWait?.outcome === "retry_exhausted") await markStorageWaitExhausted(livenessRun);
       if (storageWait?.outcome !== "scheduled" && storageWait?.outcome !== "retry_exhausted") {
         await scheduleInteractionContinuationInfrastructureRetryIfEligible(
           livenessRun,
@@ -1358,6 +1359,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         logger.warn({ err: error, runId: run.id }, "interrupted native turn Retry request failed");
       });
     }
+  }
+
+  async function markStorageWaitExhausted(run: typeof heartbeatRuns.$inferSelect) {
+    await db.update(heartbeatRuns).set({ error: STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.errorCode, STORAGE_UNAVAILABLE_CODE)))
+      .catch((error: unknown) => logger.warn({ err: error, runId: run.id }, "failed to record an exhausted storage wait"));
   }
 
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {
@@ -1647,6 +1654,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             return null;
           });
           reviewedChatRetryScheduled = retry?.outcome === "scheduled";
+          if (livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE && retry?.outcome === "retry_exhausted") await markStorageWaitExhausted(livenessRun);
           storageWaitScheduled = livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE && retry?.outcome === "scheduled";
         }
       }
