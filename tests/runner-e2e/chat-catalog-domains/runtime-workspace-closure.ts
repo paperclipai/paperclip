@@ -66,6 +66,8 @@ export const runtimeWorkspaceClosureCases = [runtimeDefinition("workspaces.close
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/execution-workspaces/${workspace.id}`, { waitUntil: "domcontentloaded" });
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
     await expect(ctx.input.page.getByRole("heading", { name: workspace.name!, exact: true }).first()).toBeVisible();
+    // The workspace page opens on Tasks; the close control lives on its Configuration tab.
+    await ctx.input.page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await expect(ctx.input.page.getByRole("button", { name: "Close workspace", exact: true })).toBeDisabled();
     const artifact = state.retainedArtifact as Artifact;
     const download = ctx.input.page.waitForEvent("download");
