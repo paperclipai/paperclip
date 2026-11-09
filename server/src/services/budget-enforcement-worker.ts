@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
@@ -11,6 +12,7 @@ import {
   type BudgetServiceHooks,
 } from "./budgets.js";
 import { hasPendingBudgetEvaluation } from "./budget-evaluation-work.js";
+import { hasDeliverableBudgetResume, nextBudgetResumeClaimExpiryAt } from "./budget-resume-continuation.js";
 import { readCostAccountingWork } from "./run-cost-accounting.js";
 import { subscribeAllCompanyLiveEvents } from "./live-events.js";
 
@@ -32,6 +34,7 @@ export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, 
   let reconciling = false;
   let reconciliationFailed = false;
   let nextDeadline: number | null = null;
+  let resumeClaimDeadline: number | null = null;
   return coordinator.register(DELIVERY_QUEUES.budgetEnforcement, {
     retryMs: 1_000,
     coalesceMs: 1_000,
@@ -50,15 +53,28 @@ export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, 
       evaluationCursor = evaluation.nextCursor;
       if (signal.aborted) return;
       await withBudgetSpan("budget.enforcement.deliver", () => deliverBudgetEnforcement(db, hooks));
+      if (signal.aborted) return;
+      // Claims a resume saved, including runs whose Stop this pass just landed.
+      // Registered with the always-on budget worker, not scheduled agent work.
+      await hooks.deliverResumeContinuations?.().catch(error =>
+        logger.warn({ err: error }, "Budget resume continuations remain pending"));
     },
     async hasPending() {
-      const [pending, next, evaluation] = await Promise.all([
+      const [pending, next, evaluation, resume, claimExpiry] = await Promise.all([
         hasPendingBudgetEnforcement(db), nextBudgetReconciliationAt(db), hasPendingBudgetEvaluation(db),
+        // A deliverable resume claim (for example after a retryable refusal or
+        // a database error) keeps this worker on its retry schedule.
+        hooks.deliverResumeContinuations ? hasDeliverableBudgetResume(db) : Promise.resolve(false),
+        // A claim held by a dispatcher that failed becomes deliverable when it
+        // goes stale; wake for that moment without another budget signal.
+        hooks.deliverResumeContinuations ? nextBudgetResumeClaimExpiryAt(db) : Promise.resolve(null),
       ]);
       nextDeadline = next?.getTime() ?? null;
-      return pending || evaluation || reconciling || startup || evaluationCursor !== null;
+      resumeClaimDeadline = claimExpiry ?? null;
+      return pending || evaluation || resume || reconciling || startup || evaluationCursor !== null;
     },
-    nextRunAt: () => nextDeadline,
+    nextRunAt: () => nextDeadline === null ? resumeClaimDeadline
+      : resumeClaimDeadline === null ? nextDeadline : Math.min(nextDeadline, resumeClaimDeadline),
   });
 }
 
