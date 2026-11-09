@@ -7,7 +7,7 @@ import {
   ListObjectsV2Command,
   ListObjectVersionsCommand,
 } from "@aws-sdk/client-s3";
-import { assertSourceFileSize, fileRangeMd5, putS3Multipart, putS3MultipartFile } from "./s3-multipart.js";
+import { assertSourceFileSize, fileRangeMd5, putS3Multipart, putS3MultipartFile, sendFileRequestWithRetry } from "./s3-multipart.js";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
@@ -64,6 +64,43 @@ async function toReadableStream(body: unknown): Promise<Readable> {
   }
 
   throw unprocessable("Unsupported S3 body stream type");
+}
+
+function observeBodyFailures(stream: Readable, response: unknown) {
+  stream.on("error", function recordBodyFailure(error) {
+    recordS3BodyFailure(error, response);
+    if (stream.listenerCount("error") === 1) throw error;
+  });
+  return stream;
+}
+
+const BODY_RESUME_ATTEMPTS = 3;
+const TRANSIENT_BODY_ERRORS = new Set(["ECONNRESET", "ETIMEDOUT", "EPIPE", "ECONNABORTED", "ERR_STREAM_PREMATURE_CLOSE", "UND_ERR_SOCKET"]);
+
+function isTransientBodyError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  return (typeof code === "string" && TRANSIENT_BODY_ERRORS.has(code))
+    || (typeof message === "string" && /socket hang up|aborted|premature close/i.test(message));
+}
+
+async function* resumeBodyAfterTransientFailure(first: Readable, reopen: (offset: number) => Promise<Readable>, signal?: AbortSignal) {
+  let current = first, offset = 0, resumes = 0;
+  while (true) {
+    try {
+      for await (const chunk of current) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+        offset += bytes.length;
+        yield bytes;
+      }
+      return;
+    } catch (error) {
+      current.destroy();
+      if (signal?.aborted || resumes >= BODY_RESUME_ATTEMPTS || !isTransientBodyError(error)) throw error;
+      resumes += 1;
+      current = await reopen(offset);
+    }
+  }
 }
 
 function toDate(value: Date | undefined): Date | undefined {
@@ -164,13 +201,15 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
         if (input.body instanceof Readable) input.body.destroy();
         await assertSourceFileSize(sourceFile, input.contentLength);
         const contentMd5 = await fileRangeMd5(sourceFile, 0, input.contentLength - 1, input.signal);
-        const body = createReadStream(sourceFile);
-        try {
-          await withS3FailureDiagnostics("put_object", () => fileClient.send(new PutObjectCommand({
-            Bucket: bucket, Key: key, Body: body, ContentType: input.contentType,
-            ContentLength: input.contentLength, ContentMD5: contentMd5,
-          }), { abortSignal: input.signal }));
-        } finally { body.destroy(); }
+        await sendFileRequestWithRetry(input.signal, async () => {
+          const body = createReadStream(sourceFile);
+          try {
+            await withS3FailureDiagnostics("put_object", () => fileClient.send(new PutObjectCommand({
+              Bucket: bucket, Key: key, Body: body, ContentType: input.contentType,
+              ContentLength: input.contentLength, ContentMD5: contentMd5,
+            }), { abortSignal: input.signal }));
+          } finally { body.destroy(); }
+        });
         return { integrity: "server_verified_md5" } as const;
       }
       if (input.contentLength > 16 * 1024 * 1024) {
@@ -201,13 +240,20 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           { abortSignal: input.signal },
         ));
 
-        const stream = await toReadableStream(output.Body);
-        // Observe, do not handle: a consumer without an error listener still
-        // sees the failure exactly as it would without this one.
-        stream.on("error", function recordBodyFailure(error) {
-          recordS3BodyFailure(error, output);
-          if (stream.listenerCount("error") === 1) throw error;
-        });
+        const first = observeBodyFailures(await toReadableStream(output.Body), output);
+        const etag = output.ETag;
+        const start = input.range?.start ?? 0;
+        const end = input.range?.end ?? (typeof output.ContentLength === "number" ? output.ContentLength - 1 : undefined);
+        const reopen = async (offset: number) => {
+          const resumed = await withS3FailureDiagnostics("get_object", () => client.send(new GetObjectCommand({
+            Bucket: bucket, Key: key, IfMatch: etag,
+            Range: `bytes=${start + offset}-${end ?? ""}`,
+          }), { abortSignal: input.signal }));
+          return observeBodyFailures(await toReadableStream(resumed.Body), resumed);
+        };
+        const stream = etag && end !== undefined
+          ? Readable.from(resumeBodyAfterTransientFailure(first, reopen, input.signal), { objectMode: false })
+          : first;
         if (input.signal) addAbortSignal(input.signal, stream);
         return {
           stream,

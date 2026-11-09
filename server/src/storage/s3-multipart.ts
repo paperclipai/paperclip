@@ -147,6 +147,25 @@ function isRequestRateLimited(error: unknown) {
   return name === "SlowDown" || $metadata?.httpStatusCode === 503 || $metadata?.httpStatusCode === 429;
 }
 
+export async function sendFileRequestWithRetry<T>(signal: AbortSignal | undefined, send: () => Promise<T>): Promise<T> {
+  for (let failures = 0, throttles = 0; ;) {
+    signal?.throwIfAborted();
+    try {
+      return await send();
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (isRequestRateLimited(error)) {
+        if (++throttles >= THROTTLED_PART_ATTEMPTS) throw error;
+        const ceiling = Math.min(THROTTLE_BACKOFF_MAX_MS, THROTTLE_BACKOFF_BASE_MS * 2 ** (throttles - 1));
+        await delay(Math.floor(Math.random() * ceiling), undefined, { signal });
+        continue;
+      }
+      if (++failures >= FILE_PART_ATTEMPTS) throw error;
+      await delay(failures * 500, undefined, { signal });
+    }
+  }
+}
+
 /** Base64 MD5 of an inclusive byte range, as the Content-MD5 header expects. */
 export async function fileRangeMd5(file: string, start: number, end: number, signal?: AbortSignal) {
   const digest = createHash("md5");
