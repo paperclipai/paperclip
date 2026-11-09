@@ -17,6 +17,7 @@ vi.mock("../services/budgets.js", () => ({
   flushBudgetEvaluationWorkPage: work.evaluate,
 }));
 vi.mock("../services/budget-evaluation-work.js", () => ({ hasPendingBudgetEvaluation: work.evaluationPending }));
+vi.mock("../services/budget-resume-continuation.js", () => ({ hasDeliverableBudgetResume: vi.fn(async () => false) }));
 vi.mock("../services/run-cost-accounting.js", () => ({ readCostAccountingWork: work.accounting }));
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -49,6 +50,17 @@ function setup() {
 }
 
 describe("budget accounting delivery", () => {
+  // H1 review: budget-resume claims are delivered by the always-on budget
+  // worker, after the pass's Stop delivery, independent of scheduled agent work.
+  it("delivers budget-resume continuations after Stop delivery in each pass", async () => {
+    const s = setup();
+    const order: string[] = [];
+    work.deliver.mockImplementation(async () => { order.push("stops"); });
+    const deliverResumeContinuations = vi.fn(async () => { order.push("continuations"); });
+    await registerBudgetEnforcementWork(s.db, s.coordinator, { deliverResumeContinuations }).ready;
+    expect(order).toEqual(["stops", "continuations"]);
+  });
+
   it("continues cancellation delivery and retries a failed startup reconciliation", async () => {
     const s = setup();
     work.reconcile.mockResolvedValueOnce({ nextCursor: null, hadFailures: true });
