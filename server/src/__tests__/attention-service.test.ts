@@ -1072,12 +1072,23 @@ describeEmbeddedPostgres("attention service", () => {
 
     // The partial index predicate must stay implied by the query predicate;
     // otherwise the scan silently falls back to reading all company events.
+    // Check a forced generic plan too: prepared statements reuse it, and only
+    // literal predicates (not bound parameters) let it use a partial index.
     const query = listAttentionExhaustedRuns(db, companyId).toSQL();
-    const plan = await db.$client.begin(async (tx) => {
+    const literal = (value: unknown) => `'${String(value).replaceAll("'", "''")}'`;
+    const plans = await db.$client.begin(async (tx) => {
       await tx.unsafe("SET LOCAL enable_seqscan = off");
-      return tx.unsafe(`EXPLAIN (FORMAT JSON) ${query.sql}`, query.params as never[]);
+      const fresh = await tx.unsafe(`EXPLAIN (FORMAT JSON) ${query.sql}`, query.params as never[]);
+      await tx.unsafe("SET LOCAL plan_cache_mode = force_generic_plan");
+      await tx.unsafe(`PREPARE attention_exhausted_runs AS ${query.sql}`);
+      const generic = await tx.unsafe(
+        `EXPLAIN (FORMAT JSON) EXECUTE attention_exhausted_runs(${query.params.map(literal).join(", ")})`,
+      );
+      await tx.unsafe("DEALLOCATE attention_exhausted_runs");
+      return { fresh, generic };
     });
-    expect(JSON.stringify(plan)).toContain("heartbeat_run_events_retry_exhausted_idx");
+    expect(JSON.stringify(plans.fresh)).toContain("heartbeat_run_events_retry_exhausted_idx");
+    expect(JSON.stringify(plans.generic)).toContain("heartbeat_run_events_retry_exhausted_idx");
   });
 
   it("suppresses failed-run attention after a newer run for the same issue", async () => {
