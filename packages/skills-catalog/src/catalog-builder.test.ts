@@ -60,6 +60,31 @@ describe("skills catalog manifest", () => {
     expect(result.manifest.skills[0]!.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
+  it("ignores local bytecode and OS files when inventorying a skill", async () => {
+    const packageDir = await createCatalogPackage();
+    await writeSkill(packageDir, "bundled", "software-development", "scripted-skill", {
+      frontmatter: [
+        "name: Scripted Skill",
+        "description: A skill with scripts that leaves local bytecode behind.",
+        "key: paperclipai/bundled/software-development/scripted-skill",
+      ],
+      files: {
+        "scripts/run.py": "print('hi')\n",
+        "scripts/__pycache__/run.cpython-314.pyc": "bytecode",
+        "scripts/run.pyc": "bytecode",
+        ".DS_Store": "junk",
+      },
+    });
+
+    const result = await buildCatalogManifest({ packageDir, generatedAt: "2026-05-26T00:00:00.000Z" });
+
+    expect(result.errors).toEqual([]);
+    expect(result.manifest.skills[0]!.files.map((file) => file.path)).toEqual([
+      "SKILL.md",
+      "scripts/run.py",
+    ]);
+  });
+
   it("builds stable manifest entries from pinned GitHub references", async () => {
     const packageDir = await createCatalogPackage();
     const skillMarkdown = [
