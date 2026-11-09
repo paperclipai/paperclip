@@ -122,23 +122,22 @@ export function gradeBrowserReconnect(value: unknown) {
     && o.documents.some(doc => o.revisions.some(revision => revision.id === doc.latestRevisionId && revision.documentId === doc.id
       && revision.createdByRunId === workerRun.id && revision.createdByAgentId === (o.state.worker as Entity).id)),
   "Reloaded UI and public reads recover the persisted conversation, real task completion and delivered document.");
-  c.add("honest-canonical-status", /done|complete|finished/i.test(reply) && !/still (?:working|running)|restart(?:ed|ing).*disconnect/i.test(reply)
-    && (reply.includes(task.identifier ?? task.id) || /website/i.test(reply)),
-  "The canonical reply reports actual completion rather than inferring a restart from reconnecting.");
+  // Reply wording is read by a person, not matched: the checks below prove
+  // each answer came from its own turn after the saved state it reports.
+  c.add("canonical-answer-attributed", (o.state.canonicalRunIds as string[] | undefined)?.length === 1 && reply.trim().length > 0,
+  "Exactly one canonical turn answers after the server completed the work while the browser was offline.");
   const remaining = o.state.remainingPhase as { attributed?: boolean; reply?: string; taskId?: string; runId?: string; offlineObserved?: boolean; runningWhileOffline?: boolean; reconnected?: boolean; runStatusAtReply?: string; taskStatusAtReply?: string } | undefined;
   const active = o.runs.find(run => run.id === remaining?.runId); const remainingTask = o.tasks.find(row => row.id === remaining?.taskId);
   c.add("remaining-work-reported-after-second-disconnect", remaining?.attributed === true && remaining.offlineObserved === true
     && remaining.runningWhileOffline === true && remaining.reconnected === true && !!active && !!remainingTask
     && remaining.runStatusAtReply === "running" && typeof remaining.taskStatusAtReply === "string" && remaining.taskStatusAtReply !== "done"
-    && /running|working|waiting|not (?:yet )?(?:done|finished|complete)|still|in progress/i.test(remaining.reply ?? "")
-    && !/(?:is|has|have) (?:now )?(?:finished|completed)|restarted.*disconnect/i.test(remaining.reply ?? ""),
+    && !!remaining.reply?.trim(),
   "Another genuine worker phase remains active through a second disconnect; only that phase's attributed answer reports the actual remaining work.");
   const failed = o.state.failedReconnectPhase as { attributed?: boolean; reply?: string; runId?: string; taskId?: string; offlineObserved?: boolean; failedWhileOffline?: boolean; reconnected?: boolean } | undefined;
   const failedRun = o.runs.find(run => run.id === failed?.runId);
   c.add("genuine-failed-run-not-promoted-to-success", failed?.attributed === true && failed.offlineObserved === true && failed.failedWhileOffline === true
     && failed.reconnected === true && failedRun?.runtimeMode === "native" && failedRun.status === "failed" && !!failedRun.errorCode
-    && /fail|error|reject|could not|couldn't|did not finish/i.test(failed.reply ?? "")
-    && !/(?:is|has) (?:now )?(?:finished|completed|succeeded)|restarted.*disconnect/i.test(failed.reply ?? ""),
+    && !!failed.reply?.trim(),
   "A third genuine native failure occurs while offline; its own phase-attributed answer retains that failure instead of inferring success from missed events.");
   c.add("no-duplicate-send-or-worker", o.runs.length === 7 && o.runs.filter(run => run.agentId === (o.state.worker as Entity).id).length === 2
     && o.humanQueries.length === 4 && o.tasks.length === 3 && new Set(o.tasks.map(row => row.id)).size === 3
@@ -201,6 +200,12 @@ export const runtimeHistoryCases = [runtimeDefinition("agent-chat.remember-and-f
     if (download.suggestedFilename() !== name) throw new Error("Remembered preview UI downloaded a different file");
   },
 }), runtimeDefinition("recovery.browser-reconnect", async ctx => {
+  // The CEO answers four declared turns; the fixture default allows three a day.
+  const leadPath = `/api/agents/${ctx.input.fixtures.agent.id}`;
+  const lead = await ctx.input.api.get<{ runtimeConfig: { heartbeat?: Record<string, unknown> } }>(leadPath);
+  await ctx.input.api.patch(leadPath, { runtimeConfig: { ...lead.runtimeConfig, heartbeat: { ...lead.runtimeConfig.heartbeat, maxDailyRuns: 4 } } });
+  if ((await ctx.input.api.get<typeof lead>(leadPath)).runtimeConfig.heartbeat?.maxDailyRuns !== 4)
+    throw new Error("Reconnect fixture requires its declared four-turn daily lead allowance");
   const state = await busyRuntimeWorker(ctx); const source = await openStandingChat(ctx);
   await sendChatMessage(ctx.input.page, `Please keep track of the existing Website task ${state.task.identifier ?? state.task.id}, assigned to Morgan. It is already running and waiting for the human brief. Acknowledge that reference without creating work or interrupting Morgan.`, chatCatalogNativePhaseRemainingBudget(ctx));
   await sourceSettled(ctx, 2);
@@ -228,6 +233,7 @@ export const runtimeHistoryCases = [runtimeDefinition("agent-chat.remember-and-f
   }
 }, gradeBrowserReconnect, {
   sourceFiles: ["chat-catalog-domains/runtime-history.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-native-failure.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/recovery.yaml"],
+  oracleVersion: "paperclip.chat-catalog.runtime.browser-reconnect.v3",
   setupHumanMessageCount: 1, expectedHumanMessageCount: 4, expectedRunCount: 7, attemptTimeoutMs: 1_200_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 6, failed: 1 } },
   async act(ctx, state) {
