@@ -534,11 +534,12 @@ describe("agent auth middleware", () => {
   it("populates agent-key actors from the key responsible user binding", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const keyId = randomUUID();
     const token = "pcp_test_agent_key";
     const { db } = createDbState({
       agent: { id: agentId, companyId },
       agentKey: {
-        id: randomUUID(),
+        id: keyId,
         agentId,
         companyId,
         keyHash: hashToken(token),
@@ -555,6 +556,7 @@ describe("agent auth middleware", () => {
       type: "agent",
       agentId,
       companyId,
+      keyId,
       onBehalfOfUserId: "user-key",
       source: "agent_key",
     });
@@ -590,6 +592,7 @@ describe("agent auth middleware", () => {
       action: "auth.agent_key_missing_responsible_user",
       entityType: "agent_api_key",
       entityId: keyId,
+      apiKeyId: keyId,
       details: { method: "GET", url: `/companies/${companyId}/protected` },
     });
   });

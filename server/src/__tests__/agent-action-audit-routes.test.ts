@@ -547,7 +547,7 @@ describePostgres("agent action audit routes", () => {
 
     const lines = response.text.trim().split("\r\n");
     expect(lines[0]).toBe(
-      "createdAt,action,actorType,actorId,agentId,runId,responsibleUserId,entityType,entityId,issueIdentifier,issueTitle,commentExcerpt,documentKey",
+      "createdAt,action,actorType,actorId,agentId,runId,apiKeyId,responsibleUserId,entityType,entityId,issueIdentifier,issueTitle,commentExcerpt,documentKey",
     );
     // Three seeded activity rows → three CSV data rows (the export reads before it logs itself).
     expect(lines).toHaveLength(4);

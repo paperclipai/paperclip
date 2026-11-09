@@ -137,6 +137,23 @@ describe("activity routes", () => {
     mockAccessService.canUser.mockResolvedValue(false);
   });
 
+  it.each([
+    ["Board API key", { type: "board", userId: "user-1", companyIds: ["company-1"], source: "board_key", keyId: "00000000-0000-4000-8000-000000000001" }, "00000000-0000-4000-8000-000000000001"],
+    ["session", { type: "board", userId: "user-1", companyIds: ["company-1"], source: "session" }, null],
+  ])("stamps %s authentication on directly created activity", async (_label, actor, apiKeyId) => {
+    mockActivityService.create.mockImplementation(async (input) => input);
+    const app = await createApp(actor);
+    const res = await requestApp(app, baseUrl => request(baseUrl)
+      .post("/api/companies/company-1/activity")
+      .send({ actorType: "user", actorId: "user-1", action: "company.updated", entityType: "company", entityId: "company-1" }));
+
+    expect(res.status).toBe(201);
+    expect(mockActivityService.create).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      apiKeyId,
+    }));
+  });
+
   it("lets an agent read activity for an authorized issue", async () => {
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-1", companyId: "company-1", projectId: null, parentId: null,
@@ -223,6 +240,7 @@ describe("activity routes", () => {
       createdAt: "2026-08-04T00:00:00.000Z",
       agentId: null,
       runId: null,
+      apiKeyId: null,
       responsibleUserId: null,
       details: null,
     });

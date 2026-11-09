@@ -193,6 +193,7 @@ async function auditAgentKeyMissingResponsibleUser(
       action: "auth.agent_key_missing_responsible_user",
       entityType: "agent_api_key",
       entityId: input.keyId,
+      apiKeyId: input.keyId,
       ...(isUuidLike(input.agentId) ? { agentId: input.agentId } : {}),
       details: {
         method: input.method,

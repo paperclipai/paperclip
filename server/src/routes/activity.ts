@@ -28,6 +28,7 @@ const AUDIT_CSV_COLUMNS = [
   "actorId",
   "agentId",
   "runId",
+  "apiKeyId",
   "responsibleUserId",
   "entityType",
   "entityId",
@@ -63,6 +64,7 @@ type AuditCsvRow = {
   actorId: string | null;
   agentId: string | null;
   runId: string | null;
+  apiKeyId: string | null;
   responsibleUserId: string | null;
   entityType: string;
   entityId: string;
@@ -81,6 +83,7 @@ function auditRowsToCsv(rows: AuditCsvRow[]): string {
       csvCell(row.actorId),
       csvCell(row.agentId),
       csvCell(row.runId),
+      csvCell(row.apiKeyId),
       csvCell(row.responsibleUserId),
       csvCell(row.entityType),
       csvCell(row.entityId),
@@ -165,6 +168,7 @@ export function activityRoutes(db: Db) {
     items: Array<{
       agentId: string | null;
       runId: string | null;
+      apiKeyId: string | null;
       responsibleUserId: string | null;
       details: unknown;
     }>;
@@ -175,6 +179,7 @@ export function activityRoutes(db: Db) {
         ...item,
         agentId: null,
         runId: null,
+        apiKeyId: null,
         responsibleUserId: null,
         details: null,
       })),
@@ -347,6 +352,7 @@ export function activityRoutes(db: Db) {
     const event = await svc.create({
       companyId,
       ...req.body,
+      apiKeyId: req.actor.keyId ?? null,
       details: req.body.details ? sanitizeRecord(req.body.details) : null,
     });
     res.status(201).json(event);

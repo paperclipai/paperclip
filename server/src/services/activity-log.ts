@@ -15,6 +15,7 @@ import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { currentRequestActor } from "./request-actor-context.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
@@ -65,6 +66,7 @@ export interface LogActivityInput {
   entityId: string;
   agentId?: string | null;
   runId?: string | null;
+  apiKeyId?: string | null;
   agentApiKeyId?: string | null;
   issueId?: string | null;
   details?: Record<string, unknown> | null;
@@ -167,6 +169,9 @@ export function publishActivity(publication: ActivityPublication) {
 export async function persistActivity(db: Db, input: LogActivityInput, receipt?: { id: string }) {
   const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
+  const apiKeyId = readNonEmptyString(input.apiKeyId)
+    ?? readNonEmptyString(input.agentApiKeyId)
+    ?? readNonEmptyString(currentRequestActor()?.keyId);
   const insert = (runner: Db) => runner.insert(activityLog).values({
     ...(receipt ? { id: receipt.id } : {}),
     companyId: input.companyId,
@@ -177,6 +182,7 @@ export async function persistActivity(db: Db, input: LogActivityInput, receipt?:
     entityId: input.entityId,
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
+    apiKeyId,
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
@@ -198,6 +204,7 @@ export async function persistActivity(db: Db, input: LogActivityInput, receipt?:
     entityId: input.entityId,
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
+    apiKeyId,
     responsibleUserId,
     details: redactedDetails,
   };
@@ -216,6 +223,7 @@ export async function persistActivity(db: Db, input: LogActivityInput, receipt?:
           ...redactedDetails,
           agentId: input.agentId ?? null,
           runId: input.runId ?? null,
+          apiKeyId,
           responsibleUserId,
         },
       }

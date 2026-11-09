@@ -3158,6 +3158,13 @@
       "when": 1794205579544,
       "tag": "0452_secret_proposal_secret_cascade",
       "breakpoints": true
+    },
+    {
+      "idx": 453,
+      "version": "7",
+      "when": 1794257939094,
+      "tag": "0453_reflective_wither",
+      "breakpoints": true
     }
   ]
 }

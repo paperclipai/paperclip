@@ -572,8 +572,14 @@ Invariant: each event must attach to agent and company; rollups are aggregation,
 - `action` text not null
 - `entity_type` text not null
 - `entity_id` uuid/text not null
+- `agent_id` uuid fk `agents.id` null
+- `run_id` uuid fk `heartbeat_runs.id` null
+- `api_key_id` uuid null
+- `responsible_user_id` text null
 - `details` jsonb null
 - `created_at` timestamptz not null default now()
+
+`api_key_id` records the stable identifier of the agent or Board API key that authenticated the request. It is null for sessions, local implicit access, signed run JWTs, plugins, system work, and historical rows. It stores no credential material and has no foreign key, so audit evidence remains after key lifecycle changes. This field identifies the credential, not the person or process that used it. It does not prevent credential reuse.
 
 ## 7.12 `project_memberships` + `agent_memberships`
 

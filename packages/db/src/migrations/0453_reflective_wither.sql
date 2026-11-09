@@ -1,0 +1,1 @@
+ALTER TABLE "activity_log" ADD COLUMN "api_key_id" uuid;

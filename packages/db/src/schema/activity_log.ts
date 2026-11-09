@@ -16,6 +16,7 @@ export const activityLog = pgTable(
     entityId: text("entity_id").notNull(),
     agentId: uuid("agent_id").references(() => agents.id),
     runId: uuid("run_id").references(() => heartbeatRuns.id),
+    apiKeyId: uuid("api_key_id"),
     responsibleUserId: text("responsible_user_id"),
     details: jsonb("details").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
