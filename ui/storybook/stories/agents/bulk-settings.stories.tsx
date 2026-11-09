@@ -88,7 +88,7 @@ export const FilterJourney: Story = { play: async ({ canvasElement }) => {
   const filters = within(await screen.findByRole("dialog", { name: "Agent filter choices" }));
   await userEvent.selectOptions(filters.getByRole("combobox", { name: "Harness" }), "codex_local");
   await expect(page.queryByRole("checkbox", { name: "Select Sage" })).not.toBeInTheDocument();
-  await expect(page.getByText("1 hidden by filters")).toBeVisible();
+  await expect(screen.getByText("1 hidden by filters")).toBeVisible();
   await expect(page.getByRole("checkbox", { name: "Select Scout" })).toBeEnabled();
   await userEvent.selectOptions(filters.getByRole("combobox", { name: "Model" }), "model:gpt-5.3-codex");
   await userEvent.selectOptions(filters.getByRole("combobox", { name: "Status" }), "paused");
@@ -99,7 +99,7 @@ export const FilterJourney: Story = { play: async ({ canvasElement }) => {
   await expect(await page.findByRole("checkbox", { name: "Select Sage" })).toBeChecked();
   await userEvent.keyboard("{Escape}");
   await expect(page.getByRole("button", { name: "Filter agents" })).toHaveFocus();
-  await userEvent.click(page.getByRole("button", { name: "Clear selection" }));
+  await userEvent.click(screen.getByRole("button", { name: "Clear selection" }));
 } };
 
 async function selectCodex(canvasElement: HTMLElement, mixed = false) {
