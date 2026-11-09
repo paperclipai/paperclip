@@ -7,6 +7,25 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+describe("saved governed wait shutdown", () => {
+  const now = Date.parse("2026-11-09T12:00:00Z");
+  const pending = { ...run, runtimeMode: "native", errorCode: "native_governed_wait_settlement_pending", resultJson: null };
+  it("names automatic shutdown settlement without offering a duplicate Retry", () => {
+    expect(projectTaskInterruption(issue, { run: { ...pending, nativeResumeAt: new Date(now + 30_000) }, agent,
+      paused: false, approval: false }, now)).toMatchObject({ state: "working", canRetry: false,
+        retryWait: { reason: "governed_wait_settlement", message: "Your work is saved. Paperclip is finishing shutdown." } });
+  });
+  it("explains exhausted shutdown recovery while preserving the saved work", () => {
+    expect(projectTaskInterruption(issue, { run: pending, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason: "governed_wait_settlement",
+        message: "Paperclip couldn’t confirm shutdown. Your work is saved; continuation is paused." } });
+  });
+  it("keeps genuine approvals authoritative", () => {
+    expect(projectTaskInterruption(issue, { run: pending, agent, paused: false, approval: true }, now))
+      .toMatchObject({ state: "waiting_for_user", userAction: "approval" });
+  });
+});
+
 describe("queued dependency wait presentation", () => {
   const waitingRun = { ...run, status: "cancelled", runtimeMode: "legacy" as const, startedAt: null,
     errorCode: "issue_dependencies_blocked", resultJson: {

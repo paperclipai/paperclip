@@ -36,6 +36,28 @@ describe("scheduler determinism", () => {
     }
   });
 
+  it("fires every planned fault at --fault-after-seconds without changing the rest of the seeded plan", () => {
+    const base = parseCommand(["--faults", "K1,K2", "--tasks", "6", "--seed", "77"]);
+    const pinned = parseCommand(["--faults", "K1,K2", "--tasks", "6", "--seed", "77", "--fault-after-seconds", "150"]);
+    if (base.mode !== "wave" || pinned.mode !== "wave") throw new Error("expected a wave");
+    expect(pinned.options.faultAfterMs).toBe(150_000);
+    const planned = planTasks(pinned.options);
+    expect(planned.map(task => task.fireAfterMs)).toEqual(Array(6).fill(150_000));
+    expect(planned.map(({ fireAfterMs: _fire, ...rest }) => rest)).toEqual(planTasks(base.options).map(({ fireAfterMs: _fire, ...rest }) => rest));
+    expect(() => parseCommand(["--fault-after-seconds", "2"])).toThrow(/fault-after-seconds/);
+    expect(() => parseCommand(["--storm-minutes", "10", "--fault-after-seconds", "60"])).toThrow(/storm/);
+    expect(() => parseCommand(["--triggers", "time,comment", "--fault-after-seconds", "60"])).toThrow(/--triggers time/);
+  });
+
+  it("keeps the plans existing seeds produce for triggered and storm waves", () => {
+    const triggered = planTasks({ seed: 4242, tasks: 4, workloads: ["A1", "C1"], adapters: ["codex", "claude"], faults: ["K1", "K2"],
+      triggers: ["time", "comment", "result"] } as never);
+    expect(triggered.map(task => [task.trigger ?? "time", task.triggerDelayMs ?? null, task.fireAfterMs, task.nonce])).toEqual([
+      ["time", null, 36292, "d3a12313"], ["time", null, 14380, "37697e51"], ["comment", 4272, 23204, "a5d0f179"], ["time", null, 51015, "b9f3ef15"]]);
+    const storm = planTasks({ seed: 4242, tasks: 3, workloads: ["A1"], adapters: ["codex"], faults: ["K1"], triggers: ["time"], stormMinutes: 10 } as never);
+    expect(storm.map(task => [task.fault, task.fireAfterMs, task.nonce])).toEqual([["K13", 0, "84e8a446"], ["K13", 0, "59bc9f5c"], ["K13", 0, "d3a12313"]]);
+  });
+
   it("raises the K4 hold upper end with --k4-hold-max-seconds, up to the 600 s outage cap", () => {
     const command = parseCommand(["--faults", "K4", "--k4-hold-max-seconds", "600", "--seed", "5"]);
     if (command.mode !== "wave") throw new Error("expected a wave");

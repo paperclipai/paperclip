@@ -1030,7 +1030,13 @@ or certify backend behavior or keyboard accessibility.
 
 Agents and Connectors compose the same `ToolbarSearch`. Connectors also use canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
 toolbar references; `ConnectorsToolbar` is shared by Browse and toolbar references. Keep search
-first, source selection next where present, and view/actions last. The agent roster uses a harness filter icon without a status selector.
+first, source selection next where present, and view/actions last. The agent roster filter icon opens model, status, harness and connection selectors.
+Each selector includes an All option. Selected filters intersect with name, role
+and title search. Clear filters resets metadata selectors and keeps the search.
+Filter choices use the same metadata as the roster cells, including harness defaults,
+local credentials, connection pools, and agents that still need setup. Filters stay
+active across list and org-chart views, retain matching nodes' ancestors, and preserve
+bulk selection. The count reports matching agents, without ancestor context.
 Connector source choices use radio semantics and preserve Browse's existing
 automatic search expansion; they do not switch separate content panels.
 Legacy agent status and built-in URLs redirect to the full roster at `/agents/all`.

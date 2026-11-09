@@ -2423,6 +2423,13 @@ contract, setup, recovery, boundaries, and qualification status.
 
 ### Native task completion
 
+A durable question or approval handoff survives a missing provider shutdown
+notification. Paperclip settles its yielded result once the provider terminal
+or exact host-owned shutdown proves stopped execution and settled tool outcomes.
+Until then it retains the saved handoff and explains the shutdown hold. Recovery
+must not repeat completed work or release an overlapping execution. See
+`doc/execution-semantics.md` for the bounded settlement and restart contract.
+
 For ordinary low-risk tasks, accept the current agent's structured `done` claim
 subject to explicit workflow constraints. Missing independent evidence or a
 `needs_review` label alone must not create a human approval. Require a concrete
@@ -2979,5 +2986,7 @@ Standard agents can configure connections through the same domain APIs used by t
 The agent performs authorized setup, reuses saved accounts and drafts, and hands off only required human authentication, consent, credential entry or identity confirmation. Saved handoffs resume through existing task continuation after current authority is rechecked. Management, tool execution and approval remain separate. Private accounts, host commands and stored credentials retain their boundaries; agent-issued gateway clients preserve issuer and responsible-user restrictions at use time.
 
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+Ordinary tool approvals remain reviewable without an implicit one-hour deadline. Authenticated OAuth refresh preserves a pending approval for the same saved action and authorization. Sign-in repair retains an accepted decision and resumes through connection-change events after revalidation; changed consent, permissions, credentials or action targets require a new review. Current access, explicit deadlines, task closure and execution receipts remain enforced. See [Delayed tool approvals](execution-semantics.md#delayed-tool-approvals).
 
 The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.

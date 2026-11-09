@@ -186,6 +186,66 @@ describe.skipIf(!support.supported)("remote workspace save parent lock order", (
     }
   }, 30_000);
 
+  it("lets a retry prepare the workspace again after its first writer was killed during preparation", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID(), retryId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Killed preparation", issuePrefix: `K${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "paperclip_runner" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Prepare twice", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, status: "running", executionStage: "preparing",
+      contextSnapshot: { issueId } });
+    const [environment] = await db.insert(environments).values({ name: runId, driver: "sandbox" }).returning();
+    const storage = { ...createStorageService(createLocalDiskStorageProvider(path.join(root, runId, "objects"))), provider: "s3" as const };
+    const allocate = async (heartbeatRunId: string, directory: string, killSave = false) => {
+      const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId, environmentId: environment.id,
+        provider: "daytona", providerLeaseId: randomUUID(), status: "active" }).returning();
+      const remoteCwd = path.join(root, runId, directory);
+      await mkdir(remoteCwd, { recursive: true });
+      const transfer: NonNullable<NonNullable<AdapterSandboxExecutionTarget["runner"]>["syncIn"]> = async operations => {
+        for (const operation of operations) for (const file of operation.files) {
+          await mkdir(path.dirname(file.targetPath), { recursive: true });
+          await cp(file.sourcePath, file.targetPath, { recursive: file.kind === "directory" });
+        }
+        return { operations: operations.map(operation => ({ operationId: operation.operationId,
+          filesTransferred: operation.files.length, bytesTransferred: 0 })) };
+      };
+      const target: AdapterSandboxExecutionTarget = { kind: "remote", transport: "sandbox", leaseId: lease.id, remoteCwd, timeoutMs: 30_000,
+        runner: { syncIn: transfer, syncOut: killSave ? async () => { throw new Error("controller killed"); } : transfer,
+          execute: async input => {
+          const result = await exec(input.command, input.args ?? [], { cwd: input.cwd ?? remoteCwd,
+            env: { ...process.env, ...input.env }, timeout: input.timeoutMs, maxBuffer: 8 * 1024 * 1024 });
+          return { exitCode: 0, stdout: result.stdout, stderr: result.stderr, signal: null, timedOut: false,
+            pid: process.pid, startedAt: new Date().toISOString() };
+        } } };
+      return { lease: lease as EnvironmentLease, target, remoteCwd };
+    };
+    const first = await allocate(runId, "first", true);
+    const reserved = await reserveRemoteWorkspace({ db, storage, companyId, issueId, runId, agentId, environmentId: environment.id,
+      projectId: null, projectWorkspaceId: null, existingWorkspaceId: null, source: { kind: "empty" } });
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId, lease: first.lease, target: first.target }))
+      .rejects.toThrow();
+    const workspaceAuthority = async () => readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, reserved.id)))[0]!.metadata)!;
+    expect(await workspaceAuthority()).toMatchObject({ epoch: 1, dirty: true, writerRunId: runId, snapshotId: null });
+
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "process_lost", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values({ id: retryId, companyId, agentId, issueId, status: "running", executionStage: "preparing",
+      contextSnapshot: { issueId, retryOfRunId: runId } });
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(await workspaceAuthority()).toMatchObject({ epoch: 2, dirty: false, writerRunId: null, location: null, snapshotId: null });
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, first.lease.id)))[0]!.status).not.toBe("active");
+
+    const second = await allocate(retryId, "second");
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, reserved.id));
+    const retried = await reserveRemoteWorkspace({ db, storage, companyId, issueId, runId: retryId, agentId,
+      environmentId: environment.id, projectId: null, projectWorkspaceId: null, existingWorkspaceId: workspace.id, source: { kind: "empty" } });
+    const reprepared = await prepareRemoteWorkspace({ db, storage, workspace: retried, runId: retryId,
+      lease: second.lease, target: second.target });
+    expect(await workspaceAuthority()).toMatchObject({ epoch: 3, dirty: true, writerRunId: retryId, snapshotId: expect.any(String) });
+    expect(path.relative(first.remoteCwd, reprepared.remoteRoot).startsWith("..")).toBe(true);
+  }, 30_000);
+
   it("releases database locks while a provisioning command is in flight", async () => {
     const f = await preparedFailure();
     await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));

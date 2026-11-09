@@ -25,6 +25,8 @@ Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below
 `--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
+`--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600; with `--triggers time`), keeping
+the rest of the seeded plan, for example to restart a Daytona R1 task after its workspace preparation.
 
 Each wave's temporary instance (embedded Postgres, workspaces, often 5–13 GB) is
 deleted when the wave ends, pass or fail, including after an interrupt. Evidence
@@ -201,8 +203,8 @@ With `--env daytona --storage s3`, each task's workspace is a remote workspace: 
 and restores it through the store, so the faults also hit workspace save, restore and copyback. R1
 (`--workspace-repo`) runs on Daytona only with `--storage s3`: the project points at the checkout's
 GitHub `origin` over https at its `origin/master` commit, so the sandbox clones the repository and its
-snapshots are Paperclip-sized. Its oracle reads the task's files through the board API and runs its
-commands on a local copy.
+snapshots are Paperclip-sized. Its oracle reads the task's files through the board API, retrying for up
+to 4 minutes while the closing save makes the workspace readable, and runs its commands on a local copy.
 
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
