@@ -716,7 +716,8 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
   // person. A restart between the status commit and the live presentation
   // must not lose that answer. The run is saved exactly as the previous
   // release's finalizer saves it, with no presentation recorded yet.
-  type Hold = "pending approval" | "approval sent back for revision" | "execution stage" | "own question card";
+  type Hold = "pending approval" | "approval sent back for revision" | "execution stage" | "own question card"
+    | "someone else's confirmation card";
   async function heldTurn(hold: Hold, disposition: "yielded" | "done" = "yielded") {
     return fixture(true, { disposition, beforeFinalize: async ({ companyId, issueId, runId, agentId }) => {
       if (hold.includes("approval")) {
@@ -730,11 +731,18 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
           sourceRunId: runId, createdByAgentId: agentId, payload: { version: 1, questions: [{ id: "model", prompt: "Which model?",
             selectionMode: "single", required: true, options: [{ id: "flash", label: "Flash" }] }] } });
       }
+      // The board addressed this card to another person; the run did not create it.
+      if (hold === "someone else's confirmation card") {
+        await db.insert(issueThreadInteractions).values({ companyId, issueId, kind: "request_confirmation", status: "pending",
+          continuationPolicy: "none", title: "Riley's website proposal", requestedResolverPolicy: "human_only",
+          effectiveResolverPolicy: "human_only", resolverPolicyProvenance: "explicit", addresseeUserId: "riley",
+          createdByUserId: "local-board", payload: { version: 1, prompt: "Riley: approve creating the website implementation task?" } });
+      }
     } });
   }
   it.each([
     ["pending approval", "yielded"], ["approval sent back for revision", "yielded"], ["execution stage", "yielded"],
-    ["pending approval", "done"],
+    ["pending approval", "done"], ["someone else's confirmation card", "yielded"],
   ] as const)(
     "recovers a held conversation turn's answer exactly once after a restart: %s (%s)", async (hold, disposition) => {
       const f = await heldTurn(hold, disposition);
@@ -749,6 +757,7 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply, authorAgentId: f.agentId, createdByRunId: f.runId })]);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].resultJson).toMatchObject({
         presentationDecision: { chosenSource: "final_agent_message", commentAction: "create", commentId: expect.any(String) } });
+      expect(await issue(f.issueId)).toMatchObject({ conversationState: "waiting" });
       expect(await work.load(f.input)).toEqual([]);
       await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
       expect(await comments(f.runId)).toHaveLength(1);
