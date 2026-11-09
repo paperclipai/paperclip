@@ -243,6 +243,13 @@ fn optional_value(args: &[String], name: &str) -> Result<Option<String>, LocalRu
         .ok_or_else(|| LocalRunnerError::invalid(format!("missing value for {name}")))
 }
 
+/// Launches without `--lifecycle-mode` (older controllers) and warm launches
+/// keep the turn-end provider restart; only an explicit per-turn lifecycle,
+/// whose Runner exits with its run, skips it.
+fn turn_scoped(args: &[String]) -> Result<bool, LocalRunnerError> {
+    Ok(optional_value(args, "--lifecycle-mode")?.as_deref() == Some("per_turn"))
+}
+
 fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, LocalRunnerError> {
     let Some(index) = args.iter().position(|argument| argument == name) else {
         return Ok(None);
@@ -497,6 +504,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_delay: duration("--reconnect-delay-ms", 250)?,
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
+        turn_scoped: turn_scoped(args)?,
     };
     if host_control.is_some() && !config.connect_url.starts_with("listen://") {
         return Err(LocalRunnerError::invalid(
@@ -695,6 +703,26 @@ fn run_main(args: Vec<String>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_per_turn_lifecycle_is_turn_scoped() {
+        let args = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(turn_scoped(&args(&["--lifecycle-mode", "per_turn"])).unwrap());
+        assert!(!turn_scoped(&args(&[
+            "--lifecycle-mode",
+            "warm",
+            "--idle-timeout-ms",
+            "1"
+        ]))
+        .unwrap());
+        assert!(!turn_scoped(&args(&[])).unwrap());
+        assert!(turn_scoped(&args(&["--lifecycle-mode"])).is_err());
+    }
 
     #[test]
     fn cursor_cloud_launch_flags_are_optional_as_a_whole_and_required_as_an_exact_pin_set() {
