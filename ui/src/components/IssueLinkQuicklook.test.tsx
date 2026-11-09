@@ -6,9 +6,22 @@ import { MemoryRouter } from "react-router-dom";
 import type { Issue } from "@paperclipai/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueLinkQuicklook, QUICKLOOK_CONTENT_CLASS, quicklookAlignOffset } from "./IssueLinkQuicklook";
+import { ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS, IssueLinkQuicklook, QUICKLOOK_CONTENT_CLASS, quicklookAlignOffset } from "./IssueLinkQuicklook";
 
 const mockIssuesApiGet = vi.hoisted(() => vi.fn());
+const navigationPrefetches = vi.hoisted(() => [] as Array<{ ref: string; history: boolean }>);
+
+vi.mock("@/lib/issueDetailCache", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/issueDetailCache")>();
+  return {
+    ...actual,
+    prefetchIssueDetailForNavigation: (...args: Parameters<typeof actual.prefetchIssueDetailForNavigation>) => {
+      navigationPrefetches.push({ ref: args[1], history: args[2]?.history === true });
+      // The other quicklook tests rely on the real prefetch seeding the issue.
+      return actual.prefetchIssueDetailForNavigation(args[0], args[1], { ...args[2], history: false });
+    },
+  };
+});
 
 vi.mock("@/api/issues", () => ({
   issuesApi: {
@@ -93,6 +106,48 @@ describe("IssueLinkQuicklook", () => {
     container.remove();
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  describe("navigation prefetch", () => {
+    function renderLink() {
+      navigationPrefetches.length = 0;
+      act(() => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter>
+              <IssueLinkQuicklook issuePathId="PAP-1" issuePrefetch={createIssue()} to="/companies/company-1/issues/PAP-1" disableIssueQuicklook>
+                PAP-1
+              </IssueLinkQuicklook>
+            </MemoryRouter>
+          </QueryClientProvider>,
+        );
+      });
+      return container.querySelector("a") as HTMLAnchorElement;
+    }
+    const hover = (link: HTMLAnchorElement, type: "mouseover" | "mouseout") =>
+      act(() => { link.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: document.body })); });
+
+    it("warms only the issue and recent comments when a pointer passes over a task", () => {
+      const link = renderLink();
+      hover(link, "mouseover");
+      act(() => { vi.advanceTimersByTime(ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS - 1); });
+      hover(link, "mouseout");
+      act(() => { vi.advanceTimersByTime(1_000); });
+      expect(navigationPrefetches).toEqual([{ ref: "PAP-1", history: false }]);
+    });
+
+    it("warms the full chat history once a hover rests on the task", () => {
+      const link = renderLink();
+      hover(link, "mouseover");
+      act(() => { vi.advanceTimersByTime(ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS); });
+      expect(navigationPrefetches).toEqual([{ ref: "PAP-1", history: false }, { ref: "PAP-1", history: true }]);
+    });
+
+    it("warms the full chat history at once when the task is pressed", () => {
+      const link = renderLink();
+      act(() => { link.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+      expect(navigationPrefetches).toEqual([{ ref: "PAP-1", history: true }]);
+    });
   });
 
   it("keeps portaled quicklook links mounted until after blur click handling", () => {
