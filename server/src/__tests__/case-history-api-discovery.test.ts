@@ -21,3 +21,12 @@ it("tells chat agents where a task's case and its fact-change history are", () =
   expect(CASES_CHAT_DIRECTIVE).toContain("GET /api/issues/{issueId}/cases");
   expect(CASES_CHAT_DIRECTIVE).toContain("GET /api/cases/{id}/events");
 });
+
+it("names the nested case id and how people appear in case history", () => {
+  const lookup = searchRunnerApi({ query: "GET /api/issues/{issueId}/cases" }).results[0]!;
+  expect(lookup.description).toContain("pass case.id");
+  const revisions = searchRunnerApi({ query: "GET /api/cases/{id}/documents/{key}/revisions" }).results[0]!;
+  expect(revisions.summary).toBe("Read a case document's revision history");
+  expect(revisions.description).toContain("createdByUserId");
+  expect(searchRunnerApi({ query: "GET /api/cases/{id}" }).results[0]!.summary).toBe("Read a case and its current facts");
+});
