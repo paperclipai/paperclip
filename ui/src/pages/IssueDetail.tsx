@@ -5952,6 +5952,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const conversationAgent = conversation?.agent ?? agents?.find(agent => agent.id === issue?.conversationAgentId);
+  const breadcrumbParent = issue?.ancestors?.[0];
   useEffect(() => {
     if (conversationAgent) {
       setBreadcrumbs([{ label: "Chat" }]);
@@ -5959,6 +5960,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     }
     setBreadcrumbs([
       sourceBreadcrumb,
+      ...(breadcrumbParent ? [{
+        label: isLockedIssueStub(breadcrumbParent) ? "Private task" : breadcrumbParent.title,
+        identifier: breadcrumbParent.identifier ?? undefined,
+        href: isLockedIssueStub(breadcrumbParent)
+          ? undefined
+          : createIssueDetailPath(breadcrumbParent.identifier ?? breadcrumbParent.id),
+      }] : []),
       {
         // The status glyph (leading) already conveys in-progress/live state;
         // no redundant 🔵 emoji prefix on the title.
@@ -5973,6 +5981,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     coordinatorWorkspaceEnabled,
     breadcrumbTitle,
     breadcrumbIdentifier,
+    breadcrumbParent,
     hasLiveRuns,
     setBreadcrumbs,
     sourceBreadcrumb.href,

@@ -2882,7 +2882,7 @@ describe("IssueDetail", () => {
     },
   );
 
-  it("keeps hierarchy breadcrumbs and label chips out of the Streamlined task header", async () => {
+  it("includes the parent in the global Streamlined breadcrumbs while keeping label chips out of the task header", async () => {
     mockIssuesApi.get.mockResolvedValue(
       createIssue({
         ancestors: [
@@ -2891,6 +2891,7 @@ describe("IssueDetail", () => {
             identifier: "PAP-0",
             title: "Parent task visible in Properties",
           },
+          { id: "root-1", identifier: "PAP-99", title: "Root task" },
         ] as Issue["ancestors"],
         labels: [
           {
@@ -2916,6 +2917,24 @@ describe("IssueDetail", () => {
     );
     expect(container.textContent).not.toContain("Quick win");
     expect(container.textContent).toContain("Issue detail smoke");
+    expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
+      { label: "Tasks", href: "/issues" },
+      { label: "Parent task visible in Properties", identifier: "PAP-0", href: "/issues/PAP-0" },
+      expect.objectContaining({ label: "Issue detail smoke" }),
+    ]);
+  });
+
+  it("does not link to or reveal the title of a private parent in the global breadcrumbs", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      ancestors: [{ id: "private-parent", identifier: "PAP-0", locked: true }] as unknown as Issue["ancestors"],
+    }));
+    await act(async () => { renderIssueView(); });
+    await flushReact();
+    expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
+      { label: "Tasks", href: "/issues" },
+      { label: "Private task", identifier: "PAP-0", href: undefined },
+      expect.objectContaining({ label: "Issue detail smoke" }),
+    ]);
   });
 
   it("preserves hierarchy breadcrumbs and label chips when Streamlined UI is off", async () => {

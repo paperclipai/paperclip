@@ -834,6 +834,13 @@ status picker with its monospaced task ID, project and people. The title remains
 editable and the existing task-actions menu stays at the upper right. Typography
 and spacing use the shared tokens; toggling off restores the ordinary header.
 
+Task breadcrumbs link the immediate parent before the current task. Each task
+title displays at most 48 Unicode code points, including an ellipsis; saved
+titles, hover text and accessible names retain the full title. The parent uses
+at most 40% of the breadcrumb row, and both titles truncate when space runs out.
+Mobile omits the collection link and parent identifier to preserve both titles
+and the current task identifier. Private parents show a noninteractive label.
+
 The local task detail also offers a **Thread preview** selector. DES-1 opens a
 complete synthetic conversation matching the staging transcript layout; other
 tasks start with their saved thread. Synthetic runner events pass through
