@@ -1886,6 +1886,24 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }));
   });
 
+  it("closes the enrollment popup and ignores a late enrollment response when switching to a PAT", async () => {
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue(unconfiguredConnectorEnrollment());
+    let finishEnrollment!: (value: { verificationUrl: string }) => void;
+    startCloudConnectorEnrollmentMock.mockReturnValue(new Promise((resolve) => { finishEnrollment = resolve; }));
+    const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    await render();
+    await act(async () => { buttonByText("Connect with Paperclip")!.click(); });
+    await act(async () => { buttonByText("Use a GitHub personal access token")!.click(); });
+    expect(popup.close).toHaveBeenCalledOnce();
+    await act(async () => { finishEnrollment({ verificationUrl: "https://my.paperclip.app/connections/enroll?id=test" }); });
+    await flushReact();
+    expect(popup.location.assign).not.toHaveBeenCalled();
+    expect(container.querySelector('input[type="password"]')).not.toBeNull();
+  });
+
   it("restores the setup step after the one-time enrollment callback", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({ apps: [GITHUB_MANAGED] });

@@ -1165,6 +1165,7 @@ function StandardConnectionSetupFlow({
   });
   const connectorEnrollmentView = useQueryView(connectorEnrollmentQuery);
   const [connectorEnrollmentError, setConnectorEnrollmentError] = useState<string | null>(null);
+  const enrollmentAttempt = useRef(0);
   const closeEnrollmentPopup = useCallback(() => {
     oauthPopupRef.current?.close();
     oauthPopupRef.current = null;
@@ -1203,7 +1204,7 @@ function StandardConnectionSetupFlow({
     void galleryQuery.refetch();
   }, [enrollmentAuthorizationUrl, connectorEnrollmentQuery.data?.status, galleryQuery.refetch, closeEnrollmentPopup]);
   const startConnectorEnrollment = useMutation({
-    mutationFn: () => toolsApi.startCloudConnectorEnrollment(
+    mutationFn: (_attempt: number) => toolsApi.startCloudConnectorEnrollment(
       selectedCompanyId!,
       selectedCompany?.name,
       requestedAppKey
@@ -1214,7 +1215,8 @@ function StandardConnectionSetupFlow({
           }) + (host === "dialog" ? "&enrollment_host=dialog" : "")
         : undefined,
     ),
-    onSuccess: (status) => {
+    onSuccess: (status, attempt) => {
+      if (attempt !== enrollmentAttempt.current) return;
       if (!status.verificationUrl) {
         closeEnrollmentPopup();
         setConnectorEnrollmentError("Paperclip Cloud did not return an enrollment link. Try again.");
@@ -1222,7 +1224,8 @@ function StandardConnectionSetupFlow({
       }
       openConnectorEnrollment(status.verificationUrl);
     },
-    onError: (error) => {
+    onError: (error, attempt) => {
+      if (attempt !== enrollmentAttempt.current) return;
       closeEnrollmentPopup();
       setConnectorEnrollmentError(
         describeError(error).body,
@@ -2616,7 +2619,7 @@ function StandardConnectionSetupFlow({
             </Button>
           ) : null}
           {githubPatMethod ? (
-            <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(githubPatMethod.key)}>
+            <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => { enrollmentAttempt.current++; closeEnrollmentPopup(); setConnectionMethodKey(githubPatMethod.key); }}>
               Use a GitHub personal access token
             </Button>
           ) : null}
@@ -2651,7 +2654,7 @@ function StandardConnectionSetupFlow({
               </Button>
             ) : null}
             {githubPatMethod ? (
-              <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(githubPatMethod.key)}>
+              <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => { enrollmentAttempt.current++; closeEnrollmentPopup(); setConnectionMethodKey(githubPatMethod.key); }}>
                 Use a GitHub personal access token
               </Button>
             ) : null}
@@ -2684,7 +2687,7 @@ function StandardConnectionSetupFlow({
                   preserveEnrollmentAccess();
                   // Let the server reuse a live enrollment or replace an expired
                   // one. A cached verification URL may expire while this page is open.
-                  startConnectorEnrollment.mutate();
+                  startConnectorEnrollment.mutate(++enrollmentAttempt.current);
                 }}
               >
                 {startConnectorEnrollment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
