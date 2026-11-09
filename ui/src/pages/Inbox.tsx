@@ -1256,7 +1256,11 @@ function StreamlinedInbox({
     [issues, remoteIssueSearchResults],
   );
   const referencedExecutionWorkspaceIdsKey = referencedExecutionWorkspaceIds.join(",");
-  const { data: executionWorkspaces = [], isLoading: isWorkspacesLoading } = useQuery({
+  const {
+    data: executionWorkspaces = [],
+    isLoading: isWorkspacesLoading,
+    isPlaceholderData: isWorkspacesPlaceholder,
+  } = useQuery({
     queryKey: queryKeys.executionWorkspaces.summaryList(selectedCompanyId ?? "__disabled__", {
       ids: referencedExecutionWorkspaceIdsKey,
     }),
@@ -2552,7 +2556,8 @@ function StreamlinedInbox({
   const initialSourcesSettled =
     ![sourceSearchView, mineIssuesView, touchedIssuesView].some(view => view.kind === "reconnecting") &&
     !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading &&
-    !(workspaceDataAffectsRows && isWorkspacesLoading) &&
+    // Previous summaries stand in while a new id set loads; they may lack the new view's workspaces.
+    !(workspaceDataAffectsRows && (isWorkspacesLoading || isWorkspacesPlaceholder)) &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
     !isDashboardLoading &&
