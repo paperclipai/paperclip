@@ -894,10 +894,13 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       }
     }, 60_000);
   it.each([
-    { label: "never delivered to a dead runner", connectionCount: 0, claim: true, admitted: true },
-    { label: "possibly delivered", connectionCount: 1, claim: true, admitted: false },
-    { label: "without a dead-runner claim", connectionCount: 0, claim: false, admitted: false },
-  ])("resumes from the previous turn when a warm attach rotation was $label", async ({ connectionCount, claim, admitted }) => {
+    { label: "never delivered to a dead runner", connectionCount: 0, claim: true, admitted: true, archiveOnly: false },
+    { label: "possibly delivered", connectionCount: 1, claim: true, admitted: false, archiveOnly: false },
+    { label: "without a dead-runner claim", connectionCount: 0, claim: false, admitted: false, archiveOnly: false },
+    { label: "cut off before its new control plane was written", connectionCount: 0, claim: true, admitted: true, archiveOnly: true },
+    { label: "cut off before its new control plane, without a dead-runner claim", connectionCount: 0, claim: false, admitted: false,
+      archiveOnly: true },
+  ])("resumes from the previous turn when a warm attach rotation was $label", async ({ connectionCount, claim, admitted, archiveOnly }) => {
     const prior = await seedRecoveredPriorRun();
     const followUp = await admitFollowUp(prior);
     const root = await restoreHeldRoot(prior, followUp);
@@ -911,22 +914,28 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     await mkdir(join(root, "runner"), { recursive: true, mode: 0o700 });
     await writeFile(join(root, "runner", "codex-provider-state.json"), "{}");
     const identity = { ...priorIdentity, runId: followUp.runId, turnId: `turn-${followUp.runId}`, itemId: `item-${followUp.runId}` };
-    await mkdir(join(root, "control-plane"), { mode: 0o700 });
+    if (!archiveOnly) await mkdir(join(root, "control-plane"), { mode: 0o700 });
     const undelivered = JSON.stringify({ schema: "paperclip.runner.durable.control-plane-state.v2", identity,
       bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", originIdentity: identity, credentialsIssued: 0, adopted: false },
       runAttachTemplate: {}, tickets: {}, leases: {},
       commands: [{ commandId: "attach", controllerSeq: 1, type: "run.attach", status: "pending", payload: {} }],
       committedEvents: [], ackedSourceSeq: 0, connectionCount, commandDeliveryCounts: {} });
-    await writeFile(join(root, "control-plane", "control-plane-state.json"), undelivered);
+    if (!archiveOnly) await writeFile(join(root, "control-plane", "control-plane-state.json"), undelivered);
     const outcome = await followUp.startLocal(claim ? { kind: "resume_dead_runner", runId: followUp.runId, leaseOwner: "successor",
       controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null } as never : undefined);
     if (!admitted) {
-      expect(outcome).toBe("runner_state_identity_mismatch: authority_indeterminate");
+      expect(outcome).toBe(archiveOnly ? "runner_state_identity_mismatch: durable_identity_unreadable"
+        : "runner_state_identity_mismatch: authority_indeterminate");
       return;
     }
     expect(outcome).toBe(ADMITTED);
     expect(JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8")).identity).toEqual(priorIdentity);
     expect(existsSync(join(root, "authority-epochs"))).toBe(false);
+    if (archiveOnly) {
+      expect(existsSync(join(root, "continuity-breaks"))).toBe(false);
+      expect(await quarantined()).toEqual([]);
+      return;
+    }
     const [archive] = await readdir(join(root, "continuity-breaks"));
     expect(await readFile(join(root, "continuity-breaks", archive!, "control-plane", "control-plane-state.json"), "utf8")).toBe(undelivered);
     expect(await quarantined()).toEqual([]);
