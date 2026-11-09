@@ -2,6 +2,7 @@ import { QueryErrorState } from "./QueryView";
 import { ISSUE_SORT_FIELDS, sortIssues, type IssueSort, type IssueSortField } from "../lib/issue-sort";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
+import { usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
 import { IssueRowDetailsNotice } from "./IssueRowDetailsNotice";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
@@ -453,6 +454,8 @@ type IssueListRequestFilters = NonNullable<Parameters<typeof issuesApi.list>[1]>
 
 interface IssuesListProps {
   issues: Issue[];
+  /** Preload the chat of the top visible rows. Only the top-level tasks page sets this. */
+  preloadTaskChats?: boolean;
   isLoading?: boolean;
   error?: Error | null;
   onRetry?: () => void;
@@ -711,6 +714,7 @@ export function IssuesList(props: IssuesListProps) {
 
 function StreamlinedIssuesList({
   issues,
+  preloadTaskChats = false,
   isLoading,
   error,
   onRetry,
@@ -1441,6 +1445,12 @@ function StreamlinedIssuesList({
       : group.items,
   })), [baseGroupedContent, hierarchy.issues, issues, enableAgentCreatedVisibilityFilter, viewState.showAgentCreatedTasks, viewState.routineTasksOnly, viewState.nestingEnabled, viewState.viewMode]);
   const visibleListRowCount = groupedContent.reduce((total, group) => total + group.items.length, 0);
+  const preloadTaskRefs = useMemo(() => preloadTaskChats
+    ? groupedContent
+      .filter((group) => !(group.label && viewState.collapsedGroups.includes(group.key)))
+      .flatMap((group) => group.items.map((issue) => issue.identifier ?? issue.id))
+    : [], [groupedContent, preloadTaskChats, viewState.collapsedGroups]);
+  usePreloadTaskChats(selectedCompanyId, preloadTaskRefs, !collectionLoading && !error && preloadTaskRefs.length > 0);
 
 
   // Flattened visible order (group headers, then tree DFS per group —

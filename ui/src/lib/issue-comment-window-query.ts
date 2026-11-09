@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { IssueComment, IssueRecentComments } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
+import { readFromIssueChatBootstrap } from "./issue-chat-bootstrap";
 import { queryKeys } from "./queryKeys";
 
 export function mergeWindowComments(...windows: readonly IssueComment[][]): IssueComment[] {
@@ -14,8 +15,11 @@ export function getIssueRecentCommentsQueryOptions(queryClient: QueryClient, iss
     queryKey: recentKey,
     queryFn: async ({ signal }: { signal: AbortSignal }): Promise<IssueRecentComments> => {
       const previous = queryClient.getQueryData<IssueRecentComments>(recentKey);
+      // A cold open may already have this window in a loading bootstrap.
+      if (!previous) {
+        return readFromIssueChatBootstrap(issueRef, (item) => item.recentComments, () => issuesApi.recentComments(issueRef, { signal }));
+      }
       const snapshot = await issuesApi.recentComments(issueRef, { signal });
-      if (!previous) return snapshot;
       // A burst can contain more than the cold-open window. Catch up from the
       // saved cursor instead of dropping messages between two invalidations.
       let cursor = previous.latestCommentId;

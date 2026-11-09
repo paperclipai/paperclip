@@ -4,6 +4,7 @@ import { activityApi, type RunForIssue } from "@/api/activity";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
 import { prefetchIssueIdBatches } from "@/hooks/useIssueIdBatches";
+import { readFromIssueChatBootstrap } from "@/lib/issue-chat-bootstrap";
 import { queryKeys } from "@/lib/queryKeys";
 
 // The compact task chat reveals its first frame only after these reads settle
@@ -53,8 +54,12 @@ export function prefetchIssueCommentInputFacts(queryClient: QueryClient, issueRe
 
 /** Recent activity, merged with events already observed while the task is open. */
 export async function fetchRecentIssueActivity(queryClient: QueryClient, issueRef: string) {
-  const recent = await activityApi.recentForIssue(issueRef);
-  const previous = queryClient.getQueryData<ActivityEvent[]>(recentIssueActivityQueryKey(issueRef)) ?? [];
+  const cached = queryClient.getQueryData<ActivityEvent[]>(recentIssueActivityQueryKey(issueRef));
+  // A cold open may already have this in a loading bootstrap; a refresh asks the server.
+  const recent = cached
+    ? await activityApi.recentForIssue(issueRef)
+    : await readFromIssueChatBootstrap(issueRef, (item) => item.recentActivity, () => activityApi.recentForIssue(issueRef));
+  const previous = cached ?? [];
   return [...new Map([...previous, ...recent].map((event) => [event.id, event])).values()];
 }
 
@@ -65,8 +70,10 @@ export async function fetchRecentIssueRunWindow(
   options: { conversationMode?: boolean } = {},
 ): Promise<RecentIssueRunWindow> {
   const key = recentIssueRunWindowQueryKey(issueRef);
-  let recent = await activityApi.recentRunsForIssue(issueRef);
   const previousWindow = queryClient.getQueryData<RecentIssueRunWindow>(key);
+  let recent = previousWindow
+    ? await activityApi.recentRunsForIssue(issueRef)
+    : await readFromIssueChatBootstrap(issueRef, (item) => item.recentRuns, () => activityApi.recentRunsForIssue(issueRef));
   let previous = previousWindow?.runs ?? [];
   let reconciledFullHistory = false;
   if (previous.some((run) =>

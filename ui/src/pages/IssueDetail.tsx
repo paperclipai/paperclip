@@ -88,6 +88,7 @@ import {
   recentIssueRunWindowQueryKey,
   type RecentIssueRunWindow,
 } from "../lib/issue-chat-history-queries";
+import { readFromIssueChatBootstrap, sameIds, startIssueChatBootstrap } from "../lib/issue-chat-bootstrap";
 import {
   heartbeatsApi,
   type ActiveRunForIssue,
@@ -1504,7 +1505,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const inputCommentIds = issueInputCommentIds(comments);
   const inputFacts = useIssueIdBatches(
     issueCommentInputFactsQueryKey(issueQueryRef), inputCommentIds,
-    ids => activityApi.inputFactsForIssue(issueQueryRef, ids), !!issueId && !historyExpanded,
+    ids => readFromIssueChatBootstrap(
+      issueQueryRef,
+      // The bootstrap answers exactly the saved recent-window comments.
+      (item) => sameIds(issueInputCommentIds(item.recentComments.comments), ids) ? item.commentInputFacts : undefined,
+      () => activityApi.inputFactsForIssue(issueQueryRef, ids),
+    ), !!issueId && !historyExpanded,
   );
   const {
     data: liveRuns,
@@ -1513,7 +1519,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     refetch: refetchLiveRuns,
   } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueQueryRef),
-    queryFn: () => heartbeatsApi.liveRunsForIssue(issueQueryRef),
+    queryFn: () => readFromIssueChatBootstrap(issueQueryRef, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueQueryRef)),
     enabled: !!issueId,
     refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData:
@@ -1530,7 +1536,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     refetch: refetchActiveRun,
   } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueQueryRef),
-    queryFn: () => heartbeatsApi.activeRunForIssue(issueQueryRef),
+    queryFn: () => readFromIssueChatBootstrap(issueQueryRef, (item) => item.activeRun, () => heartbeatsApi.activeRunForIssue(issueQueryRef)),
     enabled: activeRunQueryEnabled,
     refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
@@ -3313,8 +3319,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [location.state, resolvedIssueDetailState],
   );
 
+  // A cold open sends one bootstrap request for everything the chat's first
+  // frame needs; the reads below wait for its answer instead of fanning out.
+  // A task preloaded by the list is already cached, so this is a no-op.
+  const bootstrapCompanyId = companies.find((company) => company.issuePrefix === companyPrefix?.toUpperCase())?.id ?? selectedCompanyId;
+  if (issueId && !conversation && queryClient.getQueryData([...queryKeys.issues.detail(issueId), "core"]) === undefined) {
+    startIssueChatBootstrap(queryClient, bootstrapCompanyId, issueId);
+  }
+  const coreIssueOptions = getIssueCoreQueryOptions(queryClient, issueId!);
   const coreIssueQuery = useQuery({
-    ...getIssueCoreQueryOptions(queryClient, issueId!),
+    ...coreIssueOptions,
+    queryFn: (context: { signal: AbortSignal }) =>
+      readFromIssueChatBootstrap(issueId!, (item) => item.issue, () => coreIssueOptions.queryFn(context)),
     enabled: !!issueId,
   });
   const { historyExpanded, expandHistory, recent: recentComments, retainComment, acknowledgedComments } = useIssueHistoryWindow(
@@ -3521,7 +3537,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     refetch: refetchInteractions,
   } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId!),
-    queryFn: () => issuesApi.listInteractions(issueId!),
+    queryFn: () => readFromIssueChatBootstrap(issueId!, (item) => item.interactions, () => issuesApi.listInteractions(issueId!)),
     enabled: !!issueId,
     // A review can be committed between the initial fetch and live-socket
     // subscription. Reconcile even after its originating run has ended.
@@ -3538,7 +3554,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     refetch: refetchAttachments,
   } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
-    queryFn: () => issuesApi.listAttachments(issueId!),
+    queryFn: () => readFromIssueChatBootstrap(issueId!, (item) => item.attachments, () => issuesApi.listAttachments(issueId!)),
     enabled: !!issueId,
     placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(
       issueId ?? "pending",
