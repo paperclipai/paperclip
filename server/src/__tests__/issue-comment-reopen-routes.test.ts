@@ -379,6 +379,18 @@ function createReviewIssue(policy: NonNullable<Awaited<ReturnType<typeof normali
   };
 }
 
+function fencedApprovalComment(
+  issue: ReturnType<typeof createReviewIssue>,
+  body: string,
+) {
+  return {
+    body,
+    executionDecision: "approve",
+    expectedExecutionStageId: issue.executionState.currentStageId,
+    expectedExecutionLastDecisionId: issue.executionState.lastDecisionId,
+  };
+}
+
 function createScheduledRetry() {
   return {
     runId: "retry-run-1",
@@ -992,7 +1004,7 @@ describe("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "I can answer the mention without reopening." });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.status).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
@@ -3016,7 +3028,7 @@ describe("issue comment reopen routes", () => {
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
-  it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
+  it("uses an explicit execution decision for final approval and records it transactionally", async () => {
     const policy = await normalizePolicy({
       stages: [
         {
@@ -3062,13 +3074,19 @@ describe("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ status: "done", comment: "Approved for ship" });
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: policy.stages[0].id,
+        expectedExecutionLastDecisionId: null,
+        comment: "Approved for ship",
+      });
 
     expect(res.status).toBe(200);
     expect(mockDb.transaction).toHaveBeenCalledTimes(1);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
+        status: "done",
         executionState: expect.objectContaining({
           status: "completed",
           lastDecisionId: expect.any(String),
@@ -3092,6 +3110,87 @@ describe("issue comment reopen routes", () => {
         body: "Approved for ship",
       }),
     );
+  });
+
+  it("keeps an intermediate explicit approval in review and advances to the next participant", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      assigneeUserId: null,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: reviewerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-explicit-review",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: policy.stages[0].id,
+        expectedExecutionLastDecisionId: null,
+        comment: "Review approved",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      executionState: {
+        status: "pending",
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: "local-board" },
+        completedStageIds: [policy.stages[0].id],
+      },
+    });
+    expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
+      status: "in_review",
+      assigneeUserId: "local-board",
+    });
   });
 
   it("auto-approves a reviewer comment with the APPROVED review marker", async () => {
@@ -3132,9 +3231,9 @@ describe("issue comment reopen routes", () => {
       }),
     )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: reviewBody });
+      .send(fencedApprovalComment(issue, reviewBody));
 
-    expect(res.status).toBe(201);
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body).toMatchObject({
       id: "comment-review-1",
       issueId: issue.id,
@@ -3197,7 +3296,7 @@ describe("issue comment reopen routes", () => {
       }),
     )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: reviewBody });
+      .send(fencedApprovalComment(issue, reviewBody));
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
@@ -3290,7 +3389,7 @@ describe("issue comment reopen routes", () => {
       }),
     )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: reviewBody });
+      .send(fencedApprovalComment(issue, reviewBody));
 
     expect(res.status).toBe(201);
     expect(mockIssueService.listWakeableBlockedDependents).toHaveBeenCalledWith(
@@ -3369,7 +3468,7 @@ describe("issue comment reopen routes", () => {
       }),
     )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: reviewBody });
+      .send(fencedApprovalComment(issue, reviewBody));
 
     expect(res.status).toBe(201);
     // Allow any deferred wakeup task to flush before asserting it never fired.
@@ -3382,7 +3481,7 @@ describe("issue comment reopen routes", () => {
     expect(issueCommentedWakeCalls).toEqual([]);
   });
 
-  it("does not auto-approve APPROVED comments from a non-review participant", async () => {
+  it("keeps an approval-shaped comment without explicit fences as an ordinary comment", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
     const policy = await createAgentReviewPolicy(reviewerAgentId)!;
     const issue = createReviewIssue(policy, reviewerAgentId);
@@ -3395,28 +3494,69 @@ describe("issue comment reopen routes", () => {
       body: reviewBody,
       createdAt: new Date(),
       updatedAt: new Date(),
-      authorAgentId: null,
-      authorUserId: "local-board",
+      authorAgentId: reviewerAgentId,
+      authorUserId: null,
     });
 
-    const res = await request(await installActor(createApp()))
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: reviewerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-review-unfenced",
+      }),
+    )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: reviewBody });
 
     expect(res.status).toBe(201);
-    // The human comment and optional receipt commit together; no approval update occurs.
-    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ reason: "issue_blockers_resolved" }),
-    );
+  });
+
+  it.each(["reopen", "resume", "interrupt"] as const)(
+    "rejects a fenced approval combined with %s before any side effect",
+    async (action) => {
+      const res = await request(await installActor(createApp()))
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({
+          body: "## Review: APPROVED",
+          executionDecision: "approve",
+          expectedExecutionStageId:
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          expectedExecutionLastDecisionId: null,
+          [action]: true,
+        });
+
+      expect(res.status).toBe(400);
+      expect(mockIssueService.getById).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a fenced approval decision from a non-review participant", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
+    const issue = createReviewIssue(policy, reviewerAgentId);
+    const reviewBody = "## Review: PAP-580 - APPROVED\n\nLooks good.";
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send(fencedApprovalComment(issue, reviewBody));
+
+    expect(res.status).toBe(422);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("does not auto-approve when actor kind disagrees with the participant kind", async () => {
     // The reviewer participant is a USER, but the request actor is an AGENT whose id collides
-    // with that user's id. The auto-approval gate must dispatch on actor kind, not just id, so
-    // this comment must follow the normal non-approval insert path.
+    // with that user's id. The explicit decision gate must dispatch on actor kind, not just id.
     const sharedId = "33333333-3333-4333-8333-333333333333";
     const policy = await normalizePolicy({
       stages: [
@@ -3470,10 +3610,11 @@ describe("issue comment reopen routes", () => {
       }),
     )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: reviewBody });
+      .send(fencedApprovalComment(issue, reviewBody));
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(422);
     expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
@@ -3710,7 +3851,7 @@ describe("issue comment reopen routes", () => {
         }),
       )
         .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-        .send({ body });
+        .send(fencedApprovalComment(issue, body));
 
       expect(res.status).toBe(201);
       expect(mockDb.transaction).toHaveBeenCalledTimes(1);
@@ -3765,7 +3906,7 @@ describe("issue comment reopen routes", () => {
       }),
     )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: reviewBody });
+      .send(fencedApprovalComment(issue, reviewBody));
 
     // The route must propagate the 422 (no successful 201) and must insert the
     // comment inside the same transaction as the status update so the comment
@@ -3811,7 +3952,7 @@ describe("issue comment reopen routes", () => {
       }),
     )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: reviewBody });
+      .send(fencedApprovalComment(issue, reviewBody));
 
     // The route must surface a 404 AND keep the transaction rollback path intact:
     // the addComment INSERT must run inside the same transaction that the throw aborts,
@@ -3972,7 +4113,9 @@ describe("issue comment reopen routes", () => {
     )
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({
-        status: "in_progress",
+        executionDecision: "request_changes",
+        expectedExecutionStageId: policy.stages[0].id,
+        expectedExecutionLastDecisionId: null,
         comment: "Needs another pass",
       });
 

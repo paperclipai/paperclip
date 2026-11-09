@@ -378,6 +378,13 @@ describe("issue update comment wakeups", () => {
           reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
           intentAuditId: "stop-intent", acknowledgementAuditId: "stop-acknowledgement" },
       } })).toBe(true);
+    expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
+      terminalizationRunStopReceipt: {
+        agentId: ASSIGNEE_AGENT_ID,
+        runId: SOURCE_RUN_ID,
+        stopId: stopMetadata.issueMutationStopId,
+      },
+    });
     expect(res.body).toMatchObject({ status, executionRunId: null });
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });

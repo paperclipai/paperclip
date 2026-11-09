@@ -251,10 +251,10 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     expect(selfApproval.body).toMatchObject({ id: issueId, status: "done" });
   });
 
-  it("still lets the pending execution-policy stage participant sign off as done", async () => {
+  it("lets the pending execution-policy stage participant submit a fenced final approval", async () => {
     // Execution-policy signoff reassigns the issue to each stage's participant, so
-    // the reviewer/approver *is* the assignee. Their `done` PATCH is a stage advance
-    // governed by the policy, not a self-approval, and must not hit the guard above.
+    // the reviewer/approver *is* the assignee. Their explicit decision is a stage
+    // advance governed by the policy, not a self-approval, and must not hit the guard above.
     const seeded = await seedCompany("SGN");
     const issueId = await seedReview({
       companyId: seeded.companyId,
@@ -289,10 +289,61 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
 
     const res = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId, stageRunId)))
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "done", comment: "Stage signoff." });
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: stageId,
+        expectedExecutionLastDecisionId: null,
+        comment: "Stage signoff.",
+      });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({ id: issueId, status: "done" });
+  });
+
+  it("does not let another visible-issue agent cancel a pending execution stage", async () => {
+    const seeded = await seedCompany("CXL");
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "CXL-1",
+      reviewPolicy: "anyone",
+    });
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          participants: [{ id: randomUUID(), type: "agent", agentId: seeded.assigneeAgentId }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: seeded.assigneeAgentId },
+        returnAssignee: { type: "agent", agentId: seeded.peerAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, issueId));
+
+    const peerRunId = await seedRun(seeded.companyId, seeded.peerAgentId, issueId);
+    const res = await request(app(agentActor(seeded.companyId, seeded.peerAgentId, peerRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("Only the active reviewer, approver, or a privileged board actor");
+    const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(saved).toMatchObject({
+      status: "in_review",
+      executionState: { status: "pending", currentStageId: stageId },
+    });
   });
 
   it("enforces not_creator for status verdicts and admits another agent", async () => {
@@ -364,6 +415,73 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       .send({ status: "cancelled" });
     expect(userVerdict.status, JSON.stringify(userVerdict.body)).toBe(200);
     expect(userVerdict.body).toMatchObject({ id: issueId, status: "cancelled" });
+  });
+
+  it.each([
+    { prefix: "EHU", reviewPolicy: "human_only" as const, recordRequester: false },
+    { prefix: "ENC", reviewPolicy: "not_creator" as const, recordRequester: true },
+  ])("enforces $reviewPolicy for explicit execution-stage decisions", async ({ prefix, reviewPolicy, recordRequester }) => {
+    const seeded = await seedCompany(prefix);
+    const stageId = randomUUID();
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: `${prefix}-1`,
+      reviewPolicy,
+    });
+    await db.update(issues).set({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "approval",
+          participants: [{ id: randomUUID(), type: "agent", agentId: seeded.assigneeAgentId }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "agent", agentId: seeded.assigneeAgentId },
+        returnAssignee: { type: "agent", agentId: seeded.peerAgentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, issueId));
+    if (recordRequester) {
+      await db.insert(activityLog).values({
+        companyId: seeded.companyId,
+        actorType: "agent",
+        actorId: seeded.assigneeAgentId,
+        agentId: seeded.assigneeAgentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: { status: "in_review", _previous: { status: "in_progress" } },
+      });
+    }
+
+    const verdict = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: stageId,
+        expectedExecutionLastDecisionId: null,
+        comment: "Explicit approval",
+      });
+
+    expect(verdict.status).toBe(403);
+    expect(verdict.body.details).toMatchObject({ code: "review_policy_denied", policy: reviewPolicy });
+    const [persisted] = await db.select({ status: issues.status, executionState: issues.executionState })
+      .from(issues).where(eq(issues.id, issueId));
+    expect(persisted).toMatchObject({
+      status: "in_review",
+      executionState: { status: "pending", currentStageId: stageId },
+    });
   });
 
   it("does not let an agent bypass human_only by relaxing reviewPolicy in the verdict patch", async () => {

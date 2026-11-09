@@ -415,7 +415,7 @@ describe("issue execution policy routes", () => {
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "done" });
 
-    expect(res.status).toBe(403);
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body).toMatchObject({
       details: {
         code: "review_policy_denied",
@@ -423,6 +423,60 @@ describe("issue execution policy routes", () => {
       },
     });
     expect(mockDb.transaction).toHaveBeenCalled();
+    expect(mockIssueService.getByIdForUpdate).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("reauthorizes an explicit execution decision against the review policy held under the update lock", async () => {
+    const stageId = "66666666-6666-4666-8666-666666666666";
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const executionPolicy = normalizeIssueExecutionPolicy({
+      stages: [{ type: "approval", participants: [{ type: "agent", agentId }] }],
+    })!;
+    executionPolicy.stages[0].id = stageId;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      reviewPolicy: "anyone",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002B",
+      title: "Concurrent explicit decision policy update",
+      executionPolicy,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "agent", agentId },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({ ...issue, reviewPolicy: "human_only" });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId,
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch(`/api/issues/${issue.id}`)
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: stageId,
+        expectedExecutionLastDecisionId: null,
+        comment: "Approve the current stage",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body).toMatchObject({ details: { code: "review_policy_denied", policy: "human_only" } });
     expect(mockIssueService.getByIdForUpdate).toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });

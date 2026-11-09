@@ -37,6 +37,16 @@ describe("issue validators", () => {
     expect(updateIssueSchema.parse({}).expectedExecutionPolicy).toBeUndefined();
     expect(updateIssueSchema.safeParse({ expectedExecutionPolicy: [] }).success).toBe(false);
   });
+  it("accepts only explicit execution-stage decision values", () => {
+    const stageId = "11111111-1111-4111-8111-111111111111";
+    expect(updateIssueSchema.parse({ executionDecision: "approve", expectedExecutionStageId: stageId, expectedExecutionLastDecisionId: null }))
+      .toMatchObject({ executionDecision: "approve", expectedExecutionStageId: stageId, expectedExecutionLastDecisionId: null });
+    expect(updateIssueSchema.parse({ executionDecision: "request_changes", expectedExecutionStageId: stageId, expectedExecutionLastDecisionId: null }))
+      .toMatchObject({ executionDecision: "request_changes", expectedExecutionStageId: stageId, expectedExecutionLastDecisionId: null });
+    expect(updateIssueSchema.safeParse({ executionDecision: "done" }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({ expectedExecutionStageId: "not-a-uuid" }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({ expectedExecutionLastDecisionId: "not-a-uuid" }).success).toBe(false);
+  });
   it("accepts private visibility without adding defaults to updates", () => {
     expect(createIssueSchema.parse({ title: "Private", visibility: "private" }).visibility).toBe("private");
     expect(createIssueSchema.parse({ title: "Open" }).visibility).toBe("open");
@@ -414,6 +424,52 @@ describe("issue validators", () => {
     });
 
     expect(parsed.body).toBe("Progress update\n\nNext action.");
+  });
+
+  it("requires a complete execution fence for explicit approval comments", () => {
+    const stageId = "11111111-1111-4111-8111-111111111111";
+    const lastDecisionId = "22222222-2222-4222-8222-222222222222";
+    expect(
+      addIssueCommentSchema.parse({
+        body: "Gate A — APPROVE",
+        executionDecision: "approve",
+        expectedExecutionStageId: stageId,
+        expectedExecutionLastDecisionId: lastDecisionId,
+      }),
+    ).toMatchObject({
+      executionDecision: "approve",
+      expectedExecutionStageId: stageId,
+      expectedExecutionLastDecisionId: lastDecisionId,
+    });
+
+    for (const payload of [
+      { executionDecision: "approve" },
+      { expectedExecutionStageId: stageId },
+      { expectedExecutionLastDecisionId: null },
+      {
+        executionDecision: "approve",
+        expectedExecutionStageId: stageId,
+      },
+    ]) {
+      expect(
+        addIssueCommentSchema.safeParse({
+          body: "Gate A — APPROVE",
+          ...payload,
+        }).success,
+      ).toBe(false);
+    }
+
+    for (const action of ["reopen", "resume", "interrupt"] as const) {
+      expect(
+        addIssueCommentSchema.safeParse({
+          body: "Gate A — APPROVE",
+          executionDecision: "approve",
+          expectedExecutionStageId: stageId,
+          expectedExecutionLastDecisionId: null,
+          [action]: true,
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it("accepts structured issue comment presentation and metadata", () => {

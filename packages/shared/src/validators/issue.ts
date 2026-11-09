@@ -975,6 +975,12 @@ export const updateIssueSchema = objectWithoutDefaults(
     expectedStatusVersion: z.number().int().nonnegative().optional(),
     /** Reject a policy write if the policy changed after the caller read it. */
     expectedExecutionPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    /** Decide the currently active execution stage without encoding the decision as an issue status. */
+    executionDecision: z.enum(["approve", "request_changes"]).optional(),
+    /** Bind an execution decision to the stage observed by the caller. */
+    expectedExecutionStageId: z.string().uuid().optional(),
+    /** Bind an execution decision to the exact review round observed by the caller. */
+    expectedExecutionLastDecisionId: z.string().uuid().nullable().optional(),
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
@@ -1173,6 +1179,33 @@ export const addIssueCommentSchema = z.object({
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  /** Explicitly approve the stage identified by the two optimistic fences. */
+  executionDecision: z.literal("approve").optional(),
+  expectedExecutionStageId: z.string().uuid().optional(),
+  expectedExecutionLastDecisionId: z.string().uuid().nullable().optional(),
+}).superRefine((value, ctx) => {
+  const decisionFields = [
+    value.executionDecision !== undefined,
+    value.expectedExecutionStageId !== undefined,
+    value.expectedExecutionLastDecisionId !== undefined,
+  ];
+  if (decisionFields.some(Boolean) && !decisionFields.every(Boolean)) {
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "Comment execution decisions require executionDecision, expectedExecutionStageId, and expectedExecutionLastDecisionId",
+    });
+  }
+  if (
+    value.executionDecision !== undefined &&
+    (value.reopen === true || value.resume === true || value.interrupt === true)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "Comment execution decisions cannot be combined with reopen, resume, or interrupt",
+    });
+  }
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
