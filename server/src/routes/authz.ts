@@ -31,6 +31,18 @@ export function assertAuthenticated(req: Request) {
 
 export const BOARD_ACCESS_REQUIRED_CODE = "board_access_required";
 
+// Agent API subresources whose controls live on their own profile tab.
+const AGENT_PROFILE_TABS: Record<string, [string, string]> = {
+  keys: ["API keys", "api-keys"],
+  permissions: ["permissions", "permissions"],
+  budgets: ["budget", "budgets"],
+  identity: ["identity and instructions", "identity"],
+  "instructions-bundle": ["identity and instructions", "identity"],
+  "instructions-path": ["identity and instructions", "identity"],
+  configuration: ["harness settings", "runtime"],
+  "runtime-state": ["harness settings", "runtime"],
+};
+
 // The board page that holds the control behind a board-only API route, when one
 // is known. Paths keep <prefix> for the agent to fill from its own task identifier.
 const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray) => [string, string]]> = [
@@ -39,7 +51,10 @@ const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray) => [string, s
   [/^\/companies\/[^/]+\/(?:members|invites|join-requests)(?:\/|$)/, () => ["company members", "/<prefix>/company/settings/members"]],
   [/^\/companies\/[^/]+\/(?:tools\/)?gateways(?:\/|$)|^\/tool-gateway\//, () => ["tool gateways", "/<prefix>/apps/gateways"]],
   [/^\/approvals\/([^/]+)/, match => ["the approval", `/<prefix>/approvals/${match[1]}`]],
-  [/^\/agents\/([0-9a-f-]{36})(?:\/|$)/i, match => ["the agent's profile", `/<prefix>/agents/${match[1]}`]],
+  [/^\/agents\/([0-9a-f-]{36})(?:\/([^/]+))?(?:\/|$)/i, match => {
+    const tab = match[2] && Object.hasOwn(AGENT_PROFILE_TABS, match[2]) ? AGENT_PROFILE_TABS[match[2]] : undefined;
+    return tab ? [`the agent's ${tab[0]}`, `/<prefix>/agents/${match[1]}/${tab[1]}`] : ["the agent's profile", `/<prefix>/agents/${match[1]}`];
+  }],
   [/^\/companies\/[^/]+(?:\/(?:archive|branding|settings))?\/?$/, () => ["company settings", "/<prefix>/company/settings"]],
 ];
 
