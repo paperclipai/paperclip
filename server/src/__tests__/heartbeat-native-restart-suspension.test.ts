@@ -439,8 +439,6 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     const f = await seedAcceptedResult("ACCEPTED-UNPROVEN-PROCESS-SPACE", runner => `${runner}:${randomUUID()}`);
     await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001,
       processStartedAt: new Date(Date.now() - 60_000) });
-    // Migration leaves legacy rows NULL; do not silently turn495's original
-    // missing-proof negative into a local-positive fixture after adding stamps.
     await f.db.update(nativeRunFinalizations).set({ controllerHostHash: null })
       .where(eq(nativeRunFinalizations.runId, f.runId));
     const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
@@ -640,8 +638,6 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       const onClaim = vi.fn();
       try {
         const dispositions = await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim });
-        // This assertion is the original-code causal RED: a local probe cannot
-        // establish anything about the recorded foreign or unproved PID space.
         expect(probe.observed).toEqual([]);
         expect(dispositions).toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified" }]);
         expect(onClaim).not.toHaveBeenCalled();
