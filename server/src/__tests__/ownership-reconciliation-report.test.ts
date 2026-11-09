@@ -456,7 +456,8 @@ describe("report-only ownership reconciliation", () => {
     const [liveRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs.live));
     expect(liveRun.status).toBe("running");
   it("ends a dirty remote epoch whose writer died during preparation, and keeps every other writer's files", async () => {
-    const runs = { preparing: randomUUID(), resolved: randomUUID(), executing: randomUUID(), live: randomUUID(), saving: randomUUID() };
+    const runs = { preparing: randomUUID(), resolved: randomUUID(), executing: randomUUID(), live: randomUUID(), saving: randomUUID(),
+      invoked: randomUUID(), spawned: randomUUID() };
     const run = (id: string, status: string, extra: Record<string, unknown> = {}) => ({ id, companyId, agentId, status,
       invocationSource: "manual", executionStage: "preparing", ...(status === "running" ? {} : { finishedAt: minutesAgo(2), errorCode: "process_lost" }), ...extra });
     await db.insert(heartbeatRuns).values([
@@ -465,7 +466,10 @@ describe("report-only ownership reconciliation", () => {
       run(runs.executing, "failed", { executionStage: "executing" }),
       run(runs.live, "running"),
       run(runs.saving, "failed"),
+      run(runs.invoked, "failed"),
+      run(runs.spawned, "failed", { processPid: 4_194_303 }),
     ]);
+    await db.insert(heartbeatRunEvents).values({ companyId, runId: runs.invoked, agentId, seq: 1, eventType: "adapter.invoke" });
     const workspaceFor = Object.fromEntries(Object.keys(runs).map(name => [name, randomUUID()])) as Record<keyof typeof runs, string>;
     await db.insert(executionWorkspaces).values(Object.entries(runs).map(([name, writerRunId]) => ({
       id: workspaceFor[name as keyof typeof runs], companyId, mode: "isolated_workspace", strategyType: "test", name,
@@ -483,7 +487,7 @@ describe("report-only ownership reconciliation", () => {
     expect(kindReport(first, "remote_workspace_unsaved_files")).toMatchObject({ settled: 1 });
     const after = await authorities();
     expect(after.preparing).toMatchObject({ epoch: 2, dirty: false, writerRunId: null, location: null, snapshotId: null });
-    for (const kept of ["resolved", "executing", "live", "saving"] as const)
+    for (const kept of ["resolved", "executing", "live", "saving", "invoked", "spawned"] as const)
       expect(after[kept], kept).toMatchObject({ epoch: 1, dirty: true, writerRunId: runs[kept] });
     const [abandoned] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceFor.preparing));
     expect(abandoned.metadata?.remoteWorkspaceAbandonedEpochs).toEqual([expect.objectContaining({ epoch: 1, runId: runs.preparing })]);
