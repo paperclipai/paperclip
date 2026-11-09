@@ -117,6 +117,7 @@ function inboxBoundary(scenarioId: string): ChatCatalogCase {
     } catch (error) { await cleanupInboxProbe(ctx); throw error; }
   }, gradeInbox);
   return { ...base, authentication: "human-session",
+    ...(scenarioId === "inbox-search.archive-without-grant" ? { oracleVersion: "paperclip.chat-catalog.inbox.archive-without-grant.v2" } : {}),
     async observe(ctx, state): Promise<InboxObservation> {
       const o = await observeInternal(ctx, state);
       const [personalItems, policy, personalProbe, responsibleUserProbe, unreadProbe] = await Promise.all([
@@ -138,7 +139,9 @@ function inboxBoundary(scenarioId: string): ChatCatalogCase {
       if (!href && o.scenarioId !== "inbox-search.archive-without-grant") throw new Error("Missing rendered Mine link");
       const source = ctx.input.page.url();
       if (href) await internalResultLink(ctx, o, href).first().click();
-      else await ctx.input.page.getByRole("link", { name: "Inbox", exact: true }).first().click();
+      // The sidebar Inbox link's accessible name carries its unread badge ("Inbox 2 unread"),
+      // so match the leading label within the sidebar rather than the exact name.
+      else await ctx.input.page.locator("aside").getByRole("link", { name: /^Inbox(?![\w-])/ }).filter({ visible: true }).first().click();
       const mine = ctx.input.page.getByRole("button", { name: "Mine", exact: true }).or(ctx.input.page.getByRole("link", { name: "Mine", exact: true }))
         .or(ctx.input.page.getByRole("tab", { name: "Mine", exact: true })).first();
       await expect(mine).toBeVisible();
