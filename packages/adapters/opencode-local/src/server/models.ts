@@ -7,6 +7,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
+import { parseOpenCodeModelLimitsOutput, type OpenCodeModelLimits } from "./session-compaction.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -361,6 +362,72 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
   }
 }
 
+const limitsCache = new Map<string, { expiresAt: number; limits: OpenCodeModelLimits | null }>();
+
+function buildModelsDiscoveryRuntimeEnv(env: Record<string, string>): Record<string, string> {
+  let resolvedHome: string | undefined;
+  try {
+    resolvedHome = os.userInfo().homedir || undefined;
+  } catch {
+    // Minimal Docker images don't have /etc/passwd.
+  }
+  return normalizeEnv(
+    ensurePathInEnv({
+      ...process.env,
+      ...env,
+      ...(resolvedHome ? { HOME: resolvedHome } : {}),
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+    }),
+  );
+}
+
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
+  limitsCache.clear();
+}
+
+/**
+ * Best-effort context/completion token budgets for a configured model, via
+ * `opencode models --verbose <provider>`. Returns null when the probe fails
+ * or the output does not cover the model; callers skip compaction in that case.
+ */
+export async function resolveOpenCodeModelLimits(input: {
+  model?: unknown;
+  command?: unknown;
+  cwd?: unknown;
+  env?: unknown;
+}): Promise<OpenCodeModelLimits | null> {
+  const model = asString(input.model, "").trim();
+  const slash = model.indexOf("/");
+  if (slash <= 0) return null;
+  const provider = model.slice(0, slash);
+  const command = resolveOpenCodeCommand(input.command);
+  const cwd = asString(input.cwd, process.cwd());
+  const env = normalizeEnv(input.env);
+  const key = discoveryCacheKey(command, cwd, env);
+  const now = Date.now();
+  const cached = limitsCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.limits;
+  let limits: OpenCodeModelLimits | null = null;
+  try {
+    const result = await runChildProcess(
+      `opencode-model-limits-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command,
+      ["models", "--verbose", provider],
+      {
+        cwd,
+        env: buildModelsDiscoveryRuntimeEnv(env),
+        timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+        graceSec: 3,
+        onLog: async () => {},
+      },
+    );
+    if (!result.timedOut && (result.exitCode ?? 1) === 0) {
+      limits = parseOpenCodeModelLimitsOutput(result.stdout, model);
+    }
+  } catch {
+    // probe is best-effort, same policy as model discovery
+  }
+  limitsCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, limits });
+  return limits;
 }

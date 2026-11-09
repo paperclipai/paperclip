@@ -59,7 +59,15 @@ import {
   isTruthyEnvFlag,
   parseOpenCodeModelsOutput,
   requireOpenCodeModelId,
+  resolveOpenCodeModelLimits,
 } from "./models.js";
+import {
+  buildOpenCodeSessionDigest,
+  compactOpenCodeDigestForStorage,
+  decideResumeCompaction,
+  DIGEST_CHARS_PER_TOKEN,
+  exportOpenCodeSession,
+} from "./session-compaction.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
@@ -512,7 +520,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runtimeSessionId.length > 0 &&
       (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
-    const sessionId = canResumeSession ? runtimeSessionId : null;
+    const storedCompactDigest = asString(runtimeSessionParams.compactDigest, "").trim();
+    let resumeSessionId = canResumeSession ? runtimeSessionId : null;
+    let compactedDigest = "";
     if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
       await onLog(
         "stdout",
@@ -572,7 +582,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       run: { id: runId, source: "on_demand" },
       context,
     };
-    const buildPrompt = (resumedSession: boolean) => {
+    const buildPrompt = (resumedSession: boolean, compactedSessionDigest?: string) => {
       const renderedBootstrapPrompt =
         !resumedSession && bootstrapPromptTemplate.trim().length > 0
           ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
@@ -589,6 +599,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const basePrompt = joinPromptSections([
         instructionsPrefix,
         renderedBootstrapPrompt,
+        !resumedSession ? compactedSessionDigest : "",
         wakePrompt,
         taskContextNote,
         sessionHandoffNote,
@@ -604,6 +615,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           taskContextChars: taskContextNote.length,
           sessionHandoffChars: sessionHandoffNote.length,
           heartbeatPromptChars: renderedPrompt.length,
+          compactionDigestChars: !resumedSession ? (compactedSessionDigest?.trim().length ?? 0) : 0,
         },
       };
     };
@@ -616,6 +628,49 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const printLogs = isTruthyEnvFlag(
       env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
     );
+    // EYW-797: compact-on-resume. A resumed session re-sends its full transcript;
+    // when that would push the next provider turn past the model's context window,
+    // start a fresh session seeded with a bounded digest of the old one instead of
+    // passing --session. Remote targets are skipped: their session storage is not
+    // guaranteed to be visible from this host for an export probe.
+    if (resumeSessionId && !executionTargetIsRemote && model) {
+      const modelLimits = await resolveOpenCodeModelLimits({
+        model,
+        command: resolvedCommand,
+        cwd: effectiveExecutionCwd,
+        env: preparedRuntimeConfig.env,
+      });
+      if (modelLimits) {
+        const exported = await exportOpenCodeSession({
+          command: resolvedCommand,
+          sessionId: resumeSessionId,
+          cwd: effectiveExecutionCwd,
+          env: preparedRuntimeConfig.env,
+        });
+        const decision = decideResumeCompaction({
+          estimateTokens: exported?.tokens ?? null,
+          contextWindow: modelLimits.contextWindow,
+          maxOutputTokens: modelLimits.maxOutputTokens,
+          freshPromptChars: buildPrompt(false).promptMetrics.promptChars,
+        });
+        if (decision.compact) {
+          const digestBudgetChars = Math.max(0, decision.digestTokenBudget * DIGEST_CHARS_PER_TOKEN);
+          compactedDigest =
+            (exported && exported.tokens > 0
+              ? buildOpenCodeSessionDigest(exported.json, digestBudgetChars, resumeSessionId)
+              : "") ||
+            storedCompactDigest ||
+            `[paperclip] Session "${resumeSessionId}" was compacted; its transcript could not be recovered, so this fresh session starts from the current task context only.`;
+          await onLog(
+            "stdout",
+            `[paperclip] OpenCode session "${resumeSessionId}" ${exported ? `estimated at ~${exported.tokens} tokens ` : "(size unknown) "}` +
+              `would exceed model "${model}" context (${modelLimits.contextWindow} window, ${modelLimits.maxOutputTokens} completion budget); ` +
+              `starting a fresh session seeded with a bounded digest (${compactedDigest.length} chars) instead of resuming.\n`,
+          );
+          resumeSessionId = null;
+        }
+      }
+    }
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
       if (printLogs) args.push("--print-logs");
@@ -635,9 +690,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     // Remote targets receive only the prepared environment, never host keys.
     const accountingEnv = executionTargetIsRemote ? preparedRuntimeConfig.env : runtimeEnv;
-    const runAttempt = async (resumeSessionId: string | null) => {
+    const runAttempt = async (resumeSessionId: string | null, compactedSessionDigest?: string) => {
       await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
-      const { basePrompt, promptMetrics } = buildPrompt(Boolean(resumeSessionId));
+      const { basePrompt, promptMetrics } = buildPrompt(Boolean(resumeSessionId), compactedSessionDigest);
       const prompt = joinPromptSections([
         selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
         basePrompt,
@@ -741,6 +796,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? ({
             sessionId: resolvedSessionId,
             cwd: effectiveExecutionCwd,
+            ...(compactedDigest ? { compactDigest: compactOpenCodeDigestForStorage(compactedDigest) } : {}),
             ...(workspaceId ? { workspaceId } : {}),
             ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
             ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
@@ -795,19 +851,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     try {
-      const initial = await runAttempt(sessionId);
+      const initial = await runAttempt(resumeSessionId, compactedDigest || undefined);
       const initialFailed =
         !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
       if (
-        sessionId &&
+        resumeSessionId &&
         initialFailed &&
         isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
       ) {
         await onLog(
           "stdout",
-          `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+          `[paperclip] OpenCode session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
         );
-        const retry = await runAttempt(null);
+        const retry = await runAttempt(null, compactedDigest || undefined);
         return toResult(retry, true);
       }
 
