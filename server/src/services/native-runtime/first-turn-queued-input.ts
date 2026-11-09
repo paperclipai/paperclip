@@ -127,6 +127,21 @@ export function renderFirstTurnQueuedInput(messages: readonly QueuedMessage[]): 
   ].join("\n\n");
 }
 
+/**
+ * The one rule for which queued comment a first turn may take: a live, plain
+ * comment written directly by the run's responsible user, with no files. The
+ * prompt carries text only; a message with files keeps its own delivery, which
+ * stages those files for the turn that reads it.
+ */
+function firstTurnEligibleComment(input: { companyId: string; issueId: string; responsibleUserId: string }) {
+  return and(
+    eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
+    eq(issueComments.authorUserId, input.responsibleUserId),
+    isNull(issueComments.authorAgentId), isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
+    sql`not exists (select 1 from ${issueAttachments} where ${issueAttachments.companyId} = ${input.companyId}
+      and ${issueAttachments.issueCommentId} = ${issueComments.id})`);
+}
+
 async function readQueuedMessages(
   tx: Db,
   input: { companyId: string; issueId: string; agentId: string; responsibleUserId: string; commentIds: string[]; excludeDelivered: boolean },
@@ -135,15 +150,7 @@ async function readQueuedMessages(
   const rows = await tx.select({
     id: issueComments.id, body: issueComments.body, createdAt: issueComments.createdAt,
     sourceTrust: issueComments.sourceTrust,
-  }).from(issueComments).where(and(
-    eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
-    inArray(issueComments.id, input.commentIds), eq(issueComments.authorUserId, input.responsibleUserId),
-    isNull(issueComments.authorAgentId), isNull(issueComments.createdByRunId),
-    isNull(issueComments.deletedAt),
-    // The prompt carries text only. A message with files keeps its own
-    // delivery, which stages those files for the turn that reads it.
-    sql`not exists (select 1 from ${issueAttachments} where ${issueAttachments.companyId} = ${input.companyId}
-      and ${issueAttachments.issueCommentId} = ${issueComments.id})`));
+  }).from(issueComments).where(and(inArray(issueComments.id, input.commentIds), firstTurnEligibleComment(input)));
   const delivered = input.excludeDelivered
     ? await deliveredQueuedCommentIds(tx, { companyId: input.companyId, issueId: input.issueId, agentId: input.agentId,
       commentIds: rows.map(row => row.id) })
@@ -244,15 +251,19 @@ export async function runAcceptsFirstTurnQueuedInput(
 }
 
 /**
- * True when the first turn can take every one of these queued messages. A
- * message with files keeps its own delivery, so Interrupt must still apply.
+ * True when the first turn would take every pending message in this queue,
+ * under the same rule as the claim. Another user's message, an agent's, or one
+ * with files keeps its own delivery, so Interrupt must still apply.
  */
 export async function firstTurnTakesAllQueuedComments(
   tx: Pick<Db, "select">,
-  input: { companyId: string; commentIds: string[] },
+  input: { companyId: string; issueId: string; responsibleUserId: string | null; commentIds: string[] },
 ): Promise<boolean> {
-  if (input.commentIds.length === 0) return false;
-  const [withFiles] = await tx.select({ id: issueAttachments.id }).from(issueAttachments).where(and(
-    eq(issueAttachments.companyId, input.companyId), inArray(issueAttachments.issueCommentId, input.commentIds))).limit(1);
-  return !withFiles;
+  if (input.commentIds.length === 0 || !input.responsibleUserId) return false;
+  const rows = await tx.select({
+    id: issueComments.id,
+    eligible: sql<boolean>`coalesce((${firstTurnEligibleComment({ ...input, responsibleUserId: input.responsibleUserId })}), false)`,
+  }).from(issueComments).where(and(eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
+    inArray(issueComments.id, input.commentIds), isNull(issueComments.deletedAt)));
+  return rows.length > 0 && rows.every(row => row.eligible === true);
 }

@@ -174,7 +174,8 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
     const queuedIds = (wake!.payload?._paperclipWakeContext as { wakeCommentIds: string[] }).wakeCommentIds;
     // Interrupt keeps its meaning for this queue: the first turn cannot take all of it.
-    expect(await firstTurnTakesAllQueuedComments(db, { companyId: f.companyId, commentIds: queuedIds })).toBe(false);
+    expect(await firstTurnTakesAllQueuedComments(db, { companyId: f.companyId, issueId: f.issueId, responsibleUserId: USER,
+      commentIds: queuedIds })).toBe(false);
     const firstTurn = await claimFirstTurnQueuedInput(db, binding(f, f.runId));
     expect(firstTurn).toContain("text only");
     expect(firstTurn).not.toContain("see the attached screenshot");

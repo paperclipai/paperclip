@@ -17290,7 +17290,8 @@ export function issueRoutes(
         // messages into that turn. Stopping it would only discard its setup.
         if (locked.activeRun && !issue.conversationAgentId && issue.executionRunId === locked.activeRun.id &&
             deferredWakeJoinsFirstTurn(locked.wake, locked.activeRun) &&
-            await firstTurnTakesAllQueuedComments(tx, { companyId: issue.companyId,
+            await firstTurnTakesAllQueuedComments(tx, { companyId: issue.companyId, issueId: issue.id,
+              responsibleUserId: locked.activeRun.responsibleUserId,
               commentIds: queuedCommentIdsFromWakePayload(locked.wake.payload) }) &&
             await runAcceptsFirstTurnQueuedInput(tx, locked.activeRun)) {
           return { firstTurnRunId: locked.activeRun.id };

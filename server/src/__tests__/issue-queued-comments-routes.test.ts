@@ -960,6 +960,23 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     },
   );
 
+  it("still interrupts a preparing run when its queue holds another user's message", async () => {
+    const seeded = await seedFirstTurnQueue("native");
+    // Ordinary comments from two users merge into one wake that keeps the
+    // first author as its requester; the first turn would take only that user's.
+    await db.update(issueComments).set({ authorUserId: "other-operator" }).where(eq(issueComments.id, seeded.commentIds[1]!));
+    const client = app(seeded.companyId);
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    const response = await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+      queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.executionWait?.reason).not.toBe("first_turn_pending");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run!.status).toBe("cancelled");
+    expect(run!.errorCode).toBe("operator_interrupted");
+  });
+
   it.each(["accepted turn", "sealed first turn"] as const)(
     "still interrupts a run whose %s already started",
     async (state) => {
