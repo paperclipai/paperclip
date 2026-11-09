@@ -35,17 +35,25 @@ function resolve(program: Command, text: string): { path: string; error?: string
   if (command === program) return result(`unknown command: ${tokens[0]}`);
   if (command.commands.length > 0) return result(`unknown subcommand ${tokens[index]} of ${command.name()}`);
   let argumentsLeft = command.registeredArguments.length;
+  const given = new Set<string>();
   while (index < tokens.length) {
     const token = tokens[index]!;
     if (token.startsWith("--")) {
       const option = command.options.find(row => row.long === token);
       if (!option) return result(`unknown flag ${token} for ${command.name()}`);
-      index += option.required || option.optional ? 2 : 1;
+      given.add(token);
+      if (option.required || option.optional) {
+        const value = tokens[index + 1];
+        if (option.required && (!value || value.startsWith("-"))) return result(`missing value for ${token}`);
+        index += value && !value.startsWith("-") ? 2 : 1;
+      } else index += 1;
     } else if (token.startsWith("<") && argumentsLeft > 0) {
       argumentsLeft -= 1; index += 1;
     } else break;
   }
-  return result(argumentsLeft === 0 ? undefined : `missing arguments for ${command.name()}`);
+  if (argumentsLeft > 0) return result(`missing arguments for ${command.name()}`);
+  const missing = command.options.find(option => option.mandatory && !given.has(option.long!));
+  return result(missing ? `missing required ${missing.long} for ${command.name()}` : undefined);
 }
 
 describe("chat CLI guidance", () => {
@@ -66,5 +74,7 @@ describe("chat CLI guidance", () => {
     expect(resolve(program, "run cancel <runId> --force now").error).toMatch(/unknown flag --force/);
     expect(resolve(program, "context select <name>").error).toMatch(/unknown subcommand select/);
     expect(resolve(program, "issue document:get <task> and more").error).toMatch(/missing arguments/);
+    expect(resolve(program, "context set --profile --use").error).toMatch(/missing value for --profile/);
+    expect(resolve(program, "issue create --project-id <projectId> creates").error).toMatch(/missing required --company-id/);
   });
 });

@@ -1011,6 +1011,7 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("Fill in values you can read here, such as this company's id");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Write the Paperclip address as <your Paperclip URL>");
     expect(AGENT_CHAT_DIRECTIVE).toContain("npx paperclipai run cancel <runId> stops a queued or running one (board users only)");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a command whose output is piped cannot open the sign-in prompt");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("npx paperclipai issue document:get <task id or identifier> <key> --json | jq -r .body > <file name>");
   });
