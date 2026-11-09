@@ -45,8 +45,10 @@ export function reviewQuotes(reply: string): Quote[] {
     }
     return "\n";
   });
-  prose = prose.replace(/(?:^>[^\n]*(?:\n|$))+/gm, block => { quotes.push({ side: "block", text: block.replace(/^>\s?/gm, "") }); return "\n"; });
-  for (const match of prose.matchAll(/`([^`\n]+)`|"([^"\n]+)"|“([^”\n]+)”/g)) quotes.push({ side: "inline", text: match[1] ?? match[2] ?? match[3]! });
+  // Block quotes may be indented under a list item.
+  prose = prose.replace(/(?:^[ \t]*>[^\n]*(?:\n|$))+/gm, block => { quotes.push({ side: "block", text: block.replace(/^[ \t]*>\s?/gm, "") }); return "\n"; });
+  // Emphasis inside an inline quote is presentation, not quoted text.
+  for (const match of prose.matchAll(/`([^`\n]+)`|"([^"\n]+)"|“([^”\n]+)”/g)) quotes.push({ side: "inline", text: (match[1] ?? match[2] ?? match[3]!).replace(/\*\*|__/g, "") });
   return quotes;
 }
 

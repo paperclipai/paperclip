@@ -55,6 +55,10 @@ describe("genuine immutable public skill update qualification", () => {
     const fabricated = valid(bytes.old, bytes.next);
     fabricated.state.reviewCheckpoint.reply = review.replace("texts are key", "generous spacing is key");
     expect(check(fabricated, "review-diff-before-update")).toBe(false);
+    // A quote that silently corrects upstream text is not the upstream text.
+    const corrected = valid(bytes.old, bytes.next);
+    corrected.state.reviewCheckpoint.reply = review.replace("> Breathable", "1. New section:\n   > Breathable").replace("indivudal", "individual");
+    expect(check(corrected, "review-diff-before-update")).toBe(false);
     const thin = valid(bytes.old, bytes.next);
     thin.state.reviewCheckpoint.reply = "Installed `1339489`.\n> Breathable layouts and texts are key.";
     expect(check(thin, "review-diff-before-update")).toBe(false);
@@ -154,7 +158,7 @@ it("actual review-update setup keeps the real prerequisite and then prepares the
   vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(url.includes(pins.oldCommit) ? bytes.old : bytes.next)));
   try {
     const f = setupFixture(false); const result = await integratorSkillUpdateCases[0]!.setup(f.ctx);
-    expect(integratorSkillUpdateCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.skill-update.diff-hunks.v2");
+    expect(integratorSkillUpdateCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.skill-update.diff-hunks.v3");
     expect(result.pinnedSkillText).toEqual({ old: bytes.old, next: bytes.next });
     expect(f.prerequisite).toHaveBeenCalledOnce(); expect(saveSkillConversationContext).toHaveBeenCalledOnce(); expect(result.source).toMatchObject({ trackingRef: pins.newCommit, lastScanCommit: pins.oldCommit });
   } finally { vi.unstubAllGlobals(); }
