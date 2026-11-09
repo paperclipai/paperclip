@@ -3,6 +3,7 @@ import { companyModelIdentityCases, requestedAuxiliaryServiceModel, saveFastResp
 import type { IdentityObservation } from "./identity-support.js";
 vi.mock("./identity-support.js", async importOriginal => ({
   ...await importOriginal<typeof import("./identity-support.js")>(), probeAgentPermission: async () => 403,
+  observeIdentity: async () => ({ links: ["/RUN/company/settings/connections"], origin: "https://fixture.test" }), followRenderedLink: async () => {},
 }));
 function valid(scenarioId: string): IdentityObservation {
   const model = scenarioId === "companies.configure-decision-model" ? "typesafe/jev-1.13" : requestedAuxiliaryServiceModel;
@@ -14,7 +15,10 @@ function valid(scenarioId: string): IdentityObservation {
       saved: { companyId: "acorn", enabled: true, connectionId: "shared", grantId: "grant", model }, modelBeforeTest: model, beforeEnabled: false, afterReplyEnabled: false, agentWriteStatus: 403, agentTestStatus: 403,
       persistedAfterReload: true, testHttpStatus: 200, visibleTestReceipt: true, history: [history], testCostEvents: 2 } };
   if (scenarioId.endsWith("configure-decision-model")) o.state.testResult = { status: "succeeded", invocationId: "test", answers: {}, usage };
-  else if (scenarioId.endsWith("fast-responses")) o.state.testResult = { status: "succeeded", invocationId: "test", text: "I will check that for you.", durationMs: 140, usage };
+  else if (scenarioId.endsWith("fast-responses")) {
+    o.state.testResult = { status: "succeeded", invocationId: "test", text: "I will check that for you.", durationMs: 140, usage };
+    o.links = ["/acorn/company/settings/connections"]; o.state.replyLinkedControlHref = "/acorn/company/settings/connections";
+  }
   else o.state.testResult = { passed: true, samples: [
     { name: "Benign source code", expectedViolation: false, actualViolation: false, passed: true, invocationId: "benign", durationMs: 80, usage },
     { name: "Malicious instructions", expectedViolation: true, actualViolation: true, passed: true, invocationId: "malicious", durationMs: 90, usage },
@@ -62,12 +66,12 @@ describe("company model service configuration and actual tests", () => {
   it.each(["companies.prompt-injection-guard", "companies.fast-responses"])("%s actual human act stops before test if saved model differs", async id => {
     const definition = companyModelIdentityCases.find(row => row.scenarioId === id)!;
     const fill = vi.fn(async () => {}), save = vi.fn(async () => {}), test = vi.fn(async () => {});
-    const section = { getByLabel: () => ({ fill }), getByRole: (_role: string, options: { name: string }) => ({
+    const section = { waitFor: async () => {}, getByLabel: () => ({ fill }), getByRole: (_role: string, options: { name: string }) => ({
       click: options.name.startsWith("Test") ? test : save, setChecked: async () => {},
     }) };
     const get = vi.fn(async () => ({ settings: { enabled: false, model: "openai/wrong-default" } }));
     const ctx = { refreshIssue: async () => {}, issue: () => ({ conversationState: "waiting" }), allRuns: async () => [{ id: "source", status: "succeeded" }],
-      observationDeadlineAt: Date.now() + 390_000, input: { fixtures: { company: { id: "acorn", issuePrefix: "RUN" } }, api: { get }, page: { waitForResponse: async () => ({ status: () => 200, json: async () => ({ model: "wrong" }) }), url: () => "https://fixture.test", goto: async () => {}, getByRole: () => section } } };
+      observationDeadlineAt: Date.now() + 390_000, input: { evidence: async () => {}, fixtures: { company: { id: "acorn", issuePrefix: "RUN" } }, api: { get }, page: { waitForResponse: async () => ({ status: () => 200, json: async () => ({ model: "wrong" }) }), url: () => "https://fixture.test", goto: async () => {}, getByRole: () => section } } };
     await expect(definition.act!(ctx as never, valid(id).state)).rejects.toThrow(/Requested auxiliary model saved before any service test/);
     expect(fill).toHaveBeenCalledExactlyOnceWith(requestedAuxiliaryServiceModel); expect(save).toHaveBeenCalledTimes(2);
     expect(get).toHaveBeenCalledTimes(id.endsWith("fast-responses") ? 1 : 2); expect(test).not.toHaveBeenCalled();
@@ -75,15 +79,31 @@ describe("company model service configuration and actual tests", () => {
   it("rejects an ordinary agent run standing in for a decision invocation", () => { const d = companyModelIdentityCases[0]!; const o = valid(d.scenarioId); o.runs = [{ id: "test", companyId: "acorn", agentId: "ceo", status: "succeeded" }]; o.state.history = []; expect(d.grade(o).passed).toBe(false); });
   it("rejects builtin fallback being reported as model classification", () => { const d = companyModelIdentityCases[1]!; const o = valid(d.scenarioId); (o.state.testResult as { samples: Array<{ invocationId?: string }> }).samples[0]!.invocationId = undefined; expect(d.grade(o).passed).toBe(false); });
   it("rejects classifier model samples without their independent cost events", () => { const d = companyModelIdentityCases[1]!; const o = valid(d.scenarioId); o.state.testCostEvents = 0; expect(d.grade(o).passed).toBe(false); });
-  it("does not accept an instruction-only acknowledgement change as Fast response configuration guidance", () => {
+  it("requires a reply link whose page showed the Fast response control, not reply wording", () => {
     const d = companyModelIdentityCases.find(row => row.scenarioId === "companies.fast-responses")!;
-    const o = valid(d.scenarioId);
-    o.reply = "I updated my persistent instructions to acknowledge chat requests immediately.";
-    const grade = d.grade(o);
-    expect(grade.passed).toBe(false);
-    expect(grade.checks.find(check => check.id === "honest-human-settings-guidance")?.passed).toBe(false);
+    const reworded = valid(d.scenarioId); reworded.reply = "A board member can switch this on here: [Connections](/acorn/company/settings/connections).";
+    expect(d.grade(reworded).passed).toBe(true);
+    const unlinked = valid(d.scenarioId); unlinked.state.replyLinkedControlHref = null;
+    expect(d.grade(unlinked).checks.find(check => check.id === "reply-link-opens-fast-response-control")?.passed).toBe(false);
+    const notRendered = valid(d.scenarioId); notRendered.links = ["/acorn/company/settings"];
+    expect(d.grade(notRendered).passed).toBe(false);
   });
-  it("rejects fast response work-completion claims", () => { const d = companyModelIdentityCases[2]!; const o = valid(d.scenarioId); o.reply = "Open Settings for fast responses. Your task is finished."; expect(d.grade(o).passed).toBe(false); });
+  it("fast response act follows only the reply's links and stops when none shows the control", async () => {
+    const definition = companyModelIdentityCases.find(row => row.scenarioId === "companies.fast-responses")!;
+    const support = await import("./identity-support.js");
+    const observe = vi.spyOn(support, "observeIdentity").mockResolvedValue({ links: ["/RUN/company/settings", "https://elsewhere.test/RUN/company/settings/connections"], origin: "https://fixture.test" } as never);
+    const fill = vi.fn(async () => {}), save = vi.fn(async () => {}), goto = vi.fn(async () => {});
+    const section = { waitFor: async () => { throw new Error("not visible"); }, getByLabel: () => ({ fill }), getByRole: () => ({ click: save, setChecked: save }) };
+    const evidence = vi.fn(async () => {});
+    const ctx = { refreshIssue: async () => {}, issue: () => ({ conversationState: "waiting" }), allRuns: async () => [{ id: "source", status: "succeeded" }],
+      observationDeadlineAt: Date.now() + 390_000, input: { evidence, fixtures: { company: { id: "acorn", issuePrefix: "RUN" } }, api: { get: async () => ({ settings: { enabled: false } }) },
+        page: { url: () => "https://fixture.test/RUN/issues/RUN-1", goto, getByRole: () => section } } };
+    const state = valid("companies.fast-responses").state; delete state.replyLinkedControlHref;
+    await definition.act!(ctx as never, state);
+    expect(state.replyLinkedControlHref).toBeNull(); expect(fill).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
+    expect(goto.mock.calls.map(call => (call as unknown[])[0])).not.toContain("/RUN/company/settings/connections");
+    observe.mockRestore();
+  });
   it("rejects an acknowledgement whose independent invocation belongs to a different human", () => { const d = companyModelIdentityCases[2]!; const o = valid(d.scenarioId); (o.state.history as Array<{ responsibleUserId: string }>)[0]!.responsibleUserId = "other-person"; expect(d.grade(o).passed).toBe(false); });
 });
 

@@ -7,7 +7,8 @@ import type { PromptInjectionPreventionSettings, PromptInjectionTestResult } fro
 import type { FastResponseSettings, FastResponseTestResult } from "../../../packages/shared/src/fast-response.js";
 import type { CostSummary } from "../../../packages/shared/src/types/cost.js";
 import { checks } from "./internal-support.js";
-import { identityDefinition, identityObservation, observeIdentity, probeAgentPermission } from "./identity-support.js";
+import { followRenderedLink, identityDefinition, identityObservation, observeIdentity, probeAgentPermission } from "./identity-support.js";
+import type { Locator } from "@playwright/test";
 
 export const requestedAuxiliaryServiceModel = "deepseek/deepseek-v4.1-flash-1017";
 
@@ -38,6 +39,23 @@ export async function saveFastResponseModelBeforeTest(ctx: ChatCatalogContext, c
   return persisted;
 }
 
+/**
+ * The person follows the reply's own rendered links, in order, and stops at the first page that shows the service control.
+ * There is no typed-URL fallback: a reply that links a page without the control leaves the person without it.
+ */
+export async function openServiceControlFromReply(ctx: ChatCatalogContext, links: readonly string[], origin: string, control: () => Locator): Promise<string | undefined> {
+  const source = ctx.input.page.url();
+  for (const href of links) {
+    let url: URL; try { url = new URL(href, origin); } catch { continue; }
+    if (url.origin !== new URL(origin).origin) continue;
+    await followRenderedLink(ctx, href);
+    const shown = await control().waitFor({ state: "visible", timeout: Math.min(15_000, remainingCompanyServiceObservationBudget(ctx)) }).then(() => true, () => false);
+    if (shown) return href;
+    await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
+  }
+  return undefined;
+}
+
 type Settings = DecisionModelSettings | PromptInjectionPreventionSettings | FastResponseSettings;
 const fastExperiments = new WeakMap<ChatCatalogContext, boolean>();
 const specs = [
@@ -54,7 +72,11 @@ export function gradeCompanyModel(value: unknown) {
     && saved.companyId === o.companyId && saved.connectionId === connection?.id && saved.grantId === connection?.grantId && o.state.persistedAfterReload === true
     && o.state.testHttpStatus === 200 && o.state.visibleTestReceipt === true,
     "The canonical chat leaves the disabled board-managed service unchanged; the actual human settings controls save the intended grant and the result survives reload.");
-  c.add("honest-human-settings-guidance", /settings|connections/i.test(o.reply) && !/\bI(?:'ve| have)?\s+(?:enabled|configured|turned on|tested)\b/i.test(o.reply), "The chat names the human settings surface and does not claim a board-only change or test it could not perform.");
+  if (o.scenarioId === "companies.fast-responses") {
+    const href = o.state.replyLinkedControlHref;
+    c.add("reply-link-opens-fast-response-control", typeof href === "string" && o.links.includes(href),
+      "The person clicked a link rendered in the reply and that page showed the Fast response control; a settings page without it does not qualify.");
+  } else c.add("honest-human-settings-guidance", /settings|connections/i.test(o.reply) && !/\bI(?:'ve| have)?\s+(?:enabled|configured|turned on|tested)\b/i.test(o.reply), "The chat names the human settings surface and does not claim a board-only change or test it could not perform.");
   if (["companies.prompt-injection-guard", "companies.fast-responses"].includes(o.scenarioId)) {
     c.add("requested-service-model-persisted-before-test", o.state.modelBeforeTest === requestedAuxiliaryServiceModel && saved?.model === requestedAuxiliaryServiceModel,
       "The actual public human configuration uses the requested OpenRouter API model before service testing and after readback; default auxiliary models are not substituted.");
@@ -80,7 +102,6 @@ export function gradeCompanyModel(value: unknown) {
       && row.connectionId === connection?.id && row.model === requestedAuxiliaryServiceModel && row.responsibleUserId === o.state.humanId && row.feature === "settings.test" && row.finishedAt != null
       && row.inputTokens === result.usage.inputTokens && row.outputTokens === result.usage.outputTokens && row.costStatus === result.usage.costStatus),
       "The real settings test generates an actual model acknowledgement and matching durable usage/failure history; elapsed worker time alone cannot qualify.");
-    c.add("acknowledgement-is-not-work", /acknowledg|receipt|quick|fast/i.test(o.reply) && !/\b(?:work|task)\s+(?:is|has been)\s+(?:finished|completed|started)/i.test(o.reply), "The response does not present a fast acknowledgement as task completion or proof of worker execution.");
   } else c.add("known-service", false, "No oracle exists for this service.");
   return c.result();
 }
@@ -104,14 +125,21 @@ export const companyModelIdentityCases: readonly ChatCatalogCase[] = specs.map(s
   } catch (error) { const prior = fastExperiments.get(ctx); if (prior !== undefined) { await ctx.input.api.patch("/api/instance/settings/experimental", { enableFastResponses: prior }); fastExperiments.delete(ctx); } throw error; }
 }, gradeCompanyModel, {
   sourceFiles: sources, authentication: "human-session", requiredCredentials: ["OPENROUTER_API_KEY"], attemptTimeoutMs: 420_000,
+  ...(spec.id === "companies.fast-responses" ? { oracleVersion: "paperclip.chat-catalog.identity.fast-responses.v2" } : {}),
   async act(ctx, state) {
     await waitForCompanySettingsTurn(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`; const source = ctx.input.page.url();
     state.afterReplyEnabled = (await ctx.input.api.get<{ settings: Settings }>(`${root}/${spec.path}`)).settings.enabled;
     state.agentWriteStatus = await probeAgentPermission(ctx, `${root}/${spec.path}`, "PUT", { enabled: true, connectionId: (state.connection as AiManagedConnectionSummary).id, grantId: (state.connection as AiManagedConnectionSummary).grantId,
       ...(spec.path === "decision-model" ? { allowBackground: false } : spec.path === "fast-response" ? { model: requestedAuxiliaryServiceModel, allowSponsored: false } : { model: requestedAuxiliaryServiceModel }) });
     state.agentTestStatus = await probeAgentPermission(ctx, `${root}/${spec.path}/test`, "POST", {});
-    await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/company/settings/connections`, { waitUntil: "domcontentloaded" });
     const section = spec.path === "decision-model" ? ctx.input.page.locator('section[aria-labelledby="decision-model-heading"]') : ctx.input.page.getByRole("region", { name: spec.section, exact: true });
+    if (spec.path === "fast-response") {
+      const o = await observeIdentity(ctx, state);
+      const href = await openServiceControlFromReply(ctx, o.links, o.origin, () => section);
+      state.replyLinkedControlHref = href ?? null;
+      await ctx.input.evidence("identity-company-model-reply-link.json", { links: o.links, opened: href ?? null, url: ctx.input.page.url() });
+      if (!href) { await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" }); return; }
+    } else await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/company/settings/connections`, { waitUntil: "domcontentloaded" });
     await section.getByRole("button", { name: (state.connection as AiManagedConnectionSummary).name, exact: true }).click();
     if (spec.path !== "decision-model") await section.getByLabel("Model", { exact: true }).fill(requestedAuxiliaryServiceModel);
     await section.getByRole("switch", { name: spec.toggle, exact: true }).setChecked(true);
