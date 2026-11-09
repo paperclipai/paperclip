@@ -1,3 +1,4 @@
+import { NATIVE_TURN_LOST_ON_RESTORE } from "./native-usage-accounting.js";
 import { readPendingNativeRunStop } from "./native-cancellation-request.js";
 import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
@@ -69,6 +70,21 @@ export type NativeRestartKind = "hot" | "hard" | "graceful";
 export const NATIVE_RESTART_RECOVERY_FAILED = "restart_recovery_failed";
 
 export const NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT = 3;
+
+function restartContinuationInFlight(checkpoint: Record<string, unknown>): boolean {
+  const activeTurnId = checkpoint.activeTurnId;
+  if (typeof activeTurnId !== "string" || !activeTurnId) return false;
+  const last = Array.isArray(checkpoint.terminalTurns) ? checkpoint.terminalTurns.at(-1) as Record<string, unknown> | undefined : undefined;
+  if (!last || typeof last.fingerprint !== "string" || last.turnId === activeTurnId) return false;
+  try {
+    const fingerprint = JSON.parse(last.fingerprint) as Record<string, unknown>;
+    const error = fingerprint.error as Record<string, unknown> | null | undefined;
+    return fingerprint.terminalState === "failed" && fingerprint.result === null &&
+      error?.code === NATIVE_TURN_LOST_ON_RESTORE && error.recoverable === true;
+  } catch {
+    return false;
+  }
+}
 
 export type NativeRestartRecoveryClaim =
   | {
@@ -1436,7 +1452,8 @@ export async function claimNativeRestartRecoveries(input: {
         checkpointFailed:
           (checkpointRecord.terminal as Record<string, unknown> | undefined)
             ?.runTerminalState === "failed" &&
-          nativeRestartInterruptedTurnId(checkpointRecord as unknown as PersistedNativeSession) === null,
+          nativeRestartInterruptedTurnId(checkpointRecord as unknown as PersistedNativeSession) === null &&
+          !restartContinuationInFlight(checkpointRecord),
         providerAttempt: row.coordinator.attempt,
         resumeChargesAttempt: !resumeKeepsAttempt,
       });
