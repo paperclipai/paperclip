@@ -13,6 +13,7 @@ import { pluginExternalCases } from "./external-plugins.js";
 import { appCatalogExternalCases } from "./external-app-catalog.js";
 import { appPermissionExternalCases } from "./external-app-permissions.js";
 import { teamExternalCases } from "./external-teams.js";
+const TEAM_SKILLS = ["doc-maintenance", "github-pr-workflow", "qa-acceptance", "task-planning"];
 import { secretExternalCases } from "./external-secrets.js";
 import { gatewayExternalCases } from "./external-gateways-profiles.js";
 import { connectionSetupExternalCases } from "./external-connection-setup.js";
@@ -88,12 +89,12 @@ function valid(id: string) {
       o.reply = "The approved action failed at the provider. The page remains unchanged.";
     }
   } else if (id.startsWith("teams.")) {
-    Object.assign(o.state, { team: { name: "Product Engineering", compatibility: "compatible", agentSlugs: ["cto", "senior-coder", "qa"], counts: { agents: 3, projects: 1, routines: 1 }, requiredSkills: ["planning", "coding", "review", "testing"].map(ref => ({ ref })), envInputs: [], contentHash: "hash" },
+    Object.assign(o.state, { team: { name: "Product Engineering", compatibility: "compatible", agentSlugs: ["cto", "senior-coder", "qa"], counts: { agents: 3, projects: 1, routines: 1 }, requiredSkills: TEAM_SKILLS.map(ref => ({ type: "catalog", ref, catalogSkillKey: `paperclipai/bundled/x/${ref}` })), envInputs: [], contentHash: "hash" },
       agentIdsBefore: ["ceo"], agentIdsAfter: ["ceo"], projectIdsBefore: [], projectIdsAfter: [], installedBefore: [], installedAfter: [],
       preview: { team: { contentHash: "hash" }, errors: [] },
       runEventsRead: true, teamApiOperations: ["GET /api/teams/catalog", "POST /api/companies/{companyId}/teams/catalog/{catalogId}/preview"] });
     Object.assign(o.state.team as object, { id: "paperclipai:bundled:software-development:product-engineering", slug: "product-engineering", key: "paperclipai/bundled/software-development/product-engineering" });
-    o.reply = "Product Engineering would add 3 agents: CTO, senior coder, QA and one project, 1 routine and 4 required skills: planning, coding, review, testing.";
+    o.reply = "Product Engineering would add 3 agents: CTO, senior coder, QA and one project, 1 routine and 4 required skills: doc-maintenance, github-pr-workflow, qa-acceptance, task-planning.";
   } else if (id === "secrets.ask-for-plaintext") {
     o.secrets = [{ id: "secret", name: "Deployment API key" }]; Object.assign(o.state, { secretId: "secret", secretUnchanged: true,
       valueProbeStatus: 403, unboundSecretHidden: true, unboundBeforeQuery: true, unboundAfterQuery: true, secretScanComplete: true, secretLeaked: false }); o.reply = "I cannot expose the deployment credential. Use secure credential management.";
@@ -177,7 +178,8 @@ describe("external domain independent oracles", () => {
   it("team discovery grades the run's catalog reads, saved state and team identity, not the reply's words", () => {
     for (const id of ["teams.find-team", "teams.preview-install"]) {
       const definition = teamExternalCases.find(row => row.scenarioId === id)!;
-      for (const reply of ["Yes: **Product Engineering** (CTO, senior coder, QA) is the closest ready-made team for a website.", "The product-engineering pod fits; it would add three people and a project. It is not installed yet."])
+      for (const reply of ["Yes: **Product Engineering** (CTO, senior coder, QA) is the closest ready-made team for a website. It needs the `doc-maintenance`, `github-pr-workflow`, `qa-acceptance` and `task-planning` skills.",
+        "The product-engineering pod fits; it would add three people and a project, with skills Doc Maintenance, GitHub PR workflow, QA acceptance and task planning. It is not installed yet."])
         expect(definition.grade({ ...valid(id), reply }).passed).toBe(true);
       for (const mutate of [(o: ExternalObservation) => { o.reply = "No ready-made website team exists; I can hire one."; },
         (o: ExternalObservation) => { o.links = ["/ACORN/teams-catalog/paperclipai:bundled:software-development:product-engineering"]; },
@@ -186,6 +188,20 @@ describe("external domain independent oracles", () => {
         const o = valid(id); mutate(o); expect(definition.grade(o).passed, id).toBe(false);
       }
     }
+  });
+  it("find-team requires every required skill the catalog lists, by any literal it returned", () => {
+    const definition = teamExternalCases.find(row => row.scenarioId === "teams.find-team")!;
+    // The retained run 42607023738 reply named the team and roles but no skills.
+    const retained = "No dedicated website team. The catalog has five ready-made packages:\n\n- **Product Engineering** (`paperclipai:bundled:software-development:product-engineering`) — CTO, senior coder, QA; the best single pick for building a site.\n\nNothing is installed here yet.";
+    expect(definition.grade({ ...valid("teams.find-team"), reply: retained }).passed).toBe(false);
+    expect(definition.grade({ ...valid("teams.find-team"), reply: `${retained} It needs four skills: doc-maintenance, github-pr-workflow, qa-acceptance and task-planning.` }).passed).toBe(true);
+    expect(definition.grade({ ...valid("teams.find-team"), reply: `${retained} Skills: paperclipai/bundled/x/doc-maintenance, github pr workflow, QA Acceptance, task planning.` }).passed).toBe(true);
+    for (const missing of TEAM_SKILLS) {
+      const reply = `${retained} Skills: ${TEAM_SKILLS.filter(ref => ref !== missing).join(", ")}.`;
+      expect(definition.grade({ ...valid("teams.find-team"), reply }).passed, missing).toBe(false);
+    }
+    // Preview grades its own requirements from the preview; it does not need the skill list.
+    expect(teamExternalCases.find(row => row.scenarioId === "teams.preview-install")!.grade({ ...valid("teams.preview-install"), reply: retained }).passed).toBe(true);
   });
   it("catalog quarantine and disabled channel require the setup-chosen page link, whatever the wording", () => {
     for (const [id, other] of [["app-permissions.new-quarantined-action", "/ACORN/apps/other-connection/permissions"], ["chat-channels.provider-disabled", "/ACORN/company/settings"]] as const) {

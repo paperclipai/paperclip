@@ -4315,7 +4315,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/questions-and-approvals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.identity.wrong-reviewer.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -6033,7 +6033,7 @@
       "run-observations.ts",
       "chat-catalog-domains/identity-support.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.team-discovery.v2",
+    "oracleVersion": "paperclip.chat-catalog.team-discovery.v3",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -6077,7 +6077,7 @@
       "run-observations.ts",
       "chat-catalog-domains/identity-support.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.team-discovery.v2",
+    "oracleVersion": "paperclip.chat-catalog.team-discovery.v3",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,

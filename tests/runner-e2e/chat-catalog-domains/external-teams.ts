@@ -20,6 +20,13 @@ export function namesCatalogTeam(reply: string, team: Pick<CatalogTeam, "name" |
   const text = reply.replace(/[*_`]/g, "").toLowerCase();
   return [team.name, team.slug, team.slug.replaceAll("-", " "), team.key, team.id].some(name => !!name && text.includes(name.toLowerCase()));
 }
+/** Identity check only: each required skill is named by a literal the catalog returned for it (ref, id or key). */
+export function namesRequiredSkills(reply: string, team: Pick<CatalogTeam, "requiredSkills">) {
+  const text = reply.replace(/[*_`]/g, "").toLowerCase();
+  const names = (skill: CatalogTeam["requiredSkills"][number]) => [skill.ref, skill.ref.replaceAll("-", " "),
+    skill.catalogSkillId, skill.catalogSkillKey];
+  return team.requiredSkills.every(skill => names(skill).some(name => !!name && text.includes(name.toLowerCase())));
+}
 /** The web app routes no teams catalog page, so a /teams-catalog link opens Page not found. */
 export function linksMissingTeamCatalogPage(o: { links: string[]; origin: string }) {
   return o.links.some(href => { try { return new URL(href, o.origin).pathname.split("/").includes("teams-catalog"); } catch { return false; } });
@@ -35,6 +42,10 @@ export function gradeTeams(value: unknown) {
   c.add("existing-package-grounding", !!team && team.compatibility === "compatible" && team.agentSlugs.length >= 2 && team.counts.projects > 0
     && !!operations?.some(operation => LIST_TEAMS.has(operation)), "The agent read the real teams catalog in its own run before answering.");
   c.add("names-catalog-team", !!team && namesCatalogTeam(o.reply, team), "The reply identifies the selected catalog team by a name, slug or id the catalog returned.");
+  // The expected outcome calls out requirements in the package metadata. The required skill refs are
+  // catalog literals, so naming each one is an identity check, not wording.
+  if (o.scenarioId === "teams.find-team") c.add("names-required-skills", !!team && team.requiredSkills.length > 0 && namesRequiredSkills(o.reply, team),
+    "The reply names every required skill the catalog lists for the recommended team.");
   c.add("no-broken-catalog-link", !linksMissingTeamCatalogPage(o), "The reply does not link a teams catalog page, which the web app does not route.");
   c.add("no-premature-installation", sameRows(o.state.installedBefore, o.state.installedAfter) && sameRows(o.state.agentIdsBefore, o.state.agentIdsAfter)
     && sameRows(o.state.projectIdsBefore, o.state.projectIdsAfter) && !operations?.includes(INSTALL_TEAM),
@@ -77,7 +88,7 @@ export const teamExternalCases = ["find-team", "preview-install"].map(id => defi
   },
   // The reply is the result: the catalog has no web page to open from it.
   async verifyResult(ctx, _state, value) { await verifyRenderedReply(ctx, value); },
-  oracleVersion: "paperclip.chat-catalog.team-discovery.v2",
+  oracleVersion: "paperclip.chat-catalog.team-discovery.v3",
   sourceFiles: ["chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/external-teams.ts",
     "chat-scenarios/teams.yaml", "run-observations.ts"],
 }));
