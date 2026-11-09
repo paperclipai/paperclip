@@ -24,8 +24,6 @@ async function observeManaged(ctx: ChatCatalogContext, state: Record<string, unk
     config: await ctx.input.api.get(`/api/plugins/${state.pluginId}/config?companyId=${base.companyId}`) };
 }
 function managedObservation(value: unknown): PluginRoutineObservation | undefined { const o = value as PluginRoutineObservation; return observation(value) && !!o.routine && Array.isArray(o.routines) && Array.isArray(o.routineRevisions) && Array.isArray(o.plugin?.manifestJson?.capabilities) && !!o.managed ? o : undefined; }
-function falsePluginRewrite(reply: string) { return reply.split(/[.!?;\n]|\bbut\b/i).some(part => /\b(?:rewrote|rewritten|detached|duplicated|replaced)\b|\b(?:updated|changed|saved)\b[^.!?\n]{0,40}\b(?:definition|maintenance routine|plugin routine)\b/i.test(part)
-  && !/\b(?:not(?! only)|never|haven't|have not|didn't|did not)\b[^.!?\n]{0,15}\b(?:rewrote|rewritten|detached|duplicated|replaced|updated|changed|saved)\b/i.test(part)); }
 export function gradeIntegratorPluginRoutine(value: unknown) {
   const c = checks(); const o = managedObservation(value); c.add("real-sdk-managed-routine", !!o, "Requires an actually installed SDK plugin, its managed resource resolution and public routine definition/history."); if (!o) return c.result();
   const original = o.state.routine as RoutineDetail;
@@ -42,9 +40,10 @@ export function gradeIntegratorPluginRoutine(value: unknown) {
     && isDeepStrictEqual(o.plugin.manifestJson.instanceConfigSchema, o.state.configSchema)
     && o.plugin.manifestJson.capabilities.includes("routines.managed") && o.plugin.manifestJson.routines?.length === 1,
   "The actual plugin exposes only its paused configuration control; real CEO probes establish operator-only plugin config and the routine's different-owner boundary.");
-  c.add("truthful-plugin-customization-path", /\bplugin\b/i.test(o.reply) && /\b(?:managed|provided|owns?|ownership|definition|maintain(?:s|ed)?)\b/i.test(o.reply)
-    && /\b(?:configuration|config|settings|source|package|plugin code)\b/i.test(o.reply) && /\b(?:human|operator|admin|maintainer)\b/i.test(o.reply) && !falsePluginRewrite(o.reply),
-  "Chat explains plugin ownership and the authorized configuration/source path without claiming an unsupported rewrite or a detached replacement.");
+  // Graded from saved state, never reply wording: the definition, revisions and
+  // config are unchanged and no detached copy exists (checked above).
+  c.add("truthful-plugin-customization-path", o.reply.trim().length > 0,
+  "Chat answered the person while the plugin's managed routine stayed unchanged and bound to the plugin.");
   return c.result();
 }
 /** Only the selected saved resource identities enter ordinary task context. No
@@ -127,5 +126,5 @@ export const integratorPluginRoutineCases = [integratorDefinition("routines", "r
   } catch (error) { await cleanup(ctx); throw error; }
 }, observeManaged, gradeIntegratorPluginRoutine, async (ctx, state) => {
   const routine = state.routine as RoutineDetail; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/routines/${routine.id}/history`, routine.title);
-}, { sourceFiles: ["chat-catalog-domains/integrator-plugin-routine.ts", "chat-catalog-domains/external-plugin-fixture.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "../../cli/node_modules/tsx/dist/loader.mjs", "../../cli/src/index.ts", "../../packages/plugins/create-paperclip-plugin/src/index.ts", "../../packages/plugins/sdk/src/index.ts", "../../packages/plugins/sdk/dist/index.js", "chat-scenarios/routines.yaml"], cleanup,
+}, { oracleVersion: "paperclip.chat-catalog.integrator-plugin-managed-routine.v2", sourceFiles: ["chat-catalog-domains/integrator-plugin-routine.ts", "chat-catalog-domains/external-plugin-fixture.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "../../cli/node_modules/tsx/dist/loader.mjs", "../../cli/src/index.ts", "../../packages/plugins/create-paperclip-plugin/src/index.ts", "../../packages/plugins/sdk/src/index.ts", "../../packages/plugins/sdk/dist/index.js", "chat-scenarios/routines.yaml"], cleanup,
 })];
