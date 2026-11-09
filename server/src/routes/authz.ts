@@ -3,6 +3,7 @@ import type { SecretBindingTargetType } from "@paperclipai/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 
 function throwOrShadowResponsibleUserCompanyAccessDeny(
   req: Request,
@@ -65,8 +66,25 @@ const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray, req: Request)
   [/^\/companies\/[^/]+(?:\/(?:archive|branding|settings))?\/?$/, () => ["company settings", "/<prefix>/company/settings"]],
 ];
 
+// Plugin management pages. A plugin id or key segment opens that plugin's settings
+// (the page accepts either); a plugin-manager endpoint segment opens the manager.
+// An operator can hide plugin management, so link it only while it is visible.
+const PLUGIN_REFERENCE = /^[a-z0-9][a-z0-9._-]*$/i;
+const PLUGIN_MANAGER_SEGMENTS = new Set(["examples", "install", "tools", "ui-contributions"]);
+function pluginControlPage(path: string): [string, string] | null {
+  const match = /^\/plugins(?:\/([^/]+))?(?:\/|$)/.exec(path);
+  if (!match || getHiddenSettings().has("instance.plugins")) return null;
+  const segment = match[1];
+  const plugin = segment && PLUGIN_REFERENCE.test(segment) && !PLUGIN_MANAGER_SEGMENTS.has(segment) ? segment : null;
+  return plugin
+    ? ["the plugin's settings", `/<prefix>/company/settings/instance/plugins/${plugin}`]
+    : ["plugin settings", "/<prefix>/company/settings/instance/plugins"];
+}
+
 function boardControlPage(req: Request) {
   const path = (req.originalUrl ?? "").split("?")[0]!.replace(/^\/api(?=\/)/, "");
+  const pluginPage = pluginControlPage(path);
+  if (pluginPage) return pluginPage;
   for (const [pattern, page] of BOARD_CONTROL_PAGES) {
     const match = pattern.exec(path);
     if (match) return page(match, req);
@@ -86,7 +104,7 @@ export function boardAccessRequired(req: Request) {
     : "They can do it in the Paperclip web app or with their own board credentials. Link a page only if you already know its route; do not search for one.";
   return forbidden("Board access required", {
     code: BOARD_ACCESS_REQUIRED_CODE,
-    remediation: `This action is board-only by design and this denial is final: no agent credential, tool or other API route can do it, so do not search for one. Tell the person that a board user must do it. ${where}`,
+    remediation: `This action is board-only by design and this denial is final: no agent credential, tool or other API route can do it, so do not search for one. Stop working on this step and reply now: tell the person that a board user must do it. ${where}`,
   });
 }
 
