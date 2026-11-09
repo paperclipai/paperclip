@@ -18,6 +18,7 @@ import {
   createDb,
   databaseWorkPending,
   executionWorkspaces,
+  environmentLeases,
   heartbeatRuns,
   issueComments,
   issueReferenceMentions,
@@ -278,6 +279,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   async function resetDatabase() {
+    await db.delete(environmentLeases);
     await db.delete(workspaceRuntimeServices);
     await db.delete(activityLog);
     await db.delete(issueRecoveryActions);
@@ -2297,6 +2299,85 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(readiness?.deliveryState).toBe("unmerged");
     expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
     expect(parentWorkspace?.status).toBe("active");
+  });
+
+  it.each([
+    "workspace", "lease", "checkout", "execution", "issue", "native", "contextIssue", "contextTask",
+  ] as const)("retains a terminal worktree for a live run bound through %s", async binding => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
+    const [source] = await db.select().from(issues).where(eq(issues.id, seeded.sourceIssueId));
+    const runId = source!.checkoutRunId!;
+    await db.update(issues).set({ checkoutRunId: null, executionRunId: null }).where(eq(issues.id, seeded.sourceIssueId));
+    const contextSnapshot = binding === "workspace" ? { executionWorkspaceId: seeded.executionWorkspaceId }
+      : binding === "contextIssue" ? { issueId: seeded.sourceIssueId }
+        : binding === "contextTask" ? { taskId: seeded.sourceIssueId } : null;
+    await db.update(heartbeatRuns).set({
+      issueId: binding === "issue" ? seeded.sourceIssueId : null,
+      scopeKind: binding === "issue" ? "issue" : "company",
+      nativeIssueId: binding === "native" ? seeded.sourceIssueId : null,
+      contextSnapshot,
+    }).where(eq(heartbeatRuns.id, runId));
+    if (binding === "lease") {
+      await db.insert(environmentLeases).values({ companyId: seeded.companyId, heartbeatRunId: runId, executionWorkspaceId: seeded.executionWorkspaceId });
+    }
+    if (binding === "checkout" || binding === "execution") {
+      await db.update(issues).set(binding === "checkout" ? { checkoutRunId: runId } : { executionRunId: runId }).where(eq(issues.id, seeded.sourceIssueId));
+    }
+    for (const status of ["queued", "running"] as const) {
+      await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, runId));
+      await db.update(issues).set({ status: status === "queued" ? "done" : "cancelled" }).where(eq(issues.id, seeded.sourceIssueId));
+      expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedActiveRun: 1 });
+      expect(await svc.getCloseReadiness(seeded.executionWorkspaceId)).toMatchObject({ state: "blocked", isDestructiveCloseAllowed: false });
+      expect(await svc.findGitWorktreeContention({
+        companyId: seeded.companyId, worktreePath: seeded.worktreePath, liveBranchName: "PAP-16015-delivery",
+      })).toMatchObject({ activeRun: { id: runId, status } });
+      expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId)))[0]).toMatchObject({ status: "active", closedAt: null });
+      await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    }
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    expect(await svc.getCloseReadiness(seeded.executionWorkspaceId)).toMatchObject({ isDestructiveCloseAllowed: true });
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ archived: 1, skippedActiveRun: 0, cleanupFailed: 0 });
+    await expect(fs.access(seeded.worktreePath)).rejects.toThrow();
+  });
+
+  it("retains the source workspace after issue pointers move and until every run finishes", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
+    const [source] = await db.select().from(issues).where(eq(issues.id, seeded.sourceIssueId));
+    const [first] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source!.checkoutRunId!));
+    await db.update(issues).set({ checkoutRunId: null, executionWorkspaceId: null }).where(eq(issues.id, seeded.sourceIssueId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { taskId: seeded.sourceIssueId } }).where(eq(heartbeatRuns.id, first!.id));
+    const [second] = await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: first!.agentId, status: "queued", contextSnapshot: { executionWorkspaceId: seeded.executionWorkspaceId } }).returning();
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedActiveRun: 1 });
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, first!.id));
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedActiveRun: 1 });
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, second!.id));
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ archived: 1 });
+  });
+
+  it("retains a workspace for a hidden linked issue after checkout release", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
+    const [source] = await db.select().from(issues).where(eq(issues.id, seeded.sourceIssueId));
+    const [linked] = await db.insert(issues).values({ companyId: seeded.companyId, title: "Hidden linked issue", status: "done", hiddenAt: new Date(), executionWorkspaceId: seeded.executionWorkspaceId }).returning();
+    await db.update(issues).set({ checkoutRunId: null }).where(eq(issues.id, seeded.sourceIssueId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: linked!.id } }).where(eq(heartbeatRuns.id, source!.checkoutRunId!));
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedActiveRun: 1 });
+    expect(await svc.findGitWorktreeContention({ companyId: seeded.companyId, worktreePath: seeded.worktreePath, liveBranchName: null })).toMatchObject({ activeRun: { id: source!.checkoutRunId, issueId: linked!.id } });
+  });
+
+  it("ignores unrelated runs, foreign-company bindings and released environment leases", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
+    const foreign = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
+    const [source] = await db.select().from(issues).where(eq(issues.id, seeded.sourceIssueId));
+    const [other] = await db.select().from(issues).where(eq(issues.id, foreign.sourceIssueId));
+    await db.update(issues).set({ checkoutRunId: null }).where(eq(issues.id, seeded.sourceIssueId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { executionWorkspaceId: seeded.executionWorkspaceId, issueId: seeded.sourceIssueId, taskId: seeded.sourceIssueId } }).where(eq(heartbeatRuns.id, other!.checkoutRunId!));
+    await db.insert(environmentLeases).values([
+      { companyId: seeded.companyId, heartbeatRunId: source!.checkoutRunId!, executionWorkspaceId: seeded.executionWorkspaceId, status: "released", releasedAt: new Date() },
+      { companyId: foreign.companyId, heartbeatRunId: source!.checkoutRunId!, executionWorkspaceId: seeded.executionWorkspaceId },
+    ]);
+    expect(await svc.getCloseReadiness(seeded.executionWorkspaceId)).toMatchObject({ isDestructiveCloseAllowed: true });
+    expect(await svc.findGitWorktreeContention({ companyId: seeded.companyId, worktreePath: seeded.worktreePath, liveBranchName: null })).toMatchObject({ activeRun: null });
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ archived: 1, skippedActiveRun: 1 });
   });
 
   it("reaps only fully-terminal delivered workspaces without active checkout runs", async () => {

@@ -913,6 +913,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   // isolated-workspace UI, just as warm sandbox continuity already does.
   const nativeSharedWorkspace = agent.adapterType === "paperclip_runner" &&
     requestedExecutionWorkspaceMode === "shared_workspace";
+  const bindRunToPersistedExecutionWorkspace = async (workspace: ExecutionWorkspace | null) => {
+    if (!workspace) return;
+    context.executionWorkspaceId = workspace.id;
+    await db.update(heartbeatRuns).set({ contextSnapshot: context, updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, run.id));
+  };
   const bindIssueToPersistedExecutionWorkspace = async (
     workspace: ExecutionWorkspace | null,
   ) => {
@@ -1267,16 +1273,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       repoRef: preparedRefs.has(source.id) ? preparedRefs.get(source.id)! : readNonEmptyString(source.repoRef),
     }));
   }
-  if (persistedExecutionWorkspace) {
-    context.executionWorkspaceId = persistedExecutionWorkspace.id;
-    await db
-      .update(heartbeatRuns)
-      .set({
-        contextSnapshot: context,
-        updatedAt: new Date(),
-      })
-      .where(eq(heartbeatRuns.id, run.id));
-  }
+  await bindRunToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   if (providerApiPlacement) {
     await controllerLease.assertOwned();
     return {
@@ -1473,6 +1470,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   // the issue before dispatch so warm turns reuse the exact same workspace
   // and lease scope instead of silently creating a per-run replacement.
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
+  await bindRunToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const workspaceRealization = realizationResult.workspaceRealization;
   const executionTarget = realizationResult.executionTarget;
   if (remoteAuthority && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
