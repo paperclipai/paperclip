@@ -3554,6 +3554,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
+  it.each([2, 3])("does not promise a quota retry after dispatched process loss at attempt %s", async (attempt) => {
+    const { companyId, runId } = await seedRunFixture({ agentStatus: "idle", processPid: 999_999_999,
+      contextSnapshot: { errorFamily: "provider_quota" } });
+    await db.update(heartbeatRuns).set({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: attempt,
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+    }).where(eq(heartbeatRuns.id, runId));
+    await heartbeatService(db).reapOrphanedRuns();
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({ errorCode: "process_lost", error: "Process lost -- server may have restarted" });
+    expect(reaped.resultJson).toMatchObject({ processLossDiagnostic: { retryEligible: false } });
+    expect(await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))).toEqual([]);
+  });
+
   it.each([2, 3, 4])("preserves quota retry budget across a pre-dispatch restart at attempt %s", async (attempt) => {
     const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
     const [seeded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
