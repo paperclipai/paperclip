@@ -193,6 +193,20 @@ describe("external domain independent oracles", () => {
       expect(definitions.find(row => row.scenarioId === id)!.grade(o).passed).toBe(false);
     }
   });
+  it("decline-consent grades the saved outcome, not the reply's words", () => {
+    const definition = assistantConnectionExternalCases.find(row => row.scenarioId === "assistant-connections.decline-consent")!;
+    const reworded = (reply: string) => { const o = valid("assistant-connections.decline-consent"); o.reply = reply; o.phaseReplies = [{ runId: "continuation", body: reply }]; return o; };
+    // Run 42544676484's reply, and a rewording with none of the old keywords.
+    for (const reply of ["Understood — I won't connect that assistant. Nothing has been connected or changed, and I won't retry it.", "OK, that assistant stays off. Nothing else changed."])
+      expect(definition.grade(reworded(reply)).passed).toBe(true);
+    expect(definition.grade(reworded("")).passed).toBe(false);
+    const prompt = valid("assistant-connections.decline-consent"); prompt.interactions = [{ id: "again", kind: "ask_user_questions", status: "pending" }];
+    expect(definition.grade(prompt).passed).toBe(false);
+    const write = valid("assistant-connections.decline-consent"); write.activity = [{ id: "w", action: "mcp.connection_revoked", actorType: "agent", entityType: "mcp_connection", entityId: "other" } as typeof write.activity[number]];
+    expect(definition.grade(write).passed).toBe(false);
+    const grant = valid("assistant-connections.decline-consent"); grant.state.newGrantCount = 1;
+    expect(definition.grade(grant).passed).toBe(false);
+  });
   it("a plausible reply alone never passes", () => { for (const definition of definitions) expect(definition.grade({ reply: "Done, everything is connected and ready." }).passed).toBe(false); });
 });
 describe("private disposable provider prerequisite contract", () => {
