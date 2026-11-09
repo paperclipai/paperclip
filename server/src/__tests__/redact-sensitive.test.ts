@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   collectSensitiveStringValues,
+  redactInvitationTokens,
   redactSensitive,
   redactSensitiveValueOccurrences,
   stripSecretBearingUrlParts,
@@ -285,5 +286,16 @@ describe("invitation bearer URL paths", () => {
     ["/api/companies/company/invites/invite-record-id", "/api/companies/company/invites/invite-record-id"],
   ])("sanitizes %s without hiding the route", (input, expected) => {
     expect(stripSecretBearingUrlParts(input)).toBe(expected);
+  });
+});
+
+describe("redactInvitationTokens", () => {
+  it.each([
+    ["Open [Join](https://app.example.test/invite/legacy8x) now", "Open [Join](https://app.example.test/invite/[REDACTED]) now"],
+    ['{"token":"pcp_invite_abc-DEF_123","note":"ok"}', '{"token":"[REDACTED]","note":"ok"}'],
+    ["POST /api/invites/pcp_invite_abc/accept", "POST /api/invites/[REDACTED]/accept"],
+    ["GET /api/companies/c1/invites and /invites/i1/revoke", "GET /api/companies/c1/invites and /invites/i1/revoke"],
+  ])("redacts invitation tokens inside free text: %s", (input, expected) => {
+    expect(redactInvitationTokens(input)).toBe(expected);
   });
 });
