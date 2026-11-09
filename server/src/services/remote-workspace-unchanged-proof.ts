@@ -37,8 +37,10 @@ export function readUnchangedBaseline(metadata: Record<string, unknown> | null |
   return value as UnchangedBaseline;
 }
 
-/** Operations a preparation may record without changing the saved files: a restore writes exactly the saved version. */
-const FILE_NEUTRAL_OPERATION_PHASES = ["remote_workspace_restore"];
+/** Operations that cannot change the saved files: a restore writes exactly the
+ * saved version, and finalize and recovery rows are receipts that wrap a save
+ * (whose own snapshot operation is still counted). */
+const FILE_NEUTRAL_OPERATION_PHASES = ["remote_workspace_restore", "workspace_finalize", "workspace_recovery"];
 /** Terminal states of a run that ended without a result. */
 const ENDED_WITHOUT_RESULT = ["failed", "cancelled", "interrupted", "timed_out"];
 

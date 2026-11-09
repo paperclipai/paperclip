@@ -148,6 +148,9 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     const f = await preparedFollowUp();
     await f.end();
     const dueAt = await f.parkWaiter();
+    // Production finalizers publish their wrapper receipt before the save.
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: (await f.workspace()).id,
+      heartbeatRunId: f.runB, phase: "workspace_finalize", status: "running", metadata: { owningService: "native_workspace_finalizer" } });
     const before = f.captures();
     const saved = await f.saveB();
     expect(saved).toMatchObject({ snapshotId: f.savedA.snapshotId, unchanged: true });

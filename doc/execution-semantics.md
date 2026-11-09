@@ -581,8 +581,8 @@ no recovered attachments, no repository outside the saved version and no
 workspace migration. The release requires durable evidence that nothing ran
 after that point: no execution or provider event, process, runner checkpoint,
 native result or provider turn in a checkpoint for that run; no workspace
-operation other than a restore; and no task repository outside the saved
-version. The writer's owner fence must also be clear. Any missing or ambiguous evidence,
+operation other than a restore or a finalize or recovery receipt; and no task
+repository outside the saved version. The writer's owner fence must also be clear. Any missing or ambiguous evidence,
 including a writer prepared by an earlier release without that starting point,
 keeps the full save. The next run's reservation, cancelled-workspace
 preservation and a later final save each apply this release. A repeated save

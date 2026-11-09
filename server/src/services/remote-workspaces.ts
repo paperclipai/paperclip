@@ -44,7 +44,7 @@ import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
 import { proveRemoteWorkspaceUnchanged, readUnchangedBaseline, UNCHANGED_BASELINE_KEY, UNCHANGED_BASELINE_SCHEMA,
   type UnchangedBaseline } from "./remote-workspace-unchanged-proof.js";
-import { wakeWorkspaceBusyWaitersInTx } from "../modules/run-dispatch/adapters/workspace-busy-wait.js";
+import { wakeWorkspaceBusyWaitersInTx } from "../modules/run-dispatch/index.js";
 
 export { readRemoteWorkspaceAuthority, type RemoteWorkspaceAuthority, type RemoteWorkspaceSource } from "@paperclipai/shared";
 export { remoteWorkspaceRepositoryPath } from "./remote-workspace-transport.js";
