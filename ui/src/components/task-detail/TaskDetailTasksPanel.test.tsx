@@ -91,7 +91,17 @@ describe("TaskDetailTasksPanel", () => {
     const blocker = task("blocker", { identifier: "PAP-11", projectId: project.id });
     const child = task("child", {
       status: "blocked",
-      blockerAttention: { terminalBlocker: blocker } as Issue["blockerAttention"],
+      blockerAttention: {
+        state: "needs_attention",
+        reason: "attention_required",
+        unresolvedBlockerCount: 1,
+        coveredBlockerCount: 0,
+        stalledBlockerCount: 0,
+        attentionBlockerCount: 1,
+        sampleBlockerIdentifier: blocker.identifier,
+        sampleStalledBlockerIdentifier: null,
+        terminalBlocker: blocker,
+      },
     });
     render({ subtasks: [child], createdTasks: [blocker], projects: [project] });
     expect(container.querySelectorAll('a[href="/issues/PAP-11"]')).toHaveLength(1);
