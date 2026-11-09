@@ -17,9 +17,11 @@ export function gradePluginInstall(value: unknown) {
     "The ordinary agent cannot install the package; the authenticated operator management request has independent mutation attribution.");
   c.add("actual-contribution-and-visible-state", o.state.previewReadback === true && o.state.humanSawActivation === true,
     "The human sees the installed activation state and the real company-scoped contributed route answers its fixture marker.");
-  c.add("truthful-installation-handoff", /Website Preview Eval|@paperclip-eval\/website-preview/i.test(o.reply) && /admin|operator|instance.*(?:setting|plugin)/i.test(o.reply)
-    && /install/i.test(o.reply) && !/\bI (?:have )?(?:installed|activated)\b|\b(?:is|now|already) (?:installed|activated|ready)\b/i.test(o.reply),
-    "The model identifies the exact package and administrator installation path without claiming the later human action already occurred.");
+  // Graded from saved state and setup-chosen literals, never reply wording: the
+  // package was still absent when chat answered (administrator-installation-only).
+  const literals = [o.state.packageName, o.state.displayName, o.state.pluginKey, o.state.packageRoot].filter((value): value is string => typeof value === "string" && value.length > 0);
+  c.add("truthful-installation-handoff", literals.length === 4 && o.phaseReplies.some(row => literals.some(literal => row.body.includes(literal))),
+    "Chat answered before the human installation step and named the exact package (its name, key or local path).");
   return c.result();
 }
 export const pluginInstallExternalCases = [definition("plugins.install-plugin", async ctx => {
@@ -30,9 +32,10 @@ export const pluginInstallExternalCases = [definition("plugins.install-plugin", 
     const agentInstallStatus = await probeAgentPermission(ctx, "/api/plugins/install", "POST", { packageName: fixture.packageRoot, isLocalPath: true });
     await ctx.input.api.post(`${root(ctx)}/chats/${ctx.input.fixtures.agent.id}`); await ctx.refreshIssue();
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The selected vetted synthetic package is Website Preview Eval (@paperclip-eval/website-preview), key ${fixture.key}, available as a local package at ${fixture.packageRoot}. It is not installed. Local-path installation uses the administrator plugin-management API. No external package needs downloading.` });
-    return { pluginKey: fixture.key, syntheticPackage: true, agentInstallStatus };
+    return { pluginKey: fixture.key, packageName: "@paperclip-eval/website-preview", displayName: "Website Preview Eval", packageRoot: fixture.packageRoot, syntheticPackage: true, agentInstallStatus };
   } catch (error) { fixtures.delete(ctx); await fixture.close(); throw error; }
 }, gradePluginInstall, {
+  oracleVersion: "paperclip.chat-catalog.external-plugin-install.v2",
   sourceFiles: ["chat-catalog-domains/external-plugin-install.ts", "chat-catalog-domains/external-plugin-fixture.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "../../cli/node_modules/tsx/dist/loader.mjs", "../../cli/src/index.ts", "../../packages/plugins/create-paperclip-plugin/src/index.ts", "../../packages/plugins/sdk/src/index.ts", "../../packages/plugins/sdk/dist/index.js", "chat-scenarios/plugins.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx);
