@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig, oauthGrantApprovalIdentity } from "./tool-approval-target.js";
+import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig, oauthGrantApprovalIdentity,
+  approvalGrantTenantIdentity, externalCredentialApprovalIdentity } from "./tool-approval-target.js";
 
 function snapshot() {
   return { approvalSnapshotVersion: 2, connectionConfigHash: "old expiry", connectionTransportConfigHash: "old expiry",
@@ -78,5 +79,27 @@ describe("durable tool approval target", () => {
     }
     expect(oauthGrantApprovalIdentity({ scopes: ["read"] }, { tokenType: "Bearer" }))
       .toEqual(oauthGrantApprovalIdentity({ scopes: ["read"], strategy: "direct_oauth", tokenType: "Bearer", refreshedAt: "new" }, {}));
+  });
+
+  it("compares effective permissions when a refresh starts or stops reporting scope", () => {
+    const consent = { scopes: ["read", "write"], requestedScopes: ["read", "write"], scopeSource: "requested_fallback" };
+    const reported = { ...consent, scopes: ["write", "read", "read"], scopeSource: "provider", scope: "write read", unrequestedScopes: [] };
+    expect(oauthGrantApprovalIdentity(consent, {})).toEqual(oauthGrantApprovalIdentity(reported, {}));
+    expect(oauthGrantApprovalIdentity(consent, {})).not.toEqual(oauthGrantApprovalIdentity({ ...reported, scopes: ["read"] }, {}));
+  });
+
+  it("retains external account and token identity while ignoring verification timestamps", () => {
+    const credential = { provider: "vercel_connect", tokenId: "reviewed-token", teamId: "reviewed-team", expiresAt: 1, lastVerifiedAt: 1 };
+    expect(externalCredentialApprovalIdentity(credential)).toEqual(externalCredentialApprovalIdentity({ ...credential, expiresAt: 2, lastVerifiedAt: 2 }));
+    for (const key of ["tokenId", "teamId"]) {
+      expect(externalCredentialApprovalIdentity(credential)).not.toEqual(externalCredentialApprovalIdentity({ ...credential, [key]: "changed" }));
+    }
+  });
+
+  it("retains installation identity while ignoring GitHub health and refresh bookkeeping", () => {
+    const tenant = { github: { installationId: 123, accountId: 456, lastAccessRefreshAt: "old", bindingSync: { status: "pending" } } };
+    expect(approvalGrantTenantIdentity(tenant, {})).toEqual(approvalGrantTenantIdentity({ github: {
+      ...tenant.github, lastAccessRefreshAt: "new", bindingSync: { status: "complete" }, lastWebhookAt: "new", webhookHealth: "healthy" } }, {}));
+    expect(approvalGrantTenantIdentity(tenant, {})).not.toEqual(approvalGrantTenantIdentity({ github: { ...tenant.github, installationId: 789 } }, {}));
   });
 });

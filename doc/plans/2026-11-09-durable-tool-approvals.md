@@ -27,7 +27,11 @@ Progress: reproduced the original 409 for both OAuth client modes before the
 repair. The local OAuth HTTP journey now passes for personal and shared grants,
 public and confidential clients, delayed review, ended runs, reconstructed gateway,
 duplicate approval, changed scopes/consent/tool/destination, manual token replacement,
-and event-driven authorization repair. Gateway service regressions (191 tests),
+and event-driven authorization repair. The journey injects the production OAuth
+refresher and proves that an invalid refresh preserves the decision before action
+dispatch. It also covers equivalent scope-reporting changes, withdrawn formal
+approvals during sign-in waits, and explicit deadlines on saved decisions.
+Gateway service regressions,
 connected-tool acceptance and vault suites passed after making their intentional
 expiry fixtures explicit. UI tests, server/UI typechecks, token gates and catalog
 checks passed. The production task-thread repair state was inspected in local

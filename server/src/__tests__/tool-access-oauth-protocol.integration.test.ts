@@ -7,7 +7,7 @@ import { join } from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, companyMemberships, createDb, connectionGrants, heartbeatRuns, issues, toolActionRequests, toolCatalogEntries, toolConnections, toolOauthStates, toolPolicies } from "@paperclipai/db";
+import { agents, approvals, companies, companyMemberships, createDb, connectionGrants, heartbeatRuns, issues, toolActionRequests, toolCatalogEntries, toolConnections, toolOauthStates, toolPolicies } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
@@ -17,6 +17,7 @@ import { secretService } from "../services/secrets.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { registerToolReviewRecoveryWork } from "../services/tool-review-recovery-work.js";
 import { writeToolConnectionHealthChange } from "../services/tool-connection-health-notifications.js";
+import { readSignedToolArgumentsPayload } from "../services/tool-content-guards.js";
 import { errorHandler } from "../middleware/index.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -42,11 +43,11 @@ describe("tool OAuth over local HTTP", () => {
   });
 
   it.each([
-    { authMethod: "none", grantKind: "organization" },
-    { authMethod: "client_secret_basic", grantKind: "organization" },
-    { authMethod: "none", grantKind: "user" },
-    { authMethod: "client_secret_basic", grantKind: "user" },
-  ] as const)("approves a $grantKind $authMethod OAuth action after refresh and delayed review", async ({ authMethod, grantKind }) => {
+    { authMethod: "none", grantKind: "organization", scopeMode: "omitted_initial" },
+    { authMethod: "client_secret_basic", grantKind: "organization", scopeMode: "omitted_refresh" },
+    { authMethod: "none", grantKind: "user", scopeMode: "omitted_initial" },
+    { authMethod: "client_secret_basic", grantKind: "user", scopeMode: "explicit" },
+  ] as const)("approves a $grantKind $authMethod OAuth action after refresh and delayed review ($scopeMode)", async ({ authMethod, grantKind, scopeMode }) => {
     const userId = `oauth-user-${randomUUID()}`;
     const [company] = await db.insert(companies).values({
       name: "OAuth protocol fixture", issuePrefix: `O${randomUUID().slice(0, 5)}`,
@@ -59,6 +60,7 @@ describe("tool OAuth over local HTTP", () => {
     let origin: string;
     let currentAccessToken = "fixture-access";
     let currentRefreshToken = "fixture-refresh";
+    let rejectRefresh = false;
     const provider = createServer(async (req, res) => {
       let body = "";
       for await (const chunk of req) body += chunk;
@@ -89,6 +91,7 @@ describe("tool OAuth over local HTTP", () => {
       if (path === "/token") {
         const refreshing = new URLSearchParams(body).get("grant_type") === "refresh_token";
         if (refreshing) {
+          if (rejectRefresh) return json({ error: "invalid_grant" }, 400);
           if (new URLSearchParams(body).get("refresh_token") !== currentRefreshToken) {
             return json({ error: "invalid_grant" }, 400);
           }
@@ -96,7 +99,9 @@ describe("tool OAuth over local HTTP", () => {
           currentRefreshToken = "fixture-refresh-rotated";
         }
         return json({ access_token: currentAccessToken, refresh_token: currentRefreshToken,
-          expires_in: 3600, token_type: "Bearer", scope: "tools.write offline_access" });
+          expires_in: 3600, token_type: "Bearer",
+          ...((scopeMode === "omitted_initial" && !refreshing) || (scopeMode === "omitted_refresh" && refreshing)
+            ? {} : { scope: "tools.write offline_access" }) });
       }
       if (path === "/mcp") {
         if (req.headers.authorization !== `Bearer ${currentAccessToken}`) {
@@ -186,24 +191,32 @@ describe("tool OAuth over local HTTP", () => {
         responsibleUserId: userId, cause: "instruction" });
       await db.insert(toolPolicies).values({ companyId: company.id, name: "Review OAuth actions",
         policyType: "require_approval", selectors: { connectionId: connection.id } });
+      const options = { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const, paperclipCloudConnector: null };
+      const first = toolAccessService(db, options);
+      const second = toolAccessService(db, options);
       const signingSecret = "oauth-protocol-approval-signing-secret";
-      const gateway = createToolGatewayService(db, { toolActionSigningSecret: signingSecret });
+      const gatewayOptions = { toolActionSigningSecret: signingSecret,
+        oauthGrantRefresher: first.refreshOAuthGrantCredentials };
+      const gateway = createToolGatewayService(db, gatewayOptions);
       const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
       const tool = (await gateway.listToolsForSession(session.token)).find(entry => entry.connectionId === connection.id)!;
       expect(tool).toBeDefined();
-      for (const action of ["after refresh", "tomorrow", "connection repair", "changed authorization"]) {
+      const reviewActions = ["after refresh", "tomorrow", "connection repair", "changed authorization", "withdrawn formal approval", "expired authorization"];
+      for (const action of reviewActions) {
         await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name,
           parameters: { action, sharingPolicy: { mode: "domain", domain: "paperclip.ing" } } })).rejects.toMatchObject({ reasonCode: "approval_required" });
       }
-      const pendingActions = await db.select().from(toolActionRequests).where(eq(toolActionRequests.issueId, issue.id));
-      expect(pendingActions).toHaveLength(4);
+      const savedActions = await db.select().from(toolActionRequests).where(eq(toolActionRequests.issueId, issue.id));
+      expect(savedActions).toHaveLength(reviewActions.length);
+      const pendingActions = reviewActions.map(action => savedActions.find(saved => {
+        const payload = readSignedToolArgumentsPayload({ signedArguments: saved.signedArguments,
+          invocationId: saved.invocationId, toolName: tool.name, signingSecret });
+        return (payload?.arguments as { action: string })?.action === action;
+      })!);
       await db.update(connectionGrants).set({ providerTenant: {
         ...grant.providerTenant,
         oauth: { ...grant.providerTenant?.oauth, accessTokenExpiresAt: new Date(0).toISOString() },
       } }).where(eq(connectionGrants.id, grant.id));
-      const options = { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const, paperclipCloudConnector: null };
-      const first = toolAccessService(db, options);
-      const second = toolAccessService(db, options);
       const refreshInput = { companyId: company.id, connectionId: connection.id, grantId: grant.id, actor: { actorType: "user" as const, actorId: userId } };
       const refreshed = await Promise.all([
         first.refreshOAuthGrantCredentials(refreshInput),
@@ -236,7 +249,7 @@ describe("tool OAuth over local HTTP", () => {
       // Rebuild the gateway after the requesting run ends. The durable request,
       // rather than the original session or its old tokens, owns execution.
       await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
-      const restarted = createToolGatewayService(db, { toolActionSigningSecret: signingSecret });
+      const restarted = createToolGatewayService(db, gatewayOptions);
       const approve = (id: string) => restarted.approveActionRequest({ companyId: company.id,
         actionRequestId: id, actor: { userId } });
       const [currentGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
@@ -270,11 +283,19 @@ describe("tool OAuth over local HTTP", () => {
       await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
         .where(eq(connectionGrants.id, grant.id));
       await expect(approve(pendingActions[2].id)).resolves.toMatchObject({ status: "approved" });
+      const [formal] = await db.insert(approvals).values({ companyId: company.id,
+        type: "request_board_approval", status: "approved", payload: {} }).returning();
+      await db.update(toolActionRequests).set({ approvalId: formal.id }).where(eq(toolActionRequests.id, pendingActions[4].id));
+      await expect(approve(pendingActions[4].id)).resolves.toMatchObject({ status: "approved" });
+      await db.update(approvals).set({ status: "rejected" }).where(eq(approvals.id, formal.id));
+      await restarted.recoverApprovedActionReviews(company.id);
+      expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pendingActions[4].id)))[0].status)
+        .toBe("cancelled");
       const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
         canReconcile: () => true, onError: error => { throw error; } });
       try {
         await registerToolReviewRecoveryWork(coordinator, restarted, () => true).ready;
-        expect(coordinator.nextWakeAt()).toBeNull();
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 5000 });
         await expect(restarted.recoverApprovedActionReviews(company.id)).resolves.toMatchObject({ retry: false });
         // The supported connection writer wakes recovery after commit. No
         // second approval or agent run is needed for the same authorization.
@@ -287,6 +308,33 @@ describe("tool OAuth over local HTTP", () => {
             .toBe("executed");
         }, { timeout: 5000, interval: 25 });
       } finally { await coordinator.stop(); }
+      // A production refresh failure is a pre-dispatch sign-in wait, even
+      // when the grant looked active when the person clicked Approve.
+      const [beforeReauthConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+      const [beforeReauthGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+      rejectRefresh = true;
+      await db.update(connectionGrants).set({ providerTenant: { ...beforeReauthGrant.providerTenant,
+        oauth: { ...beforeReauthGrant.providerTenant?.oauth, accessTokenExpiresAt: new Date(0).toISOString() },
+      } }).where(eq(connectionGrants.id, grant.id));
+      await expect(approve(pendingActions[5].id)).resolves.toMatchObject({ status: "approved" });
+      await restarted.recoverApprovedActionReviews(company.id);
+      expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pendingActions[5].id)))[0].status)
+        .toBe("approved");
+      const deadline = new Date(Date.now() - 1);
+      await db.update(toolActionRequests).set({ expiresAt: deadline }).where(eq(toolActionRequests.id, pendingActions[5].id));
+      expect(await restarted.nextActionReviewExpiryAt()).toBe(deadline.getTime());
+      await restarted.sweepExpiredActionReviews();
+      expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pendingActions[5].id)))[0].status)
+        .toBe("expired");
+      rejectRefresh = false;
+      // Restore this fixture's original authorization metadata to exercise
+      // manual replacement separately. The recovery worker is already stopped.
+      await db.update(toolConnections).set({ status: beforeReauthConnection.status,
+        enabled: beforeReauthConnection.enabled, credentialRefs: beforeReauthConnection.credentialRefs,
+        credentialSecretRefs: beforeReauthConnection.credentialSecretRefs,
+      }).where(eq(toolConnections.id, connection.id));
+      await db.update(connectionGrants).set({ status: "active", credentialSecretRefs: beforeReauthGrant.credentialSecretRefs,
+        providerTenant: beforeReauthGrant.providerTenant }).where(eq(connectionGrants.id, grant.id));
       const accessRef = currentGrant.credentialSecretRefs.find(ref => ref.configPath === "oauth.access_token")!;
       await secretService(db).rotate(accessRef.secretId, { value: "manually-replaced-token" }, { userId });
       await expect(approve(pendingActions[3].id)).rejects.toMatchObject({ reasonCode: "approved_tool_target_changed" });

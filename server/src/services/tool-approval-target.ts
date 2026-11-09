@@ -8,11 +8,11 @@ function record(value: unknown): Record<string, unknown> | null {
 /** Refresh bookkeeping does not change the OAuth authorization being reviewed. */
 export function oauthApprovalIdentity(value: unknown): Record<string, unknown> {
   const { expiresAt, accessTokenExpiresAt, refreshTokenExpiresAt, refreshedAt, refreshLease,
+    scope, scopeSource, unrequestedScopes,
     ...identity } = record(value) ?? {};
-  for (const key of ["scopes", "requestedScopes", "unrequestedScopes"]) {
-    if (Array.isArray(identity[key])) identity[key] = [...identity[key]].sort();
+  for (const key of ["scopes", "requestedScopes"]) {
+    if (Array.isArray(identity[key])) identity[key] = [...new Set(identity[key])].sort();
   }
-  if (typeof identity.scope === "string") identity.scope = identity.scope.split(/\s+/).filter(Boolean).sort().join(" ");
   return identity;
 }
 
@@ -29,8 +29,26 @@ export function oauthApprovalConfig(value: Record<string, unknown>): Record<stri
 export function oauthGrantApprovalIdentity(value: unknown, connectionOAuth: unknown) {
   const grant = oauthApprovalIdentity(value);
   const connection = record(connectionOAuth) ?? {};
+  const tokenType = grant.tokenType ?? connection.tokenType ?? "Bearer";
   return { ...grant, strategy: grant.strategy ?? connection.strategy ?? "direct_oauth",
-    tokenType: grant.tokenType ?? connection.tokenType ?? "Bearer" };
+    tokenType: typeof tokenType === "string" ? tokenType.toLowerCase() : tokenType };
+}
+
+export function approvalGrantTenantIdentity(value: unknown, connectionOAuth: unknown) {
+  const tenant: Record<string, unknown> = { ...record(value), oauth: oauthGrantApprovalIdentity(record(value)?.oauth, connectionOAuth) };
+  const github = record(tenant.github);
+  if (github) {
+    const { lastAccessRefreshAt, bindingSync, continuityRetry, lastWebhookAt, webhookHealth, ...identity } = github;
+    tenant.github = identity;
+  }
+  return tenant;
+}
+
+export function externalCredentialApprovalIdentity(value: unknown) {
+  const fields = record(value);
+  if (fields?.provider !== "vercel_connect") return value;
+  const { expiresAt, lastVerifiedAt, ...identity } = fields;
+  return identity;
 }
 
 function credentials(value: unknown, durable: boolean): unknown {

@@ -1,6 +1,7 @@
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
-import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig, oauthGrantApprovalIdentity } from "./tool-approval-target.js";
-import { isToolApprovalConnectionError, toolApprovalConnectionRevision,
+import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig,
+  approvalGrantTenantIdentity, externalCredentialApprovalIdentity } from "./tool-approval-target.js";
+import { isToolApprovalConnectionError, toolApprovalConnectionRevision, toolApprovalConnectionCanResume,
   TOOL_APPROVAL_CONNECTION_MESSAGE, TOOL_APPROVAL_CONNECTION_REQUIRED } from "./tool-approval-connection.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
@@ -5928,9 +5929,9 @@ export function createToolGatewayService(
       connectionAuthorizationTransportConfigHash: stableHash(row.connection.authKind === "oauth"
         ? oauthApprovalConfig(row.connection.transportConfig ?? {}) : row.connection.transportConfig ?? {}),
       credentialGrantIdentityHash: stableHash({ kind: grant.kind, subjectUserId: grant.subjectUserId,
-        subjectAgentId: grant.subjectAgentId, externalCredential: grant.externalCredential, providerTenant: { ...grant.providerTenant,
-          ...(row.connection.authKind === "oauth"
-            ? { oauth: oauthGrantApprovalIdentity(grant.providerTenant?.oauth, row.connection.config.oauth) } : {}) } }),
+        subjectAgentId: grant.subjectAgentId, externalCredential: externalCredentialApprovalIdentity(grant.externalCredential),
+        providerTenant: row.connection.authKind === "oauth"
+          ? approvalGrantTenantIdentity(grant.providerTenant, row.connection.config.oauth) : grant.providerTenant }),
       applicationId: row.application.id,
       applicationKey: row.application.applicationKey ?? null,
       applicationStatus: row.application.status,
@@ -5962,6 +5963,21 @@ export function createToolGatewayService(
       gatewayToolName: tool.name,
       riskLevel: tool.risk,
     };
+  }
+
+  async function prepareApprovedConnectionAuthorization(session: ToolGatewaySession, tool: ToolGatewayDescriptor, reviewedSnapshot: unknown) {
+    if (tool.providerType !== "mcp_remote_http" && tool.providerType !== "provider_rest") return;
+    const { connection } = await resolveConnectedRemoteTool(session, tool);
+    if (connection.authKind !== "oauth") return;
+    // Never send a refresh credential to a changed endpoint. Validate the saved
+    // target before refresh, then let the caller revalidate its resulting grant.
+    const beforeRefresh = await connectedRemoteApprovalSnapshot(session, tool);
+    if (!approvalSnapshotsMatch(reviewedSnapshot, beforeRefresh))
+      throw new ToolGatewayHttpError(409, approvalTargetChangeMessage(reviewedSnapshot, beforeRefresh), "approved_tool_target_changed");
+    const grant = await resolveConnectionGrant(session, connection);
+    // Discover refresh/sign-in failures before startToolInvocation records a
+    // provider dispatch. No action is sent during this credential preparation.
+    await resolveCredentialHeaders(session, connection, grant);
   }
 
   function responseTooLargeError() {
@@ -7931,6 +7947,7 @@ export function createToolGatewayService(
   ): Promise<void> {
     const claim = await claimToolTestApproval(db, actionRequestId, invocation.id);
     if (!claim) return;
+    claim.enforceDeadline = asRecord(signedPayload.approvalSnapshot)?.approvalSnapshotVersion === 2;
     let execution: Parameters<typeof runTestToolInvocation>[0];
     let connectionRevision: string | null = null;
     try {
@@ -7961,6 +7978,7 @@ export function createToolGatewayService(
       const tool = (await connectedMcpToolsForConnection(invocation.companyId, invocation.connectionId))
         .find(candidate => candidate.name === invocation.toolName || candidate.upstreamToolName === invocation.toolName);
       if (!tool) throw new ToolGatewayHttpError(404, `Tool "${invocation.toolName}" is no longer connected`, "tool_not_found");
+      await prepareApprovedConnectionAuthorization(session, tool, signedPayload.approvalSnapshot);
       const liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(session, tool);
       if (!approvalSnapshotsMatch(signedPayload.approvalSnapshot, liveApprovalSnapshot)) {
         throw new ToolGatewayHttpError(409, approvalTargetChangeMessage(signedPayload.approvalSnapshot, liveApprovalSnapshot), "approved_tool_target_changed");
@@ -8411,6 +8429,7 @@ export function createToolGatewayService(
         );
         throw error;
       }
+      claim.enforceDeadline = asRecord(signedPayload.approvalSnapshot)?.approvalSnapshotVersion === 2;
 
       const session: ToolGatewaySession = {
         id: `approved-action:${claimed.id}`,
@@ -8438,6 +8457,7 @@ export function createToolGatewayService(
       connectionRevision = await toolApprovalConnectionRevision(db, invocation.companyId,
         invocation.connectionId, signedPayload.approvalSnapshot);
       const tool = await findToolForSession(session, invocation.toolName);
+      await prepareApprovedConnectionAuthorization(session, tool, signedPayload.approvalSnapshot);
       const liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(
         session,
         tool,
@@ -10289,6 +10309,10 @@ export function createToolGatewayService(
         }
       }
       if (actionRequest.status === "approved") {
+        if (invocation.errorCode === TOOL_APPROVAL_CONNECTION_REQUIRED &&
+          !await toolApprovalConnectionCanResume(db, invocation.companyId, invocation.connectionId,
+            signedPayload.approvalSnapshot, invocation.policyExplanation?.approvalConnectionWait))
+          return actionRequest;
         await reflectToolActionInteractionLifecycle({
           actionRequestId: actionRequest.id,
           status: "approved",

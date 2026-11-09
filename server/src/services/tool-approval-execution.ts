@@ -4,7 +4,7 @@ import type { ToolRedactedValueSummary } from "@paperclipai/shared";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { TOOL_APPROVAL_CONNECTION_MESSAGE, TOOL_APPROVAL_CONNECTION_REQUIRED } from "./tool-approval-connection.js";
 
-export type ToolApprovalClaim = { actionRequestId: string; invocationId: string; claimedAt: Date };
+export type ToolApprovalClaim = { actionRequestId: string; invocationId: string; claimedAt: Date; enforceDeadline?: boolean };
 export type ToolTestOutcome = {
   status: "succeeded" | "failed" | "timed_out" | "rate_limited";
   result?: ToolRedactedValueSummary;
@@ -94,6 +94,15 @@ export async function startToolInvocation(db: Db, invocationId: string, claim?: 
     if (invocationId !== claim.invocationId || invocation?.status !== "awaiting_approval" || invocation.startedAt !== null ||
       request?.status !== "executing" || request.invocationId !== invocationId || request.companyId !== invocation.companyId ||
       request.updatedAt.getTime() !== claim.claimedAt.getTime()) return false;
+    if ((claim.enforceDeadline || invocation.errorCode === TOOL_APPROVAL_CONNECTION_REQUIRED) && request.expiresAt && request.expiresAt <= now) {
+      await notifyToolReviewChange(tx, request.companyId);
+      await tx.update(toolInvocations).set({ status: "failed", errorCode: "action_expired",
+        errorMessage: "The action deadline passed before execution.", completedAt: now, updatedAt: now })
+        .where(eq(toolInvocations.id, invocationId));
+      await tx.update(toolActionRequests).set({ status: "expired", resolvedAt: now, updatedAt: now })
+        .where(eq(toolActionRequests.id, request.id));
+      return false;
+    }
     await tx.update(toolInvocations).set({ status: "executing", approvalState: "approved", startedAt: now, updatedAt: now,
       errorCode: null, errorMessage: null })
       .where(eq(toolInvocations.id, invocationId));

@@ -8,7 +8,8 @@ export function isToolApprovalConnectionError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const typed = error as { reasonCode?: string; details?: { code?: string } };
   return ["connector_reauthorization_required", "oauth_reauthorization_required", "oauth_refresh_missing",
-    "user_authorization_required", "organization_authorization_required", "agent_authorization_required"]
+    "user_authorization_required", "organization_authorization_required", "agent_authorization_required",
+    "vercel_connect_authorization_required"]
     .includes(typed.reasonCode ?? typed.details?.code ?? "");
 }
 
@@ -26,4 +27,14 @@ export async function toolApprovalConnectionRevision(db: Db, companyId: string,
       eq(connectionGrants.companyId, companyId), grantId ? eq(connectionGrants.id, grantId) : sql`false`))
     .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId))).limit(1);
   return JSON.stringify(state ?? null);
+}
+
+export async function toolApprovalConnectionCanResume(db: Db, companyId: string,
+  connectionId: string | null, snapshot: unknown, previousRevision: unknown) {
+  const revision = await toolApprovalConnectionRevision(db, companyId, connectionId, snapshot);
+  if (revision === previousRevision) return false;
+  const state = revision === null ? null : JSON.parse(revision) as { connectionStatus: string; enabled: boolean } | null;
+  // Missing connections reach normal target rejection. Draft or disabled
+  // connections still need repair; do not convert that wait to tool_not_found.
+  return !state || (state.connectionStatus === "active" && state.enabled);
 }
