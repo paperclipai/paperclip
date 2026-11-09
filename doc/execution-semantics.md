@@ -649,6 +649,16 @@ stall, including resource-wait retries of its wake, are retried after ten
 minutes, then twenty, and not after the third failed run. The stall stays
 listed on the waiting task, and a new stall wakes it again.
 
+An unstarted queued turn names an agent setup or verification wait. A failed
+setup shows **Agent setup needs attention**, while its saved turn remains queued.
+AI account selection failures use the selector's owned configuration evidence:
+missing defaults, unavailable or incompatible connections, missing responsible
+users, and credential sharing refusals park automatic host verification until
+configuration repair or explicit Retry. They retain fixed, redacted guidance.
+Provider and infrastructure failures keep their existing retry policy. Readiness
+must commit before normal queue dispatch; this display grants no execution or
+credential authority and does not change the task's lifecycle status.
+
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
 these existing runs immediately. The shared delivery coordinator owns the drain's

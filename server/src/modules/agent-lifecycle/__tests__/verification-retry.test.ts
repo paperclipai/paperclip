@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { agents, companies, createDb, applyPendingMigrations, closeRegisteredClients, type Db } from "@paperclipai/db";
+import { agents, companies, companyMemberships, createDb, applyPendingMigrations, closeRegisteredClients, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
@@ -11,6 +11,8 @@ import { createLifecycleWorker } from "../application/worker.js";
 import type { LifecycleAgent } from "../application/ports.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
+
+import { aiConnectionService } from "../../../services/ai-connections.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LIFECYCLE_VERIFICATION_RETRY_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -52,6 +54,44 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
     return { agent: await current(agent.id), work, driver, runHost };
   }
+
+  it("parks a real missing-default selection across restart and permits repair through the normal ready handoff", async () => {
+    const userId = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active" });
+    let repaired = false;
+    const runHost = vi.fn(async (agent: LifecycleAgent) => {
+      if (agent.lifecycleState === "verifying" && !repaired) await aiConnectionService(db).select({
+        companyId, userId, agentId: agent.id, adapterType: "paperclip_runner", runnerProvider: "opencode",
+        model: "openrouter/deepseek/deepseek-v4.1-flash-1017",
+        binding: { mode: "responsible_user", provider: "openrouter", method: "api_key" },
+      });
+      return "complete" as const;
+    });
+    const onReady = vi.fn();
+    const driver = { requiredPluginIds: async () => [], runHost, runPlugin: async () => "complete" as const, onReady };
+    const work = configureAgentLifecycle(db, driver); workers.push(work);
+    const hired = await createAgentLifecycle(db).requestHire(companyId, { name: "Missing default", adapterType: "process" });
+    await work.process(hired.id);
+    const held = await current(hired.id);
+    expect(held).toMatchObject({ lifecycleState: "verifying", status: "paused", lifecycleOperation: { retryRequired: true } });
+    expect(held.lifecycleError).toContain("personal default");
+    expect(held.lifecycleError).not.toContain("retry automatically");
+    expect(held.lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(onReady).not.toHaveBeenCalled();
+    await work.stop();
+    const restarted = startAgentLifecycle(db, createAgentLifecycleEffects(), driver, () => true); workers.push(restarted);
+    const calls = runHost.mock.calls.length;
+    expect(await restarted.hasPending()).toBe(false);
+    expect(restarted.nextRunAt()).toBeNull();
+    await restarted.sweep();
+    expect(runHost).toHaveBeenCalledTimes(calls);
+    // Repair and Retry must still pass verification before the normal ready handoff.
+    repaired = true;
+    await createAgentLifecycle(db).retry(hired.id);
+    await restarted.sweep();
+    expect(await current(hired.id)).toMatchObject({ lifecycleState: "ready", status: "idle", lifecycleError: null });
+    expect(onReady).toHaveBeenCalledOnce();
+  });
 
   it("persists a failed test across worker restarts without scanning, claiming, or probing it again", async () => {
     const { agent, work, driver, runHost } = await failed();
