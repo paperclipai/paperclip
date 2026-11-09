@@ -103,10 +103,11 @@ export function gradeSecretDelivery(value: unknown) {
       task.assigneeAgentId === o.state.morganId &&
       (task as { originIssueId?: string | null }).originIssueId === o.state.sourceId &&
       task.status === "done" &&
-      worker.length === 1 &&
-      worker[0]?.id === o.state.workerRunId &&
-      worker[0]?.status === "succeeded" &&
-      worker[0]?.runtimeMode === "native" &&
+      // A handoff comment after creation may wake Morgan again; every worker
+      // run must succeed natively, and the endpoint call must come from one.
+      worker.length >= 1 &&
+      worker.every((run) => run.status === "succeeded" && run.runtimeMode === "native") &&
+      worker.some((run) => run.id === o.state.workerRunId) &&
       o.state.workerReceiptBound === true &&
       o.activity.some(
         (row) =>
@@ -133,7 +134,7 @@ export function gradeSecretDelivery(value: unknown) {
       }) &&
       o.state.authorizedChecks === 1 &&
       o.state.unauthorizedChecks === 0,
-    "The host verifies the actual still-running worker JWT through production identity/catalog routes, observes only the bound secret and directly receives two403 denials for unrelated company and server-custody keys. JWT bytes are withheld.",
+    "When the bound credential arrives, the host identifies Morgan's one running run from saved server state, probes with that run's own agent authority through production identity/catalog routes, sees the bound secret but neither probed key, and receives two 403 denials for unrelated company and server-custody keys. Token bytes are withheld.",
   );
   const access = o.state.boundAccess as SecretAccessEvent[] | undefined;
   c.add(
@@ -267,8 +268,10 @@ export const secretDeliveryExternalCases = [
     },
     gradeSecretDelivery,
     {
-      oracleVersion: "paperclip.chat-catalog.external-least-scope-delivery.v9", authentication: "human-session",
-      expectedRunCount: 3,
+      oracleVersion: "paperclip.chat-catalog.external-least-scope-delivery.v10", authentication: "human-session",
+      // CEO turn, Morgan's check (plus at most one wake from a handoff
+      // comment on the created task), and the CEO's confirmation.
+      expectedRunCount: 4,
       minimumRunCount: 3,
       expectedHumanMessageCount: 1,
       attemptTimeoutMs: 660000,
@@ -398,33 +401,43 @@ export const secretDeliveryExternalCases = [
               run.agentId === state.morganId &&
               run.contextSnapshot?.issueId === task?.id,
           );
-        state.workerRunId = worker.length === 1 ? worker[0]!.id : undefined;
+        // The worker run is the one the endpoint bound the credential to.
+        const receiptRunId = fixture.endpoint.scopeReceipts[0]?.runId;
+        state.workerRunId = worker.some((run) => run.id === receiptRunId) ? receiptRunId : undefined;
         state.workerReceiptBound = false;
         state.confirmationAfterWorker = false;
-        if (task && worker.length === 1) {
+        if (task && state.workerRunId) {
+          const workerIds = new Set(worker.map((run) => run.id));
           const comments = await ctx.input.api.get<Entity[]>(
             `/api/issues/${task.id}/comments?order=asc`,
           );
           state.workerReceiptBound = comments.some(
             (row) =>
               row.authorAgentId === state.morganId &&
-              row.createdByRunId === state.workerRunId &&
+              workerIds.has(String(row.createdByRunId)) &&
               !!row.body?.trim(),
           );
-          const run = await ctx.input.api.get<{ finishedAt?: string }>(
-            `/api/heartbeat-runs/${state.workerRunId}`,
+          const finished = await Promise.all(
+            worker.map((row) =>
+              ctx.input.api.get<{ finishedAt?: string }>(`/api/heartbeat-runs/${row.id}`),
+            ),
           );
-          const later = o.runs.filter(
-            (row) =>
-              row.contextSnapshot?.issueId === state.sourceId &&
-              row.agentId === o.leadId &&
-              row.status === "succeeded" &&
-              !!row.startedAt &&
-              !!run.finishedAt &&
-              Date.parse(row.startedAt) >= Date.parse(run.finishedAt!),
-          );
-          if (later.length === 1) {
-            state.confirmationRunId = later[0]!.id;
+          const lastFinish = finished.every((run) => !!run.finishedAt)
+            ? Math.max(...finished.map((run) => Date.parse(run.finishedAt!)))
+            : NaN;
+          const later = o.runs
+            .filter(
+              (row) =>
+                row.contextSnapshot?.issueId === state.sourceId &&
+                row.agentId === o.leadId &&
+                row.status === "succeeded" &&
+                !!row.startedAt &&
+                Number.isFinite(lastFinish) &&
+                Date.parse(row.startedAt) >= lastFinish,
+            )
+            .sort((a, b) => Date.parse(a.startedAt!) - Date.parse(b.startedAt!));
+          if (later.length >= 1) {
+            state.confirmationRunId = later.at(-1)!.id;
             state.confirmationAfterWorker = true;
           }
         }
@@ -496,10 +509,15 @@ export const secretDeliveryExternalCases = [
           const comments = await ctx.input.api.get<Entity[]>(
               `/api/issues/${task.id}/comments?order=asc`,
             ),
+            workerIds = new Set(
+              (await ctx.allRuns())
+                .filter((run) => run.agentId === state.morganId && run.contextSnapshot?.issueId === task.id)
+                .map((run) => run.id),
+            ),
             report = comments.find(
               (row) =>
                 row.authorAgentId === state.morganId &&
-                row.createdByRunId === state.workerRunId &&
+                workerIds.has(String(row.createdByRunId)) &&
                 !!row.body?.trim(),
             );
           if (!report)

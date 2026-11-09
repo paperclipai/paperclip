@@ -4971,8 +4971,8 @@
       "../../packages/plugins/sdk/dist/index.js",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external-least-scope-delivery.v9",
-    "expectedRunCount": 3,
+    "oracleVersion": "paperclip.chat-catalog.external-least-scope-delivery.v10",
+    "expectedRunCount": 4,
     "expectedHumanMessageCount": 1,
     "minimumRunCount": 3,
     "turnTimeoutMs": 120000,
