@@ -58,17 +58,67 @@ describe("TaskDetailTasksPanel", () => {
     expect(container.textContent).toContain("No tasks yet.");
   });
 
-  it("keeps subtask membership separate from creation membership, including overlap", () => {
+  it("shows overlapping next actions and other subtasks only in the subtask section", () => {
     const manual = task("manual-child");
-    const overlap = task("created-child", { projectId: project.id });
+    const overlap = task("created-child", { projectId: project.id, status: "in_progress" });
+    const completed = task("completed-child", { projectId: project.id, status: "done" });
     const followup = task("other-parent", { parentId: "elsewhere", projectId: project.id });
-    render({ subtasks: [manual, overlap], createdTasks: [overlap, followup], projects: [project] });
-    expect(container.querySelectorAll('[data-task-id="created-child"]')).toHaveLength(2);
+    render({ subtasks: [manual, overlap, completed], createdTasks: [{ ...overlap }, followup, { ...completed }], projects: [project] });
+    expect(container.querySelectorAll('[data-task-id="created-child"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-task-id="completed-child"]')).toHaveLength(1);
     expect(container.querySelectorAll('[data-task-id="manual-child"]')).toHaveLength(1);
     const group = container.querySelector('section[aria-label="Board UI"]')!;
     expect(group.textContent).toContain("other-parent");
+    expect(group.textContent).not.toContain("created-child");
+    expect(group.textContent).not.toContain("completed-child");
     expect(group.textContent).not.toContain("manual-child");
     expect(container.querySelectorAll('[role="progressbar"]')).toHaveLength(1);
+    expect(container.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("33");
+    act(() => (container.querySelector('section[aria-label="Subtasks"] button') as HTMLButtonElement).click());
+    expect(container.querySelector('[data-task-id="created-child"]')).toBeNull();
+    expect(container.querySelector('[data-task-id="other-parent"]')).not.toBeNull();
+  });
+
+  it.each([project.id, null])("hides a project group when all its tasks are subtasks (project %s)", (projectId) => {
+    const child = task("child", { projectId });
+    render({ subtasks: [child, { ...child }], createdTasks: [{ ...child }, child], projects: [project] });
+    expect(container.querySelectorAll('[data-task-id="child"]')).toHaveLength(1);
+    expect([...container.querySelectorAll('h2')].map((heading) => heading.textContent)).toEqual(["Subtasks"]);
+    expect(container.textContent).not.toContain("No tasks yet.");
+  });
+
+  it("does not repeat a subtask's root blocker in a project group", () => {
+    const blocker = task("blocker", { identifier: "PAP-11", projectId: project.id });
+    const child = task("child", {
+      status: "blocked",
+      blockerAttention: { terminalBlocker: blocker } as Issue["blockerAttention"],
+    });
+    render({ subtasks: [child], createdTasks: [blocker], projects: [project] });
+    expect(container.querySelectorAll('a[href="/issues/PAP-11"]')).toHaveLength(1);
+    expect(container.querySelector('[data-task-id="blocker"]')).toBeNull();
+    expect(container.querySelector('section[aria-label="Board UI"]')).toBeNull();
+  });
+
+  it("keeps task and project lookups linear for large overlapping lists", () => {
+    let lookups = 0;
+    const readId = (id: string) => {
+      if (++lookups > 12000) throw new Error("Too many task and project lookups");
+      return id;
+    };
+    const projects = Array.from({ length: 120 }, (_, index) => ({
+      ...project, get id() { return readId(`project-${index}`); }, name: `Project ${index}`,
+    }));
+    const tasks = Array.from({ length: 800 }, (_, index) => task(`task-${index}`, {
+      projectId: `project-${index % projects.length}`,
+    }));
+    for (let index = 0; index < tasks.length; index++) {
+      Object.defineProperty(tasks[index], "id", { get: () => readId(`task-${index}`) });
+    }
+    render({ subtasks: tasks.slice(0, 600), createdTasks: tasks, projects });
+    const rows = [...container.querySelectorAll('[data-task-id]')];
+    expect(rows).toHaveLength(800);
+    expect(new Set(rows.map((row) => row.getAttribute("data-task-id"))).size).toBe(800);
+    expect(lookups).toBeLessThan(12000);
   });
 
   it("hides absent subtasks and puts unowned tasks under No project without a link or progress", () => {
@@ -123,5 +173,25 @@ describe("TaskDetailTasksPanel", () => {
     render({ createdFrom: null, subtasks: [], createdTasks: [], projects: [] });
     expect(container.querySelector('section[aria-label="Created from"]')).toBeNull();
     expect(container.textContent).toContain("No tasks yet.");
+  });
+
+  it("does not repeat the creation source or ancestors in project groups", () => {
+    render({
+      ancestors,
+      createdFrom: {
+        issue: ancestors[0],
+        run: null,
+        agent: null,
+      },
+      subtasks: [],
+      createdTasks: [task("parent", { projectId: project.id }), task("root"), task("followup", { projectId: project.id })],
+      projects: [project],
+    });
+    expect(container.querySelectorAll('a[href="/issues/PAP-2"]')).toHaveLength(1);
+    expect(container.querySelectorAll('a[href="/issues/root"]')).toHaveLength(1);
+    expect(container.querySelector('[data-task-id="parent"]')).toBeNull();
+    expect(container.querySelector('[data-task-id="root"]')).toBeNull();
+    expect(container.querySelector('[data-task-id="followup"]')).not.toBeNull();
+    expect(container.querySelector('section[aria-label="No project"]')).toBeNull();
   });
 });
