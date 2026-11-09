@@ -901,8 +901,6 @@ async function runAttempt(input: {
         reporterEvidenceWithheld: reporterPrivacy.length > 0,
       });
       const resultPath = path.join(casePrivateDir, "result.json");
-      const requiredPassEvidence = candidate.suite.id === "chat-features" && findChatCatalogCase(candidate.task.id)?.journeyKind === "browser-boundary"
-        ? "browser-boundary" as const : "standard" as const;
       if (manualPrivateHandoff) {
         manualDiagnostic = { stage: "package-original", result, observation: await readPrivateAttemptObservation(casePrivateDir) };
         await preserveOriginalFrameworkResult(casePrivateDir);
@@ -920,7 +918,6 @@ async function runAttempt(input: {
           uploadDir,
           secrets: credentials,
           expectPassScreenshot: result.status === "passed",
-          requiredPassEvidence,
           privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
         });
         const originalEvidence = evidence, originalFeaturePassed = result.status === "passed";
@@ -954,7 +951,7 @@ async function runAttempt(input: {
         }
         manualDiagnostic!.stage = "seal-original";
         await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
-          executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed, requiredPassEvidence });
+          executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
         manualDiagnostic!.stage = "attach-original";
         if (evidence.files.includes(PRIVATE_FRAMEWORK_REPORT)) await referenceSealedFrameworkAttachments(uploadDir,
           path.join(manualPrivateHandoff.root, "originals", manualCellKind(candidate.id)), candidate.id);
@@ -965,7 +962,6 @@ async function runAttempt(input: {
           privateDir: casePrivateDir,
           uploadDir,
           secrets: credentials,
-          requiredPassEvidence,
         });
         if (result.failureClass === "secret_leak") {
           result = withholdPrivateScreenshots(result, { packagedEvidenceSecretFinding: true });

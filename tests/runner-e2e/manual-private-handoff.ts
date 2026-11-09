@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { copyFile, lstat, mkdir, open, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { packageEvidence, isStandardEvidencePath, isStandardEvidenceFile, type EvidencePackageResult, type RequiredPassEvidence } from "./evidence.js";
+import { packageEvidence, isStandardEvidencePath, isStandardEvidenceFile, type EvidencePackageResult } from "./evidence.js";
 import { canonicalGeneratedReportAsset, isTrustedGeneratedReportAsset, assertCellReportProducer, privateCellEvidenceOwner, cellTraceAsset, readPrivateCellTraceAsset, assertPrivateCellDirectories, type CellReportProducerIdentity } from "./manual-private-report-assets.js";
 import { assertSecretFree, normalizedSecrets } from "./redaction.js";
 import { MANUAL_PRIVATE_PROTOCOL, manualCellKind, type ManualRetentionIdentity } from "./manual-private-retention.js";
@@ -40,7 +40,6 @@ export async function preserveOriginalFrameworkResult(directory: string) {
 }
 export async function sealStandardOriginalEvidence(input: {
   context: ManualPrivateHandoff; executionId: string; source: string; evidence: EvidencePackageResult; secrets: readonly string[]; expectPassScreenshot: boolean;
-  requiredPassEvidence?: RequiredPassEvidence;
 }) {
   if (!input.context.executionIds.includes(input.executionId)) throw new Error("Private evidence execution is outside preflight");
   const cellOwner = input.context.cellReportProducer ? await privateCellEvidenceOwner(input.context, input.executionId) : undefined;
@@ -105,7 +104,7 @@ export async function sealStandardOriginalEvidence(input: {
     const validation = path.join(input.context.root, `validation-${manualCellKind(input.executionId)}`);
     await mkdir(validation, { mode: 0o700 });
     try {
-      const scan = await packageEvidence({ privateDir: out, uploadDir: validation, secrets, expectPassScreenshot: input.expectPassScreenshot, requiredPassEvidence: input.requiredPassEvidence, ...(cellOwner ? { privateCell: { owner: cellOwner, layout: "original" as const } } : {}) });
+      const scan = await packageEvidence({ privateDir: out, uploadDir: validation, secrets, expectPassScreenshot: input.expectPassScreenshot, ...(cellOwner ? { privateCell: { owner: cellOwner, layout: "original" as const } } : {}) });
       missingRequiredEvidence = scan.missing;
       if (scan.leaks.length) {
         await writeFile(path.join(input.context.root, "contamination.json"), JSON.stringify({ protocol: MANUAL_PRIVATE_PROTOCOL, status: "withheld_credential_contamination", complete: false }), { mode: 0o600, flag: "wx" });

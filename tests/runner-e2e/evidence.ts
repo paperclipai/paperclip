@@ -65,22 +65,6 @@ const REQUIRED_PASS_FILES = [
   path.join("snapshots", "fixtures.json"),
   path.join("snapshots", "api-state.json"),
 ] as const;
-/** A browser boundary stops before fixture task setup and chat dispatch, so it never has a
- * source task's final-state capture, fixtures or API state. It must instead retain its own
- * definition, unsent intent, graded observation and cleanup receipt. */
-const REQUIRED_BOUNDARY_PASS_FILES = [
-  "result.json",
-  "junit.xml",
-  path.join("html-report", "index.html"),
-  path.join("snapshots", "chat-boundary-definition.json"),
-  path.join("snapshots", "chat-boundary-intent.json"),
-  path.join("snapshots", "chat-boundary-observation.json"),
-  path.join("snapshots", "chat-boundary-cleanup.json"),
-] as const;
-export type RequiredPassEvidence = "standard" | "browser-boundary";
-export function requiredPassEvidenceFiles(kind: RequiredPassEvidence = "standard"): readonly string[] {
-  return kind === "browser-boundary" ? REQUIRED_BOUNDARY_PASS_FILES : REQUIRED_PASS_FILES;
-}
 
 export function isStandardEvidenceFile(relative: string) {
   const extension = path.extname(relative).toLowerCase();
@@ -215,7 +199,6 @@ export async function packageEvidence(input: {
   uploadDir: string;
   secrets: readonly string[];
   expectPassScreenshot: boolean;
-  requiredPassEvidence?: RequiredPassEvidence;
   privateCell?: { owner: PrivateCellEvidenceOwner; layout: "original" | "final-wrapper" };
 }): Promise<EvidencePackageResult> {
   if (input.privateCell && !["original", "final-wrapper"].includes(input.privateCell.layout)) throw new Error("Invalid private cell packaging layout");
@@ -333,7 +316,7 @@ export async function packageEvidence(input: {
   if (budget) { budget.inventoryComplete = true; budget.scanFinished = true; }
   const missing = input.expectPassScreenshot
     ? [
-        ...requiredPassEvidenceFiles(input.requiredPassEvidence).filter((required) => !files.includes(required) && !(compact && required === path.join("html-report", "index.html"))),
+        ...REQUIRED_PASS_FILES.filter((required) => !files.includes(required) && !(compact && required === path.join("html-report", "index.html"))),
         ...(compact || files.some(
           (file) =>
             file.startsWith(`blob-report${path.sep}`) && file.endsWith(".zip"),
@@ -371,7 +354,6 @@ export async function publishRunnerE2EAttemptEvidence(input: {
   uploadDir: string;
   resultsRoot: string;
   secrets: readonly string[];
-  requiredPassEvidence?: RequiredPassEvidence;
 }): Promise<RunnerE2EResult> {
   let result = input.result;
   const resultPath = path.join(input.privateDir, "result.json");

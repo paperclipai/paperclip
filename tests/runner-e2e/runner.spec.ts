@@ -3,6 +3,7 @@ import type { ControllerReplacementReceipt } from "./controller-replacement.js";
 import { withSdkCanaryPreFixture, captureSdkCanaryPreFixture } from "./sdk-canary-prefixture.js";
 import { withholdPrivateScreenshots } from "./screenshot-privacy.js";
 import { ordinaryChatCapture } from "./chat-screenshot-capture.js";
+import { boundaryStandardSnapshots, emptyBoundaryResourceTrail, recordBoundaryResources } from "./chat-boundary-standard-evidence.js";
 import { checkSetupHealthCredential } from "./chat-setup-credential.js";
 import { SetupHealthAbort, runChatSetupHealth, captureSetupHealthProfile } from "./chat-setup-health.js";
 import { bindInvitationEnrollmentPrerequisite } from "./chat-catalog-domains/identity-invite-prerequisite.js";
@@ -977,14 +978,17 @@ for (const execution of executions) {
         const scenario = chatCatalogScenarios.find(row => row.id === execution.task.id);
         if (!scenario || !catalogDescriptor.boundaryTarget) throw new Error("Boundary scenario or target identity missing");
         await workerTiming.enter("execution"); trace?.phase("execution");
+        const boundaryTrail = emptyBoundaryResourceTrail(); let boundaryObservation: unknown;
         const checks = await runChatBoundaryFlow({ journeyKind: "browser-boundary", boundaryTarget: catalogDescriptor.boundaryTarget,
           scenario, page, api, execution, nonce, credentials: { ...credentials, ...privateInputs?.credentials }, privateSecrets: secrets, privateDir, deadlineAt: startedAtMs + deadlineMs,
           capture: captureScreenshot,
           evidence: async (name, value) => {
             await writeSanitizedJson(snapshotsDir, name, value, secrets);
+            if (name === "chat-boundary-observation.json") boundaryObservation = value;
             if (name === "chat-boundary-cleanup.json") cleanup = (value as { cleanup?: string }).cleanup === "complete" ? "passed" : "failed";
           },
           observeResources(value) {
+            recordBoundaryResources(boundaryTrail, value);
             if (execution.task.id === "agent-chat.chat-disabled") boundaryScreenshotResources = { companyId: value.companyId, agentId: value.agentId };
             // Boundaries independently collect their real resources. They do not
             // manufacture LiveFixtureValues or a source issue for result fields.
@@ -992,6 +996,11 @@ for (const execution of executions) {
               passed: false, detail: "This pre-chat boundary observed an unexpected real provider admission." });
           },
         }, catalogDescriptor);
+        // The passing boundary retains the standard pass evidence from what it really observed.
+        const boundarySnapshots = boundaryStandardSnapshots({ scenarioId: execution.task.id, trail: boundaryTrail, boundaryObservation });
+        await writeSanitizedJson(snapshotsDir, "fixtures.json", boundarySnapshots.fixtures, secrets);
+        await writeSanitizedJson(snapshotsDir, "api-state.json", boundarySnapshots.apiState, secrets);
+        await capturePrivateScreenshot("final-state", "final-state.png");
         matcherResults.push(...checks.map(check => ({ matcher: { kind: "json_path" as const, path: `boundary.${check.id}`, expected: true }, passed: check.passed, detail: check.detail })));
       } else {
       if (execution.task.flow === "public_mcp" || execution.suite.id === "chat-features" && findChatCatalogCase(execution.task.id)?.authentication === "human-session") publicMcpUserId = await establishPublicMcpSession(api, page, secrets);
