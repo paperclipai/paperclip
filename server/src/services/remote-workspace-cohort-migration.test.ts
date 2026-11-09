@@ -313,6 +313,41 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect.soft(await db.select().from(workspaceOperations)).toHaveLength(1);
     await assertLocal(f);
   });
+  it.each(["preflight", "reservation", "recovery"] as const)("joins concurrent %s validation readers before releasing the fence", async phase => {
+    const f = await fixture(), held = await recoverable(f), inspect = onlineWorkspaceSource.inspectOnlineWorkspaceSource;
+    const counts = new Map<string, number>(), selected = new Set(f.leaves.map(row => row.id));
+    const phaseCall = phase === "preflight" ? 2 : phase === "reservation" ? 3 : 4;
+    let entered = 0, settled = false, bothEntered!: () => void, release!: () => void, firstFailed!: () => void;
+    const both = new Promise<void>(resolve => { bothEntered = resolve; }), peer = new Promise<void>(resolve => { release = resolve; });
+    const failed = new Promise<void>(resolve => { firstFailed = resolve; }), timer = setTimeout(() => bothEntered(), 5000);
+    vi.spyOn(onlineWorkspaceSource, "inspectOnlineWorkspaceSource").mockImplementation(async (...args) => {
+      const id = args[1].id, call = (counts.get(id) ?? 0) + 1; counts.set(id, call);
+      if (selected.has(id) && call === phaseCall) {
+        if (++entered === 1) { await both; firstFailed(); throw new Error("first_validation_failure"); }
+        bothEntered(); await peer;
+      }
+      return inspect(...args);
+    });
+    const put = vi.spyOn(storage, "putFile"), other = createDb(database.connectionString, { maxConnections: 1 });
+    const pending = run(f).then(value => ({ value }), error => ({ error })).finally(() => { settled = true; });
+    try {
+      await both; await failed;
+      expect(entered).toBe(2);
+      expect(settled).toBe(false);
+      await expect(withWorkspaceSourceLocks(other, { companyId: f.companyId, projectIds: [f.projectId] }, async () => true, true))
+        .rejects.toBeInstanceOf(IsolatedRepositorySourceBusy);
+      if (phase === "recovery") await other.transaction(async tx =>
+        expect(await tryLockNativeWorkspaceFinalization(tx as unknown as Db, { companyId: f.companyId, runId: held.runId })).toBe(false));
+      expect(put).not.toHaveBeenCalled();
+    } finally { clearTimeout(timer); bothEntered(); release(); await pending; await other.$client.end({ timeout: 1 }); }
+    expect(await pending).toMatchObject({ error: { message: "first_validation_failure" } });
+    await expect(withWorkspaceSourceLocks(db, { companyId: f.companyId, projectIds: [f.projectId] }, async () => true, true)).resolves.toBe(true);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, held.runId)))[0]).toEqual(held.owner);
+    await assertLocal(f);
+    expect(await db.select().from(workspaceOperations)).toHaveLength(phase === "preflight" ? 0 : phase === "reservation" ? 1 : 2);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
+    expect(await db.select().from(activityLog)).toHaveLength(0);
+  });
   it.each(["failure", "cancel"] as const)("joins active capture peers and keeps the fence on %s", async mode => {
     const f = await fixture(), controller = new AbortController(); let entered = 0, firstFailed!: () => void, release!: () => void;
     const both = new Promise<void>(resolve => { firstFailed = resolve; }), peer = new Promise<void>(resolve => { release = resolve; });

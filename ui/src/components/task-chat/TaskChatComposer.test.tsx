@@ -19,6 +19,7 @@ import { instanceSettingsApi } from "@/api/instanceSettings";
 import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 import {
+  loadDraftAttachments,
   loadDraftSubmission,
   saveDraft,
   saveDraftSubmission,
@@ -1431,6 +1432,55 @@ describe("TaskChatComposer", () => {
     flushSync(() => sendButton().click());
     await flushAsync();
     expect(onAdd.mock.calls[0]?.[0]).toBe("Review this image\n\n![shot.png](/attachments/shot.png)");
+  });
+
+  it.each(["saved", "rejected", "unknown"] as const)("moves submitted screenshots out of the composer before the request is %s", async (outcome) => {
+    let resolveSend!: () => void;
+    let rejectSend!: (error: Error) => void;
+    const onAdd = vi.fn().mockReturnValue(new Promise<void>((resolve, reject) => {
+      resolveSend = resolve;
+      rejectSend = reject;
+    }));
+    const draftKey = `screenshots-${outcome}`;
+    const onAttachImage = vi.fn().mockResolvedValueOnce({
+      id: "8c365a89-5545-40f7-8cc0-ec6b20567827", contentPath: "/api/attachments/8c365a89-5545-40f7-8cc0-ec6b20567827/content", originalFilename: "shot.png", contentType: "image/png",
+    }).mockResolvedValue({
+      id: "266ff1d0-6be9-47cb-b2ed-300fce5fbcd3", contentPath: "/api/attachments/266ff1d0-6be9-47cb-b2ed-300fce5fbcd3/content", originalFilename: "next.png", contentType: "image/png",
+    });
+    renderComposer({ onAdd, workMode: "standard", draftKey, onAttachImage });
+    typeText("Check **this** screenshot");
+    pasteFiles([new File(["png"], "shot.png", { type: "image/png" })]);
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-images"]')).not.toBeNull();
+
+    flushSync(() => sendButton().click());
+    await flushAsync();
+    expect(onAdd.mock.calls[0]?.[0]).toBe("Check **this** screenshot\n\n![shot.png](/api/attachments/8c365a89-5545-40f7-8cc0-ec6b20567827/content)");
+    expect(onAdd.mock.calls[0]?.[3]).toEqual(["8c365a89-5545-40f7-8cc0-ec6b20567827"]);
+    expect(editable().textContent).toBe("");
+    expect(container.querySelector('[data-testid="task-chat-composer-images"]')).toBeNull();
+    // Hiding the submitted preview must not discard its reload/retry receipt.
+    expect(loadDraftAttachments(draftKey).map(item => item.attachmentId)).toEqual(["8c365a89-5545-40f7-8cc0-ec6b20567827"]);
+    typeText("Next draft");
+    pasteFiles([new File(["next"], "next.png", { type: "image/png" })]);
+    await flushAsync();
+    expect(container.querySelector('img[alt="next.png"]')).not.toBeNull();
+    expect(container.querySelector('img[alt="shot.png"]')).toBeNull();
+    if (outcome === "saved") resolveSend();
+    else rejectSend(outcome === "unknown" ? new CommentSubmissionUnknownError() : new Error("Rejected"));
+    await flushAsync();
+    await flushAsync();
+    if (outcome === "saved") {
+      expect(container.querySelector('img[alt="shot.png"]')).toBeNull();
+      expect(editable().textContent).toBe("Next draft");
+      expect(loadDraftAttachments(draftKey).map(item => item.attachmentId)).toEqual(["266ff1d0-6be9-47cb-b2ed-300fce5fbcd3"]);
+    } else {
+      expect(container.querySelectorAll('img[alt="shot.png"]')).toHaveLength(1);
+      expect(editable().textContent).toBe("Check **this** screenshot\n\nNext draft");
+      expect(loadDraftAttachments(draftKey).map(item => item.attachmentId)).toEqual(["8c365a89-5545-40f7-8cc0-ec6b20567827", "266ff1d0-6be9-47cb-b2ed-300fce5fbcd3"]);
+      if (outcome === "unknown") expect(loadDraftSubmission(draftKey)?.request?.attachmentIds).toEqual(["8c365a89-5545-40f7-8cc0-ec6b20567827"]);
+    }
+    expect(container.querySelectorAll('img[alt="next.png"]')).toHaveLength(1);
   });
 
   it("keeps failed image uploads in the preview row for retry without changing the text", async () => {
