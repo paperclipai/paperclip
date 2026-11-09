@@ -543,10 +543,8 @@ export function connectionIntentService(db: Db) {
         connectionId: ready?.id ?? null,
       }});
     }
-    // A chat channel hidden by the instance setting stays findable, so the agent can say why it is
-    // unavailable and where it is turned on instead of searching for a route that is not offered.
     if (!settings.enableChatConnectors) for (const app of APP_STORE_DEFINITIONS) {
-      if (!isConnectorFeatureEnabled(app, settings) || discoveryMethods(app).length
+      if (!isConnectorFeatureEnabled(app, settings) || discoveryMethods(app).length || findAggregatorService(app.slug) || findAggregatorService(app.name)
         || !getAvailableConnectionMethods(app).some(method => method.purpose === "channel" && method.provider !== "github")) continue;
       const channelMethods = getAvailableConnectionMethods(app).filter(method => method.purpose === "channel");
       const { score, nameScore } = scoreConnectionSearch(preparedQuery, [app.slug, app.name],
@@ -714,7 +712,6 @@ export function connectionIntentService(db: Db) {
   }
 
   function directSearchResult(query: string, results: ConnectionSearchResultItem[], prefix: string, suggestions = false): ConnectionsSearchResult {
-    // A service the catalog does not list can still be the person's own MCP server; name its secure setup page.
     const ownServer = `the person adds it as their own MCP server on [Connect your own MCP server](/${prefix}/apps/byo): they enter the URL and type any API key into that page's secure field themselves. `
       + "An agent cannot enter the key. Do not create the connection yourself, ask for the key in chat or search for another route; link that page and reply.";
     return { version: 1, query, results, instruction: !results.length
@@ -732,7 +729,6 @@ export function connectionIntentService(db: Db) {
       : results[0]!.methods.every(method => method.purpose && method.purpose !== "tool")
         ? "Choose the method relevant to the task using its purpose and label. If method.management.allowed, configure through search_api/call_api using nextApiOperation. Hand off only required human authentication or consent at the saved setupPath. These methods do not use the tool connection_request card. Do not claim tools or an inbox are ready before setup finishes."
       : results[0]!.state === "ready" ? "Use the installed connection. Do not create another connection request."
-      : results[0]!.state === "unavailable" ? "This connection is unavailable or administratively restricted. Explain the reason. Do not bypass it using another provider."
       : "The user asked to connect. If method.management.allowed, use search_api/call_api with nextApiOperation to configure it. Reuse a saved draft. Use connection_request only for required human input or access. Do not ask a generic confirmation or silently change policy to bypass a failed tool call." };
   }
 
