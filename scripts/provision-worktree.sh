@@ -127,9 +127,8 @@ repair_base_workspace_install() {
   # otherwise skip the dangling symlinks; --frozen-lockfile keeps the repair
   # from mutating the shared base workspace's lockfile.
   local repair_cmd=(pnpm install --prod=false --force --frozen-lockfile --config.confirmModulesPurge=false)
-  # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
-  # install. Node 24 reports that call as DEP0169. Remove this flag when the
-  # pinned pnpm no longer calls url.parse() in that path.
+  # Node 24 reports url.parse() as DEP0169. Keep this flag while any
+  # toolchain install path may call url.parse().
   local repair_node_options="${NODE_OPTIONS:-} --disable-warning=DEP0169"
   # Resolve the real git dir so locking also covers base workspaces that are
   # linked worktrees, where "$base_cwd/.git" is a file rather than a directory.
@@ -730,12 +729,33 @@ function walk(dir) {
 }
 
 walk(root);
-// package.json is the pnpm 9 patch manifest for this repository. Hash the
-// declared paths, including non-.patch filenames and patches outside patches/.
-const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-for (const patch of Object.values(manifest.pnpm?.patchedDependencies ?? {})) {
-  if (typeof patch !== "string") throw new Error("Invalid pnpm patch path");
-  const file = path.resolve(root, patch);
+// Hash declared patches from pnpm-workspace.yaml (pnpm 11) and package.json#pnpm
+// (pre-migration branches), including non-.patch filenames and patches outside patches/.
+const manifestPath = path.join(root, "package.json");
+if (fs.existsSync(manifestPath)) {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    for (const patch of Object.values(manifest.pnpm?.patchedDependencies ?? {})) {
+      if (typeof patch === "string") {
+        const file = path.resolve(root, patch);
+        if (!files.includes(file)) files.push(file);
+      }
+    }
+  } catch {}
+}
+const workspaceManifestPath = path.join(root, "pnpm-workspace.yaml");
+const workspaceManifest = fs.existsSync(workspaceManifestPath) ? fs.readFileSync(workspaceManifestPath, "utf8") : "";
+let inPatchedDependencies = false;
+for (const line of workspaceManifest.split("\n")) {
+  if (/^\s*(#.*)?$/.test(line)) continue;
+  if (/^\S/.test(line)) {
+    inPatchedDependencies = /^patchedDependencies:\s*(#.*)?$/.test(line);
+    continue;
+  }
+  if (!inPatchedDependencies) continue;
+  const entry = line.match(/^\s+(?:"([^"]+)"|'([^']+)'|([^\s#"'][^:]*?))\s*:\s*(?:"([^"]+)"|'([^']+)'|([^\s#"'][^#]*?))\s*(#.*)?$/);
+  if (!entry) throw new Error("Invalid pnpm patch path");
+  const file = path.resolve(root, entry[4] ?? entry[5] ?? entry[6]);
   if (!files.includes(file)) files.push(file);
 }
 files.sort((left, right) => path.relative(root, left).localeCompare(path.relative(root, right)));
@@ -820,9 +840,8 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
       if (
         cd "$worktree_cwd"
-        # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
-        # install. Node 24 reports that call as DEP0169. Remove this flag
-        # when the pinned pnpm no longer calls url.parse() in that path.
+        # Node 24 reports url.parse() as DEP0169. Keep this flag while any
+        # toolchain install path may call url.parse().
         NODE_OPTIONS="${NODE_OPTIONS:-} --disable-warning=DEP0169" pnpm install --prod=false "$@"
       ) >"$stdout_path" 2>"$stderr_path"; then
         cat "$stdout_path"

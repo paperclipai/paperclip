@@ -15,6 +15,9 @@ it("runs every active nested/parameterized fixture case exactly once through the
     mkdirSync(path.join(root, "server/scripts"), { recursive: true });
     symlinkSync(path.join(repoRoot, "node_modules"), path.join(root, "node_modules"), "junction");
     writeFileSync(path.join(root, "package.json"), JSON.stringify({ private: true }));
+    // The fixture borrows the repository's node_modules. A pnpm 11 deps check
+    // before `pnpm exec` would install this empty project into it and prune it.
+    writeFileSync(path.join(root, "pnpm-workspace.yaml"), "verifyDepsBeforeRun: false\n");
     writeFileSync(path.join(root, "vitest.config.mjs"), `export default {
       test: { projects: [{ test: { name: "@paperclipai/server", root: ${JSON.stringify(path.join(root, "server"))},
         include: ["src/**/*.test.ts"], pool: "forks", maxWorkers: 1 } }] }

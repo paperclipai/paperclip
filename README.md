@@ -419,7 +419,7 @@ pnpm dev
 
 This starts the UI and API at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
 
-> **Requirements:** Node.js 24.11+, pnpm 9.15+
+> **Requirements:** Node.js 24.11+, pnpm 11.27+
 
 Local Claude and Codex subscription sign-in also needs Python 3 and the
 corresponding provider CLI on the Paperclip host. The Docker image includes them.

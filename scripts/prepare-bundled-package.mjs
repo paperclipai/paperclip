@@ -53,7 +53,7 @@ export function createBundledInstallManifest(publishManifest, bundledDependencie
 // npm consumers cannot inherit the workspace's pnpm overrides or patches.
 // Materialize the already-qualified provider bridge closures in the tarball,
 // with overrides confined to the temporary, scripts-disabled producer graph.
-export function configureBundledProviderOverrides(installManifest, bundledDependencies, rootPackage, profileData) {
+export function configureBundledProviderOverrides(installManifest, bundledDependencies, workspaceOverrides, profileData) {
   const result = structuredClone(installManifest);
   const selected = [];
   for (const [agent, serverPackage, runtimePackage] of [
@@ -69,7 +69,7 @@ export function configureBundledProviderOverrides(installManifest, bundledDepend
       throw new Error(`Bundled ${agent} bridge must match its exact qualified profile`);
     }
     const selector = `${serverPackage}@${profile.agentServerVersion}>${runtimePackage}`;
-    if (rootPackage.pnpm?.overrides?.[selector] !== profile.agentRuntimeVersion) {
+    if (workspaceOverrides?.[selector] !== profile.agentRuntimeVersion) {
       throw new Error(`Bundled ${agent} runtime override must match its qualified profile`);
     }
     const npmSelector = `${serverPackage}@${profile.agentServerVersion}`;
@@ -354,9 +354,38 @@ export function selectBundledDependencyPatches(
   return selectedPatches;
 }
 
+function readWorkspaceMapping(sourceRoot, section) {
+  const workspacePath = resolve(sourceRoot, "pnpm-workspace.yaml");
+  const content = readFileSync(workspacePath, "utf8");
+  const entries = {};
+  let inSection = false;
+  const header = new RegExp(`^${section}:\\s*(#.*)?$`);
+  for (const line of content.split("\n")) {
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    if (/^\S/.test(line)) {
+      inSection = header.test(line);
+      continue;
+    }
+    if (!inSection) continue;
+    const entry = line.match(/^\s+(?:"([^"]+)"|'([^']+)'|([^\s#"'][^:]*?))\s*:\s*(?:"([^"]+)"|'([^']+)'|([^\s#"'][^#]*?))\s*(#.*)?$/);
+    if (!entry) throw new Error(`Invalid ${section} entry in ${workspacePath}: ${line.trim()}`);
+    entries[entry[1] ?? entry[2] ?? entry[3]] = entry[4] ?? entry[5] ?? entry[6];
+  }
+  return entries;
+}
+
+// pnpm-workspace.yaml is the pnpm 11 patch and override manifest. scripts/provision-worktree.sh
+// embeds the same patchedDependencies reader for its install fingerprint; keep the two in sync.
+export function readWorkspacePatchedDependencies(sourceRoot = repoRoot) {
+  return readWorkspaceMapping(sourceRoot, "patchedDependencies");
+}
+
+export function readWorkspaceOverrides(sourceRoot = repoRoot) {
+  return readWorkspaceMapping(sourceRoot, "overrides");
+}
+
 export function applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot = repoRoot) {
-  const rootPackage = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8"));
-  const patchedDependencies = rootPackage.pnpm?.patchedDependencies ?? {};
+  const patchedDependencies = readWorkspacePatchedDependencies(sourceRoot);
 
   for (const { packageName, patchPath } of selectBundledDependencyPatches(
     destinationDir,
@@ -395,11 +424,11 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
 
   const deployedPackagePath = resolve(destinationDir, "package.json");
   const publishManifest = materializePublishManifest(sourcePackage);
-  const rootPackage = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8"));
+  const workspaceOverrides = readWorkspaceOverrides(sourceRoot);
   const profileData = bundledDependencies.includes("@agentclientprotocol/codex-acp")
     ? JSON.parse(readFileSync(resolve(sourceRoot, "packages/paperclip-runner/acpx-profiles.json"), "utf8")) : undefined;
   const { installManifest, profiles } = configureBundledProviderOverrides(
-    createBundledInstallManifest(publishManifest, bundledDependencies), bundledDependencies, rootPackage, profileData,
+    createBundledInstallManifest(publishManifest, bundledDependencies), bundledDependencies, workspaceOverrides, profileData,
   );
   writeFileSync(deployedPackagePath, `${JSON.stringify(installManifest, null, 2)}\n`);
 

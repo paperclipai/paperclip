@@ -138,7 +138,7 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
-          version: 9.15.4
+          version: 11.27.0
           run_install: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -210,7 +210,7 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
-          version: 9.15.4
+          version: 11.27.0
           run_install: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -447,7 +447,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -554,7 +554,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -754,7 +754,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -1043,7 +1043,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -1434,7 +1434,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -1502,7 +1502,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7

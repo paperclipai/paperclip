@@ -12,7 +12,7 @@ into Paperclip. Real integration is future upload integration and requires separ
 
 ## What you need
 
-- Node.js 20 or newer and pnpm 9 or newer. Verified with Node 22.22.2.
+- Node.js 20 or newer and pnpm 11 or newer. Verified with Node 24.
 - No Rust toolchain and no network access after `pnpm install`.
 
 Install the package workspace from the repository root:

@@ -33,7 +33,7 @@ Paperclip is a monorepo with four main layers.
 | Database | PostgreSQL 17 (or embedded PGlite), Drizzle ORM |
 | Auth | Better Auth (sessions + API keys) |
 | Adapters | Claude Code CLI, Codex CLI, shell process, HTTP webhook |
-| Package manager | pnpm 9 with workspaces |
+| Package manager | pnpm 11 with workspaces |
 
 ## Repository Structure
 
