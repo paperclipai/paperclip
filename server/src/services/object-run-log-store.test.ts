@@ -118,6 +118,22 @@ describe("S3 run log store", () => {
     expect((await store.finalize(handle)).bytes).toBe(Buffer.byteLength(content));
   });
 
+  it("begins a new run log with one head read and no source proof read", async () => {
+    const m = memory(), options = { provider: m.provider, keyPrefix: "logs", flushMs: 1,
+      assertWriterAuthority: async () => undefined };
+    const get = m.provider.getObject.bind(m.provider), reads: string[] = [];
+    m.provider.getObject = async value => { reads.push(value.objectKey); return get(value); };
+    const headReads = () => reads.filter(key => key.endsWith("/head.json")).length;
+    const proofReads = () => reads.filter(key => key.includes("/objects/source-prefix-proof-v1-")).length;
+    const handle = await createObjectRunLogStore(options).begin(input);
+    expect(handle.initialSourcePrefixVerified).toBe(false);
+    expect({ head: headReads(), proof: proofReads() }).toEqual({ head: 1, proof: 0 });
+    reads.length = 0;
+    const resumed = await createObjectRunLogStore(options).begin(input);
+    expect(resumed.initialSourcePrefixVerified).toBe(false);
+    expect({ head: headReads(), proof: proofReads() }).toEqual({ head: 1, proof: 1 });
+  });
+
   it("keeps live byte appends deliverable after a proof-only outage and requires cold prefix verification", async () => {
     const m = memory(), options = { provider: m.provider, keyPrefix: "logs", flushMs: 1,
       assertWriterAuthority: async () => undefined };
