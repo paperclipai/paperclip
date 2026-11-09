@@ -7,7 +7,7 @@ import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { IssueRowDetailsNotice } from "../components/IssueRowDetailsNotice";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER, isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
@@ -930,13 +930,6 @@ function StreamlinedInbox({
   });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
-  const { data: executionWorkspaces = [], isLoading: isWorkspacesLoading } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
-      : ["execution-workspaces", "__disabled__"],
-    queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
-    enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
-  });
 
   useEffect(() => {
     setBreadcrumbs([{ label: surfaceLabel }]);
@@ -1254,6 +1247,23 @@ function StreamlinedInbox({
     for (const issue of remoteIssueSearchResults) issueIds.add(issue.id);
     return [...issueIds];
   }, [mineIssues, remoteIssueSearchResults, touchedIssues]);
+  // Only the workspaces these rows reference; a company-wide list can be thousands of rows.
+  const referencedExecutionWorkspaceIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const list of [issues, remoteIssueSearchResults]) {
+      for (const issue of list) if (issue.executionWorkspaceId) ids.add(issue.executionWorkspaceId);
+    }
+    return [...ids].sort();
+  }, [issues, remoteIssueSearchResults]);
+  const referencedExecutionWorkspaceIdsKey = referencedExecutionWorkspaceIds.join(",");
+  const { data: executionWorkspaces = [], isLoading: isWorkspacesLoading } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.summaryList(selectedCompanyId ?? "__disabled__", {
+      ids: referencedExecutionWorkspaceIdsKey,
+    }),
+    queryFn: () => executionWorkspacesApi.listSummariesByIds(selectedCompanyId!, referencedExecutionWorkspaceIds),
+    enabled: !!selectedCompanyId && isolatedWorkspacesEnabled && referencedExecutionWorkspaceIds.length > 0,
+    placeholderData: keepPreviousData,
+  });
   const {
     summaries: externalObjectSummaryByIssueId,
     isLoading: externalObjectSummariesLoading,
@@ -2534,9 +2544,15 @@ function StreamlinedInbox({
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
 
+  // Workspace names change what rows show (grouping, the Workspace column) or which rows match a
+  // search, so wait for them only then; otherwise rows reveal without the workspace read.
+  const workspaceDataAffectsRows = groupBy === "workspace"
+    || (visibleIssueColumnSet.has("workspace") && availableIssueColumnSet.has("workspace"))
+    || normalizedSearchQuery.length > 0;
   const initialSourcesSettled =
     ![sourceSearchView, mineIssuesView, touchedIssuesView].some(view => view.kind === "reconnecting") &&
-    !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading && !isWorkspacesLoading &&
+    !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading &&
+    !(workspaceDataAffectsRows && isWorkspacesLoading) &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
     !isDashboardLoading &&

@@ -73,7 +73,10 @@ vi.mock("../api/dashboard", () => ({
 }));
 
 vi.mock("../api/execution-workspaces", () => ({
-  executionWorkspacesApi: { listSummaries: apiMocks.executionWorkspaceSummaries },
+  executionWorkspacesApi: {
+    listSummariesByIds: (companyId: string, ids: readonly string[]) =>
+      apiMocks.executionWorkspaceSummaries(companyId, { ids }),
+  },
 }));
 
 vi.mock("../api/issues", () => ({
@@ -901,6 +904,8 @@ describe("Inbox toolbar", () => {
     await vi.waitFor(() => {
       expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Aurora");
     });
+    // Only the workspaces the rows reference are read, never the company-wide list.
+    expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledWith("company-1", { ids: ["execution-workspace-1"] });
 
     const taskRow = container.querySelector('[data-slot="task-row"]');
     const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');
@@ -910,6 +915,73 @@ describe("Inbox toolbar", () => {
     expect(timestamp).not.toBeNull();
     if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
     expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    act(() => root.unmount());
+  });
+
+  it("rows reveal while the workspace read is pending when no workspace column or grouping is active", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "updated"]));
+    localStorage.setItem("paperclip:inbox:group-by", "none");
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    apiMocks.executionWorkspaceSummaries.mockReturnValue(new Promise(() => {}));
+    setIssueRows([createIssue({
+      executionWorkspaceId: "execution-workspace-1",
+      title: "Row without workspace column",
+    })]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Row without workspace column");
+    });
+    expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledWith("company-1", { ids: ["execution-workspace-1"] });
+
+    act(() => root.unmount());
+  });
+
+  it("keeps rows hidden until referenced workspaces load when the Workspace column is shown", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    let resolveWorkspaces: (value: unknown) => void = () => {};
+    apiMocks.executionWorkspaceSummaries.mockReturnValue(new Promise((resolve) => { resolveWorkspaces = resolve; }));
+    setIssueRows([createIssue({
+      executionWorkspaceId: "execution-workspace-1",
+      title: "Row with workspace column",
+    })]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledWith("company-1", { ids: ["execution-workspace-1"] });
+    });
+    expect(container.querySelector('[data-slot="task-row"]')).toBeNull();
+
+    await act(async () => {
+      resolveWorkspaces([{ id: "execution-workspace-1", name: "Workspace Borealis", mode: "isolated_workspace", projectWorkspaceId: null }]);
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Borealis");
+    });
 
     act(() => root.unmount());
   });
