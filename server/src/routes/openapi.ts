@@ -7362,7 +7362,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members",
   tags: ["access"],
   summary: "List company members",
-  description: "Board members or agents holding users:manage_permissions in this company. Changing a member's role, grants or status stays board-only.",
+  description: "Board members or agents holding users:manage_permissions in this company. Returns each member's role, status and explicit grants. Changing a member's role, grants or status stays board-only: A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -7372,6 +7372,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}",
   tags: ["access"],
   summary: "Update a company member status or role",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(updateCompanyMemberSchema),
@@ -7389,6 +7390,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}/role-and-grants",
   tags: ["access"],
   summary: "Update a company member role and explicit grants",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(updateCompanyMemberWithPermissionsSchema),
@@ -7406,6 +7408,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}/archive",
   tags: ["access"],
   summary: "Archive a company member",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(archiveCompanyMemberSchema),
@@ -7423,6 +7426,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}/permissions",
   tags: ["access"],
   summary: "Update explicit company member permissions",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(updateMemberPermissionsSchema),

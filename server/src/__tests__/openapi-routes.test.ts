@@ -439,7 +439,11 @@ describe("openapi routes", () => {
     for (const path of [
       "/api/companies/{companyId}/members/{memberId}/permissions",
       "/api/companies/{companyId}/members/{memberId}/role-and-grants",
-    ]) expect(spec.paths[path].patch["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    ]) {
+      expect(spec.paths[path].patch["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(spec.paths[path].patch.description).toContain("/<prefix>/company/settings/members");
+    }
+    expect(spec.paths["/api/companies/{companyId}/members"].get.description).toContain("/<prefix>/company/settings/members");
   });
 
   it("documents owned conversation reads and exact revision access separately", () => {
