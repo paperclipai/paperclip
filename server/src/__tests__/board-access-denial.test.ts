@@ -58,6 +58,19 @@ describe("board-only denial", () => {
     expect(res.body.remediation).toContain(link);
   });
 
+  it("tells an agent denied any plugin route that every plugin management step is board-only", async () => {
+    // An agent asked to finish configuring a plugin usually reads the plugin list first.
+    // That denial must also settle configuration and secret binding, or the agent keeps
+    // searching the catalog for an agent route to them.
+    for (const path of ["/api/plugins", `/api/plugins/${AGENT_ID}/config`]) {
+      const res = await request(createApp(agentActor)).get(path).expect(403);
+      expect(res.body.remediation).toContain("Plugin management is board-only throughout");
+      expect(res.body.remediation).toContain("configuring (including choosing a secret for a plugin setting)");
+    }
+    const other = await request(createApp(agentActor)).post(`/api/companies/${COMPANY_ID}/secrets`).expect(403);
+    expect(other.body.remediation).not.toContain("Plugin management");
+  });
+
   it("links the resolved project when an agent names the project by its short reference", async () => {
     const app = express();
     app.use((req, _res, next) => {
