@@ -61,14 +61,18 @@ export function groundedOverviewBlocker(reply: string, blocked: Entity, knownTas
  * any vocabulary (primary, main, work task, linked, reference) is not required.
  */
 export function contradictsRecordedCaseRole(reply: string, task: Entity, linkedTasks: Entity[], role: "work" | "reference") {
-  const other = role === "work"
-    ? /\|\s*reference\s*\||\b(?:is|as|role[: ]+) (?:a |the )?reference\b|\breference(?:-linked)? (?:task|item)\b/i
-    : /\|\s*work\s*\||\b(?:is|as|role[: ]+) (?:a |the )?(?:primary|main|work)\b|\b(?:primary|main|work) (?:task|item)\b/i;
+  const words = role === "work" ? "reference(?:-linked)?" : "primary|main|work";
+  const noun = "(?:\\s+(?:task|item|link|role))?";
+  // Prose claims ("is the primary", "a reference task") and standalone labels in
+  // tables, dash or dot separated lists ("| work |", "— primary —", "role: reference").
+  const other = new RegExp([
+    `\\b(?:is|as|role[: ]+) (?:a |the |an )?(?:${words})\\b`,
+    `\\b(?:${words})\\s+(?:task|item)\\b`,
+    `(?:^|[|\u00b7:,(]|\\s[-\u2013\u2014]\\s|[\u2013\u2014])\\s*[*_]*(?:${words})${noun}[*_]*\\s*(?=$|[|\u00b7,;.)]|\\s[-\u2013\u2014]\\s|[\u2013\u2014])`,
+  ].join("|"), "i");
   const denied = role === "work" ? /\bnot (?:the |a )?(?:primary|main|work task)\b/i : /\bnot (?:the |a )?(?:linked|reference)\b/i;
   // A denial of the other role ("a reference task, not the primary task") restates the right role.
-  const deniesOther = role === "work"
-    ? /\b(?:not|never) (?:the |a |an )?reference(?:-linked)?(?: task| item| link)?\b/gi
-    : /\b(?:not|never) (?:the |a |an )?(?:primary|main|work)(?: task| item)?\b/gi;
+  const deniesOther = new RegExp(`\\b(?:not|never|rather than|instead of|as opposed to) (?:the |a |an )?(?:${words})${noun}\\b`, "gi");
   return recordedTaskUnits(reply, task, linkedTasks).some(unit => other.test(unit.replace(deniesOther, "")) || denied.test(unit));
 }
 export function explicitlyUnrelatedWork(reply: string, unrelated: Entity, knownTasks: Entity[]) {

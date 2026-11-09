@@ -89,11 +89,22 @@ describe("actual work/reference roles and explicit negative related-work context
     expect(gradeIntegratorRelatedWork(v).passed).toBe(true);
     v.reply = "ACN-1 Investigation is the work task and is done, not a reference task. ACN-2 Mobile follow-up is a reference task in backlog, not the primary task.\nACN-3 is explicitly unrelated and has no case link.";
     expect(gradeIntegratorRelatedWork(v).passed).toBe(true);
+    for (const denial of ["rather than the primary task", "instead of the main task", "as opposed to the work task"]) {
+      v.reply = `ACN-1 Investigation is the work task and is done. ACN-2 Mobile follow-up is a reference task in backlog, ${denial}.\nACN-3 is explicitly unrelated and has no case link.`;
+      expect(gradeIntegratorRelatedWork(v).passed, denial).toBe(true);
+    }
+    v.reply = "- ACN-1 Investigation \u2014 role: work; status: done\n- ACN-2 Mobile follow-up \u2014 role: reference; status: backlog. It follows up the primary investigation.\nACN-3 is explicitly unrelated and has no case link.";
+    expect(gradeIntegratorRelatedWork(v).passed).toBe(true);
   });
   it.each([
     ["primary called the reference task", "ACN-1 Investigation is the reference task and is done. ACN-2 Mobile follow-up is linked and in backlog."],
     ["follow-up called the work task", "ACN-1 Investigation is done. ACN-2 Mobile follow-up is the work task and is in backlog."],
     ["follow-up called primary", "ACN-1 Investigation is done. ACN-2 Mobile follow-up is the primary task and is in backlog."],
+    ["dash-separated swapped labels", "- ACN-1 Investigation - reference - done\n- ACN-2 Mobile follow-up - primary - backlog"],
+    ["em-dash swapped labels", "- ACN-1 Investigation \u2014 reference \u2014 done\n- ACN-2 Mobile follow-up \u2014 primary \u2014 backlog"],
+    ["dot-separated swapped labels", "- ACN-1 Investigation \u00b7 reference task \u00b7 done\n- ACN-2 Mobile follow-up \u00b7 work task \u00b7 backlog"],
+    ["bold dash-separated swapped labels", "- ACN-1 Investigation \u2014 **reference** \u2014 done\n- ACN-2 Mobile follow-up \u2014 **primary** \u2014 backlog"],
+    ["role label swapped", "- ACN-1 Investigation \u2014 role: reference; status: done\n- ACN-2 Mobile follow-up \u2014 role: work; status: backlog"],
   ])("rejects prose role contradiction: %s", (_name, reply) => {
     const v = related(); v.reply = `${reply}\nACN-3 is explicitly unrelated and has no case link.`; expect(gradeIntegratorRelatedWork(v).passed).toBe(false);
   });
