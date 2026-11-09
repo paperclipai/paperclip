@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -193,8 +193,9 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
         sandboxLeaseAcquisition: { outcome, providerLeaseId } } as never,
     }).then(() => "constructed", (error: Error) => error.message);
     // A local Runner keeps its controller root on this host between turns.
-    const startLocal = () => createRunnerdBackend({
+    const startLocal = (restartRecovery?: Parameters<typeof createRunnerdBackend>[0]["restartRecovery"]) => createRunnerdBackend({
       db, execution, runnerInstanceId: next.runnerInstanceId, onLog: async (_stream, chunk) => { logs.push(chunk); },
+      ...(restartRecovery ? { restartRecovery } : {}),
     }).then(() => "constructed", (error: Error) => error.message);
     return { runId, logs, start, startLocal, native: next, environmentId, leaseId, providerLeaseId, remoteExecute, selectedRunId: selected?.id ?? null };
   }
@@ -829,6 +830,45 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
         await rm(root, { recursive: true, force: true });
       }
     }, 60_000);
+  it.each([
+    { label: "never delivered to a dead runner", connectionCount: 0, claim: true, admitted: true },
+    { label: "possibly delivered", connectionCount: 1, claim: true, admitted: false },
+    { label: "without a dead-runner claim", connectionCount: 0, claim: false, admitted: false },
+  ])("resumes from the previous turn when a warm attach rotation was $label", async ({ connectionCount, claim, admitted }) => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = await restoreHeldRoot(prior, followUp);
+    const priorIdentity = JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8")).identity;
+    const epoch = join(root, "authority-epochs",
+      `epoch-${createHash("sha256").update(JSON.stringify(priorIdentity)).digest("hex").slice(0, 24)}`);
+    await mkdir(epoch, { recursive: true, mode: 0o700 });
+    await rename(join(root, "control-plane"), join(epoch, "control-plane"));
+    await writeFile(join(epoch, "runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1", ...priorIdentity,
+      lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null }));
+    await mkdir(join(root, "runner"), { recursive: true, mode: 0o700 });
+    await writeFile(join(root, "runner", "codex-provider-state.json"), "{}");
+    const identity = { ...priorIdentity, runId: followUp.runId, turnId: `turn-${followUp.runId}`, itemId: `item-${followUp.runId}` };
+    await mkdir(join(root, "control-plane"), { mode: 0o700 });
+    const undelivered = JSON.stringify({ schema: "paperclip.runner.durable.control-plane-state.v2", identity,
+      bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", originIdentity: identity, credentialsIssued: 0, adopted: false },
+      runAttachTemplate: {}, tickets: {}, leases: {},
+      commands: [{ commandId: "attach", controllerSeq: 1, type: "run.attach", status: "pending", payload: {} }],
+      committedEvents: [], ackedSourceSeq: 0, connectionCount, commandDeliveryCounts: {} });
+    await writeFile(join(root, "control-plane", "control-plane-state.json"), undelivered);
+    const outcome = await followUp.startLocal(claim ? { kind: "resume_dead_runner", runId: followUp.runId, leaseOwner: "successor",
+      controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null } as never : undefined);
+    if (!admitted) {
+      expect(outcome).toBe("runner_state_identity_mismatch: authority_indeterminate");
+      return;
+    }
+    expect(outcome).toBe(ADMITTED);
+    expect(JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8")).identity).toEqual(priorIdentity);
+    expect(existsSync(join(root, "authority-epochs"))).toBe(false);
+    const [archive] = await readdir(join(root, "continuity-breaks"));
+    expect(await readFile(join(root, "continuity-breaks", archive!, "control-plane", "control-plane-state.json"), "utf8")).toBe(undelivered);
+    expect(await quarantined()).toEqual([]);
+    expect(followUp.logs.join("")).toContain("stopped before its runner received the session");
+  }, 60_000);
 
   it("retires a finished local owner whose Runner stopped before it proved suspension", async () => {
     const { prior, followUp, root } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
