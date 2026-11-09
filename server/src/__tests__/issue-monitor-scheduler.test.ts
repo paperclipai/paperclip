@@ -345,7 +345,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 30_000))).enqueued).toBe(0);
     const [waiting] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(waiting.monitorNextCheckAt).toEqual(nextCheckAt);
-    expect(waiting.monitorWakeRequestedAt).toBeNull();
+    expect(waiting.monitorWakeRequestedAt).toEqual(tickAt);
     expect(waiting.monitorAttemptCount).toBe(0);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(1);
     const diagnostics = (await db.select().from(activityLog).where(eq(activityLog.entityId, issueId)))
@@ -356,8 +356,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold!.id)))[0]?.status).toBe("active");
     await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date(),
       evidence: { runId: sourceRunId, executionReconciliation: { action: "continue" } } }).where(eq(issueRecoveryActions.id, hold!.id));
-    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 60_000))).enqueued).toBe(1);
-    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 90_000))).enqueued).toBe(0);
+    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 5 * 60_000 + 1))).enqueued).toBe(1);
+    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 5 * 60_000 + 30_000))).enqueued).toBe(0);
     const [triggered] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(triggered.monitorAttemptCount).toBe(1);
     expect(triggered.monitorNextCheckAt).toBeNull();
@@ -381,7 +381,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 30_000))).enqueued).toBe(0);
 
     const [deferred] = await db.select().from(issues).where(eq(issues.id, issueId));
-    expect(deferred.monitorWakeRequestedAt).toBeNull();
+    expect(deferred.monitorWakeRequestedAt).toEqual(tickAt);
     expect(deferred.monitorNextCheckAt).toEqual(nextCheckAt);
     expect(deferred.monitorAttemptCount).toBe(0);
     expect(deferred.updatedAt).toEqual(seeded.updatedAt);
@@ -390,7 +390,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       evidence: { runId: sourceRunId, executionReconciliation: { action: "continue" } } })
       .where(eq(issueRecoveryActions.id, hold!.id));
 
-    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 60_000))).enqueued).toBe(1);
+    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 5 * 60_000 + 1))).enqueued).toBe(1);
 
     const [triggered] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(triggered.monitorAttemptCount).toBe(1);

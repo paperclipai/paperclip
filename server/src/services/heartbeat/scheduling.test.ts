@@ -189,17 +189,42 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: replacement, monitorAttemptCount: 0 });
   });
 
-  it("retains a deferred monitor and releases its claim for a later tick", async () => {
+  it("backs off a deferred scheduled monitor and retries after the claim timeout", async () => {
     const f = await fixture();
     f.deps.enqueueWakeup.mockResolvedValueOnce(null);
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
-    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: now, monitorAttemptCount: 0 });
+    expect(await f.scheduler.tickTimers(new Date(now.getTime() + 30_000))).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(await f.scheduler.tickTimers(new Date(now.getTime() + 5 * 60_000 + 1))).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
     const calls = f.deps.enqueueWakeup.mock.calls;
     expect(calls[0]![1]!.idempotencyKey).toBe(calls[1]![1]!.idempotencyKey);
     expect(calls[0]![1]!.issueStateGuard).toMatchObject({
       assigneeAgentId: f.agent.id, statuses: ["in_progress"], monitorNextCheckAt: dueAt.toISOString(), monitorWakeRequestedAt: now.toISOString(),
     });
+  });
+
+  it("lets a ready tied monitor pass fifty deferred monitors on the next sweep", async () => {
+    const f = await fixture();
+    const deferred = await db.insert(issues).values(Array.from({ length: 50 }, (_, index) => ({
+      companyId: f.company.id, title: `Deferred monitor ${index}`, status: "in_progress",
+      assigneeAgentId: f.agent.id, monitorNextCheckAt: dueAt, monitorAttemptCount: 0,
+      createdAt: dueAt, updatedAt: dueAt,
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [], monitor: { nextCheckAt: dueAt.toISOString() } },
+    }))).returning();
+    let admissions = 0;
+    f.deps.enqueueWakeup.mockImplementation(async () => {
+      admissions += 1;
+      return admissions <= 50 ? null : admitted;
+    });
+
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 50, enqueued: 0, skipped: 50 });
+    expect(await f.scheduler.tickTimers(new Date(now.getTime() + 30_000))).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(51);
+    expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull();
+    const rows = await db.select().from(issues);
+    const deferredIds = new Set(deferred.map(issue => issue.id));
+    expect(rows.filter(issue => deferredIds.has(issue.id))
+      .every(issue => issue.monitorWakeRequestedAt?.getTime() === now.getTime())).toBe(true);
   });
 
   it("keeps manual error recovery distinct from scheduled client-error handling", async () => {
@@ -240,8 +265,9 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     const f = await fixture();
     f.deps.enqueueWakeup.mockRejectedValueOnce(new Error("Temporary admission failure"));
     await f.scheduler.tickTimers(now);
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null });
-    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: now });
+    expect(await f.scheduler.tickTimers(new Date(now.getTime() + 30_000))).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(await f.scheduler.tickTimers(new Date(now.getTime() + 5 * 60_000 + 1))).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
   });
 
   it("records bounded dispatch failure diagnostics while retaining the schedule", async () => {
@@ -249,7 +275,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     f.deps.enqueueWakeup.mockRejectedValue(new Error("PRIVATE_PROVIDER_FAILURE"));
     await f.scheduler.tickTimers(now);
     await f.scheduler.tickTimers(new Date(now.getTime() + 30_000));
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: now, monitorAttemptCount: 0 });
     const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
     expect(events.filter(event => event.action === "issue.monitor_dispatch_failed")).toHaveLength(1);
     expect(events[0]?.details).toMatchObject({ reason: "monitor_dispatch_failed", nextCheckAt: dueAt.toISOString(), attemptCount: 0 });
@@ -263,7 +289,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     await f.scheduler.tickTimers(new Date(now.getTime() + 30_000));
     expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(1);
     await db.update(activityLog).set({ createdAt: new Date(Date.now() - 6 * 60_000) }).where(eq(activityLog.entityId, f.issue.id));
-    await f.scheduler.tickTimers(new Date(now.getTime() + 60_000));
+    await f.scheduler.tickTimers(new Date(now.getTime() + 5 * 60_000 + 1));
     expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(2);
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorAttemptCount: 0 });
   });
@@ -280,7 +306,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(JSON.stringify(events)).not.toContain("PRIVATE_BLOCKER_CAUSE");
   });
 
-  it("releases a monitor claim when diagnostic storage fails", async () => {
+  it("backs off a monitor claim when diagnostic storage fails", async () => {
     const f = await fixture();
     await db.execute(sql`create function fail_monitor_diagnostic_test() returns trigger language plpgsql as $$
       begin if new.action = 'issue.monitor_deferred' then raise exception 'Synthetic diagnostic storage failure'; end if; return new; end; $$`);
@@ -289,8 +315,9 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     try {
       f.deps.enqueueWakeup.mockResolvedValueOnce(null);
       expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
-      expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
-      expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+      expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: now, monitorAttemptCount: 0 });
+      expect(await f.scheduler.tickTimers(new Date(now.getTime() + 30_000))).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+      expect(await f.scheduler.tickTimers(new Date(now.getTime() + 5 * 60_000 + 1))).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
     } finally {
       await db.execute(sql`drop trigger fail_monitor_diagnostic_test on activity_log`);
       await db.execute(sql`drop function fail_monitor_diagnostic_test()`);
@@ -760,7 +787,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       await advance(5000);
       expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
       expect(coordinator!.nextWakeAt()).not.toBeNull();
-      await advance(30_000);
+      await advance(5 * 60_000);
       await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
       expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(2);
       await quiet();
