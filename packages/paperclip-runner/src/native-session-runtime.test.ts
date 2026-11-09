@@ -587,9 +587,10 @@ describe("executeNativeSession recovery", () => {
   });
 
   it.each([
-    { label: "after the continuation starts", staleFirst: false },
-    { label: "before the continuation starts", staleFirst: true },
-  ])("keeps the restart continuation when the restored runner reports an earlier unrecorded continuation lost $label", async ({ staleFirst }) => {
+    { label: "after the continuation starts", staleFirst: false, staleTurnId: "turn-unrecorded-continuation" },
+    { label: "before the continuation starts", staleFirst: true, staleTurnId: "turn-unrecorded-continuation" },
+    { label: "as the checkpointed interrupted turn before the continuation starts", staleFirst: true, staleTurnId: "turn-recovery" },
+  ])("keeps the restart continuation when the restored runner reports an earlier unrecorded continuation lost $label", async ({ staleFirst, staleTurnId }) => {
     let staleAppended!: () => void;
     const staleTerminal = new Promise<void>(resolve => { staleAppended = resolve; });
     const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
@@ -607,7 +608,7 @@ describe("executeNativeSession recovery", () => {
       identity: () => identity,
       async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
       async *events() {
-        yield { ...runnerEvent(1, "turn.failed", { status: "failed", error: failure }), turnId: "turn-unrecorded-continuation" };
+        yield { ...runnerEvent(1, "turn.failed", { status: "failed", error: failure }), turnId: staleTurnId };
         yield { ...runnerEvent(2, "turn.completed", { status: "completed" }), turnId: "turn-continuation" };
       },
       startTurn,
@@ -639,7 +640,7 @@ describe("executeNativeSession recovery", () => {
     })).resolves.toMatchObject({ result, turnId: "turn-continuation", terminal: { runTerminalState: "succeeded" } });
     expect(startTurn).toHaveBeenCalledOnce();
     expect((startTurn.mock.calls[0]![0] as Parameters<NativeSession["startTurn"]>[0]).continuation).toBe(true);
-    expect(events.filter(event => event.eventType === "turn.failed").map(event => event.turnId)).toEqual(["turn-unrecorded-continuation"]);
+    expect(events.filter(event => event.eventType === "turn.failed").map(event => event.turnId)).toEqual([staleTurnId]);
   });
 
   it("recovers a restart continuation whose checkpoint still carries the lost turn's failed terminal", async () => {
@@ -687,6 +688,56 @@ describe("executeNativeSession recovery", () => {
     expect(nativeRestartContinuationInFlight({ ...checkpoint, terminalTurns: [{ turnId: "turn-recovery",
       fingerprint: JSON.stringify({ terminalState: "failed", error: { code: "model_not_found", recoverable: false }, result: null }) }] }))
       .toBe(false);
+  });
+
+  it.each([
+    { label: "after it starts", proposedFirst: false },
+    { label: "after the continuation proposed its result", proposedFirst: true },
+  ])("keeps the restart continuation when the lost turn's terminal is delivered again $label", async ({ proposedFirst }) => {
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "runner", driverKind: "acpx_runtime", sessionId: "record-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: "turn-recovery",
+      terminalTurns: [], semanticResult: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    const interrupted: PersistedNativeSession = {
+      ...checkpoint, activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-continuation" }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        yield runnerEvent(1, "turn.failed", { status: "failed", error: failure });
+        if (!startTurn.mock.calls.length) return;
+        if (proposedFirst) yield { ...runnerEvent(2, "run.result.proposed", result), turnId: "turn-continuation" };
+        yield runnerEvent(3, "turn.failed", { status: "failed", error: failure });
+        yield { ...runnerEvent(4, "turn.completed", { status: "completed" }), turnId: "turn-continuation" };
+      },
+      startTurn,
+      async result() { return startTurn.mock.calls.length ? { result, terminal, turnId: "turn-continuation" } : null; },
+      async snapshot() { return structuredClone(interrupted); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "restart", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { throw new Error("must preserve the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await expect(executeNativeSession({
+      input, backend, controlPlane: port, persistedSession: checkpoint,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      resumeInterruptedTurn: true,
+    })).resolves.toMatchObject({ result, turnId: "turn-continuation", terminal: { runTerminalState: "succeeded" } });
+    expect(startTurn).toHaveBeenCalledOnce();
   });
 
   it.each(["acpx_runtime", "opencode_server"] as const)("continues a restart-lost %s turn once in the same conversation", async (driverKind) => {

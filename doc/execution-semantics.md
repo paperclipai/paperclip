@@ -2268,7 +2268,9 @@ posts its final answer to the conversation even when the task stays held: a
 pending or revision-requested approval, a pending execution stage, or a
 dependency blocker. A held task does not present the turn. Only a pending
 thread interaction (a question or confirmation card) presents the turn in place
-of its prose.
+of its prose. Background presentation recovery applies the same rule, so a
+restart between the status commit and the live presentation posts the held
+turn's answer once, or records that its card presented the turn.
 
 A delegated-task completion callback can finish native execution before its
 accepted final reply is saved. The completion outbox must retain that callback's
