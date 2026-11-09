@@ -48,7 +48,8 @@ describe("two company acts share the original observation clock", () => {
     vi.useFakeTimers(); vi.setSystemTime(260_000); const ctx = context(0);
     const first = vi.fn(async () => { vi.setSystemTime(271_000); return { status: "active" }; });
     const forbidden = vi.fn(() => { throw new Error("must not start another followup"); });
-    const control = { click: first, filter: () => ({ click: forbidden }) };
+    const control: Record<string, unknown> = { click: first, filter: () => ({ click: forbidden }), getByText: () => ({}) };
+    control.getByRole = () => control;
     ctx.input = { page: { url: () => "https://fixture.test/RUN/chats/ceo", getByRole: () => control },
       fixtures: { company: { id: "company" } }, api: { get: first, post: forbidden } } as never;
     const act = companyLifecycleIdentityCases.find(row => row.scenarioId === id)!.act!;

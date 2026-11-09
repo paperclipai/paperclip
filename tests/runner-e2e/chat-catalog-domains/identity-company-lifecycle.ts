@@ -61,7 +61,11 @@ export const companyLifecycleIdentityCases: readonly ChatCatalogCase[] = [
       remaining();
       const source = ctx.input.page.url();
       await ctx.input.page.getByRole("button", { name: /^Open .+ (?:organization|workspace|company) switcher$/i }).click({ timeout: remaining() });
-      await ctx.input.page.getByRole("menuitem").filter({ hasText: /^Birch/ }).click({ timeout: remaining() });
+      // Each organization row's accessible name starts with its avatar initial ("B Birch BIR"),
+      // so match the row by its exact visible organization name inside the open menu.
+      const organizations = ctx.input.page.getByRole("menu");
+      await organizations.getByRole("menuitem").filter({ has: organizations.getByText("Birch", { exact: true }) })
+        .click({ timeout: remaining() });
       const prefix = String(state.foreignPrefix);
       await expect(ctx.input.page).toHaveURL(new RegExp(`/${prefix}/`), { timeout: remaining() });
       state.switchedCompanyId = entity(state, "otherCompany").id;
