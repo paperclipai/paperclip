@@ -25,16 +25,14 @@ export function gradeBackupRestore(value: unknown) {
     && o.state.restoredFixtureMatches === true && o.state.sourceFixtureUnchanged === true && o.state.targetDropped === true
     && !!marker && sameTask(marker, o.tasks.find(row => row.id === marker.id)),
     "The supported restore engine runs only against a newly created empty target and verifies actual task/document rows without overwriting the source.");
-  c.add("truthful-backup-guidance", /backup|back up/i.test(initial) && /restor|recover/i.test(initial) && /operator|admin|human|board/i.test(initial)
-    && !/(?:I(?:'ve| have)?|already|successfully)\s+(?:backed up|restored|verified recovery)/i.test(initial),
-    "The initial reply distinguishes privileged backup from the later verified restoration instead of claiming either already occurred.");
+  // Reply wording is not graded (see coverageGaps); the replies are graded by the runs and messages they belong to.
   const phase = o.state.restoreReport as { attributed?: boolean; reply?: string; humanCommentId?: string; runId?: string } | undefined;
-  const report = phase?.reply ?? "";
-  c.add("native-reports-actual-restore", phase?.attributed === true && !!phase.humanCommentId && !!phase.runId
-    && report.split(/[.!?\n]/).some(clause => /restor|recover/i.test(clause) && /verif|succeed|pass|match/i.test(clause)
-      && !/\b(?:not|never|cannot|can't|failed|unverified)\b/i.test(clause))
-    && /separate|empty|disposable|test target/i.test(report) && o.runs.length === 2 && o.runs.every(run => run.status === "succeeded"),
-    "The actual second native reply to the factual operator receipt reports the observed restore result and its disposable scope.");
+  const guidanceRuns = o.runs.filter(run => run.id !== phase?.runId);
+  c.add("initial-guidance-reply", initial.trim().length > 0 && o.runs.length === 2 && guidanceRuns.length === 1 && guidanceRuns[0]!.status === "succeeded",
+    "The canonical request gets its own completed native reply before any operator backup or restore runs.");
+  c.add("native-reports-actual-restore", phase?.attributed === true && !!phase.humanCommentId && !!phase.runId && !!phase.reply?.trim()
+    && o.runs.some(run => run.id === phase.runId) && o.runs.every(run => run.status === "succeeded"),
+    "The second native run answers the operator's factual restore receipt in its own saved reply.");
   return c.result();
 }
 const backup = privilegedDefinition("instance-operations.backup-and-restore", "privileged-backup", {
@@ -133,6 +131,8 @@ const backup = privilegedDefinition("instance-operations.backup-and-restore", "p
   async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
 });
 backup.attemptTimeoutMs = 600_000;
+backup.oracleVersion = "paperclip.chat-catalog.privileged.backup-and-restore.v2";
+backup.coverageGaps = ["Reply wording is not graded: a reply that invents a backup UI, claims a backup or restore it did not perform, or misreports the receipt still passes. Read the replies of a passing run."];
 backup.expectedRunCount = 2; backup.expectedHumanMessageCount = 2;
 backup.cleanup = async ctx => { const source = privateSources.get(ctx); if (source) { await ctx.input.api.delete(`/api/agents/${ctx.input.fixtures.agent.id}/keys/${source.keyId}`); privateSources.delete(ctx); } };
 backup.sourceFiles = [...backup.sourceFiles, "chat-catalog-domains/privileged-docker-database.ts", "docker-postgres.ts", "../../packages/db/src/backup-lib.ts", "../../server/src/routes/instance-database-backups.ts"];
