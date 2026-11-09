@@ -38,9 +38,16 @@ export function pluginLifecycleInbox(db: Db, pluginId: string) {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw badRequest("limit must be an integer from 1 to 100");
       if (afterId !== undefined && (typeof afterId !== "string" || !/^[1-9]\d*$/.test(afterId) || !Number.isSafeInteger(Number(afterId)))) throw badRequest("Invalid lifecycle page id");
       await assertAvailable(db, companyId);
-      const rows = await db.select().from(resourceLifecycleEvents)
-        .where(and(eq(resourceLifecycleEvents.companyId, companyId), unacknowledged, firstForResource, inArray(resourceLifecycleEvents.resourceType, resourceTypes ?? ["agent", "project"]), afterId === undefined ? undefined : gt(resourceLifecycleEvents.id, Number(afterId))))
-        .orderBy(asc(resourceLifecycleEvents.id)).limit(limit);
+      // One pass picks each resource's deliverable head: its unacknowledged creation, else its
+      // oldest unacknowledged event. This is the set `firstForResource` admits, without probing
+      // every acknowledged older event once per pending candidate. The page filter stays outside.
+      const heads = db.selectDistinctOn([resourceLifecycleEvents.resourceType, resourceLifecycleEvents.resourceId]).from(resourceLifecycleEvents)
+        .where(and(eq(resourceLifecycleEvents.companyId, companyId), inArray(resourceLifecycleEvents.resourceType, resourceTypes ?? ["agent", "project"]), unacknowledged))
+        .orderBy(resourceLifecycleEvents.resourceType, resourceLifecycleEvents.resourceId, sql`${resourceLifecycleEvents.action} <> 'create'`, resourceLifecycleEvents.id)
+        .as("heads");
+      const rows = await db.select().from(heads)
+        .where(afterId === undefined ? undefined : gt(heads.id, Number(afterId)))
+        .orderBy(asc(heads.id)).limit(limit);
       return rows.map(row => ({ ...row, id: String(row.id), createdAt: row.createdAt.toISOString() })) as ResourceLifecycleEvent[];
     },
     async acknowledge(companyId: string, eventId: string, credentials?: { snapshot: ProjectSecretSnapshot; changes: unknown }): Promise<void> {
