@@ -18,6 +18,17 @@ function namesSelectedModel(body: string, model: string, catalog: unknown): bool
     return id === model || uniqueShortId && id === shortId;
   });
 }
+/** Catalog models the text names, by exact id or by a short id unique in the catalog. Wording is never graded. */
+function namedCatalogModels(body: string, catalog: unknown): string[] {
+  if (!Array.isArray(catalog)) return [];
+  const ids = catalog.filter((id): id is string => typeof id === "string");
+  const identifiers = (body.match(/[A-Za-z0-9][A-Za-z0-9_./:@~-]*/g) ?? []).map(value => value.replace(/[.:]+$/, ""));
+  return ids.filter(model => {
+    const shortId = model.split("/").at(-1)!;
+    const uniqueShortId = ids.filter(id => id.split("/").at(-1) === shortId).length === 1;
+    return identifiers.some(id => id === model || uniqueShortId && id === shortId);
+  });
+}
 function hasBoundRevisionHistory(o: IdentityObservation, approval: Approval | undefined): boolean {
   const comment = o.state.revisionHistoryComment as Entity | undefined;
   const link = o.state.revisionHistoryLink as RenderedConversationLink | undefined;
@@ -25,7 +36,10 @@ function hasBoundRevisionHistory(o: IdentityObservation, approval: Approval | un
   if (!approval || !comment || !link || typeof sourceId !== "string" || o.runs.length !== 1 || o.humanQueries.length !== 1
     || comment.companyId !== o.companyId || comment.issueId !== sourceId || comment.authorAgentId !== o.leadId || comment.authorUserId
     || typeof comment.body !== "string" || typeof o.state.cheaperModel !== "string"
-    || !namesSelectedModel(comment.body, o.state.cheaperModel, o.state.eligibleModels)) return false;
+    // The saved proposal and the request the reply links to carry the revised
+    // model. The reply need not repeat it, but it must not name another
+    // catalog model than the original or the selected one.
+    || namedCatalogModels(comment.body, o.state.eligibleModels).some(model => model !== o.state.cheaperModel && model !== o.state.originalModel)) return false;
   const run = o.runs[0]!;
   if (run.id !== comment.createdByRunId || run.companyId !== o.companyId || run.agentId !== o.leadId || run.runtimeMode !== "native"
     || run.status !== "succeeded" || run.resultJson?.finalizationPhase !== "committed" || run.nativeIssueId !== sourceId
@@ -68,7 +82,7 @@ export function gradeHireRevision(value: unknown) {
     && o.activity.filter(row => row.action === "approval.resubmitted" && row.entityId === approval?.id && row.actorType === "agent" && row.agentId === o.leadId).length === 1,
     "The retained public original/board-choice comment, agent approval note or bound native revision reply, and actual revision/resubmission audit form inspectable history.");
   c.add("no-hire-or-approval-side-effect", o.agents.length === o.state.beforeAgentCount && !o.activity.some(row => row.action === "approval.approved" && row.entityId === approval?.id)
-    && o.state.pendingProposalVisible === true && o.state.revisedModelVisible === true && /approval|review|pending|board/i.test(o.reply),
+    && o.state.pendingProposalVisible === true && o.state.revisedModelVisible === true,
     "The actual proposal remains visibly pending with the revised model and no employee is instantiated or activated under the revision request.");
   return c.result();
 }
@@ -92,7 +106,7 @@ export const hireRevisionIdentityCases: readonly ChatCatalogCase[] = [identityDe
   return { sourceIssueId: source.id, originalApproval, originalHistoryCommentId: history.id, originalModel, cheaperModel, humanId: session.user.id,
     eligibleModels: models.map(row => row.id), modelChoice, beforeAgentCount: (await ctx.input.api.get<unknown[]>(`/api/companies/${fixtures.company.id}/agents`)).length };
 }, gradeHireRevision, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.hire-revision.native1017.v5", sourceFiles: ["chat-catalog-domains/identity-hire-revision.ts", "chat-catalog-domains/identity-hire-model-choice.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-rendered-links.ts", "chat-scenarios/questions-and-approvals.yaml"],
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.hire-revision.native1017.v6", sourceFiles: ["chat-catalog-domains/identity-hire-revision.ts", "chat-catalog-domains/identity-hire-model-choice.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-rendered-links.ts", "chat-scenarios/questions-and-approvals.yaml"],
   async act(ctx, state) {
     const remaining = () => remainingIdentityObservationBudget(ctx);
     remaining(); await waitForReply(ctx, ctx.observationDeadlineAt); remaining();

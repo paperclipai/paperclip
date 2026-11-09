@@ -39,8 +39,10 @@ describe("formal hire remains a proposal after cost revision", () => {
     o.comments[0]!.body = body;
     (o.state.revisionHistoryComment as { body: string }).body = body;
     expect(gradeHireRevision(o).passed).toBe(true);
-    for (const wrong of ["deepseek-v4.1-flash", "deepseek-v4.1-flash-1017:batch", "other/deepseek/deepseek-v4.1-flash-1017"]) {
+    for (const wrong of ["openrouter/deepseek/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4.1-flash-1017:batch", "other/deepseek/deepseek-v4.1-flash-1017"]) {
+      // A reply that names another catalog model as the revision states a wrong fact.
       const invalid = structuredClone(o), changed = body.replace(model, wrong);
+      (invalid.state.eligibleModels as string[]).push(wrong);
       invalid.reply = changed;
       invalid.comments[0]!.body = changed;
       (invalid.state.revisionHistoryComment as { body: string }).body = changed;
@@ -51,25 +53,27 @@ describe("formal hire remains a proposal after cost revision", () => {
     const wrongProposal = structuredClone(o);
     (wrongProposal.state.currentApproval as { payload: { adapterConfig: { model: string } } }).payload.adapterConfig.model = "openrouter/deepseek/deepseek-v4.1-flash";
     expect(gradeHireRevision(wrongProposal).passed).toBe(false);
-    if (!model.includes("/")) {
-      const ambiguous = structuredClone(o);
-      (ambiguous.state.eligibleModels as string[]).push("other/deepseek/" + model);
-      expect(gradeHireRevision(ambiguous).passed).toBe(false);
-    }
   });
-  it("accepts a generic linked chat message only when the owned approval note supplies model-specific history", () => {
-    const o = validChatRevision(), body = "Revised and resubmitted for approval. [Pending proposal](/approvals/approval).";
-    o.state.approvalComments = valid().state.approvalComments;
-    o.reply = body;
-    o.comments[0]!.body = body;
-    (o.state.revisionHistoryComment as { body: string }).body = body;
-    expect(gradeHireRevision(o).passed).toBe(true);
-    const missing = structuredClone(o);
-    missing.state.approvalComments = (missing.state.approvalComments as unknown[]).slice(0, 1);
-    expect(gradeHireRevision(missing).passed).toBe(false);
-    const foreign = structuredClone(o);
-    (foreign.state.approvalComments as Array<{ authorAgentId?: string }>)[1]!.authorAgentId = "other";
-    expect(gradeHireRevision(foreign).passed).toBe(false);
+  it.each([
+    "The revised hire is pending your approval. Review [the pending approval](/ACORN/approvals/approval) — it must be approved before the hire can proceed.",
+    "Done. [Open it](/approvals/approval).",
+  ])("accepts a linked reply that does not repeat the model, with or without an approval note: %s", body => {
+    // The saved proposal and the request behind the reply's link carry the revised model; wording is not graded.
+    for (const withNote of [false, true]) {
+      const o = validChatRevision();
+      if (withNote) o.state.approvalComments = valid().state.approvalComments;
+      o.reply = body;
+      o.comments[0]!.body = body;
+      (o.state.revisionHistoryComment as { body: string }).body = body;
+      expect(gradeHireRevision(o).passed).toBe(true);
+      const expensive = structuredClone(o);
+      (expensive.state.currentApproval as { payload: { adapterConfig: { model: string } } }).payload.adapterConfig.model = "openrouter/deepseek/deepseek-v4-pro";
+      expect(gradeHireRevision(expensive).passed).toBe(false);
+      const unseen = structuredClone(o); unseen.state.revisedModelVisible = false;
+      expect(gradeHireRevision(unseen).passed).toBe(false);
+      const unlinked = structuredClone(o); unlinked.renderedLinkEvidence = [];
+      expect(gradeHireRevision(unlinked).passed).toBe(withNote);
+    }
   });
   it("accepts a bound revision reply alongside progress from the same run", () => {
     const o = validChatRevision();
@@ -101,7 +105,7 @@ describe("formal hire remains a proposal after cost revision", () => {
     ["wrong comment source", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { issueId: string }).issueId = "other"; }],
     ["wrong comment actor", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { authorAgentId: string }).authorAgentId = "other"; }],
     ["wrong originating run", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { createdByRunId: string }).createdByRunId = "other"; }],
-    ["wrong model in reply", (o: IdentityObservation) => { o.reply = o.reply.replace(String(o.state.cheaperModel), "other-model"); (o.state.revisionHistoryComment as { body: string }).body = o.reply; }],
+    ["wrong model in reply", (o: IdentityObservation) => { (o.state.eligibleModels as string[]).push("openrouter/other/other-model"); o.reply = o.reply.replace(String(o.state.cheaperModel), "openrouter/other/other-model"); o.comments[0]!.body = o.reply; (o.state.revisionHistoryComment as { body: string }).body = o.reply; }],
     ["uncommitted run", (o: IdentityObservation) => { o.runs[0]!.resultJson = { finalizationPhase: "pending" }; }],
     ["foreign run company", (o: IdentityObservation) => { o.runs[0]!.companyId = "other"; }],
     ["foreign run actor", (o: IdentityObservation) => { o.runs[0]!.agentId = "other"; }],
