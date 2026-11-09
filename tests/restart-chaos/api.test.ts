@@ -11,23 +11,28 @@ afterEach(async () => {
 
 async function serve(handler: (count: number) => { status: number; body: unknown }) {
   let count = 0;
+  const arrivals: number[] = [];
   server = createServer((_request, response) => {
     count += 1;
+    arrivals.push(performance.now());
     const reply = handler(count);
     response.writeHead(reply.status, { "content-type": "application/json" });
     response.end(JSON.stringify(reply.body));
   });
   await new Promise<void>(resolve => server!.listen(0, "127.0.0.1", () => resolve()));
-  return { url: `http://127.0.0.1:${(server!.address() as AddressInfo).port}`, count: () => count };
+  return { url: `http://127.0.0.1:${(server!.address() as AddressInfo).port}`, count: () => count, arrivals };
 }
 
 describe("ChaosApi rate limits", () => {
   it("retries a GET the server rate-limited, after the delay it asked for", async () => {
     const target = await serve(count => count <= 2
-      ? { status: 429, body: { error: "Too many concurrent issue-list requests", retryAfterSeconds: 0.01 } }
+      ? { status: 429, body: { error: "Too many concurrent issue-list requests", retryAfterSeconds: 0.05 } }
       : { status: 200, body: [{ id: "c1" }] });
     await expect(new ChaosApi(target.url).get("/api/issues")).resolves.toEqual([{ id: "c1" }]);
     expect(target.count()).toBe(3);
+    const [first, second, third] = target.arrivals;
+    expect(second! - first!).toBeGreaterThanOrEqual(45);
+    expect(third! - second!).toBeGreaterThanOrEqual(95);
   });
 
   it("does not repeat a write the server rate-limited", async () => {
