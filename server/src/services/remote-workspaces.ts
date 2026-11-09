@@ -433,6 +433,8 @@ export async function prepareRemoteWorkspace(input: {
   const preparationIdentity = createHash("sha256").update(JSON.stringify([input.workspace.companyId, input.workspace.id,
     input.runId, initial.epoch, input.lease.id, input.lease.providerLeaseId, remoteRoot, initial.source])).digest("hex");
   let restoredExport: Awaited<ReturnType<typeof restoreRemoteWorkspaceDirectory>> | null = null;
+  // Where the restore spent its time and the storage requests it sent.
+  const restoreTiming = newWorkspaceSnapshotStorageTiming();
   if (sameAllocation && !await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId,
     workspaceId: input.workspace.id, location: initial.location!, target,
     assertOwned: input.assertOwned ?? (async () => undefined) })) throw new Error("remote_workspace_export_cleanup_pending");
@@ -448,7 +450,8 @@ export async function prepareRemoteWorkspace(input: {
         try {
           const archivePath = path.join(scratch, "workspace.pcws");
           step = "snapshot_download";
-          await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
+          await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath,
+            timing: restoreTiming });
           step = "sandbox_restore";
           restoredExport = await measureRunPhase("workspace.snapshot.sandbox_restore", () => restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
             restorationIdentity: preparationIdentity, restorationEpoch: initial.epoch, allowEmptyRoot: migration !== null,
@@ -594,7 +597,8 @@ export async function prepareRemoteWorkspace(input: {
         || existing.heartbeatRunId !== input.runId || existing.phase !== "remote_workspace_restore")) throw new Error("remote_workspace_restore_receipt_changed");
       const metadata = { epoch: authority.epoch, snapshotId: initial.snapshotId,
         exportCleanup: { ...authority.location, stagingRoot: restoredExport.stagingRoot,
-          state: restoredExport.cleanupPending ? "pending" : "cleaned" } };
+          state: restoredExport.cleanupPending ? "pending" : "cleaned" },
+        restoreTiming: { schema: "paperclip.remote-workspace-restore-timing.v1", ...restoreTiming } };
       if (existing) await tx.update(workspaceOperations).set({ status: "succeeded", metadata, finishedAt: new Date(), updatedAt: new Date() })
         .where(eq(workspaceOperations.id, existing.id));
       else await tx.insert(workspaceOperations).values({ id: restoredExport.operationId, companyId: workspace.companyId,

@@ -645,6 +645,13 @@ in `metadata.saveTiming.storage`:
   rate-limited with 503, 429 or SlowDown) and `backoffMs` (the uploader's waits
   before resending a part).
 
+A restore also records its step durations, `bytes` and `requests` on its
+`remote_workspace_restore` workspace operation, in `metadata.restoreTiming`
+(schema `paperclip.remote-workspace-restore-timing.v1`). A save that reuses an
+earlier upload still reads it back; that read-back is counted in `verifyMs`.
+A throttled part send counts in `throttled` even when it ends the retries,
+and a multipart abort sent during cleanup counts in `requests`.
+
 These are counts and durations only: no object keys, paths or provider text.
 
 ## System notices and final replies

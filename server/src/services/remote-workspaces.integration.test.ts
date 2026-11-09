@@ -1112,6 +1112,10 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const [operation] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
       eq(workspaceOperations.heartbeatRunId, nextRun), eq(workspaceOperations.phase, "remote_workspace_restore")));
     expect(operation).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { ...location, state: "pending" } } });
+    // The restore records where it spent its time and the storage requests it sent.
+    expect(operation?.metadata?.restoreTiming).toMatchObject({ schema: "paperclip.remote-workspace-restore-timing.v1",
+      downloadMs: expect.any(Number), decryptMs: expect.any(Number), plaintextVerifyMs: expect.any(Number), publishMs: expect.any(Number),
+      bytes: expect.any(Number), requests: expect.objectContaining({ requests: expect.any(Number) }) });
     await fs.writeFile(path.join(restored.remoteRoot, "saved.txt"), "later agent edits\n");
     await fs.writeFile(path.join(restored.remoteRoot, "newer.txt"), "keep untracked work\n");
     failCleanup = false;

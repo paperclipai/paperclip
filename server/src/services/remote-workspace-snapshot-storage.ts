@@ -230,13 +230,18 @@ async function uploadWorkspaceSnapshotTimed(input: WorkspaceSnapshotUpload): Pro
 
 async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, verify: (ref: WorkspaceSnapshotRef) => Promise<void>,
   options: { acceptServerVerifiedUpload: boolean }): Promise<WorkspaceSnapshotRef> {
+  // Reusing an earlier upload still reads it back: time that too.
+  const verifyTimed = async (ref: WorkspaceSnapshotRef) => {
+    if (input.timing) input.timing.bytes = ref.byteSize;
+    await timedStep(input.timing, "verifyMs", "storage.snapshot.verify", () => verify(ref));
+  };
   const [row] = await input.db.select().from(executionWorkspaceSnapshots).where(scope(input));
   if (!row) failure("missing");
   if (input.unpublishedRecapture && row!.sourceOperationId !== input.unpublishedRecapture.sourceOperationId) failure("operation_binding_changed");
   if (["uploaded", "committed", "superseded"].includes(row!.status)) {
     const saved = reference(row!);
     if (saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
-    await verify(saved); return saved;
+    await verifyTimed(saved); return saved;
   }
   if (row!.status !== "pending" || !/^[a-f0-9]{64}$/.test(input.manifestDigest)) failure("not_writable");
   const recapture = Boolean(input.unpublishedRecapture);
@@ -257,7 +262,7 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
     if (!winning || !["uploaded", "committed", "superseded"].includes(winning.status)) failure("publication_changed");
     const saved = reference(winning!);
     if (!recapture && saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
-    if (saved.objectKey !== attempt.objectKey) await verify(saved);
+    if (saved.objectKey !== attempt.objectKey) await verifyTimed(saved);
     return saved;
   };
   // Recover a completed upload even when the previous process lost its reply
@@ -269,7 +274,7 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
       const ref = { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef;
       validateReference(ref);
       if ((await input.storage.headObject(ref.companyId, ref.objectKey, { signal: input.signal })).exists) {
-        await verify(ref); return attempt;
+        await verifyTimed(ref); return attempt;
       }
     }
     return null;

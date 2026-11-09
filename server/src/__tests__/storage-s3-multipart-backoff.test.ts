@@ -1,4 +1,4 @@
-import { CreateMultipartUploadCommand, UploadPartCommand, S3Client } from "@aws-sdk/client-s3";
+import { AbortMultipartUploadCommand, CreateMultipartUploadCommand, UploadPartCommand, S3Client } from "@aws-sdk/client-s3";
 import type { Readable } from "node:stream";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -54,6 +54,38 @@ describe("file-backed S3 multipart backoff schedule", () => {
       expect(stats.requests).toBe(12);
     } finally {
       random.mockRestore(); send.mockRestore(); client.destroy();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("file-backed S3 multipart request statistics", () => {
+  it("counts the throttled send that exhausts the attempts and the cleanup abort", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pc-s3-stats-"));
+    const file = path.join(dir, "source.bin"), size = 3 * 8 * 1024 * 1024;
+    await fs.writeFile(file, Buffer.alloc(size, 7), { mode: 0o600 });
+    const client = new S3Client({ region: "us-east-1" });
+    const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
+      if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload" };
+      if (command instanceof UploadPartCommand) {
+        (command.input.Body as Readable).resume();
+        if (command.input.PartNumber === 1) throw slowDown();
+        return { ETag: `part-${command.input.PartNumber}` };
+      }
+      return {};
+    });
+    const stats = newStorageRequestStats();
+    try {
+      await expect(collectStorageRequestStats(stats, () => putS3MultipartFile(client, "bucket", "key", { objectKey: "key",
+        contentType: "application/octet-stream", contentLength: size, body: Buffer.alloc(0), sourceFile: file }))).rejects.toThrow();
+      // Every rate-limited send counts, including the one that ends the retries.
+      expect(stats.throttled).toBe(THROTTLED_PART_ATTEMPTS);
+      const aborts = send.mock.calls.filter(([command]) => command instanceof AbortMultipartUploadCommand).length;
+      expect(aborts).toBe(1);
+      const sent = send.mock.calls.length;
+      expect(stats.requests).toBe(sent);
+    } finally {
+      send.mockRestore(); client.destroy();
       await fs.rm(dir, { recursive: true, force: true });
     }
   });

@@ -61,10 +61,26 @@ export function recordStoragePart(): void {
   if (stats) stats.parts += 1;
 }
 
-/** Records a wait before resending a part; `throttled` when the backend limited the rate. */
-export function recordStorageBackoff(waitMs: number, throttled: boolean): void {
+/** Records a part send the backend rate-limited (503, 429, SlowDown), including a final one. */
+export function recordStorageThrottle(): void {
   const stats = current.getStore();
-  if (!stats) return;
-  stats.backoffMs += count(waitMs, 0);
-  if (throttled) stats.throttled += 1;
+  if (stats) stats.throttled += 1;
+}
+
+/** Records a wait before resending a part. */
+export function recordStorageBackoff(waitMs: number): void {
+  const stats = current.getStore();
+  if (stats) stats.backoffMs += count(waitMs, 0);
+}
+
+/** Counts a request sent outside the failure-diagnostics wrapper (cleanup), keeping its error handling. */
+export async function withStorageRequestStats<T>(send: () => Promise<T>): Promise<T> {
+  try {
+    const result = await send();
+    recordStorageRequest(result, false);
+    return result;
+  } catch (error) {
+    recordStorageRequest(error, true);
+    throw error;
+  }
 }

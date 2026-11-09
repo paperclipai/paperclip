@@ -88,6 +88,14 @@ suite("remote workspace snapshot storage", () => {
       bytes: ref.byteSize });
   });
 
+  it("times the read-back of an earlier upload that a retried save reuses", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    const retry = newWorkspaceSnapshotStorageTiming();
+    await uploadWorkspaceSnapshot({ ...f.upload, timing: retry });
+    expect(retry).toMatchObject({ verifyMs: expect.any(Number), bytes: ref.byteSize });
+    expect(retry.putMs).toBeUndefined();
+  });
+
   it("preserves multi-chunk archive bytes through encryption, authenticated readback, and cold restore", async () => {
     const content = randomBytes(3 * 1024 * 1024 + 137), f = await fixture(content);
     const verifiedArchivePath = path.join(root, "verified-large.pcws");
