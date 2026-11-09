@@ -393,6 +393,7 @@ import {
   resolveIssueReviewRequester,
 } from "../services/issue-review-policy.js";
 import {
+  addressedHumanOnlyDenialMessage,
   evaluateIssueThreadInteractionResolverAudience,
   issueThreadInteractionAttentionAgentAllowed,
   type IssueThreadInteractionResolverAudienceDecision,
@@ -6009,6 +6010,16 @@ export function issueRoutes(
     return false;
   }
 
+  /** The addressee's display name, so a denial relayed in chat can name who resolves the card. */
+  async function addresseeDisplayName(userId: string) {
+    try {
+      const [row] = await db.select({ name: authUsers.name }).from(authUsers).where(eq(authUsers.id, userId)).limit(1);
+      return typeof row?.name === "string" && row.name.trim() ? row.name.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+
   function denyIssueThreadInteractionResolution(
     res: Response,
     input: {
@@ -6205,13 +6216,18 @@ export function issueRoutes(
             payload?.secretProposal !== undefined),
       });
     if (!decision.allowed) {
+      const addresseeUserId = decision.code === "interaction_human_only" && typeof decision.details?.addresseeUserId === "string"
+        ? decision.details.addresseeUserId
+        : null;
+      const addresseeName = addresseeUserId ? await addresseeDisplayName(addresseeUserId) : null;
       return denyIssueThreadInteractionResolution(res, {
         status: decision.status,
         code: decision.code,
-        message: decision.message,
+        message: addresseeName ? addressedHumanOnlyDenialMessage(addresseeName) : decision.message,
         details: {
           effectiveResolverPolicy: decision.effectiveResolverPolicy,
           ...(decision.details ?? {}),
+          ...(addresseeName ? { addresseeName } : {}),
         },
       });
     }
