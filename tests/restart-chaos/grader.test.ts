@@ -238,6 +238,14 @@ describe("T-oracles", () => {
     expect(stallWakeChecks({ ...stalled, childStalls: [] } as never)).toEqual([]);
   });
 
+  it("grades a Retry the user could not click in the board UI under its own R3 signature", () => {
+    const record = { plan: { workload: "A1" }, launchError: null, finalStatus: "blocked", timedOut: false, createdAt: 0, restAt: 1,
+      samples: [{ at: 1, reachable: true, serverReady: true, issueStatus: "blocked", interruption: { state: "failed", canRetry: true } }],
+      retry: { at: 2, observedRunId: "r1", httpStatus: null, accepted: null, error: "ui_retry_button_missing", via: "ui", bannerText: "Saving files" } } as unknown as TaskRecord;
+    expect(gradeR3(record)).toEqual({ verdict: "fail", detail: "ui_retry_button_missing (user saw: Saving files)" });
+    expect(gradeR3({ ...record, retry: { ...record.retry!, clicked: true, error: "ui_retry_no_request" } } as TaskRecord).detail).toMatch(/^ui_retry_no_request/);
+  });
+
   it("grades S1: stopped run cancelled, nothing ran before the continue comment, brief has both markers", () => {
     const base: OracleArtifacts = { issueStatus: "done", documents: { brief: "CHAOS-abcd1234\nCONTINUE-abcd1234\n- one\n- two\n- three\n" },
       agentComments: [], files: {}, commands: {}, workspacePath: null,

@@ -13,6 +13,7 @@ import type {
   TaskSample,
 } from "./types.js";
 import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
+import type { UiRetryClick } from "./board-ui.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
@@ -192,7 +193,8 @@ export class TaskObserver {
     private readonly timeline: Timeline,
     private readonly supervisor: { serverReady: boolean; faultInProgress: boolean; serverBuild?: "upgrade_from" | "current" },
     /** Paths oracle commands may not read: the operator's home, the instance root (secrets key, database) and results. */
-    private readonly protectedRoots: readonly string[] = [os.homedir()]) {
+    private readonly protectedRoots: readonly string[] = [os.homedir()],
+    private readonly board: { clickRetry(issue: string): Promise<UiRetryClick> } | null = null) {
     this.record = { plan, issueId: null, identifier: null, createdAt: null, launchError: null, samples: [], retry: null,
       restAt: null, finalStatus: null, deadlineAt: null, timedOut: false, followUp: null, faultIds: [], sweep: null,
       preFaultFiles: null, lostFiles: null };
@@ -637,16 +639,8 @@ export class TaskObserver {
       const interruption = child?.interruption as Json | null | undefined;
       if (interruption?.canRetry !== true) continue;
       const observedRunId = typeof interruption.observedRunId === "string" ? interruption.observedRunId : null;
-      const attempt: RetryAttempt & { childIssueId: string } = { childIssueId, at: now, observedRunId, httpStatus: null, accepted: null, error: null };
-      try {
-        const result = await this.api.post<{ accepted?: boolean }>(`/api/issues/${childIssueId}/retry`, { idempotencyKey: randomUUID(), observedRunId });
-        attempt.httpStatus = 200;
-        attempt.accepted = result?.accepted === true;
-        attempt.acceptedAt = Math.max(now, Date.now());
-      } catch (error) {
-        attempt.httpStatus = error instanceof ChaosApiError ? error.status : null;
-        attempt.error = error instanceof Error ? error.message : String(error);
-      }
+      const childRef = typeof child?.identifier === "string" ? child.identifier : childIssueId;
+      const attempt: RetryAttempt & { childIssueId: string } = { childIssueId, ...await this.clickRetry(childRef, childIssueId, observedRunId, now) };
       (this.record.childRetries ??= []).push(attempt);
       this.timeline.add("task_child_retry_clicked", { taskId: this.plan.taskId, ...attempt });
       clicked = clicked || attempt.accepted === true;
@@ -665,10 +659,22 @@ export class TaskObserver {
 
   private async retry(sample: TaskSample, now: number): Promise<RetryAttempt> {
     const observedRunId = sample.interruption?.observedRunId ?? (this.issue?.executionBlocker?.runId as string | undefined) ?? null;
+    const attempt = await this.clickRetry(this.record.identifier ?? this.record.issueId!, this.record.issueId!, observedRunId, now);
+    this.timeline.add("task_retry_clicked", { taskId: this.plan.taskId, ...attempt });
+    return attempt;
+  }
+
+  private async clickRetry(issueRef: string, issueId: string, observedRunId: string | null, now: number): Promise<RetryAttempt> {
     const attempt: RetryAttempt = { at: now, observedRunId, httpStatus: null, accepted: null, error: null };
+    if (this.board) {
+      const click = await this.board.clickRetry(issueRef);
+      Object.assign(attempt, { via: "ui", httpStatus: click.httpStatus, accepted: click.accepted, error: click.error, bannerText: click.bannerText });
+      if (click.accepted) attempt.acceptedAt = Math.max(now, Date.now());
+      return attempt;
+    }
+    attempt.via = "api";
     try {
-      const result = await this.api.post<{ accepted?: boolean }>(`/api/issues/${this.record.issueId}/retry`,
-        { idempotencyKey: randomUUID(), observedRunId });
+      const result = await this.api.post<{ accepted?: boolean }>(`/api/issues/${issueId}/retry`, { idempotencyKey: randomUUID(), observedRunId });
       attempt.httpStatus = 200;
       attempt.accepted = result?.accepted === true;
       attempt.acceptedAt = Math.max(now, Date.now());
@@ -676,7 +682,6 @@ export class TaskObserver {
       attempt.httpStatus = error instanceof ChaosApiError ? error.status : null;
       attempt.error = error instanceof Error ? error.message : String(error);
     }
-    this.timeline.add("task_retry_clicked", { taskId: this.plan.taskId, ...attempt });
     return attempt;
   }
 

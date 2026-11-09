@@ -47,6 +47,15 @@ describe("scheduler determinism", () => {
     expect(single.options.workloads).not.toContain("M1");
     expect(both.options.workloads).toContain("M1");
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "M1"])).toThrow(/two agents/);
+    const stored = parseCommand(["--storage", "s3", "--seed", "5"]);
+    if (stored.mode !== "wave") throw new Error("expected a wave");
+    expect(stored.options.storage).toBe("s3");
+    expect(both.options.storage).toBeUndefined();
+    expect(() => parseCommand(["--storage", "gcs"])).toThrow(/local or s3/);
+    const faulted = parseCommand(["--storage", "s3", "--storage-faults", "ST1,ST3", "--seed", "5"]);
+    if (faulted.mode !== "wave") throw new Error("expected a wave");
+    expect(faulted.options.storageFaults).toEqual(["ST1", "ST3"]);
+    expect(() => parseCommand(["--storage-faults", "ST1"])).toThrow(/needs --storage s3/);
     expect(() => parseCommand(["--k4-hold-max-seconds", "601"])).toThrow(/between 120 and 600/);
     expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
   });

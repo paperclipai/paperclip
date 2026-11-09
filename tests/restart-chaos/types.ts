@@ -73,6 +73,8 @@ export interface WaveOptions {
    */
   upgradeFrom?: string;
   workspaceRepo?: string;
+  storage?: "s3";
+  storageFaults?: Array<"ST1" | "ST2" | "ST3">;
   workspaceCommit?: string;
 }
 
@@ -183,7 +185,12 @@ export interface RetryAttempt {
   httpStatus: number | null;
   accepted: boolean | null;
   error: string | null;
+  via?: "ui" | "api";
+  bannerText?: string | null;
 }
+
+export const UI_RETRY_BUTTON_MISSING = "ui_retry_button_missing";
+export const UI_RETRY_NO_REQUEST = "ui_retry_no_request";
 
 export interface FaultReceipt {
   faultId: string;

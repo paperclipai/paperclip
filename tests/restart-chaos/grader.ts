@@ -1,4 +1,4 @@
-import type { FaultReceipt, OracleResult, RuleId, RuleResult, TaskGrade, TaskRecord, TaskSample } from "./types.js";
+import { UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
 import { g1Decision } from "./workloads.js";
 
 /** Pure R1–R6 grading over observer samples (plan §2). No I/O. */
@@ -107,6 +107,9 @@ function gradeOwnRetry(record: TaskRecord): RuleResult {
       return { verdict: "fail", detail: `missing_retry: rested ${record.finalStatus ?? "unknown"} with canRetry=${String(last?.interruption?.canRetry ?? false)}` };
     }
     return { verdict: "n/a", detail: "no Retry needed" };
+  }
+  if (record.retry.via === "ui" && (record.retry.error === UI_RETRY_BUTTON_MISSING || record.retry.error === UI_RETRY_NO_REQUEST)) {
+    return { verdict: "fail", detail: `${record.retry.error}${record.retry.bannerText ? ` (user saw: ${record.retry.bannerText})` : ""}` };
   }
   if (record.retry.error || record.retry.accepted !== true) {
     return { verdict: "fail", detail: `retry_rejected: http=${record.retry.httpStatus ?? "none"} accepted=${String(record.retry.accepted)} ${record.retry.error ?? ""}`.trim() };

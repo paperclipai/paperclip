@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { STORAGE_FAULT_KINDS } from "./storage-chaos.js";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
@@ -98,13 +99,15 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "crash-point-hold-ms": { type: "string" },
       "upgrade-from": { type: "string" },
       "workspace-repo": { type: "string" },
+      storage: { type: "string" },
+      "storage-faults": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -203,6 +206,13 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       throw new Error(`--concurrency ${options.concurrency} × --daytona-cpu ${options.daytonaCpu} vCPU exceeds the Daytona vCPU budget of ${budget} `
         + "for chaos tasks. Lower one of them (RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).");
     }
+  }
+  const storage = values.storage ?? "local";
+  if (storage !== "local" && storage !== "s3") throw new Error("--storage must be local or s3");
+  if (storage === "s3") options.storage = "s3";
+  if (values["storage-faults"] !== undefined) {
+    if (storage !== "s3") throw new Error("--storage-faults needs --storage s3");
+    options.storageFaults = list<"ST1" | "ST2" | "ST3">(values["storage-faults"], STORAGE_FAULT_KINDS, "storage-faults", []);
   }
   return { mode: "wave", options, keep };
 }

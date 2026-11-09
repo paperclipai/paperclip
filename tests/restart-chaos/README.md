@@ -161,6 +161,36 @@ receipt names both commits (`upgrade` in `faults.json`, `upgrade_switched` in th
 timeline). K14 is local-only, because a Daytona runner must match its image, and
 it is never part of a storm's default faults.
 
+## Cloud storage (`--storage s3`, `--storage-faults`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads A1,C1 --faults K1,K2 --concurrency 4 --tasks 8 --seed 24 \
+  --storage s3 --storage-faults ST1,ST2,ST3
+```
+
+`--storage s3` runs the server the way cloud mode does: `PAPERCLIP_STORAGE_PROVIDER=s3`, so run logs
+and provider traces use the `s3_segments` backend and attachments, artifacts and other stored files go
+to object storage. The store is a loopback MinIO (`RELEASE.2025-04-22T22-12-26Z`, built from source at
+`~/.cache/paperclip/tools/minio/minio` or `RESTART_CHAOS_MINIO_BIN`) with its data under the instance
+temp root, behind a fault proxy that every server S3 call goes through. The proxy's request counts by
+method and status are written to `storage-proxy.json`.
+
+`--storage-faults` adds seeded windows of 60–180 s, alongside the restart faults:
+
+| Fault | Store behaviour during the window |
+| --- | --- |
+| ST1 | outage: every request answers 503 `ServiceUnavailable` |
+| ST2 | slow store: 1–10 s added latency with jitter |
+| ST3 | 30% of requests answer 503, half of them `SlowDown` |
+
+The windows are logged in the timeline and written to `storage-faults.json`.
+
+Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
+Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
+R3 as `ui_retry_button_missing (user saw: …)`; a click that sends no retry request fails as
+`ui_retry_no_request`. Crash-point waves serve no UI and click Retry through the API.
+
 ## Daytona (`--env daytona`)
 
 The control plane stays local; agent runs execute in Daytona sandboxes from an
