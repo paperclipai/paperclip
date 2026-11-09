@@ -2622,9 +2622,14 @@ export function agentRoutes(
     throw forbidden("Agent keys cannot configure host-executed process adapters.");
   }
 
+  // External adapters that spawn a host process but do not use the `_local`
+  // type suffix; they must stay behind the same agent-key guard.
+  const HOST_EXECUTING_ADAPTER_TYPES = new Set(["paperclip_runner", "bob_shell"]);
+
   const LOCAL_ADAPTER_HOST_COMMAND_KEYS = [
     "command",
     "hermesCommand",
+    "bobCommand",
     "args",
     "extraArgs",
     "cwd",
@@ -2670,7 +2675,7 @@ export function agentRoutes(
     allowPlainCredentials = false,
     harnessConfig = adapterConfig,
   ) {
-    if (req.actor.type !== "agent" || (!adapterType.endsWith("_local") && adapterType !== "paperclip_runner")) return;
+    if (req.actor.type !== "agent" || (!adapterType.endsWith("_local") && !HOST_EXECUTING_ADAPTER_TYPES.has(adapterType))) return;
     const harness = agentHarnessType(adapterType, harnessConfig);
     const changedKeys = LOCAL_ADAPTER_HOST_COMMAND_KEYS.filter((key) =>
       adapterConfig[key] !== undefined &&

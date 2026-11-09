@@ -991,6 +991,10 @@ describe("agent permission routes", () => {
     ["hermes_local", { hermesCommand: "/tmp/untrusted" }],
     ["gemini_local", { cwd: "/tmp" }],
     ["opencode_local", { filesystemSandboxCommand: "/tmp/untrusted" }],
+    ["bob_shell", { bobCommand: "/tmp/untrusted" }],
+    ["bob_shell", { extraArgs: ["--unsafe"] }],
+    ["bob_shell", { cwd: "/tmp" }],
+    ["bob_shell", { env: { PATH: "/tmp" } }],
   ])("blocks agent-authenticated host settings for %s", async (adapterType, adapterConfig) => {
     mockAgentService.getById.mockResolvedValue({ ...baseAgent, adapterType });
     const app = await createApp({

@@ -4,21 +4,47 @@
  * Verifies that `bob` CLI is installed and accessible.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
   AdapterEnvironmentCheck,
 } from "@paperclipai/adapter-utils";
-import { ensurePathInEnv } from "@paperclipai/adapter-utils/server-utils";
+import {
+  ensureCommandResolvable,
+  ensurePathInEnv,
+  runChildProcess,
+} from "@paperclipai/adapter-utils/server-utils";
 import { ADAPTER_TYPE } from "../shared/constants.js";
 import { resolveBobCommand } from "./execute.js";
 
-const execFileAsync = promisify(execFile);
-
-/** Inherited process environment with a guaranteed non-empty PATH. */
-const ENV_WITH_PATH = ensurePathInEnv({ ...process.env });
+/**
+ * Environment and working directory used to probe the CLI. They mirror what
+ * `execute` uses for real runs so the probe resolves `bobCommand` the same way.
+ * The probe never goes through a shell: `runChildProcess` spawns with
+ * `shell: false` (and wraps `.cmd`/`.bat` shims in `cmd.exe` with quoting), so
+ * a configured `bobCommand` cannot inject shell syntax.
+ */
+function probeContext(config: Record<string, unknown>): {
+  cwd: string;
+  env: Record<string, string>;
+} {
+  const userEnv =
+    config.env && typeof config.env === "object"
+      ? Object.fromEntries(
+          Object.entries(config.env as Record<string, unknown>).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        )
+      : {};
+  const cwd =
+    typeof config.cwd === "string" && config.cwd.trim().length > 0
+      ? config.cwd.trim()
+      : process.cwd();
+  return {
+    cwd,
+    env: ensurePathInEnv({ ...process.env, ...userEnv }) as Record<string, string>,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Individual checks
@@ -26,39 +52,41 @@ const ENV_WITH_PATH = ensurePathInEnv({ ...process.env });
 
 async function checkCliInstalled(
   command: string,
+  config: Record<string, unknown>,
 ): Promise<AdapterEnvironmentCheck | null> {
+  const { cwd, env } = probeContext(config);
   try {
-    await execFileAsync(command, ["--version"], {
-      timeout: 10_000,
-      env: ENV_WITH_PATH,
-      shell: process.platform === "win32",
-    });
+    await ensureCommandResolvable(command, cwd, env);
     return null; // OK
-  } catch (err: unknown) {
-    const e = err as NodeJS.ErrnoException;
-    if (e.code === "ENOENT") {
-      return {
-        level: "error",
-        message: `IBM Bob CLI "${command}" not found in PATH`,
-        hint: "Install IBM Bob and ensure the `bob` binary is in your PATH. See https://bob.ibm.com/docs/shell/getting-started/install-bobshell",
-        code: "bob_cli_not_found",
-      };
-    }
-    // Command exists but returned non-zero (e.g. license not accepted yet)
-    return null;
+  } catch {
+    return {
+      level: "error",
+      message: `IBM Bob CLI "${command}" not found in PATH`,
+      hint: "Install IBM Bob and ensure the `bob` binary is in your PATH. See https://bob.ibm.com/docs/shell/getting-started/install-bobshell",
+      code: "bob_cli_not_found",
+    };
   }
 }
 
 async function checkCliVersion(
   command: string,
+  config: Record<string, unknown>,
 ): Promise<AdapterEnvironmentCheck | null> {
+  const { cwd, env } = probeContext(config);
   try {
-    const { stdout, stderr } = await execFileAsync(command, ["--version"], {
-      timeout: 10_000,
-      env: ENV_WITH_PATH,
-      shell: process.platform === "win32",
-    });
-    const version = (stdout || stderr).trim();
+    const result = await runChildProcess(
+      `bob-shell-probe-${Date.now()}`,
+      command,
+      ["--version"],
+      {
+        cwd,
+        env,
+        timeoutSec: 10,
+        graceSec: 2,
+        onLog: async () => {},
+      },
+    );
+    const version = (result.stdout || result.stderr).trim();
     if (version) {
       return {
         level: "info",
@@ -141,14 +169,16 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
 
   // 1. Is the CLI installed?
-  const cliCheck = await checkCliInstalled(command);
+  const cliCheck = await checkCliInstalled(command, config);
   if (cliCheck) {
     checks.push(cliCheck);
   }
 
-  // 2. What version?
-  const versionCheck = await checkCliVersion(command);
-  if (versionCheck) checks.push(versionCheck);
+  // 2. What version? (only meaningful when the CLI was found)
+  if (!cliCheck) {
+    const versionCheck = await checkCliVersion(command, config);
+    if (versionCheck) checks.push(versionCheck);
+  }
 
   // 3. Workspace configuration
   const wsCheck = checkWorkspace(config);
