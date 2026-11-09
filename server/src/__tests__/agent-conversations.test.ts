@@ -1023,6 +1023,12 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("npx paperclipai issue document:get <task id or identifier> <key> --json | jq -r .body > <file name>");
   });
 
+  it("answers a person's inbox question from their Mine list and links Mine", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("GET /api/agents/me/inbox/mine?userId=<their user id>, using the authorUserId of their message");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("your own queue and a company-wide task search are not their inbox");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("[Mine](/<prefix>/inbox/mine)");
+  });
+
   it("tells chat where a person can hire when the agent cannot", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("send the person to the hire form at /<prefix>/agents/new");
     expect(AGENT_CHAT_DIRECTIVE).toContain("to your own /permissions page, where they can turn on hiring for you");

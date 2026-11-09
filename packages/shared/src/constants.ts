@@ -1,5 +1,7 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export const ISSUE_SUMMARIES_MAX_IDS = 5;
+/** Tasks per chat bootstrap request. The list preloads larger sets in chunks. */
+export const ISSUE_CHAT_BOOTSTRAP_MAX_IDS = 10;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;

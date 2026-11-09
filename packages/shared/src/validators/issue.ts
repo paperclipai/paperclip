@@ -2,7 +2,8 @@ import { CHAT_PROVIDERS } from "../types/chat-channels.js";
 import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
 import { z } from "zod";
 import { maxStringLength } from "./text.js";
-import { ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
+import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
+import { normalizeIssueIdentifier } from "../issue-references.js";
 
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
@@ -52,6 +53,28 @@ export const issueSummariesQuerySchema = z.object({
   ids: z.string().transform((value) => value.split(",").map((id) => id.trim().toLowerCase()))
     .pipe(z.array(z.string().guid()).min(1).max(ISSUE_SUMMARIES_MAX_IDS))
     .transform((ids) => [...new Set(ids)]),
+}).strict();
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A task reference as the UI routes use it: a UUID or an identifier such as `ABC-12`. */
+function normalizeIssueRef(value: string): string | null {
+  const trimmed = value.trim();
+  if (UUID_RE.test(trimmed)) return trimmed.toLowerCase();
+  return normalizeIssueIdentifier(trimmed);
+}
+
+export const issueChatBootstrapQuerySchema = z.object({
+  ids: z.string()
+    .transform((value, ctx) => {
+      const refs = value.split(",").filter((ref) => ref.trim()).map(normalizeIssueRef);
+      if (refs.some((ref) => ref === null)) {
+        ctx.addIssue({ code: "custom", message: "Each id must be a task UUID or identifier" });
+        return z.NEVER;
+      }
+      return [...new Set(refs as string[])];
+    })
+    .pipe(z.array(z.string()).min(1).max(ISSUE_CHAT_BOOTSTRAP_MAX_IDS)),
 }).strict();
 
 export const issueBlockedInboxStateSchema = z.enum([
