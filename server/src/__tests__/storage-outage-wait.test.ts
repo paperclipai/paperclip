@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
-import { isStorageUnavailableError, retryThroughStorageOutage, waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { endStorageOutageWaitOn, isStorageUnavailableError, noteStorageAvailable, retryThroughStorageOutage, runSharedStorageWork, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import { RemoteWorkspaceRestoreError } from "../services/remote-workspace-transport.js";
 
 const OUTAGE = `<?xml version="1.0" encoding="UTF-8"?>
@@ -92,6 +92,7 @@ describe("the shared storage outage wait", () => {
     throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
   });
   const policy = { budgetMs: 200, firstDelayMs: 10, maxDelayMs: 40 };
+  beforeEach(() => noteStorageAvailable());
 
   it("retries until the store answers, within its budget", async () => {
     let calls = 0;
@@ -117,24 +118,44 @@ describe("the shared storage outage wait", () => {
     expect(isStorageUnavailableError(stopped)).toBe(false);
   });
 
-  it("shares one outage budget across a run's storage calls", async () => {
-    let calls = 0;
-    const failing = async () => { calls++; return outage(); };
-    await waitOutStorageOutages(async () => {
-      await expect(retryThroughStorageOutage(failing, undefined, policy)).rejects.toMatchObject({ name: "ServiceUnavailable" });
-      const spent = calls;
-      await waitOutStorageOutages(() => expect(retryThroughStorageOutage(failing, undefined, policy))
-        .rejects.toMatchObject({ name: "ServiceUnavailable" }));
-      expect(spent).toBeGreaterThan(4);
-      expect(calls - spent).toBeLessThan(3);
-    });
+  it("lets nested and parallel waits ride out one outage shorter than the budget", async () => {
+    const wide = { budgetMs: 600, firstDelayMs: 20, maxDelayMs: 40 };
+    const endsAt = Date.now() + 300;
+    const send = async () => (Date.now() < endsAt ? outage() : "ok");
+    const nested = () => retryThroughStorageOutage(() => retryThroughStorageOutage(send, undefined, wide), undefined, wide);
+    await expect(waitOutStorageOutages(() => Promise.all(Array.from({ length: 8 }, nested))))
+      .resolves.toEqual(Array(8).fill("ok"));
   });
 
-  it("counts time spent in failed requests against the budget", async () => {
+  it("gives up once one outage has lasted longer than the budget, however the waits overlap", async () => {
+    const startedAt = Date.now();
+    const failing = () => retryThroughStorageOutage(outage, undefined, policy);
+    const results = await Promise.allSettled(Array.from({ length: 4 }, failing));
+    expect(results.every(result => result.status === "rejected")).toBe(true);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(policy.budgetMs - policy.maxDelayMs);
+    expect(Date.now() - startedAt).toBeLessThan(policy.budgetMs * 3);
+  });
+
+  it("starts a new outage after the store answers", async () => {
+    await expect(retryThroughStorageOutage(outage, undefined, policy)).rejects.toMatchObject({ name: "ServiceUnavailable" });
+    noteStorageAvailable();
     let calls = 0;
-    const slow = async () => { calls++; await new Promise(resolve => setTimeout(resolve, 120)); return outage(); };
-    await expect(retryThroughStorageOutage(slow, undefined, policy)).rejects.toMatchObject({ name: "ServiceUnavailable" });
-    expect(calls).toBeLessThanOrEqual(2);
+    await expect(retryThroughStorageOutage(async () => (++calls < 3 ? outage() : "ok"), undefined, policy)).resolves.toBe("ok");
+  });
+
+  it("lets one run's Stop end only its own wait, not shared work another run waits on", async () => {
+    const endsAt = Date.now() + 150;
+    const wide = { budgetMs: 2_000, firstDelayMs: 20, maxDelayMs: 40 };
+    const stopA = new AbortController();
+    let shared!: Promise<string>;
+    const runA = waitOutStorageOutages(async () => {
+      endStorageOutageWaitOn(stopA.signal);
+      shared = runSharedStorageWork(() => retryThroughStorageOutage(async () => (Date.now() < endsAt ? outage() : "shared"), undefined, wide));
+      return retryThroughStorageOutage(outage, undefined, wide);
+    });
+    setTimeout(() => stopA.abort(new Error("Stopped by a board operator")), 30);
+    await expect(runA).rejects.toMatchObject({ name: "AbortError" });
+    await expect(shared).resolves.toBe("shared");
   });
 
   it("never retries a failure that is not an outage", async () => {

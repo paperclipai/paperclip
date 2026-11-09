@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
 import { recordS3BodyFailure, withS3FailureDiagnostics } from "../storage/s3-failure.js";
-import { isStorageUnavailableError, waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { endStorageOutageWaitOn, isStorageUnavailableError, noteStorageAvailable, sendThroughStorageOutage, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import {
   createObjectByteJournal,
   ObjectJournalBusyError,
@@ -71,6 +71,32 @@ const authority = async () => undefined;
 afterEach(() => vi.useRealTimers());
 
 describe("object byte journal", () => {
+  it("keeps another run's shared probe going when one run is stopped during a storage outage", async () => {
+    noteStorageAvailable();
+    const s = storage();
+    const put = s.provider.putObjectConditional!;
+    const recoversAt = Date.now() + 1_000;
+    s.provider.putObjectConditional = (input) => sendThroughStorageOutage(async () => {
+      if (input.objectKey.includes("conditional-probe-") && Date.now() < recoversAt)
+        return withS3FailureDiagnostics("put_object", async () => {
+          throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+        });
+      return put(input);
+    }, input.signal);
+    const stopA = new AbortController();
+    const claimA = waitOutStorageOutages(async () => {
+      endStorageOutageWaitOn(stopA.signal);
+      return createObjectByteJournal({ provider: s.provider, prefix: "company/a/log" })
+        .claim({ expectedOwner: null, assertAuthority: authority, signal: stopA.signal });
+    });
+    const claimB = waitOutStorageOutages(() => createObjectByteJournal({ provider: s.provider, prefix: "company/b/log" })
+      .claim({ expectedOwner: null, assertAuthority: authority }));
+    void claimA.catch(() => undefined);
+    setTimeout(() => stopA.abort(new Error("Stopped by a board operator")), 200);
+    await expect(claimA).rejects.toBeTruthy();
+    await expect(claimB).resolves.toMatchObject({ head: { generation: 1 } });
+  }, 30_000);
+
   it("rereads a head whose download was cut off during a storage outage", async () => {
     const s = storage();
     const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/reset/log" });

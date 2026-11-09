@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { sendThroughStorageOutage } from "../storage/storage-unavailable.js";
+import { runSharedStorageWork, sendThroughStorageOutage } from "../storage/storage-unavailable.js";
 import { z } from "zod";
 import { setTimeout as delay } from "node:timers/promises";
 import type { StorageProvider } from "../storage/types.js";
@@ -119,7 +119,7 @@ async function qualifyConditionalWrites(
     const probeSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
     const current: ConditionalQualification = { controller, waiters: 0, work: Promise.resolve() };
     qualification = current;
-    current.work = (async () => {
+    current.work = runSharedStorageWork(async () => {
       const objectKey = `${prefix}/conditional-probe-${randomUUID()}`;
       const body = Buffer.from("paperclip-conditional-probe-v1");
       const put = provider.putObjectConditional!.bind(provider);
@@ -165,7 +165,7 @@ async function qualifyConditionalWrites(
       }
       probeSignal.throwIfAborted();
       qualifiedProviders.add(provider);
-    })().finally(() => {
+    }).finally(() => {
       if (qualifications.get(provider) === current) qualifications.delete(provider);
     });
     qualifications.set(provider, current);
@@ -576,14 +576,14 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     let shared = readsInFlight.get(cacheKey);
     if (!shared) {
       const controller = new AbortController();
-      const work = (async () => {
+      const work = runSharedStorageWork(async () => {
         const stored = await getBytes(ref.key, MAX_OBJECT_BYTES * 2, controller.signal);
         const bytes = options.decode ? await options.decode(stored.bytes) : stored.bytes;
         if (bytes.length > MAX_OBJECT_BYTES || sha256(bytes) !== ref.sha256)
           throw new Error("object_journal_integrity_error");
         cacheObject(cacheKey, bytes);
         return bytes;
-      })();
+      });
       const entry: SharedObjectRead = { work, controller, waiters: 0 };
       const release = () => {
         if (readsInFlight.get(cacheKey) === entry) readsInFlight.delete(cacheKey);

@@ -55,33 +55,48 @@ export function isStorageUnavailableError(error: unknown): boolean {
 
 export const STORAGE_OUTAGE_WAIT = { budgetMs: 5 * 60_000, firstDelayMs: 2_000, maxDelayMs: 30_000 } as const;
 
-type OutageWaitScope = { budget: { waitedMs: number }; stop?: AbortSignal };
+const outage = { startedAt: null as number | null, lastFailureAt: 0 };
+
+export function noteStorageAvailable(): void {
+  outage.startedAt = null;
+}
+
+function outageStartedAt(now: number, policy: { maxDelayMs: number }) {
+  if (outage.startedAt === null || now - outage.lastFailureAt > 2 * policy.maxDelayMs) outage.startedAt = now;
+  outage.lastFailureAt = now;
+  return outage.startedAt;
+}
+
+type OutageWaitScope = { stop?: AbortSignal };
 const outageWaitScope = new AsyncLocalStorage<OutageWaitScope>();
 
 export function waitOutStorageOutages<T>(work: () => Promise<T>): Promise<T> {
-  return outageWaitScope.getStore() ? work() : outageWaitScope.run({ budget: { waitedMs: 0 } }, work);
+  return outageWaitScope.getStore() ? work() : outageWaitScope.run({}, work);
+}
+
+export function runSharedStorageWork<T>(work: () => Promise<T>): Promise<T> {
+  return outageWaitScope.getStore() ? outageWaitScope.run({}, work) : work();
 }
 
 export function endStorageOutageWaitOn(stop: AbortSignal): void {
   const current = outageWaitScope.getStore();
-  if (current) outageWaitScope.enterWith({ budget: current.budget, stop: current.stop ? AbortSignal.any([current.stop, stop]) : stop });
+  if (current) outageWaitScope.enterWith({ stop: current.stop ? AbortSignal.any([current.stop, stop]) : stop });
 }
 
 export async function retryThroughStorageOutage<T>(send: () => Promise<T>, signal?: AbortSignal,
   policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number } = STORAGE_OUTAGE_WAIT): Promise<T> {
-  const scope = outageWaitScope.getStore();
-  const budget = scope?.budget ?? { waitedMs: 0 };
-  const stop = signal && scope?.stop ? AbortSignal.any([signal, scope.stop]) : signal ?? scope?.stop;
+  const scopeStop = outageWaitScope.getStore()?.stop;
+  const stop = signal && scopeStop ? AbortSignal.any([signal, scopeStop]) : signal ?? scopeStop;
   for (let wait = policy.firstDelayMs; ; wait = Math.min(wait * 2, policy.maxDelayMs)) {
-    const sentAt = Date.now();
     try {
-      return await send();
+      const result = await send();
+      noteStorageAvailable();
+      return result;
     } catch (error) {
       if (!isStorageUnavailableError(error)) throw error;
-      budget.waitedMs += Date.now() - sentAt;
-      if (stop?.aborted || budget.waitedMs + wait > policy.budgetMs) throw error;
+      const now = Date.now();
+      if (stop?.aborted || now - outageStartedAt(now, policy) + wait > policy.budgetMs) throw error;
       recordStorageBackoff(wait);
-      budget.waitedMs += wait;
       await delay(wait, undefined, { signal: stop }).catch((interrupted: unknown) => {
         throw signal?.aborted && signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? error : interrupted;
       });
