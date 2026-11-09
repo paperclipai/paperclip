@@ -28,8 +28,9 @@ describe("catalog oracle contract", () => {
     expect(chatCatalogScenarios).toHaveLength(244);
     expect(new Set(chatCatalogScenarios.map(row => row.feature)).size).toBe(35);
     expect(new Set(chatCatalogScenarios.flatMap(row => row.capabilities)).size).toBe(191);
-    // agent-chat.chat-disabled retargeted to the Conference Room gate (Agent Chat is always on since #19360).
-    expect(chatCatalogInventoryDigest).toBe("ee2d0536501e931d41ca2d50b3c5d7796e0e90acc86805171b1526f786b0b88d");
+    // agent-chat.chat-disabled retargeted to the Conference Room gate (Agent Chat is always on since #19360);
+    // agents.restore-instructions retargeted to no saved history (instruction saves keep none since #14420).
+    expect(chatCatalogInventoryDigest).toBe("008db938efaa8285aa7a5f84accc3b33b8a2a6d5d0114000a42195a79d3c1b3b");
     for (const implementation of chatCatalogCases) expect(chatCatalogScenarios.some(row => row.id === implementation.scenarioId)).toBe(true);
   });
 });

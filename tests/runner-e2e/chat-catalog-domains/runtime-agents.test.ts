@@ -41,11 +41,13 @@ function valid(id: string): RuntimeObservation {
     ];
     o.reply = "Added the rule to Morgan's instructions for future work.";
   } else {
-    const revision = { id: "previous", agentId: "morgan", companyId: "company", source: "seed" };
+    const revision = { id: "token-previous", agentId: "morgan", companyId: "company", source: "api" };
     o.state.previousInstruction = { path: "AGENTS.md", content: "Original guidance", revision };
-    o.state.unwantedInstruction = { path: "AGENTS.md", content: "Original guidance\nNever run tests", revision: { ...revision, id: "unwanted", source: "board" } };
-    o.instruction = { path: "AGENTS.md", content: "Original guidance", revision: { ...revision, id: "restored", source: "restore", actorAgentId: "ceo", sourceRunId: "run" } };
-    o.instructionHistory = { revisions: [revision, { ...revision, id: "unwanted" }, o.instruction.revision] };
+    o.state.unwantedInstruction = { path: "AGENTS.md", content: "Original guidance\nSkip the frontend tests", revision: { ...revision, id: "token-unwanted" } };
+    o.state.historyBefore = 0;
+    o.instruction = { path: "AGENTS.md", content: "Original guidance\nSkip the frontend tests", revision: { ...revision, id: "token-unwanted" } };
+    o.instructionHistory = { revisions: [] };
+    o.reply = "Paperclip keeps no earlier versions of Morgan's instructions, so there is nothing saved to undo from. What should the instructions say, or which rule should I remove?";
     o.state.sideContent = "Keep accessibility"; o.instructionSideFile = { content: "Keep accessibility" };
   }
   return o;
@@ -68,7 +70,7 @@ describe("runtime agent oracles", () => {
       "agents.change-manager": "Morgan now reports to Riley; the reporting relationship is saved.",
       "agents.hire-denied": "Hiring is denied by my effective permissions. You can [hire Morgan from the hire form](/ACORN/agents/new).",
       "agents.edit-instructions": "Morgan's saved instructions now require relevant tests before a handoff; the guidance applies to future work.",
-      "agents.restore-instructions": "Morgan's instruction file is back at the previous saved version; the unwanted change is removed.",
+      "agents.restore-instructions": "I can't undo that: no previous version of Morgan's AGENTS.md was saved. Tell me the wording you want and I'll update it.",
     };
     for (const [id, reply] of Object.entries(replies)) { const o = valid(id); o.reply = reply; expect(gradeRuntimeAgents(o).passed, id).toBe(true); }
   });
@@ -124,18 +126,28 @@ describe("runtime agent oracles", () => {
     const o = valid("agents.hire-denied"); o.state.agentCreateProbeDeniedBy = "Agent keys cannot configure host-executed local adapter settings (command).";
     expect(gradeRuntimeAgents(o).passed).toBe(false);
   });
-  it("rejects plausible restoration prose with the unwanted content still saved", () => {
-    const o = valid("agents.restore-instructions"); o.instruction!.content += "\nNever run tests";
+  it("rejects a guessed reconstruction even when it matches the earlier text", () => {
+    const o = valid("agents.restore-instructions"); o.instruction!.content = "Original guidance";
+    o.activity = [{ id: "guess", companyId: "company", action: "agent.files_updated", entityId: "morgan", actorType: "agent", actorId: "ceo", agentId: "ceo", details: { path: "AGENTS.md", source: "tool" } }];
+    expect(gradeRuntimeAgents(o).passed).toBe(false);
+    const rewritten = valid("agents.restore-instructions"); rewritten.instruction!.content = "Original guidance";
+    expect(gradeRuntimeAgents(rewritten).passed).toBe(false);
+  });
+  it("rejects an agent write that leaves the bytes unchanged", () => {
+    const o = valid("agents.restore-instructions");
+    o.activity = [{ id: "rewrite", companyId: "company", action: "agent.files_updated", entityId: "morgan", actorType: "agent", actorId: "ceo", agentId: "ceo", details: { path: "AGENTS.md", source: "tool" } }];
     expect(gradeRuntimeAgents(o).passed).toBe(false);
   });
-  it("rejects restoration that erased history", () => {
-    const o = valid("agents.restore-instructions"); o.instructionHistory!.revisions = [o.instruction!.revision];
-    expect(gradeRuntimeAgents(o).passed).toBe(false);
+  it("rejects a fabricated history row, a changed side file or changed configuration", () => {
+    const fabricated = valid("agents.restore-instructions"); fabricated.instructionHistory!.revisions = [fabricated.instruction!.revision];
+    expect(gradeRuntimeAgents(fabricated).passed).toBe(false);
+    const side = valid("agents.restore-instructions"); side.instructionSideFile = { content: "rewritten" }; expect(gradeRuntimeAgents(side).passed).toBe(false);
+    const config = valid("agents.restore-instructions"); config.agents[1] = { ...config.agents[1]!, adapterConfig: { instructionsEntryFile: "OTHER.md" } };
+    expect(gradeRuntimeAgents(config).passed).toBe(false);
   });
-  it("rejects a restoration attributed to another run", () => {
-    const o = valid("agents.restore-instructions"); o.instruction!.revision.sourceRunId = "other-run";
-    expect(gradeRuntimeAgents(o).passed).toBe(false);
-  });
+  it("rejects a run whose setup found recorded history (the retired contract)", () => {
+    const o = valid("agents.restore-instructions"); o.state.historyBefore = 2; expect(gradeRuntimeAgents(o).passed).toBe(false);
+});
 });
 
 it("rejects an instruction edit that overwrote concurrent human guidance", () => {
@@ -196,11 +208,3 @@ it("rejects an unrelated API route offered as an instruction revision result", (
   expect(gradeRuntimeAgents(o).passed).toBe(false);
 });
 
- it("restoration accepts content-addressed identity and ordinary source labels with real visible restoration history", () => {
-  const o = valid("agents.restore-instructions");
-  const restored = { ...o.instruction!.revision, id: "previous", source: "api" };
-  o.instruction!.revision = restored;
-  o.instructionHistory!.revisions[2] = restored;
-  expect(gradeRuntimeAgents(o).passed).toBe(true);
-  o.instructionHistory!.revisions.pop(); expect(gradeRuntimeAgents(o).passed).toBe(false);
- });
