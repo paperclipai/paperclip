@@ -108,11 +108,11 @@ it("accepts a redacted call_api read of the routine runs and a link to the block
   o.leadEvents = call({ operationId: "GET /api/companies/{companyId}/routines", pathParams: { companyId: "company" } });
   expect(gradeRoutineAudit(o).passed).toBe(true);
   for (const input of [{ operationId: "GET /api/routines/{id}/runs", pathParams: { id: "routine" } }, { operationId: "GET /api/routines/{id}", pathParams: { id: "routine" } },
-    { operationId: "GET /api/routines/{id}/runs", pathParams: { id: "routine" }, query: { limit: 50 } }, { operationId: "GET /api/routines/{id}/runs", pathParams: { id: "routine" }, query: { limit: "10" } },
+    { operationId: "GET /api/routines/{id}/runs", pathParams: { id: "routine" }, query: { limit: 50 } }, { operationId: "GET /api/routines/{id}/runs", pathParams: { id: "routine" }, query: { limit: "10" } }, { operationId: "GET /api/routines/{id}/runs", pathParams: { id: "routine" }, query: { limit: 1000 } }, { operationId: "GET /api/routines/{id}/runs", pathParams: { id: "routine" }, query: { limit: 0 } },
     { operationId: "GET /api/companies/{companyId}/routines" }, { operationId: "GET /api/companies/{companyId}/routines", pathParams: {}, query: {} }]) { const v = structuredClone(o); v.leadEvents = call(input); expect(gradeRoutineAudit(v).passed).toBe(true); }
   for (const input of [{ operationId: "GET /api/routines/{id}/revisions", pathParams: { id: "routine" } }, { operationId: "GET /api/routines/{id}/runs", pathParams: { id: "other-routine" } },
     { operationId: "GET /api/companies/{companyId}/routines", pathParams: { companyId: "company" }, query: { projectId: "unrelated" } },
-    { operationId: "GET /api/routines/{id}/runs", pathParams: { id: "routine" }, query: { limit: 0 } }, { operationId: "GET /api/companies/{companyId}/routines", pathParams: { companyId: "other-company" } }]) { const v = structuredClone(o); v.leadEvents = call(input); expect(gradeRoutineAudit(v).passed).toBe(false); }
+    { operationId: "GET /api/routines/{id}/runs", pathParams: { id: "other-routine" }, query: { limit: 50 } }, { operationId: "GET /api/companies/{companyId}/routines", pathParams: { companyId: "other-company" } }]) { const v = structuredClone(o); v.leadEvents = call(input); expect(gradeRoutineAudit(v).passed).toBe(false); }
   const failedRead = structuredClone(o); failedRead.leadEvents = call({ operationId: "GET /api/companies/{companyId}/routines", pathParams: { companyId: "company" } }, 403); expect(gradeRoutineAudit(failedRead).passed).toBe(false);
   const otherTask = structuredClone(o); otherTask.links = ["/RUN/issues/RUN-2"]; expect(gradeRoutineAudit(otherTask).passed).toBe(false);
 });
