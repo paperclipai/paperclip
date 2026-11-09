@@ -375,6 +375,35 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect((await git("-C", "repo", "commit", "--allow-empty", "-m", "Managed work")).posts).toBe(1);
     expect((await git("-C", "repo", "log", "-1", "--format=%an <%ae>")).stdout).toBe("Managed <managed@example.test>");
   }, 20_000);
+  it("names a caller-set token it ignores without printing its value", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-ignored-token-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real");
+    await mkdir(bin); await mkdir(realBin);
+    for (const name of ["git", "gh"]) await writeFile(path.join(bin, name), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(realBin, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");', { mode: 0o700 });
+    const server = createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: "managed-token" } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const managed = { ...process.env, ...githubBrokerEnvironment({ GH_TOKEN: "host-token" }, { url: `http://127.0.0.1:${port}`, token: "run-capability" }),
+      PATH: `${bin}:${realBin}:${process.env.PATH}` };
+    const run = (program: string, args: string[], extra: Record<string, string>) =>
+      exec(path.join(bin, program), args, { cwd: root, env: { ...managed, ...extra } });
+
+    const callerSet = await run("gh", ["api", "user"], { GH_TOKEN: "caller-token", GITHUB_TOKEN: "caller-token-2", GH_ENTERPRISE_TOKEN: "" });
+    expect(callerSet.stdout).toBe("managed-token");
+    expect(callerSet.stderr).toBe("Paperclip: GitHub ignored caller-set GH_TOKEN, GITHUB_TOKEN; managed git and gh use only the GitHub connection's credential.\n");
+    const enterprise = await run("gh", ["api", "user"], { GITHUB_ENTERPRISE_TOKEN: "caller-token" });
+    expect(enterprise.stderr).toContain("ignored caller-set GITHUB_ENTERPRISE_TOKEN;");
+    for (const result of [callerSet, enterprise]) expect(result.stderr).not.toMatch(/caller-token|host-token|managed-token|run-capability/);
+
+    expect((await run("gh", ["api", "user"], {})).stderr).toBe("");
+    expect((await run("git", ["--version"], { GH_TOKEN: "caller-token" })).stderr).toBe("");
+  });
 });
 
 it("captures the current task broker file once per invocation and never falls back to inherited authority", async () => {

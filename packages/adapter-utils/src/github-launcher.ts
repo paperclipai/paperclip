@@ -76,6 +76,7 @@ ${options.brokerFile ? String.raw`
     authorReady = true;
   } catch { diagnostic('configuration_directory_unavailable'); }
   {
+    const ignoredTokens = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'].filter(key => env[key]);
     for (const key of Object.keys(env)) {
       if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
     }
@@ -91,6 +92,9 @@ ${options.brokerFile ? String.raw`
     });
     const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
     const askBroker = !isLocalGit(process.argv.slice(2));
+    if (askBroker && ignoredTokens.length) {
+      process.stderr.write('Paperclip: GitHub ignored caller-set ' + ignoredTokens.join(', ') + "; managed git and gh use only the GitHub connection's credential.\n");
+    }
     try {
     let response;
     if (askBroker && base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
