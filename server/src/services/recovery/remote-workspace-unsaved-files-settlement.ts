@@ -22,16 +22,16 @@ export async function settlePreparationOnlyRemoteWorkspaceEpoch(db: Db, record: 
       runnerInstanceId: heartbeatRuns.runnerInstanceId })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId))).for("update");
     if (!run || !TERMINAL_RUN_STATUSES.includes(run.status)) return { settled: false, reason: "owner_run_active" };
-    if (run.runtimeModeResolvedAt || run.executionStage !== "preparing") return { settled: false, reason: "writer_reached_runtime" };
+    if (run.runtimeModeResolvedAt || run.executionStage !== "preparing") return { settled: false, reason: "writer_reached_runtime", watch: false };
     const [finalization] = await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
       .where(and(eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, runId))).limit(1);
     if (finalization || run.processPid || run.processGroupId || run.nativeSessionId || run.runnerInstanceId) {
-      return { settled: false, reason: "writer_reached_runtime" };
+      return { settled: false, reason: "writer_reached_runtime", watch: false };
     }
     const [workStarted] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
       eq(heartbeatRunEvents.runId, runId), or(inArray(heartbeatRunEvents.eventType, WORK_STARTED_EVENT_TYPES),
         ...WORK_STARTED_EVENT_PREFIXES.map(prefix => like(heartbeatRunEvents.eventType, `${prefix}%`))))).limit(1);
-    if (workStarted) return { settled: false, reason: "writer_reached_runtime" };
+    if (workStarted) return { settled: false, reason: "writer_reached_runtime", watch: false };
     const [workspace] = await tx.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
       .where(and(eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, record.recordId)));
     const authority = readRemoteWorkspaceAuthority(workspace?.metadata);

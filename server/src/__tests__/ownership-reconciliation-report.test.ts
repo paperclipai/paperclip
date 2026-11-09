@@ -491,6 +491,8 @@ describe("report-only ownership reconciliation", () => {
     expect(after.preparing).toMatchObject({ epoch: 2, dirty: false, writerRunId: null, location: null, snapshotId: null });
     for (const kept of ["resolved", "executing", "live", "saving", "invoked", "spawned"] as const)
       expect(after[kept], kept).toMatchObject({ epoch: 1, dirty: true, writerRunId: runs[kept] });
+    const unsavedFiles = OWNABLE_KINDS.find(kind => kind.id === "remote_workspace_unsaved_files")!;
+    expect((await recheckSettlingKinds(db, { kinds: [unsavedFiles] })).watched).toBe(2);
     const [abandoned] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceFor.preparing));
     expect(abandoned.metadata?.remoteWorkspaceAbandonedEpochs).toEqual([expect.objectContaining({ epoch: 1, runId: runs.preparing })]);
   });
