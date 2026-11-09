@@ -344,6 +344,15 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "teams.install-team",
     "sourceFiles"
+  ],
+  // Outcome definitions revised with their structural graders on the chat-eval candidate.
+  [
+    "agents.edit-instructions",
+    "expectedOutcome"
+  ],
+  [
+    "documents-artifacts.revise-delivery",
+    "expectedOutcome"
   ]
 ]);
   for (const change of repair.changedFields) {
