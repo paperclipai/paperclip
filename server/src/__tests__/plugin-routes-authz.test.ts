@@ -1243,3 +1243,96 @@ describe("operator-hidden plugin management floor", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
   }, 20_000);
 });
+
+describe("plugin health worker status check", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockReadyManifestPlugin() {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      lastError: null,
+      manifestJson: {
+        id: "paperclip.example",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Example",
+        description: "Example",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: [],
+        entrypoints: { worker: "dist/worker.js" },
+      },
+    });
+  }
+
+  it("reports healthy: true with a passing worker check when the worker is running", async () => {
+    mockReadyManifestPlugin();
+    const workerManager = {
+      getWorker: vi.fn(() => ({
+        status: "running",
+        diagnostics: () => ({
+          pluginId,
+          status: "running",
+          pid: 1234,
+          uptime: 500,
+          consecutiveCrashes: 0,
+          totalCrashes: 0,
+          pendingRequests: 0,
+          lastCrashAt: null,
+          nextRestartAt: null,
+        }),
+      })),
+    };
+    const { app } = await createApp(boardActor(), {}, { bridgeDeps: { workerManager } });
+
+    const res = await request(app).get(`/api/plugins/${pluginId}/health`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.healthy).toBe(true);
+    expect(res.body.checks).toContainEqual({
+      name: "worker",
+      passed: true,
+      message: "Worker status: running",
+    });
+  });
+
+  it.each([
+    ["backoff", 1_760_000_000_000, `Worker status: backoff (next restart at ${new Date(1_760_000_000_000).toISOString()})`],
+    ["crashed", null, "Worker status: crashed"],
+    ["stopped", null, "Worker status: stopped"],
+  ] as const)("reports healthy: false when a ready plugin worker is %s", async (workerStatus, nextRestartAt, expectedMessage) => {
+    mockReadyManifestPlugin();
+    const workerManager = {
+      getWorker: vi.fn(() => ({
+        status: workerStatus,
+        diagnostics: () => ({
+          pluginId,
+          status: workerStatus,
+          pid: null,
+          uptime: null,
+          consecutiveCrashes: 2,
+          totalCrashes: 2,
+          pendingRequests: 0,
+          lastCrashAt: 1_759_999_990_000,
+          nextRestartAt,
+        }),
+      })),
+    };
+    const { app } = await createApp(boardActor(), {}, { bridgeDeps: { workerManager } });
+
+    const res = await request(app).get(`/api/plugins/${pluginId}/health`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.healthy).toBe(false);
+    expect(res.body.checks).toContainEqual({
+      name: "worker",
+      passed: false,
+      message: expectedMessage,
+    });
+  });
+});

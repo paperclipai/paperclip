@@ -2205,7 +2205,6 @@ export function pluginRoutes(
       message: `Current status: ${plugin.status}`,
     });
 
-    // Check 4: No last error
     const hasNoError = !plugin.lastError;
     if (!hasNoError) {
       checks.push({
@@ -2215,10 +2214,27 @@ export function pluginRoutes(
       });
     }
 
+    const wm = bridgeDeps?.workerManager ?? webhookDeps?.workerManager ?? null;
+    let workerRunning = true;
+    if (isHealthy && wm) {
+      const handle = wm.getWorker?.(plugin.id);
+      const diag = handle?.diagnostics?.();
+      const workerStatus = diag?.status ?? handle?.status ?? (wm.isRunning?.(plugin.id) ? "running" : "stopped");
+      workerRunning = workerStatus === "running";
+      const nextRestart = diag?.nextRestartAt != null
+        ? ` (next restart at ${new Date(diag.nextRestartAt).toISOString()})`
+        : "";
+      checks.push({
+        name: "worker",
+        passed: workerRunning,
+        message: `Worker status: ${workerStatus}${nextRestart}`,
+      });
+    }
+
     const result: PluginHealthCheckResult = {
       pluginId: plugin.id,
       status: plugin.status,
-      healthy: isHealthy && hasValidManifest && hasNoError,
+      healthy: isHealthy && hasValidManifest && hasNoError && workerRunning,
       checks,
       lastError: plugin.lastError ?? undefined,
     };
@@ -3230,10 +3246,24 @@ export function pluginRoutes(
       });
     }
 
+    let workerRunning = true;
+    if (isHealthy && wm) {
+      const workerStatus = worker?.status ?? (wm.isRunning?.(plugin.id) ? "running" : "stopped");
+      workerRunning = workerStatus === "running";
+      const nextRestart = worker?.nextRestartAt != null
+        ? ` (next restart at ${new Date(worker.nextRestartAt).toISOString()})`
+        : "";
+      checks.push({
+        name: "worker",
+        passed: workerRunning,
+        message: `Worker status: ${workerStatus}${nextRestart}`,
+      });
+    }
+
     const health: PluginHealthCheckResult = {
       pluginId: plugin.id,
       status: plugin.status,
-      healthy: isHealthy && hasValidManifest && hasNoError,
+      healthy: isHealthy && hasValidManifest && hasNoError && workerRunning,
       checks,
       lastError: plugin.lastError ?? undefined,
     };

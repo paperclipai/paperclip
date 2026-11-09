@@ -1,3 +1,5 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -1711,6 +1713,245 @@ describe("plugin worker manager login pseudo-terminal concurrency", () => {
       expect(loggedText).not.toContain(secretMarker);
     } finally {
       await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+describe("plugin worker backoff initialize failure and recovery exhaustion", () => {
+  function writeAttemptWorker(dir: string, lines: string[]): string {
+    const workerPath = path.join(dir, "worker.cjs");
+    writeFileSync(workerPath, lines.join(String.fromCharCode(10)), "utf8");
+    return workerPath;
+  }
+
+  it("does not schedule background backoff retries when the initial start fails initialize", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-worker-first-init-"));
+    const attemptsFile = path.join(dir, "attempts.txt");
+    writeFileSync(attemptsFile, "0", "utf8");
+    const workerPath = writeAttemptWorker(dir, [
+      'const fs = require("node:fs");',
+      'const readline = require("node:readline");',
+      `const attemptsFile = ${JSON.stringify(attemptsFile)};`,
+      'const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });',
+      'const nl = String.fromCharCode(10);',
+      'function send(msg) { process.stdout.write(JSON.stringify(msg) + nl); }',
+      'rl.on("line", (line) => {',
+      '  if (!line.trim()) return;',
+      '  const msg = JSON.parse(line);',
+      '  if (msg.method === "initialize") {',
+      '    const attempt = Number(fs.readFileSync(attemptsFile, "utf8")) + 1;',
+      '    fs.writeFileSync(attemptsFile, String(attempt), "utf8");',
+      '    send({ jsonrpc: "2.0", id: msg.id, result: { ok: false } });',
+      '  }',
+      '});',
+    ]);
+
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: workerPath,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers: {},
+      crashRecovery: { minBackoffMs: 1 },
+    });
+
+    try {
+      await expect(handle.start()).rejects.toThrow("Worker initialize failed");
+      expect(handle.status).toBe("crashed");
+      expect(handle.diagnostics().nextRestartAt).toBeNull();
+      expect(Number(readFileSync(attemptsFile, "utf8"))).toBe(1);
+    } finally {
+      await handle.stop().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("continues crash recovery when initialize fails during a backoff restart", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-worker-backoff-"));
+    const attemptsFile = path.join(dir, "attempts.txt");
+    writeFileSync(attemptsFile, "0", "utf8");
+    const workerPath = writeAttemptWorker(dir, [
+      'const fs = require("node:fs");',
+      'const readline = require("node:readline");',
+      `const attemptsFile = ${JSON.stringify(attemptsFile)};`,
+      'const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });',
+      'const nl = String.fromCharCode(10);',
+      'function send(msg) { process.stdout.write(JSON.stringify(msg) + nl); }',
+      'rl.on("line", (line) => {',
+      '  if (!line.trim()) return;',
+      '  const msg = JSON.parse(line);',
+      '  if (msg.method === "initialize") {',
+      '    const attempt = Number(fs.readFileSync(attemptsFile, "utf8")) + 1;',
+      '    fs.writeFileSync(attemptsFile, String(attempt), "utf8");',
+      '    if (attempt === 2) {',
+      '      process.stderr.write("transient setup error on attempt 2" + nl);',
+      '      send({ jsonrpc: "2.0", id: msg.id, result: { ok: false } });',
+      '      return;',
+      '    }',
+      '    send({ jsonrpc: "2.0", id: msg.id, result: { ok: true, supportedMethods: ["health"] } });',
+      '    return;',
+      '  }',
+      '  if (msg.method === "health") {',
+      '    if (msg.params && msg.params.crash) {',
+      '      setImmediate(() => process.exit(1));',
+      '      return;',
+      '    }',
+      '    send({ jsonrpc: "2.0", id: msg.id, result: { status: "ok" } });',
+      '    return;',
+      '  }',
+      '  if (msg.method === "shutdown") {',
+      '    send({ jsonrpc: "2.0", id: msg.id, result: {} });',
+      '    setImmediate(() => process.exit(0));',
+      '  }',
+      '});',
+    ]);
+
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: workerPath,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers: {},
+      crashRecovery: { minBackoffMs: 1 },
+    });
+
+    try {
+      await handle.start();
+      expect(handle.status).toBe("running");
+
+      await expect(
+        handle.call("health", { crash: true } as unknown as HostToWorkerMethods["health"][0]),
+      ).rejects.toThrow();
+
+      await vi.waitFor(
+        () => {
+          expect(Number(readFileSync(attemptsFile, "utf8"))).toBeGreaterThanOrEqual(3);
+          expect(handle.status).toBe("running");
+        },
+        { timeout: 10_000 },
+      );
+
+      expect(handle.diagnostics().consecutiveCrashes).toBe(0);
+      expect(handle.diagnostics().totalCrashes).toBe(2);
+    } finally {
+      await handle.stop().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ends recovery when stop() is called during initialize", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-worker-stop-init-"));
+    const workerPath = writeAttemptWorker(dir, [
+      'const readline = require("node:readline");',
+      'const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });',
+      'rl.on("line", () => {});',
+    ]);
+
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: workerPath,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers: {},
+      crashRecovery: { minBackoffMs: 1 },
+    });
+
+    try {
+      const startPromise = handle.start();
+      await vi.waitFor(() => expect(handle.status).toBe("starting"));
+      await handle.stop();
+      await expect(startPromise).rejects.toThrow("Worker initialize failed");
+      expect(handle.status).toBe("stopped");
+      expect(handle.diagnostics().nextRestartAt).toBeNull();
+    } finally {
+      await handle.stop().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits recovery_exhausted with exit code, signal, and stderr excerpt when crash recovery gives up", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-worker-exhausted-"));
+    const attemptsFile = path.join(dir, "attempts.txt");
+    writeFileSync(attemptsFile, "0", "utf8");
+    const workerPath = writeAttemptWorker(dir, [
+      'const fs = require("node:fs");',
+      'const readline = require("node:readline");',
+      `const attemptsFile = ${JSON.stringify(attemptsFile)};`,
+      'const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });',
+      'const nl = String.fromCharCode(10);',
+      'function send(msg) { process.stdout.write(JSON.stringify(msg) + nl); }',
+      'rl.on("line", (line) => {',
+      '  if (!line.trim()) return;',
+      '  const msg = JSON.parse(line);',
+      '  if (msg.method === "initialize") {',
+      '    const attempt = Number(fs.readFileSync(attemptsFile, "utf8")) + 1;',
+      '    fs.writeFileSync(attemptsFile, String(attempt), "utf8");',
+      '    if (attempt === 1) {',
+      '      send({ jsonrpc: "2.0", id: msg.id, result: { ok: true, supportedMethods: ["health"] } });',
+      '      setImmediate(() => {',
+      '        process.stderr.write("fatal worker crash on attempt " + attempt + nl);',
+      '        process.exit(1);',
+      '      });',
+      '      return;',
+      '    }',
+      '    process.stderr.write("fatal worker crash on attempt " + attempt + nl);',
+      '    setTimeout(() => process.exit(2), 5);',
+      '  }',
+      '});',
+    ]);
+
+    const events: Array<Record<string, unknown>> = [];
+    const manager = createPluginWorkerManager({
+      onWorkerEvent: (event) => events.push(event),
+    });
+    const exhausted = vi.fn();
+    const unsubscribe = manager.onWorkerRecoveryExhausted!(exhausted);
+
+    try {
+      await manager.startWorker("test.plugin", {
+        entrypointPath: workerPath,
+        manifest: TEST_MANIFEST,
+        config: {},
+        instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+        apiVersion: 1,
+        hostHandlers: {},
+        crashRecovery: { minBackoffMs: 0 },
+      });
+
+      await vi.waitFor(
+        () => {
+          expect(exhausted).toHaveBeenCalledTimes(1);
+        },
+        { timeout: 15_000 },
+      );
+
+      expect(exhausted).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pluginId: "test.plugin",
+          code: 2,
+          signal: null,
+          lastError: expect.stringContaining("Worker process exited (code=2, signal=null)"),
+        }),
+      );
+      expect(exhausted.mock.calls[0]?.[0]?.lastError).toContain("fatal worker crash on attempt 11");
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "plugin.worker.recovery_exhausted",
+          pluginId: "test.plugin",
+          willRestart: false,
+          lastError: expect.stringContaining("fatal worker crash on attempt 11"),
+        }),
+      );
+      const handle = manager.getWorker("test.plugin");
+      expect(handle?.status).toBe("crashed");
+      expect(handle?.diagnostics().nextRestartAt).toBeNull();
+    } finally {
+      unsubscribe();
+      await manager.stopAll();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

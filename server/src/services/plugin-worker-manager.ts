@@ -353,7 +353,8 @@ export interface WorkerHandleEvents {
   /** Worker process exited. */
   "exit": { pluginId: string; code: number | null; signal: NodeJS.Signals | null };
   /** Worker process crashed unexpectedly. */
-  "crash": { pluginId: string; code: number | null; signal: NodeJS.Signals | null; willRestart: boolean };
+  "crash": { pluginId: string; code: number | null; signal: NodeJS.Signals | null; willRestart: boolean; lastError?: string };
+  "recovery_exhausted": { pluginId: string; code: number | null; signal: NodeJS.Signals | null; lastError: string };
   /** Worker process errored (e.g. spawn failure). */
   "error": { pluginId: string; error: Error };
   /** Worker status changed. */
@@ -838,6 +839,7 @@ export interface PluginWorkerManager {
    * survives the handle being replaced. Returns the unsubscribe function.
    */
   onWorkerReady?(listener: (pluginId: string) => void): () => void;
+  onWorkerRecoveryExhausted?(listener: (event: WorkerHandleEvents["recovery_exhausted"]) => void): () => void;
   inspectIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<{
     backgroundWork: "none" | "present" | "unknown"; pluginIds: string[];
     catalogGeneration?: string;
@@ -1122,6 +1124,7 @@ export function createPluginWorkerHandle(
 
   // Shutdown coordination
   let intentionalStop = false;
+  let hasStartedOnce = false;
 
   const rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
   const autoRestart = options.autoRestart ?? true;
@@ -3153,13 +3156,11 @@ export function createPluginWorkerHandle(
     childProcess = null;
     startedAt = null;
 
-    // Reject all pending requests
-    rejectAllPending(
-      new Error(formatWorkerFailureMessage(
-        `Worker process exited (code=${code}, signal=${signal})`,
-        stderrExcerpt,
-      )),
+    const lastFailure = formatWorkerFailureMessage(
+      `Worker process exited (code=${code}, signal=${signal})`,
+      stderrExcerpt,
     );
+    rejectAllPending(new Error(lastFailure));
 
     // Read-only requests cannot continue in an exited worker. Do not infer
     // completion for execute/cleanup calls, whose provider work may outlive it.
@@ -3203,7 +3204,7 @@ export function createPluginWorkerHandle(
     }
 
     if (wasRetired) {
-      handleRetiredProcessExit(code, signal);
+      handleRetiredProcessExit(code, signal, lastFailure);
       return;
     }
 
@@ -3224,10 +3225,10 @@ export function createPluginWorkerHandle(
     );
 
     const willRestart =
-      autoRestart && consecutiveCrashes <= MAX_CONSECUTIVE_CRASHES;
+      hasStartedOnce && autoRestart && consecutiveCrashes <= MAX_CONSECUTIVE_CRASHES;
 
     setStatus("crashed");
-    emitter.emit("crash", { pluginId, code, signal, willRestart });
+    emitter.emit("crash", { pluginId, code, signal, willRestart, lastError: lastFailure });
 
     if (willRestart) {
       scheduleRestart(consecutiveCrashes);
@@ -3236,19 +3237,21 @@ export function createPluginWorkerHandle(
         { consecutiveCrashes, maxCrashes: MAX_CONSECUTIVE_CRASHES },
         "max consecutive crashes reached, not restarting",
       );
+      if (hasStartedOnce) {
+        emitter.emit("recovery_exhausted", {
+          pluginId,
+          code,
+          signal,
+          lastError: lastFailure,
+        });
+      }
     }
   }
 
-  // The retired process is gone, together with every route, reservation, and
-  // tombstone it held (the exit path above already settled them as failed).
-  // Replace it with a fresh process through the same backoff timer a crash uses.
-  // The fresh process starts with empty route state, and host route ids are
-  // monotonic, so no retired route can resolve against it. The retirement count
-  // survives a successful restart, so repeated retirements stop restarting after
-  // `maxConsecutiveRetirements` within the crash window.
   function handleRetiredProcessExit(
     code: number | null,
     signal: NodeJS.Signals | null,
+    lastFailure: string,
   ): void {
     totalCrashes++;
     const now = Date.now();
@@ -3265,7 +3268,7 @@ export function createPluginWorkerHandle(
     );
 
     setStatus("crashed");
-    emitter.emit("crash", { pluginId, code, signal, willRestart });
+    emitter.emit("crash", { pluginId, code, signal, willRestart, lastError: lastFailure });
 
     if (willRestart) {
       scheduleRestart(consecutiveRetirements);
@@ -3274,6 +3277,12 @@ export function createPluginWorkerHandle(
         { consecutiveRetirements, maxRetirements: maxConsecutiveRetirements },
         "max consecutive worker retirements reached, not restarting",
       );
+      emitter.emit("recovery_exhausted", {
+        pluginId,
+        code,
+        signal,
+        lastError: lastFailure,
+      });
     }
   }
 
@@ -3386,16 +3395,16 @@ export function createPluginWorkerHandle(
       }
       supportedMethods = result.supportedMethods ?? [];
     } catch (err) {
-      // Initialize failed — kill the process and propagate
       const msg = err instanceof Error ? err.message : String(err);
       log.error({ err: msg }, "worker initialize failed");
+      const wasStopping = status === "stopping" || status === "stopped";
       await killProcess();
-      setStatus("crashed");
+      if (!wasStopping && status !== "backoff") setStatus("crashed");
       throw new Error(`Worker initialize failed for "${pluginId}": ${msg}`);
     }
 
-    // Reset crash counter on successful start
     consecutiveCrashes = 0;
+    hasStartedOnce = true;
     setStatus("running");
     emitter.emit("ready", { pluginId });
     log.info({ pid: child.pid }, "worker process started and initialized");
@@ -3409,6 +3418,7 @@ export function createPluginWorkerHandle(
     }
 
     intentionalStop = true;
+    hasStartedOnce = false;
     setStatus("stopping");
 
     if (!childProcess) {
@@ -3531,7 +3541,7 @@ export function createPluginWorkerHandle(
 
   async function killProcess(): Promise<void> {
     if (!childProcess) return;
-    intentionalStop = true;
+    if (!hasStartedOnce) intentionalStop = true;
     try {
       childProcess.kill("SIGKILL");
     } catch {
@@ -3947,11 +3957,12 @@ export interface PluginWorkerManagerOptions {
    * (crash, restart). Used by the server to publish global live events.
    */
   onWorkerEvent?: (event: {
-    type: "plugin.worker.crashed" | "plugin.worker.restarted";
+    type: "plugin.worker.crashed" | "plugin.worker.restarted" | "plugin.worker.recovery_exhausted";
     pluginId: string;
     code?: number | null;
     signal?: string | null;
     willRestart?: boolean;
+    lastError?: string;
   }) => void;
   /**
    * The process-scoped aggregate ceiling for concurrent duplex channel routes,
@@ -4051,6 +4062,7 @@ export function createPluginWorkerManager(
   const startupWorkers = () => new Set([...workers.values(), ...retiredStartupWorkers]);
   const configApplied = new Set<() => void>();
   const workerReady = new Set<(pluginId: string) => void>();
+  const workerRecoveryExhausted = new Set<(event: WorkerHandleEvents["recovery_exhausted"]) => void>();
   let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
@@ -4073,6 +4085,10 @@ export function createPluginWorkerManager(
     onWorkerReady(listener) {
       workerReady.add(listener);
       return () => { workerReady.delete(listener); };
+    },
+    onWorkerRecoveryExhausted(listener) {
+      workerRecoveryExhausted.add(listener);
+      return () => { workerRecoveryExhausted.delete(listener); };
     },
     async inspectIdleSleep(hold) {
       if (startupLocks.size) return { backgroundWork: "unknown", pluginIds: [] };
@@ -4130,8 +4146,13 @@ export function createPluginWorkerManager(
           catch (err) { log.warn({ err, pluginId: payload.pluginId }, "worker ready listener failed"); }
         }
       });
+      handle.on("recovery_exhausted", (payload) => {
+        for (const listener of [...workerRecoveryExhausted]) {
+          try { listener(payload); }
+          catch (err) { log.warn({ err, pluginId: payload.pluginId }, "worker recovery exhausted listener failed"); }
+        }
+      });
 
-      // Subscribe to crash/ready events for live event forwarding
       if (managerOptions?.onWorkerEvent) {
         const notify = managerOptions.onWorkerEvent;
         handle.on("crash", (payload) => {
@@ -4141,6 +4162,17 @@ export function createPluginWorkerManager(
             code: payload.code,
             signal: payload.signal,
             willRestart: payload.willRestart,
+            lastError: payload.lastError,
+          });
+        });
+        handle.on("recovery_exhausted", (payload) => {
+          notify({
+            type: "plugin.worker.recovery_exhausted",
+            pluginId: payload.pluginId,
+            code: payload.code,
+            signal: payload.signal,
+            willRestart: false,
+            lastError: payload.lastError,
           });
         });
         handle.on("ready", (payload) => {
