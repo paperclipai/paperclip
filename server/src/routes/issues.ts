@@ -13,7 +13,7 @@ import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../serv
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
-import { issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
+import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { activityService } from "../services/activity.js";
@@ -8572,13 +8572,13 @@ export function issueRoutes(
     }
     const parsed = issueSummariesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      res.status(400).json({ error: "ids must be the only query parameter and contain one to five comma-separated UUIDs" });
+      res.status(400).json({ error: `ids must be the only query parameter and contain one to ${ISSUE_SUMMARIES_MAX_IDS} comma-separated UUIDs` });
       return;
     }
     const rows = await listIssueSummaries(db, companyId, parsed.data.ids, await issueReadSqlCondition(db, req.actor));
     const visible = await filterIssuesForActor(req, rows);
     // Blocked rows carry glyph-only blocker state so every task view resolves
-    // the same glyph (covered → "in queue") as the task pane. At most five IDs.
+    // the same glyph (covered → "in queue") as the task pane. At most ISSUE_SUMMARIES_MAX_IDS IDs.
     const blockerAttention = await listIssueStatusBlockerAttention(db, companyId, visible, async (ids) => new Set(
       (await filterIssuesForActor(req, await listIssueSummaries(db, companyId, ids, await issueReadSqlCondition(db, req.actor))))
         .map((row) => row.id),

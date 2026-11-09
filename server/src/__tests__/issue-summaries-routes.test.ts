@@ -6,6 +6,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import {
   agents, chatConversations, chatEndpoints, heartbeatRuns, issueRelations, issues, toolApplications, toolConnections,
 } from "@paperclipai/db";
+import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import { issueRoutes } from "../routes/issues.js";
 import * as issueServices from "../services/issues.js";
 import { errorHandler } from "../middleware/index.js";
@@ -59,7 +60,7 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
 
   it.each(["", "?ids=", "?ids=nope", "?ids=,", "?ids[]=nope", "?ids[x]=nope",
     `?ids=${randomUUID()}&ids[]=nope`, `?ids=${randomUUID()}&ids[x]=nope`,
-    `?ids=${randomUUID()}&ids=${randomUUID()}`, `?ids=${Array(6).fill(randomUUID()).join(",")}`,
+    `?ids=${randomUUID()}&ids=${randomUUID()}`, `?ids=${Array.from({ length: ISSUE_SUMMARIES_MAX_IDS + 1 }, () => randomUUID()).join(",")}`,
   ])("rejects invalid query %s", async (query) => {
     const f = await fixture();
     await request(app(f.actor)).get(url(f.companyId) + query).expect(400);

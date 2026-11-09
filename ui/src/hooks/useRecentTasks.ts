@@ -82,11 +82,14 @@ export function useRecentTasks({
   const summaryQuery = useQuery({
     queryKey: summaryKey,
     queryFn: async ({ signal }) => {
-      const summaries: IssueSummary[] = [];
+      // One request covers a typical list; longer lists fetch their chunks in
+      // parallel rather than one after another.
+      const chunks: string[][] = [];
       for (let offset = 0; offset < queryIds.length; offset += ISSUE_SUMMARIES_MAX_IDS) {
-        summaries.push(...await issuesApi.summaries(companyId!, queryIds.slice(offset, offset + ISSUE_SUMMARIES_MAX_IDS), { signal }));
+        chunks.push(queryIds.slice(offset, offset + ISSUE_SUMMARIES_MAX_IDS));
       }
-      return summaries;
+      const results = await Promise.all(chunks.map((ids) => issuesApi.summaries(companyId!, ids, { signal })));
+      return results.flat() as IssueSummary[];
     },
     enabled: Boolean(companyId && queryIds.length),
     staleTime: 30_000,
