@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import { sendThroughStorageOutage, waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { isStorageUnavailableError, sendThroughStorageOutage, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import { measureRunPhase, type ExecutionPhase } from "./execution-preparation-timing.js";
 import { collectStorageRequestStats, newStorageRequestStats, type StorageRequestStats } from "../storage/request-stats.js";
 import { constants, createReadStream, createWriteStream } from "node:fs";
@@ -406,7 +406,8 @@ async function loadWorkspaceSnapshotArchiveTimed(input: Parameters<typeof loadWo
       }, signal));
       if (input.timing) input.timing.bytes = received;
     } catch (error) {
-      if (signal.aborted && signal.reason === stalled) throw stalled;
+      if (signal.aborted && signal.reason === stalled) throw isStorageUnavailableError(error)
+        ? Object.assign(new DOMException(stalled.message, stalled.name), { cause: error }) : stalled;
       throw error;
     } finally { clearTimeout(timer); }
     if (received !== ref.byteSize || digest.digest("hex") !== ref.sha256) failure("object_hash_mismatch");
