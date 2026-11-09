@@ -1048,6 +1048,33 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it("reveals another company's rows that reference no workspaces after a workspace view loaded", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    setIssueRows([createIssue({ id: "issue-first", identifier: "PAP-7001", title: "First company task", executionWorkspaceId: "execution-workspace-1" })]);
+    apiMocks.executionWorkspaceSummaries.mockResolvedValue([
+      { id: "execution-workspace-1", name: "Workspace One", mode: "isolated_workspace", projectWorkspaceId: null },
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    const render = () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+
+    try {
+      await act(async () => { render(); });
+      await vi.waitFor(() => expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace One"));
+
+      setIssueRows([createIssue({ id: "issue-second", identifier: "PAP-7002", title: "Second company task", companyId: "company-2" })]);
+      companyState.selectedCompanyId = "company-2";
+      await act(async () => { render(); });
+      await vi.waitFor(() => expect(container.textContent).toContain("Second company task"));
+      expect(container.textContent).not.toContain("Workspace One");
+      expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledTimes(1);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
   it("keeps rows hidden until referenced workspaces load when the Workspace column is shown", async () => {
     routerMock.location.pathname = "/inbox/mine";
     localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
