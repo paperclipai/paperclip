@@ -1056,7 +1056,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         } : {}),
       }).catch(error => {
         if (!(error instanceof RemoteWorkspaceWriterActiveError)
-          || error.writer.lastActivityAt.getTime() < Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS) throw error;
+          || (!error.writer.ownerFenceHeld
+            && error.writer.lastActivityAt.getTime() < Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS)) throw error;
         throw new WorkspaceBusyDeferral({ holder: error.writer, executionWorkspaceId: error.workspaceId,
           deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0,
           wasIssueAssignee: input.task.wasIssueAssignee, holderEnded: error.writer.ended === true });
@@ -1485,7 +1486,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   }
   if (remoteAuthority && persistedExecutionWorkspace?.metadata?.remoteWorkspaceRecoveredFiles) {
     const recorded = persistedExecutionWorkspace?.metadata?.remoteWorkspaceRecoveredFiles;
-    const recoveredFiles = (Array.isArray(recorded) ? recorded : []).map(value => {
+    // Retired copies were removed from the workspace; they are kept only as records.
+    const recoveredFiles = (Array.isArray(recorded) ? recorded : []).filter(value => parseObject(value).retired !== true).map(value => {
       const file = parseObject(value);
       if (typeof file.operationId !== "string" || typeof file.sourceRunId !== "string"
         || file.path !== `.paperclip-recovered/${file.operationId}` || !/^[a-f0-9-]{36}$/.test(file.operationId)) {

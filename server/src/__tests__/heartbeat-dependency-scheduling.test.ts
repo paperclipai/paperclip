@@ -40,6 +40,7 @@ import {
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -813,6 +814,73 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       return rows.every((run) => run.status !== "queued" && run.status !== "running");
     }, 10_000);
     expect(noActiveRuns).toBe(true);
+  });
+
+  it("admits an issue_blocker_stalled wake while a blocker is unresolved", async () => {
+    // The waiter's blocker stalled on a board-owned recovery action. Parking
+    // this wake until the blocker resolves would hide the stall again.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId, name: "Paperclip", issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "CodexCoder", role: "engineer", status: "active", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Stalled blocker", status: "blocked", priority: "high", responsibleUserId: "responsible-user" },
+      { id: dependentId, companyId, title: "Waiting dependent", status: "blocked", priority: "medium", assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user" },
+    ]);
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: dependentId, type: "blocks" });
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: blockerId, kind: "run_recovery",
+      status: "resolved", outcome: "blocked", ownerType: "board", cause: "native_session_retry_exhausted",
+      fingerprint: "stall", nextAction: "Retry", resolvedAt: new Date() }).returning();
+    const stallWake = (requestedByActorType: "system" | "agent") => heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blocker_stalled",
+      payload: { issueId: dependentId, stalledIssueId: blockerId },
+      idempotencyKey: `issue_blocker_stalled:${dependentId}:${blockerId}:${action.id}:${requestedByActorType}`,
+      requestedByActorType,
+      requestedByActorId: requestedByActorType === "system" ? "issue-blocker-stall" : agentId,
+      contextSnapshot: { issueId: dependentId, wakeReason: "issue_blocker_stalled",
+        blockerStall: { stalledIssueId: blockerId, relation: "blocker", recoveryAction: { id: action.id } } },
+    });
+
+    // The reason string alone is not trusted: an agent cannot use it to skip the blocker gate.
+    expect(await stallWake("agent")).toBeNull();
+
+    const stalledWake = await stallWake("system");
+    expect(stalledWake).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    const [run] = await db.select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, stalledWake!.id));
+    expect(run?.status).toBe("succeeded");
+    expect(run?.contextSnapshot).toMatchObject({ dependencyBlockedInteraction: true, unresolvedBlockerIssueIds: [blockerId] });
+
+    // A resource wait replaces the run with a server-created retry that keeps
+    // the stall context but not the wake reason. The retry gate still admits it.
+    const retryGate = async (contextSnapshot: Record<string, unknown>) => {
+      const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation",
+        status: "scheduled_retry", scheduledRetryAt: new Date(), scheduledRetryReason: "transient_failure",
+        retryOfRunId: stalledWake!.id, contextSnapshot }).returning();
+      return createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId, runId: retry.id,
+        retryReasonOverride: "transient_failure", now: new Date() });
+    };
+    const replacement: Record<string, unknown> = { ...(run!.contextSnapshot as Record<string, unknown>),
+      wakeReason: "bounded_transient_heartbeat_retry", retryReason: "transient_failure", retryOfRunId: stalledWake!.id };
+    expect(await retryGate(replacement)).toMatchObject({ allowed: true });
+    const { blockerStall: _stall, ...withoutStall } = replacement;
+    expect(await retryGate(withoutStall)).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
+    // Once the stall's action is no longer current, the retry waits for the blocker like any other.
+    await db.update(issueRecoveryActions).set({ outcome: "restored" }).where(eq(issueRecoveryActions.id, action.id));
+    expect(await retryGate(replacement)).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
   });
 
   it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {

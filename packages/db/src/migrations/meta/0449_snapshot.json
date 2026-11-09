@@ -1,6 +1,6 @@
 {
-  "id": "d290d707-7d29-43a0-a697-06eecbdb743d",
-  "prevId": "69e6941f-890f-43d8-af7c-2e3e24ebfcd5",
+  "id": "4bd9d289-9cb8-4262-9dd7-04ce2b6020c4",
+  "prevId": "360fef2e-1ac3-4ae8-92a2-245e544b61da",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4249,6 +4249,18 @@
         "lifecycle_operation": {
           "name": "lifecycle_operation",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "harness_verified_digest": {
+          "name": "harness_verified_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "harness_verified_at": {
+          "name": "harness_verified_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -21965,6 +21977,112 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.controller_instances": {
+      "name": "controller_instances",
+      "schema": "",
+      "columns": {
+        "boot_id": {
+          "name": "boot_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "epoch": {
+          "name": "epoch",
+          "type": "bigserial",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "process_space": {
+          "name": "process_space",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pid": {
+          "name": "pid",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "renewed_at": {
+          "name": "renewed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fenced_at": {
+          "name": "fenced_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fenced_by_epoch": {
+          "name": "fenced_by_epoch",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stopped_at": {
+          "name": "stopped_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "controller_instances_epoch_idx": {
+          "name": "controller_instances_epoch_idx",
+          "columns": [
+            {
+              "expression": "epoch",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "controller_instances_lease_idx": {
+          "name": "controller_instances_lease_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.cost_events": {
       "name": "cost_events",
       "schema": "",
@@ -34856,6 +34974,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "controller_process": {
+          "name": "controller_process",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "execution_stage": {
           "name": "execution_stage",
           "type": "text",
@@ -34877,6 +35001,12 @@
         "process_started_at": {
           "name": "process_started_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "process_host_hash": {
+          "name": "process_host_hash",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -35115,6 +35245,22 @@
           ],
           "isUnique": false,
           "where": "\"heartbeat_runs\".\"status\" = 'cancelled' and \"heartbeat_runs\".\"result_json\" ? 'treeHoldSuppression'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_legacy_controller_lease_idx": {
+          "name": "heartbeat_runs_legacy_controller_lease_idx",
+          "columns": [
+            {
+              "expression": "controller_lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"runtime_mode\" = 'legacy' AND \"heartbeat_runs\".\"status\" = 'running' AND \"heartbeat_runs\".\"controller_boot_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -44760,6 +44906,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "lease_holder": {
+          "name": "lease_holder",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "controller_boot_id": {
           "name": "controller_boot_id",
           "type": "text",
@@ -44769,6 +44921,12 @@
         "controller_pid": {
           "name": "controller_pid",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_host_hash": {
+          "name": "controller_host_hash",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -44914,6 +45072,54 @@
           ],
           "isUnique": false,
           "where": "\"native_run_finalizations\".\"phase\" = 'terminal_failure' AND \"native_run_finalizations\".\"failure_code\" = 'native_workspace_sync_out_unsafe_archive'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "native_run_finalizations_finalizer_lease_idx": {
+          "name": "native_run_finalizations_finalizer_lease_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"native_run_finalizations\".\"lease_owner\" like 'native-finalizer:%'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "native_run_finalizations_cleanup_lease_idx": {
+          "name": "native_run_finalizations_cleanup_lease_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"native_run_finalizations\".\"lease_owner\" like 'native-cleanup:%'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "native_run_finalizations_accepted_result_lease_idx": {
+          "name": "native_run_finalizations_accepted_result_lease_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"native_run_finalizations\".\"result_id\" is not null AND \"native_run_finalizations\".\"lease_owner\" is not null AND \"native_run_finalizations\".\"phase\" not in ('committed', 'terminal_failure', 'applied')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -64331,6 +64537,139 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.mcp_oauth_client_changes": {
+      "name": "mcp_oauth_client_changes",
+      "schema": "",
+      "columns": {
+        "client_id": {
+          "name": "client_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation": {
+          "name": "operation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "mcp_client_changes_revision_idx": {
+          "name": "mcp_client_changes_revision_idx",
+          "columns": [
+            {
+              "expression": "revision",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "client_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "mcp_client_change_revision": {
+          "name": "mcp_client_change_revision",
+          "value": "\"mcp_oauth_client_changes\".\"revision\" >= 1"
+        },
+        "mcp_client_change_operation": {
+          "name": "mcp_client_change_operation",
+          "value": "\"mcp_oauth_client_changes\".\"operation\" IN ('upsert','delete')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.mcp_oauth_client_mirror_state": {
+      "name": "mcp_oauth_client_mirror_state",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "remote_responsibility": {
+          "name": "remote_responsibility",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "device_cutover_stack_id": {
+          "name": "device_cutover_stack_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "device_cutover_at": {
+          "name": "device_cutover_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "receipt": {
+          "name": "receipt",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "mcp_client_mirror_singleton": {
+          "name": "mcp_client_mirror_singleton",
+          "value": "\"mcp_oauth_client_mirror_state\".\"id\" = 'public'"
+        },
+        "mcp_client_mirror_revision": {
+          "name": "mcp_client_mirror_revision",
+          "value": "\"mcp_oauth_client_mirror_state\".\"revision\" >= 0"
+        },
+        "mcp_device_cutover_identity": {
+          "name": "mcp_device_cutover_identity",
+          "value": "(\"mcp_oauth_client_mirror_state\".\"device_cutover_at\" IS NULL AND \"mcp_oauth_client_mirror_state\".\"device_cutover_stack_id\" IS NULL) OR (\"mcp_oauth_client_mirror_state\".\"device_cutover_at\" IS NOT NULL AND \"mcp_oauth_client_mirror_state\".\"device_cutover_stack_id\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.mcp_oauth_clients": {
       "name": "mcp_oauth_clients",
       "schema": "",
@@ -64398,6 +64737,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "ingress_owner": {
+          "name": "ingress_owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'tenant'"
         },
         "device_code_hash": {
           "name": "device_code_hash",
@@ -64554,7 +64900,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "mcp_device_ingress_owner": {
+          "name": "mcp_device_ingress_owner",
+          "value": "\"mcp_oauth_device_requests\".\"ingress_owner\" IN ('tenant','cloud')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.mcp_oauth_grants": {
@@ -64614,6 +64965,19 @@
         "revoked_at": {
           "name": "revoked_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revocation_revision": {
+          "name": "revocation_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "revocation_index_receipt": {
+          "name": "revocation_index_receipt",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -64947,6 +65311,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "revocation_revision": {
+          "name": "revocation_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "expires_at": {
           "name": "expires_at",
           "type": "timestamp with time zone",
@@ -64982,6 +65353,33 @@
           "columns": [
             {
               "expression": "grant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "mcp_oauth_tokens_revocation_revision_idx": {
+          "name": "mcp_oauth_tokens_revocation_revision_idx",
+          "columns": [
+            {
+              "expression": "grant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "revocation_revision",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

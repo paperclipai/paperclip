@@ -14,6 +14,15 @@ Delegated work and interactions persist their originating context. Retries retai
 
 Executions with managed GitHub configured receive token-free `git` and `gh` launchers. Each launcher invocation resolves one eligible credential from the current run's accepted identity at operation start. A `gh` command's child Git processes inherit that command's captured identity; later steering does not change already-started operations.
 
+When the broker returns a managed credential, `gh repo create`, its
+`gh repo new` alias, and `gh repo fork` stop before they run. The message
+names the connection's `create_repository` or `fork_repository` tool. Those
+tools apply the connection's tool access rules, approvals, owner defaults, and
+audit, which a raw `gh` command cannot. The agent then uses Git to push to the
+new repository or to clone the fork. `--help` still runs. Without a managed
+credential, `gh` runs these commands unchanged. This guidance is not a
+security boundary: any command that receives the token can call the GitHub API.
+
 A `git` command that never uses the network does not ask the broker. The launcher reads past the global options, such as `-C` and `-c`, and checks the subcommand against a short list (for example `status`, `diff`, `diff-files`, `write-tree`, `log`, `rev-parse`, `add`, `config`, `branch`, `checkout`). This includes the index comparison and tree writing used by workspace snapshots. An unknown subcommand or option still asks. `commit` and `var` still ask, because the managed author comes from the broker answer. The launcher keeps no broker answer between invocations and never writes a credential to a file.
 
 GitHub credential capture reads the current task, project, and retained trust

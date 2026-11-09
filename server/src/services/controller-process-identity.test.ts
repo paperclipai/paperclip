@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { processExists, processStartsDefinitelyDiffer } from "./controller-process-identity.js";
 import { isPidAlive, isProcessGroupAlive } from "./local-service-supervisor.js";
 import { readProcessStartedAt } from "./hot-restart.js";
-import { verifiedRecoveryProcessIsAlive } from "./native-runtime/native-session-executor.js";
+import { recoveryProcessMayBeAlive } from "./native-runtime/native-session-executor.js";
 
 describe("shared process identity proof", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -41,9 +41,14 @@ describe("shared process identity proof", () => {
     try {
       const observed = new Date((await readProcessStartedAt(live.pid!))!);
       const startedAt = new Date(observed.getTime() + 500).toISOString();
-      await expect(verifiedRecoveryProcessIsAlive({ pid: live.pid!, startedAt })).resolves.toBe(true);
-      const recycled = new Date(observed.getTime() + 5_000).toISOString();
-      await expect(verifiedRecoveryProcessIsAlive({ pid: live.pid!, startedAt: recycled })).resolves.toBe(false);
+      await expect(recoveryProcessMayBeAlive({ pid: live.pid!, startedAt })).resolves.toBe(true);
+      // The live PID started definitely after the recorded runner: reused, so gone.
+      const recycled = new Date(observed.getTime() - 5_000).toISOString();
+      await expect(recoveryProcessMayBeAlive({ pid: live.pid!, startedAt: recycled })).resolves.toBe(false);
+      // A live PID that started before the recorded runner is an inconsistent
+      // stamp (shared prover), never exit evidence.
+      const inconsistent = new Date(observed.getTime() + 5_000).toISOString();
+      await expect(recoveryProcessMayBeAlive({ pid: live.pid!, startedAt: inconsistent })).resolves.toBe(true);
     } finally {
       const exited = once(live, "exit");
       live.kill("SIGKILL");

@@ -214,6 +214,7 @@ import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js
 import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
+import type { BudgetResumeDelivery } from "./services/budget-resume-continuation.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { nativeChatProgressWork } from "./services/chat-native-progress-work.js";
 import { chatInboundWakeNoticeWork } from "./services/chat-inbound-wake-notice-work.js";
@@ -448,6 +449,8 @@ export async function createApp(
     databaseBackupService?: InstanceDatabaseBackupService;
     prepareIdleDatabaseBackup?: () => Promise<boolean>;
     idleDeadlineOwners?: IdleDeadlineOwners;
+    /** Filled with the chat service's Retry callback for background budget-resume delivery. */
+    budgetResumeDelivery?: BudgetResumeDelivery;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
@@ -590,6 +593,7 @@ export async function createApp(
       deliverNativeQuestionResponse(db, interaction),
     storage: opts.storageService,
   });
+  if (opts.budgetResumeDelivery) opts.budgetResumeDelivery.prepareChatRetry = chatChannels.prepareFailedChatRunRetry;
   // Voice capabilities are verified by the signed callback route, not by
   // board/agent bearer authentication. Mount before actorMiddleware so its
   // per-session Bearer cannot be mistaken for an agent API key.

@@ -46,6 +46,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import {
+  heldByAnotherRun,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeGovernanceGate,
   type NativeStatusDecision,
@@ -1793,6 +1794,9 @@ export async function commitNativeStatusDecision(input: {
     if (input.decision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(tx as unknown as Db, {
       companyId: input.companyId, issueId: input.issueId, runId: input.runId,
     })) throw new NativeStatusRaceError();
+    if (input.decision.statusAction === "done" && !isConversation(issue) && heldByAnotherRun(issue, input.runId)) {
+      throw new NativeStatusRaceError();
+    }
     if (input.decision.statusAction === "done") {
       try {
         const [saved] = await tx.select({ context: heartbeatRuns.contextSnapshot, receipts: heartbeatRuns.resultJson,

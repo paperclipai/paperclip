@@ -49,6 +49,7 @@ import { firstTaskTasks, onboardingApprovalHistoryTask } from "./first-task-case
 import { APPROVAL_HISTORY_SUITE, approvalHistoryDefinitionDigest } from "./first-task-approval-history.js";
 import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
+import { neutralFixtureSuffix } from "./fixture-names.js";
 import { fileURLToPath } from "node:url";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
@@ -117,11 +118,11 @@ function commonAgent(
   additionalInstructions: readonly string[] = [],
 ) {
   return {
-    name: `Runner E2E ${fixtureId} ${input.executionId}`,
+    name: `Agent ${neutralFixtureSuffix(fixtureId, input.executionId)}`,
     role: "qa",
-    title: "Paid full-stack runner acceptance fixture",
+    title: "Operations agent",
     capabilities:
-      "Completes deterministic standard, planning, and ask-mode runner acceptance tasks.",
+      "Completes standard, planning, and ask-mode tasks for the company.",
     adapterType,
     ...(adapterType === "codex_local" ? { runner: "legacy" as const } : {}),
     adapterConfig,
@@ -504,8 +505,8 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
     expectedExecutionTarget: { kind: "local" },
     buildEnvironment(input) {
       return {
-        name: `Runner E2E local ${input.executionId}`,
-        description: "Ephemeral local runner E2E environment",
+        name: `Local ${neutralFixtureSuffix(input.executionId)}`,
+        description: "Local execution environment",
         driver: "local",
         config: {},
         envVars: {},
@@ -532,8 +533,8 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
         );
       }
       return {
-        name: `Runner E2E Daytona ${input.executionId}`,
-        description: "Ephemeral Daytona runner E2E environment",
+        name: `Daytona ${neutralFixtureSuffix(input.executionId)}`,
+        description: "Daytona sandbox environment",
         driver: "sandbox",
         config: {
           provider: "daytona",
@@ -580,8 +581,8 @@ export const daytonaWarmEnvironment: EnvironmentFixture = {
       );
     }
     return {
-      name: `Runner E2E Daytona warm ${input.executionId}`,
-      description: "Ephemeral reusable Daytona runner E2E environment",
+      name: `Daytona warm ${neutralFixtureSuffix(input.executionId)}`,
+      description: "Reusable Daytona sandbox environment",
       driver: "sandbox",
       config: {
         provider: "daytona",

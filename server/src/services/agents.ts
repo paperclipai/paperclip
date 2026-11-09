@@ -58,7 +58,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         return tx
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }),
+          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, { role: existing.role }),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))

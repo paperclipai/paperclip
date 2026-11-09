@@ -599,6 +599,16 @@ export const confirmNativeControllerStoppedSchema = z.object({
   stopEvidence: z.string().trim().min(20).max(12000),
 }).strict();
 
+/** Board attestation that the owner of a record Paperclip cannot judge (saved
+ * before owners were recorded) has stopped, so recovery may settle the record. */
+export const confirmOwnerGoneSchema = z.object({
+  actionId: z.string().guid(),
+  recordId: z.string().guid(),
+  stopEvidence: z.string().trim().min(20).max(12000),
+  /** The record version the board saw (`evidence.recordUpdatedAt`); required when the request names one. */
+  recordVersion: z.string().datetime({ offset: true }).optional(),
+}).strict();
+
 export const retryWorkspaceExportSchema = z.object({
   actionId: z.string().guid(),
   runId: z.string().guid(),

@@ -655,6 +655,8 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     "runner-protocol-live-evals.yml",
     "chat-catalog-testops.yml",
     "chat-catalog-testops-case.yml",
+    // On-demand crash-point suite (durable ownership plan, Phase 5).
+    "crash-points.yml",
   ];
   const paidWorkflowNameSet = new Set(paidWorkflowNames);
   const providerSecretReference =

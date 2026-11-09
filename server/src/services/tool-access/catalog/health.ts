@@ -21,7 +21,7 @@ import type { ConnectionCredentialAccess } from "../credential-access.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import { toConnection } from "../connections/projection.js";
 import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js";
-import { healthFailureHttpStatus, sanitizeHttpFailure, unsupportedToolConnectionTransport } from "./failures.js";
+import { healthFailureHttpStatus, sanitizeHttpFailure, unreachableServerRemediation, unsupportedToolConnectionTransport } from "./failures.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -226,6 +226,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
         ...githubRecovery,
+        ...unreachableServerRemediation(error, actor),
       }));
     }
   }

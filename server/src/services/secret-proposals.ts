@@ -446,6 +446,13 @@ export function createSecretProposalsService(db: Db) {
     return createWithinQuota(
       { companyId: context.companyId, agentId: run.agentId, runId: run.id, issueId: originIssueId },
       async (txDb) => {
+        if (resolvedSecretId) {
+          // Hold the secret against a concurrent delete: the delete marks it
+          // deleted first, then settles the proposals that reference it.
+          const live = await txDb.select({ status: companySecrets.status }).from(companySecrets)
+            .where(eq(companySecrets.id, resolvedSecretId)).for("share").then((rows) => rows[0] ?? null);
+          if (!live || live.status === "deleted") throw notFound("Secret not found");
+        }
         if (input.secretProposalId) {
           const dependency = await txDb.select().from(companySecretProposals).where(and(
             eq(companySecretProposals.id, input.secretProposalId),
@@ -915,5 +922,35 @@ export function createSecretProposalsService(db: Db) {
     return row?.at == null ? null : new Date(row.at).getTime();
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired, sweepExpiredForCompany, expiryDeadlines, nextExpiryAt };
+  /**
+   * Deleting a secret also deletes the binding proposals that reference it.
+   * Settle pending ones first, so their review cards close as rejected with
+   * the reason instead of pointing at a proposal that no longer exists. Call
+   * it after the secret is marked deleted: createBinding holds the secret row
+   * and refuses a deleted one, so no new pending proposal can follow.
+   */
+  async function rejectPendingBindingsForSecret(companyId: string, secretId: string, input: { resolvedByUserId?: string | null; reason: string }) {
+    const pending = await db.select().from(companySecretProposals).where(and(
+      eq(companySecretProposals.companyId, companyId),
+      eq(companySecretProposals.secretId, secretId),
+      eq(companySecretProposals.kind, "binding"),
+      eq(companySecretProposals.status, "pending"),
+    ));
+    const rejected: Proposal[] = [];
+    for (const row of pending) {
+      try {
+        await transition(companyId, row.id, "rejected", {
+          resolvedByUserId: input.resolvedByUserId ?? null,
+          reason: input.reason,
+        });
+        rejected.push(row);
+      } catch (error) {
+        // Resolved concurrently; the secret deletion still removes the row.
+        if (!(error instanceof HttpError) || error.status !== 409) throw error;
+      }
+    }
+    return rejected;
+  }
+
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, rejectPendingBindingsForSecret, sweepExpired, sweepExpiredForCompany, expiryDeadlines, nextExpiryAt };
 }

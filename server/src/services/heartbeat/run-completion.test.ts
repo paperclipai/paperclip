@@ -16,7 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, approvals, issueApprovals, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issues, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -468,6 +468,90 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "succeeded", null, expect.any(Object));
   });
+
+  // A chat turn can finish while its task keeps waiting: a resubmitted hire
+  // approval, an execution stage or a dependency blocker holds the status.
+  // The accepted final answer must still reach the conversation. Only a card
+  // the run itself left pending in the thread presents the turn instead.
+  it.each([
+    { hold: "pending approval", reasonCode: "governed_response_waiting", replies: true },
+    { hold: "approval sent back for revision", reasonCode: "governed_response_waiting", replies: true },
+    { hold: "execution stage", reasonCode: "governed_response_waiting", replies: true },
+    { hold: "dependency blocker", reasonCode: "durable_dependency_blocker_bound", replies: true },
+    { hold: "finished turn", reasonCode: "conversation_turn_finished", replies: true },
+    { hold: "own question card", reasonCode: "governed_response_waiting", replies: false },
+    { hold: "execution stage and own question card", reasonCode: "governed_response_waiting", replies: false },
+    // A card the board addressed to someone else holds the task, but this run
+    // did not create it, so it cannot be the turn's response.
+    { hold: "someone else's confirmation card", reasonCode: "governed_response_waiting", replies: true },
+    { hold: "earlier turn's question card", reasonCode: "governed_response_waiting", replies: true },
+  ] as const)("posts a waiting conversation turn's accepted answer: $hold", async ({ hold, reasonCode, replies }) => {
+    const f = await fixture({ runtimeMode: "native" }, `CNV${randomUUID().slice(0, 6)}`);
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Chat with CEO",
+      status: "in_progress", assigneeAgentId: f.agent.id, responsibleUserId: "local-board",
+      conversationAgentId: f.agent.id, conversationUserId: "local-board", conversationState: "active",
+      ...(hold.startsWith("execution stage") ? { executionState: { status: "pending" } } : {}),
+    }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, responsibleUserId: "local-board",
+      contextSnapshot: { issueId: issue.id, conversationSessionGeneration: 0 } }).where(eq(heartbeatRuns.id, f.run.id));
+    if (hold.includes("approval")) {
+      const [approval] = await db.insert(approvals).values({ companyId: f.run.companyId, type: "hire_agent",
+        status: hold === "pending approval" ? "pending" : "revision_requested", payload: { name: "Researcher" } }).returning();
+      await db.insert(issueApprovals).values({ companyId: f.run.companyId, issueId: issue.id, approvalId: approval.id });
+    }
+    if (hold.endsWith("own question card")) {
+      await issueThreadInteractionService(db).create(issue, { kind: "ask_user_questions", sourceRunId: f.run.id,
+        continuationPolicy: "wake_assignee", payload: { version: 1, questions: [{ id: "model", prompt: "Which model?",
+          selectionMode: "single", required: true, options: [{ id: "flash", label: "Flash" }] }] } },
+        { agentId: f.agent.id, runId: f.run.id });
+    }
+    if (hold === "someone else's confirmation card") {
+      // Saved as the board's create route saves it: no source run.
+      await db.insert(issueThreadInteractions).values({ companyId: f.run.companyId, issueId: issue.id,
+        kind: "request_confirmation", status: "pending", continuationPolicy: "none", title: "Riley's website proposal",
+        requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only", resolverPolicyProvenance: "explicit",
+        addresseeUserId: "riley", createdByUserId: "local-board",
+        payload: { version: 1, prompt: "Riley: approve creating the website implementation task?" } });
+    }
+    if (hold === "earlier turn's question card") {
+      const [earlier] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
+        status: "succeeded", runtimeMode: "native", responsibleUserId: "local-board" }).returning();
+      await issueThreadInteractionService(db).create(issue, { kind: "request_confirmation", sourceRunId: earlier.id,
+        resolverPolicy: "human_only", continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Create the website implementation task?" } },
+        { agentId: f.agent.id, runId: earlier.id });
+    }
+    const answer = "Resubmitted the hire with the cheaper model. [Review the pending approval](/CNV/approvals/a1).";
+    f.input.issueId = issue.id;
+    f.input.issueRef = issue;
+    f.input.issueContext = await createHeartbeatRunPreparation(db).getIssueExecutionContext(f.run.companyId, issue.id);
+    // The finalizer's saved shape, unchanged from the previous release.
+    f.input.adapterResult.resultJson = {
+      nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
+        summary: "Waiting for the approval decision.",
+        continuation: { kind: "response_wake", summary: "Wait for the decision.", idempotencyKey: "hire-wait" } },
+      finalizationPhase: "committed", finalizationReasonCode: reasonCode,
+    };
+    f.deps.findLatestCompletedFinalAgentMessage.mockResolvedValue({ seq: 1, text: answer, sourceEventId: "final-event", channel: "final",
+      reasonCode: "latest_non_empty_completed_final_agent_message" });
+    f.deps.issuesSvc.addComment.mockImplementation(async (issueId, body) => {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId,
+        authorAgentId: f.agent.id, authorType: "agent", createdByRunId: f.run.id, body }).returning();
+      return { ...comment, authorType: "agent" as const };
+    });
+
+    await f.completion.completeRun(f.input);
+
+    const posted = (await db.select().from(issueComments).where(eq(issueComments.issueId, issue.id)))
+      .filter(comment => comment.createdByRunId === f.run.id);
+    expect(posted.map(comment => comment.body)).toEqual(replies ? [answer] : []);
+    expect((await read(f.run.id)).resultJson).toMatchObject({ presentationDecision: replies
+      ? { chosenSource: "final_agent_message", commentAction: "create", commentId: posted[0]?.id }
+      : { chosenSource: "none", commentAction: "none" } });
+    // The posted answer (or the run's own card) is the turn's response: the
+    // conversation waits for the person.
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].conversationState).toBe("waiting");
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("settles the accepted native exact rate-card price without replacing it with zero", async () => {
     const f = await fixture({ runtimeMode: "native" });

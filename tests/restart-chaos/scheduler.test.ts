@@ -32,6 +32,49 @@ describe("scheduler determinism", () => {
     }
   });
 
+  it("raises the K4 hold upper end with --k4-hold-max-seconds, up to the 600 s outage cap", () => {
+    const command = parseCommand(["--faults", "K4", "--k4-hold-max-seconds", "600", "--seed", "5"]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options.k4HoldMaxMs).toBe(600_000);
+    const holds = planTasks({ ...command.options, tasks: 40 }).map(task => task.holdMs);
+    expect(Math.min(...holds)).toBeGreaterThanOrEqual(K4_HOLD_RANGE_MS[0]);
+    expect(Math.max(...holds)).toBeLessThanOrEqual(600_000);
+    expect(Math.max(...holds)).toBeGreaterThan(K4_HOLD_RANGE_MS[1]);
+    const storm = planStorm(5, 120, ["K4"], 600_000);
+    expect(Math.max(...storm.faults.map(fault => fault.holdMs))).toBeGreaterThan(K4_HOLD_RANGE_MS[1]);
+    expect(() => parseCommand(["--k4-hold-max-seconds", "601"])).toThrow(/between 120 and 600/);
+    expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
+  });
+
+  it("pairs R1 with --workspace-repo, locally, without the chaoscli fixture workloads", () => {
+    const command = parseCommand(["--workloads", "R1,C1", "--workspace-repo", "."]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options.workspaceRepo).toBe(process.cwd());
+    expect(command.options.workspaceCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(() => parseCommand(["--workloads", "R1"])).toThrow(/go together/);
+    expect(() => parseCommand(["--workloads", "A1", "--workspace-repo", "x"])).toThrow(/go together/);
+    expect(() => parseCommand(["--workloads", "R1,B1", "--workspace-repo", "x"])).toThrow(/chaoscli fixture/);
+    const defaults = parseCommand([]);
+    if (defaults.mode !== "wave") throw new Error("expected a wave");
+    expect(defaults.options.workloads).not.toContain("R1");
+  });
+
+  it("pairs K14 (upgrade mid-run) with --upgrade-from, locally, with no hold and outside storm defaults", () => {
+    const command = parseCommand(["--faults", "K14", "--upgrade-from", "../older-checkout", "--seed", "5"]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options.upgradeFrom).toMatch(/older-checkout$/);
+    expect(command.options.upgradeFrom!.startsWith("/")).toBe(true);
+    expect(planTasks(command.options).every(task => task.fault === "K14" && task.holdMs === 0)).toBe(true);
+    expect(() => parseCommand(["--faults", "K14"])).toThrow(/go together/);
+    expect(() => parseCommand(["--faults", "K1", "--upgrade-from", "../older-checkout"])).toThrow(/go together/);
+    expect(() => parseCommand(["--faults", "K14", "--upgrade-from", "x", "--env", "daytona",
+      "--daytona-image", `ghcr.io/x/y@sha256:${"a".repeat(64)}`])).toThrow(/only with --env local/);
+    const storm = parseCommand(["--storm-minutes", "30"]);
+    if (storm.mode !== "wave") throw new Error("expected a wave");
+    expect(storm.options.faults).not.toContain("K14");
+    expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--upgrade-from", "x"])).toThrow(/do not combine/);
+  });
+
   it("covers every workload × adapter × fault cell once per cycle", () => {
     const cells = options.workloads.length * options.adapters.length * options.faults.length;
     const tasks = planTasks({ ...options, tasks: cells });
@@ -154,6 +197,13 @@ describe("Daytona options", () => {
     expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--concurrency", "11"])).toThrow(/exceeds the Daytona vCPU budget of 40/);
     expect(() => parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y:latest"])).toThrow(/immutable runner image/);
     expect(() => parseCommand(["--env", "local", "--daytona-cpu", "2"])).toThrow(/only to --env daytona/);
+    expect(() => parseCommand(["--env", "local", "--daytona-reuse-lease"])).toThrow(/only to --env daytona/);
+  });
+  it("keeps reusable Daytona leases only when asked", () => {
+    const reuse = parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-reuse-lease"]);
+    expect(reuse).toMatchObject({ mode: "wave", options: { daytonaReuseLease: true } });
+    const plain = parseCommand(["--env", "daytona", "--daytona-image", image]);
+    if (plain.mode === "wave") expect(plain.options.daytonaReuseLease).toBeUndefined();
   });
 });
 

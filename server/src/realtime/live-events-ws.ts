@@ -7,7 +7,7 @@ import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, companyMemberships, instanceUserRoles, heartbeatRuns, projects } from "@paperclipai/db";
-import type { DeploymentMode, LiveEvent } from "@paperclipai/shared";
+import { issueActivityChangesTaskIdentity, type DeploymentMode, type LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { activityToastIdentity } from "./activity-toast-identity.js";
@@ -289,6 +289,7 @@ export function setupLiveEventsWebSocketServer(
       if (context!.actor.source === "local_implicit") {
         if (event.type === "activity.logged" && event.payload.entityType === "issue") {
           return { ...event, payload: { ...event.payload,
+            taskIdentityChanged: issueActivityChangesTaskIdentity(event.payload.action, event.payload.details),
             ...await activityToastIdentity(db, event.companyId, event.payload) } };
         }
         return event;
@@ -351,6 +352,11 @@ export function setupLiveEventsWebSocketServer(
         // A handoff can attach the first case to a task. Its already-authorized
         // task identity lets an empty cases panel refresh without exposing content.
         ...(payload.entityType === "case" && String(payload.action).startsWith("case.handoff_") && issueId ? { issueId } : {}),
+        // A closed boolean derived from details, so task pickers can tell a
+        // created, deleted, hidden or renamed task from routine progress.
+        ...(payload.entityType === "issue"
+          ? { taskIdentityChanged: issueActivityChangesTaskIdentity(payload.action, payload.details) }
+          : {}),
         // The task read check above authorizes attribution, but not arbitrary details.
         ...(issueId ? await activityToastIdentity(db, event.companyId, payload) : {}),
       } };

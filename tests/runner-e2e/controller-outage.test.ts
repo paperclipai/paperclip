@@ -105,6 +105,13 @@ describe("controller outage qualification", () => {
       signal: "SIGKILL", holdMs: 300000, previousPid: 1, replacementPid: 2, startedAt: new Date().toISOString(),
       stoppedAfterMs: 0, cacheDiscarded: true, replacementStartedAfterMs: 300000, readyAfterMs: 420000 })).toBe(false);
   });
+  it("accepts a hold past the reconnect grace only with an explicit later ready bound", () => {
+    const receipt = { schema: "paperclip.e2e.controller-outage/v1", requestId: "long", signal: "SIGKILL", holdMs: 579_090,
+      previousPid: 1, replacementPid: 2, startedAt: new Date().toISOString(), stoppedAfterMs: 200, cacheDiscarded: true,
+      replacementStartedAfterMs: 579_400, readyAfterMs: 593_500 };
+    expect(validControllerOutageReceipt(receipt)).toBe(false);
+    expect(validControllerOutageReceipt(receipt, undefined, undefined, undefined, 579_090 + 420_000)).toBe(true);
+  });
 });
 
 it.each(["absent", "present"])("retires a %s old controller cache", async state => {

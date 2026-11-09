@@ -466,6 +466,8 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     ] as Request["actor"][]) {
       actor = candidate;
       expect((await request(app).get("/api/mcp/setup")).status).toBe(401);
+      expect((await request(app).get("/api/mcp/connections")).status).toBe(401);
+      expect((await request(app).delete(`/api/mcp/connections/${randomUUID()}`).set("Origin", config.origin)).status).toBe(401);
     }
     for (const source of ["session", "cloud_tenant"] as const) {
       actor = { type: "board", source, userId: randomUUID() };

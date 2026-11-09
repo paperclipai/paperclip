@@ -439,9 +439,11 @@ const support = await getEmbeddedPostgresTestSupport();
           return call(...args);
         },
       } as unknown as WorkspaceWorkers;
+      let clock = Date.now();
       const svc = executionWorkspaceService(db, {
         pluginWorkerManager: workers,
         workspaceReaperCooldownDays: 0,
+        now: () => new Date(clock),
       });
       const sweep = () => svc.sweepTerminalWorkspaces(100);
       expect(await sweep()).toMatchObject({ cleanupFailed: 1 });
@@ -451,7 +453,10 @@ const support = await getEmbeddedPostgresTestSupport();
         .where(eq(executionWorkspaces.id, workspace!.id));
       expect(failed.status).toBe("cleanup_failed");
       expect(failed.metadata?.workspaceProviderRemoval).toBeUndefined();
-      expect(await svc.nextTerminalWorkspaceSweepAt()).not.toBeNull();
+      expect(failed.metadata?.terminalCleanupRetry).toMatchObject({ failures: 1, failure: { kind: "transport" },
+        retryAt: new Date(clock + 300_000).toISOString() });
+      expect(await sweep()).toMatchObject({ skippedBackoff: 1 });
+      clock += 300_000;
       await sweep();
       const [removed] = await db
         .select()
@@ -459,6 +464,7 @@ const support = await getEmbeddedPostgresTestSupport();
         .where(eq(executionWorkspaces.id, workspace!.id));
       expect(removed.metadata?.workspaceProviderRemoved).toBe(true);
       expect(removed.status).toBe("archived");
+      expect(removed.metadata).not.toHaveProperty("terminalCleanupRetry");
     });
     it("prepares a durable reference without a local checkout or agent allocation", async () => {
       const f = await fixture();

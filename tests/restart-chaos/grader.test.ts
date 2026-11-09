@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { crossingFaults, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
 import { isResting } from "./observer.js";
 import type { FaultReceipt, OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
-import { BENCH_EXPECTED, parseBenchRecord, workloadDefinitions } from "./workloads.js";
+import { BENCH_EXPECTED, parseBenchRecord, r1TestChecksSlug, stallWakeChecks, workloadDefinitions } from "./workloads.js";
 
 const T0 = Date.parse("2026-11-06T12:00:00Z");
 const iso = (offsetMs: number) => new Date(T0 + offsetMs).toISOString();
@@ -68,17 +68,20 @@ describe("R1–R6 grading on fixture timelines", () => {
     expect(grade.signature).toBe("R1:rested_not_done:A1:K1");
   });
 
-  it("passes R3 when one Retry starts a run that completes the task", () => {
+  it("fails R3 when the task needed a Retry, even one that completed it, and names a second click", () => {
     const samples = [
       sample(60_000, "blocked", [run("r1", "failed", 1_000, 30_000)], { interruption: { state: "failed", canRetry: true, retryWait: false, workspaceFailure: null, observedRunId: "r1", userAction: null } }),
       sample(80_000, "in_progress", [run("r1", "failed", 1_000, 30_000), run("r2", "running", 75_000, null, { retryOfRunId: "r1" })]),
       sample(140_000, "done", [run("r1", "failed", 1_000, 30_000), run("r2", "succeeded", 75_000, 130_000)]),
     ];
     const retried = record(samples, { retry: { at: T0 + 74_000, observedRunId: "r1", httpStatus: 200, accepted: true, error: null }, restAt: T0 + 140_000 });
-    expect(gradeR3(retried)).toMatchObject({ verdict: "pass" });
+    expect(gradeR3(retried)).toEqual({ verdict: "fail", detail: "retry_needed (failed)" });
     const grade = gradeTask(retried, [fault], workloadDefinitions.A1.budgetMs, oracle());
     expect(grade.rules.R1.verdict).toBe("n/a");
-    expect(grade.pass).toBe(true);
+    expect(grade.pass).toBe(false);
+    const twice = record(samples, { retry: { at: T0 + 74_000, observedRunId: "r1", httpStatus: 200, accepted: true, error: null },
+      priorRetries: [{ at: T0 + 50_000, observedRunId: "r0", httpStatus: 200, accepted: true, error: null }], restAt: T0 + 140_000 });
+    expect(gradeR3(twice).detail).toBe("retry_needed_2_clicks (failed)");
   });
 
   it("fails R3 for a dead Retry (accepted but no new run)", () => {
@@ -127,6 +130,27 @@ describe("R1–R6 grading on fixture timelines", () => {
     expect(gradeR4(record(afterSuccess)).detail).toMatch(/comment_consumed_twice: c1 by r1,r2/);
   });
 
+  // s9401/t72: the message's run was claimed just before the first run ended,
+  // then cancelled as stale before dispatch; a later run delivered the message.
+  it("passes R4 for a stale continuation cancelled before dispatch whose message a later run delivered once", () => {
+    const samples = [sample(90_000, "done", [
+      run("r1", "succeeded", 1_000, 40_000),
+      run("r2", "cancelled", 30_000, 40_060, { startedAt: iso(39_960), wakeCommentIds: ["c1"],
+        errorCode: "continuation_task_ownership_changed" }),
+      run("r3", "succeeded", 45_000, 80_000, { wakeCommentIds: ["c1"] }),
+    ])];
+    expect(gradeR4(record(samples))).toMatchObject({ verdict: "pass" });
+    // A poll that saw both running (claiming marks running before dispatch)
+    // does not change that.
+    const polled = [sample(39_990, "in_progress", [run("r1", "running", 1_000), run("r2", "running", 30_000, null, { startedAt: iso(39_960) })]),
+      ...samples];
+    expect(gradeR4(record(polled))).toMatchObject({ verdict: "pass" });
+    // Any other cancelled run that overlapped still executed.
+    const executed = [sample(90_000, "done", [run("r1", "succeeded", 1_000, 40_000),
+      run("r2", "cancelled", 30_000, 40_060, { startedAt: iso(39_960), errorCode: "cancelled" })])];
+    expect(gradeR4(record(executed)).detail).toMatch(/concurrent_runs/);
+  });
+
   it("fails R5 on a silent stall longer than three minutes after ready, but not during outages or named waits", () => {
     const idle = (at: number, extra: Partial<TaskSample> = {}) => sample(at, "in_progress", [run("r1", "failed", 1_000, 30_000)], extra);
     const stalled = [idle(60_000), idle(60_000 + STALL_LIMIT_MS / 2), idle(60_000 + STALL_LIMIT_MS + 5_000)];
@@ -168,10 +192,61 @@ describe("R1–R6 grading on fixture timelines", () => {
 });
 
 describe("T-oracles", () => {
+  it("grades M1 delegation: two done subtasks, part 1 delegated, and a summary of both", () => {
+    const agents = { self: { id: "self", name: "Chaos codex" }, other: { id: "other", name: "Chaos claude" } };
+    const child = (n: number, assigneeAgentId: string, status = "done") =>
+      ({ id: `c${n}`, status, assigneeAgentId, documents: { part: `PART${n}-abcd1234\nIdempotency keys.` } });
+    const artifacts: OracleArtifacts = { issueStatus: "done", agentComments: [], files: {}, commands: {}, workspacePath: null,
+      documents: { summary: "PART1-abcd1234\nPART2-abcd1234" }, children: [child(1, "other"), child(2, "self")] };
+    expect(workloadDefinitions.M1.grade("abcd1234", artifacts, agents).verdict).toBe("pass");
+    expect(workloadDefinitions.M1.description("abcd1234", agents)).toContain("assigned to Chaos claude");
+    const undelegated = { ...artifacts, children: [child(1, "self"), child(2, "self")] };
+    expect(workloadDefinitions.M1.grade("abcd1234", undelegated, agents).checks.find(check => check.name === "part1_delegated")?.ok).toBe(false);
+    const pending = { ...artifacts, children: [child(1, "other", "in_progress"), child(2, "self")] };
+    expect(workloadDefinitions.M1.grade("abcd1234", pending, agents).verdict).toBe("fail");
+    expect(workloadDefinitions.M1.grade("abcd1234", { ...artifacts, children: [child(1, "other")] }, agents).verdict).toBe("fail");
+    const both = { ...artifacts, children: [{ ...child(1, "other"), documents: { part: "PART1-abcd1234\nPART2-abcd1234" } },
+      { ...child(2, "self"), documents: { part: "nothing" } }] };
+    expect(workloadDefinitions.M1.grade("abcd1234", both, agents).checks.find(check => check.name === "parts_in_distinct_subtasks")?.ok).toBe(false);
+    const wrongPart2 = { ...artifacts, children: [child(1, "other"), child(2, "other")] };
+    expect(workloadDefinitions.M1.grade("abcd1234", wrongPart2, agents).checks.find(check => check.name === "part2_kept")?.ok).toBe(false);
+    const single = { self: agents.self, other: agents.self };
+    expect(workloadDefinitions.M1.grade("abcd1234", { ...artifacts, children: [child(1, "self"), child(2, "self")] }, single)
+      .checks.find(check => check.name === "two_agents")?.ok).toBe(false);
+  });
+
   it("grades A1 and C1 markers", () => {
     expect(workloadDefinitions.A1.grade("abcd1234", passingBrief).verdict).toBe("pass");
     expect(workloadDefinitions.C1.grade("abcd1234", passingBrief).checks.find(check => check.name.includes("followup"))?.ok).toBe(false);
     expect(workloadDefinitions.C1.grade("abcd1234", { ...passingBrief, documents: { brief: `${passingBrief.documents.brief}FOLLOWUP-abcd1234\n` } }).verdict).toBe("pass");
+  });
+
+  it("fails M1 when a subtask needed a board Retry, and checks the parent got one stall wake per stall", () => {
+    const done = record([sample(1_000, "done", [run("r1", "succeeded", 0, 900)])], { finalStatus: "done" });
+    const withChildRetry = { ...done, childRetries: [{ childIssueId: "c2", at: 1, observedRunId: "r", httpStatus: 200, accepted: true, error: null }] };
+    expect(gradeR3(done)).toMatchObject({ verdict: "n/a" });
+    expect(gradeR3(withChildRetry)).toMatchObject({ verdict: "fail", detail: "retry_needed_on_subtask_1 (c2)" });
+    const stalled = { issueStatus: "done", documents: {}, agentComments: [], files: {}, commands: {}, workspacePath: null,
+      childStalls: [{ childIssueId: "c2", recoveryActionId: "a1" }] };
+    const wakeA1 = { stalledIssueId: "c2", recoveryActionId: "a1" };
+    expect(stallWakeChecks({ ...stalled, stallWakes: [wakeA1] } as never)[0]).toMatchObject({ ok: true });
+    expect(stallWakeChecks({ ...stalled, stallWakes: [] } as never)[0]).toMatchObject({ ok: false, detail: "stalls=1 wakes=0 unwoken=c2:a1" });
+    expect(stallWakeChecks({ ...stalled, stallWakes: [wakeA1, wakeA1] } as never)[0]).toMatchObject({ ok: false });
+    const twoStalls = { ...stalled, childStalls: [...stalled.childStalls, { childIssueId: "c2", recoveryActionId: "a2" }] };
+    expect(stallWakeChecks({ ...twoStalls, stallWakes: [wakeA1] } as never)[0]).toMatchObject({ ok: false, detail: "stalls=2 wakes=1 unwoken=c2:a2" });
+    expect(stallWakeChecks({ ...twoStalls, stallWakes: [wakeA1, { stalledIssueId: "c2", recoveryActionId: "a2" }] } as never)[0]).toMatchObject({ ok: true });
+    expect(stallWakeChecks({ ...stalled, childStalls: [] } as never)).toEqual([]);
+  });
+
+  it("grades S1: stopped run cancelled, nothing ran before the continue comment, brief has both markers", () => {
+    const base: OracleArtifacts = { issueStatus: "done", documents: { brief: "CHAOS-abcd1234\nCONTINUE-abcd1234\n- one\n- two\n- three\n" },
+      agentComments: [], files: {}, commands: {}, workspacePath: null,
+      stop: { runId: "r1", runStatus: "cancelled", runsStartedBeforeContinue: [], continuePosted: true } };
+    expect(workloadDefinitions.S1.grade("abcd1234", base).verdict).toBe("pass");
+    const restarted = workloadDefinitions.S1.grade("abcd1234", { ...base, stop: { ...base.stop!, runsStartedBeforeContinue: ["r2"] } });
+    expect(restarted.checks.find(check => check.name === "nothing_ran_after_stop")).toMatchObject({ ok: false, detail: "continue=true runs=r2" });
+    expect(workloadDefinitions.S1.grade("abcd1234", { ...base, stop: { ...base.stop!, runStatus: "succeeded" } }).verdict).toBe("fail");
+    expect(workloadDefinitions.S1.grade("abcd1234", { ...base, stop: undefined }).verdict).toBe("fail");
   });
 
   it("grades B1 by running the tests and the CLI", () => {
@@ -180,6 +255,27 @@ describe("T-oracles", () => {
       commands: { unittest: { exitCode: 0, stdout: "", stderr: "OK" }, slugify: { exitCode: 0, stdout: "hello-chaos-world\n", stderr: "" } } };
     expect(workloadDefinitions.B1.grade("abcd1234", base).verdict).toBe("pass");
     expect(workloadDefinitions.B1.grade("abcd1234", { ...base, commands: { ...base.commands, unittest: { exitCode: 1, stdout: "", stderr: "FAILED" } } }).verdict).toBe("fail");
+  });
+
+  it("grades R1 by running the agent's node test and a hidden case against its module", () => {
+    const base: OracleArtifacts = { issueStatus: "done", documents: {}, agentComments: [], workspacePath: "/tmp/ws",
+      files: { "packages/shared/src/chaos/slug-abcd1234.ts": "export function chaosSlug() {}",
+        "packages/shared/src/chaos/slug-abcd1234.test.ts": [
+          "import test from \"node:test\";", "import assert from \"node:assert/strict\";", "import { chaosSlug } from \"./slug-abcd1234.ts\";",
+          "test(\"slug\", () => {", "  assert.equal(chaosSlug(\"Hello Chaos World\"), \"hello-chaos-world\");",
+          "  assert.equal(chaosSlug(\"a  b\"), \"a-b\");", "  assert.equal(chaosSlug(\"--x--\"), \"x\");", "});"].join("\n") },
+      commands: { node_test: { exitCode: 0, stdout: "", stderr: "" },
+        slug: { exitCode: 0, stdout: "[\"hello-chaos-world\",\"r1-paperclip-chaos-2026\"]\n", stderr: "" } } };
+    expect(workloadDefinitions.R1.grade("abcd1234", base).verdict).toBe("pass");
+    expect(workloadDefinitions.R1.grade("abcd1234", { ...base, commands: { ...base.commands,
+      slug: { exitCode: 0, stdout: "[\"hello-chaos-world\",\"-r1-paperclip-chaos-2026-\"]\n", stderr: "" } } }).verdict).toBe("fail");
+    expect(r1TestChecksSlug("import test from \"node:test\";")).toBe(false);
+    expect(r1TestChecksSlug("import test from \"node:test\"; import assert from \"node:assert\"; assert.ok(chaosSlug(\"x\"));")).toBe(false);
+    expect(r1TestChecksSlug([ "import test from \"node:test\";", "import assert from \"node:assert/strict\";",
+      "for (const [input, want] of [[\"Hello Chaos World\", \"hello-chaos-world\"], [\"a b\", \"a-b\"], [\"-x-\", \"x\"]])",
+      "  test(input, () => assert.equal(chaosSlug(input), want));"].join("\n"))).toBe(true);
+    const argv = workloadDefinitions.R1.collect.commands.find(command => command.name === "node_test")!.argv;
+    expect(typeof argv === "function" ? argv("abcd1234") : argv).toEqual([process.execPath, "--test", "packages/shared/src/chaos/slug-abcd1234.test.ts"]);
   });
 
   it("grades B5 against the deterministic bench result", () => {

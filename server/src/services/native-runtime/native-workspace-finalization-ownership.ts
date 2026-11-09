@@ -16,12 +16,11 @@ import { currentNativeWorkspaceRecoveryResult } from "./native-workspace-recover
 import { withWorkspaceLockKeepalive } from "./native-workspace-lock-keepalive.js";
 import {
   currentNativeControllerIdentity,
-  evaluateNativeControllerTakeover,
   type NativeControllerIdentity,
 } from "./native-restart-recovery.js";
 
 import { currentWorkspaceWorker, requestWorkspaceWorkerStopProof, type WorkspaceWorker, type WorkspaceWorkerStopProof } from "./native-workspace-platform-proof.js";
-import { currentProcessGroupId, proveLocalWorkspaceOwnerStopped, type LocalWorkspaceOwnerStop } from "./native-workspace-owner-stop-proof.js";
+import { currentProcessGroupId, proveCopybackOwnerGone, proveLocalWorkspaceOwnerStopped, type LocalWorkspaceOwnerStop } from "./native-workspace-owner-stop-proof.js";
 import { currentDeploymentIdentity, proveOwnerGone } from "../owner-proof.js";
 
 const OWNER_KEY = "nativeWorkspaceFinalizationOwner";
@@ -48,6 +47,8 @@ type Owner = {
   processStartedAt: string;
   /** Copyback children inherit this group; a successor uses it to prove they stopped. */
   processGroupId?: number;
+  /** PID space of `pid` (`currentProcessSpaceHash`). Absent on older receipts. */
+  hostHash?: string;
   worker?: WorkspaceWorker;
   /** The platform volume this deployment mounted; it binds a later deployment proof. */
   volumeId?: string;
@@ -113,7 +114,8 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
   const owner: Owner = {
     token: randomUUID(), controllerBootId: identity.bootId, hostname: os.hostname(), pid: identity.pid,
     processStartedAt: identity.processStartedAt.toISOString(),
-    ...(processGroupId ? { processGroupId } : {}), worker: currentWorkspaceWorker(),
+    ...(processGroupId ? { processGroupId } : {}), ...(identity.hostHash ? { hostHash: identity.hostHash } : {}),
+    worker: currentWorkspaceWorker(),
     // Record a volume only when this deployment is volume-exclusive by the same rule the proof uses.
     ...(deployment ? { exclusiveVolume: deployment.exclusiveVolume } : {}),
     ...(deployment?.exclusiveVolume && deployment.volumeId ? { volumeId: deployment.volumeId } : {}),
@@ -237,16 +239,12 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
             }
           }
           if (!prior) return requireStopVerification();
-          if (!platformProof && !deploymentProof && prior.hostname !== owner.hostname) return requireStopVerification();
           const knownJoinedHere = prior.controllerBootId === identity.bootId
             && prior.pid === identity.pid && joinedOwnerTokens.has(prior.token)
             && !activeOwnerTokens.has(prior.token);
           if (!platformProof && !deploymentProof && !knownJoinedHere) {
-            const takeover = await evaluateNativeControllerTakeover({
-              owner: { leaseOwner: prior.token, leaseExpiresAt: new Date(0), controllerPid: prior.pid,
-                controllerProcessStartedAt: new Date(prior.processStartedAt) }, now: new Date(),
-            });
-            if (!takeover.allowed) return requireStopVerification();
+            // Shared prover: the receipt's PID space, or this host for older receipts.
+            if ((await proveCopybackOwnerGone(prior)).verdict !== "gone") return requireStopVerification();
             // A dead parent may have orphaned tar/Git children. Only a durable
             // completed-copyback barrier proves they joined; otherwise board proof
             // is required even on the same host. Both callers reuse this barrier.

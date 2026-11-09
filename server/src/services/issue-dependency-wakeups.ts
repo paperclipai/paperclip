@@ -5,13 +5,18 @@ import { agentWakeupRequests } from "@paperclipai/db";
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
-export const issueBlockersResolvedWakePayloadSql =
-  sql`${agentWakeupRequests.payload}#>>'{_paperclipWakeContext,wakeReason}' = ${ISSUE_BLOCKERS_RESOLVED_WAKE_REASON}`;
+export const ISSUE_CHILDREN_COMPLETED_WAKE_REASON = "issue_children_completed";
 
-export function isIssueBlockersResolvedWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
+const DEPENDENCY_RESOLVED_WAKE_REASONS = [ISSUE_BLOCKERS_RESOLVED_WAKE_REASON, ISSUE_CHILDREN_COMPLETED_WAKE_REASON];
+
+export const dependencyResolvedWakePayloadSql =
+  sql`${agentWakeupRequests.payload}#>>'{_paperclipWakeContext,wakeReason}' in (${sql.join(
+    DEPENDENCY_RESOLVED_WAKE_REASONS.map(reason => sql`${reason}`), sql`, `)})`;
+
+export function isDependencyResolvedWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
   const context = payload?._paperclipWakeContext;
   return context !== null && typeof context === "object" && !Array.isArray(context)
-    && (context as Record<string, unknown>).wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON;
+    && DEPENDENCY_RESOLVED_WAKE_REASONS.includes(String((context as Record<string, unknown>).wakeReason));
 }
 
 /**

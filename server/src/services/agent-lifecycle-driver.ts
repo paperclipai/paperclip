@@ -1,5 +1,7 @@
-import { and, eq, inArray } from "drizzle-orm";
-import { agents, environments, plugins, pluginCompanySettings, type Db } from "@paperclipai/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { CANCELLABLE_HEARTBEAT_RUN_STATUSES } from "./heartbeat/recovery.js";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
+import { agents, companies, environments, heartbeatRuns, plugins, pluginCompanySettings, type Db } from "@paperclipai/db";
 import { instanceSettingsService } from "./instance-settings.js";
 import { pluginHasAgentEnvironments, pluginServesAgentEnvironment } from "./plugin-environment-driver.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -14,6 +16,7 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
   const heartbeat = heartbeatService(db, { pluginWorkerManager: manager });
   return {
     async onReady(agent) {
+      await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: agent.companyId, trigger: "pause_lifted" }));
       await heartbeat.resumeQueuedRunsForAgent(agent.companyId, agent.id);
     },
     async requiredPluginIds(agent) {
@@ -60,7 +63,24 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
             await db.select().from(agents).where(eq(agents.companyId, agent.companyId)))];
         const reason = agent.lifecycleHolds?.includes("company_archived")
           ? "Cancelled because the company was archived" : "Agent lifecycle stop requested";
-        if (!await heartbeat.stopInvocationsForAgents(ids, reason)) return "pending";
+        // Record what this pause stopped the runs for, so a budget resume
+        // continues only the work its own budget stopped, never a manual pause.
+        if (agent.lifecycleState === "pausing") {
+          // The cause recorded when the pause started survives a resume that
+          // already removed the holds before this Stop ran.
+          const cause = agent.lifecycleOperation?.pauseCause;
+          const pauseStop = sql`jsonb_build_object('pauseStop', jsonb_build_object(
+            'holds', ${JSON.stringify(cause?.holds ?? agent.lifecycleHolds ?? [])}::jsonb,
+            'companyPauseReason', ${cause ? sql`${cause.companyPauseReason}::text`
+              : sql`(select ${companies.pauseReason} from ${companies} where ${companies.id} = ${agent.companyId})`}))`;
+          await db.update(heartbeatRuns).set({
+            resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${pauseStop}`,
+          }).where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+            inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+            sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ? 'pauseStop')`));
+        }
+        if (!await heartbeat.stopInvocationsForAgents(ids, reason,
+          { preservePauseDeferred: agent.lifecycleState === "pausing" })) return "pending";
       }
       return "complete";
     },

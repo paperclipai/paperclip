@@ -159,6 +159,34 @@ describe("PaperclipRunnerToolAuthority", () => {
       .rejects.toThrow("This connector is no longer assigned or authorized");
   });
 
+  it("names a missing agent id and its closest real agent instead of a bare code (restart chaos t06)", async () => {
+    const claudeId = "0cb62ac2-742d-442c-abb4-edfcc60defe4";
+    await db.insert(agents).values({ id: claudeId, companyId, name: "Chaos claude", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "claude" }, runtimeConfig: {}, status: "active" });
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const spliced = "0cb62ac2-742d-442c-acc9-d21dd936e716";
+    for (const call of [
+      { tool: "create_task", callId: "t06-spliced-assignee", arguments: { idempotencyKey: "t06-spliced", title: "Part 2", assigneeActorId: spliced } },
+      { tool: "get_agent", callId: "t06-spliced-read", arguments: { actorId: spliced } },
+    ]) {
+      const error = await authority.execute(call).then(() => null, (failure: Error) => failure);
+      expect(error?.message).toMatch(/^paperclip_runner_agent_not_found: /);
+      expect(error?.message).toContain(spliced);
+      expect(error?.message).toContain(`Chaos claude (${claudeId})`);
+      expect(error?.message).toContain("list_agents");
+    }
+    const recovered = await authority.recover({ tool: "get_agent", callId: "t06-spliced-recovered", arguments: { actorId: spliced } });
+    expect(recovered).toMatchObject({ isError: true });
+    const text = JSON.stringify(recovered);
+    expect(text).toContain("paperclip_runner_agent_not_found: ");
+    expect(text).toContain(`Chaos claude (${claudeId})`);
+    expect(text).toContain("list_agents");
+    const created = await db.select({ id: issues.id }).from(issues).where(eq(issues.originId,
+      `paperclip-runner:create-task:${issueId}:t06-spliced`));
+    expect(created).toEqual([]);
+    await db.delete(agents).where(eq(agents.id, claudeId));
+  });
+
   it("advertises only real bindings and reads the bound task", async () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,

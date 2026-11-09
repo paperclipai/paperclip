@@ -14,7 +14,7 @@ import { environmentService } from "../environments.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { measureRunPhase } from "../execution-preparation-timing.js";
+import { drainRunPreparationPhases, measureRunPhase } from "../execution-preparation-timing.js";
 import { parseNativeSessionGoalControl } from "./scheduling.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import {
@@ -601,6 +601,12 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       });
       if (wakeIngressSpan)
         nativeRunnerPreparationSpans.unshift(wakeIngressSpan);
+      // Named preparation phases (workspace, configuration, runner staging)
+      // that ran before dispatch, as run-log spans under task.prepare.
+      nativeRunnerPreparationSpans.push(...drainRunPreparationPhases(run.id).map(phase => ({
+        name: phase.name, startedAtMs: phase.startedAtMs, endedAtMs: phase.endedAtMs,
+        ...(phase.outcome === "failed" ? { outcome: "failed" as const } : {}),
+      })));
       nativeRunnerPreparationSpans.push(
         ...buildNativeHeartbeatPreparationSpans({
           runCreatedAtMs,

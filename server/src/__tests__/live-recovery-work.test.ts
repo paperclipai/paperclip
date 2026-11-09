@@ -1,3 +1,4 @@
+import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { spawn } from "node:child_process";
@@ -346,14 +347,17 @@ describe("residual recovery production matrix", () => {
     expect(await getRun(run.id)).toMatchObject({ status: "running", executionStage: "dispatching", errorCode: null });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toEqual([]);
   });
-  it("keeps the stale-age guard for this boot, a recorded process, or a dispatched adapter", async () => {
+  // A recorded process is judged by the shared prover, not by age: a live one
+  // is held (a proven-dead one settles at once, recovery-stale-issue-lock-sweep).
+  it("keeps the stale-age guard for this boot or a dispatched adapter, and holds a live recorded process", async () => {
     const f = await fixture(), now = Date.now(), expired = new Date(now - 1_000);
     const [sameBoot] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
       runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: expired,
       executionStage: "preparing", updatedAt: new Date(now), startedAt: new Date(now) }).returning();
     const [withProcess] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
       runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expired,
-      executionStage: "dispatching", processPid: 2 ** 22 + 17, updatedAt: new Date(now), startedAt: new Date(now) }).returning();
+      executionStage: "dispatching", processPid: process.pid, processHostHash: currentProcessSpaceHash(),
+      updatedAt: new Date(now), startedAt: new Date(now) }).returning();
     // A dispatched adapter may hold remote work without a local process.
     const [dispatched] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
       runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expired,

@@ -85,8 +85,24 @@ describe("plugin-provided Runner execution", () => {
     expect(operations).not.toContain("complete");
     release();
     const result = await checked;
-    if (preparationStopped) { expect(result).toEqual({ value: true, error: null }); expect(operations).toEqual(["stop", "status", "complete"]); }
+    if (preparationStopped) { expect(result).toEqual({ value: "completed", error: null }); expect(operations).toEqual(["stop", "status", "complete"]); }
     else { expect(result.error?.message).toContain("termination is unconfirmed"); expect(fixture.sets).toContainEqual(expect.objectContaining({ status: "pending_cleanup", cleanupStatus: "failed" })); }
+  });
+  it("still stops a startup task first when resume already observed the stop", async () => {
+    const value = row();
+    Object.assign(value.lease.metadata, { runnerTaskDispatched: false,
+      runnerTaskStartupCleanup: { contextId: "startup", requiresPreparationStop: true } });
+    const fixture = database(value), workers = worker();
+    fixture.db.select = ((...args: unknown[]) => (database(value).db.select as (...values: unknown[]) => unknown)(...args)) as Db["select"];
+    Object.assign(workers, { drainStartup: vi.fn(async () => undefined) });
+    const operations: string[] = [];
+    workers.call.mockImplementation(async (...args: any[]) => {
+      const operation = args[2].operation.kind; operations.push(operation);
+      return operation === "status" ? { kind: "status", taskId: "attempt-1", phase: "cancelled", executionStopped: true, preparationStopped: true }
+        : { kind: "accepted", taskId: "attempt-1" };
+    });
+    await expect(settleDispatchedEnvironmentTask(fixture.db, workers as never, { companyId: "company", id: leaseId }, { executionStopObserved: true })).resolves.toBe("completed");
+    expect(operations).toEqual(["stop", "status", "complete"]);
   });
   it("negotiates the transient context without reading transport for an older plugin", async () => {
     const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);

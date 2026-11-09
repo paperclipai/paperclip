@@ -341,7 +341,7 @@ describe("cost routes", () => {
       .send({ budgetMonthlyCents: 2500 });
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Board access required" });
+    expect(res.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -360,7 +360,7 @@ describe("cost routes", () => {
       .send({ budgetMonthlyCents: 2500 });
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Board access required" });
+    expect(res.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();

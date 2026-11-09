@@ -404,6 +404,8 @@ export {
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   ISSUE_RECOVERY_ACTION_STATUSES,
   ISSUE_RECOVERY_ACTION_OWNER_TYPES,
+  ISSUE_BLOCKER_STALLED_WAKE_REASON,
+  ISSUE_BLOCKER_STALL_RELATIONS,
   ISSUE_RECOVERY_ACTION_OUTCOMES,
   pluginOperationIssueOriginKind,
   isPluginOperationIssueOriginKind,
@@ -597,6 +599,7 @@ export {
   type IssueRecoveryActionKind,
   type IssueRecoveryActionStatus,
   type IssueRecoveryActionOwnerType,
+  type IssueBlockerStallRelation,
   type IssueRecoveryActionOutcome,
   type IssueRelationType,
   type IssueTreeControlMode,
@@ -1122,6 +1125,7 @@ export type {
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
   IssueRecoveryAction,
+  IssueBlockerStalledWakeContext,
   IssueWatchdog,
   IssueWatchdogStatus,
   IssueWatchdogSummary,
@@ -1220,6 +1224,7 @@ export type {
   IssueDocument,
   IssueDocumentSummary,
   DocumentRevision,
+  ExactDocumentRevision,
   DocumentFormat,
   LegacyPlanDocument,
   IssueAttachment,
@@ -1995,6 +2000,7 @@ export {
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
+  confirmOwnerGoneSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
@@ -2894,3 +2900,7 @@ export { readProviderFailure, type ProviderFailure } from "./provider-failure.ge
 export type { BoardBootstrap, BoardBootstrapSession } from "./types/board-bootstrap.js";
 export { readBoardBootstrap } from "./board-bootstrap.js";
 export * from "./provider-rate-limits.js";
+export {
+  TASK_IDENTITY_CHANGED_FIELD,
+  issueActivityChangesTaskIdentity,
+} from "./issue-activity-identity.js";

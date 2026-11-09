@@ -123,6 +123,7 @@ import {
   useRunnerGoalControl,
 } from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
+import { QUEUED_MESSAGE_AUTO_STEER_DELAY_MS } from "@/components/task-chat/queued-message-auto-steer";
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
@@ -586,6 +587,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onEditQueuedComment,
     onReorderQueuedComments,
     onSteerQueuedComment,
+    queuedMessageAutoSteerDelayMs = QUEUED_MESSAGE_AUTO_STEER_DELAY_MS,
     onDiscardQueuedComment,
     blockedBy = [],
     blockerAttention,
@@ -3542,6 +3544,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                           key={issueId}
                           queue={queuedMessageQueue ?? emptyQueuedCommentQueue}
                           onEdit={beginQueuedEdit}
+                          editingCommentId={queuedEdit?.commentId ?? null}
+                          autoSteerDelayMs={queuedMessageAutoSteerDelayMs}
                           onReorder={async (orderedCommentIds, revision) => {
                             if (!onReorderQueuedComments)
                               throw new Error("Queue reordering is unavailable.");

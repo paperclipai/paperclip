@@ -117,6 +117,42 @@ export function observeStoppedWorkspaceRecovery(db: Db, source: StopEvidenceSour
   return recheckStoppedWorkspaceRecovery(db, source, true);
 }
 
+/**
+ * Ownership-reconciler settle for the RC-50 copyback-owner hold. The recorded
+ * owner was proven gone by the shared prover, so the waiting recheck is due
+ * now instead of after its backoff. It grants no attempt and settles nothing
+ * itself: the worker still proves the owner and its copyback process group
+ * before it takes ownership. Returns whether the recheck was woken.
+ */
+export async function wakeCopybackOwnerRecheck(db: Db, input: {
+  companyId: string; actionId: string; now: Date;
+  owner: { pid: number | null; processStartedAt: string | null; bootId: string | null; processSpace: string | null };
+}): Promise<boolean> {
+  return db.transaction(async tx => {
+    const [action] = await tx.select().from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
+      inArray(issueRecoveryActions.status, ["active", "escalated"]))).for("update");
+    const hold = action?.evidence?.workspaceOwnerRecovery as { state?: unknown; owner?: Record<string, unknown> } | undefined;
+    const owner = hold?.owner;
+    if (!action || hold?.state !== "operator_required" || !owner || owner.pid !== input.owner.pid
+      || owner.processStartedAt !== input.owner.processStartedAt
+      || (owner.controllerBootId ?? null) !== input.owner.bootId || (owner.hostHash ?? null) !== input.owner.processSpace) return false;
+    const current = readSystemRecovery(action.evidence);
+    const runId = action.evidence.runId;
+    const now = input.now.getTime();
+    if (!current || typeof runId !== "string" || current.sourceRunId !== runId || current.state !== "awaiting_evidence"
+      || current.failure?.code !== "copyback_stop_unconfirmed"
+      || (current.deadlineAt !== null && now >= current.deadlineAt)) return false;
+    const due = Math.max(now, current.providerCooldownAt ?? 0);
+    if (current.nextAttemptAt !== null && current.nextAttemptAt <= due) {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
+      return true;
+    }
+    return updateSystemRecovery(tx as unknown as Db, { companyId: input.companyId, issueId: action.sourceIssueId,
+      runId, actionId: action.id }, current, { ...current, revision: current.revision + 1, nextAttemptAt: due });
+  });
+}
+
 /** Admission records intent only. No request handler runs physical recovery. */
 export async function requestWorkspaceRecovery(input: Source & { db: Db; idempotencyKey: string; actorId: string }) {
   return input.db.transaction(async tx => {
@@ -486,15 +522,24 @@ async function recordCopybackOwnerHold(db: Db, input: Source, generationId: stri
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   const owner = source?.owner;
   if (!owner || typeof owner !== "object" || typeof (owner as { token?: unknown }).token !== "string") return;
-  await db.update(issueRecoveryActions).set({
-    // A confirmation names one receipt; a newer unverified owner needs its own.
-    evidence: sql`(${issueRecoveryActions.evidence} - 'workspaceOwnerStop') || jsonb_build_object('workspaceOwnerRecovery',
-      jsonb_build_object('state', 'operator_required', 'owner', ${JSON.stringify(owner)}::jsonb))`,
-    updatedAt: new Date(),
-  }).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
+  const target = and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
     eq(issueRecoveryActions.sourceIssueId, input.issueId),
     sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}' = ${generationId}`,
-    sql`${issueRecoveryActions.evidence}#>'{workspaceOwnerRecovery,owner}' is distinct from ${JSON.stringify(owner)}::jsonb`));
+    sql`${issueRecoveryActions.evidence}#>'{workspaceOwnerRecovery,owner}' is distinct from ${JSON.stringify(owner)}::jsonb`);
+  await db.transaction(async tx => {
+    const [action] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(target).for("update");
+    if (!action) return;
+    // Wake the ownership worker (on any server) before the hold it announces,
+    // so a quiet worker judges this owner and can wake the recheck.
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.ownershipInvariantReport,
+      JSON.stringify({ companyId: input.companyId, runId: input.runId, actionId: input.actionId }));
+    await tx.update(issueRecoveryActions).set({
+      // A confirmation names one receipt; a newer unverified owner needs its own.
+      evidence: sql`(${issueRecoveryActions.evidence} - 'workspaceOwnerStop') || jsonb_build_object('workspaceOwnerRecovery',
+        jsonb_build_object('state', 'operator_required', 'owner', ${JSON.stringify(owner)}::jsonb))`,
+      updatedAt: new Date(),
+    }).where(target);
+  });
 }
 
 const cursors = new WeakMap<Db, string>();

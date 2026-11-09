@@ -1345,6 +1345,200 @@ it.each(["success", "integrity_failure"] as const)("ignores a replaced connectio
   }
 });
 
+it("fails closed with the schema issue when the runner keeps redelivering an invalid event (restart chaos t01)", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-schema-stall-"));
+  const commits = vi.fn(async () => undefined);
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "invalid-write-target-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  delete event.schemaVersion;
+  event.priority = 7;
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      await vi.waitFor(() => expect(client.socket.destroyed || client.socket.readyState === "closed"
+        || onProtocolIntegrityError.mock.calls.length > 0).toBe(true));
+      clock += 3_000;
+      client.socket.destroy();
+    }
+    expect(commits).not.toHaveBeenCalled();
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as { reason: string; detail: string };
+    expect(failure.reason).toBe("runner_event_commit_stalled");
+    expect(failure.detail).toMatch(/^event_schema_invalid:\/\S* at source seq 1$/);
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed at once when the journal cannot record a runner event", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-journal-failure-"));
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: vi.fn(async () => undefined), onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "journal-failure-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  try {
+    await core.start();
+    const client: AuthenticatedClient = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const journal = core.store as unknown as { commit: (...args: unknown[]) => void; commitEvent: (...args: unknown[]) => Promise<boolean> };
+    const diskFull = Object.assign(new Error("no space on /private/disk"), { code: "ENOSPC" });
+    vi.spyOn(journal, "commit").mockImplementation(() => { throw diskFull; });
+    vi.spyOn(journal, "commitEvent").mockRejectedValue(diskFull);
+    sendSecure(client, envelope);
+    await vi.waitFor(() => expect(onProtocolIntegrityError).toHaveBeenCalledOnce());
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error & { reason: string; detail: string };
+    expect(failure).toMatchObject({ reason: "runner_event_commit_stalled", detail: "journal_write_failed:ENOSPC at source seq 1" });
+    expect(failure.message).not.toContain("/private/disk");
+    client.socket.destroy();
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed when checkpoint storage keeps failing before a reconnect authenticates", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-stall-"));
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: vi.fn(async () => undefined), onProtocolIntegrityError });
+  let checkpointUp = true;
+  core.setCheckpointPersistence(async () => {
+    if (!checkpointUp) throw Object.assign(new Error("connect to private-db-host refused"), { code: "ECONNREFUSED" });
+  });
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    const tickets = Array.from({ length: 20 }, () => core.issueBootstrapTicket(60_000));
+    await core.flushCheckpoint();
+    checkpointUp = false;
+    for (const ticket of tickets) {
+      const client = await authenticate(core, ticket);
+      client?.socket.destroy();
+      clock += 3_000;
+      if (onProtocolIntegrityError.mock.calls.length > 0) break;
+    }
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error & { reason: string; detail: string };
+    expect(failure.reason).toBe("runner_event_commit_stalled");
+    expect(failure.detail).toMatch(/^checkpoint_flush_failed:ECONNREFUSED at source seq 1$/);
+    expect(failure.message).not.toContain("private-db-host");
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  { label: "an out-of-order event", seq: 5, failCommit: false, stepMs: 3_000, failsClosed: true,
+    detail: "event_sequence_mismatch at source seq 5" },
+  { label: "20 failures inside 45 s", seq: 1, failCommit: true, stepMs: 1_000, failsClosed: false, detail: null },
+])("bounds commit-stall reconnects for $label", async ({ seq, failCommit, stepMs, failsClosed, detail }) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-stall-bound-"));
+  const commits = vi.fn(async () => {
+    if (failCommit) throw Object.assign(new Error("transient"), { code: "ECONNRESET" });
+  });
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(seq);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = `stall-bound-${seq}`;
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      if (failCommit) await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(attempt));
+      await new Promise<void>(resolveTurn => setTimeout(resolveTurn, 20));
+      clock += stepMs;
+      client.socket.destroy();
+    }
+    if (failsClosed) {
+      expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+      expect(onProtocolIntegrityError.mock.calls[0]![0]).toMatchObject({ reason: "runner_event_commit_stalled", detail });
+    } else {
+      expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+    }
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed when runner events keep failing to commit without progress", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-delivery-stall-"));
+  const commits = vi.fn(async () => {
+    throw Object.assign(new Error("connection reset by private-host-fixture"), { code: "ECONNRESET" });
+  });
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "stalled-delivery-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(attempt));
+      await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+      if (attempt < 20) expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+      clock += 3_000;
+      client.socket.destroy();
+    }
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error;
+    expect(failure).toMatchObject({ reason: "runner_event_commit_stalled", detail: "ECONNRESET at source seq 1" });
+    expect(failure.message).toContain("runner_event_commit_stalled");
+    expect(failure.message).not.toContain("private-host-fixture");
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function renewalRequest(client: AuthenticatedClient, expiresAt: number): Record<string, unknown> {
   return {
     protocol: "paperclip.runner", version: client.welcome.version,

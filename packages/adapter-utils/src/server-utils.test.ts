@@ -3008,6 +3008,34 @@ describe("renderPaperclipWakePrompt", () => {
     expect(JSON.parse(stringifyPaperclipWakePayload(payload)!)).toMatchObject({ dispositionRepair: payload.dispositionRepair });
   });
 
+  it("tells the agent what it can do when a child or blocker stalls on the board", () => {
+    const payload = {
+      reason: "issue_blocker_stalled",
+      issue: { id: "parent-1", identifier: "CHA-5", title: "Coordinate the rollout", status: "blocked", priority: "medium" },
+      blockerStall: {
+        stalledIssueId: "child-1",
+        stalledIssueIdentifier: "CHA-8",
+        stalledIssueTitle: "Ship the migration",
+        stalledIssueStatus: "blocked",
+        relation: "child",
+        recoveryAction: { id: "action-1", kind: "run_recovery", cause: "execution_recovery_budget_exhausted",
+          status: "escalated", ownerType: "board", nextAction: "Retry the run or reassign the task" },
+      },
+    };
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      blockerStall: { stalledIssueIdentifier: "CHA-8", relation: "child",
+        recoveryAction: { cause: "execution_recovery_budget_exhausted", nextAction: "Retry the run or reassign the task" } },
+    });
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("## Stalled dependency");
+    expect(prompt).toContain("CHA-8 Ship the migration (blocked)");
+    expect(prompt).toContain("execution_recovery_budget_exhausted");
+    expect(prompt).toContain("Retry the run or reassign the task");
+    expect(prompt).toMatch(/re-delegate/i);
+    expect(prompt).toMatch(/escalate/i);
+    expect(prompt).toMatch(/block this issue/i);
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",

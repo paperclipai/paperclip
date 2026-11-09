@@ -1,6 +1,7 @@
 import type { AgentInstructionCommitReceipt } from "@paperclipai/shared";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { agents, companies, type Db } from "@paperclipai/db";
 import { badRequest, notFound } from "../../errors.js";
 import { agentInstructionRevisionService } from "../agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
@@ -44,7 +45,7 @@ export async function executeAgentInstructionTool(input: {
       ...scope(targetAgentId), runId: input.binding.runId, entryFile: receipt.revision.entryFile,
       revisionId: receipt.revision.id, contentHash: receipt.revision.contentHash,
     }).catch(() => undefined);
-    return receipt;
+    return { ...receipt, ...(await savedAgentResource(input.db, scope(targetAgentId))) };
   };
   switch (input.tool) {
     case "read_agent_instructions": {
@@ -73,4 +74,17 @@ export async function executeAgentInstructionTool(input: {
       return acknowledge(receipt, args.targetAgentId);
     }
   }
+}
+
+/** Runs snapshot instructions when their runtime context is built, so a save
+ * reaches only runs that start afterward. The chat reply needs a real profile
+ * href for the edited agent; completion guidance forbids guessing routes. */
+const INSTRUCTION_SAVE_EFFECT = "Runs that start after this save use these instructions. Runs already in progress keep the instructions they started with.";
+async function savedAgentResource(db: Db, target: { companyId: string; agentId: string }) {
+  const [row] = await db.select({ name: agents.name, issuePrefix: companies.issuePrefix }).from(agents)
+    .innerJoin(companies, eq(companies.id, agents.companyId))
+    .where(and(eq(agents.id, target.agentId), eq(agents.companyId, target.companyId)));
+  if (!row) return { appliesTo: INSTRUCTION_SAVE_EFFECT };
+  const href = `/${encodeURIComponent(row.issuePrefix)}/agents/${encodeURIComponent(target.agentId)}`;
+  return { appliesTo: INSTRUCTION_SAVE_EFFECT, resourceLinks: [{ kind: "agent", id: target.agentId, name: row.name, href }] };
 }

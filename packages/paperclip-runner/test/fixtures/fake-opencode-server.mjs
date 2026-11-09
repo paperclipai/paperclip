@@ -275,6 +275,12 @@ async function callTerminalTool(promptBody, signal) {
     const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: bad });
     await writeFile(join(process.env.XDG_DATA_HOME, "fake-criteria-repair.json"), JSON.stringify(rejected));
   }
+  if (String(prompt.message ?? "").includes("repair-revision")) {
+    const stale = structuredClone(result);
+    stale.completionClaim.contractRevision = "stale-revision";
+    const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: stale });
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-revision-repair.json"), JSON.stringify(rejected));
+  }
   const call = () => mcpRequest("tools/call", {
     name: blocked ? "paperclip_block" : "paperclip_finish",
     arguments: result,

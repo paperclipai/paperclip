@@ -480,6 +480,14 @@ class HarnessNativeSession implements NativeSession {
     };
   }
 
+  beginRunAttachment(input: { identity: OpenNativeSessionInput["identity"] }): boolean {
+    const currentIdentity = this.#input.identity;
+    if (this.#protocolIntegrityFailure !== null || this.#session.beginRunAttachment === undefined
+      || input.identity.sessionId !== currentIdentity.sessionId || input.identity.companyId !== currentIdentity.companyId
+      || input.identity.issueId !== currentIdentity.issueId || input.identity.agentId !== currentIdentity.agentId) return false;
+    return this.#session.beginRunAttachment({ runId: input.identity.runId });
+  }
+
   async attachRun(input: {
     identity: OpenNativeSessionInput["identity"];
     currentRunGrant?: NativeRunRuntimeGrant;

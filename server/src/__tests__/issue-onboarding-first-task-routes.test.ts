@@ -342,6 +342,25 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
+  it.each(["done", "cancelled"])("does not queue an assignment wake for an issue created already %s", async (status) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const app = createApp();
+
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Historical record", status, assigneeAgentId: agentId })
+      .expect(201);
+
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups).toHaveLength(0);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("still queues an assignment wake for an ordinary assigned issue", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId);

@@ -2020,6 +2020,8 @@ describe("rebindNativeSessionCheckpoint", () => {
     const profile = prior.runnerProfileJson as Record<string, unknown>;
     const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
     checkpoint.governedWait = { sourceEvent: { runId: previousRunId, turnId: "old-turn" }, result: { reportedWorkDisposition: "yielded" } };
+    checkpoint.dispositionOnlyRecoveryConsumed = true;
+    checkpoint.dispositionOnlyRecoveryTurnId = "old-restart-continuation";
     const before = structuredClone(prior);
     const rebound = rebindNativeSessionCheckpoint({
       previousRun: prior,
@@ -2037,6 +2039,8 @@ describe("rebindNativeSessionCheckpoint", () => {
       activeTurnId: null,
       terminalTurns: [],
       pendingRuntimeRequests: [],
+      dispositionOnlyRecoveryConsumed: false,
+      dispositionOnlyRecoveryTurnId: null,
       providerRecoveryPolicy: "allow_replacement_after_resume_failure",
       identity: {
         runId: currentRunId,

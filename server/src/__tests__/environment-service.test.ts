@@ -711,6 +711,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(activeImpact?.reusableSandboxLeaseHolders).toEqual([
       {
         leaseId: lease.id,
+        leasePolicy: "reuse_by_environment",
         executionWorkspaceId: workspaceId,
         executionWorkspaceName: "ACME-7-reusable-lease-holder",
         issueId,

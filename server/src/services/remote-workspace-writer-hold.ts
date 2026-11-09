@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { RemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
@@ -12,7 +12,14 @@ export type RemoteWorkspaceWriter = {
   runId: string; agentId: string; issueId: string; issueIdentifier: string | null; lastActivityAt: Date;
   /** The writer run ended; its workspace save or sandbox release has not settled. */
   ended?: boolean;
+  ownerFenceHeld?: boolean;
 };
+
+export function runOwnerFenceHeldSql() {
+  return sql<boolean>`(coalesce(${heartbeatRuns.controllerLeaseExpiresAt} > now(), false) or exists (
+    select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+      and ${nativeRunFinalizations.leaseOwner} is not null and ${nativeRunFinalizations.leaseExpiresAt} > now()))`;
+}
 
 /**
  * Who still holds a remote workspace through its recorded writer run, other
@@ -33,7 +40,7 @@ export async function readRemoteWorkspaceWriterHold(tx: Db, input: {
     errorCode: heartbeatRuns.errorCode, executionRecovery: sql<unknown>`${heartbeatRuns.resultJson}->'executionRecovery'`,
     contextIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
     lastOutputAt: heartbeatRuns.lastOutputAt, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
-    finishedAt: heartbeatRuns.finishedAt,
+    finishedAt: heartbeatRuns.finishedAt, ownerFenceHeld: runOwnerFenceHeldSql(),
   }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, authority.writerRunId)));
   const writerIssueId = prior ? prior.nativeIssueId ?? prior.issueId ?? prior.contextIssueId : null;
@@ -41,7 +48,7 @@ export async function readRemoteWorkspaceWriterHold(tx: Db, input: {
     .where(and(eq(issues.companyId, companyId), eq(issues.id, canonicalExecutionUuid(sql`${writerIssueId}::text`)))) : [];
   if (prior?.status === "running" && writerIssue) return { kind: "held", writer: {
     runId: authority.writerRunId, agentId: prior.agentId, issueId: writerIssue.id, issueIdentifier: writerIssue.identifier,
-    lastActivityAt: prior.lastOutputAt ?? prior.startedAt ?? prior.createdAt,
+    lastActivityAt: prior.lastOutputAt ?? prior.startedAt ?? prior.createdAt, ownerFenceHeld: prior.ownerFenceHeld === true,
   } };
   const leases = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, companyId),
     eq(environmentLeases.heartbeatRunId, authority.writerRunId)));

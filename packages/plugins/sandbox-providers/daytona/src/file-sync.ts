@@ -33,8 +33,8 @@ const SPAN_ATTR = {
   // for a download from the sandbox. Operation identity comes from the parent
   // span, so the transfer span never carries an operation label.
   transferDirection: `${SPAN_ATTR_PREFIX}transfer.direction`,
-  // The five zstd-transport-compression attributes. Values are a closed codec
-  // set or a finite number — never a path, a command line, file content, a
+  // The five transport-compression attributes. Values are a closed codec
+  // set (`zstd`, `gzip`) or a finite number — never a path, a command line, file content, a
   // raw identifier, or error text.
   transferCompressionCodec: `${SPAN_ATTR_PREFIX}transfer.compression.codec`,
   transferCompressionWallMs: `${SPAN_ATTR_PREFIX}transfer.compression.wall_ms`,
@@ -513,6 +513,18 @@ const ZSTD_COMPRESSION_LEVEL = 3;
  * (no compression), per the design's fallback rules. */
 const ZSTD_PROBE_MARKER = "PAPERCLIP_ZSTD_AVAILABLE";
 
+/** Marker for a `gzip` binary on `PATH`. The Daytona runner image ships gzip
+ * but no zstd, so gzip is the fallback codec there; without it every remote
+ * turn uploaded the whole uncompressed workspace seed. */
+const GZIP_PROBE_MARKER = "PAPERCLIP_GZIP_AVAILABLE";
+
+/** gzip level for the fallback codec: level 1 compresses a 220 MB repository
+ * tar to about 70 MB in about 1.3 s; higher levels cost far more CPU for little
+ * extra saving. */
+const GZIP_COMPRESSION_LEVEL = 1;
+
+type TransportCodec = "zstd" | "gzip";
+
 /**
  * Feature-detect zstd support on the running Node runtime. `node:zlib` shipped
  * zstd as of Node v22.15.0 / v23.8.0, ahead of this package's declared
@@ -550,13 +562,15 @@ async function hasCompressedHeader(sourcePath: string): Promise<boolean> {
  * step after the directory create, including the post-compression size
  * stat, so a throw there does not leave the directory behind.
  */
-async function compressFileToHostTemp(sourcePath: string): Promise<{ dir: string; path: string; bytesOut: number }> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-daytona-zstd-"));
-  const tempPath = path.join(dir, "artifact.zst");
+async function compressFileToHostTemp(sourcePath: string, codec: TransportCodec): Promise<{ dir: string; path: string; bytesOut: number }> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-daytona-${codec}-`));
+  const tempPath = path.join(dir, codec === "zstd" ? "artifact.zst" : "artifact.gz");
   try {
     await pipeline(
       createReadStream(sourcePath),
-      zlib.createZstdCompress({ params: { [zlib.constants.ZSTD_c_compressionLevel]: ZSTD_COMPRESSION_LEVEL } }),
+      codec === "zstd"
+        ? zlib.createZstdCompress({ params: { [zlib.constants.ZSTD_c_compressionLevel]: ZSTD_COMPRESSION_LEVEL } })
+        : zlib.createGzip({ level: GZIP_COMPRESSION_LEVEL }),
       createWriteStream(tempPath, { flags: "wx", mode: 0o600 }),
     );
     const bytesOut = (await fs.stat(tempPath)).size;
@@ -768,7 +782,9 @@ interface FileMappingPlan {
    * decompression step does. */
   rawScratch: string;
   compressed: null | {
-    /** Reserved `.zst` scratch name, a direct child of `remoteDir`. */
+    /** Codec of the uploaded bytes; selects the in-sandbox decompressor. */
+    codec: TransportCodec;
+    /** Reserved `.zst` (or `.gz`) scratch name, a direct child of `remoteDir`. */
     zstdScratch: string;
     /** Private `0700` host temp directory holding the compressed file, removed
      * (recursively) after upload. */
@@ -817,6 +833,7 @@ async function syncInFileMappings(input: {
   const mkdirAndProbeCommand = [
     mkdirCommand,
     `&& { command -v zstd >/dev/null 2>&1 && echo ${ZSTD_PROBE_MARKER} || true; }`,
+    `&& { command -v gzip >/dev/null 2>&1 && echo ${GZIP_PROBE_MARKER} || true; }`,
   ].join(" ");
   // `ensureDirectory` span: `mkdir -p` (plus the zstd availability probe) —
   // ensure a directory exists before a write.
@@ -828,6 +845,11 @@ async function syncInFileMappings(input: {
   // An absent or unexpected probe answer fails closed: no compression, byte-
   // identical to a sandbox that has no `zstd` binary.
   const sandboxHasZstd = mkdirOutput.includes(ZSTD_PROBE_MARKER);
+  // Prefer zstd (faster, smaller); fall back to gzip, which every Debian image
+  // carries. Node always has gzip, so only zstd needs the runtime feature check.
+  const codec: TransportCodec | null = sandboxHasZstd && isZstdCompressionSupported()
+    ? "zstd"
+    : mkdirOutput.includes(GZIP_PROBE_MARKER) ? "gzip" : null;
 
   // Host-side compression, gated on the probe AND a runtime feature check (a
   // declared `engines.node` floor is an assumption, not a guarantee — always
@@ -837,19 +859,19 @@ async function syncInFileMappings(input: {
   // misses `ZSTD_MIN_SAVING_RATIO`, falls back to the raw path — a fallback is
   // never an error, it reproduces the present behavior exactly.
   const compressCandidates = plans.filter((plan) => plan.sourceSize >= ZSTD_MIN_SOURCE_BYTES);
-  if (sandboxHasZstd && isZstdCompressionSupported() && compressCandidates.length > 0) {
+  if (codec && compressCandidates.length > 0) {
     let compressBytesIn = 0;
     let compressBytesOut = 0;
     await withProviderSpan({
       name: "compress",
       wallMsAttr: SPAN_ATTR.transferCompressionWallMs,
-      attributes: { [SPAN_ATTR.transferCompressionCodec]: "zstd" },
+      attributes: { [SPAN_ATTR.transferCompressionCodec]: codec },
       run: async (span: PluginSpan) => {
         for (const plan of compressCandidates) {
           let hostTempDir: string | null = null;
           try {
             if (await hasCompressedHeader(plan.mapping.sourcePath)) continue;
-            const compressed = await compressFileToHostTemp(plan.mapping.sourcePath);
+            const compressed = await compressFileToHostTemp(plan.mapping.sourcePath, codec);
             hostTempDir = compressed.dir;
             compressBytesIn += plan.sourceSize;
             compressBytesOut += compressed.bytesOut;
@@ -859,7 +881,8 @@ async function syncInFileMappings(input: {
               continue;
             }
             plan.compressed = {
-              zstdScratch: path.posix.join(remoteDir, scratchName(".zst")),
+              codec,
+              zstdScratch: path.posix.join(remoteDir, scratchName(codec === "zstd" ? ".zst" : ".gz")),
               hostTempDir: compressed.dir,
               hostTempPath: compressed.path,
             };
@@ -950,8 +973,13 @@ async function syncInFileMappings(input: {
         // applies no `chmod` when the mapping sets no `mode`, so the two
         // inbound branches do not use the same no-mode default today.
         const targetMode = typeof plan.mapping.mode === "number" ? plan.mapping.mode : 0o600;
+        // gzip writes through a redirect, so the output mode comes from umask;
+        // the `chmod` below sets it explicitly either way.
+        const decompress = plan.compressed.codec === "zstd"
+          ? `zstd -d -o ${shellQuote(plan.rawScratch)} ${shellQuote(plan.compressed.zstdScratch)}`
+          : `gzip -dc -- ${shellQuote(plan.compressed.zstdScratch)} > ${shellQuote(plan.rawScratch)}`;
         renameScript.push(
-          `zstd -d -o ${shellQuote(plan.rawScratch)} ${shellQuote(plan.compressed.zstdScratch)} || { echo "decompress failed"; exit 49; };`,
+          `${decompress} || { echo "decompress failed"; exit 49; };`,
           `chmod ${toOctalModeString(targetMode)} ${shellQuote(plan.rawScratch)} || { echo "chmod failed"; exit 50; };`,
         );
       }
@@ -999,7 +1027,7 @@ async function syncInFileMappings(input: {
     const leftoverCount = await sweepZstdScratchAfterSuccess(sandbox, compressedZstdScratchNames, timeoutSeconds);
     if (leftoverCount > 0) {
       console.warn(
-        `Daytona zstd transport compression: ${leftoverCount} post-promotion scratch file(s) could not be removed after two attempts. The already-promoted target file(s) are unaffected.`,
+        `Daytona transport compression: ${leftoverCount} post-promotion scratch file(s) could not be removed after two attempts. The already-promoted target file(s) are unaffected.`,
       );
     }
   }

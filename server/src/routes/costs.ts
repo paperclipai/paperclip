@@ -371,7 +371,8 @@ export function costRoutes(
       const companyId = req.params.companyId as string;
       const incidentId = req.params.incidentId as string;
       assertCompanyAccess(req, companyId);
-      const incident = await budgets.resolveIncident(companyId, incidentId, req.body, req.actor.userId ?? "board");
+      const incident = await budgets.resolveIncident(companyId, incidentId, req.body, req.actor.userId ?? "board",
+        req.actor.source ?? null);
       res.json(incident);
     },
   );

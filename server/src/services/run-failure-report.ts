@@ -4,6 +4,7 @@ import { agents, dotRunnerAssignments, grokBotDispatches, heartbeatRuns, nativeR
 import { captureRunFailure, type RunFailureStatus } from "../sentry.js";
 import {
   collectRunFailureDiagnostics,
+  collectRunFailureHostTokenSecrets,
   collectRunFailureSecretValues,
   redactRunFailureSecretValues,
   sanitizeRunFailureDiagnostics,
@@ -376,9 +377,11 @@ async function captureTerminalRunFailure(
       errorCode: run.errorCode ?? null,
       diagnostics: collectRunFailureDiagnostics(run, options),
     }, [...new Set([
-      ...collectRunFailureSecretValues(process.env),
+      // The server's own environment: short host settings under unknown
+      // names are private only as whole tokens (see collectHostEnvironmentTokenSecrets).
+      ...collectRunFailureSecretValues(process.env, [], { hostProcess: true }),
       ...(options.secretValues ?? []),
-    ])].sort((a, b) => b.length - a.length));
+    ])].sort((a, b) => b.length - a.length), collectRunFailureHostTokenSecrets(process.env));
     const agent = await db
       .select({ adapterType: agents.adapterType })
       .from(agents)

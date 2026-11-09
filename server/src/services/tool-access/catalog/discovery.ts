@@ -34,7 +34,7 @@ import type { OAuthCredentialStore } from "../oauth/credential-store.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import type { ToolRemoteHttp } from "../remote-http.js";
 import { normalizeToolDescriptor, type McpToolDescriptor } from "./descriptors.js";
-import { unsupportedToolConnectionTransport } from "./failures.js";
+import { googleWorkspaceServicesUnavailable, unsupportedToolConnectionTransport } from "./failures.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -99,8 +99,8 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       const currentGrant = await vaultGrantForConnection(connection, actor);
       if (!currentGrant) throw unprocessable("OAuth authorization must be reconnected", { code: "oauth_reauthorization_required" });
       if (catalogs.length > 0 && catalogs.every((catalog) => catalog.status === "rejected")) {
-        throw new HttpError(502, `Google services unavailable: ${unavailableServices.join(", ")}. Retry refreshing actions.`,
-          { code: "google_workspace_services_unavailable" });
+        throw googleWorkspaceServicesUnavailable(unavailableServices,
+          catalogs.map((catalog) => catalog.status === "rejected" ? catalog.reason : undefined));
       }
       // A service's authentication retry may have refreshed into a narrower
       // grant. Never publish actions using the pre-refresh permission snapshot.

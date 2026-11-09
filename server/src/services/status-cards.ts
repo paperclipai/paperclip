@@ -95,7 +95,7 @@ function updateDescription(input: {
   previousSummary: string | null;
   snapshot: CompanySearchIssueSummary[];
 }) {
-  const mechanical = `Return the completed Markdown through \`PUT /api/status-cards/${input.card.id}/summary\` with \`generationIssueId\`, a short non-empty \`changeSummary\`, and the model id. Do not call issue-list endpoints. Preserve the streaming STATUS and <<<SUMMARY-DRAFT>>> sentinels used by the Summarizer. Issues the Markdown references by identifier (e.g. ABC-123) or issue link automatically join the card's watched set, so reference an issue only when the board should keep tracking it.`;
+  const mechanical = `Return the completed Markdown through \`PUT /api/status-cards/${input.card.id}/summary\` with \`generationIssueId\`, a short non-empty \`changeSummary\`, and the model id. Do not call issue-list endpoints. While you work, write short plain-text \`STATUS:\` lines; before the write, put the final Markdown between a \`<<<SUMMARY-DRAFT>>>\` line and a \`<<<END-SUMMARY-DRAFT>>>\` line in your reply text. These lines only drive the card's live preview; the PUT body is the plain Markdown, and there is no other format to look up. If you cannot produce a summary from what you can read, comment the reason on this task and set it to blocked; the card then keeps its previous summary and shows the failure. Issues the Markdown references by identifier (e.g. ABC-123) or issue link automatically join the card's watched set, so reference an issue only when the board should keep tracking it.`;
   // The card prompt is the board's single standing request: it already says
   // what to watch and how the update should read, so it doubles as the
   // summary instructions — there is no separate default prompt to append to

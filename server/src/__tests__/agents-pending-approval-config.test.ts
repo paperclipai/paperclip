@@ -187,4 +187,35 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       metadata: { source: "hire-form" },
     });
   });
+
+  it("keeps a CEO's hiring authority as saved when another permission changes", async () => {
+    const companyId = await seedCompany();
+    const service = agentService(db);
+    const insertCeo = (permissions: Record<string, unknown>) => db.insert(agents).values({
+      companyId, name: `CEO ${randomUUID()}`, role: "ceo", permissions,
+      adapterType: "process", adapterConfig: {}, runtimeConfig: {},
+    }).returning().then(rows => rows[0]!);
+    const stored = (id: string) => db.select().from(agents).where(eq(agents.id, id)).then(rows => rows[0]!.permissions as Record<string, unknown>);
+
+    const legacy = await insertCeo({});
+    await service.updatePermissions(legacy.id, { canCreateSkills: false } as never);
+    expect(await stored(legacy.id)).toMatchObject({ canCreateAgents: true, canCreateSkills: false });
+
+    const unrecorded = await insertCeo({ canCreateAgents: false, canCreateSkills: true });
+    await service.updatePermissions(unrecorded.id, { canCreateSkills: false } as never);
+    expect(await stored(unrecorded.id)).toMatchObject({ canCreateAgents: true, canCreateSkills: false });
+
+    const denial = { actorType: "user", actorId: "board-user", at: "2026-11-08T00:00:00.000Z" };
+    const denied = await insertCeo({ canCreateAgents: false, canCreateSkills: true, ceoHiringDeniedBy: denial });
+    await service.updatePermissions(denied.id, { canCreateSkills: false } as never);
+    expect(await stored(denied.id)).toMatchObject({ canCreateAgents: false, canCreateSkills: false, ceoHiringDeniedBy: denial });
+
+    // An import update whose manifest omits the field keeps the board's denial,
+    // and a supplied denial record is never taken from input.
+    await service.update(denied.id, { permissions: {} } as never);
+    expect(await stored(denied.id)).toMatchObject({ canCreateAgents: false, ceoHiringDeniedBy: denial });
+    const open = await insertCeo({ canCreateAgents: true });
+    await service.update(open.id, { permissions: { canCreateAgents: false, ceoHiringDeniedBy: denial } } as never);
+    expect(await stored(open.id)).not.toHaveProperty("ceoHiringDeniedBy");
+  });
 });

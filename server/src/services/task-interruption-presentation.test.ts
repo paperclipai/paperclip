@@ -343,3 +343,22 @@ describe("scheduled resource wait presentation", () => {
       .toMatchObject({ state: "failed", canRetry: true });
   });
 });
+
+describe("saved Retry held by dependencies", () => {
+  const failedRun = { ...run, status: "failed", errorCode: "native_session_interrupted", resultJson: {} };
+  const retryWait = { id: "retry", requestedAt: new Date(0), sourceRunId: "run" };
+  const project = (retryDependencies: { count: number; blocked: boolean; cancelled: boolean; savingFilesOnly: boolean }) =>
+    projectTaskInterruption(issue, { run: failedRun, agent, retryWait, paused: false, approval: false, retryDependencies });
+
+  it.each([
+    [{ count: 1, blocked: true, cancelled: false, savingFilesOnly: false }, "Retry or unblock it"],
+    [{ count: 1, blocked: false, cancelled: true, savingFilesOnly: false }, "Remove or replace that dependency"],
+    [{ count: 1, blocked: false, cancelled: false, savingFilesOnly: true }, "to save its files"],
+    [{ count: 2, blocked: false, cancelled: false, savingFilesOnly: false }, "to finish"],
+  ])("names what the saved Retry waits on (%o)", (dependencies, text) => {
+    const presentation = project(dependencies);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: "retry",
+      retryWait: { reason: "dependency_blocked" } });
+    expect(presentation?.retryWait?.message).toContain(text);
+  });
+});

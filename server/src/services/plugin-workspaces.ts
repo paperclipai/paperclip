@@ -1,6 +1,7 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy, isWorkspaceProvider } from "./project-workspace-provider.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
+import { retireAbandonedPluginWorkspaceReservation } from "./plugin-workspace-reservations.js";
 import { randomUUID, createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import {
@@ -557,8 +558,11 @@ async function reconcilePluginWorkspaceReservation(
       ),
     );
   if (!workspace) throw conflict("Workspace is unavailable");
-  if (readWorkspaceProviderBinding(workspace.metadata)) return workspace;
+  if (readWorkspaceProviderBinding(workspace.metadata) || workspace.metadata?.workspaceProviderRemoval ||
+    workspace.metadata?.workspaceProviderRemoved === true) return workspace;
   const owner = workspace.metadata?.workspaceProviderOwner;
+  const retired = typeof owner === "string" ? await retireAbandonedPluginWorkspaceReservation(db, workspace) : null;
+  if (retired) return retired;
   if (typeof owner !== "string" || !workspace.metadata?.workspaceProviderSource)
     throw conflict("Workspace storage reservation is unavailable");
   const operation = workspaceProviderOperationSchema.parse({
@@ -765,8 +769,10 @@ async function finishPendingRemoval(
   const operationId = createHash("sha256").update(JSON.stringify([workspace.id, pending.generation, parsed.data])).digest("hex");
   if (pending.operationId !== undefined && pending.operationId !== operationId)
     throw conflict("Workspace removal identity does not match its recorded payload");
+  const owner = workspace.metadata?.workspaceProviderOwner;
   const result = await callWorkspaceProvider(db, workers, {
     workspace,
+    pluginId: typeof owner === "string" ? owner : undefined,
     operation: parsed.data,
     removalOperationId: operationId,
   });

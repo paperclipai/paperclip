@@ -75,7 +75,11 @@ export async function hasPendingRunCleanup(db: Db, companyId: string, runId: str
     eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
     sql`${environmentLeases.metadata}->'workspaceRecoveryCleanup' is not null`,
   ))).filter(hasRecoveredCleanupStopReceipt).map(lease => lease.id);
-  const [state] = await db.execute<{ pending: boolean }>(sql`SELECT
+  // A missing predecessor row owns nothing: deleting a run nulls its leases'
+  // run reference and removes its finalization coordinator. Failing closed on
+  // absence stranded the successor with no next action (invariants 3 and 7).
+  const [state] = await db.execute<{ pending: boolean }>(sql`SELECT EXISTS (SELECT 1 FROM ${heartbeatRuns}
+    WHERE ${heartbeatRuns.companyId} = ${companyId} AND ${heartbeatRuns.id} = ${runId} AND (
     ${heartbeatRuns.runnerProfileJson}->>'nativeWorkspaceFinalizationOwner' IS NOT NULL
     OR EXISTS (SELECT 1 FROM ${environmentLeases}
       WHERE ${environmentLeases.companyId} = ${companyId} AND ${environmentLeases.heartbeatRunId} = ${runId}
@@ -93,13 +97,12 @@ export async function hasPendingRunCleanup(db: Db, companyId: string, runId: str
                   OR (${environmentLeases.provider} = 'ssh' AND ${environmentLeases.metadata}->>'driver' = 'ssh'
                     AND ${environmentLeases.providerLeaseId} LIKE 'ssh://%')))))
             OR (${environmentLeases.status} = 'retained' AND ${environmentLeases.leasePolicy} = 'reuse_by_environment'
-              AND ${environmentLeases.cleanupStatus} = 'success'), false))))
+              AND ${environmentLeases.cleanupStatus} = 'success'), false))))))
     OR EXISTS (SELECT 1 FROM ${nativeRunFinalizations}
       WHERE ${nativeRunFinalizations.companyId} = ${companyId} AND ${nativeRunFinalizations.runId} = ${runId}
         AND (${nativeRunFinalizations.leaseOwner} IS NOT NULL
-          OR ${nativeRunFinalizations.phase} NOT IN ('committed', 'applied', 'terminal_failure'))) AS pending
-    FROM ${heartbeatRuns} WHERE ${heartbeatRuns.companyId} = ${companyId} AND ${heartbeatRuns.id} = ${runId} LIMIT 1`);
-  return state?.pending !== false;
+          OR ${nativeRunFinalizations.phase} NOT IN ('committed', 'applied', 'terminal_failure'))) AS pending`);
+  return state?.pending === true;
 }
 
 /** Resolved recovery bookkeeping can still carry an effective no-replay hold. */

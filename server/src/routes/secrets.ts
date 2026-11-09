@@ -1115,7 +1115,17 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     );
     if (!existing) return;
 
-    const removed = await svc.remove(id);
+    const resolvedByUserId = req.actor.userId ?? "board";
+    const reason = "The referenced secret was deleted.";
+    const removed = await svc.remove(id, {
+      beforeDelete: async (secret) => {
+        const rejected = await proposals.rejectPendingBindingsForSecret(secret.companyId, secret.id, { resolvedByUserId, reason });
+        // Same signal as an ordinary rejection, so the proposing agent continues.
+        for (const proposal of rejected) {
+          await notifySecretProposalResolution({ proposal, status: "rejected", userId: resolvedByUserId, reason, issues, heartbeat });
+        }
+      },
+    });
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
       return;

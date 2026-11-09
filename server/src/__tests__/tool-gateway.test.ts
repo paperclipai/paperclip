@@ -738,6 +738,60 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     } finally { await remote.close(); }
   });
 
+  it("defaults GitHub repository creation to the only installed organization for agents and connection tests", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const remote = await startFakeRemoteMcpServer(({ body }) => ({ body: {
+      jsonrpc: "2.0", id: body?.id, result: { content: [{ type: "text", text: "Repository created" }] },
+    } }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url, applicationKey: "github", toolName: "create_repository", riskLevel: "write",
+        connectionConfig: { sourceTemplateKey: "github", connectionMethodKey: "managed" },
+      });
+      await db.update(toolCatalogEntries).set({ inputSchema: {
+        type: "object", required: ["name"], additionalProperties: false, properties: {
+          name: { type: "string" },
+          organization: { type: "string", description: "Organization to create the repository in (omit to create in your personal account)" },
+        },
+      } }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      const github = { userId: "1", login: "octocat", installationCount: 1, repositoryCount: 1,
+        repositorySelection: "all" as const, installationIds: ["9"], installationOwnerLogins: ["acme"],
+        repositories: [{ id: "10", fullName: "acme/site", installationId: "9", ownerType: "organization" as const }] };
+      await db.update(connectionGrants).set({ providerTenant: { github } })
+        .where(eq(connectionGrants.connectionId, connection.id));
+      const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: catalogEntry.toolName });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const listed = (await gateway.listToolsForSession(session.token)).find((tool) => tool.name === toolName);
+      expect((listed?.parametersSchema as { properties?: Record<string, { description?: string }> } | undefined)
+        ?.properties?.organization?.description).toMatch(/installed only on one organization; then Paperclip uses that organization/);
+
+      await gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters: { name: "agent-site" } });
+      await gateway.executeTool({ sessionToken: session.token, tool: toolName,
+        parameters: { name: "chosen-site", organization: "globex" } });
+      await createActiveMember(db, company.id, "test-user");
+      const testCall = await gateway.executeTestCall({ companyId: company.id, connectionId: connection.id,
+        agentId: agent.id, userId: "test-user", toolName, parameters: { name: "test-site" } });
+      expect(testCall).toMatchObject({ decision: "allowed" });
+      // With the App also on the personal account, GitHub's personal default applies.
+      await db.update(connectionGrants).set({ providerTenant: { github: { ...github, installationOwnerLogins: ["octocat", "acme"] } } })
+        .where(eq(connectionGrants.connectionId, connection.id));
+      await gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters: { name: "personal-site" } });
+
+      expect(remote.requests.filter((entry) => entry.body?.method === "tools/call")
+        .map((entry) => (entry.body?.params as { arguments?: unknown } | undefined)?.arguments)).toEqual([
+        { name: "agent-site", organization: "acme" },
+        { name: "chosen-site", organization: "globex" },
+        { name: "test-site", organization: "acme" },
+        { name: "personal-site" },
+      ]);
+    } finally { await remote.close(); }
+  });
+
   it.each(["config", "transport", "application", "legacy_application"])("records an actionable GitHub access error from %s metadata after one approved call and keeps the connection usable", async source => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

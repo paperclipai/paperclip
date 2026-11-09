@@ -1,4 +1,6 @@
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { heartbeatRunEvents, agents, approvals, costEvents, issueApprovals, environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations, issueThreadInteractions, executionWorkspaces, executionWorkspaceSnapshots } from "@paperclipai/db";
 import { terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
 import * as recoverySources from "./workspace-recovery-source.js";
@@ -318,11 +320,22 @@ describe("automatic retained workspace recovery", () => {
       await db.update(issueRecoveryActions).set({ evidence: { ...before.evidence, systemRecovery: spent } })
         .where(eq(issueRecoveryActions.id, f.actionId));
     }
-    for (let pass = 0; pass < 8; pass++) {
-      await recoverRetainedWorkspace(f.input);
-      await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
-      if (!exhaustedBeforeUpgrade) await makeRetryDue(f.actionId);
-    }
+    // Recording the hold wakes the ownership worker, which judges its owner.
+    const ownershipWakes: string[] = [];
+    const stopWatching = subscribeDatabaseWork(db, DELIVERY_QUEUES.ownershipInvariantReport, (event, hints) => {
+      if (event === "settled") ownershipWakes.push(...(hints ?? []));
+    });
+    try {
+      for (let pass = 0; pass < 8; pass++) {
+        await recoverRetainedWorkspace(f.input);
+        await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
+        if (!exhaustedBeforeUpgrade) await makeRetryDue(f.actionId);
+      }
+      for (let wait = 0; wait < 50 && !exhaustedBeforeUpgrade && !ownershipWakes.some(hint => hint.includes(f.actionId)); wait++) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    } finally { stopWatching(); }
+    if (!exhaustedBeforeUpgrade) expect(ownershipWakes.some(hint => hint.includes(f.actionId))).toBe(true);
     expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(spentAttempts);
     // Rechecking an unverifiable owner is not an attempt and never ends in a stale "Retry recovery" handoff.
     const held = await action(f.actionId);

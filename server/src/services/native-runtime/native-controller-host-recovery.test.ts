@@ -77,4 +77,28 @@ describe("native controller rows saved before their host was recorded", () => {
     await expect(confirmNativeControllerStopped({ db, companyId, issueId, actionId: actions[0]!.id, runId,
       stopEvidence, actorId: "board-user" })).rejects.toMatchObject({ status: 409 });
   });
+
+  it("binds stop confirmation to an exact foreign-host controller and rejects changed ownership", async () => {
+    const { companyId, issueId, runId, coordinator } = await seed();
+    const owner = { ...coordinator, controllerHostHash: "previous-pid-space" };
+    await db.update(nativeRunFinalizations).set({ controllerHostHash: owner.controllerHostHash })
+      .where(eq(nativeRunFinalizations.runId, runId));
+    await requestNativeControllerStopConfirmation(db, owner);
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    const input = { db, companyId, issueId, runId, actionId: action!.id, actorId: "board-user",
+      stopEvidence: "The hosting provider confirms the exact previous container stopped." };
+    for (const patch of [{ controllerHostHash: "changed-space" }, { controllerBootId: randomUUID() },
+      { controllerPid: 1_999_999_999 }, { controllerProcessStartedAt: new Date(owner.controllerProcessStartedAt!.getTime() + 60_000) }]) {
+      await db.update(nativeRunFinalizations).set(patch).where(eq(nativeRunFinalizations.runId, runId));
+      await expect(confirmNativeControllerStopped(input)).rejects.toMatchObject({ status: 409 });
+      await db.update(nativeRunFinalizations).set({ controllerHostHash: owner.controllerHostHash,
+        controllerBootId: owner.controllerBootId, controllerPid: owner.controllerPid,
+        controllerProcessStartedAt: owner.controllerProcessStartedAt }).where(eq(nativeRunFinalizations.runId, runId));
+    }
+    await expect(confirmNativeControllerStopped(input)).resolves.toEqual({ runId, status: "queued" });
+    const [attested] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    expect(await evaluateNativeControllerTakeover({ owner: attested!, now: new Date() }))
+      .toEqual({ allowed: true, reason: "operator_attested_controller_stopped" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("running");
+  });
 });

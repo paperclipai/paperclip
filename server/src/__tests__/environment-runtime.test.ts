@@ -10,7 +10,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
@@ -1125,6 +1125,34 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(call.mock.calls.every(entry => entry[1] === "environmentStopLease")).toBe(true);
     },
   );
+
+  it("renews the stop-only cleanup claim while the provider stop is still running", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    const lease = seeded.reusableLease;
+    await db.update(environmentLeases).set({ leasePolicy: "ephemeral", metadata: { ...lease.metadata, reuseLease: false } })
+      .where(eq(environmentLeases.id, lease.id));
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, seeded.runId));
+    const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method === "environmentStopLease") { started.resolve(); await finish.promise; }
+      return { providerLeaseId: lease.providerLeaseId, state: "stopped" };
+    });
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentReleaseLease", "environmentDestroyLease", "environmentStopLease"] }),
+    } as unknown as PluginWorkerManager });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const releasing = runtime.releaseRunLeases(seeded.runId, "failed", undefined, "stop_and_retain");
+    try {
+      await started.promise;
+      const expiry = async () => Number((await environmentService(db).getLeaseById(lease.id))?.metadata?.pendingCleanupLeaseExpiresAtMs);
+      await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupLeaseExpiresAtMs":1}'::jsonb` })
+        .where(eq(environmentLeases.id, lease.id));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(async () => expect(await expiry()).toBeGreaterThan(Date.now() + 14 * 60_000));
+    } finally { finish.resolve(); await releasing; vi.useRealTimers(); }
+    expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "released", cleanupStatus: "success" });
+  });
 
   it("reports an unwired manager separately from a stopped sandbox worker", async () => {
     const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
@@ -5504,6 +5532,39 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       metadata: { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
         leaseId: reusableLease.id, runId, providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" } },
     });
+  });
+
+  it("destroys a retained restore-source sandbox (retain_on_failure) when its environment is deleted", async () => {
+    const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
+    // A failed run's sandbox kept, stopped, as a workspace-restore source. The
+    // restore marker protects it from every ordinary teardown.
+    await db.update(environmentLeases).set({ leasePolicy: "retain_on_failure", status: "released", cleanupStatus: "success",
+      releasedAt: new Date(), metadata: { ...reusableLease.metadata,
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", runId } } })
+      .where(eq(environmentLeases.id, reusableLease.id));
+    expect(await environmentService(db).getDeleteBlastRadius(reusableLease.environmentId!))
+      .toMatchObject({ reusableSandboxLeaseCount: 1, canDelete: false,
+        reusableSandboxLeaseHolders: [expect.objectContaining({ leasePolicy: "retain_on_failure" })] });
+    // The atomic delete guard refuses too, not only the blast-radius pre-check.
+    expect(await environmentService(db).removeIfDeletable(reusableLease.environmentId!)).toBeFalsy();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentDestroyLease") return { providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" };
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
+    } as unknown as PluginWorkerManager;
+    // The operator consented to deleting the environment and the files only
+    // this sandbox holds: that consent releases the restore protection.
+    const result = await environmentRuntimeService(db, { pluginWorkerManager: workerManager })
+      .destroyReusableSandboxLeasesForEnvironment({ environmentId: reusableLease.environmentId!, failureReason: "environment_deleted",
+        consentedBy: "board-user" });
+    expect(result).toEqual({ destroyed: 1, failed: 0, skippedLiveRun: 0 });
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.anything(), expect.anything());
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "expired", failureReason: "environment_deleted", cleanupStatus: "success" });
   });
 
   it("destroys a failed reusable sandbox after successful release before deleting its environment", async () => {

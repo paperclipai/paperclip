@@ -372,7 +372,10 @@ const heartbeatRunIssueControlColumns = {
   runtimeModeResolvedAt: heartbeatRuns.runtimeModeResolvedAt,
   startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
   contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
-    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId') else null end`,
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId')
+      || case when ${heartbeatRuns.contextSnapshot} ? 'firstTurnQueuedInput'
+        then jsonb_build_object('firstTurnQueuedInput', ${heartbeatRuns.contextSnapshot}->'firstTurnQueuedInput') else '{}'::jsonb end
+    else null end`,
   runnerProfileJson: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
     then jsonb_build_object('adapterDispatch', jsonb_build_object('adapterType', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'adapterType'))
     else null end`,

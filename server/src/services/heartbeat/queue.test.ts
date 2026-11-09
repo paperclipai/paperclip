@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { authUsers, agents, agentWakeupRequests, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { authUsers, agents, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
+import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "./run-admission.js";
 import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
 import { createWakeQueue } from "../../modules/wake-queue/index.js";
 import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
@@ -48,6 +49,30 @@ describe("heartbeat queue module boundary", () => {
     expect(deps.getAgent).not.toHaveBeenCalled();
     expect(deps.resumeExecutionWaitComments).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["startNextQueuedRunForAgent", "resumeQueuedRuns"] as const)("starts no run once shutdown closed run admission (%s)", async (operation) => {
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    deps.isRunAdmissionClosed = () => true;
+    const queue = createHeartbeatQueue(database.db, deps);
+    await queue[operation]("agent");
+    expect(database.access).not.toHaveBeenCalled();
+    expect(deps.getAgent).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("honors the process-wide run admission gate in every heartbeat instance", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    closeProcessRunAdmission();
+    try {
+      await createHeartbeatQueue(database.db, deps).startNextQueuedRunForAgent("agent");
+    } finally {
+      resetProcessRunAdmissionForTests();
+    }
+    expect(database.access).not.toHaveBeenCalled();
+    expect(deps.getAgent).not.toHaveBeenCalled();
   });
 
   it("tracks pending wakes across instances and clears each rejected wake", async () => {
@@ -783,6 +808,51 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(2);
     expect(new Set(deps.releaseIssueExecutionAndPromote.mock.calls.map(([row]) => row.id))).toEqual(new Set([seeded.run.id, run.id]));
     await expectSavedMessages([...firstMessages, ...secondMessages]);
+  });
+
+  // H1 bug C review: a queued run admission cancels for a board-owned budget
+  // block records which budget stopped it, so Raise budget and resume can
+  // continue it.
+  async function admissionBudgetBlock(options: { openIncident: boolean }) {
+    const fixtureRows = await fixture("queued");
+    const { company, agent } = fixtureRows;
+    const [policy] = await db.insert(budgetPolicies).values({ companyId: company.id, scopeType: "company", scopeId: company.id,
+      windowKind: "lifetime", amount: 1, hardStopEnabled: true, isActive: true }).returning();
+    await db.insert(costEvents).values({ companyId: company.id, agentId: agent.id, provider: "test", model: "test",
+      costCents: 5, occurredAt: new Date() });
+    if (options.openIncident) await db.insert(budgetIncidents).values({ companyId: company.id, policyId: policy.id,
+      scopeType: "company", scopeId: company.id, metric: "billed_cents", windowKind: "lifetime",
+      windowStart: new Date(0), windowEnd: new Date(Date.now() + 86_400_000), thresholdType: "hard",
+      amountLimit: 1, amountObserved: 5 });
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    deps.budgets.getInvocationBlock.mockResolvedValue({ scopeType: "company", scopeId: company.id,
+      scopeName: company.name, reason: "Company cannot start work because its budget hard-stop is still exceeded." });
+    deps.cancelRunInternal.mockImplementation(async (runId: string) => {
+      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    });
+    return { ...fixtureRows, deps };
+  }
+
+  it("leaves a queued run queued when a resume closed its budget incident first", async () => {
+    // Raise budget and resume closed the incident between the admission
+    // check and the cancel: the re-read finds no block, so the task runs.
+    const { run, deps } = await admissionBudgetBlock({ openIncident: false });
+    deps.budgets.getInvocationBlock.mockResolvedValueOnce({ scopeType: "company", scopeId: run.companyId,
+      scopeName: "Budget", reason: "Company cannot start work because its budget hard-stop is still exceeded." })
+      .mockResolvedValueOnce(null);
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun({ ...run, responsibleUserId: "queue-test-user" })).toBeNull();
+    expect(deps.cancelRunInternal).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("queued");
+  });
+
+  it("records the budget that cancelled a queued run at admission", async () => {
+    const { company, agent, run, deps } = await admissionBudgetBlock({ openIncident: true });
+    void agent;
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun({ ...run, responsibleUserId: "queue-test-user" })).toBeNull();
+    expect(deps.cancelRunInternal).toHaveBeenCalledWith(run.id, expect.stringContaining("budget"), expect.anything());
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].resultJson)
+      .toMatchObject({ budgetAdmissionStop: { scopeType: "company", scopeId: company.id } });
   });
 
   it("rechecks a handoff's assignment version under the issue claim lock", async () => {

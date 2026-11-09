@@ -327,6 +327,33 @@ async function readReceipt(directory: string): Promise<DaytonaImageArtifacts | n
   return receipt;
 }
 
+export function defaultDaytonaImageCacheRoot(): string {
+  return path.resolve(process.env.RESTART_CHAOS_IMAGE_CACHE ?? path.join(import.meta.dirname, "results", "daytona-images"));
+}
+
+export const SKOPEO_ATTEMPT_TIMEOUT_MS = 20 * 60_000;
+
+export async function copyImageToDir(input: { skopeo: string; image: string; blobs: string; attempts?: number;
+  attemptTimeoutMs?: number; log?: (line: string) => void }): Promise<void> {
+  const attempts = input.attempts ?? 3;
+  const timeout = input.attemptTimeoutMs
+    ?? (Number(process.env.RESTART_CHAOS_SKOPEO_ATTEMPT_TIMEOUT_MS) || SKOPEO_ATTEMPT_TIMEOUT_MS);
+  const log = input.log ?? (() => undefined);
+  for (let attempt = 1; ; attempt += 1) {
+    await rm(input.blobs, { recursive: true, force: true });
+    await mkdir(input.blobs, { recursive: true, mode: 0o700 });
+    log(`skopeo copy ${input.image} (linux/amd64) → ${input.blobs} (attempt ${attempt}/${attempts})`);
+    try {
+      await execFileAsync(input.skopeo, ["copy", "--retry-times", "3", "--override-os", "linux", "--override-arch", "amd64",
+        `docker://${input.image}`, `dir:${input.blobs}`], { maxBuffer: 16 * 1024 * 1024, timeout, killSignal: "SIGKILL" });
+      return;
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      log(`skopeo copy failed (${error instanceof Error ? error.message.split("\n")[0] : String(error)}); retrying into an empty directory`);
+    }
+  }
+}
+
 /**
  * Returns the verified runnerd and provider pack of `image`, extracting them
  * once per image digest into `cacheRoot/<digest>/`.
@@ -338,17 +365,12 @@ export async function prepareDaytonaImageArtifacts(input: { image: string; cache
   const finalDir = path.join(path.resolve(input.cacheRoot), match[1]!);
   const cached = await readReceipt(finalDir);
   if (cached) { log(`Daytona image artifacts cached at ${finalDir}`); return cached; }
-  await rm(finalDir, { recursive: true, force: true });
 
   const staging = path.join(path.resolve(input.cacheRoot), `.staging-${match[1]!.slice(0, 12)}-${randomBytes(4).toString("hex")}`);
   const blobs = path.join(staging, "blobs");
   const rootfs = path.join(staging, "rootfs");
   try {
-    await mkdir(blobs, { recursive: true, mode: 0o700 });
-    log(`skopeo copy ${input.image} (linux/amd64) → ${blobs}`);
-    await execFileAsync(input.skopeo ?? process.env.SKOPEO ?? "skopeo", ["copy", "--retry-times", "3",
-      "--override-os", "linux", "--override-arch", "amd64", `docker://${input.image}`, `dir:${blobs}`],
-    { maxBuffer: 16 * 1024 * 1024 });
+    await copyImageToDir({ skopeo: input.skopeo ?? process.env.SKOPEO ?? "skopeo", image: input.image, blobs, log });
     const manifestBytes = await readFile(path.join(blobs, "manifest.json"));
     const manifest = JSON.parse(manifestBytes.toString("utf8")) as { config: { digest: string }; layers: Array<{ digest: string; mediaType: string }> };
     if (!manifest.config?.digest || !Array.isArray(manifest.layers)) throw new Error("skopeo did not produce a single-platform image manifest");
@@ -390,11 +412,27 @@ export async function prepareDaytonaImageArtifacts(input: { image: string; cache
       providerPackPath: path.join(root, "rootfs", ...PROVIDER_PACK_PATH.split("/")), providerPackManifestSha256: sha256(packBytes),
       providerPackDigest: pack.digest!, providerPackRunnerSourceRevision: sourceRevision, extractedAt: new Date().toISOString(),
     });
-    const receipt = { ...receiptFor(finalDir), runnerdSha256: await fileSha256(runnerd) };
-    await writeFile(path.join(staging, "receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
-    await rename(staging, finalDir);
-    log(`Daytona image artifacts ready at ${finalDir}`);
-    return receipt;
+    const runnerdSha256 = await fileSha256(runnerd);
+    const publishTo = async (root: string) => {
+      const receipt = { ...receiptFor(root), runnerdSha256 };
+      await writeFile(path.join(staging, "receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+      await rename(staging, root);
+      log(`Daytona image artifacts ready at ${root}`);
+      return receipt;
+    };
+    try {
+      return await publishTo(finalDir);
+    } catch (error) {
+      const concurrent = await readReceipt(finalDir);
+      if (concurrent) {
+        await rm(staging, { recursive: true, force: true });
+        log(`Daytona image artifacts extracted concurrently at ${finalDir}`);
+        return concurrent;
+      }
+      if (!(await stat(finalDir).then(() => true, () => false))) throw error;
+      log(`Invalid cache entry at ${finalDir} left in place; publishing this extraction beside it`);
+      return await publishTo(`${finalDir}.${randomBytes(4).toString("hex")}`);
+    }
   } catch (error) {
     await rm(staging, { recursive: true, force: true }).catch(() => undefined);
     throw error;
@@ -428,7 +466,7 @@ if (invoked && import.meta.url === pathToFileURL(invoked).href) {
   const image = process.argv[2];
   if (!image) { console.error("Usage: daytona-image.ts <registry/repository@sha256:digest>"); process.exit(2); }
   const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-  const cacheRoot = process.env.RESTART_CHAOS_IMAGE_CACHE ?? path.join(import.meta.dirname, "results", "daytona-images");
+  const cacheRoot = defaultDaytonaImageCacheRoot();
   try {
     const artifacts = await prepareDaytonaImageArtifacts({ image, cacheRoot, log: line => console.error(line) });
     const check = await assertControllerMatchesImage(artifacts, repositoryRoot).then(() => "match", (error: Error) => error.message);

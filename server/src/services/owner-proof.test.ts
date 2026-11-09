@@ -45,6 +45,24 @@ describe("proveOwnerGone: local owners", () => {
     expect(await proveOwnerGone(stamp(), probe())).toEqual({ verdict: "gone", reason: "pid_dead" });
   });
 
+  it("judges a row saved before its PID space locally for one release, on single-host servers only", async () => {
+    const legacy = stamp({ host: null, processSpace: null, processSpaceUnrecorded: true });
+    expect(await proveOwnerGone(legacy, probe())).toEqual({ verdict: "gone", reason: "pid_dead", legacyHostFallback: true });
+    expect(await proveOwnerGone(legacy, probe({ alive: [4242], starts: { 4242: at(0) } })))
+      .toEqual({ verdict: "alive", reason: "pid_alive" });
+    // Without the marker a missing space is missing identity, never proof.
+    expect(await proveOwnerGone(stamp({ processSpace: null }), probe())).toEqual({ verdict: "unprovable", reason: "missing_identity" });
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    try {
+      expect(await proveOwnerGone(legacy, probe())).toEqual({ verdict: "unprovable", reason: "process_space_unrecorded" });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("accepts a board attestation that this exact recorded owner stopped", async () => {
+    expect(await proveOwnerGone(stamp({ processSpace: "operator_attested" }), probe({ alive: [4242], starts: { 4242: at(0) } })))
+      .toEqual({ verdict: "gone", reason: "operator_attested" });
+  });
+
   it("never treats a different host as proof, even when the PID is dead here", async () => {
     expect(await proveOwnerGone(stamp({ host: "host-b" }), probe())).toEqual({ verdict: "unprovable", reason: "different_host" });
   });

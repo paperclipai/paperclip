@@ -1,4 +1,5 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -1209,8 +1210,7 @@ export function issueTreeControlService(db: Db) {
     }
 
     const [updated] = await db.transaction(async tx => {
-      await notifyIssueRecovery(tx, { companyId });
-      await notifyDeferredExecutionEligibility(tx, { companyId });
+      await promoteDeferredWorkIntents(tx, { companyId, trigger: "tree_hold_released" });
       return tx
       .update(issueTreeHolds)
       .set({

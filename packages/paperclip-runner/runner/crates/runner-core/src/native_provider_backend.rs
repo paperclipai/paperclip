@@ -337,6 +337,20 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         }
     }
 
+    fn prepare_for_park(&mut self, deadline: Instant) -> Result<bool, DurableRunnerError> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.prepare_for_park(deadline),
+            _ => Ok(false),
+        }
+    }
+
+    fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.prepare_next_turn(),
+            _ => Ok(()),
+        }
+    }
+
     fn observe_recovery_state(
         &mut self,
         state: &crate::durable::DurableState,

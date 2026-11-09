@@ -416,7 +416,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
       return;
     }
     const next = await acquire;
-    expect(operations).toEqual(["stop", "status", "complete", "environmentReleaseLease", "environmentAcquireLease"]);
+    expect(operations).toEqual(["stop", "status", "complete", "environmentAcquireLease"]);
     expect(next.lease.id).not.toBe(oldLeaseId);
     await expect(resolvePluginTaskResume(db, { companyId, leaseId: next.lease.id, priorIdentity })).resolves.toBe("old-task");
     await expect(runtime.task({ companyId, leaseId: next.lease.id, operation: { kind: "submit", projectIds: [], bootstrapTicket: "fixture", runner } })).rejects.toThrow("identity mismatch");

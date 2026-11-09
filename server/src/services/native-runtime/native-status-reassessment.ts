@@ -236,7 +236,7 @@ export async function reassessNativeStatusFromSource(
     }
     // New evidence from a reassigned-away run cannot close the new owner's task.
     if (currentIssue && !currentIssue.conversationAgentId) {
-      decision = supersedeStaleOwnerCompletion(decision, { ...currentIssue, status: row.issueStatus }, row.agentId);
+      decision = supersedeStaleOwnerCompletion(decision, { ...currentIssue, status: row.issueStatus }, row.agentId, row.runId);
     }
     let committed: Awaited<ReturnType<typeof commitNativeStatusDecision>>;
     try {

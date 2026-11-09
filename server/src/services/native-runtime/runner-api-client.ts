@@ -54,7 +54,7 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   if (!parsed.success) throw badRequest("Invalid call_api arguments", { issues: parsed.error.issues });
   const input = parsed.data;
   const operation = runnerApiOperation(input.operationId);
-  if (operation.transport !== "rest") throw unprocessable("This endpoint requires its existing protocol client; call_api supports REST only");
+  if (operation.transport !== "rest") throw unprocessable(`This endpoint requires its existing protocol client; call_api supports REST only and no other API route substitutes for it.${operation.description.trim() ? " Read its catalog description for details." : ""}`);
   if (input.responseText && operation.method !== "GET") throw badRequest("responseText requires a GET operation; read the saved artifact instead of repeating a mutation");
   if (!operation.allowedModes.includes(context.workMode)) throw forbidden("call_api permits only reads in Ask and Plan modes; use the permitted dedicated tools");
   if (input.pathParams?.companyId && input.pathParams.companyId !== context.companyId) throw forbidden("API call belongs to another company");
@@ -119,6 +119,34 @@ export async function readBoundedResponse(response: Response, maxBytes = RUNNER_
     reader.releaseLock();
   }
   return Buffer.concat(chunks);
+}
+
+/**
+ * Page position reported by capped list routes (for example
+ * GET /api/companies/{companyId}/issues) through X-Paperclip-Has-More and its
+ * sibling headers. Agents never see response headers, so surface it beside the
+ * data; otherwise a capped page reads as the complete list.
+ */
+export function runnerApiPagination(headers: Headers) {
+  const hasMoreHeader = headers.get("x-paperclip-has-more");
+  if (hasMoreHeader !== "true" && hasMoreHeader !== "false") return undefined;
+  const hasMore = hasMoreHeader === "true";
+  const limit = Number(headers.get("x-paperclip-limit"));
+  const offsetHeader = headers.get("x-paperclip-next-offset");
+  const nextOffset = offsetHeader !== null && /^\d+$/.test(offsetHeader) ? Number(offsetHeader) : null;
+  const nextAfterId = hasMore ? headers.get("x-paperclip-next-after-id") : null;
+  const next = [
+    ...(nextAfterId ? [`afterId=${nextAfterId}`] : []),
+    ...(nextOffset !== null ? [`offset=${nextOffset}`] : []),
+  ];
+  return {
+    hasMore,
+    truncated: hasMore,
+    ...(Number.isSafeInteger(limit) && limit > 0 ? { limit } : {}),
+    nextOffset: hasMore ? nextOffset : null,
+    ...(nextAfterId ? { nextAfterId } : {}),
+    ...(hasMore ? { guidance: `This list is incomplete: the page limit was reached and more results exist. Repeat the same call with the same filters and ${next.length ? next.join(" or ") : "the next page"} in query; continue until pagination.hasMore is false before treating the list as complete.` } : {}),
+  };
 }
 
 export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiContext, io: RunnerApiIo) {
@@ -221,7 +249,8 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
     const uncertain = mutation && (response.status >= 500 || response.status === 408 || (response.status >= 300 && response.status < 400));
     const uncertainty = { outcome: "unknown", guidance: "Inspect current state before retrying this mutation; it may already have succeeded." };
     const etag = input.responseText && response.ok ? response.headers.get("etag") : null;
-    const base = { ok: response.ok, status: response.status, operationId: operation.operationId, contentType: type, retryAfter: response.headers.get("retry-after"), ...(etag ? { etag } : {}), ...(uncertain ? uncertainty : {}) };
+    const pagination = response.ok ? runnerApiPagination(response.headers) : undefined;
+    const base = { ok: response.ok, status: response.status, operationId: operation.operationId, contentType: type, retryAfter: response.headers.get("retry-after"), ...(etag ? { etag } : {}), ...(pagination ? { pagination } : {}), ...(uncertain ? uncertainty : {}) };
     if (response.status >= 300 && response.status < 400) return { ...base, ok: false, error: "api_redirect_not_followed" };
     let totalBytes = captured?.byteSize ?? bytes.length;
     let baseOffset = captured && response.ok ? textOffset : 0;

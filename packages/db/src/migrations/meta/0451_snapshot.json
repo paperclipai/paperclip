@@ -1,6 +1,6 @@
 {
-  "id": "a2ec96c6-3cf1-4c51-8ee8-b35f090bfd42",
-  "prevId": "0c990bdc-6df0-44ca-8f21-28124f7b39e7",
+  "id": "b5699366-77c2-48c8-b7dc-658a75de7658",
+  "prevId": "b8f43f1a-3230-4cda-991d-0e7b6323114b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4102,6 +4102,28 @@
           "method": "btree",
           "with": {}
         },
+        "agent_wakeup_requests_issue_blocker_stalled_uq": {
+          "name": "agent_wakeup_requests_issue_blocker_stalled_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'issue_blocker_stalled:%' AND \"agent_wakeup_requests\".\"status\" IN ('queued', 'deferred_issue_execution', 'claimed', 'coalesced', 'completed')",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "agent_wakeup_requests_company_payload_issue_idx": {
           "name": "agent_wakeup_requests_company_payload_issue_idx",
           "columns": [
@@ -4249,6 +4271,18 @@
         "lifecycle_operation": {
           "name": "lifecycle_operation",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "harness_verified_digest": {
+          "name": "harness_verified_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "harness_verified_at": {
+          "name": "harness_verified_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -7846,6 +7880,150 @@
           "value": "\"budget_policies\".\"reservation_cents\" >= 0"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.budget_resume_claims": {
+      "name": "budget_resume_claims",
+      "schema": "",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "incident_id": {
+          "name": "incident_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_source": {
+          "name": "actor_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "claimed_at": {
+          "name": "claimed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "budget_resume_claims_pending_idx": {
+          "name": "budget_resume_claims_pending_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"budget_resume_claims\".\"state\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "budget_resume_claims_run_id_heartbeat_runs_id_fk": {
+          "name": "budget_resume_claims_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "budget_resume_claims",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "budget_resume_claims_company_id_companies_id_fk": {
+          "name": "budget_resume_claims_company_id_companies_id_fk",
+          "tableFrom": "budget_resume_claims",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "budget_resume_claims_incident_id_budget_incidents_id_fk": {
+          "name": "budget_resume_claims_incident_id_budget_incidents_id_fk",
+          "tableFrom": "budget_resume_claims",
+          "tableTo": "budget_incidents",
+          "columnsFrom": [
+            "incident_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.built_in_managed_resources": {
@@ -21965,6 +22143,112 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.controller_instances": {
+      "name": "controller_instances",
+      "schema": "",
+      "columns": {
+        "boot_id": {
+          "name": "boot_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "epoch": {
+          "name": "epoch",
+          "type": "bigserial",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "process_space": {
+          "name": "process_space",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pid": {
+          "name": "pid",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "renewed_at": {
+          "name": "renewed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fenced_at": {
+          "name": "fenced_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fenced_by_epoch": {
+          "name": "fenced_by_epoch",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stopped_at": {
+          "name": "stopped_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "controller_instances_epoch_idx": {
+          "name": "controller_instances_epoch_idx",
+          "columns": [
+            {
+              "expression": "epoch",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "controller_instances_lease_idx": {
+          "name": "controller_instances_lease_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.cost_events": {
       "name": "cost_events",
       "schema": "",
@@ -34856,6 +35140,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "controller_process": {
+          "name": "controller_process",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "execution_stage": {
           "name": "execution_stage",
           "type": "text",
@@ -34877,6 +35167,12 @@
         "process_started_at": {
           "name": "process_started_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "process_host_hash": {
+          "name": "process_host_hash",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -35115,6 +35411,22 @@
           ],
           "isUnique": false,
           "where": "\"heartbeat_runs\".\"status\" = 'cancelled' and \"heartbeat_runs\".\"result_json\" ? 'treeHoldSuppression'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_legacy_controller_lease_idx": {
+          "name": "heartbeat_runs_legacy_controller_lease_idx",
+          "columns": [
+            {
+              "expression": "controller_lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"runtime_mode\" = 'legacy' AND \"heartbeat_runs\".\"status\" = 'running' AND \"heartbeat_runs\".\"controller_boot_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -44760,6 +45072,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "lease_holder": {
+          "name": "lease_holder",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "controller_boot_id": {
           "name": "controller_boot_id",
           "type": "text",
@@ -44920,6 +45238,54 @@
           ],
           "isUnique": false,
           "where": "\"native_run_finalizations\".\"phase\" = 'terminal_failure' AND \"native_run_finalizations\".\"failure_code\" = 'native_workspace_sync_out_unsafe_archive'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "native_run_finalizations_finalizer_lease_idx": {
+          "name": "native_run_finalizations_finalizer_lease_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"native_run_finalizations\".\"lease_owner\" like 'native-finalizer:%'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "native_run_finalizations_cleanup_lease_idx": {
+          "name": "native_run_finalizations_cleanup_lease_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"native_run_finalizations\".\"lease_owner\" like 'native-cleanup:%'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "native_run_finalizations_accepted_result_lease_idx": {
+          "name": "native_run_finalizations_accepted_result_lease_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"native_run_finalizations\".\"result_id\" is not null AND \"native_run_finalizations\".\"lease_owner\" is not null AND \"native_run_finalizations\".\"phase\" not in ('committed', 'terminal_failure', 'applied')",
           "concurrently": false,
           "method": "btree",
           "with": {}

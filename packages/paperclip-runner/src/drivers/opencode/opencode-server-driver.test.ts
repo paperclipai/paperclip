@@ -2549,6 +2549,25 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it("names the expected revision in a repairable stale-revision tool error", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-revision-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({ model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture, environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" }, taskEnvelope: createCodexTaskEnvelope({ objective: "Apply the accepted decision", contractRevision: "approval-v2", criteria: [{ id: "human_response", requirement: "Apply the approved response" }] }) });
+    const session = await driver.openSession({ runId: "revision-repair", normalizedSessionId: "revision-repair", workingDirectory: workspace });
+    await session.startTurn({ message: { role: "user", text: "repair-revision" } });
+    const events = await collectTurnEvents(session.events());
+    const results = events.filter((event) => event.eventType === "run.result.proposed");
+    expect(results).toHaveLength(1);
+    expect(results[0].payload).toMatchObject({ completionClaim: { contractRevision: "approval-v2" } });
+    const files = await readdir(root, { recursive: true });
+    const evidence = files.find((name) => name.endsWith("fake-revision-repair.json"));
+    expect(evidence).toBeDefined();
+    expect(JSON.parse(await readFile(join(root, evidence!), "utf8"))).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining('Use contractRevision "approval-v2"') }] } });
+    await session.close({ reason: "test" });
+  });
+
   it.each(["monitor", "response_wake"] as const)("resolves an omitted %s through the real OpenCode MCP boundary only from current server state", async kind => {
     for (const eligible of [true, false]) {
     await chmod(fixture, 0o755);

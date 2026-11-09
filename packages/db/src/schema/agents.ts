@@ -31,6 +31,9 @@ export const agents = pgTable(
     lifecycleVersion: integer("lifecycle_version").notNull().default(0),
     lifecycleError: text("lifecycle_error"),
     lifecycleOperation: jsonb("lifecycle_operation").$type<AgentLifecycleOperation>(),
+    /** Digest of the effective configuration and runner image whose harness verification passed. */
+    harnessVerifiedDigest: text("harness_verified_digest"),
+    harnessVerifiedAt: timestamp("harness_verified_at", { withTimezone: true }),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
     capabilities: text("capabilities"),
     adapterType: text("adapter_type").notNull().default("process"),

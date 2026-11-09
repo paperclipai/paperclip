@@ -35,6 +35,7 @@ import { createNativeControllerRecovery, NATIVE_CONTROLLER_RECOVERY_MAX_BYTES, t
 import { eligibleNativeTaskSessionPublication, publishNativeTaskSessionInTransaction, NATIVE_TASK_SESSION_PUBLICATION_KEY,
   type NativeTaskSessionPublicationContext, type NativeTaskSessionPublicationIssue } from "./native-task-session-publication.js";
 import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -632,6 +633,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       this.#assertActive(options);
       return true;
     });
+    if (insertedResult) crashPoint("native.result.after_accept_before_finalize");
     if (insertedResult) { try { await this.#onResultCommitted?.(); } catch {} }
   }
 }

@@ -483,6 +483,42 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  describe("a Codex turn that completed while no controller was attached", () => {
+    async function recoverCompleted(status: string) {
+      const first = new FakeCodexTransport();
+      const second = Object.assign(new FakeCodexTransport(), {
+        controllerAcceptedTurnId: () => null,
+        controllerAcceptedCompletedTurnId: () => "turn-1",
+      });
+      second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status, items: [] }] } };
+      const driver = makeDriver([first, second]);
+      const original = await driver.openSession({ runId: "run-completed", normalizedSessionId: "normalized-completed", workingDirectory: WORKSPACE });
+      const snapshot = await original.snapshot();
+      await original.close({ reason: "controller restarted" });
+      const recovery = await driver.recoverSession!(snapshot);
+      expect(recovery).toMatchObject({ recovered: true });
+      second.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+      second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+      return recovery.session!;
+    }
+
+    it("adopts the accepted turn when provider history shows it completed", async () => {
+      const recovered = await recoverCompleted("completed");
+      const events = await collectUntilTerminal(recovered.events());
+      expect(events.filter(event => event.eventType.startsWith("turn.")).map(event => [event.eventType, event.turnId]))
+        .toEqual(expect.arrayContaining([["turn.accepted", "turn-1"], ["turn.completed", "turn-1"]]));
+      expect(events.find(event => event.eventType === "session.failed")).toBeUndefined();
+      await recovered.close({ reason: "test complete" });
+    });
+
+    it("leaves a turn the runner reports lost to the restart continuation", async () => {
+      const recovered = await recoverCompleted("failed");
+      expect((await recovered.snapshot()).activeTurnId ?? null).toBeNull();
+      await recovered.close({ reason: "test complete" });
+    });
+  });
+
   it("rejects a recovered provider thread outside the assigned workspace", async () => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();

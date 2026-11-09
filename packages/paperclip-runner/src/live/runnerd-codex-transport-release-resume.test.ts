@@ -78,7 +78,7 @@ async function nativeWire(port: number, path: string, closeGate?: Promise<void>)
   });
 }
 
-it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cache adoption", "acpx cache adoption", "unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "release admission", "no cleanup callback", "adoption no cleanup callback", "resume no cleanup callback", "deferred turn after close", "late wire close", "empty goal snapshot"] as const)(
+it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cache adoption", "acpx cache adoption", "unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "release admission", "no cleanup callback", "adoption no cleanup callback", "resume no cleanup callback", "deferred turn after close", "late wire close", "empty goal snapshot", "early claim", "early claim abandoned", "early claim cancellation", "early claim expired", "early claim stale ticket"] as const)(
   "releases and resumes the native Codex source before attachment (%s)", async mode => {
     const root = await mkdtemp(join(tmpdir(), "runner-release-resume-"));
     const acpx = mode === "acpx cache adoption";
@@ -119,7 +119,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
     const heldMeasuredTurn = new Promise<void>(resolve => { finishMeasuredTurn = resolve; });
     const sockets = new Set<PrpWireConnection>();
     const registration = async (core: DurablePrpControlPlane, source = core.store.state.identity) => {
-      if ((mode === "late claim reply" || mode === "held past deadline") && claimAccepted) throw new Error("Fixture source authentication started after expiry");
+      if ((mode === "late claim reply" || mode === "held past deadline" || mode === "early claim expired") && claimAccepted) throw new Error("Fixture source authentication started after expiry");
       authority = core;
       let socket: PrpWireConnection | undefined;
       return {
@@ -165,8 +165,8 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
           parkId: parkId(source), bootstrapTicket: ticket });
         if (result.status !== "claimed") throw new Error("Fixture claim receipt unavailable");
         claimAccepted = true; acceptClaim();
-        if (mode === "claim cancellation" || mode === "held past deadline") await claimReceipt;
-        if (mode === "expired ticket" || mode === "late claim reply") {
+        if (mode === "claim cancellation" || mode === "held past deadline" || mode === "early claim" || mode === "early claim cancellation") await claimReceipt;
+        if (mode === "expired ticket" || mode === "late claim reply" || mode === "early claim expired") {
           expireClock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
           if (mode === "expired ticket") throw new Error("Fixture lost claim reply past ticket lifetime");
         }
@@ -347,12 +347,51 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         await expect(bundle.transport.request("thread/goal/set", { threadId, objective: "Must stay fenced" })).rejects.toThrow("release_resume_pending");
       }
       if (mode === "unavailable") await fixture.close();
+      if (mode.startsWith("early claim")) {
+        expect(bundle.transport.beginRunAttachment!({ runId: claimantRunId })).toBe(true);
+        expect(bundle.transport.beginRunAttachment!({ runId: claimantRunId })).toBe(false);
+        await vi.waitFor(() => expect(pair.resume).toHaveBeenCalledOnce());
+        await expect(bundle.transport.release!()).rejects.toThrow("run_attachment_in_progress");
+        await expect(bundle.transport.attachRun!({ runId: "other-run", turnId: "other-turn", itemId: "other-item" })).rejects.toThrow("run_attachment_in_progress");
+        await expect(bundle.transport.request("turn/start", { input: [] })).rejects.toThrow("run_attachment_in_progress");
+        expect(routeRuns).toEqual([identity.runId]);
+      }
+      if (mode === "early claim cancellation") {
+        await vi.waitFor(() => expect(claimAccepted).toBe(true));
+        const closing = bundle.transport.close();
+        releaseClaim();
+        await closing;
+        await expect(bundle.transport.attachRun!({ runId: claimantRunId, turnId: "next-turn", itemId: "next-item" })).rejects.toThrow("closed");
+      }
+      if (mode === "early claim abandoned" || mode === "early claim stale ticket") {
+        await vi.waitFor(async () => expect(await pair.resume.mock.results[0]?.value).toBe("resumed"));
+        if (mode === "early claim abandoned") await bundle.transport.close();
+        else {
+          expireClock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+          await expect(bundle.transport.attachRun!({ runId: claimantRunId, turnId: "next-turn", itemId: "next-item" })).rejects.toThrow("reconciliation_expired");
+          expireClock.mockRestore(); expireClock = undefined;
+          await bundle.transport.close();
+        }
+        expect(routeRuns).toEqual([identity.runId]);
+        expect(pair.release).toHaveBeenCalledOnce();
+      }
       if (mode === "held past deadline") vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       const attaching = Promise.resolve(recoveredSession
         ? recoveredSession.attachRun!({ runId: claimantRunId })
         : bundle.transport.attachRun!({ runId: claimantRunId, turnId: "next-turn", itemId: "next-item" }));
       void attaching.catch(() => undefined);
-      if (mode === "held past deadline") {
+      if (mode === "early claim cancellation" || mode === "early claim abandoned" || mode === "early claim stale ticket") {
+        await expect(attaching).rejects.toThrow("closed");
+      } else if (mode === "early claim") {
+        await vi.waitFor(() => expect(claimAccepted).toBe(true));
+        let attached = false;
+        void attaching.then(() => { attached = true; }, () => undefined);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(attached).toBe(false);
+        expect(routeRuns).toEqual([identity.runId]);
+        releaseClaim();
+        await attaching;
+      } else if (mode === "held past deadline") {
         await acceptedClaim;
         let failure: unknown;
         const settled = attaching.catch(error => { failure = error; });
@@ -372,13 +411,14 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         releaseClaim();
         await expect(attaching).rejects.toThrow("closed");
         await closing;
-      } else if (mode === "unavailable" || mode === "expired ticket" || mode === "late claim reply" || mode === "resume no cleanup callback") {
+      } else if (mode === "unavailable" || mode === "expired ticket" || mode === "late claim reply" || mode === "resume no cleanup callback" || mode === "early claim expired") {
         await expect(attaching).rejects.toThrow(mode === "unavailable" ? "reuse_unavailable" : mode === "resume no cleanup callback" ? "released_cleanup_unavailable" : "reconciliation_expired");
         expireClock?.mockRestore(); expireClock = undefined;
         await bundle.transport.close();
       } else await attaching;
       expect(new Set(claimTicketDigests).size).toBe(1);
-      if (["unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "resume no cleanup callback"].includes(mode)) {
+      if (["unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "resume no cleanup callback",
+        "early claim abandoned", "early claim cancellation", "early claim expired", "early claim stale ticket"].includes(mode)) {
         expect(pair.resume).toHaveBeenCalledOnce();
         expect(authority!.store.state.identity.runId).toBe(identity.runId);
         expect(launch).toHaveBeenCalledOnce();

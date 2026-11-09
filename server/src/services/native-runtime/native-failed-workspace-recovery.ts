@@ -18,6 +18,7 @@ import { preserveRemoteWorkspacePreparationFailure } from "./native-workspace-fi
 import { pinFailedObservedWorkspace } from "./native-observed-workspace-preservation.js";
 import { hasConfirmedSandboxStopAndRetain } from "../sandbox-stop-and-retain.js";
 import { preparedRemoteWorkspaceSource } from "../remote-workspace-lifecycle.js";
+import { releaseUnchangedRemoteWorkspaceWriterById } from "../remote-workspaces.js";
 
 const reusableLeasePolicies = ["reuse_by_environment", "reuse_by_execution_workspace"];
 
@@ -137,6 +138,12 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       )).limit(1);
       if (!accepted) return;
     }
+    // A run that ended without changing its files has nothing to keep: its
+    // workspace is handed on at the saved version it started from.
+    if (!exhaustedAcceptedCopyback && !coordinator.resultId && coordinator.phase === "terminal_failure"
+      && run.runnerProfileJson?.nativeWorkspaceSync == null
+      && await releaseUnchangedRemoteWorkspaceWriterById(tx, { companyId: run.companyId,
+        workspaceId: currentReference.workspaceId, runId: run.id })) return;
     // A stopped reusable sandbox is retained only with its exact stop receipt
     // while the workspace is still bound to this writer. Otherwise record nothing.
     if (!exhaustedAcceptedCopyback && source.status !== "active" && reusableLeasePolicies.includes(source.leasePolicy) && (!hasConfirmedSandboxStopAndRetain(source)

@@ -61,6 +61,11 @@ describe("workspace provider SDK", () => {
       }
     }
   });
+  it("accepts an unbound reservation removal but requires a binding elsewhere", () => {
+    expect(workspaceProviderOperationSchema.parse({ kind: "remove", binding: null, expectedHeadSha: null }))
+      .toEqual({ kind: "remove", binding: null, expectedHeadSha: null });
+    expect(() => workspaceProviderOperationSchema.parse({ kind: "inspect", binding: null })).toThrow();
+  });
   it("accepts only canonical optional preparation destinations", () => {
     for (const destinationRef of [undefined, null, "refs/heads/main", "refs/heads/release/one"]) {
       expect(parseWorkspaceProviderResult(params, { ...result, ...(destinationRef !== undefined ? { destinationRef } : {}) }))

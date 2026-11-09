@@ -2,7 +2,7 @@ import { captureEnvironmentAcquisitionDiagnostic } from "../environment-acquisit
 import { describe, expect, it } from "vitest";
 import type { heartbeatRuns } from "@paperclipai/db";
 import { attachRemoteRunnerRecoveryDiagnostic, RemoteRunnerRecoveryError } from "../native-runtime/remote-runner-recovery-diagnostics.js";
-import { collectRunFailureDiagnostics, collectRunFailureSecretValues, redactRunFailureSecretValues, sanitizeRunFailureDiagnostics, sanitizeRunFailureText } from "../run-failure-diagnostics.js";
+import { collectRunFailureDiagnostics, collectRunFailureHostTokenSecrets, collectRunFailureSecretValues, redactRunFailureSecretValues, sanitizeRunFailureDiagnostics, sanitizeRunFailureText } from "../run-failure-diagnostics.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 const run = (overrides: Partial<Run> = {}) => ({ resultJson: null, ...overrides }) as Run;
@@ -593,6 +593,20 @@ describe("run failure diagnostics", () => {
     expect(result.text).not.toContain("opaque");
     expect(result.status).toBe(503);
     expect(result.text).not.toContain("***[REDACTED]");
+  });
+
+  it("redacts short host values as whole tokens without corrupting words that contain them", () => {
+    const tokens = collectRunFailureHostTokenSecrets({ CHILD_EDITOR: "vi", OPAQUE_SHORT: "k9Q", SHORT_PIN: "482", LEVEL: "1" });
+    const result = redactRunFailureSecretValues({ category: "service", text: "editor vi used k9Q and 482; k9Qx and 4821 stay, exit 1",
+      nested: ["(vi)", "vim"] }, [], tokens);
+    expect(result).toEqual({ category: "service",
+      text: "editor ***REDACTED*** used ***REDACTED*** and ***REDACTED***; k9Qx and 4821 stay, exit 1",
+      nested: ["(***REDACTED***)", "vim"] });
+  });
+
+  it("lets a longer whole-token host value win over a shorter declared secret at the same position", () => {
+    expect(redactRunFailureSecretValues("upstream rejected 1aB9xQ; code 1", ["1"], ["1aB9xQ"]))
+      .toBe("upstream rejected ***REDACTED***; code ***REDACTED***");
   });
 
   it("preserves ordinary settings while retaining declared secrets", () => {

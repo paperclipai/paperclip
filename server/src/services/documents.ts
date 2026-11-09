@@ -181,11 +181,12 @@ export function documentService(db: Db) {
         format: documentRevisions.format, body: documentRevisions.body, changeSummary: documentRevisions.changeSummary,
         createdByAgentId: documentRevisions.createdByAgentId, createdByUserId: documentRevisions.createdByUserId,
         createdByRunId: documentRevisions.createdByRunId, createdAt: documentRevisions.createdAt,
+        latestRevisionId: documents.latestRevisionId, latestRevisionNumber: documents.latestRevisionNumber,
       }).from(issueDocuments)
         .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
         .innerJoin(documentRevisions, and(eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, documents.companyId)))
         .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key), eq(documentRevisions.id, revisionId))).limit(1);
-      return revision ?? null;
+      return revision ? { ...revision, isLatest: revision.latestRevisionId === revision.id } : null;
     },
 
     listIssueDocumentRevisions: async (issueId: string, rawKey: string) => {

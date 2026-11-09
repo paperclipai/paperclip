@@ -564,6 +564,7 @@ export interface HarnessSession {
     displayId?: string | null;
   };
   events(): AsyncIterable<PrpEvent>;
+  beginRunAttachment?(input: { runId: string }): boolean;
   attachRun?(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void> | void;
   startTurn(input: {
     message: NativeUserMessage;

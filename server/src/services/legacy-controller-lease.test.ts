@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, closeLivenessDb, companies, createDb, heartbeatRuns, livenessDb, subscribeDatabaseWork } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
@@ -8,8 +8,24 @@ import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { heartbeatService } from "./heartbeat.js";
 import { hasLiveLegacyController, LEGACY_CONTROLLER_LEASE_MS, LEGACY_CONTROLLER_RENEW_MS,
   LEGACY_CONTROLLER_RENEWAL_RETRY_DELAY_MS, legacyControllerBootId, legacyControllerClaim, LegacyControllerLeaseLostError,
-  renewLegacyControllerLease, revokeExpiredLegacyController, revokeExpiredLegacyControllerWithState,
-  watchLegacyControllerLease } from "./legacy-controller-lease.js";
+  legacyControllerOwnerStamp, renewLegacyControllerLease, revokeExpiredLegacyController,
+  revokeExpiredLegacyControllerWithState, watchLegacyControllerLease } from "./legacy-controller-lease.js";
+import { currentProcessSpaceHash, currentProcessStartedAtMs } from "./controller-process-identity.js";
+import { proveOwnerGone } from "./owner-proof.js";
+import * as legacyControllerLease from "./legacy-controller-lease.js";
+
+/** Runs just before recovery's revocation, to model a controller that saved
+ * its child's PID after recovery's scan and then died. Null in other cases. */
+const beforeRevocation: { hook: null | ((runId: string) => Promise<void>) } = { hook: null };
+vi.mock("./legacy-controller-lease.js", async importOriginal => {
+  const actual = await importOriginal<typeof legacyControllerLease>();
+  return { ...actual, revokeExpiredLegacyControllerWithState: async (...args: Parameters<typeof actual.revokeExpiredLegacyControllerWithState>) => {
+    if (beforeRevocation.hook) await beforeRevocation.hook(args[1].id);
+    return actual.revokeExpiredLegacyControllerWithState(...args);
+  } };
+});
+import { createOwnershipReportState, runOwnershipReconciliationPass } from "./recovery/ownership-invariant-report.js";
+import { OWNABLE_KINDS } from "./recovery/ownership-registry.js";
 
 type WatchArgs = Parameters<typeof watchLegacyControllerLease>;
 // A renewal test double: each attempt runs in a transaction on the liveness pool.
@@ -248,6 +264,119 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("leaves native controller ownership to the native coordinator", () => {
     expect(legacyControllerClaim("native")).toEqual({});
+  });
+
+  // Phase 2: the claim records its controller process, and a controller of
+  // another boot proven gone by the shared prover holds no lease and needs no
+  // age guard. Proof is by identity, never by lease age.
+  it("stamps the claiming process, bound to the lease's boot id", async () => {
+    const run = await seed();
+    expect(run.controllerProcess).toMatchObject({ bootId: legacyControllerBootId, pid: process.pid,
+      hostHash: currentProcessSpaceHash() });
+    expect(legacyControllerOwnerStamp(run)).toMatchObject({ bootId: legacyControllerBootId, pid: process.pid });
+    // Revocation swaps the boot id, so the revoked lease names nobody.
+    expect(legacyControllerOwnerStamp({ ...run, controllerBootId: randomUUID() })).toBeNull();
+  });
+
+  type Controller = { bootId: string; pid: number; hostHash: string; processStartedAt: string | null };
+  const deadController = (hostHash = currentProcessSpaceHash()): Controller => ({ bootId: randomUUID(),
+    pid: 2_000_000_001, hostHash, processStartedAt: new Date(Date.now() - 60_000).toISOString() });
+  /** A run whose adapter was dispatched by `controller`, with its lease still live. */
+  async function dispatchedBy(controller: Controller | null) {
+    const run = await seed();
+    await db.update(heartbeatRuns).set({ controllerBootId: controller?.bootId ?? randomUUID(),
+      controllerProcess: controller, executionStage: "dispatching" }).where(eq(heartbeatRuns.id, run.id));
+    return run.id;
+  }
+  const saved = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
+  /** The startup reaper with the default age guard, over this case's run only:
+   * earlier cases leave running rows in the shared database. */
+  async function reapOnly(id: string) {
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() })
+      .where(and(eq(heartbeatRuns.status, "running"), ne(heartbeatRuns.id, id)));
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 5 * 60_000 });
+  }
+
+  it("settles a hard-killed controller's run at once, before its lease expires and without the age guard", async () => {
+    // Crash point: the controller claimed the run, dispatched the adapter, and
+    // was killed. The next boot proves it gone and does not wait 60 s plus 5 min.
+    const id = await dispatchedBy(deadController());
+    await reapOnly(id);
+    expect(await saved(id)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+  });
+
+  it("never fails a run whose dead controller saved a live child after recovery's scan", async () => {
+    // Race: the scan read the run before the old controller saved its child's
+    // PID and died. The controller is proven gone, but its child still runs.
+    const id = await dispatchedBy(deadController());
+    beforeRevocation.hook = async runId => {
+      await db.update(heartbeatRuns).set({ processPid: process.pid, processHostHash: currentProcessSpaceHash(),
+        processStartedAt: new Date((await currentProcessStartedAtMs()) ?? Date.now()) }).where(eq(heartbeatRuns.id, runId));
+    };
+    try {
+      await reapOnly(id);
+    } finally { beforeRevocation.hook = null; }
+    expect((await saved(id)).status).not.toBe("failed");
+  });
+
+  it("settles a dead controller's expired lease without waiting out the age guard", async () => {
+    const id = await dispatchedBy(deadController());
+    await expire(id);
+    await reapOnly(id);
+    expect(await saved(id)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+  });
+
+  it.each([
+    { label: "a live earlier-boot controller", controller: async (): Promise<Controller> => ({ bootId: randomUUID(),
+      pid: process.pid, hostHash: currentProcessSpaceHash(),
+      processStartedAt: new Date((await currentProcessStartedAtMs())!).toISOString() }) },
+    { label: "a dead PID in another PID space", controller: async () => deadController("another-pid-space") },
+    { label: "a lease saved by the previous release", controller: async () => null },
+  ])("keeps the run and lease of $label", async ({ controller }) => {
+    const id = await dispatchedBy(await controller());
+    const before = await saved(id);
+    await reapOnly(id);
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    const after = await saved(id);
+    expect({ status: after.status, errorCode: after.errorCode, expiresAt: after.controllerLeaseExpiresAt })
+      .toEqual({ status: "running", errorCode: null, expiresAt: before.controllerLeaseExpiresAt });
+  });
+
+  it("keeps an expired lease of a live earlier-boot controller behind the age guard", async () => {
+    const id = await dispatchedBy({ bootId: randomUUID(), pid: process.pid, hostHash: currentProcessSpaceHash(),
+      processStartedAt: new Date((await currentProcessStartedAtMs())!).toISOString() });
+    await expire(id);
+    await reapOnly(id);
+    expect(await saved(id)).toMatchObject({ status: "running", errorCode: null });
+  });
+
+  it("settles a dead controller's lease in the reconciler pass, never in a read-only pass", async () => {
+    const id = await dispatchedBy(deadController());
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === "legacy_controller_lease")!;
+    const [record] = await kind.listForRuns!(db, [id]);
+    expect(record!.owner.kind === "process" && await proveOwnerGone(record!.owner.stamp))
+      .toEqual({ verdict: "gone", reason: "pid_dead" });
+    const before = await saved(id);
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect((await saved(id)).controllerLeaseExpiresAt).toEqual(before.controllerLeaseExpiresAt);
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    const after = await saved(id);
+    expect(after.controllerLeaseExpiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    // Ownership only: live-run recovery, woken by the settle, settles the run.
+    expect(after.status).toBe("running");
+    expect(await kind.listForRuns!(db, [id])).toEqual([]);
+  });
+
+  it("settles only the exact controller it proved", async () => {
+    const id = await dispatchedBy(deadController());
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === "legacy_controller_lease")!;
+    const [record] = await kind.listForRuns!(db, [id]);
+    const before = await saved(id);
+    await db.update(heartbeatRuns).set({ controllerProcess: { ...before.controllerProcess, pid: 2_000_000_002 } })
+      .where(eq(heartbeatRuns.id, id));
+    expect(await kind.settle!(db, record!, { now: new Date(), proof: { verdict: "gone", reason: "pid_dead" } }))
+      .toEqual({ settled: false, reason: "owner_changed_since_proof" });
+    expect((await saved(id)).controllerLeaseExpiresAt).toEqual(before.controllerLeaseExpiresAt);
   });
 });
 

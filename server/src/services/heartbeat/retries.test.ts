@@ -475,3 +475,19 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(await retries.retryScheduledRetryNow({ issueId: selected.issue.id, now })).toMatchObject({ outcome: "already_promoted" });
   });
 });
+
+describe("interrupted preparation retry schedule", () => {
+  it("retries a preparation a restart interrupted at once, and backs off only if it keeps being interrupted", () => {
+    const now = new Date("2026-11-09T11:09:41.846Z");
+    const first = extracted.computeInterruptedPreparationRetrySchedule(1, now, () => 0.5);
+    expect(first).toMatchObject({ attempt: 1, delayMs: 0, dueAt: now });
+    const second = extracted.computeInterruptedPreparationRetrySchedule(2, now, () => 0.5);
+    expect(second?.delayMs).toBeGreaterThan(0);
+    expect(second).toMatchObject({ attempt: 2, baseDelayMs: extracted.BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS[0] });
+    // Later attempts keep the longest transient delay.
+    expect(extracted.computeInterruptedPreparationRetrySchedule(5, now, () => 0.5))
+      .toMatchObject({ attempt: 5, baseDelayMs: extracted.BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.at(-1) });
+    expect(extracted.computeInterruptedPreparationRetrySchedule(0, now)).toBeNull();
+  });
+});
+

@@ -8,10 +8,29 @@ export class ChaosApiError extends Error {
   constructor(readonly status: number | null, message: string) { super(message); this.name = "ChaosApiError"; }
 }
 
+export function rateLimitDelayMs(response: { status: number; headers: { get(name: string): string | null } }, text: string): number | null {
+  if (response.status !== 429) return null;
+  let seconds = Number(response.headers.get("retry-after"));
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    try { seconds = Number((JSON.parse(text) as { retryAfterSeconds?: unknown }).retryAfterSeconds); } catch { seconds = NaN; }
+  }
+  return Number.isFinite(seconds) && seconds > 0 ? Math.min(10_000, seconds * 1_000) : 1_000;
+}
+
 export class ChaosApi {
-  constructor(readonly baseUrl: string, private readonly timeoutMs = 10_000) {}
+  constructor(readonly baseUrl: string, private readonly timeoutMs = 10_000, private readonly rateLimitAttempts = 5) {}
 
   private async request<T>(method: string, route: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
+    for (let attempt = 1; ; attempt += 1) {
+      const outcome = await this.attempt<T>(method, route, body, timeoutMs);
+      if (!("retryAfterMs" in outcome)) return outcome.value;
+      if (method !== "GET" || attempt >= this.rateLimitAttempts) throw outcome.error;
+      await new Promise(resolve => setTimeout(resolve, Math.min(10_000, outcome.retryAfterMs * attempt)));
+    }
+  }
+
+  private async attempt<T>(method: string, route: string, body: unknown, timeoutMs: number):
+    Promise<{ value: T } | { retryAfterMs: number; error: ChaosApiError }> {
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}${route}`, {
@@ -25,8 +44,13 @@ export class ChaosApi {
       throw new ChaosApiError(null, `${method} ${route} unreachable: ${error instanceof Error ? error.message : String(error)}`);
     }
     const text = await response.text();
-    if (!response.ok) throw new ChaosApiError(response.status, `${method} ${route} returned ${response.status}: ${text.slice(0, 500)}`);
-    return (text ? JSON.parse(text) : null) as T;
+    if (!response.ok) {
+      const error = new ChaosApiError(response.status, `${method} ${route} returned ${response.status}: ${text.slice(0, 500)}`);
+      const retryAfterMs = rateLimitDelayMs(response, text);
+      if (retryAfterMs !== null) return { retryAfterMs, error };
+      throw error;
+    }
+    return { value: (text ? JSON.parse(text) : null) as T };
   }
 
   get<T>(route: string, timeoutMs?: number) { return this.request<T>("GET", route, undefined, timeoutMs); }

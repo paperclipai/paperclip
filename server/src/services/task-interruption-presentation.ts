@@ -65,6 +65,7 @@ type ProjectionState = {
   ownerStopRequired?: boolean;
   /** The latest wake for a task with no run yet, when admission refused it. */
   admissionWait?: { id: string; status: string; reason: string | null; agentId: string };
+  retryDependencies?: RetryDependencies;
 };
 
 // A task read reports the change that made a task fail, not every later read of
@@ -94,6 +95,14 @@ function boundedJsonString(value: SQL, limit: number) {
   return sql<string | null>`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
 }
 
+/** Projected reason for a budget.blocked refusal caused by unpriced usage. */
+export const UNPRICED_USAGE_WAIT = "accounting.unpriced_usage";
+/** Admission's unpriced-usage refusal text (budgets.ts). Only this fixed
+ * phrase is matched; the stored message itself is never displayed. */
+const unpricedUsageWait = (reason: SQL, message: SQL) =>
+  sql<string | null>`case when ${reason} = 'budget.blocked' and ${message} like '%recorded usage has no reliable price%'
+    then ${UNPRICED_USAGE_WAIT} else ${reason} end`;
+
 // Persisted wait messages can contain diagnostics. Ordinary task views expose
 // only these stable categories, never arbitrary payloads or source identifiers.
 const retryWaitMessages: Record<string, string> = {
@@ -108,6 +117,9 @@ const retryWaitMessages: Record<string, string> = {
   execution_active: "Retry is waiting for the current run to finish. Your message is saved.",
   decision_pending: "Retry is waiting for a pending approval or question to be resolved. Your message is saved.",
   "budget.blocked": "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage.",
+  // Admission records an unpriced-usage refusal as budget.blocked; the
+  // projection shows it as the accounting matter it is.
+  [UNPRICED_USAGE_WAIT]: "Retry is waiting because recorded usage has no price. Check Costs, or allow unpriced usage in the budget policy. Your message is saved.",
   finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
   // Another click cannot release a copyback owner that stopped without reporting.
   // Retry starts a new recovery generation; the agent does not repeat its work.
@@ -122,10 +134,20 @@ const retryWaitMessages: Record<string, string> = {
   retry_source_changed: "Retry cannot continue because its saved message changed. Send a new message to continue from saved work.",
 };
 
+type RetryDependencies = { count: number; blocked: boolean; cancelled: boolean; savingFilesOnly: boolean };
+
+function dependencyRetryWaitMessage(dependencies: RetryDependencies): string {
+  if (dependencies.cancelled) return "Retry is waiting on a cancelled task this one depends on. Remove or replace that dependency to continue. Your Retry is saved.";
+  if (dependencies.blocked) return "Retry is waiting on a blocked task this one depends on. Retry or unblock it; this task continues when it is done. Your Retry is saved.";
+  if (dependencies.savingFilesOnly) return "Retry is waiting for a finished task this one depends on to save its files. Your Retry is saved.";
+  return "Retry is waiting for the tasks this one depends on to finish. Your Retry is saved.";
+}
+
 // A task that never started can wait for a temporary admission hold. The
 // assigned-task liveness sweep admits it once the hold clears; no Retry needed.
 const admissionWaitMessages: Record<string, string> = {
   "budget.blocked": "Waiting for the budget to allow new work. The task starts automatically when it does.",
+  [UNPRICED_USAGE_WAIT]: "Waiting because recorded usage has no price. Check Costs, or allow unpriced usage in the budget policy.",
 };
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
@@ -238,6 +260,10 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   if (nativeResumeAt && !system && now - nativeResumeAt < NATIVE_RESUME_DISPATCH_GRACE_MS)
     return { ...base, state: "working" };
   if (recoveryRunning) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
+  const dependencies = input.retryDependencies;
+  if (retryWait?.sourceRunId === run.id && !retryWait.executionWaitReason && !retryWait.preparationStatus && dependencies?.count)
+    return { ...base, intentId: retryWait.id, state: "working",
+      retryWait: { reason: "dependency_blocked", message: dependencyRetryWaitMessage(dependencies) } };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
@@ -335,7 +361,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     // A new message must not hide an existing Retry's admission explanation.
     db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
-      executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80),
+      executionWaitReason: boundedJsonString(sql`to_jsonb(${unpricedUsageWait(sql`${agentWakeupRequests.payload}#>>'{executionWait,reason}'`,
+        sql`${agentWakeupRequests.payload}#>>'{executionWait,message}'`)})`, 80),
       preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry"),
       preparationUpdatedAt: chatActions.updatedAt })
       .from(agentWakeupRequests).leftJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId),
@@ -363,7 +390,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     db.select({ status: companies.status, pauseReason: companies.pauseReason }).from(companies).where(eq(companies.id, companyId)),
     // Only consulted for tasks without a run: the latest wake says whether admission refused it.
     startingIssueIds.length ? db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id,
-      status: agentWakeupRequests.status, reason: agentWakeupRequests.reason, agentId: agentWakeupRequests.agentId })
+      status: agentWakeupRequests.status, reason: unpricedUsageWait(sql`${agentWakeupRequests.reason}`, sql`${agentWakeupRequests.error}`),
+      agentId: agentWakeupRequests.agentId })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, startingIssueIds)))
       .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)) : [],
   ]);
@@ -431,6 +459,25 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const byIssue = <T extends { issueId: string }>(rows: T[]) => new Map(rows.map(row => [row.issueId, row]));
   const runMap = byIssue(runs), waitMap = new Map<string, typeof waits[number]>();
   const retryWaitMap = byIssue(waits.filter(wait => wait.sourceRunId));
+  const retryIssueIds = [...retryWaitMap.keys()];
+  const retryDependencyMap = new Map<string, RetryDependencies>();
+  if (retryIssueIds.length) {
+    const { issueService } = await import("./issues.js");
+    const readiness = await issueService(db).listDependencyReadiness(companyId, retryIssueIds);
+    const blockerIds = [...new Set([...readiness.values()].flatMap(row => row.unresolvedBlockerIssueIds))];
+    const statusRows = blockerIds.length ? await db.select({ id: issues.id, status: issues.status }).from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, blockerIds))) : [];
+    const statusById = new Map(statusRows.map(row => [row.id, row.status]));
+    for (const [waitingIssueId, row] of readiness) {
+      const ids = [...new Set(row.unresolvedBlockerIssueIds)];
+      if (!ids.length) continue;
+      const statuses = ids.map(id => statusById.get(id));
+      const saving = new Set(row.pendingFinalizeBlockerIssueIds);
+      retryDependencyMap.set(waitingIssueId, { count: ids.length,
+        blocked: statuses.includes("blocked"), cancelled: statuses.includes("cancelled"),
+        savingFilesOnly: ids.every(id => saving.has(id)) });
+    }
+  }
   for (const wait of waits) {
     const current = waitMap.get(wait.issueId);
     if (!current || wait.requestedAt > current.requestedAt ||
@@ -484,6 +531,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
       ownerStopRequired: ownerStopRequired.has(`${issue.id}:${facts.run?.id}`),
       admissionWait: admissionWaitMap.get(issue.id),
+      retryDependencies: retryDependencyMap.get(issue.id),
     }, now);
     result.set(issue.id, presentation);
     const run = facts.run;
