@@ -8,7 +8,7 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -19,6 +19,7 @@ import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
+import { releaseInstance, sweepExpiredKeptInstances } from "./instance-retention.js";
 import { checkPlanInvariants, summarizeViolations, type InvariantCheck } from "./invariants.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
@@ -170,6 +171,12 @@ async function main(): Promise<number> {
   // Baseline only after the harness's own build steps (preflight rewrites the runner's dist).
   startFingerprint = worktreeFingerprint(repositoryRoot, guardedOutputs);
 
+  const crashPoint = plan.replayOf ? null : plan.options.crashPoint ?? null;
+  const crashPoints = crashPoint ? crashPoint.split(",") : [];
+  const batchSize = crashPoints.length ? Math.max(1, Math.floor(plan.tasks.length / crashPoints.length)) : 0;
+  if (crashPoint && plan.tasks.length !== batchSize * crashPoints.length) throw new Error(`--tasks must be a multiple of the ${crashPoints.length} crash point(s)`);
+  const swept = await sweepExpiredKeptInstances().catch(error => { timeline.add("kept_instance_sweep_failed", { error: String(error) }); return []; });
+  if (swept.length) timeline.add("kept_instances_expired", { removed: swept });
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline,
     ...(plan.options.upgradeFrom ? { upgradeFrom: plan.options.upgradeFrom } : {}) });
   // Crash-point suite: one booted server, one point at a time. Each point gets
@@ -178,9 +185,6 @@ async function main(): Promise<number> {
   // checked when the batch rests, as violations new since the point was armed.
   // A replay fires the recorded faults (the crash point's K1 restart included)
   // at their offsets; re-arming the point could miss its nth hit with fewer tasks.
-  const crashPoint = plan.replayOf ? null : plan.options.crashPoint ?? null;
-  const crashPoints = crashPoint ? crashPoint.split(",") : [];
-  const batchSize = crashPoints.length ? Math.max(1, Math.floor(plan.tasks.length / crashPoints.length)) : 0;
   type PointResult = { point: string; token: string; taskIds: string[]; armedAt: number; restedAt: number | null;
     fault: FaultReceipt | null; invariants: InvariantCheck | null };
   const pointResults: Array<PointResult & { baseline?: Set<string> }> = [];
@@ -188,7 +192,6 @@ async function main(): Promise<number> {
   let databaseUrl: string | null = null;
   const violationKey = (violation: { rule: string; kind: string; recordId: string }) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
   if (crashPoint) {
-    if (plan.tasks.length !== batchSize * crashPoints.length) throw new Error(`--tasks must be a multiple of the ${crashPoints.length} crash point(s)`);
     supervisor.crashPointHoldMs = plan.options.crashPointHoldMs ?? 0;
     supervisor.useCrashPointControl({ controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"),
       receiptPath: path.join(waveDir, "crash-point-receipts.jsonl") });
@@ -208,6 +211,7 @@ async function main(): Promise<number> {
   const faultWork: Promise<void>[] = [];
   const lines: LedgerLine[] = [];
   let anyFailure = false;
+  let stopFailed = false;
   let speedSection: string | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
@@ -544,6 +548,7 @@ async function main(): Promise<number> {
       timeline.add("daytona_cleanup_failed", { error: String(error) });
     } } finally {
       try { await supervisor.stop(); } catch (error) {
+        stopFailed = true;
         // Incomplete cleanup is a harness failure; keep the instance for inspection.
         harnessError ??= error;
         timeline.add("supervisor_stop_failed", { error: String(error) });
@@ -555,8 +560,9 @@ async function main(): Promise<number> {
       await writeFile(path.join(waveDir, "SUMMARY.md"), speedSection ? `${summary}\n${speedSection}` : summary, { mode: 0o600 });
       console.info(`\n${summary}`);
     }
-    if (keep || anyFailure || harnessError) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot });
-    else await rm(supervisor.paths.temporaryRoot, { recursive: true, force: true }).catch(() => undefined);
+    const retention = await releaseInstance(supervisor.paths.temporaryRoot, { keep, stopFailed, waveId: plan.waveId })
+      .catch(error => { timeline.add("instance_cleanup_failed", { error: String(error) }); return null; });
+    if (retention?.kept) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot, reason: retention.reason });
   }
   console.info(`Wave ${plan.waveId}: results ${waveDir}`);
   for (const line of lines.filter(candidate => !candidate.pass)) console.info(`  FAIL ${line.taskId} ${line.signature} → ${line.evidence ?? "no evidence"}\n    replay: ${replayCommand(plan.waveId, line.taskId)}`);
