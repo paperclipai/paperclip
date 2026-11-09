@@ -25,17 +25,18 @@ type Query = { sql: string; params: unknown[] };
 
 const baselineRef = process.argv.find(value => value.startsWith("--baseline-ref="))?.slice(15);
 assert.ok(baselineRef, "Pass an explicit pre-change --baseline-ref=<commit>");
-const baselineRevision = execFileSync("git", ["rev-parse", "--verify", `${baselineRef}^{commit}`], { encoding: "utf8" }).trim();
-const samplesPerArm = Number(process.argv.find(value => value.startsWith("--samples="))?.slice(10) ?? 5);
+// Run every git command from the repository root: the documented command runs from server/.
 const root = fileURLToPath(new URL("../", import.meta.url));
+const baselineRevision = execFileSync("git", ["rev-parse", "--verify", `${baselineRef}^{commit}`], { encoding: "utf8", cwd: root }).trim();
+const samplesPerArm = Number(process.argv.find(value => value.startsWith("--samples="))?.slice(10) ?? 5);
 const sourcePath = "server/src/services/recovery/ownership-invariant-report.ts";
 // Every helper the check imports must be unchanged, or the baseline is contaminated.
 const changedRuntime = execFileSync("git", ["diff", "--name-only", baselineRevision, "--",
-  "server/src/services", "packages/db/src", "packages/shared/src", "pnpm-lock.yaml"], { encoding: "utf8" })
+  "server/src/services", "packages/db/src", "packages/shared/src", "pnpm-lock.yaml"], { encoding: "utf8", cwd: root })
   .trim().split("\n").filter(Boolean);
 assert.deepEqual(changedRuntime.filter(file => file !== sourcePath), [], "The baseline must not import changed runtime helpers");
 
-const baselineSource = execFileSync("git", ["show", `${baselineRevision}:${sourcePath}`], { encoding: "utf8" });
+const baselineSource = execFileSync("git", ["show", `${baselineRevision}:${sourcePath}`], { encoding: "utf8", cwd: root });
 const baselineDir = await fs.mkdtemp(path.join(root, "server/scripts/.comment-wake-baseline-"));
 const originalUrl = new URL(`../${sourcePath}`, import.meta.url);
 const rewritten = baselineSource.replace(/from "(\.{1,2}\/[^"]+)"/g,
@@ -253,7 +254,7 @@ try {
       + `buffers ${buffers.before} -> ${buffers.after}; hash plan ${JSON.stringify(hashPlan)}; samples before=${samples.before.map(v => v.toFixed(0)).join(",")} after=${samples.after.map(v => v.toFixed(0)).join(",")}\n`);
   }
   const treatmentSource = await fs.readFile(path.join(root, sourcePath));
-  const output = JSON.stringify({ baselineRevision, treatmentRevision: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+  const output = JSON.stringify({ baselineRevision, treatmentRevision: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd: root }).trim(),
     sourcePath, baselineSha256: createHash("sha256").update(baselineSource).digest("hex"),
     treatmentSha256: createHash("sha256").update(treatmentSource).digest("hex"), version, settings,
     warmups: 2, timedSamplesPerArm: samplesPerArm, setupAndProofMs: performance.now() - started, results }, null, 2);
