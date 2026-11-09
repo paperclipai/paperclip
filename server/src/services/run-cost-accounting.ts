@@ -403,8 +403,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       // A complete receipt arriving later may price this charge (see usage-receipts).
       ...(receiptUnavailable ? { usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({
         accountingReceiptUnavailable: true,
-        // Unlike a verified stop, the run may still have spent: the blocking
-        // unpriced-usage policy keeps counting this charge.
+        // Unlike a verified stop, the run may still have spent. The flag names
+        // the run in Costs; like any charge accounting settled without its
+        // receipt, it is exempt from the blocking unpriced-usage policy
+        // (budget-exposure.ts), because accounting is never a company gate.
         ...(closureTimedOut ? { accountingClosureTimedOut: true } : {}),
         // Late reconciliation measures a later receipt from the accepted money.
         ...(lostReceiptEstimate ? { costUsdExact: lostReceiptEstimate.costUsdExact, costStatus: "estimated",

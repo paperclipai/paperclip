@@ -127,12 +127,13 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
         and ${budgetReservations.runId} = ${heartbeatRuns.id} and ${budgetReservations.state} = 'held')`;
     ledgerPredicates.push(ledger); heldPredicates.push(held); runPredicates.push(run);
     ledgerColumns[`total${index}`] = sql`coalesce(sum(${costEvents.costCents}) filter (where ${ledger}), 0)::text`;
-    // "Usage with no reliable price" means usage a provider reported that
+    // "Usage with no reliable price" means usage from a complete receipt that
     // could not be priced. These unpriced charges are not that, so they never
     // trip the blocking policy (they stay visible in Costs):
     // - a final charge accounting settled without its receipt: lost with a
     //   stopped provider, closure evidence that never arrived, or a failed
-    //   capture. Accounting is never a company gate (plan decision 1); its
+    //   capture (its receipt is never certified complete, even if a later
+    //   report adds usage). Accounting is never a company gate (plan decision 1); its
     //   exposure is recorded, and the activity entry is the board's notice;
     // - a charge that carries a known partial cost;
     // - metered API or subscription billing with no observed tokens.
