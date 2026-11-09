@@ -411,7 +411,7 @@
     "packages/shared/src/types/server-info.ts": "5c9ae793bb912f68f5dc22a43735605a142b85dd",
     "packages/shared/src/types/sidebar-badges.ts": "d1ba9a64271eaee1c66ec9cc43c44f26ed769d8b",
     "packages/shared/src/types/sidebar-preferences.ts": "457b5f0bee99a0a2d42f671fd827930693de1c00",
-    "packages/shared/src/types/skill-source.ts": "f92df553fb8b3b967d62dce4d93fbe5a3aef1b30",
+    "packages/shared/src/types/skill-source.ts": "f34624008f2f852df198bb5f499f75f657c4f30e",
     "packages/shared/src/types/smoke-lab.ts": "534b1a1ef3f8fda6ae9a15e009c4f247a6f0b9e3",
     "packages/shared/src/types/summary-slot.ts": "9698bb7d628be3f2310d050037e30157d474ed48",
     "packages/shared/src/types/task-workspace.ts": "a23afa13d2cb58dc2eb72692ed28c16ed6fb84fb",
