@@ -4725,6 +4725,19 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
+      // Work assigned while a person keeps the agent paused has not started.
+      // It waits for the resumed agent: the assigned-todo dispatch below starts
+      // it once the agent is invokable again, so it is not stranded work.
+      if (
+        agent?.status === "paused" &&
+        agent.companyId === issue.companyId &&
+        agent.lifecycleHolds.includes("manual") &&
+        issue.status === "todo" &&
+        !latestRun
+      ) {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.status !== "in_review" && !agentInvokable) {
         const classification = classifyContinuationFailure(latestRun);
         if (
