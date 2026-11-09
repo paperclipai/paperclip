@@ -131,6 +131,7 @@ const context = privilegedDefinition("cli-operations.choose-cli-context", "privi
     for (const argv of returned.commands) await runOwnedCli(ctx, argv);
     state.returnedCommandHashes = returned.commands.map(argv => createHash("sha256").update(JSON.stringify(argv)).digest("hex"));
     state.unresolvedContextBindings = returned.bindings;
+    state.recordedSignInCommands = returned.signIn.length;
     state.contextCommandsExecuted = true;
     const selected = JSON.parse(await runOwnedCli(ctx, ["context", "show", "--json"]));
     const scopedCompany = JSON.parse(await runOwnedCli(ctx, ["company", "current", "--json"]));

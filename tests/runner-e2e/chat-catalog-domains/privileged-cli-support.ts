@@ -83,6 +83,7 @@ export function contextGuidanceArgv(reply: string, fixture: { company: string; a
     .map(line => line.trim().replace(/^\$\s+/, "")).filter(line => line && !line.startsWith("#"));
   let selected = false, readback = false;
   const commands: string[][] = [], bindings: Array<{ commandIndex: number; flag: string; placeholder: string; fixtureValue: string }> = [];
+  const signIn: string[][] = [];
   for (const line of lines) {
     if (/[`;|&\n\r]|\$\(/.test(line)) return;
     const prefix = /^(?:paperclipai|npx(?: -y)? paperclipai(?:@latest)?|pnpm (?:exec )?paperclipai)\s+/;
@@ -93,6 +94,20 @@ export function contextGuidanceArgv(reply: string, fixture: { company: string; a
     const original = tokens;
     const family = original[0];
     const command = original[1], args = original.slice(2);
+    // A sign-in step for a terminal that may not be signed in yet. The owned
+    // human actor is already signed in and browser approval cannot run here,
+    // so a well-formed login is recorded and not executed; other flags fail.
+    if (family === "auth" && command === "login") {
+      const flags = new Map<string, string>();
+      while (args.length) {
+        const flag = args.shift()!, value = args.shift();
+        if (!["--api-base", "--company-id"].includes(flag) || !value || flags.has(flag)) return;
+        flags.set(flag, value);
+      }
+      const base = flags.get("--api-base"), company = flags.get("--company-id");
+      if (base !== undefined && base !== fixture.apiBase && !addressPlaceholder.test(base) || company !== undefined && company !== fixture.company) return;
+      signIn.push(original); continue;
+    }
     if (family === "company" || family === "auth") {
       // Reads only: listing companies, the selected company and the signed-in identity.
       if (family === "company" && command !== "current" && command !== "list" || family === "auth" && command !== "whoami"
@@ -138,7 +153,7 @@ export function contextGuidanceArgv(reply: string, fixture: { company: string; a
     if (command === "show") readback ||= selected;
     commands.push(original);
   }
-  return selected && readback ? { commands, bindings } : undefined;
+  return selected && readback ? { commands, bindings, signIn } : undefined;
 }
 export function validContextGuidance(reply: string, fixture: { company: string; apiBase: string }) {
   return !!contextGuidanceArgv(reply, fixture);

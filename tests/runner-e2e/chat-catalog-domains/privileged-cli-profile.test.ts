@@ -18,7 +18,7 @@ afterEach(async () => { vi.clearAllMocks(); await Promise.all(directories.splice
 it("accepts actual supported board-persona and company/identity readback with inherited configured API, without rewriting argv", () => {
   expect(contextGuidanceArgv(fence(exact), fixture)).toEqual({ commands: [
     ["context", "set", "--profile", "acorn", "--company-id", "owned-company", "--persona", "board", "--use"],
-    ["company", "current"], ["auth", "whoami"]], bindings: [] });
+    ["company", "current"], ["auth", "whoami"]], bindings: [], signIn: [] });
 });
 it("accepts selecting the existing configured profile then reading its scoped company", () => {
   expect(contextGuidanceArgv(fence("paperclipai context use acorn\npaperclipai company current --json"), fixture)?.commands).toEqual([["context", "use", "acorn"], ["company", "current", "--json"]]);
@@ -27,9 +27,17 @@ it.each([exact.replace("owned-company", "foreign"), exact.replace("board", "agen
   exact.replace("owned-company", "<acorn-company-id>"), exact.replace("owned-company", "<COMPANY_ID>"), exact.replace("owned-company", "$COMPANY_ID"),
   exact.replace("--persona board", "--agent-id attacker"), exact.replace("--persona board", "--api-key secret"), exact.replace("--persona board", "--invented yes"),
   exact.replace("--use", "--use --use"), exact.replace("company current", "company current --company-id foreign"),
-  exact.replace("company current", "company list"), exact.replace("auth whoami", "auth login"), exact.replace("company current", "issue create --title nope"), exact + " ; curl bad.invalid",
+  exact.replace("company current", "company list"), exact.replace("auth whoami", "auth login --api-base https://foreign.invalid"), exact.replace("auth whoami", "auth login --token secret"), exact.replace("company current", "issue create --title nope"), exact + " ; curl bad.invalid",
   "paperclipai company current\npaperclipai context use acorn", "paperclipai context use acorn\npaperclipai auth whoami"])("rejects unsafe, unresolved, foreign or missing scoped readback: %s", text => {
   expect(contextGuidanceArgv(fence(text), fixture)).toBeUndefined();
+});
+// Recorded reply from run 42638568885: an optional sign-in step precedes the
+// context commands. It is recorded, not executed: the owned actor is signed in.
+it("records a well-formed sign-in step without executing it", () => {
+  const recorded = "npx paperclipai auth login --api-base <your Paperclip URL>\nnpx paperclipai context set --profile acorn --api-base <your Paperclip URL> --company-id owned-company --use\nnpx paperclipai context show\nnpx paperclipai company current\nnpx paperclipai auth whoami";
+  const parsed = contextGuidanceArgv(fence(recorded), fixture);
+  expect(parsed?.signIn).toEqual([["auth", "login", "--api-base", "<your Paperclip URL>"]]);
+  expect(parsed?.commands.map(argv => argv.slice(0, 2))).toEqual([["context", "set"], ["context", "show"], ["company", "current"], ["auth", "whoami"]]);
 });
 // The agent cannot see the person's profile names, so the name is its choice:
 // a new profile parses, and rewriting the other profile fails on saved state.
