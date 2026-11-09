@@ -17,10 +17,25 @@ export interface ChaosLab {
   environmentKind: EnvironmentKind;
   projectId: string;
   fixtureRepositoryPath: string;
-  agents: Record<AdapterId, { id: string; name: string }>;
+  /** `body` is the creation request, so a driver can hire an identical agent later. */
+  agents: Record<AdapterId, { id: string; name: string; body?: Record<string, unknown> }>;
 }
 
 /** Create the `chaos-sandbox` git repository: python CLI, one failing test, bench.sh. */
+export function cloneWorkspaceRepository(source: string, directory: string, commit?: string): string {
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  execFileSync("git", ["clone", "--quiet", "--depth", "1", "--no-hardlinks", `file://${source}`, directory], { stdio: "pipe" });
+  if (commit && git("rev-parse", "HEAD") !== commit) {
+    try {
+      git("fetch", "--quiet", "--depth", "1", "origin", commit);
+      git("checkout", "--quiet", "--detach", commit);
+    } catch (error) {
+      throw new Error(`--workspace-repo ${source} no longer has commit ${commit} that this wave used`, { cause: error });
+    }
+  }
+  return directory;
+}
+
 export async function createFixtureRepository(directory: string, benchSeconds?: number): Promise<string> {
   await mkdir(directory, { recursive: true });
   for (const [relative, file] of Object.entries(fixtureRepositoryFiles(benchSeconds))) {
@@ -58,7 +73,7 @@ export function chaosDaytonaShape(cpu: number) {
   return { cpu, memory: 4, disk: 10 };
 }
 
-async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: string; image: string; cpu: number; waveId: string;
+async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: string; image: string; cpu: number; reuseLease: boolean; waveId: string;
   secretRefs: SecretReferenceMap; timeline: Timeline }): Promise<string> {
   const fixture = runnerEnvironments.find(candidate => candidate.id === "daytona");
   if (!fixture) throw new Error("runner-e2e catalog has no daytona environment fixture");
@@ -67,8 +82,9 @@ async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: strin
   const payload = fixture.buildEnvironment({ secretRefs: input.secretRefs, daytonaImage: input.image, executionId: input.waveId });
   const shape = chaosDaytonaShape(input.cpu);
   const environment = await input.api.post<{ id: string; driver: string }>(`/api/companies/${input.companyId}/environments`,
-    { ...payload, config: { ...(payload.config as Record<string, unknown>), ...shape } });
-  input.timeline.add("seed_environment", { environmentId: environment.id, driver: environment.driver, image: input.image, ...shape });
+    { ...payload, config: { ...(payload.config as Record<string, unknown>), ...shape, ...(input.reuseLease ? { reuseLease: true } : {}) } });
+  input.timeline.add("seed_environment", { environmentId: environment.id, driver: environment.driver, image: input.image, ...shape,
+    reuseLease: input.reuseLease });
   return environment.id;
 }
 
@@ -108,11 +124,14 @@ export async function seedChaosLab(input: {
   env: EnvironmentKind;
   daytonaImage?: string;
   daytonaCpu?: number;
+  daytonaReuseLease?: boolean;
   adapters: readonly AdapterId[];
   concurrency: number;
   budgetCents: number;
   masks?: readonly string[];
   fixtureRoot: string;
+  workspaceRepo?: string;
+  workspaceCommit?: string;
   waveId: string;
   timeline: Timeline;
   /** Merged into each agent's adapterConfig (for example a runner lifecycle mode). */
@@ -127,7 +146,9 @@ export async function seedChaosLab(input: {
     await installFixtureDaytonaProvider(runnerApiView(input.api), { environment: { id: "daytona" } } as MatrixExecution);
     timeline.add("seed_daytona_plugin", {});
   }
-  const fixtureRepositoryPath = await createFixtureRepository(path.join(input.fixtureRoot, "chaos-sandbox"));
+  const fixtureRepositoryPath = input.workspaceRepo
+    ? cloneWorkspaceRepository(input.workspaceRepo, path.join(input.fixtureRoot, "workspace-repo"), input.workspaceCommit)
+    : await createFixtureRepository(path.join(input.fixtureRoot, "chaos-sandbox"));
   const company = await api.post<{ id: string }>("/api/companies", {
     name: "Chaos Lab",
     description: `Restart chaos harness wave ${input.waveId}`,
@@ -158,7 +179,7 @@ export async function seedChaosLab(input: {
   let environmentId: string;
   if (input.env === "daytona") {
     environmentId = await createDaytonaEnvironment({ api, companyId: company.id, image: input.daytonaImage!, cpu: input.daytonaCpu ?? 4,
-      waveId: input.waveId, secretRefs, timeline });
+      reuseLease: input.daytonaReuseLease === true, waveId: input.waveId, secretRefs, timeline });
     input.onEnvironment?.({ companyId: company.id, environmentId, environmentKind: "daytona" });
     if (input.adapters.includes("codex")) await qualifyNativeCodex({ api, companyId: company.id, environmentId, timeline });
   } else {
@@ -177,7 +198,7 @@ export async function seedChaosLab(input: {
       workspacePath: fixtureRepositoryPath, secretRefs, executionId: input.waveId });
     const name = `Chaos ${adapter}`;
     const runtimeConfig = (payload.runtimeConfig ?? {}) as Record<string, unknown>;
-    const created = await api.post<{ id: string; name: string }>(`/api/companies/${company.id}/agents`, {
+    const body: Record<string, unknown> = {
       ...payload,
       ...(input.adapterConfigOverrides ? { adapterConfig: {
         ...((payload.adapterConfig ?? {}) as Record<string, unknown>), ...input.adapterConfigOverrides } } : {}),
@@ -185,8 +206,9 @@ export async function seedChaosLab(input: {
       title: "Restart chaos worker",
       runtimeConfig: { ...runtimeConfig, heartbeat: { ...((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>),
         enabled: false, maxConcurrentRuns: Math.max(1, input.concurrency) } },
-    });
-    agents[adapter] = { id: created.id, name };
+    };
+    const created = await api.post<{ id: string; name: string }>(`/api/companies/${company.id}/agents`, body);
+    agents[adapter] = { id: created.id, name, body };
     timeline.add("seed_agent", { adapter, agentId: created.id, profile: profile.id, model: profile.model, environmentId });
   }
 

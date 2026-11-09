@@ -1,11 +1,11 @@
-import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { nativeWorkspaceExportPendingForLease } from "./native-runtime/native-workspace-finalization-state.js";
 import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
-import { ORPHANED_SANDBOX_RECOVERY_KEY } from "./sandbox-stop-and-retain.js";
+import { ORPHANED_SANDBOX_RECOVERY_KEY, prepareSupersededWarmSandboxStop } from "./sandbox-stop-and-retain.js";
 
 /** Failure reason on a retained orphan sandbox released for destruction. */
 export const RETAINED_ORPHAN_RELEASED_REASON = "retained_orphan_sandbox_released";
@@ -17,8 +17,70 @@ const OPEN_RUN_STATUSES = ["queued", "scheduled_retry", "running"];
 type LeaseRow = typeof environmentLeases.$inferSelect;
 
 /** A retained orphan: the ownership settle stopped and kept its sandbox, and
- * the stop is confirmed. */
+ * the stop is confirmed. Or an abandoned warm sandbox (see below). */
 export function retainedOrphanSandboxCondition() {
+  return or(orphanedRunSandboxCondition(), abandonedWarmSandboxCondition(), supersededRunningWarmSandboxCondition());
+}
+
+/** The newest lease row for its sandbox: an older row was handed on. */
+function newestRowForSandbox() {
+  return sql`not exists (select 1 from environment_leases newer where newer.id <> ${environmentLeases.id}
+      and newer.provider = ${environmentLeases.provider} and newer.provider_lease_id = ${environmentLeases.providerLeaseId}
+      and (newer.created_at > ${environmentLeases.createdAt}
+        or (newer.created_at = ${environmentLeases.createdAt} and newer.id > ${environmentLeases.id})))`;
+}
+
+/** The lease's own task is now bound to a different workspace (positive
+ * evidence of the move; an unbound task is not treated as moved), and no other
+ * task is bound to the lease's workspace, so reuse, which matches the exact
+ * workspace and agent, can never pick the sandbox again. */
+function taskMovedToAnotherWorkspace() {
+  return and(sql`${environmentLeases.executionWorkspaceId} is not null`,
+    sql`exists (select 1 from issues task where task.id = ${environmentLeases.issueId}
+      and task.company_id = ${environmentLeases.companyId}
+      and task.execution_workspace_id is not null
+      and task.execution_workspace_id <> ${environmentLeases.executionWorkspaceId})`,
+    sql`not exists (select 1 from issues bound where bound.company_id = ${environmentLeases.companyId}
+      and bound.execution_workspace_id = ${environmentLeases.executionWorkspaceId})`);
+}
+
+/**
+ * A warm sandbox kept running for reuse (`retained` after a keep-running
+ * release) whose task moved to another workspace. Its idle timer lived in the
+ * process that kept it, so after a restart nothing else would ever stop it.
+ * The settle stops it through the stop-only contract; once the provider
+ * confirms the stop, it is an abandoned warm sandbox and is destroyed.
+ */
+export function supersededRunningWarmSandboxCondition() {
+  return and(eq(environmentLeases.status, "retained"), eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+    eq(environmentLeases.cleanupStatus, "success"), sql`${environmentLeases.heartbeatRunId} is not null`,
+    sql`${environmentLeases.provider} is not null`, sql`${environmentLeases.providerLeaseId} is not null`,
+    newestRowForSandbox(), taskMovedToAnotherWorkspace());
+}
+
+/**
+ * A warm sandbox no turn can resume: a reuse_by_environment lease whose
+ * sandbox the provider confirmed stopped and kept, on the newest row for that
+ * sandbox, where either
+ * - the row is `failed`, which reuse never resumes; or
+ * - the row is `released` (stopped, kept for reuse) but bound to a workspace the
+ *   task no longer runs in: a Retry on a remote task keeps a fresh workspace,
+ *   and reuse matches only the same workspace.
+ * Releases before this change wrote exactly these rows, so the condition reads
+ * existing columns only. A row without a confirmed stop is never listed.
+ */
+export function abandonedWarmSandboxCondition() {
+  return and(eq(environmentLeases.leasePolicy, "reuse_by_environment"), eq(environmentLeases.cleanupStatus, "success"),
+    sql`${environmentLeases.heartbeatRunId} is not null`, sql`${environmentLeases.provider} is not null`,
+    sql`${environmentLeases.providerLeaseId} is not null`,
+    sql`${environmentLeases.metadata}#>>'{remoteExecutionTermination,state}' = 'stopped'`,
+    sql`${environmentLeases.metadata}#>>'{remoteExecutionTermination,leaseId}' = ${environmentLeases.id}::text`,
+    sql`${environmentLeases.metadata}#>>'{remoteExecutionTermination,runId}' = ${environmentLeases.heartbeatRunId}::text`,
+    newestRowForSandbox(),
+    or(eq(environmentLeases.status, "failed"), and(eq(environmentLeases.status, "released"), taskMovedToAnotherWorkspace())));
+}
+
+function orphanedRunSandboxCondition() {
   return and(eq(environmentLeases.status, "released"), eq(environmentLeases.cleanupStatus, "success"),
     // An ephemeral lease only: a reusable lease stays for warm reuse, and a
     // retain-on-failure lease belongs to workspace restore recovery.
@@ -127,15 +189,23 @@ export async function settleRetainedOrphanSandbox(db: Db, record: InProgressReco
   const runId = record.runId;
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    // Re-judge the row under its lock with the same listing predicate.
     const [lease] = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.id, record.recordId),
-      eq(environmentLeases.heartbeatRunId, runId), eq(environmentLeases.status, "released"),
-      eq(environmentLeases.cleanupStatus, "success"))).for("update");
-    if (!lease || !hasRemoteTerminationReceipt(lease) || lease.leasePolicy !== "ephemeral" || !lease.metadata?.[ORPHANED_SANDBOX_RECOVERY_KEY]
-      || !lease.provider || !lease.providerLeaseId) {
-      return { settled: false, reason: "no_longer_a_retained_orphan" };
-    }
+      eq(environmentLeases.heartbeatRunId, runId), retainedOrphanSandboxCondition())).for("update");
+    if (!lease || !lease.provider || !lease.providerLeaseId) return { settled: false, reason: "no_longer_a_retained_orphan" };
     const held = await heldBy(tx, lease, runId, context.now);
     if (held) return { settled: false, reason: held };
+    if (lease.status === "retained") {
+      // Still running: stop it first. The confirmed stop makes it destroyable.
+      const stopping = await prepareSupersededWarmSandboxStop(tx, lease,
+        { recoveredOrphanedRunLease: true, supersededWarmSandbox: true, ownerProof: context.proof.reason });
+      return stopping ? { settled: true, reason: context.proof.reason } : { settled: false, reason: "lease_changed_since_proof" };
+    }
+    if (!hasRemoteTerminationReceipt(lease)
+      || (lease.leasePolicy === "ephemeral" ? !lease.metadata?.[ORPHANED_SANDBOX_RECOVERY_KEY] : lease.leasePolicy !== "reuse_by_environment")) {
+      return { settled: false, reason: "no_longer_a_retained_orphan" };
+    }
+    const status = lease.status;
     const now = context.now;
     // The destroy is queued through the recognized stopped-cleanup contract
     // (`workspaceRecoveryCleanup` with the verified stop receipt), so admission
@@ -149,7 +219,7 @@ export async function settleRetainedOrphanSandbox(db: Db, record: InProgressReco
         pendingCleanupInFlight: false, pendingCleanupRetryAfterMs: 0, pendingCleanupRetryAttempts: 0,
         pendingCleanupLeaseExpiresAtMs: 0 })}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.heartbeatRunId, runId),
-      eq(environmentLeases.status, "released"), eq(environmentLeases.cleanupStatus, "success"),
+      eq(environmentLeases.status, status), eq(environmentLeases.cleanupStatus, "success"),
       sql`${environmentLeases.metadata} = ${JSON.stringify(lease.metadata)}::jsonb`))
       .returning({ id: environmentLeases.id }), { companyId: lease.companyId, runId, leaseId: lease.id });
     return released.length ? { settled: true, reason: context.proof.reason } : { settled: false, reason: "lease_changed_since_proof" };

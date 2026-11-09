@@ -10,7 +10,8 @@ import { taskClosedByAgentSql, TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity } from "../activity-log.js";
-import { proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
+import { currentProcessProbe, proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
+import { LEGACY_OWNER_REASONS, recordVersionAttestations } from "./owner-gone-attestation.js";
 import {
   OWNABLE_KINDS,
   resolveFenceHolders,
@@ -128,6 +129,7 @@ export function createOwnershipReportState(): OwnershipReportState {
 }
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
+const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"];
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 /** An in-progress issue must show a next action within this time. */
 const NEXT_ACTION_GRACE_MS = 5 * 60_000;
@@ -156,15 +158,32 @@ async function classifyRunOwners(db: Db, records: InProgressRecord[]): Promise<M
         : { verdict: "alive", reason: "owner_run_active" });
     }
   }
+  // Issue owners share the map under an `issue:` key (run ids are bare UUIDs).
+  const issueIds = [...new Set(records.flatMap(record => record.owner.kind === "issue" ? [record.owner.issueId] : []))];
+  for (let index = 0; index < issueIds.length; index += 500) {
+    const batch = issueIds.slice(index, index + 500);
+    const rows = await db.select({ id: issues.id, status: issues.status, hiddenAt: issues.hiddenAt }).from(issues)
+      .where(inArray(issues.id, batch));
+    const byId = new Map(rows.map(row => [row.id, row]));
+    for (const issueId of batch) {
+      const row = byId.get(issueId);
+      proofs.set(`issue:${issueId}`, !row ? { verdict: "gone", reason: "owner_issue_missing" }
+        : row.hiddenAt ? { verdict: "gone", reason: "owner_issue_hidden" }
+        : TERMINAL_ISSUE_STATUSES.includes(row.status) ? { verdict: "gone", reason: "owner_issue_terminal" }
+        : { verdict: "alive", reason: "owner_issue_active" });
+    }
+  }
   return proofs;
 }
 
 async function classify(owner: RecordOwner, runProofs: Map<string, Classification>, probe: ProcessProbe | undefined,
-  now: Date): Promise<Classification> {
+  now: Date, touchedAt: Date | null = null): Promise<Classification> {
   switch (owner.kind) {
-    case "process": return proveOwnerGone(owner.stamp, probe);
+    // The record's last write time lets a replaced server boot be fenced only for work it touched under a valid lease.
+    case "process": return proveOwnerGone(touchedAt ? { ...owner.stamp, touchedAt: touchedAt.toISOString() } : owner.stamp, probe);
     case "fence": return proveOwnerGone(owner.stamp, owner.fence, now);
     case "run": return runProofs.get(owner.runId) ?? { verdict: "unprovable", reason: "owner_run_unread" };
+    case "issue": return runProofs.get(`issue:${owner.issueId}`) ?? { verdict: "unprovable", reason: "owner_issue_unread" };
     case "operator": return { verdict: "alive", reason: "operator_owned" };
     // A queue is not a process: it is never proven gone. A deadline long past
     // means the queue is not acting, which is a gap to report, not a release.
@@ -174,14 +193,31 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
   }
 }
 
+/**
+ * A board confirmation that a record's unrecorded owner stopped proves that owner gone
+ * (`operator_attested`), but only while the prover still finds the owner unprovable for a legacy
+ * reason and the record is unchanged since recovery asked. A live or provable owner always wins.
+ */
+async function applyOwnerGoneAttestations(db: Db, kind: OwnableKind, records: readonly InProgressRecord[],
+  proofs: Classification[]): Promise<Classification[]> {
+  if (kind.ownerGoneAttestation !== "record_version") return proofs;
+  const legacy = (record: InProgressRecord, proof: Classification) => record.owner.kind === "process"
+    && proof.verdict === "unprovable" && LEGACY_OWNER_REASONS.has(proof.reason);
+  const candidates = records.filter((record, index) => legacy(record, proofs[index]!));
+  if (!candidates.length) return proofs;
+  const attested = await recordVersionAttestations(db, kind.id, candidates);
+  return proofs.map((proof, index) => legacy(records[index]!, proof) && attested.has(records[index]!.recordId)
+    ? { verdict: "gone", reason: "operator_attested" } : proof);
+}
+
 /** Settles a proven-gone record, or surfaces the operator action for an
  * unprovable one. A failure is logged and retried on a later pass. */
 async function settleOrSurface(db: Db, kind: OwnableKind, record: InProgressRecord, proof: Classification,
-  now: Date): Promise<"settled" | "kept" | "failed"> {
+  now: Date): Promise<"settled" | "kept" | "unwatched" | "failed"> {
   try {
     if (proof.verdict === "gone" && kind.settle) {
       const outcome = await kind.settle(db, record, { now, proof: proof as OwnerProof });
-      return outcome.settled ? "settled" : "kept";
+      return outcome.settled ? "settled" : outcome.watch === false ? "unwatched" : "kept";
     }
     if (proof.verdict === "unprovable" && kind.onUnprovable) await kind.onUnprovable(db, record, { now, proof: proof as OwnerProof });
     return "kept";
@@ -254,8 +290,11 @@ async function settleKind(db: Db, kindId: string, options: {
   const runProofs = await classifyRunOwners(db, unique);
   const settled: SettledRecord[] = [];
   let watched = 0;
-  for (const record of unique) {
-    let proof = await classify(record.owner, runProofs, options.probe, now);
+  const proofs: Classification[] = [];
+  for (const record of unique) proofs.push(await classify(record.owner, runProofs, options.probe, now, record.updatedAt));
+  const attestedProofs = await applyOwnerGoneAttestations(db, kind, unique, proofs);
+  for (const [index, record] of unique.entries()) {
+    let proof = attestedProofs[index]!;
     if (options.currentProcessIdle && record.runId && proof.verdict === "alive" && proof.reason === "current_process") {
       proof = { verdict: "gone", reason: "current_process_idle" };
     }
@@ -263,7 +302,7 @@ async function settleKind(db: Db, kindId: string, options: {
     const outcome = await settleOrSurface(db, kind, record, proof, now);
     if (outcome === "settled") {
       settled.push({ kind: kind.id, recordId: record.recordId, runId: record.runId, reason: proof.reason });
-    } else if (proof.verdict !== "unprovable") {
+    } else if (outcome !== "unwatched" && proof.verdict !== "unprovable") {
       watched += 1;
     }
   }
@@ -436,7 +475,18 @@ async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: number): P
       and c.author_agent_id is null and c.created_by_run_id is null
       and c.created_at >= ${since}::timestamptz
       and i.assignee_agent_id is not null and i.conversation_agent_id is null
-      and i.status in ('todo', 'in_progress') and i.execution_run_id is null
+      and (i.status in ('todo', 'in_progress')
+        or (i.status = 'done' and ${taskClosedByAgentSql(sql`c.company_id`, sql`c.issue_id`)}))
+      and i.execution_run_id is null
+      and not exists (select 1 from heartbeat_runs steered join heartbeat_run_events steer_event
+          on steer_event.company_id = steered.company_id and steer_event.run_id = steered.id
+        where steered.company_id = c.company_id
+          and (steered.context_snapshot->>'issueId' = c.issue_id::text or steered.native_issue_id = c.issue_id)
+          and coalesce(steered.started_at, steered.created_at) <= c.created_at
+          and (steered.finished_at is null or steered.finished_at >= c.created_at)
+          and steer_event.event_type in ('item.started', 'item.completed')
+          and steer_event.created_at >= c.created_at
+          and strpos(steer_event.payload::text, c.id::text) > 0)
       and exists (select 1 from heartbeat_runs prior where prior.company_id = c.company_id
         and (prior.context_snapshot->>'issueId' = c.issue_id::text or prior.native_issue_id = c.issue_id))
       and not exists (select 1 from heartbeat_runs r where r.company_id = c.company_id
@@ -560,6 +610,8 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   const goneThisPass = new Set<string>();
   let queueDueAt: Date | null = null;
   const settleRecords = options.settle ?? options.record !== false;
+  // A pass that settles nothing must not fence another boot's lease either.
+  const passProbe = settleRecords ? options.probe : { ...(options.probe ?? currentProcessProbe()), readOnly: true };
   let retryNeeded = false;
 
   for (const kind of kinds) {
@@ -589,8 +641,11 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     const unique = [...new Map(records.map(record => [record.recordId, record])).values()];
     report.inProgress = unique.length;
     const runProofs = await classifyRunOwners(db, unique);
-    for (const record of unique) {
-      const proof = await classify(record.owner, runProofs, options.probe, now);
+    const classified: Classification[] = [];
+    for (const record of unique) classified.push(await classify(record.owner, runProofs, passProbe, now, record.updatedAt));
+    const proofs = await applyOwnerGoneAttestations(db, kind, unique, classified);
+    for (const [index, record] of unique.entries()) {
+      const proof = proofs[index]!;
       report.verdicts[proof.verdict] += 1;
       report.reasons[proof.reason] = (report.reasons[proof.reason] ?? 0) + 1;
       const base = { kind: kind.id, recordId: record.recordId, companyId: record.companyId,
@@ -612,8 +667,9 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
         const outcome = await settleOrSurface(db, kind, record, proof, now);
         if (outcome === "settled") { report.settled += 1; continue; }
         if (outcome === "failed") retryNeeded = true;
-        // An unprovable owner changes only by operator action, which signals.
-        if (proof.verdict !== "unprovable") report.watched += 1;
+        // An unprovable owner changes only by operator action, which signals;
+        // so does a record whose settle has nothing left to do.
+        if (outcome !== "unwatched" && proof.verdict !== "unprovable") report.watched += 1;
       }
       if (kind.invariantChecks.includes(2) && proof.verdict === "gone") {
         const key = `${kind.id}:${record.recordId}`;

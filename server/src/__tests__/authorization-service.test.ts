@@ -2065,6 +2065,44 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("honors a board-recorded hiring denial on a CEO instead of the CEO title", async () => {
+    const company = await createCompany(db, "CeoHireDenied");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: { canCreateAgents: false, canCreateSkills: true, ceoHiringDeniedBy: { actorType: "user", actorId: "board-user", at: "2026-11-08T00:00:00.000Z" } },
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "agents:create",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission: agents:create.",
+    });
+  });
+
+  it("keeps CEO hiring when a false was saved without a board-recorded denial", async () => {
+    // Stale full-object saves, import updates and the low-trust default can
+    // all save false on a CEO without the board choosing to restrict it.
+    const company = await createCompany(db, "CeoUnrecordedFalse");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: { canCreateAgents: false, canCreateSkills: true },
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "agents:create",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_legacy_agent_creator" });
+  });
+
   it("grants hire authority through the persisted new-agent default", async () => {
     const company = await createCompany(db, "DefaultHire");
     // The service create path persists the create-context default

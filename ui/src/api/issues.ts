@@ -422,6 +422,8 @@ export const issuesApi = {
     ),
   confirmControllerStopped: (id: string, data: { actionId: string; runId: string; stopEvidence: string }) =>
     api.post<{ runId: string; status: "queued" }>(`/issues/${id}/recovery-actions/confirm-controller-stopped`, data),
+  confirmOwnerGone: (id: string, data: { actionId: string; recordId: string; stopEvidence: string; recordVersion?: string }) =>
+    api.post<{ recordId: string; status: "queued" | "released" }>(`/issues/${id}/recovery-actions/confirm-owner-gone`, data),
   resumeWorkspaceFinalization: (id: string, data: { actionId: string; runId: string; ownerToken: string; controllerAndCopybackStopped: true; stopEvidence: string }) =>
     api.post<{ runId: string; resultId: string | null; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>

@@ -4374,6 +4374,7 @@ export class DurablePrpControlPlane {
             recordFailure("persist_result", error);
           }
         };
+        crashPoint("runner.semantic_tool.after_input_before_dispatch");
         const outcome = this.#onSemanticToolInput(call);
         dispatched = true;
         void outcome

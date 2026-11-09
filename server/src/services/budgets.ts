@@ -349,7 +349,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const now = new Date();
     if (policy.scopeType === "agent") {
       const { applyAgentBudgetHoldInTransaction } = await import("./agent-lifecycle.js");
-      await applyAgentBudgetHoldInTransaction(db, policy.companyId, policy.scopeId, true);
+      await applyAgentBudgetHoldInTransaction(db, policy.companyId, policy.scopeId, true, publications);
       return;
     }
 
@@ -420,7 +420,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await promoteDeferredWorkIntents(db, { companyId: policy.companyId, trigger: "pause_lifted" });
     if (policy.scopeType === "agent") {
       const { applyAgentBudgetHoldInTransaction } = await import("./agent-lifecycle.js");
-      await applyAgentBudgetHoldInTransaction(db, policy.companyId, policy.scopeId, false);
+      await applyAgentBudgetHoldInTransaction(db, policy.companyId, policy.scopeId, false, publications);
       return;
     }
 

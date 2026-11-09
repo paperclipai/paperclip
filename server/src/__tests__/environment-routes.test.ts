@@ -28,6 +28,7 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockEnvironmentRuntimeService = vi.hoisted(() => ({
   destroyReusableSandboxLeasesForEnvironment: vi.fn(async () => ({ destroyed: 0, failed: 0, skippedLiveRun: 0 })),
+  releaseRestoreSourcesForEnvironmentDelete: vi.fn(async () => 0),
 }));
 const mockCloseWarmNativeSessionsForEnvironment = vi.hoisted(() =>
   vi.fn(async () => ({ closed: 0, busy: 0, failed: 0 })),
@@ -1774,6 +1775,7 @@ describe("environment routes", () => {
     ).toHaveBeenCalledExactlyOnceWith({
       environmentId: "env-1",
       failureReason: "environment_deleted",
+      consentedBy: "admin-1",
     });
     expect(
       mockCloseWarmNativeSessionsForEnvironment,
@@ -1845,6 +1847,12 @@ describe("environment routes", () => {
 
     expect(res.status).toBe(200);
     expect(retryPendingEnvironmentCleanup).toHaveBeenCalledExactlyOnceWith({ environmentId: "env-1", actorId: "admin-1" });
+    // Consent releases restore-source protection before the cleanup retry, or a
+    // protected source would refuse every attempt and keep the delete blocked.
+    expect(mockEnvironmentRuntimeService.releaseRestoreSourcesForEnvironmentDelete)
+      .toHaveBeenCalledWith({ environmentId: "env-1", consentedBy: "admin-1" });
+    expect(mockEnvironmentRuntimeService.releaseRestoreSourcesForEnvironmentDelete.mock.invocationCallOrder[0])
+      .toBeLessThan(retryPendingEnvironmentCleanup.mock.invocationCallOrder[0]!);
     expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-1");
   });
 
