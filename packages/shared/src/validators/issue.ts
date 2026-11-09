@@ -1196,6 +1196,16 @@ export const addIssueCommentSchema = z.object({
         "Comment execution decisions require executionDecision, expectedExecutionStageId, and expectedExecutionLastDecisionId",
     });
   }
+  if (
+    value.executionDecision !== undefined &&
+    (value.reopen === true || value.resume === true || value.interrupt === true)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "Comment execution decisions cannot be combined with reopen, resume, or interrupt",
+    });
+  }
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;

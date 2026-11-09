@@ -3515,6 +3515,28 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it.each(["reopen", "resume", "interrupt"] as const)(
+    "rejects a fenced approval combined with %s before any side effect",
+    async (action) => {
+      const res = await request(await installActor(createApp()))
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({
+          body: "## Review: APPROVED",
+          executionDecision: "approve",
+          expectedExecutionStageId:
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          expectedExecutionLastDecisionId: null,
+          [action]: true,
+        });
+
+      expect(res.status).toBe(400);
+      expect(mockIssueService.getById).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects a fenced approval decision from a non-review participant", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
     const policy = await createAgentReviewPolicy(reviewerAgentId)!;

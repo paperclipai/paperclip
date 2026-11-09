@@ -458,6 +458,18 @@ describe("issue validators", () => {
         }).success,
       ).toBe(false);
     }
+
+    for (const action of ["reopen", "resume", "interrupt"] as const) {
+      expect(
+        addIssueCommentSchema.safeParse({
+          body: "Gate A — APPROVE",
+          executionDecision: "approve",
+          expectedExecutionStageId: stageId,
+          expectedExecutionLastDecisionId: null,
+          [action]: true,
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it("accepts structured issue comment presentation and metadata", () => {
