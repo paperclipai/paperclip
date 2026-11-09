@@ -2267,8 +2267,10 @@ In an Agent Chat conversation, a successful turn whose status decision committed
 posts its final answer to the conversation even when the task stays held: a
 pending or revision-requested approval, a pending execution stage, or a
 dependency blocker. A held task does not present the turn. Only a pending
-thread interaction (a question or confirmation card) presents the turn in place
-of its prose. Background presentation recovery applies the same rule, so a
+thread interaction (a question or confirmation card) that the turn's own run
+created presents the turn in place of its prose. A card from an earlier turn,
+or one the board addressed to another person, can hold the task but does not
+present the turn, so its answer is still posted. Background presentation recovery applies the same rule, so a
 restart between the status commit and the live presentation posts the held
 turn's answer once, or records that its card presented the turn.
 
