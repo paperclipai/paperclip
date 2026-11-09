@@ -59,6 +59,7 @@ import {
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
 import { issueService } from "../services/issues.js";
+import { createInviteRateLimiter, type InviteRateLimiter } from "../services/invite-rate-limit.js";
 import type { PluginJobScheduler } from "../services/plugin-job-scheduler.js";
 import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -417,6 +418,8 @@ export interface PluginRouteJobDeps {
 export interface PluginRouteWebhookDeps {
   /** The worker manager for dispatching handleWebhook RPC calls. */
   workerManager: PluginWorkerManager;
+  /** Optional rate limiter for inbound webhook deliveries. */
+  rateLimiter?: InviteRateLimiter;
 }
 
 /**
@@ -2773,6 +2776,11 @@ export function pluginRoutes(
    * - 400 if plugin is not in ready state or lacks webhooks.receive capability
    * - 502 if the worker is unavailable or the RPC call fails
    */
+  const defaultWebhookRateLimiter = createInviteRateLimiter({
+    windowMs: 60_000,
+    maxRequests: 120,
+  });
+
   router.post("/plugins/:pluginId/webhooks/:endpointKey", async (req, res) => {
     if (!webhookDeps) {
       res.status(501).json({ error: "Webhook ingestion is not enabled" });
@@ -2780,6 +2788,19 @@ export function pluginRoutes(
     }
 
     const { pluginId, endpointKey } = req.params;
+    const webhookLimiter = webhookDeps.rateLimiter ?? defaultWebhookRateLimiter;
+    const clientKey = req.ip || "unknown";
+    const rateLimit = webhookLimiter.consume(`${clientKey}:${pluginId}:${endpointKey}`);
+    res.setHeader("X-RateLimit-Limit", String(rateLimit.limit));
+    res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
+    if (!rateLimit.allowed) {
+      res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds));
+      res.status(429).json({
+        error: "Too many webhook requests",
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+      });
+      return;
+    }
 
     // Step 1: Resolve the plugin
     const plugin = await resolvePlugin(registry, pluginId);

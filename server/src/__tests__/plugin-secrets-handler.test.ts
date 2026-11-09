@@ -326,4 +326,51 @@ describeEmbeddedPostgres("createPluginSecretsHandler shared vault integration", 
       }),
     ).resolves.toBe(true);
   });
+
+  it("enforces dedicated verification attempt budget and stops resolving secrets after budget is exhausted", async () => {
+    await seedPlugin();
+    const companyId = await seedCompany("Budget Co");
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `budget-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "budget-key",
+    });
+    await svc.syncSecretRefsForTarget(companyId, { targetType: "plugin", targetId: pluginId }, [
+      { secretId: secret.id, configPath: "apiKey" },
+    ], { replaceAll: true });
+
+    const handler = createPluginSecretsHandler({ db, pluginId, maxVerifyAttempts: 5 });
+    const payload = '{"test":true}';
+
+    // 5 attempts allowed
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        handler.verifySignature({
+          companyId,
+          secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+          data: payload,
+          signature: `sig-${i}`,
+        }),
+      ).resolves.toBe(false);
+    }
+
+    // 6th attempt exceeds rate limit
+    await expect(
+      handler.verifySignature({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        data: payload,
+        signature: "sig-6",
+      }),
+    ).rejects.toThrow(/Rate limit exceeded for webhook signature verification/i);
+
+    // Resolve allowance is untouched and still works
+    await expect(
+      handler.resolve({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+      }),
+    ).resolves.toBe("budget-key");
+  });
 });

@@ -167,6 +167,9 @@ export interface PluginSecretsResolveParams {
 export interface PluginSecretsHandlerOptions {
   db: Db;
   pluginId: string;
+  maxResolveAttempts?: number;
+  maxVerifyAttempts?: number;
+  rateLimitWindowMs?: number;
 }
 
 export interface PluginSecretsVerifyParams {
@@ -208,7 +211,12 @@ export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
   const { db, pluginId } = options;
-  const rateLimiter = createRateLimiter(30, 60_000);
+  const maxResolveAttempts = options.maxResolveAttempts ?? 30;
+  const maxVerifyAttempts = options.maxVerifyAttempts ?? 120;
+  const windowMs = options.rateLimitWindowMs ?? 60_000;
+
+  const resolveRateLimiter = createRateLimiter(maxResolveAttempts, windowMs);
+  const verifyRateLimiter = createRateLimiter(maxVerifyAttempts, windowMs);
 
   async function lookupBinding(input: {
     companyId: string;
@@ -246,7 +254,7 @@ export function createPluginSecretsHandler(
 
       const companyId = requireCompanyId(params.companyId);
 
-      if (!rateLimiter.check(`${companyId}:${pluginId}`)) {
+      if (!resolveRateLimiter.check(`${companyId}:${pluginId}`)) {
         const err = new Error("Rate limit exceeded for secret resolution");
         err.name = "RateLimitExceededError";
         throw err;
@@ -307,6 +315,12 @@ export function createPluginSecretsHandler(
       if (!bindingRef) throw invalidSecretRef(params.secretRef);
 
       const companyId = requireCompanyId(params.companyId);
+
+      if (!verifyRateLimiter.check(`${companyId}:${pluginId}`)) {
+        const err = new Error("Rate limit exceeded for webhook signature verification");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
 
       const versionSelector = bindingRef.version ?? "latest";
       const bindings = await lookupBinding({
