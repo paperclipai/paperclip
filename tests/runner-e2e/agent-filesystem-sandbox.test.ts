@@ -16,11 +16,12 @@ import {
   pythonExecutable,
   sandboxedInvocation,
   agentFilesystemSandboxHelper,
+  wrapRunnerdSpawn,
 } from "./agent-filesystem-sandbox.js";
 import { runnerMatrix } from "./catalog.js";
 
 const repositoryRoot = "/work/paperclip";
-const temporaryRoot = path.join(os.tmpdir(), "paperclip-runner-e2e-abc");
+const temporaryRoot = "/var/tmp/paperclip-runner-e2e-abc";
 const cell = (id: string) => {
   const execution = runnerMatrix.find((candidate) => candidate.id === id);
   if (!execution) throw new Error(`missing ${id}`);
@@ -36,6 +37,7 @@ const base = {
   privateDir: "/work/_temp/manual-private-evidence-x/capture",
   evidenceRoot: "/work/_temp/manual-private-evidence-x",
   installedRelease: false,
+  sharedTemporary: "/tmp",
 };
 
 describe("agent filesystem sandbox selection", () => {
@@ -43,7 +45,12 @@ describe("agent filesystem sandbox selection", () => {
     expect(agentFilesystemSandboxConfig(base)).toEqual({
       hidden: [
         "/work/paperclip/tests",
+        "/work/paperclip/.git",
         "/work/paperclip/.manual-private-trusted",
+        `${temporaryRoot}/artifacts-private`,
+        `${temporaryRoot}/control`,
+        `${temporaryRoot}/selected-private-inputs`,
+        `${temporaryRoot}/playwright-transform-cache`,
         "/work/_temp/manual-private-evidence-x/capture",
         "/work/_temp/manual-private-evidence-x",
         "/work/_temp",
@@ -53,17 +60,17 @@ describe("agent filesystem sandbox selection", () => {
   });
 
   it("hides the attempt's private children and Playwright cache when its root is outside the shared temporary directory", () => {
-    const root = "/var/tmp/paperclip-runner-e2e-abc";
-    const config = agentFilesystemSandboxConfig({ ...base, temporaryRoot: root, sharedTemporary: "/tmp" });
-    expect(config?.hidden).toEqual(expect.arrayContaining([
-      `${root}/artifacts-private`,
-      `${root}/control`,
-      `${root}/selected-private-inputs`,
-      playwrightCacheDirectory(root),
-    ]));
-    expect(config?.hidden).not.toContain(root);
+    const config = agentFilesystemSandboxConfig(base);
+    expect(config?.hidden).toContain(playwrightCacheDirectory(temporaryRoot));
+    expect(config?.hidden).not.toContain(temporaryRoot);
     expect(HARNESS_PRIVATE_TEMPORARY_CHILDREN).toContain("playwright-transform-cache");
     expect(defaultPlaywrightCacheDirectory("/tmp")).toMatch(/^\/tmp\/playwright-transform-cache-/);
+  });
+
+  it("fails closed in CI when harness material sits where it cannot be hidden", () => {
+    const underShared = { ...base, temporaryRoot: "/tmp/paperclip-runner-e2e-abc", privateDir: "/tmp/paperclip-runner-e2e-abc/artifacts-private" };
+    expect(() => agentFilesystemSandboxConfig(underShared)).toThrow(/agent_filesystem_sandbox_incomplete: .*artifacts-private/);
+    expect(() => agentFilesystemSandboxConfig({ ...base, repositoryRoot: "/tmp/checkout" })).toThrow(/\/tmp\/checkout\/tests/);
   });
 
   it("keeps a sandboxed attempt's root out of the shared temporary directory", () => {
@@ -72,14 +79,15 @@ describe("agent filesystem sandbox selection", () => {
     expect(agentTemporaryParent(false)).toBe(realpathSync(os.tmpdir()));
   });
 
-  it("never hides the agent's own state, the checkout root or the shared temporary directory", () => {
+  it("never hides the agent's own state or the checkout root, and only warns outside CI", () => {
     const config = agentFilesystemSandboxConfig({
       ...base,
-      env: { RUNNER_TEMP: os.tmpdir() },
-      privateDir: path.join(temporaryRoot, "artifacts-private"),
+      env: { RUNNER_TEMP: "/tmp" },
+      temporaryRoot: "/tmp/paperclip-runner-e2e-abc",
+      privateDir: "/tmp/paperclip-runner-e2e-abc/artifacts-private",
       evidenceRoot: "/work",
     });
-    expect(config).toEqual({ hidden: ["/work/paperclip/tests", "/work/paperclip/.manual-private-trusted"], required: false });
+    expect(config).toEqual({ hidden: ["/work/paperclip/tests", "/work/paperclip/.git", "/work/paperclip/.manual-private-trusted"], required: false });
   });
 
   it.each([
@@ -113,6 +121,18 @@ describe("runnerd launch rewriting", () => {
       args: ["-I", "-S", agentFilesystemSandboxHelper, "--required", "--unset", "LC_CTYPE", "--hide", "/work/paperclip/tests", "--", runnerd, "--run-id", "r"],
     });
     expect(sandboxedInvocation({ hidden: [], required: false }, "p", runnerd, [], { LC_CTYPE: "C" }).args).toContain("LC_CTYPE=C");
+  });
+
+  it("rewrites runnerd launches through the wrapped spawn and passes other launches through", () => {
+    const calls: unknown[][] = [];
+    const fake = ((...args: unknown[]) => { calls.push(args); return { pid: 7 }; }) as unknown as typeof import("node:child_process").spawn;
+    const spawn = wrapRunnerdSpawn(fake, { hidden: ["/work/paperclip/tests"], required: true }, "/usr/bin/python3");
+    const runnerd = "/work/paperclip/packages/paperclip-runner/runner/target/debug/paperclip-runnerd";
+    spawn(runnerd, ["--run-id", "r"], { cwd: "/work", env: { LC_CTYPE: "C.UTF-8" }, detached: true });
+    spawn("/usr/bin/git", ["status"], { cwd: "/work" });
+    expect(calls[0]).toEqual(["/usr/bin/python3", expect.arrayContaining(["--hide", "/work/paperclip/tests", "--", runnerd, "--run-id", "r"]),
+      { cwd: "/work", env: { LC_CTYPE: "C.UTF-8" }, detached: true }]);
+    expect(calls[1]).toEqual(["/usr/bin/git", ["status"], { cwd: "/work" }]);
   });
 
   it("installs the sandbox in the E2E server entry before the product starts", async () => {
