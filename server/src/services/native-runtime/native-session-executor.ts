@@ -6438,7 +6438,7 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
   verify?: typeof verifyRemoteRunnerReattachment;
   waitMs?: number;
   pollMs?: number;
-} = {}): Promise<"no_prior_runner" | "absent_confirmed" | "stopped" | "killed" | "stop_failed"> {
+} = {}): Promise<"no_prior_runner" | "absent_confirmed" | "stopped" | "killed" | "stop_failed" | "stop_unproven"> {
   const target = input.runnerExecutionTarget;
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return "no_prior_runner";
   const providerLeaseId = target.sandboxLeaseAcquisition?.providerLeaseId;
@@ -6454,7 +6454,7 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
   } catch (error) {
     // No runner with this run's exact identity and generation is alive here.
     return error instanceof RemoteRunnerRecoveryError && error.remoteRunnerRecovery.reason === "process_not_running"
-      ? "absent_confirmed" : "no_prior_runner";
+      ? "absent_confirmed" : "stop_unproven";
   }
   try {
     let outcome: "stopped" | "killed" = "stopped";
@@ -16869,9 +16869,12 @@ async function createRunnerdBackendWithinSessionClaim(
       if (!reattachClaim && input.remoteWarmRecovery) {
         throw new Error("native_runner_replacement_requires_fresh_launch");
       }
-      if (reattachClaim && await stopStaleRemoteRunnerBeforeBootstrap({ execution: input.execution,
-        runnerExecutionTarget: input.runnerExecutionTarget, identity: durableIdentity ?? {}, onLog: input.onLog }) === "stop_failed") {
-        throw new Error("native_runner_replacement_stop_failed");
+      if (reattachClaim) {
+        const stopped = await stopStaleRemoteRunnerBeforeBootstrap({ execution: input.execution,
+          runnerExecutionTarget: input.runnerExecutionTarget, identity: durableIdentity ?? {}, onLog: input.onLog });
+        if (stopped === "stop_failed" || stopped === "stop_unproven") {
+          throw new Error(`native_runner_replacement_${stopped}`);
+        }
       }
       await measureNativeRunnerSpan(
         input.trace,
