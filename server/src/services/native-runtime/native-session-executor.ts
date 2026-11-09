@@ -15159,7 +15159,7 @@ async function createRunnerdBackendWithinSessionClaim(
   let remoteCaBundleMapping: { sourcePath: string; targetPath: string } | null =
     null;
   let resolveRemoteRunnerProcessSpawned: (() => void) | null = null;
-  const remoteRunnerProcessSpawned = remoteTarget
+  let remoteRunnerProcessSpawned = remoteTarget
     ? new Promise<void>((resolveSpawned) => {
         resolveRemoteRunnerProcessSpawned = resolveSpawned;
       })
@@ -15231,7 +15231,7 @@ async function createRunnerdBackendWithinSessionClaim(
     )
       return;
     selectedRemoteMode = requiredMode;
-    if (input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery) {
+    if ((input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery) && !continuityArchived) {
       if (input.controllerPersistence?.runnerArtifact) {
         remotePrepared = true;
         return;
@@ -16274,6 +16274,11 @@ async function createRunnerdBackendWithinSessionClaim(
     moveNativeContinuityState(root, archiveRoot);
     continuityArchived = true;
     adoptedProcess = undefined;
+    if (remoteTarget) {
+      remoteRunnerProcessSpawned = new Promise<void>((resolveSpawned) => {
+        resolveRemoteRunnerProcessSpawned = resolveSpawned;
+      });
+    }
     remotePrepared = false;
     retainProviderPack = false;
     legacyProviderContinuity = false;
@@ -16376,6 +16381,8 @@ async function createRunnerdBackendWithinSessionClaim(
       "acpx",
     ),
     codexTransportFactory: (recoveryContext) => {
+      const staged = continuityArchived ? null : stagedRecovery;
+      const warm = continuityArchived ? undefined : input.remoteWarmRecovery;
       const bundle = createRunnerdCodexTransport({
         ...(input.recoveryPurpose === "stop_cleanup" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
         measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
@@ -16570,13 +16577,13 @@ async function createRunnerdBackendWithinSessionClaim(
           input.execution.interactionResponses.length > 0
             ? "allow_replacement_after_governed_wait"
             : undefined),
-        prpIdentity: stagedRecovery ? stagedRecovery.targetIdentity : input.remoteWarmRecovery ? {
-          runnerInstanceId: input.remoteWarmRecovery.identity.runnerInstanceId,
-          environmentLeaseId: input.remoteWarmRecovery.identity.environmentLeaseId,
-          runId: input.remoteWarmRecovery.identity.runId,
-          normalizedSessionId: input.remoteWarmRecovery.identity.normalizedSessionId,
-          turnId: input.remoteWarmRecovery.identity.turnId,
-          itemId: input.remoteWarmRecovery.identity.itemId,
+        prpIdentity: staged ? staged.targetIdentity : warm ? {
+          runnerInstanceId: warm.identity.runnerInstanceId,
+          environmentLeaseId: warm.identity.environmentLeaseId,
+          runId: warm.identity.runId,
+          normalizedSessionId: warm.identity.normalizedSessionId,
+          turnId: warm.identity.turnId,
+          itemId: warm.identity.itemId,
         } : input.restartRecovery?.kind === "reattach_remote_runner" && !continuityArchived ? {
           // Reattachment verified all six durable fields against the surviving
           // Runner. Warm handoff uses opaque attachment turn/item IDs; deriving
@@ -16597,15 +16604,15 @@ async function createRunnerdBackendWithinSessionClaim(
           turnId: `turn-${input.execution.binding.runId}`,
           itemId: `item-${input.execution.binding.runId}`,
         },
-        warmTransitionRegistrationMode: stagedRecovery && remoteTarget?.transport === "sandbox" &&
+        warmTransitionRegistrationMode: staged && remoteTarget?.transport === "sandbox" &&
           remoteTarget.effectiveCapabilities?.runnerWebSocketIngress === true
           ? "routed_same_endpoint"
-          : retainedTransition || stagedRecovery ? "routed_connect" : undefined,
-        authorizeWarmTransitionRecovery: stagedRecovery
+          : retainedTransition || staged ? "routed_connect" : undefined,
+        authorizeWarmTransitionRecovery: staged
           ? async () => {
               if (!stagedRecoveryPending) return;
-              const current = await verifyStagedAttachmentRestart(input, stagedRecovery);
-              if (!current || current.templateDigest !== stagedRecovery.templateDigest) {
+              const current = await verifyStagedAttachmentRestart(input, staged);
+              if (!current || current.templateDigest !== staged.templateDigest) {
                 throw new Error("native_runner_staged_attachment_recovery_unproven");
               }
             }
@@ -16664,8 +16671,8 @@ async function createRunnerdBackendWithinSessionClaim(
               if (!current) throw new Error("native_session_tool_authority_unavailable");
               return current.runId;
             }, detachNativeSessionsForRestart) : undefined,
-          binding: input.remoteWarmRecovery
-            ? { ...input.execution.binding, runId: input.remoteWarmRecovery.identity.runId }
+          binding: warm
+            ? { ...input.execution.binding, runId: warm.identity.runId }
             : input.execution.binding,
           runnerIngressAuthorized: input.runnerIngressAuthorized,
           runnerPublicUrl: input.runnerPublicUrl,
@@ -16683,11 +16690,11 @@ async function createRunnerdBackendWithinSessionClaim(
           },
           beforeConnect: async (_identity, authority) => {
             runnerControlPlane = authority;
-            await input.remoteWarmRecovery?.revalidate();
-            if (stagedRecovery && authority.store.state.stagedRunAttachment) {
-              const current = await verifyStagedAttachmentRestart(input, stagedRecovery);
-              if (!current || current.templateDigest !== stagedRecovery.templateDigest ||
-                  nativeSha256(current.targetIdentity) !== nativeSha256(stagedRecovery.targetIdentity)) {
+            await warm?.revalidate();
+            if (staged && authority.store.state.stagedRunAttachment) {
+              const current = await verifyStagedAttachmentRestart(input, staged);
+              if (!current || current.templateDigest !== staged.templateDigest ||
+                  nativeSha256(current.targetIdentity) !== nativeSha256(staged.targetIdentity)) {
                 throw new Error("native_runner_staged_attachment_recovery_unproven");
               }
             }
@@ -16869,6 +16876,13 @@ async function createRunnerdBackendWithinSessionClaim(
         () => archiveContinuityState(previous),
         { parentName: "native.session.execute" },
       );
+      if (remoteTarget && remoteCommandRunner && requiresRemoteProviderPack) {
+        selectedRemoteMode ??= resolveRemoteRunnerTransportMode({
+          target: remoteTarget,
+          runnerIngressAuthorized: input.runnerIngressAuthorized === true,
+        });
+        await prepareRemoteRunnerAssets(selectedRemoteMode);
+      }
       cursorCloudRuntime?.register();
       try {
         const session = await backend.openSession(sessionInput);

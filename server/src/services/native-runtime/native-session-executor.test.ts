@@ -2687,7 +2687,10 @@ describe("remote provider pack manifest", () => {
               Object.assign(state.createBackend.mock.results.at(-1)!.value, { openSession: async () => replacement });
               const replaced = await knownBackend.openReplacementSession!({ identity: nativeIdentity }, checkpoint);
               expect(replaced).toBe(replacement);
-              expect(admittedNativeProviderPack(replaced, nativeIdentity)).toBeNull();
+              const replacementAdmission = admittedNativeProviderPack(replaced, nativeIdentity);
+              expect(replacementAdmission).not.toEqual(coldAdmission);
+              expect(replacementAdmission).toMatchObject({ authority: "core_verified_selection", sessionId: coldAdmission!.sessionId });
+              expect(replacementAdmission!.providerPackDigest).not.toBe(coldAdmission!.providerPackDigest);
             }
           }
         }
@@ -16225,16 +16228,58 @@ describe("runnerd provider runtime wiring", () => {
       || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
   });
 
-  it("opens a remote replacement as a new runner, not the surviving runner it archived", async () => {
-    const current = scopedNativeExecution("replacement-after-reattach");
+  it.each(["codex", "acpx"] as const)("opens a remote %s replacement as a new runner, not the surviving runner it archived", async provider => {
+    const base = scopedNativeExecution(`replacement-after-reattach-${provider}`);
+    const current = { ...base, ...(provider === "acpx" ? { provider: { kind: "acpx", agent: "claude", model: null },
+      session: { ...base.session, driverKind: "acpx_runtime" } } : {}) } as NativeExecutionInputV1;
+    const driver = vi.spyOn(nativeExecutionDriver, "createNativeRunnerExecutionDriver");
+    onTestFinished(() => driver.mockRestore());
     const identity = { runId: current.binding.runId, normalizedSessionId: current.session.normalizedSessionId!,
       runnerInstanceId: "admitted-codex", environmentLeaseId: "admitted-lease",
       turnId: `turn_attachment_${randomUUID()}`, itemId: `item_attachment_${randomUUID()}` };
     const root = await initializeScopedRunnerRoot(current, identity.runnerInstanceId);
     await mkdir(join(root, "control-plane"), { recursive: true });
     await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
+    let installed: unknown = null;
+    if (provider === "acpx") {
+      const packRoot = await mkdtemp(join(tmpdir(), "paperclip-replacement-pack-"));
+      onTestFinished(() => rm(packRoot, { recursive: true, force: true }));
+      const digest = "sha256:" + "a".repeat(64);
+      const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+        : value && typeof value === "object" ? `{${Object.keys(value).sort().map(key =>
+          `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}` : JSON.stringify(value);
+      const artifacts = Object.fromEntries(Object.entries({
+        grokLauncher: "dist/providers/grok/launcher.cjs", nodeCommand: "node_modules/node/bin/node",
+        productionLock: "pnpm-lock.yaml", opencodeCommand: "node_modules/.bin/opencode",
+        opencodeExecutable: "node_modules/opencode-ai/bin/opencode.exe",
+        opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs", acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
+      }).map(([key, path]) => [key, { path, sha256: digest }]));
+      const payload = { compatibility: { opencode: 1, acpx: 1 }, contractDigest: digest,
+        target: { platform: "linux", architecture: "x64" }, runnerSourceRevision: "a".repeat(40),
+        pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion,
+          opencode: "1.18.34", acpx: "0.13.1", grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
+          claudeAcp: QUALIFIED_ACPX_PROFILES.claude.agentServerVersion, codexAcp: QUALIFIED_ACPX_PROFILES.codex.agentServerVersion },
+        acpxProfileDigests: Object.fromEntries(["grok", "claude", "codex"].map(agent =>
+          [agent, QUALIFIED_ACPX_PROFILES[agent as "grok" | "claude" | "codex"].commandDigest])),
+        distDigest: digest, artifacts,
+        bridgeDigest: "sha256:" + createHash("sha256").update(digest + "\n" + digest + "\n" + digest).digest("hex") };
+      installed = { schema: "paperclip-runner/remote-provider-pack/v1", payload,
+        digest: "sha256:" + createHash("sha256").update(canonical(payload)).digest("hex") };
+      state.bundledPackManifestPath = join(packRoot, "provider-pack.json");
+      await writeFile(state.bundledPackManifestPath, JSON.stringify(installed));
+      state.bundledRunnerBinary = join(packRoot, "linux-paperclip-runnerd");
+      const daemon = Buffer.alloc(64); daemon.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); daemon.writeUInt16LE(62, 18);
+      await writeFile(state.bundledRunnerBinary, daemon);
+      state.resolveRemoteRunnerBinary.mockResolvedValue(state.bundledRunnerBinary);
+      state.resolveRunnerBinary.mockReturnValue(state.bundledRunnerBinary);
+    }
     const execute = vi.fn(async (request: { args: string[] }) => ({ exitCode: 0, timedOut: false, stderr: "",
-      stdout: request.args[1]?.includes("base64") ? Buffer.from(JSON.stringify({ ...identity, lifecycle: "suspended" })).toString("base64")
+      stdout: request.args[0] === "--build-metadata" ? JSON.stringify({
+        schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+        packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+        durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+        providerPacks: installed ? [{ root: "/opt/paperclip-runner/provider-pack", manifest: installed, immutable: true }] : [],
+      }) : request.args[1]?.includes("base64") ? Buffer.from(JSON.stringify({ ...identity, lifecycle: "suspended" })).toString("base64")
         : request.args[1]?.includes("cat --") ? `nonce\n123\n2026-09-19T10:00:00.000Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "" }));
     state.createBackend.mockClear(); state.createTransport.mockClear();
     const openSession = vi.fn(async () => ({ close: async () => undefined }));
@@ -16256,11 +16301,18 @@ describe("runnerd provider runtime wiring", () => {
     await backend.openReplacementSession!({ identity: current.binding } as never, {} as never);
     expect(openSession).toHaveBeenCalledOnce();
     expect(execute.mock.calls.some(([request]) => request.args[1]?.includes(".continuity-break-"))).toBe(true);
+    const spawnedBefore = driver.mock.calls.at(-1)![0].processStarted;
     factory();
     const replacement = state.createTransport.mock.calls.at(-1)![0];
     expect(replacement.adoptExistingRunner).toBeUndefined();
     expect(replacement.prpIdentity).toMatchObject({ runId: current.binding.runId, turnId: `turn-${current.binding.runId}`,
       itemId: `item-${current.binding.runId}` });
+    const spawnedAfter = driver.mock.calls.at(-1)![0].processStarted!;
+    expect(spawnedAfter).not.toBe(spawnedBefore);
+    expect(await Promise.race([spawnedAfter.then(() => "spawned"), Promise.resolve("pending")])).toBe("pending");
+    if (provider === "acpx") {
+      expect(replacement).toMatchObject({ providerNodeCommand: expect.any(String), acpxSidecarPath: expect.any(String) });
+    }
   });
 
   it.each(["failed", "timeout", "succeeded"] as const)("retains the local controller checkpoint until remote continuity archiving succeeds: %s", async mode => {
