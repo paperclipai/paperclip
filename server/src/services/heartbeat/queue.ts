@@ -1,3 +1,4 @@
+import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
@@ -2063,7 +2064,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
     for (const agentId of agentIds) {
-      await startNextQueuedRunForAgent(agentId);
+      await startNextQueuedRunForAgent(agentId, true);
     }
   }
 
@@ -2095,7 +2096,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         ),
       );
     for (const { agentId } of rows) {
-      await startNextQueuedRunForAgent(agentId);
+      await startNextQueuedRunForAgent(agentId, true);
     }
     return { agents: rows.length };
   }
@@ -2139,7 +2140,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
-  async function startNextQueuedRunForAgent(agentId: string) {
+  async function attachQueuedSetupRequest(agent: typeof agents.$inferSelect) {
+    if (isAgentAwaitingSetup(agent)) await connectionIntentService(db)
+      .requestForQueuedAgentSetup(agent.companyId, agent.id)
+      .catch(() => logger.warn({ agentId: agent.id }, "Could not attach queued agent setup connection request"));
+  }
+
+  async function startNextQueuedRunForAgent(agentId: string, attachSetupRequest = false) {
     if (isRunAdmissionClosed() || (await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
     // Cancelled after the start lock is released: cancelRunInternal promotes the
@@ -2154,6 +2161,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (!agent) return [];
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
+        if (attachSetupRequest) await attachQueuedSetupRequest(agent);
         if (shouldCancelRunsForNonInvokableAgent(invokability)) {
           cancellationReason = `Cancelled because the agent is not invokable: ${invokability.reason}`;
         }
@@ -4755,12 +4763,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         return null;
       }
       if (outcome.kind === "coalesced") {
+        await attachQueuedSetupRequest(agent);
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
       }
       if (outcome.kind === "replayed") {
-        if (outcome.run.status === "queued")
+        if (outcome.run.status === "queued") {
+          await attachQueuedSetupRequest(agent);
           await startNextQueuedRunForAgent(agent.id);
+        }
         return outcome.run;
       }
 
@@ -4777,6 +4788,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         },
       });
 
+      await attachQueuedSetupRequest(agent);
       await startNextQueuedRunForAgent(agent.id);
       return newRun;
     }
@@ -4988,6 +5000,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       },
     });
 
+    await attachQueuedSetupRequest(agent);
     await startNextQueuedRunForAgent(agent.id);
 
     return newRun;

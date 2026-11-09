@@ -1104,8 +1104,10 @@ npx paperclipai allowed-hostname dotta-macbook-pro
 ## Agent status recovery
 
 Lifecycle verification stops automatic attempts after missing authentication,
-an unavailable model or command, an invalid working directory, or unexpected
-probe output. A generic failed test gets up to three failures before automatic
+an unavailable model or command, an invalid working directory, unexpected
+probe output, or an owned AI account selection refusal. Account selection guidance
+names missing defaults, unavailable accounts, incompatible bindings, missing
+responsible users, or credential sharing requirements without provider error text. A generic failed test gets up to three failures before automatic
 checks stop. The saved `verificationFailures` count only advances when the host
 verification test fails; claims deferred before the test do not spend that budget.
 An explicit retry or execution configuration change resets that count.
