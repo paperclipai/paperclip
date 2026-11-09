@@ -841,6 +841,119 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     ).toBe("running");
   });
 
+  it.each([
+    { finalStage: false, title: "intermediate" },
+    { finalStage: true, title: "final" },
+  ])(
+    "lets a recovered native reviewer approve an $title stage after adopting a failed run's locks",
+    async ({ finalStage }) => {
+      const { companyId, agentId, failedRunId, currentRunId } =
+        await seedCompanyAgentAndRuns();
+      const issueId = randomUUID();
+      const reviewStageId = randomUUID();
+      const approvalStageId = randomUUID();
+      await db.update(heartbeatRuns)
+        .set({ runtimeMode: "native", contextSnapshot: { issueId } })
+        .where(eq(heartbeatRuns.id, currentRunId));
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: `Recovered native ${finalStage ? "final" : "intermediate"} approval`,
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: agentId,
+        checkoutRunId: failedRunId,
+        executionRunId: failedRunId,
+        executionAgentNameKey: "codexcoder",
+        executionLockedAt: new Date(),
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [
+            {
+              id: reviewStageId,
+              type: "review",
+              participants: [{ type: "agent", agentId }],
+            },
+            ...(!finalStage
+              ? [{
+                  id: approvalStageId,
+                  type: "approval" as const,
+                  participants: [{ type: "agent" as const, agentId }],
+                }]
+              : []),
+          ],
+        },
+        executionState: {
+          status: "pending",
+          currentStageId: reviewStageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          returnAssignee: null,
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      });
+
+      const res = await request(
+        createApp(agentActor(companyId, agentId, currentRunId)),
+      )
+        .patch(`/api/issues/${issueId}`)
+        .send({
+          executionDecision: "approve",
+          expectedExecutionStageId: reviewStageId,
+          expectedExecutionLastDecisionId: null,
+          comment: finalStage
+            ? "Final review approved; report through paperclip_finish"
+            : "Review approved; advance to the next stage",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject(
+        finalStage
+          ? {
+              status: "in_review",
+              assigneeAgentId: agentId,
+              checkoutRunId: currentRunId,
+              executionRunId: currentRunId,
+              executionState: {
+                status: "completed",
+                completedStageIds: [reviewStageId],
+                lastDecisionOutcome: "approved",
+              },
+            }
+          : {
+              status: "in_review",
+              assigneeAgentId: agentId,
+              checkoutRunId: currentRunId,
+              executionRunId: currentRunId,
+              executionState: {
+                status: "pending",
+                currentStageId: approvalStageId,
+                currentStageIndex: 1,
+                currentParticipant: { type: "agent", agentId },
+                completedStageIds: [reviewStageId],
+                lastDecisionOutcome: "approved",
+              },
+            },
+      );
+      expect(
+        await db.select().from(issueExecutionDecisions)
+          .where(eq(issueExecutionDecisions.issueId, issueId)),
+      ).toEqual([
+        expect.objectContaining({ stageId: reviewStageId, outcome: "approved" }),
+      ]);
+      expect(
+        await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, currentRunId)).then((rows) => rows[0]?.status),
+      ).toBe("running");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    },
+  );
+
   it("rejects a cancellation authorized by a stage that advances before the row-locked write", async () => {
     const { companyId, agentId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();

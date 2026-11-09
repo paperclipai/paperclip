@@ -14463,7 +14463,7 @@ export function issueRoutes(
         throw unprocessable("expectedExecutionPolicy requires a policy-only update");
       }
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      let existing = await getAccessibleResource(
         req,
         res,
         svc.getById(id),
@@ -14471,8 +14471,6 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
-      const deferFinalStatusToNativeRun =
-        (await assertNativeRunKeepsOwnExecutionLock(req, existing)) === true;
       if (req.body.expectedStatusVersion !== undefined && (
         existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
       )) {
@@ -14523,6 +14521,24 @@ export function issueRoutes(
         { allowVisibleIssueWrite: true },
       );
       if (!issueMutationAccess) return;
+      // Ownership mediation can clear a terminal prior run and atomically
+      // adopt this task for the current run. Every execution-stage decision
+      // below must be derived from that authoritative post-adoption row;
+      // otherwise its lock snapshot still names the failed run and rejects
+      // the recovered decision as stale. The refreshed locks also determine
+      // whether a final native approval must remain in review until
+      // paperclip_finish reports the run outcome.
+      const authoritativeExisting = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(id),
+        "Issue not found",
+      );
+      if (!authoritativeExisting) return;
+      if (!(await assertIssueReadAllowed(req, res, authoritativeExisting))) return;
+      existing = authoritativeExisting;
+      const deferFinalStatusToNativeRun =
+        (await assertNativeRunKeepsOwnExecutionLock(req, existing)) === true;
       if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
       const issueMutationAuthorizationReason =
         req.actor.type === "agent"
