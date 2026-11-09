@@ -3144,6 +3144,16 @@ An interrupted conversation does not permanently block its task. For local conve
 
 Shutdown, process loss, and provider failure use the existing durable failure retry counter and delay. Ordinary failure recovery permits at most two automatic retries in a failure chain. Accepted-interaction infrastructure recovery retains its existing bounded policy. Repeated scheduler visits reuse the same successor; restarting the server does not reset the counter. After exhaustion, automatic attempts stop. A new explicit user message can start a fresh run and failure budget. Productive max-turn continuation and confirmed workspace waits keep their separate existing semantics.
 
+Legacy Claude and Codex provider-quota failures allow four automatic retries.
+Their base delays are 30, 60, 120, and 60 seconds; the third retry waits the full
+120 seconds. A future provider reset time can extend the delay. A Claude reset
+clock that expired within five minutes is stale and uses the bounded delay.
+Queued and running retries retain their inherited quota budget until a current
+failure replaces it. A restart proven to precede provider dispatch preserves
+that quota family and its remaining budget. Dispatched process loss uses the
+ordinary failure budget and must not promise a retry after that budget is spent.
+
+
 If shutdown or a recorded unexpected system interruption stops Paperclip Runner
 preparation before native execution was selected, recovery verifies that no
 provider, process launch, native result or coordinator exists. The previous
