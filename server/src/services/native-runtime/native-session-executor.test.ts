@@ -2625,7 +2625,8 @@ describe("remote provider pack manifest", () => {
           runnerInstanceId: identity.runnerInstanceId, runnerIngressAuthorized: true,
           ...(opencode ? { runnerEnvironment: configuredEnvironmentProjection({ PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" }) } : {}),
           runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
-            environmentId: "environment", leaseId: "lease", providerKey: "daytona", effectiveCapabilities: { runnerWebSocketIngress: true }, runner: { execute: recoveryExecute },
+            environmentId: "environment", leaseId: "lease", providerKey: "daytona", effectiveCapabilities: { runnerWebSocketIngress: true },
+            runner: { execute: recoveryExecute, syncIn: vi.fn(async () => undefined), syncOut: vi.fn(async () => undefined) },
             sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox" } } as never,
           restartRecovery: { kind: "reattach_remote_runner", runId: remoteExecution.binding.runId,
             leaseOwner: "controller", controllerGeneration: 2, providerAttempt: 1, restartKind: "graceful", recoveryRequestId: null,
@@ -2684,13 +2685,15 @@ describe("remote provider pack manifest", () => {
             expect(admittedNativeProviderPack(knownResult.session!, nativeIdentity)).toEqual(coldAdmission);
             if (pinned) {
               const replacement = { identity: () => nativeIdentity } as never;
-              Object.assign(state.createBackend.mock.results.at(-1)!.value, { openSession: async () => replacement });
+              const recoveredBackendMock = state.createBackend.mock.results.at(-1)!.value;
+              state.createBackend.mockReturnValueOnce({ kind: "test", openSession: async () => replacement } as never);
+              const freshPreparation = vi.spyOn(nativeExecutionDriver, "prepareNativeRemoteRunner").mockResolvedValue(undefined as never);
+              onTestFinished(() => freshPreparation.mockRestore());
               const replaced = await knownBackend.openReplacementSession!({ identity: nativeIdentity }, checkpoint);
+              expect(freshPreparation).toHaveBeenCalled();
               expect(replaced).toBe(replacement);
-              const replacementAdmission = admittedNativeProviderPack(replaced, nativeIdentity);
-              expect(replacementAdmission).not.toEqual(coldAdmission);
-              expect(replacementAdmission).toMatchObject({ authority: "core_verified_selection", sessionId: coldAdmission!.sessionId });
-              expect(replacementAdmission!.providerPackDigest).not.toBe(coldAdmission!.providerPackDigest);
+              expect(state.createBackend.mock.results.at(-1)!.value).not.toBe(recoveredBackendMock);
+              expect(admittedNativeProviderPack(replaced, nativeIdentity)).not.toEqual(coldAdmission);
             }
           }
         }
@@ -16283,7 +16286,9 @@ describe("runnerd provider runtime wiring", () => {
         : request.args[1]?.includes("cat --") ? `nonce\n123\n2026-09-19T10:00:00.000Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "" }));
     state.createBackend.mockClear(); state.createTransport.mockClear();
     const openSession = vi.fn(async () => ({ close: async () => undefined }));
-    state.createBackend.mockReturnValueOnce({ kind: "test", openSession } as never);
+    const freshOpenSession = vi.fn(async () => ({ close: async () => undefined }));
+    state.createBackend.mockReturnValueOnce({ kind: "test", openSession } as never)
+      .mockReturnValueOnce({ kind: "test", openSession: freshOpenSession } as never);
     const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
       runnerIngressAuthorized: true,
       controllerPersistence: { bootId: "successor", runnerArtifact: { version: "admitted-version", digest: `sha256:${"a".repeat(64)}` } },
@@ -16298,11 +16303,13 @@ describe("runnerd provider runtime wiring", () => {
     const factory = state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!;
     factory();
     expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({ prpIdentity: identity, adoptExistingRunner: { pid: 123 } });
-    await backend.openReplacementSession!({ identity: current.binding } as never, {} as never);
-    expect(openSession).toHaveBeenCalledOnce();
-    expect(execute.mock.calls.some(([request]) => request.args[1]?.includes(".continuity-break-"))).toBe(true);
     const spawnedBefore = driver.mock.calls.at(-1)![0].processStarted;
-    factory();
+    await backend.openReplacementSession!({ identity: current.binding } as never, {} as never);
+    expect(openSession).not.toHaveBeenCalled();
+    expect(freshOpenSession).toHaveBeenCalledOnce();
+    expect(state.createBackend).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls.some(([request]) => request.args[1]?.includes(".continuity-break-"))).toBe(true);
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
     const replacement = state.createTransport.mock.calls.at(-1)![0];
     expect(replacement.adoptExistingRunner).toBeUndefined();
     expect(replacement.prpIdentity).toMatchObject({ runId: current.binding.runId, turnId: `turn-${current.binding.runId}`,
