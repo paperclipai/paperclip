@@ -310,9 +310,6 @@ importers:
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
-      yaml:
-        specifier: ^2.8.1
-        version: 2.9.1
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
