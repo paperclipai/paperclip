@@ -332,7 +332,7 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     await expect(picker.getByRole("option", { name: /^Beta / })).toContainText("New chat");
     await picker.getByRole("combobox").press("Enter");
     await expect(picker).not.toBeVisible();
-    await expect(page.getByRole("link", { name: "Configure Beta", exact: true })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^Beta/ })).toHaveAttribute("aria-current", "page");
     expect(await sidebar.boundingBox()).toEqual(landingBounds);
     const [beta] = await json(await request.get(chatListPath));
     const betaPath = `/api/issues/${beta.id}`;
@@ -361,7 +361,7 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     await picker.getByRole("combobox").fill("Alpha");
     await picker.getByRole("combobox").press("Enter");
     await expect(picker).not.toBeVisible();
-    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^Alpha/ })).toHaveAttribute("aria-current", "page");
     const alpha = (await json(await request.get(chatListPath))).find((chat: { conversationAgentId: string }) => chat.conversationAgentId === f.agents[0].id);
     const alphaLink = sidebar.locator(`a[href$="/${alpha.id}"]`);
     const betaLink = sidebar.locator(`a[href$="/${beta.id}"]`);
@@ -387,7 +387,7 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     await expect(nav.getByRole("link")).toHaveCount(6);
 
     await page.locator('a[href$="/chats"]').click();
-    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^Alpha/ })).toHaveAttribute("aria-current", "page");
     await expect(editor).toContainText("Unsent draft for Alpha");
     expect(await sidebar.boundingBox()).toEqual(landingBounds);
     await page.goto(`/${f.company.issuePrefix}/dashboard`);
@@ -400,9 +400,9 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     }));
     await idle(request, betaPath);
     await page.locator('a[href$="/chats"]').click();
-    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^Alpha/ })).toHaveAttribute("aria-current", "page");
     await betaLink.click();
-    await expect(page.getByRole("link", { name: "Configure Beta", exact: true })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^Beta/ })).toHaveAttribute("aria-current", "page");
     await expect(page.getByText("Background activity", { exact: true })).toBeVisible();
     expect((await json(await request.get(betaPath))).id).toBe(beta.id);
     expect(await json(await request.get(chatListPath))).toHaveLength(3);
