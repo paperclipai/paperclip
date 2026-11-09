@@ -67,6 +67,10 @@ const blockerRunFields = {
   runnerProfileJson: blockerProfileColumn,
 };
 
+/** Appended when the person can retry the stopped run on this task. */
+export const EXECUTION_BLOCKER_PERSON_RETRY_ACTION =
+  "A person can use Retry on this task, or send it a new message, to continue once the previous execution has stopped. Agents cannot retry it for them.";
+
 export async function hasPendingRunCleanup(db: Db, companyId: string, runId: string): Promise<boolean> {
   if (await nativeManualAdmissionHoldsExecution(db, { companyId, runId })) return true;
   // Recovery saved the files and re-stopped this sandbox before queueing its
@@ -338,7 +342,9 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
   )).limit(1) : [];
   let nextAction = action.nextAction;
-  if (canRetry && !eligibleContinuation) nextAction += " Try again or send a new message to continue once the previous execution has stopped.";
+  // Retry is a person's control on this task. Say so, so an agent reading this
+  // record points the person to it instead of re-running the work itself.
+  if (canRetry && !eligibleContinuation) nextAction += ` ${EXECUTION_BLOCKER_PERSON_RETRY_ACTION}`;
   if (chatBinding && !restoreHold) {
     if (chatBinding.state === "endpoint_removed" || !chatBinding.endpointStatus || chatBinding.endpointStatus === "archived") {
       nextAction = "This chat connection was removed. Inspect the stopped run and create a new task to continue the work.";
