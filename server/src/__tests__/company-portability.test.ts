@@ -1831,6 +1831,30 @@ describe("company portability", () => {
       canCreateAgents: false,
       ceoHiringDeniedBy: expect.objectContaining({ actorType: "user", actorId: "user-1", at: expect.any(String) }),
     });
+    const importedId = agentSvc.updatePermissions.mock.calls[0]![0];
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(expect.any(String), "agent", importedId, "agents:create", false, null);
+  });
+
+  it("removes an existing hiring grant when an update import restores a CEO's denial", async () => {
+    const denial = { actorType: "user", actorId: "source-board-user", at: "2026-11-08T00:00:00.000Z" };
+    const [fixture] = await agentSvc.list();
+    const existing = { ...fixture, role: "ceo", permissions: { canCreateAgents: false, canCreateSkills: true, ceoHiringDeniedBy: denial } };
+    agentSvc.list.mockResolvedValue([existing]);
+    const portability = companyPortabilityService({} as any);
+    const exported = await portability.exportBundle("company-1", { include: { company: false, agents: true, projects: false, issues: false } });
+    agentSvc.update.mockImplementation(async (id: string, input: Record<string, unknown>) => ({ ...existing, ...input, id }));
+    agentSvc.updatePermissions.mockImplementation(async (id: string, permissions: Record<string, unknown>) => ({ ...existing, id, permissions }));
+    accessSvc.setPrincipalPermission.mockClear();
+    await portability.importBundle({ source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: false, agents: true, projects: false, issues: false }, target: { mode: "existing_company", companyId: "company-1" },
+      agents: "all", collisionStrategy: "replace" }, "user-1");
+
+    expect(agentSvc.create).not.toHaveBeenCalled();
+    expect(agentSvc.updatePermissions).toHaveBeenCalledWith("agent-1", expect.objectContaining({ canCreateAgents: false }));
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "agents:create", false, null);
+    expect(accessSvc.setPrincipalPermission).not.toHaveBeenCalledWith("company-1", "agent", "agent-1", "agents:create", true, expect.anything(), expect.anything());
+    agentSvc.update.mockReset();
+    agentSvc.updatePermissions.mockReset();
   });
 
   it("reads env inputs back from .paperclip.yaml during preview import", async () => {
