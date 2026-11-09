@@ -111,6 +111,10 @@ export function gradeChooseCliContext(value: unknown) {
 const context = privilegedDefinition("cli-operations.choose-cli-context", "privileged-cli", {
   async setup(ctx) {
     const operator = await prepareOwnedCli(ctx);
+    // The person calls this conversation's company "Acorn", so the company is
+    // named that; otherwise the agent cannot tell Acorn is the company it is in.
+    const acorn = await ctx.input.api.patch<Entity>(`/api/companies/${ctx.input.fixtures.company.id}`, { name: "Acorn" });
+    if (acorn.name !== "Acorn") throw new Error("CLI context fixture company was not named Acorn");
     const birch = await ctx.input.api.post<Entity>("/api/companies", { name: `Birch ${ctx.input.nonce}` });
     for (const [name, companyId] of [["acorn", ctx.input.fixtures.company.id], ["birch", birch.id]])
       await runOwnedCli(ctx, ["context", "set", "--profile", name!, "--api-base", ctx.input.api.baseURL, "--company-id", companyId!, "--persona", "board", "--use", "--json"]);
