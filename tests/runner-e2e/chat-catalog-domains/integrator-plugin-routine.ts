@@ -61,6 +61,12 @@ export function managedRoutineContext(companyId: string, issuePrefix: string, pl
     plugin: { id: plugin.id, key: plugin.manifestJson.id, name: plugin.manifestJson.displayName, url: `/${issuePrefix}/plugins/${plugin.id}` },
   }, null, 2)}`;
 }
+/** The routine as every viewer sees it: `canChangeResponsibleUser` answers for
+ * the reader (true for the board, false for an agent), not for the routine. */
+export function viewerIndependentRoutine(routine: RoutineDetail) {
+  const { canChangeResponsibleUser: _viewer, ...rest } = routine as RoutineDetail & { canChangeResponsibleUser?: unknown };
+  return rest;
+}
 export async function prepareManagedRoutineContext(ctx: ChatCatalogContext, plugin: PluginRecord, routine: RoutineDetail) {
   const company = ctx.input.fixtures.company;
   const prefix = company.issuePrefix;
@@ -82,7 +88,7 @@ export async function prepareManagedRoutineContext(ctx: ChatCatalogContext, plug
   if (visibleSource.status !== 200 || readSource?.id !== source.id || readSource.companyId !== company.id
     || readSource.assigneeAgentId !== ctx.input.fixtures.agent.id || readSource.description !== description
     || visibleRoutine.status !== 200 || !readRoutine || managedRoutineContext(company.id, prefix, plugin, readRoutine) !== description
-    || !isDeepStrictEqual(readRoutine, routine)
+    || !isDeepStrictEqual(viewerIndependentRoutine(readRoutine), viewerIndependentRoutine(routine))
     || (await comments()).length !== 0 || (await ctx.allRuns()).length !== 0) {
     throw new Error("CEO could not independently read the unchanged selected routine and source context before work");
   }
