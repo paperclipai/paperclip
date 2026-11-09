@@ -49,7 +49,7 @@ const meta = {
   parameters: { layout: "fullscreen", paperclip: {
     capabilities: ["inbox-search/decisions"], home: "design-proposals", status: "proposed", implementation: "production", boundary: "fixtures",
     exception: "Coordinator experimental motion is staged with Design proposals for review, using the implemented decision components.",
-    notes: "Real Needs You and canonical resolver components with isolated API responses. Approve or answer to compare simultaneous card resize and contained Gather Light, then the move to Recent Decisions. Failed saves retain the form. Reload resets fixtures; no real decision or agent execution occurs.",
+    notes: "Real Coordinator Inbox and canonical resolver components with isolated API responses. Approve or answer to compare simultaneous card resize and contained Gather Light, then the move to Recent Decisions. Failed saves retain the form. Reload resets fixtures; no real decision or agent execution occurs.",
   } },
   beforeEach: () => fixtures(),
 } satisfies Meta<typeof DecisionMotion>;

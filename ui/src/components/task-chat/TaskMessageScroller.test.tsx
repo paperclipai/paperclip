@@ -186,6 +186,23 @@ describe("TaskMessageScroller", () => {
     expect(scroller().scrollTop).toBe(1000);
   });
 
+  it("keeps following when content grows before the previous scroll event is delivered", async () => {
+    render(0);
+    fakeGeometry(scroller(), { clamp: true });
+    render(1);
+    expect(scroller().scrollTop).toBe(600);
+    Object.defineProperty(scroller(), "scrollHeight", { value: 1400, configurable: true });
+    await dispatch(scroller(), new Event("scroll", { bubbles: true }));
+    expect(scroller().scrollTop).toBe(1000);
+    expect(pill()).toBeNull();
+    scroller().dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
+    Object.defineProperty(scroller(), "scrollHeight", { value: 1600, configurable: true });
+    await scrollTo(scroller(), 900);
+    render(2);
+    expect(scroller().scrollTop).toBe(900);
+    await waitForPill(true);
+  });
+
   it("retains the reading anchor when a resize scroll event precedes the next width reflow", async () => {
     const resize: (() => void)[] = [];
     vi.stubGlobal("ResizeObserver", class {

@@ -5,6 +5,7 @@
 export type StorageFailureOperation =
   | "put_object"
   | "get_object"
+  | "read_object_body"
   | "head_object"
   | "delete_object"
   | "create_multipart_upload"

@@ -480,7 +480,7 @@ export function resolvePaperclipRunnerProviderProfile(
   if (candidate === "acpx" && agentHarnessType("paperclip_runner", config) === "claude_local") {
     const unsupported = claudeRunnerUnsupportedSettings(config);
     if (unsupported.length) throw new PaperclipRunnerProviderProfileError("agent_runner_config_incompatible",
-      `Paperclip Runner cannot honor these settings: ${unsupported.join(", ")}. Remove them or select Legacy runner in Advanced.`);
+      `Paperclip Runner cannot honor these settings: ${unsupported.join(", ")}. Remove them before retrying.`);
   }
   assertPermissionMode(candidate, config);
   try {

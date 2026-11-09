@@ -353,7 +353,7 @@ const fields = {
     source: optional(shape({ sha: string, ref: string, dirty: boolean })),
     initialTaskIds: array(string), configuredModel: nullable(string), observedModels: array(string), runtimeSettings: optional(object),
     instructions: array(shape({ path: string, content: string, sha256: string, contentSha256: optional(string), redacted: optional(boolean) })),
-    checkpoints: array(shape({ id: string, at: date, phase: oneOf("opening", "response", "clarified", "revised", "accepted", "rejected", "finished"), issueId: string,
+    checkpoints: array(shape({ id: string, at: date, phase: oneOf("opening", "response", "clarified", "revised", "plan-accepted", "hiring-proposed", "hiring-accepted", "execution-proposed", "accepted", "rejected", "finished"), issueId: string,
       tasks: array(object), agents: array(object), comments: array(object), interactions: array(object), documents: array(object), attachments: optional(array(object)), runs: array(object) })),
     checks: array(shape({ id: string, passed: boolean, notReached: optional(string), evidence: array(string), detail: string })),
   })),

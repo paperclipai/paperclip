@@ -84,6 +84,11 @@ const {
 }));
 
 // The session lookup never answers on its own; tests set the account directly.
+vi.mock("@/context/CompanyContext", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/context/CompanyContext")>()),
+  useCompany: () => ({ selectedCompany: null }),
+}));
+
 vi.mock("../api/auth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/auth")>();
   return { ...actual, authApi: { ...actual.authApi, getSession: () => new Promise(() => {}) } };
@@ -4465,6 +4470,52 @@ describe("IssueAssigneePausedNotice", () => {
     });
     expect(onResume).toHaveBeenCalledTimes(1);
 
+    act(() => root.unmount());
+  });
+
+  it.each([
+    ["preparing", "computer is being prepared"],
+    ["verifying", "setup isn't finished"],
+    ["paused", "setup isn't finished"],
+  ])("shows a setup-draft agent (%s) as still being set up, not manually paused", (lifecycleState, detail) => {
+    const root = createRoot(container);
+    const agent = { ...pausedAgent("setup"), lifecycleState, urlKey: "ceo" } as unknown as Agent;
+
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/ONB/issues/ONB-1"]}>
+          <IssueAssigneePausedNotice agent={agent} issueStatus="todo" onResume={vi.fn()} resuming={false} />
+        </MemoryRouter>,
+      );
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("paused manually");
+    expect(text).not.toContain("is paused");
+    expect(text).toContain("CEO is still being set up");
+    expect(text.toLowerCase()).toContain(detail);
+    // Resuming a setup draft is not the recovery path; finishing setup is.
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
+    if (lifecycleState !== "preparing") {
+      const finish = container.querySelector('[data-testid="issue-assignee-finish-setup"]');
+      expect(finish?.getAttribute("href")).toBe("/ONB/agents/ceo");
+    } else {
+      expect(container.querySelector('[data-testid="issue-assignee-finish-setup"]')).toBeNull();
+    }
+
+    act(() => root.unmount());
+  });
+
+  it("explains a company-archive pause instead of calling it manual", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <IssueAssigneePausedNotice agent={pausedAgent("company_archived")} issueStatus="todo" onResume={vi.fn()} />,
+      );
+    });
+    expect(container.textContent).not.toContain("paused manually");
+    expect(container.textContent).toContain("company is archived");
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
     act(() => root.unmount());
   });
 

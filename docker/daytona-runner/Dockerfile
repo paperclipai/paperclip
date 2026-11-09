@@ -11,7 +11,10 @@ COPY packages/paperclip-runner/runner/crates ./crates
 COPY packages/paperclip-runner/protocol ../protocol
 COPY packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json ../
 # Retain only the finished executable in this layer. Keeping Cargo's target and
-# download trees makes BuildKit run out of disk while exporting the final image.
+# download trees makes BuildKit run out of disk while exporting the final image
+# and the default-branch build cache. A separate dependency-precompile layer
+# (#19545) did exactly that: about 1.2 GB of retained Cargo trees exhausted the
+# builder disk during the registry cache export.
 RUN cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip-runnerd \
     && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd \
     && install -m 0755 target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd \
@@ -37,8 +40,9 @@ COPY ui/package.json ./ui/package.json
 COPY cli/package.json ./cli/package.json
 # The complete resolved lock (including transitive integrity hashes) is reviewed.
 # Reject registry-time drift BEFORE installing packages or running lifecycle code.
-# Refresh this digest together with source/provider dependency changes.
-ARG PAPERCLIP_RUNNER_LOCK_SHA256=342a01e487a68d0ad9cb8d8852a0ffed4dd7b0fa58e2e047d1064e9340fe6f57
+# Every build supplies the digest of the reviewed lockfile it was given; there
+# is no default, so a stale fixed value can never masquerade as lockfile drift.
+ARG PAPERCLIP_RUNNER_LOCK_SHA256
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 # Optional qualification assets; this never promotes candidate profiles.
 ARG PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=
@@ -46,7 +50,11 @@ ARG PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=
 # Subtract all available CPUs to select its minimum (one tarball worker).
 # Install and build in one layer so the disposable workspace and package store
 # do not remain in an earlier snapshot while BuildKit exports the portable pack.
-RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
+RUN if ! printf '%s' "${PAPERCLIP_RUNNER_LOCK_SHA256}" | grep -Eqx '[0-9a-f]{64}'; then \
+      echo 'PAPERCLIP_RUNNER_LOCK_SHA256 build arg must be the SHA-256 of pnpm-lock.yaml: --build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=$(shasum -a 256 pnpm-lock.yaml | cut -d " " -f 1)"' >&2; \
+      exit 1; \
+    fi \
+    && test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
     && export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')" \
     && printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
@@ -117,20 +125,25 @@ COPY packages/paperclip-runner/scripts/provision-grok.mjs /tmp/grok-provision/sc
 COPY packages/paperclip-runner/src/providers/grok/platforms.json /tmp/grok-provision/src/providers/grok/platforms.json
 RUN node /tmp/grok-provision/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok && rm -rf /tmp/grok-provision
 
-COPY --from=runnerd-build /usr/local/bin/paperclip-runnerd /usr/local/bin/paperclip-runnerd
-COPY --chown=0:0 --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
-RUN set -eu; for cli in codex claude opencode; do \
-      printf '#!/bin/sh\nexec /opt/paperclip-runner/provider-pack/node_modules/.bin/%s "$@"\n' "$cli" > "/usr/local/bin/$cli"; \
-      chmod 755 "/usr/local/bin/$cli"; \
-    done
-
 # Keep revision-dependent metadata below the stable agent CLI installation
 # layers. A source-only image miss can then reuse those expensive layers from
 # the trusted registry cache.
+# This step must stay ABOVE the COPY --from steps. It does not wait for either
+# builder stage, so BuildKit downloads the cached base and CLI layers (about
+# four minutes) while runnerd and the provider pack compile, instead of after.
 ARG PAPERCLIP_RUNNER_CONTENT_ID
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 RUN test -n "${PAPERCLIP_RUNNER_CONTENT_ID}" \
     && test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
+
+# --link builds each copied tree as an independent layer, so producing it does
+# not wait for the cached layers below to finish downloading.
+COPY --link --from=runnerd-build /usr/local/bin/paperclip-runnerd /usr/local/bin/paperclip-runnerd
+COPY --link --chown=0:0 --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
+RUN set -eu; for cli in codex claude opencode; do \
+      printf '#!/bin/sh\nexec /opt/paperclip-runner/provider-pack/node_modules/.bin/%s "$@"\n' "$cli" > "/usr/local/bin/$cli"; \
+      chmod 755 "/usr/local/bin/$cli"; \
+    done
 
 RUN set -eu; \
     printf '%s\n' 'export PATH=/opt/paperclip-runner/provider-pack/node_modules/.bin:$PATH' \

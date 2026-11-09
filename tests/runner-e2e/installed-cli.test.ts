@@ -9,7 +9,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { assertInstalledCliSelection, installedCliKeys, probeInstalledCodexStartup, verifyInstalledCli } from "./installed-cli.js";
 import { buildPaperclipServerEnvironment, buildRunnerE2EProcessEnvironment } from "./harness-env.js";
-const cells = runnerMatrix.filter(e => !isRollingWebDeployment(e) && !isLegacyWorkspaceMigration(e) && e.profile.id === "runner-acpx-pi");
+const cells = runnerMatrix.filter(e => !isRollingWebDeployment(e) && !isLegacyWorkspaceMigration(e) && e.profile.id === "runner-acpx-pi"
+  // The explicit reliability facade cell is not an installed-CLI Pi qualification case.
+  && e.task.explicitGroup === undefined);
 const roots: string[] = [];
 // pnpm's source test wrapper sets NODE_PATH; the disposable public-install fixture must start closed.
 beforeEach(() => { vi.stubEnv("NODE_PATH", undefined); vi.stubEnv("NODE_OPTIONS", undefined); });
@@ -158,7 +160,7 @@ async function startupFixture(mode: "normal" | "wrong-model" | "ambient-codex" |
       constructor(options){this.options=options;}
       async openSession(){state.calls.push("open");save();
         ${mode === "startup-and-cleanup-failed" ? 'throw new Error("fixture original provider startup failure");' : ''}
-        const model=${JSON.stringify(mode === "wrong-model" ? "wrong-model" : "gpt-5.6-sol")};
+        const model=${JSON.stringify(mode === "wrong-model" ? "wrong-model" : "gpt-6.1-sol")};
         return {ids:()=>({driverSessionId:"PRIVATE-DRIVER-ID",providerSessionId:"PRIVATE-PROVIDER-ID"}),
           events:()=>({async *[Symbol.asyncIterator](){yield {eventType:"session.started",payload:{context:{model,sandbox:{permissionProfile:{id:"paperclip-runner-workspace-read-only"}}}}};}}),
           startTurn(){state.calls.push("FORBIDDEN-TURN");save();throw new Error("No provider turn is permitted");},

@@ -31,6 +31,7 @@ function desiredMetadata(row) {
     `Full-catalog lane targets candidate ${catalogTargetSha}; other lanes keep their own actual source; target is recorded per result. This registration does not qualify current master or record a PASS.`,
     `Assumed context:\n${row.originalContext}`,
     `Required credential names: ${row.requiredCredentials.join(', ') || 'None declared for this case; the controller profile credential is separate.'}`,
+    ...(row.optionalCompanySecretBindingApproval ? ['Company secret binding uses two base human inputs plus at most one source-bound, accepted UI approval (maximum three actual human inputs). Native runs: minimum two, maximum three; original 480000ms attempt remains.'] : []),
     `External input contract: ${row.externalInput == null ? 'None declared.' : JSON.stringify(row.externalInput)}`,
     `Installed-source requirement: ${row.installedSource ?? 'None declared.'}`,
     `Source evidence kind: ${row.evidenceKind}`,

@@ -1,4 +1,5 @@
 import { recordStorageFailure, type StorageFailureOperation } from "./failure-diagnostics.js";
+import { recordStorageRequest } from "./request-stats.js";
 
 const ERROR_CODE = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
 const REQUEST_ID = /^[A-Za-z0-9+/=._-]{1,128}$/;
@@ -36,10 +37,30 @@ export function recordS3Failure(error: unknown, operation: StorageFailureOperati
   });
 }
 
+/**
+ * A GetObject body can fail after send() resolved, for example when the
+ * socket resets mid-download. The response names the request; the stream
+ * error's own code (ECONNRESET) names the failure better than its name.
+ */
+export function recordS3BodyFailure(error: unknown, response: unknown): void {
+  const metadata = ownValue(response, "$metadata");
+  recordStorageFailure(error, {
+    provider: "s3",
+    operation: "read_object_body",
+    errorCode: matching(ownValue(error, "code"), ERROR_CODE) ?? matching(ownValue(error, "name"), ERROR_CODE) ?? "unknown",
+    httpStatus: integerIn(ownValue(metadata, "httpStatusCode"), 100, 599),
+    requestId: matching(ownValue(metadata, "requestId"), REQUEST_ID),
+    attempts: integerIn(ownValue(metadata, "attempts"), 1, 100),
+  });
+}
+
 export async function withS3FailureDiagnostics<T>(operation: StorageFailureOperation, send: () => Promise<T>): Promise<T> {
   try {
-    return await send();
+    const result = await send();
+    recordStorageRequest(result, false);
+    return result;
   } catch (error) {
+    recordStorageRequest(error, true);
     recordS3Failure(error, operation);
     throw error;
   }

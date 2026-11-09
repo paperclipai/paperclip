@@ -6,6 +6,7 @@ import {
   Play,
   Plus,
   MoreHorizontal,
+  MessagesSquare,
   Loader2,
   Copy,
   RotateCcw,
@@ -161,6 +162,8 @@ export function AgentActionButtons({
   companyId,
   size = "sm",
   assignLabel = "Assign Task",
+  showAssignIcon = true,
+  showChat = false,
   runLabel = "Run now",
   showStatus = true,
   showRun = true,
@@ -183,6 +186,8 @@ export function AgentActionButtons({
   companyId?: string | null;
   size?: "sm" | "default";
   assignLabel?: string;
+  showAssignIcon?: boolean;
+  showChat?: boolean;
   runLabel?: string;
   showStatus?: boolean;
   showRun?: boolean;
@@ -246,7 +251,7 @@ export function AgentActionButtons({
   const resolvedCompanyId = companyId ?? agent.companyId;
   const canonicalAgentRef = agentRouteRef(agent);
   const isPaused = agent.lifecycleState ? agent.lifecycleState === "paused" : agent.status === "paused";
-  const isError = agent.status === "error";
+  const isAgentError = agent.status === "error";
   const needsSetup = agent.pauseReason === "setup" && agent.status !== "terminated"
     && !["terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState ?? "");
 
@@ -450,7 +455,7 @@ export function AgentActionButtons({
                 {runLabel}
               </button>
             ) : null}
-            {needsSetup ? null : isError ? (
+            {needsSetup ? null : isAgentError ? (
               <button
                 type="button"
                 className={cn(item, "text-destructive")}
@@ -522,6 +527,10 @@ export function AgentActionButtons({
             )}
           </PopoverContent>
         </Popover>
+        {showChat && <Button variant="outline" size="icon" aria-label={`Chat with ${agent.name}`} title="Chat with this agent"
+          disabled={disabled} onClick={() => { if (!onBeforeNavigate || onBeforeNavigate()) navigate(`/chats/${canonicalAgentRef}`); }}>
+          <MessagesSquare className="size-4" />
+        </Button>}
         {needsSetup ? (
           <Button size={size} disabled={disabled} onClick={finishSetup}>
             <Play className="size-4" />
@@ -534,7 +543,7 @@ export function AgentActionButtons({
             disabled={assignAndRunDisabled}
             title={workActionsDisabled ? workActionsDisabledReason : undefined}
           >
-            <Plus className="size-4" />
+            {showAssignIcon && <Plus className="size-4" />}
             {assignLabel}
           </Button>
         )}
@@ -583,7 +592,7 @@ export function AgentActionButtons({
         label={runLabel}
         size={size}
       />}
-      {!needsSetup && (isError ? (
+      {!needsSetup && (agent.status === "error" ? (
         <ClearErrorButton
           onClick={() => agentAction.mutate("clear_error")}
           disabled={clearErrorDisabled}

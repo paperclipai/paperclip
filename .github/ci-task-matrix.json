@@ -140,6 +140,11 @@
       "task": "ci:docker"
     }
   ],
+  "sandbox_provider_tests": [
+    {
+      "task": "ci:sandbox-providers"
+    }
+  ],
   "verify_paperclip_runner": [
     {
       "lane_label": "static checks",
@@ -153,13 +158,23 @@
       "task": "ci:runner-rust"
     },
     {
-      "lane_label": "vitest package",
-      "command": "test:typescript:vitest --shard=1/2",
+      "lane_label": "vitest package (1/3)",
+      "command": "test:typescript:vitest --package-lane=1/3",
+      "task": "ci:runner-vitest"
+    },
+    {
+      "lane_label": "vitest package (2/3)",
+      "command": "test:typescript:vitest --package-lane=2/3",
+      "task": "ci:runner-vitest"
+    },
+    {
+      "lane_label": "vitest package (3/3)",
+      "command": "test:typescript:vitest --package-lane=3/3",
       "task": "ci:runner-vitest"
     },
     {
       "lane_label": "vitest native server",
-      "command": "test:typescript:vitest --shard=2/2",
+      "command": "test:typescript:vitest --native-server",
       "release_crate": true,
       "task": "ci:runner-vitest"
     }
@@ -278,6 +293,11 @@
       "shard_count": 8,
       "shard_label": "8/8",
       "task": "ci:e2e"
+    }
+  ],
+  "verify_runner_e2e_support": [
+    {
+      "task": "ci:runner-e2e-support"
     }
   ]
 }

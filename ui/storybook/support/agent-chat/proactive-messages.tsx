@@ -53,6 +53,7 @@ export function prepareProactiveMessageFixtures(readFailure = false, transientRe
     executionRunId: null,
     updatedAt: new Date(index === 0 ? "2026-10-30T07:00:00Z" : "2026-10-30T06:45:00Z"),
     isUnreadForMe: unread.has(agent.id),
+    unreadMessageCount: unread.has(agent.id) ? 1 : 0,
   }));
   return prepareFixtureApi([
     { path: "/api/instance/settings/experimental", read: () => instanceExperimentalSettingsSchema.parse({ enableAgentChat: true }) },

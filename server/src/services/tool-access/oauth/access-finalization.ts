@@ -7,7 +7,7 @@ import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrantMembers, connectionGrantDelegations, connectionGrants, companySecrets, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
-import type { FinishToolAppResult, FinalizeOAuthAccess, ToolCredentialSecretRef } from "@paperclipai/shared";
+import type { FinishToolApp, FinishToolAppResult, FinalizeOAuthAccess, ToolCredentialSecretRef } from "@paperclipai/shared";
 import { getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, unprocessable } from "../../../errors.js";
 import { secretService } from "../../secrets.js";
@@ -40,6 +40,7 @@ async function finalizeOAuthAccess(
     input: FinalizeOAuthAccess,
     actor?: ActorInfo,
     requestingAgentId?: string,
+    setupAccess?: FinishToolApp["access"],
   ): Promise<FinishToolAppResult> {
     await actor?.managementContext?.reauthorize();
     if (requestingAgentId)
@@ -418,14 +419,14 @@ async function finalizeOAuthAccess(
         askFirstCatalogEntryIds: catalog
           .filter((entry) => askFirstRiskLevels.has(entry.riskLevel))
           .map((entry) => entry.id),
-        access: requestingAgentId
+        access: setupAccess ?? (requestingAgentId
           ? { agentIds: [requestingAgentId] }
-          : "all_agents",
+          : "all_agents"),
         preserveExistingAccess: Boolean(requestingAgentId),
       },
       actor,
     );
-    await db
+    if (!setupAccess) await db
       .insert(toolConnectionInstalls)
       .values({
         companyId,

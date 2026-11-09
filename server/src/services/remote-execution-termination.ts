@@ -37,6 +37,19 @@ export function hasRemoteTerminationReceipt(lease: LeaseIdentity & {
     remoteTerminationReceipt(lease, receipt));
 }
 
+/** Workspace recovery saved this run's files, re-stopped its sandbox, and then
+ * queued the stopped sandbox for destroy. The destroy is resource cleanup: the
+ * stop receipt it carried forward still proves no provider can run there. */
+export function hasRecoveredCleanupStopReceipt(lease: LeaseIdentity & {
+  releasedAt: unknown; status: string; metadata: Record<string, unknown> | null;
+}): boolean {
+  const cleanup = lease.metadata?.workspaceRecoveryCleanup as Record<string, unknown> | undefined;
+  if (!cleanup || cleanup.runId !== lease.heartbeatRunId || !lease.releasedAt ||
+      !["pending_cleanup", "released", "expired", "failed"].includes(lease.status)) return false;
+  return hasRemoteTerminationReceipt({ ...lease, status: "released", cleanupStatus: "success",
+    metadata: { remoteExecutionTermination: cleanup.stopReceipt } });
+}
+
 export function remoteLeaseCleanupScope(lease: Pick<LeaseIdentity, "provider" | "providerLeaseId">) {
   return lease.provider && lease.provider !== "local" && lease.providerLeaseId
     ? JSON.stringify([lease.provider, lease.providerLeaseId]) : undefined;

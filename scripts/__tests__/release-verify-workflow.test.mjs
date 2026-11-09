@@ -655,6 +655,8 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     "runner-protocol-live-evals.yml",
     "chat-catalog-testops.yml",
     "chat-catalog-testops-case.yml",
+    // On-demand crash-point suite (durable ownership plan, Phase 5).
+    "crash-points.yml",
   ];
   const paidWorkflowNameSet = new Set(paidWorkflowNames);
   const providerSecretReference =
@@ -878,7 +880,7 @@ test("direct protocol concurrency override only lowers the configured ceiling", 
   const script = workflow.slice(start, end) + '\nprintf "%s" "$MAX_PARALLEL"\n';
   for (const [requested, expected] of [["", "8"], ["2", "2"], ["8", "8"], ["1", null], ["9", null], ["0", null], ["-1", null], ["2.5", null], ["garbage", null], ["9999999999999999999999", null]]) {
     const result = spawnSync("bash", ["-eu", "-c", script], {
-      env: { ...process.env, MAX_PARALLEL: "8", REQUESTED_MAX_PARALLEL: requested }, encoding: "utf8",
+      env: { ...process.env, MAX_PARALLEL: "8", MAX_PARALLEL_LIMIT: "57", REQUESTED_MAX_PARALLEL: requested }, encoding: "utf8",
     });
     assert.equal(result.status, expected === null ? 1 : 0, requested);
     if (expected !== null) assert.equal(result.stdout, expected);

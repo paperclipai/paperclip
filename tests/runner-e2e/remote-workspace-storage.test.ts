@@ -86,6 +86,34 @@ describe("remote workspace Product E2E qualification", () => {
     expect(gradeRemoteWorkspaceStorage(evidence).every(check => check.passed)).toBe(false);
   });
 
+  it("reads a completed warm turn from its saved snapshot while retaining the bound workspace location", async () => {
+    const f = checkpointApi();
+    const savedFile = { ...f.file, resource: { ...f.file.resource,
+      source: { kind: "saved", snapshotId: f.receipt.snapshotId } } };
+    const location = f.workspace.workspace.metadata.remoteWorkspace.location;
+    const originalGet = f.api.get;
+    const api = { get: async <T>(route: string): Promise<T> => {
+      if (route.includes("file-resources/content")) return savedFile as T;
+      if (route.endsWith("/leases")) return [{ id: location.leaseId, companyId: f.context.companyId,
+        issueId: f.context.issueId, providerLeaseId: location.providerLeaseId }] as T;
+      return originalGet<T>(route);
+    } };
+    const input = { ...f.context, api, expectedFileSource: "saved" as const, expectedLocation: "retained" as const };
+    expect((await readRemoteWorkspaceStorageCheckpoint(input)).point).toMatchObject({
+      fileSource: "saved", fileSnapshotId: f.receipt.snapshotId, locationState: "retained" });
+    expect(await readRemoteWorkspaceStorageCheckpoint({ ...input, expectedLocation: "released" })).toEqual({});
+    location.environmentId = id("5");
+    expect(await readRemoteWorkspaceStorageCheckpoint(input)).toEqual({});
+    const evidence = goodEvidence();
+    evidence.expectedFileSource = "saved";
+    evidence.expectedLocation = "retained";
+    for (const point of [evidence.initial!, evidence.final!]) Object.assign(point, {
+      fileSource: "saved", fileSnapshotId: point.snapshotId, locationState: "retained" });
+    expect(gradeRemoteWorkspaceStorage(evidence).every(check => check.passed)).toBe(true);
+    evidence.final!.locationState = "released";
+    expect(gradeRemoteWorkspaceStorage(evidence).every(check => check.passed)).toBe(false);
+  });
+
   it.each(["run-id", "company", "agent", "native-issue", "runtime", "status", "schema", "workspace",
     "epoch", "snapshot", "save-state", "lease", "provider", "remote-root"] as const)(
     "rejects a full-run %s mismatch even when its public summary succeeds", async mismatch => {
@@ -139,7 +167,7 @@ describe("remote workspace Product E2E qualification", () => {
     expect(controllerOutageForExecution(cells[0]!, {})).toEqual({ signal: "SIGKILL", holdMs: 300_000 });
     expect(() => controllerOutageForExecution(cells[0]!, { PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS: "1000" })).toThrow("shorter");
     expect(cells[0]!.task.expectedRunCount).toBe(4);
-    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 5, savedRunReadback: "public-runId-summary-then-bound-native-detail",
+    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 6, lifecycleCoverage: "warm-reusable", workspaceFileSource: "saved-exact-snapshot-with-retained-location", savedRunReadback: "public-runId-summary-then-bound-native-detail",
       fileViewerSetup: "ordinary-setting-enabled-with-storage-default-preserved", retainedControllerContinuation: true,
       postControllerReplyFormat: "one-plain-text-line-marker-space-actual-command-output",
       retainedControllerFollowupTransport: "task_comment_api", autoStopIntervalMinutes: 15 });
@@ -151,6 +179,7 @@ describe("remote workspace Product E2E qualification", () => {
     const agent = cells[0]!.profile.buildAgent({ environmentId: id("9"), environmentFixtureId: "daytona", workspacePath: "/unavailable-host-folder",
       secretRefs: { OPENAI_API_KEY: { type: "secret_ref", secretId: id("8"), version: "latest" } }, executionId: "synthetic" });
     expect((agent.adapterConfig as Record<string, unknown>).cwd).toBeUndefined();
+    expect(agent.adapterConfig).toMatchObject({ lifecycleMode: "warm" });
     expect(cells[0]!.task.buildPrompt("synthetic")).toContain("fresh random 32-character lowercase hexadecimal reference");
   });
 

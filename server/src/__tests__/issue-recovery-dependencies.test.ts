@@ -41,6 +41,37 @@ describeIssueRecovery("issue recovery production producers and dependencies", ()
       sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'issue_blockers_resolved'`))).toHaveLength(1);
     expect(await state.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
   }, 90_000);
+  it("settles competing recovery inserts after both owners read an empty source", async () => {
+    const f = await fixture();
+    const issue = await issueService(state.db).create(f.companyId, { title: "Concurrent recovery", status: "todo" });
+    const transaction = state.db.transaction.bind(state.db);
+    let arrivals = 0, release: () => void = () => {};
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const conflicts: unknown[] = [];
+    vi.spyOn(state.db, "transaction").mockImplementation(async (callback, config) => {
+      if (++arrivals <= 2) {
+        if (arrivals === 2) release();
+        await barrier;
+      }
+      try { return await transaction(callback, config); }
+      catch (error) { conflicts.push(error); throw error; }
+    });
+    const input = { companyId: f.companyId, sourceIssueId: issue.id, kind: "stranded_assigned_issue" as const,
+      ownerType: "agent" as const, ownerAgentId: f.agentId, cause: "stranded_assigned_issue",
+      fingerprint: "concurrent-source", nextAction: "Restore work", evidence: {} };
+    const results = await Promise.allSettled([
+      issueRecoveryActionService(state.db).upsertSourceScoped(input),
+      issueRecoveryActionService(state.db).upsertSourceScoped(input),
+    ]);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({ cause: { code: "23505", constraint_name: "issue_recovery_actions_active_source_uq" } });
+    expect(results.map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    const actions = await state.db.select().from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, f.companyId), eq(issueRecoveryActions.sourceIssueId, issue.id)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ status: "active", attemptCount: 2, fingerprint: input.fingerprint });
+    for (const result of results) if (result.status === "fulfilled") expect(result.value.id).toBe(actions[0].id);
+  });
   it("settles saved disposition debt on its original real-clock timers before measuring idle", async () => {
     const f = await fixture();
     const blocker = await issueService(state.db).create(f.companyId, { title: "Saved debt blocker", status: "todo" });

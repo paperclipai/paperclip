@@ -25,6 +25,7 @@ import type {
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
   IssueRecoveryActionOwnerType,
+  IssueBlockerStallRelation,
   IssueRecoveryActionStatus,
   IssueWorkMode,
   IssueThreadInteractionContinuationPolicy,
@@ -143,8 +144,25 @@ export interface IssueCreationSource {
     title: string;
     status: string;
   };
-  run: { id: string; agentId: string };
+  /** The run that created the task, when one did and the viewer may see it. */
+  run: { id: string; agentId: string } | null;
   agent: { id: string; name: string } | null;
+}
+
+/**
+ * Why a create or move did not use the requested parent. `max_agent_depth`:
+ * agents may only build parent → child trees, so the task was placed as a
+ * sibling of the requested parent. `has_children`: an agent tried to move a task
+ * that has its own children under a parent; the move was skipped.
+ */
+export type IssueParentAdjustmentReason = "max_agent_depth" | "has_children";
+
+export interface IssueParentAdjustment {
+  reason: IssueParentAdjustmentReason;
+  /** Whether the parent change was applied, with `effectiveParent` in place of the request. */
+  applied: boolean;
+  requestedParent: { id: string; identifier: string | null } | null;
+  effectiveParent: { id: string; identifier: string | null } | null;
 }
 
 export interface IssueAssigneeAdapterOverrides {
@@ -195,6 +213,12 @@ export interface DocumentRevision {
   /** Writer provenance; reading a revision does not grant access to the run. */
   createdByRunId?: string | null;
   createdAt: Date;
+}
+
+export interface ExactDocumentRevision extends DocumentRevision {
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  isLatest: boolean;
 }
 
 export interface LegacyPlanDocument {
@@ -600,6 +624,23 @@ export interface IssueUnblockDescriptor {
   action: string;
 }
 
+/** Wake context of `issue_blocker_stalled`: the stalled issue and the recovery action it waits on. */
+export interface IssueBlockerStalledWakeContext {
+  stalledIssueId: string;
+  stalledIssueIdentifier: string | null;
+  stalledIssueTitle: string;
+  stalledIssueStatus: string;
+  relation: IssueBlockerStallRelation;
+  recoveryAction: {
+    id: string;
+    kind: string;
+    cause: string;
+    status: string;
+    ownerType: string;
+    nextAction: string;
+  };
+}
+
 export interface IssueRecoveryAction {
   /** Read-only activity of the exact native run named by the wake policy. */
   nativeRunActivity?: {
@@ -855,6 +896,8 @@ export type IssueSummary = Pick<
   "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "updatedAt"
 > & {
   externalConversationState: "active" | "waiting" | null;
+  /** Present for blocked tasks so summary views resolve the same status glyph as detail views. */
+  blockerAttention?: IssueBlockerAttention;
 };
 
 export interface Issue {
@@ -889,6 +932,8 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   /** Detail responses only: access-checked creation provenance, or null. */
   createdFrom?: IssueCreationSource | null;
+  /** Create/update responses only: present when the requested parent was not used as-is. */
+  parentAdjusted?: IssueParentAdjustment | null;
   title: string;
   description: string | null;
   descriptionTruncated?: boolean;
@@ -910,6 +955,8 @@ export interface Issue {
   originKind?: IssueOriginKind;
   originId?: string | null;
   originRunId?: string | null;
+  /** Audit-only: the task whose work created this one. Set by the server; not hierarchy. */
+  originIssueId?: string | null;
   originIdentityContextId?: string | null;
   continuationIdentityContextId?: string | null;
   originFingerprint?: string | null;
@@ -945,6 +992,8 @@ export interface Issue {
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
+  /** Children and blockers stalled on a recovery action that needs the board (issue detail only). */
+  stalledDependencies?: IssueBlockerStalledWakeContext[];
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   executionBlocker?: ExecutionBlocker | null;
   interruption?: TaskInterruptionPresentation | null;
@@ -967,6 +1016,7 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  unreadMessageCount?: number;
   archivedAt?: Date | null;
   archivedByActorType?: "user" | "agent" | null;
   archivedByAgentId?: string | null;
@@ -1099,6 +1149,8 @@ export interface IssueQueuedCommentEntry {
     interactionId: string;
     interactionKind: string;
     requiresFreshSession?: boolean;
+    /** Readable one-line status, such as "Declined: Slack connection". */
+    summary?: string;
   };
   comment: IssueComment;
   position: number;
@@ -1191,6 +1243,8 @@ export interface IssueCommentMetadata {
   };
   /** Producer-classified diagnostics; task interruption UI owns system repair. */
   recoveryResponsibility?: "system" | "user";
+  /** Generated file-preparation receipt; presentation only, never authorization. */
+  attachmentPreparation?: { attachmentId: string };
   /** Inbound channel attribution; never an authorization input. */
   sourceChannel?: ChatProvider;
   sourceRunId?: string | null;
@@ -1509,6 +1563,8 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  * authorization URLs are returned solely from addressed board endpoints.
  */
 export interface ConnectionIntentPayload {
+  /** Human-selected audience for this OAuth draft; applied only at completion. */
+  setupAccess?: { connectionId: string; access: "all_agents" | { agentIds: string[] } };
   /** Existing chat setup; the server derives the destination from these IDs. */
   savedSetup?: { endpointId: string; connectionId: string; action?: "enter_credentials" | "rotate_credentials" | "confirm_identity"; credentialRotation?: { previousId: string | null }; credentialEntry?: { previousGenerations: Record<string, string | null>; requireAll: boolean } };
   version: 1;

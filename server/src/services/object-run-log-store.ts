@@ -2,12 +2,16 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { StorageProvider } from "../storage/types.js";
 import type { RunLogStore, RunLogHandle, RunLogBeginInput } from "./run-log-store.js";
-import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalWriter } from "./object-byte-journal.js";
+import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalIOPriority, type ObjectJournalWriter } from "./object-byte-journal.js";
 import { MAX_RUN_LOG_RECORD_BYTES } from "./run-log-record-limits.js";
 
 const MAX_SEGMENT_BYTES = 1024 * 1024;
 const MAX_PENDING_BYTES = MAX_RUN_LOG_RECORD_BYTES;
 const MAX_READ_BYTES = 4 * MAX_SEGMENT_BYTES;
+const ALIGN_WINDOW_BYTES = 32_000;
+// Most records are short, so the first alignment window rides along with the
+// body read. Longer records continue with ALIGN_WINDOW_BYTES windows.
+const ALIGN_FIRST_LOOKBACK_BYTES = 4096;
 export interface ObjectRunLogStoreOptions {
   provider: StorageProvider;
   keyPrefix: string;
@@ -31,6 +35,7 @@ interface WriterState {
   timer?: NodeJS.Timeout;
   flushing?: Promise<void>;
   closed: boolean;
+  admitting: Set<Promise<unknown>>;
   failure?: unknown;
   signal?: AbortSignal;
   sourcePrefixVerified: boolean;
@@ -84,12 +89,13 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       else activeUploads--;
     };
   }
-  function journal(logRef: string) {
+  function journal(logRef: string, readPriority?: ObjectJournalIOPriority) {
     if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(logRef))
       throw new Error("Invalid object log reference");
     return createObjectByteJournal({
       provider: options.provider,
       prefix: `${options.keyPrefix}/segments-v1/${logRef}`,
+      readPriority,
     });
   }
   function schedule(state: WriterState) {
@@ -167,6 +173,12 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
   async function enqueue(handle: RunLogHandle, event: Parameters<RunLogStore["append"]>[1]) {
     const state = writers.get(handle);
     if (!state || state.closed) throw new Error("Object run log writer is closed");
+    const admission = admit(state, handle, event);
+    state.admitting.add(admission);
+    try { return await admission; }
+    finally { state.admitting.delete(admission); }
+  }
+  async function admit(state: WriterState, handle: RunLogHandle, event: Parameters<RunLogStore["append"]>[1]) {
     state.signal?.throwIfAborted();
     if (state.failure) throw state.failure;
     const bytes = Buffer.from(
@@ -186,7 +198,6 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         state.pendingBytes + bytes.length > MAX_PENDING_BYTES ||
         totalPendingBytes + bytes.length > 64 * MAX_SEGMENT_BYTES
       ) {
-        if (state.closed) throw new Error("Object run log writer is closed");
         if (state.failure) throw state.failure;
         if (!waiting) {
           if (admissions >= 32 || admissionBytes + bytes.length > MAX_PENDING_BYTES)
@@ -210,7 +221,6 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
           capacityWaiters.add(wake);
         });
       }
-      if (state.closed) throw new Error("Object run log writer is closed");
       state.signal?.throwIfAborted();
       if (state.failure) throw state.failure;
       if (event.preservesSourceCoverage !== true || event.sourceCursor !== undefined &&
@@ -267,6 +277,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         pending: [],
         pendingBytes: 0,
         closed: false,
+        admitting: new Set(),
         signal: input.signal,
         sourcePrefixVerified,
         coverageEligible: true,
@@ -323,6 +334,8 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       capacityChanged();
       try {
         await flush(state);
+        await Promise.allSettled([...state.admitting]);
+        await flush(state);
         state.writer = await state.journal.close(state.writer, state.signal);
         if (finalizeOptions?.computeDigest === false)
           return { bytes: state.writer.head.end, sha256: null, compressed: false };
@@ -344,19 +357,27 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     },
     async read(handle, opts = {}) {
       if (handle.store !== "s3_segments" && handle.store !== "s3_archive") throw new Error("Invalid object run log backend");
-      const store = journal(handle.logRef),
+      const store = journal(handle.logRef, opts.priority ?? "interactive"),
         snapshot = await store.head(opts.signal);
       if (!snapshot || snapshot.head.deleted) throw new Error("Object run log not found");
       const offset = Math.max(0, opts.offset ?? 0),
         limit = opts.limitBytes ?? 256_000;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_READ_BYTES)
         throw new Error("Invalid object log read limit");
-      const fetched = await store.readRange(
+      const bodyLimit = Math.min(MAX_READ_BYTES, limit + 3);
+      // Read the alignment window and the body in one range, so a tail read
+      // walks the index once instead of once for each part.
+      const lookback = opts.alignStartToRecord && offset > 0
+        ? Math.min(offset, ALIGN_FIRST_LOOKBACK_BYTES, MAX_READ_BYTES - bodyLimit)
+        : 0;
+      const window = await store.readRange(
         snapshot.head,
-        offset,
-        Math.min(MAX_READ_BYTES, limit + 3),
+        offset - lookback,
+        lookback + bodyLimit,
         opts.signal,
       );
+      const lookbackBytes = window.subarray(0, lookback);
+      const fetched = window.subarray(lookback);
       let end = Math.min(limit, fetched.length);
       while (end < fetched.length && (fetched[end]! & 0xc0) === 0x80) end++;
       if (
@@ -377,9 +398,16 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         return { content: bytes.toString("utf8"), nextOffset };
       const parts = [bytes];
       let before = offset;
+      if (lookback > 0) {
+        const boundary = lookbackBytes.lastIndexOf(10);
+        parts.unshift(lookbackBytes.subarray(boundary + 1));
+        before = boundary >= 0 ? 0 : offset - lookback;
+        if (before > 0 && parts.reduce((n, part) => n + part.length, 0) > MAX_PENDING_BYTES)
+          throw new Error("Object log record exceeds read alignment limit");
+      }
 
       while (before > 0) {
-        const start = Math.max(0, before - 32_000);
+        const start = Math.max(0, before - ALIGN_WINDOW_BYTES);
         const prefix = await store.readRange(snapshot.head, start, before - start, opts.signal);
         const boundary = prefix.lastIndexOf(10);
         parts.unshift(prefix.subarray(boundary + 1));

@@ -234,6 +234,9 @@ test("a seeded Classic loading title uses the resolved title typography", async 
     await page.getByRole("link").filter({ hasText: fixture.title }).first().click();
     await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: fixture.title, exact: true })).toBeVisible();
     await page.route("**/api/issues/*", async route => { await coreReady; await route.continue(); });
+    // Keep the recent-task title seed, but exercise the loading frame without
+    // a persisted full task that would correctly reveal the resolved header.
+    await page.addInitScript(() => Object.keys(localStorage).filter(key => key.startsWith("paperclip:query-cache:v1:")).forEach(key => localStorage.removeItem(key)));
     await page.reload({ waitUntil: "domcontentloaded" });
     const loadingTitle = page.getByRole("heading", { name: fixture.title, exact: true });
     await expect(loadingTitle).toBeVisible();

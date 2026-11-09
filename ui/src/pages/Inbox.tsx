@@ -1,3 +1,5 @@
+import { isTransientError } from "@/api/errors";
+import { useQueryView } from "@/components/QueryView";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { describeError } from "../api/errors";
@@ -16,6 +18,7 @@ import { dashboardApi } from "../api/dashboard";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { useSecondTick } from "../hooks/useSecondTick";
+import { taskRetryNotStartedReason } from "../hooks/useTaskRetry";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -194,6 +197,7 @@ import {
   taskDateGroupSeparator,
   type TaskDateGroup,
 } from "../lib/task-date-groups";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 100;
@@ -400,6 +404,8 @@ export function FailedRunInboxRow({
           approval: "Approval required", reconnect: "Reconnect account", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
           resume: "Work is paused", budget: "Budget limit reached",
           project_access: "Agent needs project access",
+          confirm_owner_stop: "Confirm the previous server stopped",
+          confirm_run_stopped: "Confirm the previous run stopped",
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
   const retryAvailable = !interruption || interruption.canRetry;
   const showUnreadSlot = unreadState !== null;
@@ -856,8 +862,7 @@ function StreamlinedInbox({
   const { data: experimentalSettings, isLoading: isSettingsLoading } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
+    });
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedSearchQuery = searchQuery.trim();
@@ -980,8 +985,7 @@ function StreamlinedInbox({
       }
     },
     enabled: !!selectedCompanyId,
-    retry: false,
-  });
+    });
 
   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
   const sharedDashboard = useSharedPollingQuery({
@@ -997,12 +1001,7 @@ function StreamlinedInbox({
   });
   usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
-  const {
-    data: mineIssuesRaw = [],
-    isLoading: isMineIssuesLoading,
-    error: mineIssuesError,
-    dataUpdatedAt: mineIssuesUpdatedAt,
-  } = useQuery({
+  const mineIssuesQuery = useQuery({
     queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, currentUserId] as const,
     queryFn: async ({ signal }) => {
       const snapshot = await issuesApi.inboxMine(selectedCompanyId!, { signal });
@@ -1017,18 +1016,22 @@ function StreamlinedInbox({
     refetchOnMount: mineSnapshot ? undefined : "always",
     refetchOnWindowFocus: false,
     staleTime: mineSnapshot ? INBOX_HOT_PATH_STALE_MS : 0,
+    // A successful aggregate can still omit a failed source. React Query's
+    // error retries do not run for that 200 response, so retry those sources.
+    refetchInterval: () => {
+      const snapshot = queryClient.getQueryData<InboxMineSnapshot>(mineContextQueryKey);
+      return [snapshot?.failureError, snapshot?.contextError].some(error =>
+        error && isTransientError(new ApiError(error.message, error.status, null))) ? 5_000 : false;
+    },
   });
+  const { data: mineIssuesRaw = [], isLoading: isMineIssuesLoading, error: mineIssuesError } = mineIssuesQuery;
+  const mineIssuesView = useQueryView(mineIssuesQuery);
   const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, currentUserId] as const;
   // Mine owns one coherent response: broadcasting only its task array would
   // refresh that array while another tab retained stale parent/failure context.
   // Each tab uses the authenticated aggregate read; the server coalesces it.
 
-  const {
-    data: touchedIssuesRaw = [],
-    isLoading: isTouchedIssuesLoading,
-    error: touchedIssuesError,
-    dataUpdatedAt: touchedIssuesUpdatedAt,
-  } = useQuery({
+  const touchedIssuesQuery = useQuery({
     queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -1045,6 +1048,8 @@ function StreamlinedInbox({
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const { data: touchedIssuesRaw = [], isLoading: isTouchedIssuesLoading, error: touchedIssuesError, dataUpdatedAt: touchedIssuesUpdatedAt } = touchedIssuesQuery;
+  const touchedIssuesView = useQueryView(touchedIssuesQuery);
   const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
@@ -1192,7 +1197,7 @@ function StreamlinedInbox({
     [locallyArchivedIssueIds, touchedIssuesRaw],
   );
   const sourceSearchIds = useMemo(() => [...new Set([...mineIssuesRaw, ...touchedIssuesRaw].map((issue) => issue.id))].sort(), [mineIssuesRaw, touchedIssuesRaw]);
-  const { data: sourceSearchMatches = [], isLoading: isSourceSearchLoading, error: sourceSearchError } = useQuery<Issue[]>({
+  const sourceSearchQuery = useQuery<Issue[]>({
     queryKey: [...queryKeys.issues.list(selectedCompanyId!), "inbox-source-search", normalizedSearchQuery, sourceSearchIds],
     queryFn: async ({ signal }) => {
       const matches: Issue[] = [];
@@ -1206,6 +1211,8 @@ function StreamlinedInbox({
     },
     enabled: !!selectedCompanyId && normalizedSearchQuery.length > 0 && sourceSearchIds.length > 0,
   });
+  const { data: sourceSearchMatches = [], isLoading: isSourceSearchLoading, error: sourceSearchError } = sourceSearchQuery;
+  const sourceSearchView = useQueryView(sourceSearchQuery);
   const sourceSearchMatchIds = useMemo(() => new Set(sourceSearchMatches.map((issue) => issue.id)), [sourceSearchMatches]);
   const shouldUseIssueSearchSupplement =
     !!selectedCompanyId
@@ -1911,7 +1918,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve join request");
+      setActionError(describeError(err).body);
     },
   });
 
@@ -1924,7 +1931,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject join request");
+      setActionError(describeError(err).body);
     },
   });
 
@@ -1947,6 +1954,13 @@ function StreamlinedInbox({
         });
         queryClient.setQueryData<Issue>(queryKeys.issues.detail(issueId), current =>
           current ? { ...current, interruption: result.presentation } : current);
+        const notStarted = taskRetryNotStartedReason(result);
+        if (notStarted) {
+          retryRequestKeys.current.delete(run.id);
+          await Promise.all([queryKeys.issues.listMineByMe(run.companyId), queryKeys.heartbeats(run.companyId),
+            queryKeys.heartbeats(run.companyId, run.agentId)].map(queryKey => queryClient.invalidateQueries({ queryKey })));
+          throw new Error(notStarted);
+        }
         return { newRun: { runId: null, issueId }, originalRun: run };
       }
       const result = await agentsApi.retryFailedRun(
@@ -2044,7 +2058,7 @@ function StreamlinedInbox({
       return { companyId: selectedCompanyId, previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive task");
+      setActionError(describeError(err).body);
       if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
@@ -2085,7 +2099,7 @@ function StreamlinedInbox({
       return { companyId: selectedCompanyId };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+      setActionError(describeError(err).body);
       if (context?.companyId) {
         beginLocalInboxArchive(context.companyId, id);
         boundLocalInboxArchive(context.companyId, id);
@@ -2453,7 +2467,7 @@ function StreamlinedInbox({
             const pathId = issue.identifier ?? issue.id;
             const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue));
             rememberIssueDetailLocationState(pathId, detailState);
-            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
+            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue, history: true });
             act.navigate(createIssueDetailPath(pathId), { state: detailState });
           } else if (item) {
             if (item.kind === "issue") {
@@ -2462,7 +2476,7 @@ function StreamlinedInbox({
                 withIssueDetailHeaderSeed(issueLinkState, item.issue),
               );
               rememberIssueDetailLocationState(pathId, detailState);
-              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue });
+              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue, history: true });
               act.navigate(createIssueDetailPath(pathId), { state: detailState });
             } else if (item.kind === "approval") {
               act.navigate(`/approvals/${item.approval.id}`);
@@ -2519,6 +2533,7 @@ function StreamlinedInbox({
   ].filter((key): key is SectionKey => key !== null);
 
   const initialSourcesSettled =
+    ![sourceSearchView, mineIssuesView, touchedIssuesView].some(view => view.kind === "reconnecting") &&
     !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading && !isWorkspacesLoading &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
@@ -2530,14 +2545,13 @@ function StreamlinedInbox({
     !isRunsLoading
     && (!issueFilters.liveOnly || !isLiveRunsLoading)
     && (issueFilters.externalObjectStatuses.length === 0 || externalObjectSummariesReady || !!externalObjectSummariesError);
-  const sourceError = tab === "mine" ? mineIssuesError : touchedIssuesError;
-  const sourceUpdatedAt = tab === "mine" ? mineIssuesUpdatedAt : touchedIssuesUpdatedAt;
-  const canRetainSourceRows = sourceUpdatedAt > 0 && !(sourceError instanceof ApiError
-    && (sourceError.status < 500 && sourceError.status !== 429));
-  const listError = sourceSearchError ?? (canRetainSourceRows ? null : sourceError)
+  const sourceView = tab === "mine" ? mineIssuesView : touchedIssuesView;
+  const listError = (sourceSearchView.kind === "error" ? sourceSearchError : null)
+    ?? (sourceView.kind === "error" ? sourceView.error : null)
     ?? (issueFilters.externalObjectStatuses.length > 0 ? externalObjectSummariesError : null);
-  const optionalSourceError = dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError
+  const rawOptionalSourceError = dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError
     ?? (tab === "mine" ? mineIssuesError : touchedIssuesError);
+  const optionalSourceError = isTransientError(rawOptionalSourceError) ? null : rawOptionalSourceError;
   const retryFailedSources = () => {
     // Optional failures belong to the aggregate read, whose task rows stay usable.
     if (tab === "mine" && (mineSnapshot?.failureError || mineSnapshot?.contextError)) {
@@ -2886,7 +2900,7 @@ function StreamlinedInbox({
 
       {listError && (
         <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
-          <p>Unable to load the inbox: {listError.message}</p>
+          <p>Unable to load the inbox: {describeError(listError).body}</p>
           <Button variant="outline" size="sm" onClick={() => { retryFailedSources(); if (externalObjectSummariesError) retryExternalObjectSummaries(); }}>Retry</Button>
         </div>
       )}
@@ -2992,7 +3006,7 @@ function StreamlinedInbox({
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
@@ -3092,10 +3106,11 @@ function StreamlinedInbox({
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                         )
                       ) : undefined}
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
+                      showUnreadIndicator={false}
                       onMarkRead={() => markReadMutation.mutate(issue.id)}
                       onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
                       archiveDisabled={isArchiving}

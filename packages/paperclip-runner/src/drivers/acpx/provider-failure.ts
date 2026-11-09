@@ -30,33 +30,58 @@ const CATEGORIES = new Map<string, ProviderFailure["category"]>([
 // ACP reserves this JSON-RPC code for "Authentication required".
 const ACP_AUTH_REQUIRED = -32000;
 
+/** The typed AIR session failure ACPX reports beside its generic terminal error. */
+export type AcpxTerminalSessionFailure = { category: string; title?: string; details?: string };
+
+/**
+ * AIR's `limit` category also covers context, turn and configured budget
+ * limits. Only an exhausted account allowance is a provider limit; the
+ * provider's own title distinguishes it.
+ */
+function sessionLimitCategory(failure: AcpxTerminalSessionFailure | undefined): ProviderFailure["category"] | undefined {
+  if (failure?.category !== "limit") return undefined;
+  const text = [failure.title, failure.details].filter(value => typeof value === "string").join("\n");
+  if (/\brate[- ]limit/i.test(text)) return "rate_limit";
+  if (/no available quota|usage limit|you(?:'|’)ve hit your (?:\w+ )?limit|out of (?:extra )?usage|quota (?:limit )?exceeded/i.test(text)) {
+    return "quota_exhausted";
+  }
+  return undefined;
+}
+
 /**
  * `ownMessage` keeps an error's own message when it carries no ACP error. Use
  * it only where every rejection belongs to the provider: a failed terminal
- * result or a provider session ensure.
+ * result or a provider session ensure. `sessionFailure` adds the provider's
+ * title from a typed terminal session failure; its details stay private.
  */
 export function acpxProviderFailure(error: unknown, agent: string, phase: ProviderFailure["phase"],
-  environment: NodeJS.ProcessEnv = {}, ownMessage = false): ProviderFailure | null {
+  environment: NodeJS.ProcessEnv = {}, ownMessage = false, sessionFailure?: AcpxTerminalSessionFailure): ProviderFailure | null {
   const acp = acpError(error);
   const data = record(acp?.data);
   const detail = record(data.error);
-  const fallback = ownMessage ? record(error) : {};
-  const message = typeof detail.message === "string" ? detail.message
+  const fallback = ownMessage || sessionFailure ? record(error) : {};
+  const ownText = typeof detail.message === "string" ? detail.message
     : typeof data.details === "string" ? data.details
       : typeof acp?.message === "string" ? acp.message : fallback.message;
-  if (typeof message !== "string") return null;
+  const title = typeof sessionFailure?.title === "string" ? sessionFailure.title.trim() : "";
+  const message = typeof ownText === "string" && title && !ownText.includes(title) ? `${ownText}\n${title}`
+    : typeof ownText === "string" ? ownText : title || undefined;
+  if (typeof message !== "string" || !message) return null;
   const status = data.status ?? data.statusCode ?? detail.status
     ?? (agent === "claude" ? Number(/^API error: (\d{3})\b/.exec(message)?.[1]) : undefined);
   const code = detail.type ?? detail.code ?? data.errorType ?? data.errorKind;
   const category = (typeof code === "string" ? CATEGORIES.get(code) : undefined)
-    ?? (acp?.code === ACP_AUTH_REQUIRED ? "authentication" : undefined);
+    ?? (acp?.code === ACP_AUTH_REQUIRED ? "authentication" : undefined)
+    ?? sessionLimitCategory(sessionFailure);
   return createProviderFailure({ provider: agent === "claude" ? "anthropic" : agent === "codex" ? "openai" : agent,
     phase, message, httpStatus: status, providerCode: code, requestId: data.request_id, category, environment });
 }
 
-export function acpxTerminalResult(result: unknown, agent: string, environment: NodeJS.ProcessEnv = {}): Record<string, unknown> {
+export function acpxTerminalResult(result: unknown, agent: string, environment: NodeJS.ProcessEnv = {},
+  sessionFailure?: AcpxTerminalSessionFailure): Record<string, unknown> {
   const raw = record(result);
-  const providerFailure = raw.status === "failed" ? acpxProviderFailure(raw.error, agent, "turn", environment, true) : null;
+  const providerFailure = raw.status === "failed"
+    ? acpxProviderFailure(raw.error, agent, "turn", environment, true, sessionFailure) : null;
   const terminal = boundedSidecarValue(result);
   if (providerFailure) {
     terminal.status = "failed";

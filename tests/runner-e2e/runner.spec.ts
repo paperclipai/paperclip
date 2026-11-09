@@ -64,7 +64,7 @@ import { armResponseTiming } from "./response-timing.js";
 
 import { projectFirstTaskResult, runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
 import { runChatFlow } from "./chat-flow.js";
-import { restartChatServer } from "./chat-restart.js";
+import { gotoAfterServerRestart, restartChatServer } from "./chat-restart.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -1262,7 +1262,7 @@ for (const execution of executions) {
       } else if (execution.task.flow === "continuation") {
         const continuation = await runContinuationFlow({
           page, api, fixtures, execution, nonce, secrets, workspacePath, deadlineAt: startedAtMs + deadlineMs - 60_000,
-          restart: () => restartIsolatedPaperclipServer({ api, requestId: `continuation-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          restart: () => restartChatServer(page, () => restartIsolatedPaperclipServer({ api, requestId: `continuation-${nonce}`, deadlineAt: startedAtMs + deadlineMs })),
           observe: (currentIssue, currentRuns, checks) => {
             issue = currentIssue; selectedRuns = currentRuns;
             matcherResults = checks.map(check => ({ matcher: { kind: "json_path" as const, path: `continuation.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
@@ -1489,11 +1489,13 @@ for (const execution of executions) {
         await pollUntil({ label: "governed waiting turn", deadlineAt, load: loadTaskState, accept: state => state.taskRuns.length === 1 && state.taskRuns.every(run => TERMINAL_RUN_STATUSES.has(run.status)) });
         await captureScreenshot("tool-review-pending", "Connection review awaiting a human", "tool-review-pending.png");
         await page.getByRole("button", { name: "Dismiss Approve tool action" }).click();
-        await page.getByRole("button", { name: "Review request", exact: true }).click();
         if (execution.task.toolReviewDecision === "restart") {
           await restartIsolatedPaperclipServer({ api, requestId: `tool-review-${nonce}`, deadlineAt });
           await page.reload();
         }
+        // Open the review card on the document that will act on it: an
+        // expanded card does not survive the post-restart reload.
+        await page.getByRole("button", { name: "Review request", exact: true }).click();
         if (execution.task.toolReviewDecision === "always") {
           await page.getByRole("button", { name: "Approval options", exact: true }).click();
           await page.getByRole("menuitem", { name: "Always allow", exact: true }).click();
@@ -1602,20 +1604,16 @@ for (const execution of executions) {
             (key) => Reflect.set(window, key, true),
             documentSentinel,
           );
-          try {
-            await page.goto(
-              `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
-              // The replacement Vite server can commit and render a fresh
-              // document while its navigation lifecycle remains unsettled.
-              // The sentinel and explicit assertions below prove the new
-              // document and durable state even when Playwright times out.
-              { waitUntil: "commit" },
-            );
-          } catch (error) {
-            if (!(error instanceof Error) || error.name !== "TimeoutError") {
-              throw error;
-            }
-          }
+          // The replacement Vite server can commit and render a fresh document
+          // while its navigation lifecycle remains unsettled, and the old
+          // document's Vite client can reload and abort this navigation. The
+          // sentinel and explicit assertions below prove the new document and
+          // durable state either way.
+          await gotoAfterServerRestart(
+            page,
+            `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
+            { deadlineAt },
+          );
           await expect(
             page
               .getByRole("radio", {

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, afterAll, afterEach, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentFileRoots, agents, companies, companySkills, companySkillVersions, executionWorkspaces, heartbeatRuns, providerTraceRecords, createDb } from "@paperclipai/db";
+import { agentFileRoots, agentInstructionWorkingCopies, agents, companies, companySkills, companySkillVersions, executionWorkspaces, heartbeatRuns, providerTraceRecords, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { assertEphemeralServerData, readEphemeralServerDataEligibility } from "../services/ephemeral-server-contract.js";
 import { initializeDurableAgentFiles } from "../services/agent-file-durability.js";
@@ -65,4 +65,23 @@ it("keeps replacement readiness independent of a serving controller's unfinished
   expect((await readEphemeralServerDataEligibility(db)).eligible).toBe(true);
   await db.update(companySkills).set({ currentVersionId: null }).where(eq(companySkills.id, skillId));
   await expect(assertEphemeralServerData(db)).rejects.toThrow("skills_require_migration");
+});
+
+it("keeps an unsettled local instruction copy visible after its canonical files become durable", async () => {
+  vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "true");
+  const companyId = randomUUID(), agentId = randomUUID();
+  await db.insert(companies).values({ id: companyId, name: "Private copy preservation", issuePrefix: "COPY" });
+  await db.insert(agents).values({ id: agentId, companyId, name: "File owner" });
+  await db.transaction(tx => initializeDurableAgentFiles(tx as unknown as Db, { id: agentId, companyId }));
+  const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", finishedAt: new Date() }).returning();
+  const [copy] = await db.insert(agentInstructionWorkingCopies).values({ runId: run.id, companyId, agentId,
+    responsibleUserId: "preservation-fixture", entryFile: "AGENTS.md", baseHash: "a".repeat(64),
+    localRoot: "/private/unsaved-copy", executionRoot: "/private/unsaved-copy", location: "local", state: "pending_collection" }).returning();
+  expect((await readEphemeralServerDataEligibility(db, { purpose: "startup" })).blockers)
+    .toContain("local_instruction_copies_require_settlement");
+  expect((await db.select().from(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.runId, run.id)))[0]).toEqual(copy);
+  await db.update(agentInstructionWorkingCopies).set({ state: "unavailable", processStoppedAt: new Date(),
+    receipt: { schema: "paperclip.agent-files.v1", cleanupPending: false } }).where(eq(agentInstructionWorkingCopies.runId, run.id));
+  expect((await readEphemeralServerDataEligibility(db, { purpose: "startup" })).blockers)
+    .not.toContain("local_instruction_copies_require_settlement");
 });

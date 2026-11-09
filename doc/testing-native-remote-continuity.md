@@ -68,7 +68,7 @@ without target tool dispatch or a fabricated response. The staged restart helper
 and classifier tests cover target discovery before its first session snapshot,
 exact encrypted source/header/artifact bindings and the existing compatibility
 rebinder. Source accounting tests use real PostgreSQL to distinguish immutable
-receipt replay, equal finalized usage and late usage requiring reconciliation.
+receipt replay, equal finalized usage and late usage posted to its owning run.
 Handoff crash tests must restore the exact queued command or authenticated
 receipt, reuse the verified physical Runner and preserve endpoint binding. Test
 both direct callbacks and the same guest listener when that ingress is enabled;
@@ -154,12 +154,22 @@ The checkpoint owner authenticates/decrypts that header and delegates version an
 inspection to Runner; the identity must match the run, session and runner. Ordinary
 sandbox runs bind their workspace identity; plugin tasks bind their active dispatched
 environment lease and need no workspace-sync descriptor.
+Accepted terminal results can also qualify through their existing finalization
+owner. This requires the exact accepted result and contract, a remote workspace,
+and its retained provider lease or successful workspace barrier. Committed work
+also needs its applied decision and assessment. Unknown physical owners and
+finalizer leases beyond the five-minute budget remain blockers. The observation
+does not request stop proof or take a lease. Copyback still requires the old
+worker's signed stop receipt and an atomic owner claim. Committed projections
+use the existing accepted-result and decision receipts.
 Legacy/local executions, missing identities/checkpoints, foreign/expired owners,
 in-flight admission, and an incomplete census prevent a positive report. It
 returns aggregate counts only. The request does not stop admission, detach a
 runner, or authorize new work. Ordinary drain reads do not perform this SQL.
-The explicit probe uses a read-only transaction, a two-second statement timeout,
-and at most 1,001 run rows. Header reads are capped at 256 KiB each and 8 MiB total;
+The explicit probe uses read-only transactions, a two-second statement timeout,
+and at most 1,001 run rows. Post-result inspections share a two-second scheduling
+budget; after it expires, unchecked candidates remain blocking. An in-flight
+inspection retains its SQL statement timeout. Header reads are capped at 256 KiB each and 8 MiB total;
 oversized, malformed, legacy-format or local evidence falls back to the ordinary drain.
 This bounded header probe does not validate every journal record or prove a live sandbox. This is an observation; the existing shutdown and
 startup owners still perform the actual handoff and enforce Stop and fencing.

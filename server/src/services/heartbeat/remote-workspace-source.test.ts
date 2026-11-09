@@ -105,6 +105,17 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
   });
 
+  it.each([
+    { enabled: true, storageProviderPluginId: randomUUID() },
+    { enabled: false, storageProviderPluginId: null },
+  ])("keeps the private empty source for a project with no repository and saved storage %j", async (policy) => {
+    const f = await assignedTask();
+    await db.update(projects).set({ executionWorkspacePolicy: policy }).where(eq(projects.id, f.projectId));
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: f.projectId, projectWorkspaceId: null });
+    expect(result).toMatchObject({ authority: "remote", source: { kind: "empty" }, projectId: null, projectWorkspaceId: null });
+  });
+
   it("does not use a foreign organizational project as private scratch authority", async () => {
     const f = await assignedTask(), foreignCompanyId = randomUUID(), foreignProjectId = randomUUID();
     await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign owner", issuePrefix: foreignCompanyId.slice(0, 8) });

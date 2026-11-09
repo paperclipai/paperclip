@@ -1,7 +1,7 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, livenessDb, nativeRunFinalizations } from "@paperclipai/db";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { currentNativeControllerIdentity, type NativeControllerIdentity } from "./native-restart-recovery.js";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 
@@ -28,6 +28,41 @@ export async function assertNativeSessionPreparationAuthority(input: {
       ...(input.providerAttempt === undefined ? [] : [eq(nativeRunFinalizations.attempt, input.providerAttempt)]),
     )).limit(1);
   if (!owned) throw new Error("native_session_lease_lost");
+}
+
+export async function nativeRecoveryClaimRelinquished(input: {
+  db: Db; companyId: string; runId: string; leaseOwner: string;
+}): Promise<boolean> {
+  const [row] = await input.db.select({
+    status: heartbeatRuns.status, resultId: nativeRunFinalizations.resultId,
+    leaseOwner: nativeRunFinalizations.leaseOwner, recoveryState: nativeRunFinalizations.recoveryState,
+    leaseLive: sql<boolean>`coalesce(${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp(), false)`,
+    lastDisposition: sql<string | null>`${nativeRunFinalizations.recoveryHistory} -> -1 ->> 'disposition'`,
+  }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+    .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId))).limit(1);
+  if (!row || row.status !== "running" || row.resultId) return false;
+  if (row.leaseOwner !== null && row.leaseOwner !== input.leaseOwner) return true;
+  return row.leaseOwner === input.leaseOwner && !row.leaseLive && row.recoveryState === "awaiting_runner_reattach"
+    && row.lastDisposition === "restart_suspended";
+}
+
+/**
+ * Preparation failed after a fresh claim and before any provider turn. Release
+ * only this exact claim, so ordinary failure settlement can retain the source
+ * as it does for failures before the claim. Any other owner or a result keeps it.
+ */
+export async function releaseUnstartedNativeExecutionClaim(input: {
+  db: Db; runId: string; companyId: string; issueId: string; leaseOwner: string; attempt: number;
+}): Promise<boolean> {
+  const released = await input.db.update(nativeRunFinalizations)
+    .set({ leaseOwner: null, leaseExpiresAt: null, updatedAt: new Date() })
+    .where(and(eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.companyId, input.companyId),
+      eq(nativeRunFinalizations.issueId, input.issueId), eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
+      eq(nativeRunFinalizations.attempt, input.attempt), eq(nativeRunFinalizations.phase, "observed"),
+      isNull(nativeRunFinalizations.resultId)))
+    .returning({ runId: nativeRunFinalizations.runId });
+  return released.length > 0;
 }
 
 export async function renewNativeSessionExecutionLease(input: {

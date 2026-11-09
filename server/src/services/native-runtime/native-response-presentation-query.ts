@@ -1,5 +1,5 @@
 import { QueryBuilder } from "drizzle-orm/pg-core";
-import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import { chatActions, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects } from "@paperclipai/db";
 import type { NativeResponsePresentationScope } from "../native-response-presentation-notifications.js";
 
@@ -8,6 +8,11 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
   return db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
     issueId: nativeRunFinalizations.issueId, agentId: heartbeatRuns.agentId, nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
     endpointId: chatActions.endpointId, principalId: chatActions.principalId,
+    // Durable publication retry schedule for an ordinary final task reply.
+    publicationNextAttemptAt: sql<string | null>`${heartbeatRuns.resultJson} #>> '{responsePublication,nextAttemptAt}'`.as("publication_next_attempt_at"),
+    // Agent Chat conversations keep their completion outbox as the bounded owner.
+    taskReply: sql<boolean>`coalesce(${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' in ('done', 'needs_review')
+      and (coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = ''), false)`.as("task_reply"),
   }).from(nativeRunFinalizations)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
       eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.nativeIssueId, nativeRunFinalizations.issueId)))
@@ -26,6 +31,9 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
       eq(nativeRunResults.schemaStatus, "accepted"),
       sql`jsonb_typeof(${heartbeatRuns.resultJson} #> '{presentationDecision,commentId}') is distinct from 'string'`,
       sql`coalesce(${heartbeatRuns.resultJson} #> '{presentationDecision,commentAction}', '"create"'::jsonb) = '"create"'::jsonb`,
+      // A reply whose bounded publication retries are exhausted stays visible
+      // as a named failure instead of being retried forever.
+      sql`${heartbeatRuns.resultJson} #>> '{responsePublication,state}' is distinct from 'failed'`,
       sql`${heartbeatRuns.contextSnapshot}->'skipIssueComment' is distinct from 'true'::jsonb`,
       sql`coalesce(${statusDecisions.decisionJson}->'externalChatReviewPresentation', 'null'::jsonb) in ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '""'::jsonb)`,
       sql`${nativeRunResults.resultJson} #>> '{result,schema}' = 'paperclip.run_result.v1'`,
@@ -34,9 +42,11 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
       or(
         and(eq(heartbeatRuns.status, "succeeded"),
           or(sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,
-            and(eq(statusDecisions.reasonCode, "conversation_turn_finished"),
+            // An unsettled conversation turn. A held turn keeps the status its
+            // gate committed; recovery applies the live path's answered rule.
+            and(or(ne(statusDecisions.reasonCode, "conversation_turn_finished"), eq(issues.status, "in_progress")),
               eq(issues.conversationAgentId, heartbeatRuns.agentId), eq(issues.conversationUserId, heartbeatRuns.responsibleUserId),
-              eq(issues.status, "in_progress"), eq(issues.conversationState, "active"),
+              eq(issues.conversationState, "active"),
               or(isNull(issues.executionRunId), eq(issues.executionRunId, heartbeatRuns.id)),
               sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issues.id}::text`,
               sql`jsonb_typeof(${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration') = 'number'`,
@@ -57,6 +67,9 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
             and(sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,
               sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'needs_review'`,
               sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'needs_review'`),
+            and(sql`(coalesce(${issues.conversationAgentId}::text, '') <> '' and coalesce(${issues.conversationUserId}, '') <> '')`,
+              sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'yielded'`,
+              sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'yielded'`),
           )),
         and(sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'yielded'`,
           sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'yielded'`,

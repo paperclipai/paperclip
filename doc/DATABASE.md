@@ -49,6 +49,107 @@ failed results and recovery blockers stay unchanged. A successful retained
 session without artifact proof still blocks migration. The migration receipt
 reports failed-session archives separately from imported recovery authorities.
 
+An internal maintenance owner can separately record
+`runnerProfileJson.nativeHarnessFilesystemIndependence` when an original-volume
+inspection finds no uncovered provider or Runner payload. This is not a backup
+or a successful recovery. It requires a fresh, independently reviewed provider
+attachment witness and a private nonce anchor on that original volume. The
+anchor survives normal releases; current deployment and mount identities are
+verified afresh. Replacement hosts cannot create the receipt from missing files.
+
+Publication binds the retained session, canonical newest resume source, frozen
+inputs and checkpoints, every associated lease and destroyed-provider receipt,
+released controller/finalizer ownership, and existing immutable skill references.
+Any surviving skill files must match their admitted package bytes and modes.
+Surviving controller and supervisor files require separate authenticated raw-byte
+archives through the existing encrypted backup ledger. This evidence-only path
+also accepts a settled successful source whose controller records match its
+durable checkpoint. Its `original_volume_source_evidence` manifest reason does
+not grant provider recovery or Runner execution authority. Publication checks
+the source bytes again and retains the first authenticated archive during a
+concurrent capture. The receipt binds the exact archive row and checkpoint parts.
+Retired authority epochs can use the same evidence archive with a closed
+inventory of their original controller and suspended Runner files, bytes and
+modes. Each epoch must match a retained same-session run and its canonical
+checkpoint identity when a header exists. A genuinely absent historical header
+instead requires the exact admitted authority binding and remains explicitly
+absent. Malformed, retired, or foreign headers cannot use this path. Current
+source checkpoint and artifact requirements remain unchanged. Source fences
+recheck the complete inventory before archive and receipt publication. Unknown
+children and other nonempty history directories remain blockers. The inventory
+and historical headers or their explicit absence stay bound in replacement
+validation. History-free manifests and receipts keep their exact
+existing shape; current-controller-only evidence remains retained when a later
+archive adds historical files. These archives do not become executable backups.
+This maintenance inventory is limited to 128 entries, 16 MiB per file and 64 MiB
+total. These bounds are intentionally smaller than the Runner control-plane
+state's 256 MiB maximum. A larger otherwise valid epoch remains on the original
+volume and blocks filesystem independence; it is never truncated or waived.
+Source locks and a final comparison fence publication; original files, stamps,
+warnings, failed statuses and session pointers remain unchanged. Startup can
+validate the published receipt using only database bindings, without the old
+volume, a fresh source witness, or storage reads. Changed or missing bindings
+invalidate it. Existing resume and replacement policies remain authoritative,
+including governed-wait failures and warm-session refusals. No provider history
+is reconstructed or declared recovered.
+
+The same original-volume maintenance owner has a separate `web_evidence` mode.
+It stores a `paperclip.native-harness-web-evidence.v1` receipt. This mode proves
+that the web server's retained files have durable byte coverage. It does not
+require an external VM's termination receipt and does not settle that VM's
+recovery obligation. It requires the same settled web controller, finalizer,
+task and physical-writer fences. The encrypted `original_volume_source_evidence`
+archive includes a closed inventory of all nonexcluded files under the canonical
+session root, the separate warm supervisor, and each admitted skill manifest.
+Files retain their bytes and modes, including local edits and a skill whose
+version row was deleted. Such a skill remains forensic evidence: the owner does
+not recreate its version or make it executable. Canonical credential exclusions
+stay excluded. Unknown directories, symlinks, incomplete manifests, active web
+writers and changed source facts fail closed. This WEB inventory permits at most
+10,000 entries, 4 MiB of manifest metadata, and 4,096 bytes per path. The 16-MiB
+per-file and 64-MiB total payload limits remain unchanged. Authority history keeps
+its separate 128-entry and 32-epoch bounds.
+
+A genuinely absent raw controller stays absent. A supervisor-only archive still
+requires the exact durable controller checkpoint and source identity. Old
+terminated-provider receipts and history-free manifests keep their existing
+shape. External lease status and cleanup observations can change without
+creating a new web filesystem dependency. Allocation, stamp, selected source,
+checkpoint and admitted-input changes invalidate coverage. VM references,
+recovery actions, warnings and continuation policies stay unchanged. Replacement
+validation uses only the published archive and database bindings; it needs no
+original-volume anchor or filesystem read. These validations add bounded
+per-retained-scope database reads during startup. They do not add a worker or a
+poll. Missing or invalid byte evidence remains an enrollment blocker.
+
+Receipt validation adds bounded per-scope database reads to startup eligibility.
+It does not add a recurring scan or network work. Qualification must measure the
+selected cohort's startup latency on the serving revision before enrollment.
+
+### Original local Git sources for archived workspaces
+
+When an archived runtime branch has an exact successful deletion receipt, its
+saved commit can be imported from the recorded original file-URL repository if
+the canonical private/project cache is definitively absent. A present, corrupt,
+foreign or unreadable primary source never falls through to this path.
+
+This fallback requires the matching company/project source record, a real bare
+repository under the same instance root, and the exact full saved base SHA matching
+the deleted tip (`baseRefSnapshot.resolvedSha`, with the legacy `baseRefSha` form
+accepted when no canonical snapshot exists). Conflicting records fail closed. It accepts self-contained SHA-1 storage with a bounded standard
+configuration and at most 10,000 metadata entries. Aliases, special files,
+alternates, replacement/graft/shallow state and execution hooks fail closed.
+Every retained branch or lightweight tag must still name that full base commit.
+Saved retries and final publication recheck that all recorded private and generated
+primary sources remain absent. Returned or unreadable primary files block the
+original-source path. Git reads use a restricted environment and local-file transport only.
+
+Materialization uses private migration scratch. Existing encrypted snapshot
+readback, journal identity, source reinspection and publication fences still
+apply. Original repository bytes and cleanup history remain unchanged. This
+imports the retained workspace tree; it does not turn a configured local file
+URL into a portable source for future fresh project work.
+
 ### Proactive agent chat messages
 
 Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint
@@ -224,6 +325,18 @@ legacy `issueId`/`taskId`/`taskKey` precedence. Migration 0345 builds the two ne
 indexes concurrently and can resume an interrupted build without blocking run
 writes for the full build. The indexes add storage and run-write overhead; they
 do not change task visibility or secret redaction.
+
+The task Context row reads the agent's latest context-window reading through
+two small partial indexes on `heartbeat_run_events`. One index covers only usage
+items, by run and time. The other index covers only `context.compacted` events,
+by company and normalized session. Migration 0432 builds both indexes
+concurrently. A poll therefore reads a few index entries, not a run's full event
+history.
+
+A subtree pause release finds the runs that a dispatch gate refused for that pause
+through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
+covers only cancelled runs with a `treeHoldSuppression` marker, keyed by company and
+hold. Migration 0436 builds it concurrently.
 
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
@@ -835,6 +948,50 @@ with `NOWAIT`. A real `55P03` aborts the publication transaction and reports
 `remote_workspace_migration_blocked:execution_rows_busy`. The journal, uploaded
 archive and local files remain available for a later administrative retry. Other
 database errors propagate. No automatic retry or lock-strength reduction occurs.
+
+Offline import can preserve an active task recovery hold after its exact native
+workspace reference is finalized. It checks the terminal run, released controller
+and coordinator ownership, task relationship, and any recorded file allocations.
+An accepted result with a retrying coordinator also needs the successful
+company/run/task `workspace_finalize` receipt consumed by the normal finalizer.
+Historical receipts can have no workspace foreign key. Import retains recovery
+rows, task pointers, results and coordinator phases. It does not establish provider
+termination or resolve the hold. It locks and rechecks the saved evidence before
+publication. An unrelated historical folder keeps the obligation on its real
+source workspace.
+
+Finalized file sources receive a separate `finalizedWorkspaceRecoveryMigration`
+run marker and an exact migration-operation receipt. They do not receive the
+legacy execution-replay suppression marker. Future recovery exports an immutable
+snapshot of the recorded allocation instead of merging into the retired local
+folder. The existing source, provider-stop and archive checks still apply.
+Completed copyback recovery receipts remain valid. Unknown or unverified recovery
+sources continue to block import.
+
+Online import can preserve an established provider session's prepared source
+after a terminal provider-artifact failure. It requires the exact board-owned
+native failure block and the task's current blocked status version, released
+controller and coordinator ownership, and all declared allocation bindings.
+Source locks and the finalizer lock protect the full action, task and source
+fingerprints through publication. Import saves only the current local files. It
+retains the prepared reference, provider checkpoint, remote allocations and
+recovery hold. The existing migration recipe routes later file recovery away
+from the retired local destination. This neither declares preexecution nor
+proves remote export, provider termination or permission to resume execution.
+
+An exhausted prepared-export hold can also retain the canonical historical-source
+marker added by recovery backfill. Its schema and run must match, and every unique
+recorded lease must already belong to the proven prepared source or its declared
+recovery allocations. The existing historical-source inspector verifies those
+same allocation bindings. Unknown fields, malformed markers and foreign, duplicate
+or uncovered lease references still block import.
+
+The full historical marker stays in the action fingerprint. Existing source,
+task, lifecycle and finalizer locks and publication reinspection remain required.
+This permits preservation of the current local files only. It neither clears the
+hold nor claims that remote files were copied or a provider stopped. Marked holds
+add bounded database reads during maintenance inspection; they add no provider
+calls or recurring background work.
 
 The workspace fingerprint pins the recorded source. An arriving reservation can
 reach a legacy workspace before refusing it, so publication must follow this
@@ -1878,3 +2035,14 @@ pre-upgrade database transactions before enabling independent writers. Do not ru
 pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
 Rollback must use a compatible version that reads the ledger and retains the
 durable evaluation feed; a pre-contract binary is not a safe rollback target.
+
+## Standard workspace and Classic opt-in
+
+Migration `0433_workspace_defaults.sql` adds `classic_workspace_enabled`, default
+false, to personal workspace preferences and sets the legacy Coordinator column's
+default to true. Existing rows retain their old Coordinator experiment values,
+but those values no longer select the active workspace. API reads derive
+`coordinatorWorkspaceEnabled` from the inverse of the Classic choice. Saves
+retain the existing account and company-audit checks. Replaying the migration
+preserves explicit Classic choices. Agent Chat ignores its retired stored flag
+without rewriting instance settings. No task, agent, or execution state changes.

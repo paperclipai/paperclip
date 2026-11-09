@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { failureProjection, testopsClient } from "../../../tests/runner-e2e/chat-feature-testops-api.mjs";
@@ -12,6 +14,35 @@ const sha = value => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
 const workflowUrl = "https://github.com/paperclipai/paperclip/actions/workflows/runner-protocol-live-evals.yml";
 const runUrl = runId => `https://github.com/paperclipai/paperclip/actions/runs/${runId}`;
+const officialExec = promisify(execFile);
+
+export function parseOfficialJobRunContext(stdout) {
+  if (typeof stdout !== "string" || Buffer.byteLength(stdout) > 16_384) fail("bootstrap_context");
+  const values = new Map();
+  for (const line of stdout.split(/\r?\n/)) {
+    for (const name of ["ALLURE_JOB_RUN_ID", "ALLURE_LAUNCH_ID"]) {
+      if (!line.startsWith(`${name}=`)) continue;
+      const value = line.slice(name.length + 1);
+      if (values.has(name) || !/^[1-9][0-9]{0,15}$/.test(value) || !positive(Number(value))) fail("bootstrap_context");
+      values.set(name, value);
+    }
+  }
+  if (values.size !== 2) fail("bootstrap_context");
+  return { jobRunId: values.get("ALLURE_JOB_RUN_ID"), launchId: Number(values.get("ALLURE_LAUNCH_ID")) };
+}
+
+export async function captureManualJobRunContext(env, exec = officialExec) {
+  if (env.RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID !== "" || env.ALLURE_ENDPOINT !== "https://paperclip.testops.cloud"
+    || env.ALLURE_PROJECT_ID !== String(contract.projectId)) fail("bootstrap_context");
+  let stdout;
+  try {
+    ({ stdout } = await exec("allurectl", ["job-run", "env"], { env, shell: false,
+      encoding: "utf8", timeout: 30_000, maxBuffer: 16_384, windowsHide: true }));
+  } catch { fail("bootstrap_context"); }
+  const captured = parseOfficialJobRunContext(stdout);
+  if (env.ALLURE_JOB_RUN_ID && env.ALLURE_JOB_RUN_ID !== captured.jobRunId) fail("bootstrap_context");
+  return { ...env, ALLURE_JOB_RUN_ID: captured.jobRunId, RUNNER_TESTOPS_EXPECTED_LAUNCH_ID: String(captured.launchId) };
+}
 
 export function standingPlanCases(plan) {
   if (plan?.version !== "1.0" || !Array.isArray(plan.tests)) fail("standing_plan");
@@ -56,6 +87,7 @@ export async function inspectSelection(api, env, manualPlan) {
   const acceptedUrls = [workflowUrl, `https://github.com/paperclipai/paperclip/actions/workflows/${contract.workflowId}`, "https://github.com/paperclipai/paperclip/blob/master/.github/workflows/runner-protocol-live-evals.yml"];
   if (run.id !== jobRunId || !positive(run.job?.id) || run.job.type !== undefined && run.job.type !== "github"
     || run.job.url !== undefined && !acceptedUrls.includes(run.job.url) || run.url !== runUrl(env.GITHUB_RUN_ID)
+    || manualPlan && Number(env.RUNNER_TESTOPS_EXPECTED_LAUNCH_ID) !== run.launchId
     || !["scheduled", "in_progress"].includes(run.stage)) fail("jobrun_binding");
   const [job, launch, plan, planned] = await Promise.all([
     api(`/api/job/${run.job.id}`),
@@ -105,6 +137,15 @@ export function filterCatalog(catalog, selection) {
   return { ...catalog, rosters: [{ ...roster, cases: roster.cases.filter(id => selectedIds.has(id)) }], cells, matrices,
     selection: { ...catalog.selection, kind: "testops", planId: contract.planId, fullPlan: selection.fullPlan,
       caseIds: [...selectedIds], allureJobRunId: selection.allureJobRunId } };
+}
+
+export function payloadFromSanitizedRun(score, artifact, cell) {
+  if (score?.schema !== "paperclip-runner/eval-score/v1" || artifact?.schema !== "paperclip-runner/eval-session-artifact/v1"
+    || score.attemptId !== cell.finalAttemptId || artifact.attemptId !== cell.finalAttemptId || score.caseId !== cell.caseId
+    || typeof score.passed !== "boolean" || artifact.publication?.schema !== "paperclip.runner-protocol-eval.public-chat/v1"
+    || artifact.requestedModel !== contract.model || artifact.provider !== contract.provider || artifact.driver !== contract.driver) fail("sanitized_payload_binding");
+  return { attemptId: score.attemptId, caseId: score.caseId, disposition: score.disposition, passed: score.passed,
+    publication: { schema: artifact.publication.schema }, checks: score.checks };
 }
 
 export function projectResults({ selection, campaign, payloads = new Map() }) {
@@ -200,8 +241,9 @@ export function protocolTestOpsFailure(error) {
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === "selection") {
-    const selection = await inspectSelection(await testopsClient(process.env.ALLURE_TOKEN), process.env,
-      args[1] === undefined ? undefined : await readJson(args[1]));
+    const manualPlan = args[1] === undefined ? undefined : await readJson(args[1]);
+    const env = manualPlan ? await captureManualJobRunContext(process.env) : process.env;
+    const selection = await inspectSelection(await testopsClient(env.ALLURE_TOKEN), env, manualPlan);
     await writeFile(args[0], json(selection), { mode: 0o600 });
     await githubOutputs({ allure_job_run_id: selection.allureJobRunId, full_plan: String(selection.fullPlan) });
     console.log(json({ selected: selection.cases.length, fullPlan: selection.fullPlan, launchId: selection.launchId }));
@@ -211,27 +253,36 @@ async function main() {
     await githubOutputs({ matrix_0: JSON.stringify(catalog.matrices[0]), matrix_1: JSON.stringify(catalog.matrices[1]),
       matrix_1_present: String(catalog.matrices[1].include.length > 0), selected: catalog.cells.length });
     console.log(json({ selected: catalog.cells.length, fullPlan: catalog.selection.fullPlan }));
-  } else if (command === "export") {
+  } else if (command === "export" || command === "export-runs") {
+    const structured = command === "export-runs";
+    if (args.length !== (structured ? 4 : 3)) fail("arguments");
     const selection = await readJson(args[0]);
+    const output = args[structured ? 3 : 2];
     let campaign;
-    try { campaign = await readJson(join(args[1], "campaign.json")); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    try { campaign = await readJson(structured ? args[1] : join(args[1], "campaign.json")); } catch (error) { if (error.code !== "ENOENT") throw error; }
     const payloads = new Map();
     for (const row of campaign?.results ?? []) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(row.finalAttemptId)) fail("attempt_path");
       try {
-        const html = await readFile(join(args[1], "attempts", row.finalAttemptId, "index.html"), "utf8");
-        const match = /<script type="application\/json" id="paperclip-eval-report">([^<]*)<\/script>/.exec(html);
-        if (!match) fail("public_payload_missing");
-        payloads.set(row.finalAttemptId, JSON.parse(match[1]));
+        if (structured) {
+          const directory = join(args[2], row.finalAttemptId);
+          payloads.set(row.finalAttemptId, payloadFromSanitizedRun(await readJson(join(directory, "score.json")),
+            await readJson(join(directory, "artifact.json")), row));
+        } else {
+          const html = await readFile(join(args[1], "attempts", row.finalAttemptId, "index.html"), "utf8");
+          const match = /<script type="application\/json" id="paperclip-eval-report">([^<]*)<\/script>/.exec(html);
+          if (!match) fail("public_payload_missing");
+          payloads.set(row.finalAttemptId, JSON.parse(match[1]));
+        }
       } catch (error) { if (error.code !== "ENOENT") throw error; }
     }
     const rows = projectResults({ selection, campaign, payloads });
-    await mkdir(args[2], { recursive: false, mode: 0o700 });
+    await mkdir(output, { recursive: false, mode: 0o700 });
     for (const row of rows) {
-      await writeFile(join(args[2], row.file), json(row.result));
-      await writeFile(join(args[2], row.attachment), json(row.evidence));
+      await writeFile(join(output, row.file), json(row.result));
+      await writeFile(join(output, row.attachment), json(row.evidence));
     }
-    await writeFile(`${args[2]}-receipt.json`, json({ selection, results: rows.map(row => ({
+    await writeFile(`${output}-receipt.json`, json({ selection, results: rows.map(row => ({
       testCaseId: Number(row.result.labels[0].value), fullName: row.result.fullName, status: row.result.status })) }));
     console.log(json({ reported: rows.length, passed: rows.filter(row => row.result.status === "passed").length }));
   } else if (command === "verify") {

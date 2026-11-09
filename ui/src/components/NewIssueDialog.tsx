@@ -1,7 +1,8 @@
 import { usePrimaryAgentPresentation } from "./primary-agent/PrimaryAgentPresentation";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
-import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties, type DragEvent } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -35,7 +36,6 @@ import { assigneeValueFromSelection, currentUserAssigneeOption, parseAssigneeVal
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Paperclip, FileText, Flag, PauseCircle, ListTree, X, ShieldAlert, Folder, ChevronDown, Lock } from "lucide-react";
-import { cn } from "../lib/utils";
 import type { MentionOption } from "./MarkdownEditor";
 import { TaskChatComposer } from "./task-chat/TaskChatComposer";
 import { ComposerWorktreePicker } from "./task-chat/ComposerWorktreePicker";
@@ -485,7 +485,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const [isPrivate, setIsPrivate] = useState(false);
   const { isMobile } = useSidebar();
   const [composerSettings, setComposerSettings] = useState<ComposerRunSettings | null>(null);
-  const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
   const initializationKeyRef = useRef<string | null>(null);
@@ -510,8 +509,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const isSubIssueMode = Boolean(parentId);
   const parentIssueLabel =
     (newIssueDefaults.parentId === parentId ? newIssueDefaults.parentIdentifier : undefined) ?? (parentId ? parentId.slice(0, 8) : "");
-  const parentExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId ?? "";
-  const parentExecutionWorkspaceLabel = newIssueDefaults.parentExecutionWorkspaceLabel ?? parentExecutionWorkspaceId;
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(effectiveCompanyId!),
@@ -613,25 +610,26 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const assertCurrentOwner = () => {
     if (!active.current || draftOwner === undefined || readOwner() !== draftOwner) throw new PendingSendAccountChangedError();
   };
-  const createIssue = useMutation({
+  const createIssue = useAccountBoundMutation({
     mutationFn: async ({
       companyId,
       stagedFiles: pendingStagedFiles,
       navigateOnCreate,
       ...data
-    }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>) => {
-      assertCurrentOwner();
+    }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>, { assertCurrentAccount }) => {
+      const assertVerifiedOwner = () => { assertCurrentAccount(); assertCurrentOwner(); };
+      assertVerifiedOwner();
       const issue = await issuesApi.create(companyId, data);
-      assertCurrentOwner();
+      assertVerifiedOwner();
       const failures = await addStagedFilesToIssue({
         companyId,
         issueId: issue.id,
         stagedFiles: pendingStagedFiles,
-        assertCurrentOwner,
+        assertCurrentOwner: assertVerifiedOwner,
         idempotencyKey: typeof data.idempotencyKey === "string" ? data.idempotencyKey : undefined,
       });
 
-      assertCurrentOwner();
+      assertVerifiedOwner();
       return { issue, companyId, failures, navigateOnCreate };
     },
     onSuccess: ({ issue, companyId, failures, navigateOnCreate }) => {
@@ -1048,7 +1046,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     setIsPrivate(false);
 
     setStagedFiles([]);
-    setIsFileDragOver(false);
 
     executionWorkspaceDefaultProjectId.current = null;
     initializationKeyRef.current = null;
@@ -1220,31 +1217,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     });
   }
 
-  function handleFileDragEnter(evt: DragEvent<HTMLDivElement>) {
-    if (!evt.dataTransfer.types.includes("Files")) return;
-    evt.preventDefault();
-    setIsFileDragOver(true);
-  }
-
-  function handleFileDragOver(evt: DragEvent<HTMLDivElement>) {
-    if (!evt.dataTransfer.types.includes("Files")) return;
-    evt.preventDefault();
-    evt.dataTransfer.dropEffect = "copy";
-    setIsFileDragOver(true);
-  }
-
-  function handleFileDragLeave(evt: DragEvent<HTMLDivElement>) {
-    if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
-    setIsFileDragOver(false);
-  }
-
-  function handleFileDrop(evt: DragEvent<HTMLDivElement>) {
-    if (!evt.dataTransfer.files.length) return;
-    evt.preventDefault();
-    setIsFileDragOver(false);
-    stageFiles(Array.from(evt.dataTransfer.files));
-  }
-
   function removeStagedFile(id: string) {
     setStagedFiles((current) => current.filter((file) => file.id !== id));
   }
@@ -1262,15 +1234,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const selectedReusableWorktree = selectableReusableWorkspaces.find((workspace) => workspace.id === selectedExecutionWorkspaceId);
   const worktreeSelectionIncomplete = canChooseWorktrees && executionWorkspaceMode === "reuse_existing"
     && (worktreesLoading || worktreesError || !selectedReusableWorktree);
-  const isUsingParentExecutionWorkspace =
-    isSubIssueMode && parentExecutionWorkspaceId
-      ? executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId === parentExecutionWorkspaceId
-      : false;
-  const showParentWorkspaceWarning =
-    isSubIssueMode &&
-    currentProjectSupportsExecutionWorkspace &&
-    Boolean(parentExecutionWorkspaceId) &&
-    !isUsingParentExecutionWorkspace;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentProjectIds = useMemo(() => getRecentProjectIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
@@ -1448,11 +1411,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
         <DialogTitle className="sr-only">{isSubIssueMode ? "New sub-task" : "New task"}</DialogTitle>
         <div
           ref={dialogBodyRef}
-          className={cn("min-h-0 overflow-y-auto overscroll-contain", isFileDragOver && "bg-accent/20")}
-          onDragEnter={handleFileDragEnter}
-          onDragOver={handleFileDragOver}
-          onDragLeave={handleFileDragLeave}
-          onDrop={handleFileDrop}
+          className="min-h-0 overflow-y-auto overscroll-contain"
         >
           {filesStorageError ? <p className="mb-2 text-sm text-destructive" role="alert">{filesStorageError}</p> : null}
           <TaskChatPresentationProvider mode={streamlinedUiEnabled || coordinatorEnabled ? "streamlined" : "production"}>
@@ -1704,14 +1663,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                       </div>
                     ) : null}
 
-                    {showParentWorkspaceWarning ? (
-                      <div className="mb-2">
-                        <InlineBanner tone="warning" compact>
-                          This sub-task will no longer use the parent task workspace
-                          {parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
-                        </InlineBanner>
-                      </div>
-                    ) : null}
                     {effectiveCompanyId && neededUserSecretKeys.length > 0 ? (
                       <MissingUserSecretsBanner companyId={effectiveCompanyId} definitionKeys={neededUserSecretKeys} />
                     ) : null}
@@ -1769,7 +1720,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                       <ComposerWorktreePicker
                         mode={executionWorkspaceMode}
                         workspaceId={selectedExecutionWorkspaceId}
-                        selectedWorkspaceLabel={selectedReusableWorktree?.name ?? (selectedExecutionWorkspaceId === parentExecutionWorkspaceId ? newIssueDefaults.parentExecutionWorkspaceLabel : undefined)}
+                        selectedWorkspaceLabel={selectedReusableWorktree?.name}
                         workspaces={selectableReusableWorkspaces}
                         onChange={(mode, workspaceId) => {
                           setExecutionWorkspaceMode(mode);

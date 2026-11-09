@@ -25,7 +25,16 @@ export type IssueThreadInteractionResolutionDenialCode =
 
 export type IssueThreadInteractionResolverActor =
   | { type: "user"; userId: string }
-  | { type: "agent"; agentId: string | null | undefined; runId: string | null | undefined }
+  | {
+      type: "agent";
+      agentId: string | null | undefined;
+      runId: string | null | undefined;
+      /**
+       * Set only by conversational confirmation resolution after it verified
+       * the bound user's latest comment. It never makes the agent a human.
+       */
+      relayedHumanUserId?: string | null;
+    }
   | { type: "system"; systemId: string };
 
 export type IssueThreadInteractionResolverRestriction = {
@@ -48,6 +57,7 @@ export type IssueThreadInteractionResolverAudienceInput = {
     addresseeAgentId?: string | null;
     addresseeUserId?: string | null;
     effectiveResolverPolicy: IssueThreadInteractionResolverPolicy | string;
+    effectiveResolverPolicySource?: string | null;
     resolverPolicyProvenance?: string | null;
   };
   /**
@@ -65,7 +75,8 @@ export type IssueThreadInteractionResolverAudienceDecision =
   | {
       allowed: true;
       effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
-      reason: "allow_anyone" | "allow_addressee" | "allow_human" | "allow_system" | "allow_human_override";
+      reason: "allow_anyone" | "allow_addressee" | "allow_human" | "allow_system" | "allow_human_override"
+        | "allow_relayed_human";
     }
   | {
       allowed: false;
@@ -145,6 +156,46 @@ function reviewPolicyDeniedDecision(
         : "Change reviewPolicy to `anyone`, or move the issue out of and back into `in_review` to record a requester before another writer submits the verdict.",
     },
   };
+}
+
+/**
+ * An agent may record a human-only confirmation only as the relay of a verified
+ * human decision, and only on a card it created with an explicit human_only
+ * request. Company caps (checked again at resolution by the caller), governed
+ * actions and binding-flow restrictions still require a direct human resolution.
+ */
+function relayedHumanDecisionAllowed(
+  input: IssueThreadInteractionResolverAudienceInput,
+  persistedPolicy: IssueThreadInteractionCanonicalResolverPolicy,
+  additionalRestriction: IssueThreadInteractionResolverRestriction | null | undefined,
+) {
+  if (input.actor.type !== "agent") return false;
+  const userId = input.actor.relayedHumanUserId;
+  return Boolean(userId && input.actor.agentId)
+    && !input.governedAction
+    && persistedPolicy === "human_only"
+    // Only this agent's own explicit request; a company default, cap or a
+    // human-created card keeps its direct human resolution.
+    && input.interaction.createdByAgentId === input.actor.agentId
+    && input.interaction.resolverPolicyProvenance === "explicit"
+    && input.interaction.effectiveResolverPolicySource === "requested"
+    && !additionalRestriction
+    && (!input.interaction.addresseeUserId || input.interaction.addresseeUserId === userId);
+}
+
+/**
+ * Denial for a human-only card addressed to one person. Agents relay it in
+ * chat, so it names who resolves the card. Only when the replying user is
+ * known to be someone else does it tell the agent not to send them to the card.
+ */
+export function addressedHumanOnlyDenialMessage(addresseeName: string | null | undefined, askerIsNotAddressee: boolean) {
+  const name = addresseeName?.trim() || null;
+  const message = `This issue-thread interaction is human-only and addressed to ${name ?? "one person, its addressee (addresseeUserId)"}. `
+    + `Only ${name ?? "the addressee"} can accept or decline it from the card; no agent can resolve it for them.`;
+  if (!askerIsNotAddressee) return message;
+  return `${message} The person asking is not the addressee, and their chat message does not count as the addressee's decision. `
+    + `This denial is final. Tell them the card waits on ${name ?? "the addressee"}, name ${name ? "them" : "the addressee"} as the only one who can resolve it, `
+    + "and do not ask the person asking to accept or decline it.";
 }
 
 /**
@@ -246,6 +297,22 @@ export function evaluateIssueThreadInteractionResolverAudience(
   }
 
   if (effectiveResolverPolicy === "human_only") {
+    if (relayedHumanDecisionAllowed(input, persistedPolicy, additionalRestriction)) {
+      return { allowed: true, effectiveResolverPolicy, reason: "allow_relayed_human" };
+    }
+    const addresseeUserId = input.interaction.addresseeUserId;
+    if (addresseeUserId && input.actor.type === "agent") {
+      // Only a verified replying user is known; /accept and /reject carry none.
+      const askerIsNotAddressee = Boolean(input.actor.relayedHumanUserId) && input.actor.relayedHumanUserId !== addresseeUserId;
+      return {
+        allowed: false,
+        effectiveResolverPolicy,
+        status: 403,
+        code: "interaction_human_only",
+        message: addressedHumanOnlyDenialMessage(null, askerIsNotAddressee),
+        details: { addresseeUserId, askerIsNotAddressee },
+      };
+    }
     return {
       allowed: false,
       effectiveResolverPolicy,

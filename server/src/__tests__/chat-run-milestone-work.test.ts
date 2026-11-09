@@ -27,6 +27,7 @@ import { createChatPublicationResolution } from "../services/chat-channels/publi
 import { createChatPublicationWorker } from "../services/chat-channels/publications/worker.js";
 import { CAPABILITIES } from "../services/chat-channels/provider-catalog.js";
 import { createChatPublicationFailures } from "../services/chat-channels/publications/failures.js";
+import { logger } from "../middleware/logger.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -792,8 +793,15 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     });
     const failure = Object.assign(new Error("provider rejected the send"), { status: state === "retry" ? 429 : 400 });
     // The finalizer receives the selection from before the attempt increment.
+    const warn = vi.spyOn(logger, "warn");
     await expect(failures.finalizePublicationFailure({ ...prompt, attempts: 0 }, failure, state === "delivery_unknown")).resolves.toBe(true);
     expect((await db.select().from(chatPublications).where(eq(chatPublications.id, prompt.id)))[0].state).toBe(state);
+    if (state === "delivery_unknown") {
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ publicationId: prompt.id, disposition: state, cause: "provider rejected the send" }), "chat publication failed");
+    } else {
+      expect(warn).not.toHaveBeenCalledWith(expect.objectContaining({ cause: expect.anything() }), "chat publication failed");
+    }
+    warn.mockRestore();
     await flush();
     expect((await publications()).some(row => row.idempotencyKey === `run:${source.id}:failed:${f.endpointId}`)).toBe(state === "failed");
     await quiet();

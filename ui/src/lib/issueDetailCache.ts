@@ -1,6 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { Issue, IssueComment } from "@paperclipai/shared";
+import type { InstanceExperimentalSettings, Issue, IssueComment } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
+import { getIssueRecentCommentsQueryOptions } from "./issue-comment-window-query";
+import { prefetchIssueChatHistory, prefetchIssueCommentInputFacts } from "./issue-chat-history-queries";
 import { queryKeys } from "@/lib/queryKeys";
 import { getNextIssueCommentPageParam, ISSUE_COMMENT_PAGE_SIZE } from "@/lib/optimistic-issue-comments";
 
@@ -116,12 +118,21 @@ export function seedIssueDetailCache(
   return merged;
 }
 
-/** Seed saved projections without replacing lists already read or refreshed. */
+/** Retain authenticated core aliases and saved projections without replacing
+ * data already read or refreshed. Core entries never fill full-detail keys. */
 export function seedIssueDetailProjections(
   queryClient: QueryClient,
   issue: Issue,
   issueRef?: string | null,
 ) {
+  // Canonical navigation must not discard metadata just fetched through a UUID.
+  // Only the response's own refs are aliases; an arbitrary requested ref is not.
+  for (const ref of getIssueDetailCacheRefs(issue)) {
+    const key = [...queryKeys.issues.detail(ref), "core"];
+    if (queryClient.getQueryData(key) === undefined) {
+      queryClient.setQueryData(key, issue);
+    }
+  }
   const planKey = [...queryKeys.issues.documents(issue.id), "plan"];
   if (issue.planDocument !== undefined && queryClient.getQueryData(planKey) === undefined) {
     queryClient.setQueryData(planKey, issue.planDocument);
@@ -136,6 +147,17 @@ export function seedIssueDetailProjections(
       }
     }
   }
+}
+
+export function getIssueCoreQueryOptions(queryClient: QueryClient, issueRef: string) {
+  return {
+    queryKey: [...queryKeys.issues.detail(issueRef), "core"] as const,
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      const issue = await issuesApi.getCore(issueRef, { signal });
+      seedIssueDetailProjections(queryClient, issue, issueRef);
+      return issue;
+    },
+  };
 }
 
 export async function fetchIssueDetail(
@@ -204,20 +226,48 @@ export function prefetchIssueComments(queryClient: QueryClient, issueRef: string
 }
 
 /**
- * Prefetch everything the issue-detail first paint needs — the detail snapshot
- * and the first comments page — for instant warm navigation from a list row.
- * Seeds the full list-row snapshot when provided so the header + description
- * paint immediately with no loading state.
+ * Warm what a task's first frame needs before the person opens it.
+ *
+ * `history: true` also warms every other read that gates the compact chat's
+ * first reveal (activity, runs, comment input facts, interactions,
+ * attachments, live runs). Callers
+ * pass it when an open is likely: a mouse or pen press, a click, keyboard
+ * selection, or a hover or focus that rests on the link. A pointer, touch or
+ * focus passing over rows warms only the issue and its recent comments.
  */
 export function prefetchIssueDetailForNavigation(
   queryClient: QueryClient,
   issueRef: string,
-  options?: {
-    issue?: Issue | null;
-  },
+  options?: { issue?: Issue | null; history?: boolean },
 ) {
+  const fullHistory = queryClient.getQueryData(["issues", "history-expanded", issueRef]) === true
+    || queryClient.getQueryData<InstanceExperimentalSettings>(queryKeys.instance.experimentalSettings)?.enableClassicTaskInterface === true;
+  if (fullHistory) {
+    return Promise.all([
+      prefetchIssueDetail(queryClient, issueRef, options),
+      prefetchIssueComments(queryClient, issueRef),
+    ]);
+  }
+  if (isCompleteIssueSnapshot(options?.issue)) {
+    seedIssueDetailCache(queryClient, options.issue, { issueRef });
+  }
   return Promise.all([
-    prefetchIssueDetail(queryClient, issueRef, options),
-    prefetchIssueComments(queryClient, issueRef),
+    queryClient.prefetchQuery({
+      ...getIssueCoreQueryOptions(queryClient, issueRef),
+      staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,
+    }),
+    queryClient.prefetchQuery({
+      ...getIssueRecentCommentsQueryOptions(queryClient, issueRef),
+      staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,
+    }).then(() => options?.history
+      // The chat also waits for the input facts of the comments it shows.
+      ? prefetchIssueCommentInputFacts(queryClient, issueRef, ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS)
+      : undefined),
+    ...(options?.history
+      ? [prefetchIssueChatHistory(queryClient, issueRef, {
+          issue: options.issue ?? getCachedIssueDetail(queryClient, issueRef),
+          staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,
+        })]
+      : []),
   ]);
 }

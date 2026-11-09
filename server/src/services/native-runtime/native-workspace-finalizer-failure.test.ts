@@ -25,7 +25,7 @@ vi.mock("../workspace-operations.js", () => ({ workspaceOperationService: () => 
   createRecorder: () => ({ recordOperation: async (input: { run: () => Promise<unknown> }) => input.run() }),
 }) }));
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
-import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "../remote-workspace-transport.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL, RemoteWorkspaceOperationError } from "../remote-workspace-transport.js";
 
 function fixtureDb(workspace?: Record<string, unknown>): Db {
   const responses = [[{
@@ -87,11 +87,21 @@ describe("native remote workspace save failures", () => {
     const result = await resumeNativeWorkspaceFinalization({ db: fixtureDb(workspace), runId: "run", environmentRuntime: {} as never });
     expect(sync.save).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ status: "failed", exitCode: 1,
-      stderr: `workspace_sync_out_failed\n${REMOTE_WORKSPACE_SANDBOX_DISK_FULL}\n`, metadata: { workspaceSync: { code: "workspace_sync_out_failed" } } });
+      stderr: `workspace_sync_out_failed\n${REMOTE_WORKSPACE_SANDBOX_DISK_FULL}\n`,
+      metadata: { workspaceSync: { code: "workspace_sync_out_failed", cause: REMOTE_WORKSPACE_SANDBOX_DISK_FULL } } });
+  });
+
+  it("keeps the redacted remote operation cause on retried copy-back", async () => {
+    const cause = "remote_workspace_operation_failed: operation=capture exit=1; "
+      + "remote_workspace_capture_failed: stage=archive exit=128 program=git helper_exit=1";
+    sync.save.mockRejectedValueOnce(new RemoteWorkspaceOperationError(cause));
+    const result = await resumeNativeWorkspaceFinalization({ db: fixtureDb(workspace), runId: "run", environmentRuntime: {} as never });
+    expect(result).toMatchObject({ status: "failed", exitCode: 1, stderr: `workspace_sync_out_failed\n${cause}\n`,
+      metadata: { workspaceSync: { code: "workspace_sync_out_failed", cause } } });
   });
 
   it("keeps other save failures to the bare code", async () => {
-    sync.save.mockRejectedValueOnce(new Error("remote_workspace_operation_failed"));
+    sync.save.mockRejectedValueOnce(new Error("remote_workspace_operation_failed: SYNTHETIC_PRIVATE_PATH"));
     const result = await resumeNativeWorkspaceFinalization({ db: fixtureDb(workspace), runId: "run", environmentRuntime: {} as never });
     expect(result).toMatchObject({ status: "failed", exitCode: 1, stderr: "workspace_sync_out_failed\n" });
   });

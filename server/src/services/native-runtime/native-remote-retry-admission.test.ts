@@ -567,6 +567,50 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     }
   });
 
+  it.each(["superseded", "released"] as const)("settles a %s bootstrap retry that lost its task lock instead of re-checking forever", async lock => {
+    const f = await failedRemoteRun("remote");
+    // A bootstrap retry follows a pre-provider failure: no checkpoint, provider session or provider events.
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const { sessionCheckpoint: _checkpoint, ...profile } = run.runnerProfileJson ?? {};
+    await f.db.update(heartbeatRuns).set({ errorCode: "provider_session_open_rejected", runnerProfileJson: profile })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await f.db.delete(nativeRunnerCheckpoints)
+      .where(and(eq(nativeRunnerCheckpoints.companyId, f.companyId), eq(nativeRunnerCheckpoints.runId, f.runId)));
+    await f.db.update(nativeRunFinalizations).set({ failureCode: "provider_session_open_rejected", failureDetail: {
+      recoveryMode: "bootstrap_retry", providerSessionEstablished: false, checkpointExists: false, providerEventsExist: false,
+    } }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (lock === "superseded") {
+      const [newer] = await f.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
+        status: "running", createdAt: new Date(Date.now() + 1_000) }).returning({ id: heartbeatRuns.id });
+      await f.db.update(issues).set({ executionRunId: newer.id }).where(eq(issues.id, f.issueId));
+    }
+    const onClaim = vi.fn();
+    const attempt = (now: Date) => claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", runIds: [f.runId], now, onClaim });
+    let now = new Date();
+    let passes = 0;
+    for (; passes <= SYSTEM_RECOVERY_MAX_RETRIES + 1; passes++) {
+      const [disposition] = await attempt(now);
+      expect(disposition).toMatchObject({ kind: "blocked" });
+      const [coordinator] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      if (coordinator.phase === "terminal_failure") break;
+      if (!("retryAt" in disposition) || !disposition.retryAt) throw new Error("a deferred bootstrap retry must persist its deadline");
+      expect(coordinator.nextAttemptAt).toEqual(disposition.retryAt);
+      now = disposition.retryAt;
+    }
+    expect(passes).toBe(lock === "superseded" ? 0 : SYSTEM_RECOVERY_MAX_RETRIES);
+    expect(onClaim).not.toHaveBeenCalled();
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", nextAttemptAt: null, attempt: 1, failureCode: "native_restart_recovery_blocked" });
+    expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId)))
+      .toMatchObject([{ ownerType: "board", wakePolicy: null }]);
+    const transaction = vi.spyOn(f.db, "transaction");
+    try {
+      for (const elapsed of [30_000, 3_600_000]) expect(await attempt(new Date(now.getTime() + elapsed))).toEqual([]);
+      expect(transaction).not.toHaveBeenCalled();
+    } finally { transaction.mockRestore(); }
+  });
+
   it.each(["paused", "Stop", "missing-authority"] as const)("bounds %s holds and preserves the provider and own task lock for manual reconciliation", async gate => {
     const f = await failedRemoteRun("remote");
     if (gate === "paused") await f.db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));

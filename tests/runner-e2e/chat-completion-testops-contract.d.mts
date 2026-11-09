@@ -10,7 +10,7 @@ export interface PilotCase {
   executionId: string;
   fullName: string;
 }
-export type CatalogCase = Omit<PilotCase, "checks"> & { checks: number | null };
+export type CatalogCase = Omit<PilotCase, "checks"> & { checks: number | null; optionalCompanySecretBindingApproval?: true; expectedHumanMessageCount?: 2 };
 export const cases: readonly Readonly<PilotCase>[];
 export const targetSha: string;
 export const launchSha256: string;
