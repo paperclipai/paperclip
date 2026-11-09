@@ -9,12 +9,24 @@ import type { ProjectWorkspace } from "@paperclipai/shared";
 import { describeError } from "../api/errors";
 import { QueryErrorState, useQueryView } from "./QueryView";
 
-export function ClaudeProjectTrust({ companyId, projectId, workspace, disabled, onSaved }: {
+type ClaudeProjectTrustProps = {
   companyId: string; projectId: string; workspace: ProjectWorkspace; disabled: boolean; onSaved: () => void;
+};
+
+export function ClaudeProjectTrust(props: ClaudeProjectTrustProps) {
+  const { workspace } = props;
+  const sourceRevision = JSON.stringify([props.companyId, props.projectId, workspace.id, workspace.updatedAt,
+    workspace.sourceType, workspace.cwd, workspace.repoUrl, workspace.repoRef, workspace.defaultRef,
+    workspace.remoteProvider, workspace.remoteWorkspaceRef]);
+  return <ClaudeProjectTrustForm key={sourceRevision} {...props} sourceRevision={sourceRevision} />;
+}
+
+function ClaudeProjectTrustForm({ companyId, projectId, workspace, disabled, onSaved, sourceRevision }: ClaudeProjectTrustProps & {
+  sourceRevision: string;
 }) {
   const workspaceId = workspace.id;
   const queryClient = useQueryClient();
-  const key = ["claude-project-trust", companyId, projectId, workspaceId];
+  const key = ["claude-project-trust", companyId, projectId, workspaceId, sourceRevision];
   const trust = useQuery({ queryKey: key, queryFn: () => projectsApi.getClaudeProjectTrust(projectId, workspaceId, companyId) });
   const agents = useQuery({ queryKey: ["claude-project-trust-agents", companyId], queryFn: () => agentsApi.list(companyId) });
   const trustView = useQueryView(trust);
