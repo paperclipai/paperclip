@@ -147,12 +147,13 @@ it("saves an OpenCode harness pool with automatic effort and rejects unsupported
   } finally { models.mockRestore(); }
 });
 
-it("rejects an unknown model before enabling a central harness pool", async () => {
+it("saves an explicitly entered model in a central harness pool", async () => {
   const { harnessPoolService } = await import("../services/harness-pools.js");
   const member = members[0]!;
-  await expect(harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Invalid model", enabled: true, mode: "failover", members: [
-    { id: randomUUID(), harness: { type: "codex" }, connection: member.binding as Exclude<typeof member.binding, { mode: "responsible_user" }>, model: "definitely-not-a-model" },
-  ] } }, "alice")).rejects.toMatchObject({ status: 422 });
+  const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Custom model", enabled: true, mode: "failover", members: [
+    { id: randomUUID(), harness: { type: "codex" }, connection: member.binding as Exclude<typeof member.binding, { mode: "responsible_user" }>, model: "gpt-6.1-terra" },
+  ] } }, "alice");
+  expect(pool.members[0]?.model).toBe("gpt-6.1-terra");
 });
 beforeAll(async () => {
   isolatedHome = createIsolatedTestHome();

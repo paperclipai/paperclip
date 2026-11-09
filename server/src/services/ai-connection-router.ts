@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, gt, ne, sql } from "drizzle-orm";
 import { aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, companySecrets, connectionGrants, instanceSettings, plugins, toolApplications, toolConnections, toolConnectionInstalls, type Db } from "@paperclipai/db";
-import { BUILTIN_AI_FAILOVER_ROUTER_KEY, agentHarnessType, aiRoutingModel, aiConnectionMetadataSchema, aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, agentHarnessType, aiConnectionMetadataSchema, aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
 import { isCodexLocalKnownModel, codexLocalReasoningEffortsForModel } from "@paperclipai/adapter-codex-local";
 import { models as claudeModels, claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
 import { models as grokModels, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
@@ -19,7 +19,6 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { resolvePaperclipRunnerProviderProfile, resolvePaperclipRunnerNativeProviderInput } from "./native-runtime/provider-profile.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { parseObject } from "../adapters/utils.js";
-import { listOpenRouterModels } from "./openrouter-models.js";
 
 const usageCache = new Map<string, { expires: number; value: AiConnectionUsage }>();
 const usageInFlight = new Map<string, Promise<AiConnectionUsage | undefined>>();
@@ -257,16 +256,6 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
           member.binding.mode !== (account.ownership === "shared" ? "shared" : "delegated")))
         throw unprocessable("Pool member account settings do not match its saved grant");
       const effective = poolMemberRuntimeConfig(member, "paperclip_runner");
-      if (config.kind === "harness_pool") {
-        const model = member.profile.model;
-        const catalogued = account.routing?.models.length
-          ? account.routing.models.some(item => aiRoutingModel(account.routing!, agentHarnessType("paperclip_runner", effective.config), item.id) === model)
-          : account.provider === "openai" ? isCodexLocalKnownModel(model)
-            : account.provider === "anthropic" ? claudeModels.some(item => item.id === model)
-              : account.provider === "xai" ? grokModels.some(item => item.id === model)
-                : (await listOpenRouterModels()).some(item => item.id === model);
-        if (!catalogued) throw unprocessable("Choose a model available in this account's model catalog");
-      }
       if (config.kind === "harness_pool" && member.profile.effort && ![effective.config.modelReasoningEffort, effective.config.reasoningEffort].includes(member.profile.effort))
         throw unprocessable("Effort is unavailable for this harness and model; choose a supported effort or leave it empty");
     }
