@@ -123,7 +123,9 @@ const retryWaitMessages: Record<string, string> = {
   finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
   // Another click cannot release a copyback owner that stopped without reporting.
   // Retry starts a new recovery generation; the agent does not repeat its work.
-  saved_work_recovery_failed: "Saving the agent's files failed after automatic retries. Retry to try again; the agent will not repeat its work.",
+  saved_work_recovery_failed: "Saving the agent's files failed. Retry to try again; the agent will not repeat its work.",
+  saved_work_recovery_refused: "Paperclip refused to recover the saved files because a safety check on them cannot pass. "
+    + "Retry runs the same check again and succeeds only after Paperclip is updated. The agent's result is saved, and the agent will not repeat its work.",
   workspace_owner_stop_required: "Retry is waiting until Paperclip confirms that the previous server stopped saving files. The agent's result and your Retry are saved.",
   cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
