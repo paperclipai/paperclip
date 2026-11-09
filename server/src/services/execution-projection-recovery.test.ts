@@ -20,11 +20,21 @@ describe.skipIf(!support.supported)("persisted stopped-workspace projection", ()
     await db.insert(companies).values({ id: companyId, name: "Setup wait", issuePrefix: "SW" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", adapterType: "paperclip_runner",
       status: "paused", lifecycleState: "verifying", lifecycleHolds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 1, retryRequired: true },
       lifecycleError: "Execution configuration check failed. Connect an account and choose your personal default." });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued" });
     expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)).toMatchObject({
       phase: "queued", label: "Agent setup needs attention", cause: "agent_setup_failed", canStop: true,
       nextAction: "Open the agent's Harness / Runtime settings to repair its configuration, then retry verification.",
+    });
+    await db.update(agents).set({
+      lifecycleError: "Execution configuration check failed. The remote Runner is being updated.",
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 1,
+        retryAt: new Date(Date.now() + 60_000).toISOString() },
+    }).where(eq(agents.id, agentId));
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)).toMatchObject({
+      phase: "queued", label: "Waiting for agent setup", cause: "agent_setup_pending",
+      nextAction: "This turn starts automatically after the agent finishes setup and verification.",
     });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "queued", startedAt: null });
     expect((await executionProjectionsForRuns(db, randomUUID(), [runId])).size).toBe(0);

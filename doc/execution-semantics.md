@@ -650,7 +650,9 @@ minutes, then twenty, and not after the third failed run. The stall stays
 listed on the waiting task, and a new stall wakes it again.
 
 An unstarted queued turn names an agent setup or verification wait. A failed
-setup shows **Agent setup needs attention**, while its saved turn remains queued.
+setup that requires explicit Retry shows **Agent setup needs attention**, while
+its saved turn remains queued. Temporary errors with automatic retries still show
+**Waiting for agent setup**.
 AI account selection failures use the selector's owned configuration evidence:
 missing defaults, unavailable or incompatible connections, missing responsible
 users, and credential sharing refusals park automatic host verification until
