@@ -110,6 +110,33 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
     expect(source!.contextSnapshot).toEqual({ issueId: f.issueId });
   });
 
+  it("replaces a stopped turn's setup card and repairs the current queued turn", async () => {
+    const f = await fixture();
+    await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
+    const [stoppedCard] = await cards(f.issueId);
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+    const [next] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "queued", responsibleUserId: f.userId, contextSnapshot: { issueId: f.issueId } }).returning();
+    await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
+    const current = await cards(f.issueId);
+    expect(current).toHaveLength(2);
+    const replacement = current.find(card => card.sourceRunId === next!.id)!;
+    expect(replacement).toMatchObject({ status: "pending", payload: { agentSetup: true } });
+    expect(current.find(card => card.id === stoppedCard!.id)).toMatchObject({ status: "expired",
+      result: { outcome: "superseded", supersededByInteractionId: replacement.id } });
+    const account = await repair(f);
+    await f.service.complete(replacement.id, account.id, f.userId);
+    const wakeup = vi.fn();
+    await connectionIntentDeliveryService(db, { wakeup } as never).deliver(replacement.id);
+    expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]!.lifecycleOperation)
+      .not.toHaveProperty("retryRequired");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+      .toMatchObject({ status: "cancelled", startedAt: null });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, next!.id)))[0])
+      .toMatchObject({ status: "queued", startedAt: null, responsibleUserId: f.userId });
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
   it.each(["retry", "continuation"] as const)("restores an inline setup card through full recovery for a retained %s", async kind => {
     const f = await fixture();
     if (kind === "retry") {

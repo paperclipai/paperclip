@@ -661,6 +661,8 @@ Runtime tokens remain unavailable for
 queued runs. Completing the card rechecks verification through the lifecycle
 worker and retains the original queued turn; it does not enqueue another model
 turn. Decline, Stop, reassignment and other lifecycle holds remain effective.
+Setup cards stay bound to their queued source turn. A replacement turn supersedes
+the prior setup card instead of reusing a stopped turn's delivery.
 AI account selection failures use the selector's owned configuration evidence:
 missing defaults, unavailable or incompatible connections, missing responsible
 users, and credential sharing refusals park automatic host verification until

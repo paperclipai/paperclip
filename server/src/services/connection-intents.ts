@@ -1397,6 +1397,7 @@ export function connectionIntentService(db: Db) {
         eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
         eq(issueThreadInteractions.createdByAgentId, agentId), eq(issueThreadInteractions.addresseeUserId, verificationUserId),
         eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"),
+        eq(issueThreadInteractions.sourceRunId, run.id),
         sql`${issueThreadInteractions.payload}->>'agentSetup' = 'true'`,
         sql`${issueThreadInteractions.payload}->>'serviceSlug' = ${binding.provider}`,
       )).limit(1);
