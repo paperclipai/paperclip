@@ -164,6 +164,19 @@ describe("findLedgerForSession", () => {
     expect(findLedgerForSession("local-a", path.join(root, "child-home"))).toBe(childDb);
   });
 
+  it("does not let a larger stale copy beat the child's configured home", () => {
+    const parentHome = path.join(root, "parent-home");
+    const childHome = path.join(root, "child-home");
+    process.env.HERMES_HOME = parentHome;
+    const parentDb = path.join(parentHome, "state.db");
+    const childDb = path.join(childHome, "state.db");
+    createLedger(parentDb);
+    createLedger(childDb);
+    insertUsage(parentDb, "local-a", { input: 10000, output: 1000, cacheRead: 5000 });
+    insertUsage(childDb, "local-a", { input: 100, output: 10 });
+    expect(findLedgerForSession("local-a", childHome)).toBe(childDb);
+  });
+
   it("ignores ledgers that hold only an empty row for the session", () => {
     process.env.HERMES_HOME = root;
     const emptyDb = path.join(root, "state.db");
@@ -253,6 +266,36 @@ describe("readRunUsageWhenComplete", () => {
     expect(result.complete).toBe(false);
     expect(result.usage).toBeNull();
     expect(result.ledgerPath).toBeNull();
+  });
+
+  it("keeps post-run reads on the pre-run snapshot's ledger", async () => {
+    const baselineHome = path.join(root, "baseline-home");
+    const preferredHome = path.join(root, "preferred-home");
+    const baselineDb = path.join(baselineHome, "state.db");
+    const preferredDb = path.join(preferredHome, "state.db");
+    createLedger(baselineDb);
+    createLedger(preferredDb);
+    insertUsage(baselineDb, "local-a", { input: 100, output: 10 });
+    insertUsage(preferredDb, "local-a", { input: 10000, output: 1000 });
+    const before = readSessionUsage("local-a", baselineDb);
+    insertUsage(baselineDb, "local-a", { input: 5, output: 1 });
+
+    const result = await readRunUsageWhenComplete("local-a", {
+      before,
+      ledgerPath: baselineDb,
+      preferredHome,
+      delaysMs: [0, 1, 1],
+      sleep: noWait,
+    });
+
+    expect(result.complete).toBe(true);
+    expect(result.ledgerPath).toBe(baselineDb);
+    expect(result.usage).toEqual({
+      inputTokens: 5,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 1,
+    });
   });
 });
 

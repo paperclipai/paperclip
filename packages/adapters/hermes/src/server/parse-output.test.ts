@@ -51,6 +51,13 @@ describe("parseHermesOutput with stream-json", () => {
     expect(parseHermesOutput(stdout, "").errorMessage).toBe("provider unavailable");
   });
 
+  it("keeps stderr error details when the result event has no error", () => {
+    const stdout = event({ type: "result", session_id: "local-x", text: "unfinished" });
+    const parsed = parseHermesOutput(stdout, "Error: provider quota exceeded\n");
+    expect(parsed.errorMessage).toBe("Error: provider quota exceeded");
+    expect(parsed.response).toBe("unfinished");
+  });
+
   it("falls back to quiet-mode text output when no event is present", () => {
     const stdout = "Antwort\n\nsession_id: local-plain-123";
 

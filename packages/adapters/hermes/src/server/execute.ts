@@ -331,6 +331,15 @@ function parseStreamJsonResult(stdout: string): StreamJsonResult | null {
   return null;
 }
 
+function parseStderrError(stderr: string): string | undefined {
+  if (!stderr.trim()) return undefined;
+  const errorLines = stderr
+    .split("\n")
+    .filter((line) => /error|exception|traceback|failed/i.test(line))
+    .filter((line) => !/INFO|DEBUG|warn/i.test(line));
+  return errorLines.length > 0 ? errorLines.slice(0, 5).join("\n") : undefined;
+}
+
 export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
@@ -339,7 +348,8 @@ export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput 
   if (streamed) {
     if (streamed.sessionId) result.sessionId = streamed.sessionId;
     if (streamed.response) result.response = cleanResponse(streamed.response);
-    if (streamed.errorMessage) result.errorMessage = streamed.errorMessage;
+    const errorMessage = streamed.errorMessage ?? parseStderrError(stderr);
+    if (errorMessage) result.errorMessage = errorMessage;
     return result;
   }
 
@@ -384,16 +394,8 @@ export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput 
     result.costUsd = parseFloat(costMatch[1]);
   }
 
-  // Check for error patterns in stderr
-  if (stderr.trim()) {
-    const errorLines = stderr
-      .split("\n")
-      .filter((line) => /error|exception|traceback|failed/i.test(line))
-      .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
-    if (errorLines.length > 0) {
-      result.errorMessage = errorLines.slice(0, 5).join("\n");
-    }
-  }
+  const stderrError = parseStderrError(stderr);
+  if (stderrError) result.errorMessage = stderrError;
 
   return result;
 }
@@ -519,7 +521,8 @@ export async function execute(
     typeof (config.env as Record<string, unknown> | undefined)?.HERMES_HOME === "string"
       ? ((config.env as Record<string, unknown>).HERMES_HOME as string)
       : undefined;
-  const usageBefore = sessionId ? readSessionUsage(sessionId, findLedgerForSession(sessionId, childHermesHome)) : null;
+  const usageLedgerPath = sessionId ? findLedgerForSession(sessionId, childHermesHome) : null;
+  const usageBefore = sessionId ? readSessionUsage(sessionId, usageLedgerPath) : null;
   // A resumed run whose starting total is unknown must not charge the whole
   // session: report no usage for it at all.
   const usageBaselineMissing = Boolean(sessionId) && usageBefore === null;
@@ -704,6 +707,7 @@ export async function execute(
     const ledger = await readRunUsageWhenComplete(parsed.sessionId, {
       before: usageBefore,
       preferredHome: childHermesHome,
+      ledgerPath: usageLedgerPath,
     });
     const runUsage = ledger.usage;
     await ctx.onLog(

@@ -73,9 +73,8 @@ export function findLedgerForSession(
   const defaultRoot = path.join(process.env.HOME ?? "", ".hermes");
   roots.push(defaultRoot);
 
-  const candidates: string[] = [];
   for (const root of roots) {
-    candidates.push(path.join(root, "state.db"));
+    const candidates = [path.join(root, "state.db")];
     const profilesDir = path.join(root, "profiles");
     try {
       for (const entry of readdirSync(profilesDir, { withFileTypes: true })) {
@@ -84,20 +83,17 @@ export function findLedgerForSession(
     } catch {
       // No profiles directory: nothing to add for this root.
     }
+    // Search one home at a time. A copied session in a larger, stale ledger
+    // must never win over the ledger in the child's configured home.
+    for (const candidate of candidates) {
+      if (!existsSync(candidate)) continue;
+      const usage = readSessionUsage(sessionId, candidate);
+      if (!usage) continue;
+      const volume = usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens + usage.outputTokens;
+      if (volume > 0) return candidate;
+    }
   }
-
-  // Pick the ledger that actually holds usage for this session. A ledger
-  // without the session, or one holding only an empty row, must not win over a
-  // ledger that has the tokens.
-  let best: { path: string; volume: number } | null = null;
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue;
-    const usage = readSessionUsage(sessionId, candidate);
-    if (!usage) continue;
-    const volume = usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens + usage.outputTokens;
-    if (volume > 0 && (!best || volume > best.volume)) best = { path: candidate, volume };
-  }
-  return best?.path ?? null;
+  return null;
 }
 
 function counter(value: unknown): number {
@@ -217,6 +213,8 @@ export async function readRunUsageWhenComplete(
   options: {
     before?: UsageTotals | null;
     preferredHome?: string | null;
+    /** The exact database used for the pre-run snapshot, when one exists. */
+    ledgerPath?: string | null;
     delaysMs?: number[];
     maxDiscoveryAttempts?: number;
     sleep?: (ms: number) => Promise<void>;
@@ -226,7 +224,9 @@ export async function readRunUsageWhenComplete(
   const maxDiscovery = options.maxDiscoveryAttempts ?? DEFAULT_MAX_DISCOVERY_ATTEMPTS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
-  let ledgerPath = findLedgerForSession(sessionId, options.preferredHome);
+  // A resumed run must subtract totals from the same database before and
+  // after the child executes, even if another copy appears during the run.
+  let ledgerPath = options.ledgerPath ?? findLedgerForSession(sessionId, options.preferredHome);
   let runUsage: UsageTotals | null = null;
   let previous = "";
   let stableReads = 0;
