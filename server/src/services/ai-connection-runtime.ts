@@ -90,6 +90,7 @@ export async function assertManagedAiProjectAuth(
   config: Record<string, unknown>,
   provider: AiConnectionBinding["provider"],
   target?: AdapterExecutionTarget | null,
+  adapterType?: string,
 ) {
   const extraArgs = [
     ...(Array.isArray(config.extraArgs) ? config.extraArgs : []),
@@ -109,14 +110,16 @@ export async function assertManagedAiProjectAuth(
       { code: "ai_connection_incompatible" },
     );
   }
+  const harness = adapterType ? aiRoutingHarness(adapterType, config.provider, config.acpxAgent) : undefined;
+  const authProvider = harness === "claude_local" ? "anthropic" : harness === "codex_local" ? "openai" : provider;
   const files =
-    provider === "anthropic"
+    authProvider === "anthropic"
       ? [".claude/settings.json", ".claude/settings.local.json"]
-      : provider === "openai"
+      : authProvider === "openai"
         ? [".codex/config.toml"]
         : [];
   const pattern =
-    "apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider[[:space:]]*=|env_key[[:space:]]*=|experimental_bearer_token|cli_auth_credentials_store";
+    "apiKeyHelper|ANTHROPIC_BASE_URL|ANTHROPIC_BEDROCK_BASE_URL|CLAUDE_CODE_USE_[A-Z_]+|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider[[:space:]]*=|env_key[[:space:]]*=|experimental_bearer_token|cli_auth_credentials_store";
   if (target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && files.length) {
     const description = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "describe" }));
     if (description.kind !== "description" || description.projectAuthCheckVersion !== 1) {
@@ -176,7 +179,7 @@ done`,
       try {
         const content = await readFile(path.join(directory, relative), "utf8");
         if (
-          /apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
+          /apiKeyHelper|ANTHROPIC_BASE_URL|ANTHROPIC_BEDROCK_BASE_URL|CLAUDE_CODE_USE_[A-Z_]+|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
             content,
           )
         ) {

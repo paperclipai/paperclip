@@ -611,13 +611,14 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     await makeWork(f.cwd);
     const large = Buffer.alloc(65 * 1024 * 1024, 7);
     await fs.writeFile(path.join(f.cwd, "notes", "large.bin"), large);
-    await fs.writeFile(path.join(f.cwd, "large.tsbuildinfo"), large);
+    const ignored = Buffer.from("ignored build state\n");
+    await fs.writeFile(path.join(f.cwd, "large.tsbuildinfo"), ignored);
     await expect(captureRestorePoint({ cwd: f.cwd, upstreamCommits: [] })).rejects.toMatchObject({ reason: "restore_point_too_large" });
     const before = await currentRestorePointSnapshot(f.cwd);
     expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ rehomed: true, cloneRemoved: true, reason: null });
     expect(await currentRestorePointSnapshot(f.target)).toEqual(before);
     expect((await fs.readFile(path.join(f.target, "notes", "large.bin"))).equals(large)).toBe(true);
-    expect((await fs.readFile(path.join(f.target, "large.tsbuildinfo"))).equals(large)).toBe(true);
+    expect((await fs.readFile(path.join(f.target, "large.tsbuildinfo"))).equals(ignored)).toBe(true);
   });
 
   it("keeps an orphaned clone whose origin no longer matches the recorded repository", async () => {
