@@ -98,7 +98,7 @@ export function boardAccessRequired(req: Request) {
     : "They can do it in the Paperclip web app or with their own board credentials. Link a page only if you already know its route; do not search for one.";
   return forbidden("Board access required", {
     code: BOARD_ACCESS_REQUIRED_CODE,
-    remediation: `This action is board-only by design and this denial is final: no agent credential, tool or other API route can do it, so do not search for one. Tell the person that a board user must do it. ${where}`,
+    remediation: `This action is board-only by design and this denial is final: no agent credential, tool or other API route can do it, so do not search for one. Stop working on this step and reply now: tell the person that a board user must do it. ${where}`,
   });
 }
 
