@@ -7,7 +7,7 @@ import { factualContextQueryAttachment } from "../chat-query-attachments.js";
 import type { CompanySkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion } from "../../../packages/shared/src/types/company-skill.js";
 import type { EffectiveSkillPolicy, SkillPolicyDecision } from "../../../packages/shared/src/validators/skill-policy.js";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
-import { checks, observation, project, type InternalObservation } from "./internal-support.js";
+import { checks, internalResultLink, observation, project, type InternalObservation } from "./internal-support.js";
 import { integratorDefinition, groundedStatement, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
 
 export const websiteChecklist = ["Navigate every interactive control using only the keyboard.", "Verify every form field has a visible label.", "Check text contrast meets WCAG AA.", "Test the landing page at a 375 pixel viewport without horizontal scrolling."];
@@ -129,7 +129,7 @@ export function gradeIntegratorSkills(value: unknown) {
       && preservesWebsiteChecklist(markdown) && markdown === skill.markdown, "The current saved SKILL.md revision preserves keyboard-only controls, visible form labels, WCAG AA text contrast and a 375px viewport without horizontal overflow; paraphrase is permitted.");
     const inspection = o.state.authoredSkillInspection as AuthoredSkillInspection | undefined;
     c.add("inspectable-authored-skill", !!skill && inspection?.companyId === o.companyId && inspection.skillId === skill.id && inspection.versionId === skill.currentVersionId && inspection.libraryVisible === true && inspection.editorVisible === true && (inspection.editorSurface === "detail" || inspection.editorSurface === "studio") && inspection.editable === true && inspection.checklistVisible === true && inspection.reloaded === true && inspection.readbackMatched === true,
-      "The actual saved skill is discoverable through ordinary Skills/My Skills, opens the actual editable skill content, and survives reload with the same saved version. No specific reply-link format is required.");
+      "The reply links the actual saved skill; following that link opens it, it is listed in My Skills, opens the actual editable skill content, and survives reload with the same saved version.");
     c.add("creation-not-global-assignment", authorSkillAssignmentScoped(o, skill, version) && !claimsGlobalSkillAssignment(o.reply), "Creation leaves the skill unassigned or explicitly binds only its acting author in the same real run, with current saved-version and assignment audit evidence and truthful targeted reporting; no global policy change, other-agent assignment or false global activation claim is admitted.");
   } else if (o.scenarioId === "skills.explicit-restriction") {
     const before = o.state.skill as CompanySkillDetail; const current = o.skills.find(row => row.id === before?.id);
@@ -163,13 +163,20 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
   const markdown = version?.fileInventory.find(file => file.path === "SKILL.md")?.content;
   if (!observed || observed.companyId !== ctx.input.fixtures.company.id || observed.leadId !== ctx.input.fixtures.agent.id || authored.length !== 1 || !skill || skill.companyId !== observed.companyId || !skill.editable || !skill.currentVersionId || version?.authorAgentId !== observed.leadId || version.companyId !== observed.companyId || version.companySkillId !== skill.id || typeof markdown !== "string" || markdown !== skill.markdown || !preservesWebsiteChecklist(markdown)) throw new Error("No exact authored saved checklist version is available to inspect");
   const source = ctx.input.page.url();
-  await ctx.input.page.getByRole("link", { name: "Skills", exact: true }).first().click({ timeout: remaining() });
+  const companyPath = `/${encodeURIComponent(prefix)}`;
+  const skillPaths = [skillStudioRoute(skill.id), skillRoute(skill, observed.skills)];
+  const studioRoute = `${companyPath}${skillPaths[0]}`;
+  const detailRoute = `${companyPath}${skillPaths[1]}`;
+  // Skills is no longer a primary sidebar link, so the person opens the new skill from the
+  // link the reply rendered (unprefixed links redirect into the current company).
+  const href = o.links.find(link => { try { const path = new URL(link, source).pathname; return skillPaths.some(route => path === route || path === `${companyPath}${route}`); } catch { return false; } });
+  if (!href) throw new Error("The reply did not link the saved skill, so the person cannot open it from the chat");
+  await internalResultLink(ctx, o, href).first().click({ timeout: remaining() });
+  await expect(ctx.input.page).toHaveURL(url => url.pathname === studioRoute || url.pathname === detailRoute, { timeout: remaining() });
+  // From the skill, the Skills section's own My Skills link shows it in the person's library.
   await ctx.input.page.getByRole("link", { name: "My Skills", exact: true }).first().click({ timeout: remaining() });
   const card = ctx.input.page.getByRole("button").filter({ has: ctx.input.page.getByText(skill.name, { exact: true }) }).first();
   await expect(card).toBeVisible({ timeout: remaining() }); await card.click({ timeout: remaining() });
-  const companyPath = `/${encodeURIComponent(prefix)}`;
-  const studioRoute = `${companyPath}${skillStudioRoute(skill.id)}`;
-  const detailRoute = `${companyPath}${skillRoute(skill, observed.skills)}`;
   const openSavedEditor = async () => {
     await expect(ctx.input.page).toHaveURL(url => url.origin === new URL(source).origin
       && (url.pathname === studioRoute || url.pathname === detailRoute), { timeout: remaining() });
@@ -201,7 +208,7 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
 const define = (id: string, setup: ChatCatalogCase["setup"]): ChatCatalogCase => {
   const base = integratorDefinition("skills", id, setup, observeSkills, gradeIntegratorSkills, verifySkill);
   base.sourceFiles = [...base.sourceFiles, "chat-catalog-domains/integrator-skill-versions.ts"];
-  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v6", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx", "../../ui/src/pages/CompanySkills.tsx", "../../ui/src/lib/company-skill-routes.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
+  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v7", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx", "../../ui/src/pages/CompanySkills.tsx", "../../ui/src/lib/company-skill-routes.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
     async act(ctx, state) { remainingIdentityObservationBudget(ctx); await waitForReply(ctx, ctx.observationDeadlineAt); await inspectAuthoredSkill(ctx, state, await observeSkills(ctx, state)); },
     async verifyResult(ctx, state, value) { const o = observation(value); if (!o) throw new Error("Missing authored skill inspection evidence"); await inspectAuthoredSkill(ctx, state, o); },
   } : base;
