@@ -352,6 +352,13 @@ by company and normalized session. Migration 0432 builds both indexes
 concurrently. A poll therefore reads a few index entries, not a run's full event
 history.
 
+The attention feed finds retry-exhausted runs through the partial index
+`heartbeat_run_events_retry_exhausted_idx`. The index covers only `lifecycle`
+events whose message starts with `Bounded retry exhausted`, keyed by company,
+run, and newest event first. The query predicate must stay textually equal to
+the index predicate, or the scan reads every company event again. Migration
+0454 builds the index concurrently.
+
 A subtree pause release finds the runs that a dispatch gate refused for that pause
 through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
 covers only cancelled runs with a `treeHoldSuppression` marker, keyed by company and
@@ -1596,6 +1603,18 @@ Lifecycle polls can page past failed resources using the last returned event id 
 cursor, never a persisted high-water mark. This retries failures and includes
 transactions that commit later with lower ids.
 
+A lifecycle page reads the company's unacknowledged events for the requested
+types once. It keeps one head for each resource: the unacknowledged creation,
+else the oldest unacknowledged event. Then it applies `afterId`, id order and
+the limit. Cost grows with the company's journal size, not with pending events
+times acknowledged history. The idle-sleep check only asks whether any
+unacknowledged event exists, because each such resource has a head. No index
+or migration is needed.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-plugin-lifecycle-inbox.ts --baseline-ref=02bfe71a6b
+```
+
 ## Legacy controller ownership
 
 Legacy run claims atomically record `controller_boot_id`, a database-clock
@@ -2048,6 +2067,14 @@ verified late receipt updates effective token/request fields; each adjustment
 retains its previous usage in `previous_usage_json`.
 Unknown late run receipts remain durable per-receipt debt; resolving one receipt
 cannot clear another unresolved receipt.
+
+Live usage receipt writes use READ COMMITTED and the existing run-row lock. All
+mutable receipt and accounting reads occur under that lock. A streamed run-log
+append between company validation and lock acquisition therefore cannot exhaust
+serialization retries. A concurrent finalization is read under the lock and
+keeps the normal late-receipt reconciliation path. Other independent accounting
+operations retain their repeatable-read snapshot. Receipt identity, replay
+conflicts, company scoping and budget-work publication remain transactional.
 
 Upgrade all controllers/workers to this accounting contract and drain incompatible
 pre-upgrade database transactions before enabling independent writers. Do not run

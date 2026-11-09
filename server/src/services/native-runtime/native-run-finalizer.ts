@@ -45,6 +45,7 @@ import {
   heartbeatRuns,
   heartbeatRunEvents,
   issueComments,
+  issueExecutionDecisions,
   issueThreadInteractions,
   issues,
   nativeRunFinalizations,
@@ -161,6 +162,29 @@ export function resolveNativeFinalizerStatus(
 }
 
 export { pendingNativeGovernance } from "./native-governance.js";
+
+/**
+ * Whether this run recorded the approval that completed the issue's final
+ * execution-policy stage. Read from the saved decision row, never from the
+ * model's report.
+ */
+export async function executionStageApprovedByRun(
+  db: Db,
+  run: { id: string; companyId: string; agentId: string },
+  issue: { id: string; executionState: unknown },
+): Promise<boolean> {
+  const state = record(issue.executionState);
+  if (state.status !== "completed" || state.lastDecisionOutcome !== "approved" || typeof state.lastDecisionId !== "string") return false;
+  const [decision] = await db.select({ id: issueExecutionDecisions.id }).from(issueExecutionDecisions).where(and(
+    eq(issueExecutionDecisions.id, state.lastDecisionId),
+    eq(issueExecutionDecisions.companyId, run.companyId),
+    eq(issueExecutionDecisions.issueId, issue.id),
+    eq(issueExecutionDecisions.outcome, "approved"),
+    eq(issueExecutionDecisions.actorAgentId, run.agentId),
+    eq(issueExecutionDecisions.createdByRunId, run.id),
+  )).limit(1);
+  return Boolean(decision);
+}
 
 async function acceptedInteractionFromRun(input: {
   db: Db;
@@ -1548,6 +1572,7 @@ export async function finalizeNativeRun(input: {
     const qualityReview = await readRequiredQualityReview(input.db, authoritativeIssue);
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
+      executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
       caseHandoffAuthorized: Boolean(await assertNativeCaseHandoffResult(input.db, run.id, authoritativeIssue.id, result)),
       monitorWaitDispatched: monitorDelivery !== null,
       monitorWaitPreserved: preservedMonitorWait !== null,
