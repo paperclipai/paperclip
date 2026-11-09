@@ -803,6 +803,12 @@ describe("runner E2E run observations", () => {
 });
 
 describe("runner E2E failure policy", () => {
+  it("classifies settled oracle check failures as candidate failures whatever the check ids say", () => {
+    for (const ids of ["specific-operator-qualification-next-step", "provider-connection-timeout-explained", "unauthorized-write-denied, cleanup-reported"])
+      expect(classifyFailure(new Error(`Stopped waiting for agents.managed-profile: Settled scenario failed: ${ids}`))).toBe("candidate_failure");
+    expect(classifyFailure(new Error("Stopped waiting for x: Settled scenario failed: a; secret plaintext leak in server.log"))).toBe("secret_leak");
+  });
+
   it("classifies sandbox file-transfer RPC deadlines without hiding other RPC defects", () => {
     for (const method of ["environmentSyncIn", "environmentSyncOut"]) {
       expect(classifyFailure(new Error(
