@@ -1302,6 +1302,13 @@ annotation for each such test, and a row to the step summary with the file, test
 retry count and job. Fix a test that this reporter reports. Do not treat the
 retry as the fix. Playwright retries stay at zero.
 
+ACPX credential tests share the host's TCP port namespace. A private temporary
+home does not reserve its deterministic two-of-three lease ports, which overlap
+with ephemeral client ports. Grok fixtures check all three candidates and may
+choose another fresh home up to eight times before staging. They release only
+their own probe listeners. Staging itself runs once; any collision or ownership
+failure after fixture preparation must remain a test failure.
+
 #### Embedded Postgres template cache
 
 To run the suite with one owned PostgreSQL server and a separate disposable
