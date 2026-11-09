@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
 import { clearObjectJournalReadCache } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
@@ -54,7 +54,25 @@ function countingStorage(getLatencyMs: number | ((objectKey: string) => number) 
       return { keys: [...objects.keys()].filter((key) => key.startsWith(prefix)) };
     },
   };
-  return { provider, stats };
+  return { provider, stats, objects };
+}
+
+// Holds every content-addressed object GET until released; the head answers.
+function holdObjectGets(provider: StorageProvider) {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const keys: string[] = [];
+  const signals: Array<AbortSignal | undefined> = [];
+  const getObject = provider.getObject.bind(provider);
+  provider.getObject = async (input) => {
+    if (input.objectKey.includes("/objects/")) {
+      keys.push(input.objectKey);
+      signals.push(input.signal);
+      await held;
+    }
+    return getObject(input);
+  };
+  return { keys, signals, release: () => release() };
 }
 
 const TAIL_BYTES = 32_000;
@@ -180,5 +198,62 @@ describe("object run log tail reads", () => {
     const tail = await staying;
     const recordStart = full.lastIndexOf(10, offset - 1) + 1;
     expect(Buffer.from(tail.content)).toEqual(full.subarray(recordStart));
+  });
+
+  it("keeps one fetch per object when the reader that started it navigates away", async () => {
+    clearObjectJournalReadCache();
+    const { provider } = countingStorage();
+    const { store, handle, full } = await writeManySegmentLog(provider, 60);
+    clearObjectJournalReadCache();
+    const gets = holdObjectGets(provider);
+    const offset = full.length - TAIL_BYTES / 2;
+    const leaving = new AbortController();
+
+    const first = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true, signal: leaving.signal });
+    await vi.waitFor(() => expect(gets.keys.length).toBeGreaterThan(0));
+    const joining = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true });
+    await delay(20);
+    leaving.abort(new Error("navigated away"));
+    await expect(first).rejects.toThrow("navigated away");
+    // The remaining reader still waits on the started fetch, so it stays open.
+    expect(gets.signals.every((signal) => !signal?.aborted)).toBe(true);
+    gets.release();
+
+    const tail = await joining;
+    const recordStart = full.lastIndexOf(10, offset - 1) + 1;
+    expect(Buffer.from(tail.content)).toEqual(full.subarray(recordStart));
+    // No object was fetched twice: the joining reader did not start its own GET.
+    expect(new Set(gets.keys).size).toBe(gets.keys.length);
+  });
+
+  it("stops a shared fetch when its last reader navigates away", async () => {
+    clearObjectJournalReadCache();
+    const { provider } = countingStorage();
+    const { store, handle, full } = await writeManySegmentLog(provider, 20);
+    clearObjectJournalReadCache();
+    const gets = holdObjectGets(provider);
+    const leaving = new AbortController();
+
+    const read = store.read(handle, { offset: Math.max(0, full.length - TAIL_BYTES), limitBytes: TAIL_BYTES, signal: leaving.signal });
+    await vi.waitFor(() => expect(gets.keys.length).toBeGreaterThan(0));
+    leaving.abort(new Error("navigated away"));
+
+    await expect(read).rejects.toThrow("navigated away");
+    expect(gets.signals[0]?.aborted).toBe(true);
+    gets.release();
+  });
+
+  it("does not serve one store's cached objects to a reader of another store", async () => {
+    clearObjectJournalReadCache();
+    const first = countingStorage();
+    const { handle, full } = await writeManySegmentLog(first.provider, 20);
+    const offset = Math.max(0, full.length - TAIL_BYTES);
+    // A second store has the same head, but none of the objects.
+    const second = countingStorage();
+    for (const [key, bytes] of first.objects) if (!key.includes("/objects/")) second.objects.set(key, bytes);
+    const secondStore = createObjectRunLogStore({ provider: second.provider, keyPrefix: "logs", assertWriterAuthority: async () => undefined });
+
+    await expect(secondStore.read(handle, { offset, limitBytes: TAIL_BYTES })).rejects.toThrow();
+    expect(second.stats.gets).toBeGreaterThan(1);
   });
 });

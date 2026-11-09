@@ -261,11 +261,29 @@ async function objectIO<T>(
 // reuse them instead of paying one object-store round trip per object. Only the
 // mutable head is read again. The cache is bounded by total bytes and evicts the
 // least recently used objects first. Readers authorize before any read.
+// Entries are scoped to the storage provider instance, so a different store
+// (or a test's fresh store) never sees objects that another store returned.
 const READ_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 const READ_CACHE_MAX_OBJECT_BYTES = 1024 * 1024;
 const readCache = new Map<string, Buffer>();
-const readsInFlight = new Map<string, Promise<Buffer>>();
 let readCacheBytes = 0;
+const providerScopes = new WeakMap<StorageProvider, number>();
+let nextProviderScope = 0;
+function providerCacheScope(provider: StorageProvider) {
+  let scope = providerScopes.get(provider);
+  if (scope === undefined) providerScopes.set(provider, (scope = nextProviderScope++));
+  return `${scope}:`;
+}
+
+// Concurrent readers of one object share one fetch. The fetch has its own
+// controller: a reader that aborts only stops its own wait, and the fetch is
+// aborted only when no reader is still waiting for it.
+interface SharedObjectRead {
+  work: Promise<Buffer>;
+  controller: AbortController;
+  waiters: number;
+}
+const readsInFlight = new Map<string, SharedObjectRead>();
 function cachedObject(key: string) {
   const bytes = readCache.get(key);
   if (bytes) {
@@ -287,6 +305,8 @@ function cacheObject(key: string, bytes: Buffer) {
 export function clearObjectJournalReadCache() {
   readCache.clear();
   readCacheBytes = 0;
+  // Readers already waiting keep their fetch; new readers start a new one.
+  readsInFlight.clear();
 }
 
 // One range read fetches its objects with bounded overlap. The shared objectIO
@@ -354,6 +374,7 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
   const headKey = `${prefix}/head.json`;
   const objectPrefix = `${prefix}/objects/`;
   const readPriority = options.readPriority ?? "background";
+  const cacheScope = providerCacheScope(provider);
   const putConditional = (
     input: Parameters<NonNullable<StorageProvider["putObjectConditional"]>>[0],
   ) => objectIO(() => provider.putObjectConditional!(input), "background", input.signal);
@@ -537,34 +558,40 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
   async function load(ref: Reference, signal?: AbortSignal) {
     validateReference(ref);
     signal?.throwIfAborted();
-    const cached = cachedObject(ref.key);
+    const cacheKey = `${cacheScope}${ref.key}`;
+    const cached = cachedObject(cacheKey);
     if (cached) return cached;
-    const pending = readsInFlight.get(ref.key);
-    if (pending) {
-      // Share a concurrent fetch, but do not inherit another reader's abort.
-      // This reader stops waiting on its own abort; the shared fetch continues.
-      try {
-        return await untilAborted(pending, signal);
-      } catch (error) {
-        signal?.throwIfAborted();
-        const shared = cachedObject(ref.key);
-        if (shared) return shared;
-        if (error instanceof Error && error.message === "object_journal_integrity_error") throw error;
-      }
+    let shared = readsInFlight.get(cacheKey);
+    if (!shared) {
+      const controller = new AbortController();
+      const work = (async () => {
+        const stored = await getBytes(ref.key, MAX_OBJECT_BYTES * 2, controller.signal);
+        const bytes = options.decode ? await options.decode(stored.bytes) : stored.bytes;
+        if (bytes.length > MAX_OBJECT_BYTES || sha256(bytes) !== ref.sha256)
+          throw new Error("object_journal_integrity_error");
+        cacheObject(cacheKey, bytes);
+        return bytes;
+      })();
+      const entry: SharedObjectRead = { work, controller, waiters: 0 };
+      const release = () => {
+        if (readsInFlight.get(cacheKey) === entry) readsInFlight.delete(cacheKey);
+      };
+      void work.then(release, release);
+      readsInFlight.set(cacheKey, entry);
+      shared = entry;
     }
-    const loading = (async () => {
-      const stored = await getBytes(ref.key, MAX_OBJECT_BYTES * 2, signal);
-      const bytes = options.decode ? await options.decode(stored.bytes) : stored.bytes;
-      if (bytes.length > MAX_OBJECT_BYTES || sha256(bytes) !== ref.sha256)
-        throw new Error("object_journal_integrity_error");
-      cacheObject(ref.key, bytes);
-      return bytes;
-    })();
-    readsInFlight.set(ref.key, loading);
+    const entry = shared;
+    entry.waiters++;
     try {
-      return await loading;
+      return await untilAborted(entry.work, signal);
     } finally {
-      if (readsInFlight.get(ref.key) === loading) readsInFlight.delete(ref.key);
+      entry.waiters--;
+      // The last reader left before the fetch finished: stop the fetch, and
+      // let a later reader start a new one.
+      if (!entry.waiters && signal?.aborted) {
+        if (readsInFlight.get(cacheKey) === entry) readsInFlight.delete(cacheKey);
+        entry.controller.abort(signal.reason);
+      }
     }
   }
   async function save(
