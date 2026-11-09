@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, aiProviderDefaults, companies, companyMemberships, connectionGrants, createDb, environments, plugins } from "@paperclipai/db";
+import { agents, aiProviderDefaults, companies, companyMemberships, connectionGrants, createDb, closeRegisteredClients, environments, plugins } from "@paperclipai/db";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import * as modelCatalog from "../services/openrouter-models.js";
 import * as adapters from "../adapters/index.js";
@@ -17,8 +17,10 @@ import { secretService } from "../services/secrets.js";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 const realEnvironmentTests = environmentTests.agentEnvironmentTestService;
 
@@ -44,7 +46,9 @@ describePostgres("saved harness account preflight", () => {
     home = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-harness-preflight-")));
     vi.stubEnv("PAPERCLIP_HOME", home);
     vi.stubEnv("PAPERCLIP_INSTANCE_ID", "harness-preflight-fixture");
-    database = await startEmbeddedPostgresTestDatabase("paperclip-harness-preflight-db-");
+    database = externalDatabaseUrl ? { connectionString: externalDatabaseUrl,
+      cleanup: () => closeRegisteredClients(externalDatabaseUrl, { scope: "database" }) }
+      : await startEmbeddedPostgresTestDatabase("paperclip-harness-preflight-db-");
     db = createDb(database.connectionString);
   }, 90_000);
 
