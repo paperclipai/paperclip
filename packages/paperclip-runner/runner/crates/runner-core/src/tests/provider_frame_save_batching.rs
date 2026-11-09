@@ -64,6 +64,25 @@ fn streamed_turn(
     wait_for_stream: bool,
     prepare_provider: impl FnOnce(&mut CodexProvider),
 ) -> (PathBuf, CodexCommandExecutor) {
+    streamed_turn_then(
+        frames,
+        retained_results,
+        tail,
+        ":",
+        wait_for_stream,
+        prepare_provider,
+    )
+}
+
+#[cfg(unix)]
+fn streamed_turn_then(
+    frames: usize,
+    retained_results: usize,
+    tail: &str,
+    after: &str,
+    wait_for_stream: bool,
+    prepare_provider: impl FnOnce(&mut CodexProvider),
+) -> (PathBuf, CodexCommandExecutor) {
     let directory = std::env::temp_dir().join(format!(
         "paperclip-streamed-frames-{}",
         uuid::Uuid::new_v4()
@@ -85,12 +104,14 @@ while IFS= read -r line; do
         i=$((i+1))
       done
       printf '%s\n' 'TAIL'
-      touch 'STREAMED' ;;
+      touch 'STREAMED'
+      AFTER ;;
   esac
 done
 "#
     .replace("FRAMES", &frames.to_string())
     .replace("TAIL", tail)
+    .replace("AFTER", after)
     .replace("STREAMED", &streamed.display().to_string());
     let operation = streamed_task_context_operation();
     let mut bridge = ProviderToolBridge::default();
@@ -494,4 +515,65 @@ fn streamed_turn_before_tool_call_with(
 ) -> (PathBuf, CodexCommandExecutor) {
     let tail = r#"{"id":"tool-1","method":"item/tool/call","params":{"threadId":"thread-1","turnId":"turn-1","callId":"call-streamed","tool":"get_task_context","arguments":{}}}"#;
     streamed_turn(frames, 0, tail, true, prepare_provider)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_held_cancellation_that_cannot_reach_the_provider_keeps_the_completed_turn() {
+    let tail = r#"{"id":"tool-1","method":"item/tool/call","params":{"threadId":"thread-1","turnId":"turn-1","callId":"call-streamed","tool":"get_task_context","arguments":{}}}"#;
+    let after = r#"exec 0<&-; printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}'; sleep 2; exit 0"#;
+    let (directory, mut executor) = streamed_turn_then(10, 0, tail, after, true, |_| {});
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut observed = Vec::new();
+    while !observed
+        .iter()
+        .any(|event: &PolledEvent| event.event_type == "turn.completed")
+    {
+        assert!(std::time::Instant::now() < deadline);
+        let events = executor.poll_events().unwrap();
+        let count = events.len();
+        observed.extend(events);
+        executor.acknowledge_events(count).unwrap();
+    }
+    assert!(observed
+        .iter()
+        .any(|event| event.event_type == "semantic_tool.input"));
+    let saved = read_saved_state(&executor.state_path());
+    assert!(saved.completed_turn_authoritative);
+    if let Some(provider) = executor.provider.as_mut() {
+        let _ = provider.shutdown();
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn trace_interpretations_survive_a_provider_exit_in_the_same_poll() {
+    let named = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+    let observer_named = std::sync::Arc::clone(&named);
+    let tail = r#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"message-1","delta":"last"}}"#;
+    let trace_path = std::env::temp_dir().join(format!(
+        "paperclip-frame-trace-exit-{}.jsonl",
+        uuid::Uuid::new_v4()
+    ));
+    let provider_trace_path = trace_path.clone();
+    let (directory, mut executor) =
+        streamed_turn_then(20, 0, tail, "exit 0", true, move |provider| {
+            provider.enable_trace_for_test(provider_trace_path);
+            provider.interpretation_observer = Some(Box::new(move |ids: &[String]| {
+                *observer_named.lock().unwrap() += ids.len();
+            }));
+        });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while executor.provider.is_some() {
+        assert!(std::time::Instant::now() < deadline);
+        let events = executor.poll_events().unwrap();
+        let count = events.len();
+        executor.acknowledge_events(count).unwrap();
+    }
+    assert!(*named.lock().unwrap() >= 41);
+    fs::remove_dir_all(directory).unwrap();
+    let _ = fs::remove_file(trace_path);
 }

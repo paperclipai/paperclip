@@ -3038,11 +3038,7 @@ impl CodexCommandExecutor {
         self.save_unsaved_frame_state()?;
         self.record_saved_trace_interpretations();
         if let Some(provider) = self.provider.as_mut() {
-            provider
-                .release_courtesy_responses(still_polling)
-                .map_err(|error| {
-                    DurableRunnerError::invalid(format!("Codex provider failed: {error}"))
-                })?;
+            provider.release_courtesy_responses(still_polling);
         }
         Ok(())
     }
@@ -4644,7 +4640,12 @@ impl CodexCommandExecutor {
                 .expect("Codex state remains available before receipt-limit interruption")
                 .record_receipt_limit_interrupt_attempt()?;
             self.save_state()?;
-            match self.interrupt_turn("semantic_tool_turn_receipt_limit") {
+            self.save_before_provider_writes(false)?;
+            let interrupted = self.interrupt_turn("semantic_tool_turn_receipt_limit");
+            if let Some(provider) = self.provider.as_mut() {
+                provider.hold_courtesy_responses();
+            }
+            match interrupted {
                 Ok(_) => {
                     let accepted_deadline_unix_ms =
                         receipt_limit_deadline_after(RECEIPT_LIMIT_ACCEPTED_TERMINAL_DEADLINE_MS)?;
@@ -5277,6 +5278,7 @@ impl CodexCommandExecutor {
                     ))?;
                     // Commit the authoritative failure before best-effort provider cleanup.
                     self.save_state()?;
+                    self.record_saved_trace_interpretations();
                     if let Some(mut provider) = self.provider.take() {
                         if let Some(frame_id) = trace_frame_id {
                             provider.record_provider_trace_interpretation(
@@ -5683,6 +5685,8 @@ impl CodexCommandExecutor {
                     process_generation,
                     completed_turn_process_generation,
                 } => {
+                    self.save_unsaved_frame_state()?;
+                    self.record_saved_trace_interpretations();
                     self.provider = None;
                     if !success {
                         let state = self

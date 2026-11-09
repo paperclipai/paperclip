@@ -869,7 +869,7 @@ pub struct CodexProvider {
     quarantined: bool,
     trace: Option<ProviderTraceSink>,
     last_trace_frame_id: Option<u64>,
-    held_courtesy_responses: Option<Vec<(Value, bool)>>,
+    held_courtesy_responses: Option<Vec<Value>>,
     #[cfg(test)]
     pub(crate) sent_frame_observer: Option<Box<dyn FnMut(&Value) + Send>>,
     #[cfg(test)]
@@ -2722,7 +2722,7 @@ impl CodexProvider {
         // The terminal notification is already authoritative and may be
         // waiting in the durable outbox. A courtesy rejection must not turn a
         // provider that has closed stdin into a fatal polling error.
-        let _ = self.send_best_effort_courtesy_response(&response);
+        let _ = self.send_courtesy_response(&response);
         Ok(Some(CodexProviderEvent::Notification {
             method: "warning".to_owned(),
             params: json!({"message": message, "providerMethod": bounded_method(method)}),
@@ -3842,21 +3842,6 @@ impl CodexProvider {
     }
 
     fn send_courtesy_response(&mut self, value: &Value) -> Result<(), LocalRunnerError> {
-        self.send_or_hold_courtesy_response(value, false)
-    }
-
-    fn send_best_effort_courtesy_response(
-        &mut self,
-        value: &Value,
-    ) -> Result<(), LocalRunnerError> {
-        self.send_or_hold_courtesy_response(value, true)
-    }
-
-    fn send_or_hold_courtesy_response(
-        &mut self,
-        value: &Value,
-        best_effort: bool,
-    ) -> Result<(), LocalRunnerError> {
         // A reply cannot affect a deliberately stopped local conversation.
         // Commands and authoritative results must still use strict delivery.
         if self.config.provider == "codex"
@@ -3866,7 +3851,7 @@ impl CodexProvider {
             return Ok(());
         }
         if let Some(held) = self.held_courtesy_responses.as_mut() {
-            held.push((value.clone(), best_effort));
+            held.push(value.clone());
             return Ok(());
         }
         self.send_frame(value)
@@ -3876,10 +3861,7 @@ impl CodexProvider {
         self.held_courtesy_responses.get_or_insert_with(Vec::new);
     }
 
-    pub(crate) fn release_courtesy_responses(
-        &mut self,
-        keep_holding: bool,
-    ) -> Result<(), LocalRunnerError> {
+    pub(crate) fn release_courtesy_responses(&mut self, keep_holding: bool) {
         let held = if keep_holding {
             self.held_courtesy_responses
                 .as_mut()
@@ -3888,15 +3870,9 @@ impl CodexProvider {
         } else {
             self.held_courtesy_responses.take().unwrap_or_default()
         };
-        let mut first_error = None;
-        for (value, best_effort) in held {
-            if let Err(error) = self.send_frame(&value) {
-                if !best_effort {
-                    first_error.get_or_insert(error);
-                }
-            }
+        for value in held {
+            let _ = self.send_frame(&value);
         }
-        first_error.map_or(Ok(()), Err)
     }
 
     fn send_frame(&mut self, value: &Value) -> Result<(), LocalRunnerError> {
