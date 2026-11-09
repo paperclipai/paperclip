@@ -10156,14 +10156,26 @@ export function issueRoutes(
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: issue.companyId } });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const actor = getActorInfo(req);
     const receipt = await reconstructNativeWorkspace({ db, companyId: issue.companyId, issueId: issue.id,
-      actorId: getActorInfo(req).actorId, request: req.body });
+      actorId: actor.actorId, recordedByUserId: actor.actorType === "user" ? actor.actorId : null, request: req.body });
     res.status(202).json(receipt);
   });
 
   router.post(
     "/issues/:id/recovery-actions/resolve",
-    validate(resolveIssueRecoveryActionSchema),
+    (req, _res, next) => {
+      const parsed = resolveIssueRecoveryActionSchema.safeParse(req.body);
+      if (!parsed.success) {
+        if (parsed.error.issues.some(issue =>
+          issue.path.join(".") === "executionReconciliation.providerStopped")) {
+          throw conflict("Verify that the previous provider has stopped before continuing.");
+        }
+        throw parsed.error;
+      }
+      req.body = parsed.data;
+      next();
+    },
     async (req, res) => {
       const id = req.params.id as string;
       const existing = await getAccessibleResource(
@@ -10269,7 +10281,8 @@ export function issueRoutes(
             return { issue: lockedIssue, recoveryAction: workspaceRepairAction, replayed: true, workspaceRepairOnly: true };
           }
           await markExecutionReconciliation(tx as unknown as Db, workspaceRepairAction,
-            executionReconciliation!, actor.actorId, undefined, { workspaceRepairOnly: true });
+            executionReconciliation!, actor.actorId, undefined,
+            { workspaceRepairOnly: true, recordedByUserId: actor.actorType === "user" ? actor.actorId : null });
           await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: lockedIssue.companyId, issueId: lockedIssue.id });
           const [recoveryAction] = await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored",
             resolutionNote: resolutionNote ?? null, resolvedAt: new Date(), updatedAt: new Date(),
@@ -10282,16 +10295,36 @@ export function issueRoutes(
           lockedIssue.id,
           tx,
         );
+        let selectedActionId = actionId ?? (
+          !activeRecoveryAction && executionReconciliation
+            ? (await getExecutionBlocker(
+                tx as unknown as Db,
+                lockedIssue.companyId,
+                lockedIssue.id,
+              ))?.recoveryActionId
+            : null
+        );
+        if (!selectedActionId && !activeRecoveryAction && executionReconciliation) {
+          const [reconciled] = await tx.select({ id: issueRecoveryActions.id })
+            .from(issueRecoveryActions).where(and(
+              eq(issueRecoveryActions.companyId, lockedIssue.companyId),
+              eq(issueRecoveryActions.sourceIssueId, lockedIssue.id),
+              eq(issueRecoveryActions.status, "resolved"),
+              sql`${issueRecoveryActions.evidence}->'executionReconciliation' is not null`,
+              sql`not (${issueRecoveryActions.evidence} ? 'coalescedIntoRecoveryActionId')`,
+            )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
+          selectedActionId = reconciled?.id;
+        }
         if (
-          actionId &&
-          (!activeRecoveryAction || activeRecoveryAction.id !== actionId)
+          selectedActionId &&
+          (!activeRecoveryAction || activeRecoveryAction.id !== selectedActionId)
         ) {
           const [settled] = await tx
             .select()
             .from(issueRecoveryActions)
             .where(
               and(
-                eq(issueRecoveryActions.id, actionId),
+                eq(issueRecoveryActions.id, selectedActionId),
                 eq(issueRecoveryActions.companyId, lockedIssue.companyId),
                 eq(issueRecoveryActions.sourceIssueId, lockedIssue.id),
                 inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
@@ -10306,9 +10339,16 @@ export function issueRoutes(
             );
             const automatic = settled.evidence.automaticRecovery as
               { replay?: string } | undefined;
-            if (automatic?.replay === "blocked" && executionReconciliation) {
-              // An automatic no-replay disposition is final until new evidence
-              // arrives. Keep the supported evidence API usable without a dialog.
+            const recorded = settled.evidence.executionReconciliation as
+              { runId?: string; actionOutcome?: string } | undefined;
+            if (recorded && executionReconciliation &&
+                (recorded.runId !== executionReconciliation.runId ||
+                 recorded.actionOutcome !== executionReconciliation.actionOutcome)) {
+              throw conflict("This recovery action already records a different execution reconciliation.");
+            }
+            if (!recorded && automatic?.replay === "blocked" && executionReconciliation) {
+              // An automatic no-replay disposition is final until a board user
+              // confirms new evidence. The task owner cannot retire it alone.
               assertBoard(req);
               if (
                 activeRecoveryAction ||
@@ -10330,7 +10370,7 @@ export function issueRoutes(
             } else {
               return {
                 issue: lockedIssue,
-                recoveryAction: settled,
+                recoveryAction: issueRecoveryActionReadModel(settled),
                 replayed: true,
               };
             }
@@ -10482,7 +10522,14 @@ export function issueRoutes(
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
         ) {
-          assertBoard(req);
+          // The task owner may record a verified stop with a known outcome.
+          // An unknown external outcome or an automatic no-replay hold needs a
+          // board user, because a fresh attempt may repeat an external action.
+          const activeAutomatic = activeRecoveryAction.evidence.automaticRecovery as
+            { replay?: string } | undefined;
+          if (executionReconciliation?.actionOutcome === "unknown" || activeAutomatic?.replay === "blocked") {
+            assertBoard(req);
+          }
           await validateExecutionReconciliation({
             db: tx as unknown as Db,
             companyId: lockedIssue.companyId,
@@ -10555,6 +10602,7 @@ export function issueRoutes(
             chatRetry
               ? { kind: "chat_failed_run_retry", actionId: chatRetry.actionId }
               : undefined,
+            { recordedByUserId: actor.actorType === "user" ? actor.actorId : null },
           );
         }
         let issue = lockedIssue;
@@ -10734,6 +10782,7 @@ export function issueRoutes(
             ? { ...result.issue, activeRecoveryAction: await recoveryActionsSvc.getActiveForIssue(result.issue.companyId, result.issue.id) }
             : result.issue,
           recoveryAction: result.recoveryAction,
+          replayed: true,
         });
         return;
       }

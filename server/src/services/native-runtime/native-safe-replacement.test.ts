@@ -545,6 +545,9 @@ const support = externalDatabaseUrl
       const decision = { runId: source.runId, providerStopped: true as const, actionOutcome: "mixed" as const, outcomeEvidence: "Verified saved plan and comment. Workspace copy-back failed." };
       const input = { db, companyId: source.companyId, issueId: source.issueId, agentId: source.agentId, sourceRunId: source.runId, decision };
       await expect(validateExecutionReconciliation(input)).rejects.toThrow("workspaceRepairEvidence");
+      await appendHeartbeatRunEvent(db, { companyId: source.companyId, runId: source.runId,
+        agentId: source.agentId, eventType: "native.local_process_stopped", stream: "system",
+        level: "info", message: "The provider process stop was recorded." });
       const verified = { ...decision, workspaceRepairEvidence: "Verified fresh confined staging after repairing the unsafe fixture link." };
       await expect(validateExecutionReconciliation({ ...input, decision: verified })).resolves.toMatchObject({ id: source.runId });
       await markExecutionReconciliation(db, action, verified, "operator");
@@ -602,6 +605,9 @@ const support = externalDatabaseUrl
       expect(action).toMatchObject({ ownerType: "board", returnOwnerAgentId: source.agentId, evidence: { reviewParticipantAgentId: reviewerId } });
       const input = { db, companyId: source.companyId, issueId: source.issueId, agentId: source.agentId, sourceRunId: source.runId,
         decision: { runId: source.runId, providerStopped: true as const, actionOutcome: "not_performed" as const, outcomeEvidence: "Inspected reviewer process and verified no actions occurred." } };
+      await appendHeartbeatRunEvent(db, { companyId: source.companyId, runId: source.runId,
+        agentId: reviewerId, eventType: "native.local_process_stopped", stream: "system",
+        level: "info", message: "The reviewer process stop was recorded." });
       await expect(validateExecutionReconciliation(input)).resolves.toMatchObject({ id: source.runId });
       await db.update(issues).set({ executionState: null }).where(eq(issues.id, source.issueId));
       await expect(validateExecutionReconciliation(input)).rejects.toThrow("source or task owner changed");
@@ -1258,6 +1264,12 @@ const support = externalDatabaseUrl
         .update(heartbeatRuns)
         .set({ processPid: null })
         .where(eq(heartbeatRuns.id, source.runId));
+      await expect(
+        validateExecutionReconciliation({ ...input, decision }),
+      ).rejects.toThrow("no verified process identity or stop record");
+      await appendHeartbeatRunEvent(db, { companyId: source.companyId, runId: source.runId,
+        agentId: source.agentId, eventType: "native.local_process_stopped", stream: "system",
+        level: "info", message: "The provider process stop was recorded." });
       await expect(
         validateExecutionReconciliation({ ...input, decision }),
       ).resolves.toMatchObject({ id: source.runId });
