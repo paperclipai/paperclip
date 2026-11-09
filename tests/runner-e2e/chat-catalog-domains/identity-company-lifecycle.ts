@@ -74,7 +74,9 @@ export const companyLifecycleIdentityCases: readonly ChatCatalogCase[] = [
       await expect(ctx.input.page.getByText(entity(state, "foreignTask").title!, { exact: true }).first()).toBeVisible({ timeout: remaining() });
       state.foreignTaskVisible = true; state.browserCompanyPrefix = new URL(ctx.input.page.url()).pathname.split("/")[1];
       await ctx.input.page.reload({ waitUntil: "domcontentloaded", timeout: remaining() });
-      state.afterReloadVisible = await ctx.input.page.getByText(entity(state, "foreignTask").title!, { exact: true }).first().isVisible();
+      // isVisible() does not wait, so it read the page before the reloaded project had rendered.
+      state.afterReloadVisible = await expect(ctx.input.page.getByText(entity(state, "foreignTask").title!, { exact: true }).first())
+        .toBeVisible({ timeout: remaining() }).then(() => true, () => false);
       await ctx.input.evidence("identity-human-company-switch.json", { companyId: state.switchedCompanyId, prefix: state.browserCompanyPrefix, taskId: entity(state, "foreignTask").id, afterReloadVisible: state.afterReloadVisible });
       await ctx.input.page.goto(source, { waitUntil: "domcontentloaded", timeout: remaining() }); remaining();
     },
