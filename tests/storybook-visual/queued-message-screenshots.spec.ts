@@ -55,3 +55,42 @@ for (const mobile of [false, true]) {
     expect(errors).toEqual([]);
   });
 }
+
+test("paragraphs and four screenshots fit beside narrow auto-send controls", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.clock.setFixedTime(new Date("2026-11-09T22:00:00Z"));
+  await page.addInitScript(() => localStorage.setItem("storybook-screenshot-submit", "First paragraph.\n\nSecond paragraph."));
+  await page.goto("/iframe.html?id=composer-steering-and-queued-messages--screenshot-submission&viewMode=story&args=autoSteer:true;mobile:true&globals=theme:light");
+  const composer = page.getByTestId("queued-composer");
+  await expect(composer).toBeVisible({ timeout: 30_000 });
+  const screenshot = await page.getByRole("main").screenshot();
+  await page.route("**/api/attachments/*/content", route => route.fulfill({ contentType: "image/png", body: screenshot }));
+  await composer.locator('input[type="file"]').setInputFiles([1, 2, 3, 4].map(index => ({
+    name: `screen-${index}.png`, mimeType: "image/png", buffer: screenshot,
+  })));
+  await expect(composer.getByRole("button", { name: "Remove screen-4.png" })).toBeEnabled();
+  await composer.getByRole("button", { name: /^Send/ }).click();
+  const queue = page.getByTestId("task-chat-queued-messages");
+  const first = queue.locator("p").filter({ hasText: "First paragraph." });
+  const second = queue.locator("p").filter({ hasText: "Second paragraph." });
+  await expect(first).toBeVisible();
+  await expect(second).toBeVisible();
+  expect(await first.evaluate(element => getComputedStyle(element).display)).toBe("block");
+  expect(await first.evaluate(element => getComputedStyle(element).marginBottom)).toBe("0px");
+  expect(await second.evaluate(element => getComputedStyle(element).marginTop)).toBe("0px");
+  expect((await second.boundingBox())!.y).toBeGreaterThan((await first.boundingBox())!.y);
+  await expect(queue.getByText("Sending in 5s")).toBeVisible();
+  const images = queue.getByRole("group", { name: "Queued images" });
+  await expect(images.locator("img")).toHaveCount(3);
+  await expect.poll(() => images.locator("img").evaluateAll(nodes => nodes.every(image => (image as HTMLImageElement).naturalWidth > 0))).toBe(true);
+  await expect(images.getByText("+1")).toBeVisible();
+  expect(await queue.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    return [...element.querySelectorAll('[aria-label="Queued images"] > *, button, [data-testid^="task-chat-queued-auto-steer"]')].every(child => {
+      const box = child.getBoundingClientRect();
+      return box.left >= bounds.left && box.right <= bounds.right && box.top >= bounds.top && box.bottom <= bounds.bottom;
+    });
+  })).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("narrow-auto-steer.png"), fullPage: true });
+});

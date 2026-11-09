@@ -140,6 +140,31 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).not.toContain(body);
   });
 
+  it("only loads local attachment images and counts the remaining screenshots", () => {
+    const urls = [
+      "/api/attachments/first/content", "/api/assets/second/content?download=0",
+      "/api/attachments/third/content", "/api/attachments/fourth/content",
+      "https://other.example/api/attachments/pixel/content", "//other.example/pixel.png",
+      "javascript:alert", "data:image/png;base64,AAAA", "/other/pixel.png",
+      "/api/attachments/first/content/extra", "/api/attachments/first/content#fragment",
+    ];
+    const body = urls.map((url, index) => `![screen-${index}](${url})`).join("\n");
+    render({ queue: { ...queue, entries: [{ ...queue.entries[0], comment: { ...queue.entries[0].comment, body } }] } });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')!;
+    expect([...row.querySelectorAll("img")].map(image => image.getAttribute("src"))).toEqual(urls.slice(0, 3));
+    expect(row.querySelector('[aria-label="Queued images"]')?.textContent).toBe("+1");
+  });
+
+  it("omits inline images from the compact text without exposing their URLs", () => {
+    const body = "Check ![inline](/api/attachments/inline/content) then **retry**.";
+    render({ queue: { ...queue, entries: [{ ...queue.entries[0], comment: { ...queue.entries[0].comment, body } }] } });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')!;
+    expect(row.querySelector("strong")?.textContent).toBe("retry");
+    expect(row.textContent).toContain("Check  then retry.");
+    expect(row.textContent).not.toContain("/api/attachments");
+    expect(row.querySelector("img")).toBeNull();
+  });
+
   it.each(["legacy", "native", "native-plan"] as const)("shows a read-only response and sends it only on click for %s", async (runtime) => {
     const entry = { ...queue.entries[0], canEdit: false, canDiscard: false,
       comment: { ...queue.entries[0].comment, body: 'Accepted: Build the app\n\n{"revision": "v1"}' },

@@ -29,7 +29,6 @@ import type {
   IssueQueuedCommentQueue,
 } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
-import { defaultUrlTransform } from "react-markdown";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { extractImageRefs, stripStandaloneImageEmbeds } from "./task-chat-attachments";
 import { TaskChatComposerBar } from "./TaskChatComposerBar";
@@ -125,7 +124,8 @@ function SortableQueuedMessage({
 }) {
   const immutableResponse = entry.source?.kind === "interaction";
   const body = queuedMessageLabel(entry);
-  const images = extractImageRefs(body).filter(image => defaultUrlTransform(image.url));
+  const images = extractImageRefs(body).filter(image =>
+    /^\/api\/(?:attachments|assets)\/[^/?#\\]+\/content(?:\?[^#\\]*)?$/.test(image.url));
   const label = stripStandaloneImageEmbeds(body);
   const sortable = useSortable({
     id: entry.comment.id,
@@ -149,7 +149,7 @@ function SortableQueuedMessage({
       ref={sortable.setNodeRef}
       style={style}
       className={cn(
-        "group flex min-h-11 min-w-0 items-center gap-1 border-b border-border/55 bg-card/95 px-2.5 py-1 text-sm last:border-b-0",
+        "group flex min-h-11 min-w-0 flex-wrap items-center gap-1 border-b border-border/55 bg-card/95 px-2.5 py-1 text-sm last:border-b-0",
         sortable.isDragging &&
           "relative z-20 rounded-lg border border-border shadow-lg",
       )}
@@ -171,16 +171,16 @@ function SortableQueuedMessage({
         className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
         aria-hidden
       />
-      <div className="flex min-w-0 flex-1 flex-col items-start gap-1 overflow-hidden px-1 sm:flex-row sm:items-center sm:gap-2" title={label || undefined}>
+      <div className="flex min-w-24 max-w-full flex-1 flex-col items-start gap-1 overflow-hidden px-1 sm:flex-row sm:items-center sm:gap-2" title={label || undefined}>
         {label ? <MarkdownBody
-          className="w-full min-w-0 line-clamp-2 sm:w-auto sm:flex-1 sm:line-clamp-1 [&_p]:m-0 [&_p]:inline"
+          className="w-full min-w-0 line-clamp-2 sm:w-auto sm:flex-1 sm:line-clamp-1 [&_p]:m-0!"
           linkIssueReferences={false}
-          mediaMode="reference"
+          mediaMode="omit"
         >{label}</MarkdownBody> : null}
-        {images.length ? <div className="flex shrink-0 items-center gap-1" role="group" aria-label="Queued images">
+        {images.length ? <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1" role="group" aria-label="Queued images">
           {images.slice(0, 3).map(image => <img
             key={image.url} src={image.url} alt={image.name} loading="lazy"
-            className="size-8 rounded-md border border-border object-cover"
+            className="size-8 shrink-0 rounded-md border border-border object-cover"
           />)}
           {images.length > 3 ? <span className="text-xs text-muted-foreground">+{images.length - 3}</span> : null}
         </div> : null}
