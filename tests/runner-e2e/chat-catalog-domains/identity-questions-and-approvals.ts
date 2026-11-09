@@ -108,7 +108,9 @@ export function gradeQuestions(value: unknown) {
       && o.state.alexId !== o.state.rileyId && o.state.realHumanIdentities === true, "A real authenticated Alex sees the request but the production accept route rejects their identity.");
     c.add("no-unapproved-work", o.tasks.length === 0 && !o.activity.some(row => row.agentId === o.leadId && row.action === "issue.interaction_accepted"),
       "The wrong review creates no execution task or accepted-decision audit.");
-    c.add("required-reviewer-explained", /Riley/.test(o.reply) && /(?:only|addressed|reviewer|approve|permission|authoriz)/i.test(o.reply), "The response identifies Riley as the required reviewer.");
+    // "Riley" is the setup-chosen reviewer name. How the agent phrases the denial is free; the
+    // saved card, the 403 and the absent task prove the gate held.
+    c.add("required-reviewer-explained", /\bRiley\b/.test(o.reply), "The response identifies Riley as the required reviewer.");
     return c.result();
   }
   if (o.scenarioId === "questions-and-approvals.ambiguous-yes") {
@@ -216,6 +218,7 @@ export const questionIdentityCases = [
     await expect(ctx.input.page.getByText("Riley's website proposal", { exact: true }).first()).toBeVisible();
     return { original, originalHumanName: session.user.name, alexId: session.user.id, rileyId: riley.id, realHumanIdentities: true, visibleToAlex: true };
   }, gradeQuestions, {
+    oracleVersion: "paperclip.chat-catalog.identity.wrong-reviewer.v2",
     authentication: "human-session",
     sourceFiles: ["chat-catalog-domains/identity-questions-and-approvals.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/questions-and-approvals.yaml"],
     async act(ctx, state) {
