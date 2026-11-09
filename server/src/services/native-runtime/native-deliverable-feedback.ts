@@ -113,20 +113,26 @@ function deliverableLabelNamesFile(objective: string): boolean {
   const forbiddenFile = /\b(?:do not|don['’]t|never|no need to)\s+(?:create|make|write|save|produce|generate|build|export|prepare|attach|upload|publish)\s+(?:(?:a|an|the|any|new|separate|extra|additional)\s+)*[`'"*]*$/iu;
   const editedFile = /\b(?:update|edit|modify|fix|change|refactor|patch)\s+(?:(?:the|existing|current)\s+)*[`'"*]*$/iu;
   const publicationVerb = /\b(?:publish|attach|export|upload|send|share|deliver|register)\b/giu;
-  const conjunction = /\b(?:and|plus|then|alongside|as well as)\b/giu;
+  const conjunction = /\b(?:and|plus|then|alongside|as well as|with)\b/giu;
+  const sameOutput = /^\s*(?:(?:its|their|the)\s+(?:full\s+)?(?:contents?|source|code|markup|text)|it|them)\s*$/iu;
   const namesFile = (text: string) => {
     const matches = [...text.matchAll(named)];
     if (matches.length === 0 || noFiles.test(text) || repositoryChange.test(text.replace(named, " "))) return false;
-    const publishes = [...text.matchAll(publicationVerb)].some(verb => !negated.test(text.slice(0, verb.index)));
+    const publishes = (name: string) => {
+      const object = new RegExp(`^\\s+(?:(?:it|them|both)\\b|(?:(?:the|a|an|updated|edited|new|final)\\s+)*(?:files?\\b|[\`'"*]*${name.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&")}))`, "iu");
+      return [...text.matchAll(publicationVerb)].some(verb => !negated.test(text.slice(0, verb.index))
+        && object.test(text.slice(verb.index! + verb[0].length)));
+    };
     const ownsInline = (between: string) => {
       const last = [...between.matchAll(conjunction)].at(-1);
-      return !last || [...between.slice(last.index! + last[0].length).matchAll(named)].length > 0;
+      const rest = between.slice(last ? last.index! + last[0].length : 0);
+      return !last || sameOutput.test(rest) || [...rest.matchAll(named)].length > 0;
     };
     return matches.some(match => {
       const start = match.index! + match[0].indexOf(match[1]!);
       const before = text.slice(0, start);
       if (inputReference.test(before) || forbiddenFile.test(before)) return false;
-      if (editedFile.test(before) && !publishes) return false;
+      if (editedFile.test(before) && !publishes(match[1]!)) return false;
       const end = start + match[1]!.length;
       const clauseStart = Math.max(text.lastIndexOf(",", start), text.lastIndexOf(";", start)) + 1;
       const next = text.slice(end).search(/[,;]/u);

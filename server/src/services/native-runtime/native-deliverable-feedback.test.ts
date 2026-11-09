@@ -200,6 +200,8 @@ describe("deliverable labels that name files", () => {
     "Deliverable: index.html; do not upload it externally",
     "Deliverable: an updated report.pdf",
     "Deliverable: update report.pdf and publish it",
+    "Deliverable: update report.pdf, then attach the updated report.pdf",
+    "Deliverable: index.html with a short summary in the reply",
     "Deliverable: a summary in the reply and index.html",
     "Deliverable: a short explanation; do not create notes.md, but attach report.pdf",
     "Deliverables:\n- report.pdf, do not attach it to an email",
@@ -233,6 +235,8 @@ describe("deliverable labels that name files", () => {
     "Deliverable: index.html with its contents inline in the reply",
     "Deliverables: index.html and styles.css inline in the reply",
     "Deliverable: update styles.css; do not publish it",
+    "Deliverable: update styles.css and send a short summary in the reply",
+    "Deliverable: index.html with the full markup inline in the reply",
   ])("does not treat this as a labelled file output: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(false);
   });
