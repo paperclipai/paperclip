@@ -1073,10 +1073,6 @@ async function awaitRunnerSuspensionBarrier(input: {
     existing = undefined;
   }
   if (Date.now() >= input.deadline) return false;
-  // A runnerd that already exited can never answer. A queued suspend would
-  // stay pending in the saved control-plane state and reach the next runnerd
-  // on this root as a stale terminal command.
-  if (!existing && await input.runnerHasExited()) return false;
   let commandId =
     existing?.commandId ??
     `command_close_suspend_${randomUUID().replaceAll("-", "")}`;
@@ -5462,7 +5458,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // their authority is safe to rotate; require the same exact suspension
       // barrier even when there is no remote checkpoint callback.
       suspensionRequired = true;
-      runnerSuspended = await awaitRunnerSuspensionBarrier({
+      // A runnerd lost while the session was open can never answer. A queued
+      // suspend would stay pending in the saved control-plane state and reach
+      // the next runnerd on this root as a stale terminal command.
+      const lostLocalRunner = this.#handle !== null && this.#lostRunnerHandle === this.#handle
+        && !this.options.runnerProcessLauncher && !adoptedRunner;
+      runnerSuspended = !lostLocalRunner && await awaitRunnerSuspensionBarrier({
         commands: () => this.#core?.store.state.commands ?? [],
         queueSuspend: (commandId) => {
           this.#core?.queueCommand("runner.suspend", {}, commandId, true);
