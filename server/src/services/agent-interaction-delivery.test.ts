@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
@@ -203,12 +203,19 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
     expect((await recheckQueuedRunInteractions(db, await readRun(human.run.id))).denied).toBe(false);
   });
 
-  it("recovers old assignment provenance from its existing audit receipt", async () => {
+  it.each(["wake", "run"])("recovers old assignment provenance within the same millisecond as its %s receipt", async source => {
     const f = await seed();
     await db.insert(activityLog).values({ companyId: f.companyId, entityType: "issue", entityId: f.issueId,
       actorType: "agent", actorId: f.sender, agentId: f.sender, action: "issue.updated",
-      details: { assigneeAgentId: f.recipient } });
-    await wake(f, { actorType: null, actorId: null });
+      details: { assigneeAgentId: f.recipient }, createdAt: sql`'2026-11-09T12:00:00.000100Z'::timestamptz` });
+    if (source === "wake") {
+      const receipt = await wake(f, { actorType: null, actorId: null });
+      await db.update(agentWakeupRequests).set({ requestedAt: sql`'2026-11-09T12:00:00.000900Z'::timestamptz` })
+        .where(eq(agentWakeupRequests.id, receipt.id));
+    } else {
+      await db.update(heartbeatRuns).set({ createdAt: sql`'2026-11-09T12:00:00.000900Z'::timestamptz` })
+        .where(eq(heartbeatRuns.id, f.run.id));
+    }
     await restriction(f.sender, { canAssignTasksToAgents: false });
     const result = await recheckQueuedRunInteractions(db, await readRun(f.run.id));
     expect(result.denials.assignment).toMatchObject({ actorAgentId: f.sender, permission: "canAssignTasksToAgents" });

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, lte, or, sql } from "drizzle-orm";
 import { activityLog, agents, agentWakeupRequests, caseHandoffs, heartbeatRunEvents, heartbeatRuns, issueComments, issueThreadInteractions, issues, statusDecisions, type Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
@@ -229,9 +230,12 @@ async function assignmentDenial(db: Executor, run: Run, wake: Wake | undefined, 
   if (wake?.source !== "assignment" && run.invocationSource !== "assignment") return null;
   if (issueId) {
     if (!actorType || actorType === "system") {
+      const requestedAt = wake
+        ? sql`(select ${agentWakeupRequests.requestedAt} from ${agentWakeupRequests} where ${agentWakeupRequests.id} = ${wake.id} and ${agentWakeupRequests.companyId} = ${run.companyId})`
+        : sql`(select ${heartbeatRuns.createdAt} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${run.id} and ${heartbeatRuns.companyId} = ${run.companyId})`;
       const [assignment] = await db.select({ actorType: activityLog.actorType, actorId: activityLog.actorId })
         .from(activityLog).where(and(eq(activityLog.companyId, run.companyId), eq(activityLog.entityType, "issue"),
-          eq(activityLog.entityId, issueId), lte(activityLog.createdAt, wake?.requestedAt ?? run.createdAt),
+          eq(activityLog.entityId, issueId), lte(activityLog.createdAt, requestedAt),
           or(eq(activityLog.action, "issue.created"), eq(activityLog.action, "issue.updated")),
           sql`${activityLog.details}->>'assigneeAgentId' = ${run.agentId}`))
         .orderBy(desc(activityLog.createdAt), desc(activityLog.id)).limit(1);
@@ -412,15 +416,14 @@ async function retainAllowedMessages(tx: Executor, run: Run, issueId: string, al
         wakeCommentId: commentId, wakeCommentIds: [commentId] };
       const payload = withPluginInteractionOrigin(undefined, () =>
         withInteractionDeliveryOrigin({ issueId, commentId, _paperclipWakeContext: context }, actorType, actorId));
+      const wakeId = randomUUID();
+      await notifyDeferredExecutionWork(tx, { companyId: run.companyId, requestId: wakeId });
       const [wake] = await tx.insert(agentWakeupRequests).values({
-        companyId: run.companyId, agentId: run.agentId, source: "assignment", triggerDetail: "system",
+        id: wakeId, companyId: run.companyId, agentId: run.agentId, source: "assignment", triggerDetail: "system",
         reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: actorType,
         requestedByActorId: actorId, payload, idempotencyKey: `interaction-retained:${run.id}:${commentId}`,
       }).returning({ id: agentWakeupRequests.id });
-      if (wake) {
-        retained[commentId] = wake.id;
-        await notifyDeferredExecutionWork(tx, { companyId: run.companyId, requestId: wake.id });
-      }
+      if (wake) retained[commentId] = wake.id;
     }
     await tx.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
       || ${JSON.stringify({ interactionRetainedMessages: retained })}::jsonb`, updatedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
