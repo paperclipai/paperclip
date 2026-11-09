@@ -1,4 +1,4 @@
-import { currentControllerProcess } from "../controller-process-identity.js";
+import { currentControllerProcess, currentProcessSpaceHash } from "../controller-process-identity.js";
 import { renewNativeSessionExecutionLease, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
 import { NativeControllerRecoveryWaitingError } from "./native-controller-recovery.js";
