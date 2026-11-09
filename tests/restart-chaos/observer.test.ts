@@ -214,6 +214,26 @@ describe("TaskObserver", () => {
     expect(artifacts.stop?.runsStartedBeforeContinue).toEqual(["r2"]);
   });
 
+  it.each([
+    ["agent-owned interrupted session", { id: "a-agent", status: "cancelled", ownerType: "agent" }],
+    ["system reconciliation resolved as cancelled", { id: "a-system", status: "resolved", ownerType: "system", outcome: "cancelled" }],
+  ])("records no stall for a blocked subtask whose recovery does not need the board (%s), but still clicks its Retry", async (_name, action) => {
+    let childStatus = "blocked";
+    const base = fakeApi({ "parentIds=": () => [{ id: "c1", parentId: "i1", status: "done" }, { id: "c2", parentId: "i1", status: childStatus }],
+      "/documents/": () => null, "/recovery-actions": () => ({ active: null, actions: [action] }),
+      "/api/issues/c2": () => ({ id: "c2", status: childStatus, interruption: { canRetry: childStatus === "blocked", observedRunId: "child-run" } }) }, "blocked");
+    const childRetries: string[] = [];
+    const api = { ...base.api, get: base.api.get.bind(base.api), async post(route: string, body: unknown) {
+      if (route === "/api/issues/c2/retry") { childRetries.push(route); childStatus = "in_progress"; return { accepted: true }; }
+      return (base.api as unknown as { post(route: string, body: unknown): Promise<unknown> }).post(route, body);
+    } } as unknown as ChaosApi;
+    const observer = new TaskObserver({ ...plan, workload: "M1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    await observer.poll(observer.record.createdAt! + 1_000);
+    expect(observer.record.childStalls ?? []).toEqual([]);
+    expect(childRetries).toEqual(["/api/issues/c2/retry"]);
+  });
+
   it("closes an open task as unfinished at interrupt, so the wave grades it as a failure", async () => {
     const { api } = fakeApi({}, "in_progress");
     const timeline = new Timeline(null);
