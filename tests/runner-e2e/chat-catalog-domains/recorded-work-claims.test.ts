@@ -45,6 +45,7 @@ describe("overview observation time", () => {
     ["24-hour UTC time", "as of 15:26 UTC"],
     ["12-hour time", "at 3:25 pm UTC"],
     ["ISO timestamp", "(snapshot 2026-11-09T15:26:05Z)"],
+    ["ISO timestamp at the window's last second", "(snapshot 2026-11-09T15:31:20Z)"],
     ["ISO timestamp with an offset", "(snapshot 2026-11-09T10:26:05-05:00)"],
     ["dated time without an offset", "as of 2026-11-09 15:26"],
     ["dated 12-hour time", "as of 2026-11-09 03:26 PM UTC"],
@@ -64,6 +65,7 @@ describe("overview observation time", () => {
     ["an ISO timestamp on another day", "(snapshot 2026-11-08T15:26:05Z)"],
     ["an ISO timestamp whose offset puts it outside the run", "(snapshot 2026-11-09T15:26:05-05:00)"],
     ["a dated time on another day", "as of 2026-11-08 15:26"],
+    ["an ISO timestamp seconds after the window closes", "(snapshot 2026-11-09T15:31:59Z)"],
     ["a dated 12-hour time on the wrong half of the day", "as of 2026-11-09 03:26 AM UTC"],
   ])("rejects %s", (_name, phrase) => {
     const v = overview(); v.reply = v.reply.replace("as of 15:26 UTC", phrase); expect(failed(v)).toEqual(["observation-time"]);

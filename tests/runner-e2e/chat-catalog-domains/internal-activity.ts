@@ -118,14 +118,14 @@ export function statesObservationTime(reply: string, runs: ReadonlyArray<{ start
   let prose = reply.replace(/\]\([^)]*\)/g, "]");
   let stated = false;
   // A full timestamp is judged as a whole: with an offset it must be an instant inside the window; without one, its date and minute must match a zone.
-  prose = prose.replace(/\b(\d{4}-\d{2}-\d{2})(?:T|,?\s+(?:at\s+)?)(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:(Z|[+-]\d{2}:?\d{2})|\s*([ap])\.?m\.?(?![a-z]))?(?!\d|:\d)/gi,
-    (_whole, date: string, hour: string, minute: string, offset?: string, meridiem?: string) => {
+  prose = prose.replace(/\b(\d{4}-\d{2}-\d{2})(?:T|,?\s+(?:at\s+)?)(\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?(?:(Z|[+-]\d{2}:?\d{2})|\s*([ap])\.?m\.?(?![a-z]))?(?!\d|:\d)/gi,
+    (_whole, date: string, hour: string, minute: string, seconds?: string, offset?: string, meridiem?: string) => {
       const clock = clockTime(Number(hour), minute, meridiem);
       if (!clock) return " ";
       if (offset) {
         const zone = offset.toUpperCase() === "Z" ? "Z" : offset.replace(/^([+-]\d{2}):?(\d{2})$/, "$1:$2");
-        const at = Date.parse(`${date}T${clock}:00${zone}`);
-        stated ||= Number.isFinite(at) && at >= from - 60_000 && at <= to;
+        const at = Date.parse(`${date}T${clock}:${(seconds ?? "00").padStart(2, "0")}${zone}`);
+        stated ||= Number.isFinite(at) && at >= from && at <= to;
       } else stated ||= allowedDated.has(`${date} ${clock}`);
       return " ";
     });
