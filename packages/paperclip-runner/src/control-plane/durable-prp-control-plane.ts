@@ -872,6 +872,13 @@ function validStoredWarmTransition(state: StoredCoreState): boolean {
   }
 }
 
+function eventCommitFailureCause(error: unknown): string {
+  const code = isRecord(error) ? error.code : undefined;
+  if (typeof code === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(code)) return code;
+  const name = error instanceof Error ? error.name : typeof error;
+  return /^[A-Za-z0-9_.:-]{1,80}$/.test(name) ? name : "unknown_error";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -2042,7 +2049,7 @@ export class DurablePrpControlPlane {
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
   #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
-  #eventDeliveryStall: { ackedSourceSeq: number; since: number; failures: number } | null = null;
+  #eventDeliveryStall: { ackedSourceSeq: number; since: number; failures: number; cause: string } | null = null;
   #connectionLeaseTtlMs: number;
   #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
   #persistedRevision = -1;
@@ -4127,15 +4134,21 @@ export class DurablePrpControlPlane {
     );
   }
 
-  #eventDeliveryStalled(now = Date.now()): boolean {
+  #eventCommitFailed(connection: AuthorityConnection, cause: string, now = Date.now()): void {
     const acked = this.#store.state.ackedSourceSeq;
     const stall = this.#eventDeliveryStall;
     if (stall === null || stall.ackedSourceSeq !== acked) {
-      this.#eventDeliveryStall = { ackedSourceSeq: acked, since: now, failures: 1 };
-      return false;
+      this.#eventDeliveryStall = { ackedSourceSeq: acked, since: now, failures: 1, cause };
+    } else {
+      stall.failures += 1;
+      stall.cause = cause;
+      if (stall.failures >= EVENT_DELIVERY_STALL_FAILURES && now - stall.since >= EVENT_DELIVERY_STALL_MS) {
+        this.#failProtocolIntegrity(connection,
+          new NativeSessionProtocolIntegrityError("runner_event_commit_stalled", `${cause} at source seq ${acked + 1}`));
+        return;
+      }
     }
-    stall.failures += 1;
-    return stall.failures >= EVENT_DELIVERY_STALL_FAILURES && now - stall.since >= EVENT_DELIVERY_STALL_MS;
+    connection.close();
   }
 
   #failProtocolIntegrity(
@@ -4290,11 +4303,8 @@ export class DurablePrpControlPlane {
       if (this.#eventOwner !== connection || this.#identity !== identity) return;
       if (error instanceof NativeSessionProtocolIntegrityError) {
         this.#failProtocolIntegrity(connection, error);
-      } else if (this.#eventDeliveryStalled()) {
-        this.#failProtocolIntegrity(connection,
-          new NativeSessionProtocolIntegrityError("runner_event_delivery_stalled"));
       } else {
-        connection.close();
+        this.#eventCommitFailed(connection, eventCommitFailureCause(error));
       }
       return;
     }
@@ -4341,12 +4351,12 @@ export class DurablePrpControlPlane {
       // turn before readers react or a replacement owner adopts their cursor.
       const candidate = buildCandidate(this.#store.state);
       if (candidate === null) {
-        connection.close();
+        this.#eventCommitFailed(connection, "journal_sequence_not_contiguous");
         return;
       }
       this.#store.commit(candidate, !isStreamingEvent(event));
     } else if (!await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event))) {
-      if (isCurrentOwner()) connection.close();
+      if (isCurrentOwner()) this.#eventCommitFailed(connection, "journal_commit_refused");
       return;
     }
     if (!isCurrentOwner()) return;
@@ -4367,7 +4377,14 @@ export class DurablePrpControlPlane {
     if (ownsLiveDispatch) this.#pendingSemanticCalls.add(liveCommandId!);
     let dispatched = false;
     try {
-      await this.flushCheckpoint();
+      try {
+        await this.flushCheckpoint();
+      } catch (error) {
+        if (this.#eventOwner === connection && this.#identity === identity) {
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${eventCommitFailureCause(error)}`);
+        }
+        return;
+      }
       if (this.#eventOwner !== connection || this.#identity !== identity) return;
       if (!this.#retainsSourceInputs() && ownsLiveDispatch && liveCall && liveCommandId && this.#onSemanticToolInput && !this.#getCommand(liveCommandId)) {
         const call = liveCall;

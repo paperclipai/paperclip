@@ -1347,7 +1347,9 @@ it.each(["success", "integrity_failure"] as const)("ignores a replaced connectio
 
 it("fails closed when runner events keep failing to commit without progress", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-event-delivery-stall-"));
-  const commits = vi.fn(async () => { throw new Error("database unavailable"); });
+  const commits = vi.fn(async () => {
+    throw Object.assign(new Error("connection reset by private-host-fixture"), { code: "ECONNRESET" });
+  });
   const onProtocolIntegrityError = vi.fn();
   const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
     expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
@@ -1374,7 +1376,10 @@ it("fails closed when runner events keep failing to commit without progress", as
       client.socket.destroy();
     }
     expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
-    expect(onProtocolIntegrityError.mock.calls[0]![0]).toMatchObject({ reason: "runner_event_delivery_stalled" });
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error;
+    expect(failure).toMatchObject({ reason: "runner_event_commit_stalled", detail: "ECONNRESET at source seq 1" });
+    expect(failure.message).toContain("runner_event_commit_stalled");
+    expect(failure.message).not.toContain("private-host-fixture");
   } finally {
     now.mockRestore();
     await core.stop();
