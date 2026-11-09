@@ -275,6 +275,34 @@ export function isEphemeralPostgresScanFile(paperclipHome: string, file: string)
     /^instances\/[^/]+\/db\/base\/\d+\/\d+(?:_(?:fsm|vm|init))?(?:\.\d+)?$/.test(relative);
 }
 
+/** The product's embedded database files: the only persisted state that may
+ * hold a product-delivered credential (the saved chat reply and the run events
+ * it is built from). Run logs, server/HTTP logs and every other file stay
+ * strict. */
+export function isProductDeliveredStateFile(paperclipHome: string, file: string): boolean {
+  const relative = path.relative(paperclipHome, file).split(path.sep).join("/");
+  return /^instances\/[^/]+\/db\//.test(relative);
+}
+
+/** Scan persisted state. A product-delivered value is held to every rule
+ * except inside the embedded database under `productStateRoot` (the isolated
+ * Paperclip home); every other secret is held to every rule everywhere. */
+export async function findSecretLeakInPersistedState(
+  root: string,
+  secrets: readonly string[],
+  delivered: readonly string[],
+  options: Parameters<typeof findSecretLeakInDirectory>[2] & { productStateRoot?: string } = {},
+) {
+  const { productStateRoot, ...scan } = options;
+  const deliveredValues = new Set(normalizedSecrets(delivered));
+  if (!productStateRoot || deliveredValues.size === 0) return findSecretLeakInDirectory(root, secrets, scan);
+  const strict = normalizedSecrets(secrets).filter(value => !deliveredValues.has(value));
+  const leak = await findSecretLeakInDirectory(root, strict, scan);
+  if (leak) return leak;
+  return findSecretLeakInDirectory(root, [...deliveredValues], { ...scan,
+    ignoreFile: file => scan.ignoreFile?.(file) === true || isProductDeliveredStateFile(productStateRoot, file) });
+}
+
 export async function findSecretLeakInDirectory(
   root: string,
   secrets: readonly string[],
