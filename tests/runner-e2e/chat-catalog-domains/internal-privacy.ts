@@ -194,10 +194,13 @@ function shareProject(): ChatCatalogCase {
       await ctx.input.evidence("chat-catalog-before-owner-project-sharing.json", state.beforeShare);
       if (agentMutation !== 403 || ![403, 404].includes((state.beforeShare as { observerProjectStatus: number }).observerProjectStatus))
         throw new Error("Private-project audience changed without the authorized human control");
-      const href = first.links.find(link => hasLink({ ...first, links: [link] }, "projects", p));
+      // The reply can settle before its links render in the thread; wait briefly for them.
+      const linked = await pollUntil({ label: "Owner handoff project link rendered", deadlineAt: Date.now() + 20_000,
+        load: () => observeInternal(ctx, state), accept: o => o.links.some(link => hasLink({ ...o, links: [link] }, "projects", p)) }).catch(() => first);
+      const href = linked.links.find(link => hasLink({ ...linked, links: [link] }, "projects", p));
       if (!href) throw new Error("Owner handoff omitted the actual project link");
       const sourceUrl = ctx.input.page.url();
-      await internalResultLink(ctx, first, href).first().click();
+      await internalResultLink(ctx, linked, href).first().click();
       await ctx.input.page.getByText("Configuration", { exact: true }).last().click();
       await ctx.input.page.getByRole("button", { name: "Manage access", exact: true }).click();
       const dialog = ctx.input.page.getByRole("dialog", { name: "Private project access", exact: true });
