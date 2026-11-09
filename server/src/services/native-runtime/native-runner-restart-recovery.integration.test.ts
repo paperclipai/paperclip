@@ -2762,8 +2762,9 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     { label: "restarts with its predecessor's runner identity", providerEvent: false, process: "inherited" },
     { label: "keeps its own runner identity held instead of restarting", providerEvent: false, process: "own" },
     { label: "keeps a projected provider event held instead of restarting", providerEvent: true, process: "none" },
-  ])("$label an unclaimed remote follow-up that carries only its inherited checkpoint", async ({ providerEvent, process }) => {
-    const fixture = await seedUnlaunchedRemoteClaim(`UNCLAIMED-INHERITED-${providerEvent}-${process}`);
+    { label: "keeps a pending runtime request held instead of restarting", providerEvent: false, process: "none", pendingRequest: true },
+  ])("$label an unclaimed remote follow-up that carries only its inherited checkpoint", async ({ providerEvent, process, pendingRequest }) => {
+    const fixture = await seedUnlaunchedRemoteClaim(`UNCLAIMED-INHERITED-${providerEvent}-${process}-${Boolean(pendingRequest)}`);
     if (process !== "none") {
       const processStartedAt = new Date(Date.now() - 120_000);
       await fixture.db.update(heartbeatRuns).set({ processPid: 596, processGroupId: null, processStartedAt, processHostHash: "remote" })
@@ -2785,13 +2786,13 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       driverKind: "codex_app_server", backendKind: "runner", sessionId: "inherited-thread", cursor: null,
       identity: { companyId, issueId: fixture.issueId, runId: fixture.runId, agentId, sessionId: fixture.native.normalizedSessionId },
       providerSessionId: "inherited-thread", activeTurnId: null, terminal: null, terminalTurns: [], semanticResult: null,
-      pendingRuntimeRequests: [], lineage: [],
+      pendingRuntimeRequests: pendingRequest ? [{ requestId: "input-1", kind: "user_input" }] : [], lineage: [],
     } } }).where(eq(heartbeatRuns.id, fixture.runId));
     if (providerEvent) await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq: 901,
       stream: "system", level: "info", eventType: "session.started" });
     const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
       restartKind: "hard", runIds: [fixture.runId] });
-    if (providerEvent || process === "own") {
+    if (providerEvent || process === "own" || pendingRequest) {
       expect(claim).not.toMatchObject({ kind: "bootstrap_incomplete" });
       return;
     }
