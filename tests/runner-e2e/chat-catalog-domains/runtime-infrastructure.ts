@@ -12,7 +12,8 @@ export const INFRASTRUCTURE_RECOVERY_ORACLE = "paperclip.chat-catalog.runtime.in
 const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 /**
  * The chat run read the source task's saved recovery record through a product
- * tool: its recovery actions, its runs, or the failed run itself. Tool outputs
+ * tool: its recovery actions, its runs, the failed run itself, or the task
+ * whose execution blocker names that failed run. Tool outputs
  * are product data and are matched exactly; the agent's wording never is.
  */
 export function readSourceRecoveryRecord(events: readonly Record<string, unknown>[], taskId: string, failedRunId: string) {
@@ -21,7 +22,10 @@ export function readSourceRecoveryRecord(events: readonly Record<string, unknown
     const output = typeof payload.output === "string" ? payload.output : "";
     return row.eventType === "tool.execution.completed" && envelope.sourceKind === "runner" && payload.status === "completed"
       && (/apiOperationId\\*"\s*:\s*\\*"GET \/api\/issues\/\{id\}\/(?:recovery-actions|runs)(?![\w/{])/.test(output) && output.includes(taskId)
-        || /apiOperationId\\*"\s*:\s*\\*"GET \/api\/heartbeat-runs\/\{runId\}(?![\w/{])/.test(output) && output.includes(failedRunId));
+        || /apiOperationId\\*"\s*:\s*\\*"GET \/api\/heartbeat-runs\/\{runId\}(?![\w/{])/.test(output) && output.includes(failedRunId)
+        // The task read carries its execution blocker: the saved recovery
+        // record, bound to the failed run it stopped on.
+        || /apiOperationId\\*"\s*:\s*\\*"GET \/api\/issues\/\{id\}\\*"/.test(output) && output.includes(taskId) && output.includes(failedRunId));
   });
 }
 /** Whether one controller run read the recovery record; computed from its own retained events. */
