@@ -2752,11 +2752,12 @@ export async function executeNativeSession(
       return true;
     };
     const supersededByRestartContinuation = async (event: PrpEvent, signal: AbortSignal) => {
-      if (!recovered || !checkpointedInterruption || event.eventType !== "turn.failed" ||
-          !isNativeRestartInterruption(event.payload.error) || !event.turnId ||
-          event.turnId === checkpointedInterruption) return false;
-      await startupDecision;
-      signal.throwIfAborted();
+      if (!recovered || event.eventType !== "turn.failed" ||
+          !isNativeRestartInterruption(event.payload.error) || !event.turnId) return false;
+      if (checkpointedInterruption) {
+        await startupDecision;
+        signal.throwIfAborted();
+      }
       if (!restartContinuationStarted) return false;
       await continuationSetup?.catch(() => undefined);
       signal.throwIfAborted();
