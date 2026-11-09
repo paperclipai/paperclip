@@ -1565,6 +1565,7 @@ export function createPluginWorkerHandle(
   type LoginPtyPreBindRecord = LoginPtyPreBindOutputRecord | LoginPtyPreBindExitRecord;
 
   interface LoginPtyRoute {
+    companyId: string;
     hostRouteId: string;
     state: LoginPtyRouteState;
     workerSessionId: string | null;
@@ -1627,11 +1628,11 @@ export function createPluginWorkerHandle(
   // that carries the exact host route identifier. An absent, malformed,
   // mismatched, or timed-out acknowledgement returns false, so the caller fails
   // closed.
-  async function closeLoginPtyTerminal(hostRouteId: string): Promise<boolean> {
+  async function closeLoginPtyTerminal(hostRouteId: string, companyId: string): Promise<boolean> {
     try {
       const ack = await callInternal(
         "loginPtyClose",
-        { hostRouteId },
+        { hostRouteId, companyId },
         loginPtyCloseTimeoutMs,
       );
       return isRecord(ack) && readNonEmptyString(ack.hostRouteId) === hostRouteId;
@@ -1664,7 +1665,7 @@ export function createPluginWorkerHandle(
     // A terminalized route reports a null exit code, which the runner treats as a
     // failure.
     settleRouteWait(route, { exitCode: null });
-    const confirmed = await closeLoginPtyTerminal(route.hostRouteId);
+    const confirmed = await closeLoginPtyTerminal(route.hostRouteId, route.companyId);
     if (!confirmed) {
       // The worker did not acknowledge the close, so the host cannot prove the
       // terminal is gone. Fail closed: retire the worker before any reuse. This
@@ -1921,6 +1922,7 @@ export function createPluginWorkerHandle(
       settleWait = resolve;
     });
     const route: LoginPtyRoute = {
+      companyId: input.companyId,
       hostRouteId,
       state: "reserved",
       workerSessionId: null,
@@ -2003,7 +2005,7 @@ export function createPluginWorkerHandle(
         if (route.state !== "open" || !sid) return;
         void callInternal(
           "loginPtyInput",
-          { workerSessionId: sid, data, inputId: randomUUID() },
+          { companyId: route.companyId, workerSessionId: sid, data, inputId: randomUUID() },
           loginPtyOpenTimeoutMs,
         ).catch(() => terminalizeLoginPtyRoute(route));
       },
@@ -2015,7 +2017,7 @@ export function createPluginWorkerHandle(
         if (!sid) return;
         void callInternal(
           "loginPtyStop",
-          { workerSessionId: sid },
+          { companyId: route.companyId, workerSessionId: sid },
           loginPtyOpenTimeoutMs,
         ).catch(() => {});
       },

@@ -1576,6 +1576,8 @@ Release and destroy must retire only that login allocation and preserve the
 computer. Omitted purpose retains the existing execution behavior.
 
 Core supplies `expiresAt` to the PTY open and an `inputId` for each input write.
+Input, stop, and close retain the opening company context so provider callbacks
+can use company-scoped host services during cleanup.
 A provider that retries delivery must retain the input identity and bytes, and
 reject reuse of the identity with different input. A failed input call ends the
 Core login; Core does not silently replay an unconfirmed write.

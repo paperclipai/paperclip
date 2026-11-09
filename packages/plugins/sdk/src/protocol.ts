@@ -1124,6 +1124,8 @@ export interface PluginLoginPtyOpenResult {
 
 /** The input request. It carries the worker session identifier and the raw input bytes. */
 export interface PluginLoginPtyInputParams {
+  /** Host-bound company context for provider callbacks during this lifecycle call. */
+  companyId?: string;
   /** Stable identity of this input write. Retries retain the identity and bytes. */
   inputId?: string;
   /** The worker session identifier that the open reply returned. */
@@ -1148,12 +1150,16 @@ export interface PluginLoginPtyReadCredentialResult {
 
 /** The stop request. It carries the worker session identifier. */
 export interface PluginLoginPtyStopParams {
+  /** Host-bound company context for provider callbacks during this lifecycle call. */
+  companyId?: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
 }
 
 /** The close request. The host route identifier is the authoritative key. */
 export interface PluginLoginPtyCloseParams {
+  /** Host-bound company context for provider callbacks during this lifecycle call. */
+  companyId?: string;
   /**
    * The host-owned opaque route identifier. This is the authoritative close key,
    * so the host closes the terminal even when no worker session identifier

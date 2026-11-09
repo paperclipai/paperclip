@@ -1336,6 +1336,27 @@ describe("plugin worker manager setup-token pty route gate", () => {
     }
   });
 
+  it("retains the opening company for scoped host calls during input, stop, and close", async () => {
+    const stages: string[] = [];
+    const handle = makeLoginPtyHandle({ hostHandlers: { "companies.get": async (
+      params: { companyId: string; stage: string }, context?: { invocationScope?: { companyId?: string } },
+    ) => {
+      if (context?.invocationScope?.companyId !== params.companyId || params.companyId !== "company-1") throw new Error("Host company scope denied");
+      stages.push(params.stage);
+      return { id: params.companyId };
+    } } });
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ probeLifecycle: true }));
+      session.write("browser-code");
+      await vi.waitFor(() => expect(stages).toEqual(["loginPtyInput"]));
+      session.kill();
+      await vi.waitFor(() => expect(stages).toEqual(["loginPtyInput", "loginPtyStop"]));
+      await session.close();
+      expect(stages).toEqual(["loginPtyInput", "loginPtyStop", "loginPtyClose"]);
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
   it("fails the login when input delivery is unconfirmed", async () => {
     const handle = makeLoginPtyHandle();
     try {
