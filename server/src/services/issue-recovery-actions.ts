@@ -93,7 +93,7 @@ export type ResolveIssueRecoveryActionInput = {
 function readModelNextAction(row: IssueRecoveryActionRow): string {
   const system = readSystemRecovery(row.evidence);
   return system?.state === "exhausted" && row.evidence?.workspaceRecovery
-    ? exhaustedSystemRecoveryAction(system) : row.nextAction;
+    ? exhaustedSystemRecoveryAction(system, row.evidence) : row.nextAction;
 }
 
 function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {

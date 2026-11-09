@@ -127,16 +127,44 @@ export function failSystemRecovery(
   };
 }
 
+/**
+ * An exhausted save whose last failure was an unproven agent stop is not a
+ * permanent refusal: once the source run has ended, a later attempt can prove
+ * the stop. Recovery re-arms it a bounded number of times on a backoff
+ * (workspace-recovery-stop-proof), then an export hold continues from the last
+ * save with the unsaved files attached, like a refused source.
+ */
+export const STOP_PROOF_RECOVERY_KEY = "stopProofRecovery";
+export const STOP_PROOF_RECOVERY_SCHEMA = "paperclip.stop-proof-recovery.v1";
+export const STOP_PROOF_MAX_REARMS = 4;
+export const STOP_PROOF_WAIT_CODE = "agent_stop_unconfirmed";
+
+export function readStopProofRecovery(evidence: Record<string, unknown> | null | undefined): { rearms: number; nextRearmAt: number | null } | null {
+  const marker = evidence?.[STOP_PROOF_RECOVERY_KEY] as Record<string, unknown> | undefined;
+  if (!marker || marker.schema !== STOP_PROOF_RECOVERY_SCHEMA || typeof marker.rearms !== "number") return null;
+  return { rearms: marker.rearms, nextRearmAt: typeof marker.nextRearmAt === "number" ? marker.nextRearmAt : null };
+}
+
+export function isExhaustedStopProofWait(state: Pick<SystemRecoveryState, "state" | "failure"> | null | undefined) {
+  return state?.state === "exhausted" && state.failure?.code === STOP_PROOF_WAIT_CODE
+    && state.failure.retryClass === "recheck_evidence";
+}
+
+/** Every bounded re-arm of an unproven stop is spent. */
+export function stopProofRearmsSpent(evidence: Record<string, unknown> | null | undefined) {
+  return (readStopProofRecovery(evidence)?.rearms ?? 0) >= STOP_PROOF_MAX_REARMS;
+}
+
 /** User-facing text for a spent recovery budget. It names what happens next and
  * never asks a person to inspect a sandbox or environment. The code stays for support. */
-export function exhaustedSystemRecoveryAction(state: SystemRecoveryState): string {
+export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, evidence?: Record<string, unknown> | null): string {
   // Another Retry cannot release a copyback owner that stopped without reporting.
   if (state.failure?.code === "copyback_stop_unconfirmed")
     return "Recovery of saved work is waiting for the previous server's file copy to stop. "
       + "Recovery resumes once Paperclip can confirm that it stopped. No provider turn is submitted.";
   // An unproven agent stop is re-proven automatically once the run is over
-  // (workspace-recovery-stop-proof); the wait is bounded and needs no person.
-  if (state.failure?.code === "agent_stop_unconfirmed")
+  // (workspace-recovery-stop-proof), while a bounded re-arm remains.
+  if (evidence !== undefined && isExhaustedStopProofWait(state) && !stopProofRearmsSpent(evidence))
     return "Recovery of saved work is waiting to confirm that the previous run stopped. "
       + "Paperclip tries again automatically, and the agent will not repeat its work.";
   const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";

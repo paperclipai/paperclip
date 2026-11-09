@@ -5,10 +5,9 @@ import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
-import { createSystemRecovery, readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
-import { isExhaustedStopProofWait, readStopProofRecovery, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KEY,
-  STOP_PROOF_RECOVERY_SCHEMA } from "./workspace-recovery-fallback-discovery.js";
-import { terminalWorkspaceRunStates, workspaceExportCauses, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
+import { createSystemRecovery, isExhaustedStopProofWait, readStopProofRecovery, readSystemRecovery, STOP_PROOF_MAX_REARMS,
+  STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, type SystemRecoveryState } from "./system-recovery-state.js";
+import { terminalWorkspaceRunStates, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
 
 /** Delay before re-arm n+1, measured from re-arm n. The first re-arm is due at once. */
 const STOP_PROOF_REARM_DELAYS_MS = [30 * 60_000, 2 * 60 * 60_000, 8 * 60 * 60_000];
@@ -48,17 +47,19 @@ export async function rearmExhaustedStopProof(db: Db, input: WorkspaceRecoverySo
     const system = readSystemRecovery(action.evidence);
     if (!system || system.generationId !== observed.generationId || system.revision !== observed.revision
       || !isExhaustedStopProofWait(system) || system.sourceRunId !== run.id) return null;
-    if (!workspaceExportCauses.includes(action.cause) || !["active", "escalated"].includes(action.status)
+    if (!["active", "escalated"].includes(action.status)
       || action.evidence.runId !== run.id || action.evidence.executionReconciliation || action.evidence.retainedSourceFallback) return null;
     // The agent is provably gone: its run ended and nothing still executes or
     // finalizes it. The new attempt still proves the sandbox stop itself.
     const at = new Date(now);
     if (!terminalWorkspaceRunStates.includes(run.status) || !run.finishedAt || adapterExecutionControls.has(run.id)
       || (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > at)
-      || (coordinator?.leaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt > at))) return null;
+      // The same fence as runOwnerFenceHeldSql: an owner with a live lease.
+      || (coordinator?.leaseOwner && coordinator.leaseExpiresAt && coordinator.leaseExpiresAt > at)) return null;
     const marker = readStopProofRecovery(action.evidence);
     const rearms = marker?.rearms ?? 0;
     if (rearms >= STOP_PROOF_MAX_REARMS || (marker?.nextRearmAt ?? 0) > now) return null;
+    // Any workspace recovery the worker owns: export holds and restore holds alike.
     const next: SystemRecoveryState = { ...createSystemRecovery(run.id), revision: system.revision + 1,
       preservationOperationIds: system.preservationOperationIds, providerCooldownAt: system.providerCooldownAt,
       nextAttemptAt: system.providerCooldownAt };

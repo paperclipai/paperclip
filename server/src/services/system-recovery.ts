@@ -60,7 +60,7 @@ export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySour
   // A spent budget is not system work any more. Hand it to the board with the
   // one action that can progress it, instead of leaving an inert system owner.
   const exhausted = next.state === "exhausted";
-  const handoff = exhausted ? exhaustedSystemRecoveryAction(next) : null;
+  const handoff = exhausted ? exhaustedSystemRecoveryAction(next, await loadActionEvidence(db, source)) : null;
   const compatibility = {
     schema: "paperclip.workspace-recovery.v1", runId: source.runId, status,
     stage: next.phase === "verify_execution" ? "verifying_stop" : next.phase === "preserve_files" ? "restoring_files" : "saving_receipts",
@@ -91,7 +91,7 @@ export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySour
 export async function handOffExhaustedSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity,
   state: SystemRecoveryState) {
   if (state.state !== "exhausted") return false;
-  const handoff = exhaustedSystemRecoveryAction(state);
+  const handoff = exhaustedSystemRecoveryAction(state, await loadActionEvidence(db, source));
   const [updated] = await db.update(issueRecoveryActions).set({
     ownerType: "board", ownerAgentId: null, ownerUserId: null, nextAction: handoff,
     evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{workspaceRecovery,message}', ${JSON.stringify(handoff)}::jsonb)`,
@@ -104,6 +104,12 @@ export async function handOffExhaustedSystemRecovery(db: Db, source: WorkspaceRe
     sql`jsonb_typeof(${issueRecoveryActions.evidence}->'workspaceRecovery') = 'object'`))
     .returning({ id: issueRecoveryActions.id });
   return Boolean(updated);
+}
+
+async function loadActionEvidence(db: Db, source: WorkspaceRecoverySourceIdentity) {
+  const [row] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.id, source.actionId)));
+  return row?.evidence ?? null;
 }
 
 export async function loadSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {

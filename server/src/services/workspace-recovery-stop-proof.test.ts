@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { activityLog, environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { readRemoteWorkspaceWriterHold, remoteWorkspaceHoldRefusesStart } from "./remote-workspace-writer-hold.js";
@@ -109,8 +109,12 @@ describe("exhausted stop-proof holds", () => {
 
   it("keeps the hold while the source run's controller still holds its lease", async () => {
     const f = await exhaustedStopProofHold();
-    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, f.runId));
+    const expiresAt = Date.now() + 60 * 60_000;
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(expiresAt) }).where(eq(heartbeatRuns.id, f.runId));
 
+    // The worker is not woken until the lease can expire, and does not select the hold before that.
+    expect(await nextWorkspaceRecoveryAt(db)).toBeGreaterThanOrEqual(expiresAt - 1_000);
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).not.toContain(f.actionId);
     await recoverRetainedWorkspace(f.input);
 
     const held = await action(f.actionId);
@@ -151,6 +155,29 @@ describe("exhausted stop-proof holds", () => {
     const decision = settled.evidence.executionReconciliation as { retainedSourceFallback: { quarantine: { state: string } } };
     // No unsaved work is discarded silently: it is attached to the child task.
     expect(decision.retainedSourceFallback.quarantine.state).toBe("captured");
+    expect(await parentHold(f)).toEqual({ kind: "free" });
+  }, 60_000);
+
+  it("reconsiders a spent fallback when a late stop receipt arrives", async () => {
+    const f = await exhaustedStopProofHold();
+    const prior = await action(f.actionId);
+    const generationId = readSystemRecovery(prior.evidence)!.generationId;
+    const checkedAt = Date.now() - 60_000;
+    await db.update(issueRecoveryActions).set({ evidence: { ...prior.evidence,
+      stopProofRecovery: { schema: "paperclip.stop-proof-recovery.v1", rearms: 4, generationId, previousGenerationId: randomUUID(),
+        rearmedAt: Date.now() - 86_400_000, nextRearmAt: null },
+      retainedSourceFallbackCheck: { generationId, reason: "execution_not_stopped", checks: 12, checkedAt, nextCheckAt: null } } })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+    await db.update(environmentLeases).set({ updatedAt: new Date(checkedAt - 60_000) }).where(eq(environmentLeases.heartbeatRunId, f.runId));
+    const ids = async () => (await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id);
+    // Every bounded check is spent: the worker stops selecting the hold.
+    expect(await ids()).not.toContain(f.actionId);
+
+    // A provider stop receipt lands on the source allocation afterwards.
+    await db.update(environmentLeases).set({ updatedAt: new Date() }).where(eq(environmentLeases.heartbeatRunId, f.runId));
+    expect(await ids()).toContain(f.actionId);
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
     expect(await parentHold(f)).toEqual({ kind: "free" });
   }, 60_000);
 });
