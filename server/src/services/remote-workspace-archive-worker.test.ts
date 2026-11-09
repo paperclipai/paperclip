@@ -36,7 +36,7 @@ vi.mock("node:worker_threads", async importOriginal => {
         options = { ...options, workerData: { ...options?.workerData, testControl: state.control } };
       }
       super(source, options);
-      if (options?.env && typeof options.env.TMPDIR === "string") state.roots.push(options.env.TMPDIR);
+      if (options?.env && typeof options.env === "object" && typeof options.env.TMPDIR === "string") state.roots.push(options.env.TMPDIR);
       state.spawned++;
       this.once("exit", () => { state.exited++; });
     }
