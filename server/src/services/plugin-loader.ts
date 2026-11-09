@@ -2201,7 +2201,7 @@ export function pluginLoader(
 
     // 4. Stop the worker process
     try {
-      if (workerManager.isRunning(pluginId)) {
+      if (workerManager.isRunning?.(pluginId) || workerManager.getWorker?.(pluginId)) {
         await workerManager.stopWorker(pluginId);
       }
     } catch (err) {

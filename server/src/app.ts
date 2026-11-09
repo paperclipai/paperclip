@@ -944,6 +944,11 @@ export async function createApp(
     lifecycle,
     hostServicesDisposers,
   );
+  const unsubscribeWorkerRecoveryExhausted = workerManager.onWorkerRecoveryExhausted?.((event) => {
+    void lifecycle.markError(event.pluginId, event.lastError).catch((err) => {
+      logger.error({ err, pluginId: event.pluginId }, "Failed to mark plugin as error after worker recovery gave up");
+    });
+  });
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null =
     null;
   let viteDevServer: { close(): Promise<void> } | null = null;
@@ -1400,6 +1405,7 @@ export async function createApp(
         viteHtmlRenderer?.dispose();
         void viteDevServer?.close().catch(() => undefined);
         viteHmrServer?.close();
+        unsubscribeWorkerRecoveryExhausted?.();
         hostServiceCleanup.disposeAll();
         hostServiceCleanup.teardown();
         await stopMuseMaintenance();
