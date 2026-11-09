@@ -88,6 +88,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(),
   cancelRun: vi.fn(),
   cancelInvocationsForAgents: vi.fn(),
+  cancelActiveForAgent: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -1788,6 +1789,125 @@ describe("agent permission routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.status).toBe("terminated");
     expect(mockAgentService.updateAndTransition).toHaveBeenCalledWith(agentId, "terminate", expect.anything(), expect.anything());
+  });
+
+  it.each([
+    ["PATCH status", (base: string) => request(base).patch(`/api/agents/${agentId}`).send({ status: "paused" })],
+    ["POST pause", (base: string) => request(base).post(`/api/agents/${agentId}/pause`).send({})],
+  ])("keeps pausing an agent board-only through %s, even for an agent allowed to configure the target", async (_route, send) => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "running" });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, send);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(res.body.code).toBe("board_access_required");
+    expect(res.body.remediation).toContain("this denial is final");
+    expect(res.body.remediation).toContain(`[Open the agent's profile](/<prefix>/agents/${agentId})`);
+    expect(mockAgentService.updateAndTransition).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelActiveForAgent).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("still lets a board user pause through PATCH status", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "idle" });
+    mockAgentService.updateAndTransition.mockResolvedValue({ ...baseAgent, status: "paused" });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "paused" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.updateAndTransition).toHaveBeenCalledWith(agentId, "pause", expect.anything(), expect.anything());
+  });
+
+  it("applies the resume change-grant decision to PATCH status idle from an agent", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "paused" });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string; scope?: { requiresChangeGrant?: boolean } }) => {
+      const allowed = !input.scope?.requiresChangeGrant;
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_explicit_grant" : "deny_missing_consent",
+        explanation: allowed ? "Allowed by test grant" : "Accepted consent is required for this suggested change.",
+      };
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "idle" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent_config:update",
+      scope: { requiresChangeGrant: true },
+    }));
+    expect(mockAgentService.updateAndTransition).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("lets a granted agent resume through PATCH status idle", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "paused" });
+    mockAgentService.updateAndTransition.mockResolvedValue({ ...baseAgent, status: "idle" });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "idle" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.updateAndTransition).toHaveBeenCalledWith(agentId, "resume", expect.anything(), expect.anything());
+  });
+
+  it("keeps the invalid-org-chain resume guard on PATCH status idle", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      status: "paused",
+      orgChainHealth: { status: "invalid_org_chain", reason: "missing_manager", repairGuidance: "Repair the reporting chain first." },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "idle" }));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Repair the reporting chain first.");
+    expect(mockAgentService.updateAndTransition).not.toHaveBeenCalled();
   });
 
   it("terminates directly when no open hire approval is linked", async () => {
