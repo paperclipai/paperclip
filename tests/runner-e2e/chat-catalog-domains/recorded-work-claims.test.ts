@@ -43,6 +43,20 @@ describe("actual work/reference roles and explicit negative related-work context
   it("accepts recorded work/reference table roles and a visibly linked but explicitly unrelated accessible task", () => { expect(gradeIntegratorRelatedWork(related()).passed).toBe(true); });
   it("retains harmless external references with title-grounded actual work", () => { const v=related();v.reply="The main Investigation task is done after change PR-123.\nIts reference Mobile follow-up remains backlog.\nACN-3 is explicitly unrelated and has no case link."; expect(gradeIntegratorRelatedWork(v).passed).toBe(true); });
   it("retains harmless external numeric issue references", () => { const v=related();v.reply="The main Investigation task is done after [a change](https://github.com/acme/repo/issues/123).\nIts reference Mobile follow-up remains backlog.\nACN-3 is explicitly unrelated and has no case link."; expect(gradeIntegratorRelatedWork(v).passed).toBe(true); });
+  it("accepts the retained product-vocabulary role wording without requiring primary/main", () => {
+    const v = related();
+    v.reply = "Case ACN-C1 has 2 tasks tied to it:\n\n- [ACN-1](/ACN/issues/ACN-1) — **Investigation** · work task · **done** · owner: Morgan.\n- [ACN-2](/ACN/issues/ACN-2) — **Mobile follow-up** · reference task · **backlog**, unassigned.\n\n[ACN-3](/ACN/issues/ACN-3) has a similar title but is explicitly unrelated and not linked to any case, so it is excluded.";
+    expect(gradeIntegratorRelatedWork(v).passed).toBe(true);
+    v.reply = v.reply.replace("work task", "the task this case was opened for").replace("reference task", "a follow-up linked for reference");
+    expect(gradeIntegratorRelatedWork(v).passed).toBe(true);
+  });
+  it.each([
+    ["primary called the reference task", "ACN-1 Investigation is the reference task and is done. ACN-2 Mobile follow-up is linked and in backlog."],
+    ["follow-up called the work task", "ACN-1 Investigation is done. ACN-2 Mobile follow-up is the work task and is in backlog."],
+    ["follow-up called primary", "ACN-1 Investigation is done. ACN-2 Mobile follow-up is the primary task and is in backlog."],
+  ])("rejects prose role contradiction: %s", (_name, reply) => {
+    const v = related(); v.reply = `${reply}\nACN-3 is explicitly unrelated and has no case link.`; expect(gradeIntegratorRelatedWork(v).passed).toBe(false);
+  });
   it("accepts a direct denial of case membership", () => { const v=related();v.reply=v.reply.replace("has a similar title but is explicitly unrelated and has no case link", "is not part of this case"); expect(gradeIntegratorRelatedWork(v).passed).toBe(true); });
   it.each([
     ["wrong local identifier despite correct identifier URL", (v: ReturnType<typeof related>) => { v.reply = v.reply.replace("ACN-1 Investigation", "[ACN-9 Investigation](/ACN/issues/ACN-1)"); }],

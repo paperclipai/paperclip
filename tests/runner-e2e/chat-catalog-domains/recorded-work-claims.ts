@@ -54,14 +54,18 @@ export function groundedOverviewBlocker(reply: string, blocked: Entity, knownTas
   return units.some(unit => unit.includes(reason) && /\b(?:blocked|waiting|awaits?|awaiting|pending|needs?)\b/i.test(unit) && !claimsResolution(unit))
     && !units.some(claimsResolution);
 }
-export function reportsRecordedCaseRole(reply: string, task: Entity, linkedTasks: Entity[], role: "work" | "reference") {
-  const units = recordedTaskUnits(reply, task, linkedTasks);
-  const work = /\b(?:primary|main|initial investigation)\b|\|\s*work\s*\|/i;
-  const reference = /\b(?:linked|reference)\b|\|\s*reference\s*\|/i;
-  const yes = role === "work" ? work : reference;
-  const other = role === "work" ? /\|\s*reference\s*\||\b(?:is|as|role[: ]+) (?:a |the )?reference\b/i : /\|\s*work\s*\||\b(?:is|as|role[: ]+) (?:a |the )?(?:primary|main)\b/i;
+/**
+ * True when the reply assigns the task a case role it does not have. The
+ * relationship itself is proven by saved forward/reverse case links and the
+ * task pages opened from the reply, so wording that names the right role in
+ * any vocabulary (primary, main, work task, linked, reference) is not required.
+ */
+export function contradictsRecordedCaseRole(reply: string, task: Entity, linkedTasks: Entity[], role: "work" | "reference") {
+  const other = role === "work"
+    ? /\|\s*reference\s*\||\b(?:is|as|role[: ]+) (?:a |the )?reference\b|\breference(?:-linked)? (?:task|item)\b/i
+    : /\|\s*work\s*\||\b(?:is|as|role[: ]+) (?:a |the )?(?:primary|main|work)\b|\b(?:primary|main|work) (?:task|item)\b/i;
   const denied = role === "work" ? /\bnot (?:the |a )?(?:primary|main|work task)\b/i : /\bnot (?:the |a )?(?:linked|reference)\b/i;
-  return units.some(unit => yes.test(unit) && !other.test(unit) && !denied.test(unit)) && !units.some(unit => other.test(unit) || denied.test(unit));
+  return recordedTaskUnits(reply, task, linkedTasks).some(unit => other.test(unit) || denied.test(unit));
 }
 export function explicitlyUnrelatedWork(reply: string, unrelated: Entity, knownTasks: Entity[]) {
   const units = recordedTaskUnits(reply, unrelated, knownTasks);

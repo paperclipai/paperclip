@@ -1424,7 +1424,7 @@
       "chat-catalog-domains/internal-definition.ts",
       "chat-scenarios/cases.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.case-related.grounded.v3",
+    "oracleVersion": "paperclip.chat-catalog.case-related.grounded.v4",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,

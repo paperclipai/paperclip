@@ -1,4 +1,4 @@
-import { explicitlyUnrelatedWork, privateWorkUndisclosed, recordedTaskUnits, reportsRecordedCaseRole, reportsRecordedTaskState } from "./recorded-work-claims.js";
+import { explicitlyUnrelatedWork, privateWorkUndisclosed, recordedTaskUnits, contradictsRecordedCaseRole, reportsRecordedTaskState } from "./recorded-work-claims.js";
 import { expect } from "@playwright/test";
 import type { cases } from "../../../packages/db/src/schema/cases.js";
 import type { HandoffCaseResult } from "../../../packages/shared/src/case-handoffs.js";
@@ -38,10 +38,10 @@ export function gradeIntegratorRelatedWork(value: unknown) {
   "The actual original primary and explicitly linked follow-up retain supported forward and reverse case relationships.");
   c.add("accessible-work-state-and-links", !!primary && !!linked && hasLink(o, "issues", primary) && hasLink(o, "issues", linked)
     && primary.status === "done" && linked.status === "backlog"
-    && reportsRecordedCaseRole(o.reply, primary, [primary, linked], "work") && reportsRecordedCaseRole(o.reply, linked, [primary, linked], "reference")
+    && !contradictsRecordedCaseRole(o.reply, primary, [primary, linked], "work") && !contradictsRecordedCaseRole(o.reply, linked, [primary, linked], "reference")
     && reportsRecordedTaskState(o.reply, primary, [primary, linked], "done") && reportsRecordedTaskState(o.reply, linked, [primary, linked], "backlog")
     && !/\b(?:all (?:case )?work (?:is )?(?:done|complete)|follow.up (?:is )?(?:done|completed))\b/i.test(o.reply),
-  "Chat links both actual tasks, distinguishes their roles, and preserves completed primary versus backlog follow-up rather than declaring all work done.");
+  "Chat links both actual tasks, never assigns either the other's case role, and preserves completed primary versus backlog follow-up rather than declaring all work done.");
   const unrelated = o.state.unrelated as Entity; const privateTask = o.state.privateTask as Entity;
   c.add("no-name-inference-or-private-disclosure", [403, 404].includes(o.deniedStatus) && !!unrelated && !!privateTask
     && unrelated.id !== followup.id && !hasLink(o, "issues", privateTask)
@@ -113,5 +113,5 @@ export const integratorRelatedWorkCases = [integratorDefinition("cases", "cases.
   await ctx.input.page.goto(source); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${o.caseDetail.identifier}`, o.caseDetail.title);
 }, { sourceFiles: ["chat-catalog-domains/integrator-case-related.ts", "chat-catalog-domains/recorded-work-claims.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"],
-  oracleVersion: "paperclip.chat-catalog.case-related.grounded.v3", expectedRunCount: 2, attemptTimeoutMs: 540_000, cleanup,
+  oracleVersion: "paperclip.chat-catalog.case-related.grounded.v4", expectedRunCount: 2, attemptTimeoutMs: 540_000, cleanup,
 })];
