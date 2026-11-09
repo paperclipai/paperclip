@@ -10107,10 +10107,25 @@ export function issueRoutes(
     const receipt = await requestTaskRetry({ db, companyId: issue.companyId, issueId: issue.id,
       ...req.body, actorId: getActorInfo(req).actorId, actorSource: req.actor.source,
       prepareChatRetry: opts.chatRunRetries?.prepareFailedChatRunRetry });
-    res.status(receipt.accepted ? 202 : 200).json({ ...receipt, presentation: await taskInterruptionPresentation(db, issue) });
+    const actor = getActorInfo(req);
+    const scheduledRetryRunId = "scheduledRetryRunId" in receipt ? receipt.scheduledRetryRunId : undefined;
+    const scheduledRetry = scheduledRetryRunId
+      ? await heartbeat.retryScheduledRetryNow({ issueId: issue.id, actor: { actorType: actor.actorType, actorId: actor.actorId } })
+      : null;
+    if (scheduledRetry) {
+      await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        action: "issue.scheduled_retry_retry_now", entityType: "issue", entityId: issue.id,
+        agentId: scheduledRetry.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+        runId: scheduledRetry.scheduledRetry?.runId ?? scheduledRetryRunId ?? null,
+        details: { outcome: scheduledRetry.outcome, message: scheduledRetry.message, source: "task_retry" } });
+    }
+    res.status(receipt.accepted ? 202 : 200).json({ ...receipt,
+      ...(scheduledRetry ? { scheduledRetry: { outcome: scheduledRetry.outcome, message: scheduledRetry.message } } : {}),
+      presentation: await taskInterruptionPresentation(db, issue) });
     // The receipt commits before dispatch. Maintenance redelivers it after a
     // crash or a lost response; this nudge only reduces perceived latency.
-    if (receipt.chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(receipt.chatActionId).catch(err =>
+    const chatActionId = "chatActionId" in receipt ? receipt.chatActionId : undefined;
+    if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Connected task Retry remains queued"));
     else if (receipt.accepted && receipt.requestId) void heartbeat.resumeTaskRetry(issue.companyId, receipt.requestId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Task Retry remains queued"));
@@ -14012,7 +14027,9 @@ export function issueRoutes(
       svc.getById(id),
       "Issue not found",
     );
-    if (!issue) return;
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
 
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({

@@ -1,8 +1,11 @@
-import { and, eq, inArray } from "drizzle-orm";
-import { heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import type { OwnerProof } from "../owner-proof.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { readSaveWork } from "../remote-workspaces.js";
 import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
+import { RETAINED_SOURCE_FALLBACK_CHECK_KEY } from "../workspace-recovery-fallback-discovery.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, isOwnerStampedWorkspaceOperationLive } from "../workspace-operations.js";
 import type { InProgressRecord, SettleOutcome } from "./ownership-registry.js";
 
@@ -102,4 +105,65 @@ function abandonedWorkspaceOperationSettle(spec: { phases: readonly string[]; st
     if (outcome.settled && publication) publishActivity(publication);
     return outcome;
   };
+}
+
+export const ABANDONED_REMOTE_SNAPSHOT_SAVE_REASON = "abandoned_remote_snapshot_save";
+
+export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgressRecord,
+  context: { now: Date; proof: OwnerProof }): Promise<SettleOutcome> {
+  let publication: ActivityPublication | undefined;
+  const outcome = await db.transaction(async (transaction): Promise<SettleOutcome> => {
+    const tx = transaction as unknown as Db;
+    const [operation] = await tx.select().from(workspaceOperations)
+      .where(and(eq(workspaceOperations.id, record.recordId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
+        inArray(workspaceOperations.status, ["running", "pending"])))
+      .for("update");
+    if (!operation) return { settled: false, reason: "attempt_no_longer_in_progress" };
+    const metadata = operation.metadata ?? {};
+    const work = readSaveWork(metadata);
+    if (!work || work.unknown || work.activeIds.length > 0 || !work.quiescedAt) return { settled: false, reason: "save_work_unsettled" };
+    const [run] = operation.heartbeatRunId ? await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, operation.heartbeatRunId), inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES))) : [];
+    if (!run) return { settled: false, reason: "owner_run_active" };
+    const now = context.now;
+    const provenance = {
+      schema: "paperclip.remote-snapshot-save-abandonment.v1",
+      reason: ABANDONED_REMOTE_SNAPSHOT_SAVE_REASON,
+      proof: context.proof.reason,
+      previousStatus: operation.status,
+      runId: operation.heartbeatRunId,
+      quiescedAt: work.quiescedAt,
+      reconciledAt: now.toISOString(),
+    };
+    const workKey = operation.executionWorkspaceId ? `workspace:${operation.executionWorkspaceId}`
+      : operation.issueId ? `issue:${operation.issueId}` : null;
+    if (workKey) await notifyTerminalWorkspaceWork(tx, workKey);
+    const [row] = await tx.update(workspaceOperations).set({
+      status: "failed", exitCode: 1, finishedAt: now, updatedAt: now,
+      stderrExcerpt: `${operation.stderrExcerpt ?? ""}The workspace save stopped without finishing, and its run has ended.\n`.slice(-4096),
+      metadata: { ...metadata, abandonedSave: provenance,
+        lastFailure: { code: "remote_workspace_save_abandoned", at: now.toISOString() } },
+    }).where(and(eq(workspaceOperations.id, operation.id), eq(workspaceOperations.status, operation.status)))
+      .returning({ id: workspaceOperations.id });
+    if (!row) return { settled: false, reason: "attempt_no_longer_in_progress" };
+    if (operation.executionWorkspaceId) {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
+      await tx.update(issueRecoveryActions).set({
+        evidence: sql`${issueRecoveryActions.evidence} - ${RETAINED_SOURCE_FALLBACK_CHECK_KEY}::text`,
+      }).where(and(eq(issueRecoveryActions.companyId, operation.companyId), inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        sql`${issueRecoveryActions.evidence}->${RETAINED_SOURCE_FALLBACK_CHECK_KEY}->>'reason' = 'workspace_operation_running'`,
+        sql`exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
+          and source.id::text = ${issueRecoveryActions.evidence}->>'runId'
+          and source.runner_profile_json#>>'{remoteWorkspace,workspaceId}' = ${operation.executionWorkspaceId})`));
+    }
+    const activity = await persistActivity(tx, {
+      companyId: operation.companyId, actorType: "system", actorId: "ownership-reconciler",
+      action: "workspace_operation.reconciled", entityType: "workspace_operation", entityId: operation.id,
+      runId: operation.heartbeatRunId, issueId: operation.issueId, details: provenance,
+    });
+    publication = activity.publication;
+    return { settled: true, reason: context.proof.reason };
+  });
+  if (outcome.settled && publication) publishActivity(publication);
+  return outcome;
 }
