@@ -69,6 +69,18 @@ describe("instance retention", () => {
     for (const survivor of [fresh, live, recovery, unmarked, unrelated, runner]) expect(existsSync(survivor)).toBe(true);
   });
 
+  it("releases a finished instance whose immutable runtime bundles are read-only", async () => {
+    const under = await parent();
+    const finished = await instance(under, "bundles");
+    const bundle = path.join(finished, "home", "instances", "default", "runtime-context-assets", "bundles", "sha256-abc");
+    await mkdir(bundle, { recursive: true });
+    await writeFile(path.join(bundle, "AGENTS.md"), "x");
+    await chmod(bundle, 0o555);
+    await chmod(path.dirname(bundle), 0o555);
+    expect(await releaseInstance(finished, { keep: false, stopFailed: false, owner: "w1" })).toEqual({ kept: false });
+    expect(existsSync(finished)).toBe(false);
+  });
+
   it("sweeps an expired instance that holds read-only directories", async () => {
     const under = await parent();
     const locked = await instance(under, "locked");
