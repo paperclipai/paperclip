@@ -166,7 +166,8 @@ function TaskChatBubbleContent({
   const streamlined = useStreamlinedTaskChatPresentation();
   const coordinator = useCoordinatorPresentation();
   const recordedTimestamp = item.createdAtIso ?? (typeof item.atMs === "number" && Number.isFinite(item.atMs) ? new Date(item.atMs) : null);
-  const timestamp = item.timestamp;
+  const timestamp = coordinator && recordedTimestamp && !item.optimistic
+    ? <CoordinatorRelativeTime value={recordedTimestamp} /> : item.timestamp;
   const { enabled: artifactsV1 } = useArtifactsV1Enabled();
   const openText = useContext(TextAttachmentContext);
   // Task attachments share the page gallery; standalone images retain the bubble viewer.
@@ -413,7 +414,7 @@ function TaskChatBubbleContent({
           </ul>
         </div>
       ) : null}
-      {coordinator && recordedTimestamp && attachedTurn ? <span className="px-1 text-(length:--text-micro) text-muted-foreground">{item.timestamp}</span> : null}
+      {coordinator && recordedTimestamp && attachedTurn ? <span className="px-1 text-(length:--text-micro) text-muted-foreground"><CoordinatorRelativeTime value={recordedTimestamp!} /></span> : null}
       {item.optimistic ? (
         <span className="flex items-center gap-1 px-1 text-(length:--text-micro) text-muted-foreground">
           <span>{item.optimistic === "queued" ? "Queued" : "Sending…"}</span>
