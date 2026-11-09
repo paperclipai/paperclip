@@ -210,7 +210,9 @@ def main():
                     fail(str(error))
                 sys.stderr.write("agent_filesystem_sandbox: continuing without isolation: %s\n" % error)
     try:
-        os.execv(command[0], command)
+        if os.path.isabs(command[0]):
+            os.execv(command[0], command)
+        os.execvp(command[0], command)
     except OSError as error:
         fail("cannot execute %s: %s" % (command[0], error), 127)
 

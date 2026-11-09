@@ -17,6 +17,9 @@ import {
   sandboxedInvocation,
   agentFilesystemSandboxHelper,
   wrapRunnerdSpawn,
+  wrapRunnerdLaunch,
+  gitStorePaths,
+  RUNNERD_LAUNCH_APIS,
 } from "./agent-filesystem-sandbox.js";
 import { runnerMatrix } from "./catalog.js";
 
@@ -27,6 +30,7 @@ const cell = (id: string) => {
   if (!execution) throw new Error(`missing ${id}`);
   return execution;
 };
+const gitStores = ["/work/paperclip/.git"];
 const opencodeLocal = cell("task-workspaces.runner-opencode.local.task-directory-repository-resume");
 const base = {
   platform: "linux" as const,
@@ -38,6 +42,7 @@ const base = {
   evidenceRoot: "/work/_temp/manual-private-evidence-x",
   installedRelease: false,
   sharedTemporary: "/tmp",
+  gitStores,
 };
 
 describe("agent filesystem sandbox selection", () => {
@@ -111,10 +116,9 @@ describe("agent filesystem sandbox selection", () => {
 describe("runnerd launch rewriting", () => {
   it("wraps only the absolute runnerd executable and execs it with the original argv", () => {
     const runnerd = "/work/paperclip/packages/paperclip-runner/runner/target/debug/paperclip-runnerd";
-    expect(isRunnerdLaunch(runnerd, { cwd: "/x" })).toBe(true);
-    expect(isRunnerdLaunch(runnerd, { shell: true })).toBe(false);
-    expect(isRunnerdLaunch("paperclip-runnerd", {})).toBe(false);
-    expect(isRunnerdLaunch("/usr/bin/git", {})).toBe(false);
+    expect(isRunnerdLaunch(runnerd)).toBe(true);
+    expect(isRunnerdLaunch("paperclip-runnerd")).toBe(true);
+    expect(isRunnerdLaunch("/usr/bin/git")).toBe(false);
     const invocation = sandboxedInvocation({ hidden: ["/work/paperclip/tests"], required: true }, "/usr/bin/python3", runnerd, ["--run-id", "r"], {});
     expect(invocation).toEqual({
       command: "/usr/bin/python3",
@@ -133,6 +137,36 @@ describe("runnerd launch rewriting", () => {
     expect(calls[0]).toEqual(["/usr/bin/python3", expect.arrayContaining(["--hide", "/work/paperclip/tests", "--", runnerd, "--run-id", "r"]),
       { cwd: "/work", env: { LC_CTYPE: "C.UTF-8" }, detached: true }]);
     expect(calls[1]).toEqual(["/usr/bin/git", ["status"], { cwd: "/work" }]);
+  });
+
+  it("rewrites runnerd for every direct launch API and refuses a shell launch", () => {
+    const calls: unknown[][] = [];
+    const fake = (...args: unknown[]) => { calls.push(args); return { pid: 9 }; };
+    const config = { hidden: ["/work/paperclip/tests"], required: true };
+    const callback = () => undefined;
+    wrapRunnerdLaunch(fake, config, "/usr/bin/python3", "execFile")("paperclip-runnerd", ["--x"], { cwd: "/w" }, callback);
+    wrapRunnerdLaunch(fake, config, "/usr/bin/python3", "spawnSync")("/r/paperclip-runnerd", { cwd: "/w" });
+    expect(calls[0]).toEqual(["/usr/bin/python3", expect.arrayContaining(["--", "paperclip-runnerd", "--x"]), { cwd: "/w" }, callback]);
+    expect(calls[1]).toEqual(["/usr/bin/python3", expect.arrayContaining(["--", "/r/paperclip-runnerd"]), { cwd: "/w" }]);
+    expect(() => wrapRunnerdLaunch(fake, config, "/usr/bin/python3")("/r/paperclip-runnerd", [], { shell: true })).toThrow(/refusing/);
+    expect(RUNNERD_LAUNCH_APIS).toEqual(["spawn", "spawnSync", "execFile", "execFileSync"]);
+  });
+
+  it("hides a linked worktree's gitdir and the shared object store", async () => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-sandbox-git-")));
+    try {
+      const common = path.join(root, "main", ".git");
+      const gitDir = path.join(common, "worktrees", "wt");
+      await mkdir(gitDir, { recursive: true });
+      await writeFile(path.join(gitDir, "commondir"), "../..\n");
+      const checkout = path.join(root, "wt");
+      await mkdir(checkout);
+      await writeFile(path.join(checkout, ".git"), `gitdir: ${gitDir}\n`);
+      expect(gitStorePaths(checkout)).toEqual([path.join(checkout, ".git"), gitDir, common]);
+      expect(gitStorePaths(path.join(root, "main"))).toEqual([common]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("installs the sandbox in the E2E server entry before the product starts", async () => {
