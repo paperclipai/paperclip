@@ -83,13 +83,6 @@ resource allocation waits for approval.
 
 ### `agent-configuration`
 
-Claude **Advanced → Run policies** includes import mode, optional profile source,
-per-agent transcript retention, and retention days. Typed fields override legacy
-environment bindings without changing unset defaults. The
-[selector regression](../../ui/src/adapters/claude-local/config-fields.test.tsx)
-covers create/edit saves, legacy environment fallback, and preservation of secret
-references. Live plugin execution remains a separate provider check.
-
 On Harness / Runtime, select an installed healthy AI account or change its model
 and save. The save checks current access and compatibility without starting a
 computer or provider hello test. **Test** still verifies the runtime. Unverified
