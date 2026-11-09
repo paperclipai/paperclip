@@ -65,8 +65,13 @@ export async function sweepExpiredKeptInstances(parent = os.tmpdir(), now = Date
       .then(text => JSON.parse(text) as { keptAt?: unknown; reason?: unknown }).catch(() => null);
     if (typeof marker?.keptAt !== "number" || marker.reason === "recovery_state" || now - marker.keptAt <= maxAgeMs) continue;
     if (await postgresRunning(root)) continue;
-    await rm(root, { recursive: true, force: true });
-    removed.push(root);
+    try {
+      await makeDirectoryTreeRemovable(root).catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+      removed.push(root);
+    } catch {
+      continue;
+    }
   }
   return removed;
 }

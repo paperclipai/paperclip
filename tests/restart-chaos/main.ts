@@ -552,15 +552,15 @@ async function main(): Promise<number> {
         timeline.add("supervisor_stop_failed", { error: String(error) });
       }
     }
+    const retention = await releaseInstance(supervisor.paths.temporaryRoot, { keep, stopFailed, owner: plan.waveId })
+      .catch(error => { timeline.add("instance_cleanup_failed", { error: String(error) }); return null; });
+    if (retention?.kept) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot, reason: retention.reason });
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
       await writeFile(path.join(waveDir, "SUMMARY.md"), speedSection ? `${summary}\n${speedSection}` : summary, { mode: 0o600 });
       console.info(`\n${summary}`);
     }
-    const retention = await releaseInstance(supervisor.paths.temporaryRoot, { keep, stopFailed, owner: plan.waveId })
-      .catch(error => { timeline.add("instance_cleanup_failed", { error: String(error) }); return null; });
-    if (retention?.kept) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot, reason: retention.reason });
   }
   console.info(`Wave ${plan.waveId}: results ${waveDir}`);
   for (const line of lines.filter(candidate => !candidate.pass)) console.info(`  FAIL ${line.taskId} ${line.signature} → ${line.evidence ?? "no evidence"}\n    replay: ${replayCommand(plan.waveId, line.taskId)}`);

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -61,6 +61,18 @@ describe("instance retention", () => {
     expect(await sweepExpiredKeptInstances(under, now)).toEqual([expired]);
     expect(existsSync(expired)).toBe(false);
     for (const survivor of [fresh, live, recovery, unmarked, unrelated]) expect(existsSync(survivor)).toBe(true);
+  });
+
+  it("sweeps an expired instance that holds read-only directories", async () => {
+    const under = await parent();
+    const locked = await instance(under, "locked");
+    await keepInstance(locked, { owner: "w1", reason: "keep" }, 0);
+    const readOnly = path.join(locked, "home", "cache");
+    await mkdir(readOnly, { recursive: true });
+    await writeFile(path.join(readOnly, "entry"), "x");
+    await chmod(readOnly, 0o500);
+    expect(await sweepExpiredKeptInstances(under, KEPT_INSTANCE_MAX_AGE_MS + 1)).toEqual([locked]);
+    expect(existsSync(locked)).toBe(false);
   });
 
   it("treats a stale postmaster.pid whose process is gone as not running", async () => {
