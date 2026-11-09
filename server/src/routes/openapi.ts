@@ -11849,7 +11849,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/connections",
   tags: ["tool-access"],
   summary: "Create a tool connection",
-  description: "Saves a connection as given without checking that its server answers. To connect an MCP server from its URL, use POST /api/companies/{companyId}/tools/apps/connect with link instead: it checks the server first, and a fresh setup saves nothing when the server cannot be reached." + " " + OWN_MCP_SERVER_KEY,
+  description: "Saves a connection as given without checking that its server answers. To connect an MCP server from its URL, use POST /api/companies/{companyId}/tools/apps/connect with link instead: it checks the server first, and a fresh setup saves no connection when the server cannot be reached." + " " + OWN_MCP_SERVER_KEY,
   body: createToolConnectionSchema,
   responses: {
     201: r.ok(),
