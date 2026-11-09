@@ -19,12 +19,26 @@
 //! process's own session or an ancestor's group is never claimed through that
 //! session or group, because only groups and sessions that a recorded
 //! descendant leads are recorded.
+//!
+//! The record also has to survive the runner. When runnerd itself dies (for
+//! example SIGKILL in the middle of a tool call), the provider and its tools
+//! are re-parented and the in-memory record goes with runnerd. Durable runnerd
+//! therefore journals every record to `<state-dir>/process-lineage/` from the
+//! moment the provider is spawned. After runnerd's exit is confirmed, a later
+//! `paperclip-runnerd reap-lineage` reads those journals, stops every process
+//! that still matches a recorded identity, and proves the lineage gone. The
+//! same PID-and-start-time rules apply, so a reused PID is never signalled.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+mod journal;
+
+use journal::Journal;
+pub use journal::{enable_journal, reap_journals, ReapReport, REAP_REPORT_SCHEMA};
 
 /// How often the background sampler reads the process table. A tool wrapper
 /// must live at least this long for the tracker to record its session. Claude
@@ -99,6 +113,20 @@ impl LineageState {
             root: Some((root_pid, 0)),
             ..Self::default()
         }
+    }
+
+    /// Starts from a root whose identity is already known, so the record is
+    /// complete before the background sampler's first read.
+    fn with_known_root(root: ProcessEntry) -> Self {
+        let mut state = Self {
+            root: Some((root.pid, root.started)),
+            ..Self::default()
+        };
+        state.members.insert(root.pid, root.started);
+        if root.pgid == root.pid {
+            state.groups.insert(root.pid, root.started);
+        }
+        state
     }
 
     /// Updates membership from one table read and returns the live members.
@@ -218,43 +246,76 @@ fn read_process_table() -> Option<LiveProcessTable> {
 }
 
 /// Reads the table while holding the state, so reads are applied in the
-/// order they were taken. `None` when the table could not be read.
-fn observe_now(state: &Mutex<LineageState>) -> Option<Observation> {
+/// order they were taken. `None` when the table could not be read. A changed
+/// record is journalled under the same lock, so journal writes keep that order.
+fn observe_now(state: &Mutex<LineageState>, journal: Option<&Journal>) -> Option<Observation> {
     let mut state = state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let table = read_process_table()?;
-    Some(state.observe(&table))
+    let observation = state.observe(&table);
+    if let Some(journal) = journal {
+        // Every process this read listed started no later than its newest
+        // start time. A process born after it was not seen by this read.
+        let sampled_through = table
+            .entries()
+            .iter()
+            .map(|entry| entry.started)
+            .max()
+            .unwrap_or(0);
+        // A failed write withdraws the writer marker (see Journal::write), so
+        // no reaper can claim proof from the stale record on disk.
+        let _ = journal.write(&state, sampled_through);
+    }
+    Some(observation)
 }
 
 /// Records a supervised process's lineage from spawn until it is reaped.
 pub(crate) struct LineageTracker {
     state: Arc<Mutex<LineageState>>,
+    journal: Option<Arc<Journal>>,
     stop: Arc<AtomicBool>,
     sampler: Option<JoinHandle<()>>,
 }
 
 impl LineageTracker {
-    /// Starts recording. Fails when the sampler cannot run, so a caller never
+    /// Starts recording. Fails when the sampler cannot run, or when a
+    /// journalling runnerd cannot journal the root, so a caller never
     /// supervises a process whose tools it could not stop.
     pub(crate) fn start(root_pid: u32) -> Result<Self, String> {
         let root_pid = i32::try_from(root_pid)
             .map_err(|_| format!("process ID {root_pid} is out of range"))?;
-        let state = Arc::new(Mutex::new(LineageState::new(root_pid)));
+        // One read of the new process names the root by start time before
+        // any tool can run. It reads one process, not the whole table.
+        let initial = match paperclip_process_table::read(root_pid).entry() {
+            Some(root) if !root.zombie => LineageState::with_known_root(root),
+            _ => LineageState::new(root_pid),
+        };
+        let journal = Journal::create(&initial)
+            .map_err(|error| format!("the process lineage journal could not be written: {error}"))?
+            .map(Arc::new);
+        let state = Arc::new(Mutex::new(initial));
         let stop = Arc::new(AtomicBool::new(false));
         let sampler_state = Arc::clone(&state);
+        let sampler_journal = journal.clone();
         let sampler_stop = Arc::clone(&stop);
         let sampler = thread::Builder::new()
             .name("process-lineage".to_owned())
             .spawn(move || {
                 while !sampler_stop.load(Ordering::Acquire) {
-                    let _ = observe_now(&sampler_state);
+                    let _ = observe_now(&sampler_state, sampler_journal.as_deref());
                     thread::park_timeout(SAMPLE_INTERVAL);
                 }
             })
-            .map_err(|error| format!("the process lineage sampler could not start: {error}"))?;
+            .map_err(|error| {
+                if let Some(journal) = journal.as_ref() {
+                    journal.retire();
+                }
+                format!("the process lineage sampler could not start: {error}")
+            })?;
         Ok(Self {
             state,
+            journal,
             stop,
             sampler: Some(sampler),
         })
@@ -262,7 +323,7 @@ impl LineageTracker {
 
     /// Reads the table once now, so lineage visible at this moment is kept.
     pub(crate) fn sample(&self) {
-        let _ = observe_now(&self.state);
+        let _ = observe_now(&self.state, self.journal.as_deref());
     }
 
     /// Stops every live process in the lineage and proves it is gone.
@@ -272,12 +333,12 @@ impl LineageTracker {
     /// after `grace`, they send KILL. Fails with the members still alive at
     /// the deadline, or when the table could not be read to prove that none
     /// remain.
-    pub(crate) fn terminate(&self, grace: Duration, deadline: Duration) -> Result<(), String> {
+    pub(crate) fn terminate(&mut self, grace: Duration, deadline: Duration) -> Result<(), String> {
         let started = Instant::now();
         let mut terminated: HashSet<(i32, u64)> = HashSet::new();
         loop {
             let elapsed = started.elapsed();
-            let Some(observation) = observe_now(&self.state) else {
+            let Some(observation) = observe_now(&self.state, self.journal.as_deref()) else {
                 if elapsed >= deadline {
                     return Err("the process table could not be read".to_owned());
                 }
@@ -285,6 +346,12 @@ impl LineageTracker {
                 continue;
             };
             if observation.is_empty() {
+                // Stop journalling before retiring, so the sampler cannot
+                // write the file again after it is removed.
+                self.stop_sampler();
+                if let Some(journal) = self.journal.as_ref() {
+                    journal.retire();
+                }
                 return Ok(());
             }
             if elapsed >= deadline {
@@ -350,7 +417,7 @@ fn signal_member(entry: &ProcessEntry, signal: rustix::process::Signal) {
 mod tests {
     use super::*;
 
-    struct FixedTable {
+    pub(super) struct FixedTable {
         entries: Vec<ProcessEntry>,
         unreadable: Vec<i32>,
         sessions: HashMap<i32, i32>,
@@ -368,7 +435,7 @@ mod tests {
         }
     }
 
-    fn entry(pid: i32, ppid: i32, pgid: i32, started: u64) -> ProcessEntry {
+    pub(super) fn entry(pid: i32, ppid: i32, pgid: i32, started: u64) -> ProcessEntry {
         ProcessEntry {
             pid,
             ppid,
@@ -378,7 +445,7 @@ mod tests {
         }
     }
 
-    fn table(entries: Vec<(ProcessEntry, i32)>) -> FixedTable {
+    pub(super) fn table(entries: Vec<(ProcessEntry, i32)>) -> FixedTable {
         FixedTable {
             unreadable: Vec::new(),
             sessions: entries.iter().map(|(e, sid)| (e.pid, *sid)).collect(),
@@ -387,12 +454,12 @@ mod tests {
     }
 
     impl LineageState {
-        fn observe_live(&mut self, table: &FixedTable) -> Vec<ProcessEntry> {
+        pub(super) fn observe_live(&mut self, table: &FixedTable) -> Vec<ProcessEntry> {
             self.observe(table).live
         }
     }
 
-    fn pids(entries: &[ProcessEntry]) -> Vec<i32> {
+    pub(super) fn pids(entries: &[ProcessEntry]) -> Vec<i32> {
         let mut pids: Vec<i32> = entries.iter().map(|e| e.pid).collect();
         pids.sort_unstable();
         pids

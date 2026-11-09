@@ -48,7 +48,7 @@ import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesA
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
-import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
+import { deliverConversationComments, heldConversationComments, isConversation } from "../services/agent-conversations.js";
 import { assertOnboardingFirstTaskDependenciesAllowed } from "../services/onboarding-first-task-admission.js";
 import { resolveChatTaskAssignment } from "../services/chat-task-assignment.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -128,6 +128,7 @@ import {
   taskRetrySchema,
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
+  confirmRunStoppedSchema,
   confirmOwnerGoneSchema,
   runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
@@ -10107,10 +10108,25 @@ export function issueRoutes(
     const receipt = await requestTaskRetry({ db, companyId: issue.companyId, issueId: issue.id,
       ...req.body, actorId: getActorInfo(req).actorId, actorSource: req.actor.source,
       prepareChatRetry: opts.chatRunRetries?.prepareFailedChatRunRetry });
-    res.status(receipt.accepted ? 202 : 200).json({ ...receipt, presentation: await taskInterruptionPresentation(db, issue) });
+    const actor = getActorInfo(req);
+    const scheduledRetryRunId = "scheduledRetryRunId" in receipt ? receipt.scheduledRetryRunId : undefined;
+    const scheduledRetry = scheduledRetryRunId
+      ? await heartbeat.retryScheduledRetryNow({ issueId: issue.id, actor: { actorType: actor.actorType, actorId: actor.actorId } })
+      : null;
+    if (scheduledRetry) {
+      await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        action: "issue.scheduled_retry_retry_now", entityType: "issue", entityId: issue.id,
+        agentId: scheduledRetry.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+        runId: scheduledRetry.scheduledRetry?.runId ?? scheduledRetryRunId ?? null,
+        details: { outcome: scheduledRetry.outcome, message: scheduledRetry.message, source: "task_retry" } });
+    }
+    res.status(receipt.accepted ? 202 : 200).json({ ...receipt,
+      ...(scheduledRetry ? { scheduledRetry: { outcome: scheduledRetry.outcome, message: scheduledRetry.message } } : {}),
+      presentation: await taskInterruptionPresentation(db, issue) });
     // The receipt commits before dispatch. Maintenance redelivers it after a
     // crash or a lost response; this nudge only reduces perceived latency.
-    if (receipt.chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(receipt.chatActionId).catch(err =>
+    const chatActionId = "chatActionId" in receipt ? receipt.chatActionId : undefined;
+    if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Connected task Retry remains queued"));
     else if (receipt.accepted && receipt.requestId) void heartbeat.resumeTaskRetry(issue.companyId, receipt.requestId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Task Retry remains queued"));
@@ -10137,6 +10153,37 @@ export function issueRoutes(
     const receipt = await resumeNativeWorkspaceAfterOwnerStop({ db, companyId: issue.companyId, issueId: issue.id,
       ...req.body, actorId: getActorInfo(req).actorId });
     res.status(202).json(receipt);
+  });
+
+  router.post("/issues/:id/recovery-actions/confirm-run-stopped", validate(confirmRunStoppedSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const { confirmUnidentifiedLocalRunnerStopped, UnidentifiedRunnerStopRefusedError } = await import("../services/native-local-process-stop.js");
+    const actor = getActorInfo(req);
+    let receipt: Awaited<ReturnType<typeof confirmUnidentifiedLocalRunnerStopped>>;
+    try {
+      receipt = await confirmUnidentifiedLocalRunnerStopped(db, { companyId: issue.companyId, issueId: issue.id,
+        runId: req.body.runId, actorId: actor.actorId });
+    } catch (error) {
+      if (error instanceof UnidentifiedRunnerStopRefusedError) throw conflict(error.message, { code: error.code });
+      throw error;
+    }
+    await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      action: "issue.run_stop_confirmed", entityType: "issue", entityId: issue.id, runId: receipt.runId,
+      details: { runId: receipt.runId, alreadyStopped: receipt.alreadyStopped, stopEvidence: req.body.stopEvidence } });
+    const { promoteDeferredWorkIntents } = await import("../services/work-intent-outbox.js");
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: issue.companyId, trigger: "lock_released", issueId: issue.id }));
+    const parked = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      eq(agentWakeupRequests.reason, "task_retry"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`));
+    for (const wake of parked) {
+      await heartbeat.resumeTaskRetry(issue.companyId, wake.id).catch(err =>
+        logger.warn({ err, issueId: issue.id, requestId: wake.id }, "Task Retry remains queued after the stop was confirmed"));
+    }
+    res.json({ ...receipt, presentation: await taskInterruptionPresentation(db, issue) });
   });
 
   router.post("/issues/:id/recovery-actions/confirm-controller-stopped", validate(confirmNativeControllerStoppedSchema), async (req, res) => {
@@ -10249,6 +10296,12 @@ export function issueRoutes(
         assertBoard(req);
         const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: existing.companyId } });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      }
+      if (executionReconciliation?.controllerStopped !== undefined || executionReconciliation?.controllerAuthorityDigest !== undefined) {
+        assertBoard(req);
+        const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
+          resource: { type: "company", companyId: existing.companyId } });
+        if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
       }
       const actor = getActorInfo(req);
       const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
@@ -10372,6 +10425,11 @@ export function issueRoutes(
           { source: "recovery_action_resolution" },
         );
 
+        if (activeRecoveryAction.kind === "active_run_watchdog" && activeRecoveryAction.ownerType === "board"
+          && activeRecoveryAction.cause === "native_restart_recovery_blocked"
+          && activeRecoveryAction.evidence.reason === "controller_process_space_unverified"
+          && (!executionReconciliation?.controllerStopped || !executionReconciliation.controllerAuthorityDigest))
+          throw conflict("Confirm the original controller and provider stopped and review their action outcomes before resolving this hold.");
         const workspaceRetry = outcome === "restored" && sourceIssueStatus === "todo"
           ? await prepareRestrictedWorkspaceRetry(tx as unknown as Db, lockedIssue, activeRecoveryAction)
           : null;
@@ -10501,7 +10559,21 @@ export function issueRoutes(
           }
         }
 
-        if (
+        const controllerContainment = executionReconciliation?.controllerStopped === true
+          || executionReconciliation?.controllerAuthorityDigest !== undefined;
+        if (controllerContainment) {
+          assertBoard(req);
+          const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
+            resource: { type: "company", companyId: lockedIssue.companyId } });
+          if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
+          if (outcome !== "restored" || sourceIssueStatus !== lockedIssue.status || !actionId
+            || activeRecoveryAction.id !== actionId || workspaceBaseRef || workspaceRetry)
+            throw conflict("Containment only records the original execution. Keep the task unchanged, then use Retry separately.");
+          await validateExecutionReconciliation({ db: tx as unknown as Db, companyId: lockedIssue.companyId,
+            issueId: lockedIssue.id, agentId: lockedIssue.assigneeAgentId,
+            sourceRunId: activeRecoveryAction.evidence.runId, decision: executionReconciliation,
+            controllerContainment: { actionId, actorId: actor.actorId } });
+        } else if (
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
         ) {
@@ -10523,7 +10595,7 @@ export function issueRoutes(
         }
 
         let chatRetry: { actionId: string; issueId: string } | null = null;
-        if (outcome === "restored" && sourceIssueStatus === "todo") {
+        if (!controllerContainment && outcome === "restored" && sourceIssueStatus === "todo") {
           const [chatBinding] = await tx
             .select({ id: chatConversations.id })
             .from(chatConversations)
@@ -10578,6 +10650,7 @@ export function issueRoutes(
             chatRetry
               ? { kind: "chat_failed_run_retry", actionId: chatRetry.actionId }
               : undefined,
+            controllerContainment ? { controllerContainmentOnly: true } : undefined,
           );
         }
         let issue = lockedIssue;
@@ -10605,6 +10678,13 @@ export function issueRoutes(
 
         if (sourceStatusChanged) {
           await assertNativeRunKeepsOwnExecutionLock(req, lockedIssue, sourceIssueStatus);
+          // The source row is locked in this transaction, so the check holds until the write.
+          await assertAgentStatusChangeKeepsLiveRunBound(req, lockedIssue, {
+            requestedStatus: sourceIssueStatus,
+            assigneeWillChange: false,
+            stopsGoalOnCompletion: false,
+            refreshLock: false,
+          });
           const safeHandBack =
             outcome === "restored" &&
             sourceIssueStatus === "todo" &&
@@ -10726,7 +10806,7 @@ export function issueRoutes(
           issue = updatedIssue;
         }
 
-        const recordedOutcome =
+        const recordedOutcome = controllerContainment ? "restored" :
           outcome === "restored" &&
           issue.status === "todo" &&
           activeRecoveryAction.returnOwnerAgentId != null &&
@@ -14005,7 +14085,9 @@ export function issueRoutes(
       svc.getById(id),
       "Issue not found",
     );
-    if (!issue) return;
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
 
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({
@@ -14387,6 +14469,84 @@ export function issueRoutes(
         "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
       { code: "native_run_status_reported_by_finish", requestedStatus },
     );
+  }
+
+  /**
+   * A status change releases the execution lock without stopping the run that
+   * holds it (the service clears the lock for any status other than
+   * `in_progress`, even when the status is unchanged). When an agent other than
+   * the lock-holding run asks for it, the run keeps going but is no longer
+   * bound to its task: the effect of interrupting another agent's run, which
+   * agents are not allowed to do (run cancel and tree pause are board-only).
+   * Refuse it before any side effect, with a final denial that sends the person
+   * to the controls that really stop or hold the work.
+   *
+   * Paths that stop the run themselves stay open: cancelling the task,
+   * reassigning it, and (only where the caller pauses the goal first, which the
+   * PATCH route does) completing a task whose Runner goal is active.
+   *
+   * Returns the lock the decision was based on, so the caller can make the
+   * write conditional on it (`expectedExecutionLock`); null when the change
+   * does not release a lock under this rule.
+   */
+  async function assertAgentStatusChangeKeepsLiveRunBound(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      identifier?: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      checkoutRunId: string | null;
+      executionRunId: string | null;
+    },
+    change: {
+      requestedStatus: unknown;
+      assigneeWillChange: boolean;
+      /** The caller pauses an active Runner goal (and stops its run) before completing the task. */
+      stopsGoalOnCompletion: boolean;
+      /** Re-read the lock instead of trusting a snapshot taken earlier in the request. */
+      refreshLock: boolean;
+    },
+  ): Promise<{ executionRunId: string | null; checkoutRunId: string | null } | null> {
+    if (req.actor.type !== "agent") return null;
+    const { requestedStatus } = change;
+    if (typeof requestedStatus !== "string") return null;
+    if (requestedStatus === "in_progress" || requestedStatus === "cancelled") return null;
+    if (change.assigneeWillChange) return null;
+    const current = change.refreshLock ? (await svc.getById(issue.id)) ?? issue : issue;
+    const lock = {
+      executionRunId: current.executionRunId ?? null,
+      checkoutRunId: current.checkoutRunId ?? null,
+    };
+    const actorRunId = req.actor.runId?.trim() || null;
+    const lockRunIds = [...new Set([lock.executionRunId, lock.checkoutRunId])]
+      .filter((runId): runId is string => Boolean(runId) && runId !== actorRunId);
+    for (const runId of lockRunIds) {
+      const run = await heartbeat.getRun(runId);
+      if (!run || run.companyId !== issue.companyId || run.id === actorRunId) continue;
+      if (run.status !== "running" && run.status !== "queued") continue;
+      if (change.stopsGoalOnCompletion && requestedStatus === "done" && issue.assigneeAgentId) {
+        const goal = await runnerGoals.projection(issue.companyId, issue.id, issue.assigneeAgentId);
+        // Terminalization pauses the goal and stops this run before the write.
+        if (goal?.goal && goal.goal.status !== "complete") return null;
+      }
+      const company = await companiesSvc.getById(issue.companyId).catch(() => null);
+      const identifier = issue.identifier?.trim() || null;
+      const issuePath = company?.issuePrefix && identifier
+        ? `/${company.issuePrefix}/issues/${identifier}`
+        : null;
+      const labels = await issueWriteDenialLabels(req, issue);
+      const { body } = issueWriteDenialResponse("issue_status_change_live_run", { ...labels, issuePath });
+      throw conflict(body.error, {
+        ...body.details,
+        issueId: issue.id,
+        runId: run.id,
+        requestedStatus,
+        issuePath,
+      });
+    }
+    return lock;
   }
 
   router.patch(
@@ -15144,6 +15304,12 @@ export function issueRoutes(
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
+      const checkedExecutionLock = await assertAgentStatusChangeKeepsLiveRunBound(req, existing, {
+        requestedStatus: updateFields.status,
+        assigneeWillChange,
+        stopsGoalOnCompletion: true,
+        refreshLock: true,
+      });
       const isAgentReturningIssueToCreator =
         req.actor.type === "agent" &&
         !!req.actor.agentId &&
@@ -15344,6 +15510,7 @@ export function issueRoutes(
         workspaceSelectionActor: req.actor,
         expectedExecutionPolicy,
         expectedStatusVersion,
+        ...(checkedExecutionLock ? { expectedExecutionLock: checkedExecutionLock } : {}),
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
@@ -17199,12 +17366,38 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const queue = await buildQueuedCommentQueue({
+    const actor = getActorInfo(req);
+    let queue = await buildQueuedCommentQueue({
       executor: db,
       issue,
       activeRun: await resolveActiveIssueRun(issue, { queueStateOnly: true }),
-      actor: getActorInfo(req),
+      actor,
     });
+    // A chat message held by the agent's daily limit has no wake receipt yet:
+    // show it as saved and waiting, with the reason, instead of as sent.
+    const held = await heldConversationComments(db, issue);
+    if (held && (queue.state !== null || queue.entries.length > 0)) {
+      // Earlier queued work keeps its controls; held messages join it read-only.
+      const queuedIds = new Set(queue.entries.map(entry => entry.comment.id));
+      const extra = held.comments.filter(comment => !queuedIds.has(comment.id));
+      const snapshot = buildQueuedCommentQueueSnapshot({
+        issueId: issue.id, queueId: null, state: "deferred", activeRunId: null,
+        protocol: queue.protocol, steeringDisposition: "unsupported", comments: extra,
+        actorType: actor.actorType, actorId: actor.actorId,
+      });
+      queue = { ...queue, executionWait: queue.executionWait ?? { reason: held.hold.reason, message: held.hold.message },
+        entries: [...queue.entries, ...snapshot.entries.map((entry, index) => ({
+          ...entry, position: queue.entries.length + index, canEdit: false, canDiscard: false }))] };
+    } else if (held) {
+      const snapshot = buildQueuedCommentQueueSnapshot({
+        issueId: issue.id, queueId: null, state: "deferred", activeRunId: null,
+        protocol: queue.protocol, steeringDisposition: "unsupported", comments: held.comments,
+        executionWait: { reason: held.hold.reason, message: held.hold.message },
+        actorType: actor.actorType, actorId: actor.actorId,
+      });
+      // The outbox owns delivery; there is no queue to edit, send or discard.
+      queue = { ...snapshot, entries: snapshot.entries.map(entry => ({ ...entry, canEdit: false, canDiscard: false })) };
+    }
     res.json(
       await runRedactions.redactForIssue(issue.companyId, issue.id, queue),
     );

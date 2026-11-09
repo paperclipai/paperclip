@@ -42,6 +42,11 @@ describe("scheduler determinism", () => {
     expect(Math.max(...holds)).toBeGreaterThan(K4_HOLD_RANGE_MS[1]);
     const storm = planStorm(5, 120, ["K4"], 600_000);
     expect(Math.max(...storm.faults.map(fault => fault.holdMs))).toBeGreaterThan(K4_HOLD_RANGE_MS[1]);
+    const single = parseCommand(["--adapters", "codex", "--seed", "5"]), both = parseCommand(["--seed", "5"]);
+    if (single.mode !== "wave" || both.mode !== "wave") throw new Error("expected a wave");
+    expect(single.options.workloads).not.toContain("M1");
+    expect(both.options.workloads).toContain("M1");
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "M1"])).toThrow(/two agents/);
     expect(() => parseCommand(["--k4-hold-max-seconds", "601"])).toThrow(/between 120 and 600/);
     expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
   });

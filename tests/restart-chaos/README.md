@@ -26,6 +26,16 @@ Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 
+Each wave's temporary instance (embedded Postgres, workspaces, often 5–13 GB) is
+deleted when the wave ends, pass or fail, including after an interrupt. Evidence
+is already copied into `results/`. Use `--keep` to inspect the instance itself.
+A kept instance, or one whose processes could not be stopped, gets a
+`.paperclip-runner-e2e-kept.json` marker; creating the next runner E2E or chaos instance removes marked instances older
+than 6 hours whose Postgres is no longer running and that no live process still
+references. An instance whose Daytona cleanup is still pending keeps its database
+as the owner of that cleanup and never expires. Unmarked directories are never
+removed.
+
 `--rc06-masked` keeps the company budget amount but disables its hard stop on
 the isolated Chaos Lab company, so one stuck accounting row (RC-06) cannot
 wedge every later task. Masked tasks are marked `rc06-masked` in the ledger and
@@ -115,7 +125,10 @@ S1 is the board's Stop button. While the task's run is running, the harness canc
 comments that it stopped the run on purpose and asks the agent to continue with an extra marker
 line. The oracle checks that the stopped run ended `cancelled`, that nothing started between the
 stop and the continue comment (recovery must not restart work the operator stopped), and that the
-finished brief has both markers. S1 is not a default workload.
+finished brief has both markers. The Stop waits for a ready server with no fault in progress. If the
+run already finished when the stop window opens, the harness records a missed Stop
+(`task_stop_missed`), skips the stop-triggered fault, still posts the continue comment, and the
+oracle checks only the continue. S1 is not a default workload.
 
 ## Code change in a real repository (R1, `--workspace-repo`)
 
@@ -306,6 +319,12 @@ re-arms the task's own triggered faults instead of using their offsets.
   `RESTART_CHAOS_ALLOW_UNSANDBOXED_ORACLE=1` is set inside a disposable VM.
 - R1 allows the workload budget plus outage time. When a Retry was needed R1 is
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
+  A task that never rested within its deadline fails R1 as `no_rest_within_budget`,
+  whatever its last status.
+- Speed: an aggregate p50/p95 row can breach only with at least 5 samples; a
+  smaller row is reported as `insufficient sample (n < 5)`. Every cold or warm run
+  over its p95 budget, and every restart recovery whose Paperclip share exceeds
+  its p95 budget, still fails the wave on its own.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
 - R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time.

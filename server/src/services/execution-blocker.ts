@@ -15,6 +15,7 @@ import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./r
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
+import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -66,6 +67,10 @@ const blockerRunFields = {
   contextSnapshot: blockerContextColumn,
   runnerProfileJson: blockerProfileColumn,
 };
+
+/** Appended when the person can retry the stopped run on this task. */
+export const EXECUTION_BLOCKER_PERSON_RETRY_ACTION =
+  "A person can use Retry on this task, or send it a new message, to continue once the previous execution has stopped. Agents cannot retry it for them.";
 
 export async function hasPendingRunCleanup(db: Db, companyId: string, runId: string): Promise<boolean> {
   if (await nativeManualAdmissionHoldsExecution(db, { companyId, runId })) return true;
@@ -182,12 +187,57 @@ export function stoppedBeforeProviderTurnCondition() {
       where result.company_id = stopped.company_id and result.run_id = stopped.id))`;
 }
 
+export function interruptedPreparationBeforeProviderWorkCondition() {
+  return sql`(stopped.status = 'interrupted' and stopped.runtime_mode = 'legacy'
+    and stopped.runtime_mode_resolved_at is null and stopped.execution_stage = 'preparing'
+    and stopped.runner_profile_json#>>'{adapterDispatch,adapterType}' = 'paperclip_runner'
+    and stopped.runner_profile_json->'nativeExecutionInput' is null
+    and stopped.process_pid is null and stopped.process_group_id is null and stopped.process_started_at is null
+    and stopped.session_id_after is null and stopped.native_issue_id is null and stopped.native_session_id is null
+    and (stopped.controller_lease_expires_at is null or stopped.controller_lease_expires_at <= now())
+    and (stopped.runner_profile_json->'remoteWorkspace' is null or exists (
+      select 1 from jsonb_array_elements_text(case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}') = 'array'
+        then ${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}' else '[]'::jsonb end) saved(id)
+      join ${workspaceOperations} op on op.id::text = saved.id
+      where op.company_id = stopped.company_id and op.heartbeat_run_id = stopped.id and op.status = 'succeeded'
+        and op.metadata->>'snapshotId' = stopped.runner_profile_json#>>'{remoteWorkspace,snapshotId}'))
+    and coalesce(stopped.result_json#>'{executionRecovery,providerWorkStarted}', 'false'::jsonb) = 'false'::jsonb
+    and case when stopped.result_json->'cancellation' is null then stopped.error_code = 'server_shutdown_interrupted'
+      else stopped.result_json#>>'{cancellation,initiator,type}' = 'system'
+        and coalesce(stopped.result_json#>>'{cancellation,source}', '') <> 'operator'
+        and (stopped.result_json#>>'{cancellation,source}' = 'shutdown'
+          or stopped.result_json#>'{cancellation,expected}' = 'false'::jsonb) end
+    and not exists (select 1 from ${heartbeatRunEvents} work
+      where work.company_id = stopped.company_id and work.run_id = stopped.id
+        and (work.source_event_id is not null
+          or work.event_type in ('adapter.invoke', ${PROCESS_START_REQUESTED}, ${PROCESS_IDENTITY_RECORDED})
+          or ${providerTurnWorkEventCondition(sql`work.event_type`, sql`work.source_event_id`)}))
+    and not exists (select 1 from ${nativeRunFinalizations} coordinator
+      where coordinator.company_id = stopped.company_id and coordinator.run_id = stopped.id)
+    and not exists (select 1 from ${nativeRunResults} result
+      where result.company_id = stopped.company_id and result.run_id = stopped.id)
+    and not exists (select 1 from ${environmentLeases} lease
+      where lease.company_id = stopped.company_id and lease.heartbeat_run_id = stopped.id
+        and not coalesce(lease.released_at is not null and lease.cleanup_status = 'success'
+          and lease.status in ('released', 'expired', 'failed')
+          and coalesce(lease.metadata->>'pendingCleanupInFlight', 'false') = 'false'
+          and (lease.provider = 'local' or (
+            lease.metadata#>>'{remoteExecutionTermination,schema}' = 'paperclip.remote-termination.v1'
+            and lease.metadata#>>'{remoteExecutionTermination,companyId}' = lease.company_id::text
+            and lease.metadata#>>'{remoteExecutionTermination,runId}' = stopped.id::text
+            and lease.metadata#>>'{remoteExecutionTermination,leaseId}' = lease.id::text
+            and lease.metadata#>>'{remoteExecutionTermination,provider}' = lease.provider
+            and lease.metadata#>>'{remoteExecutionTermination,providerLeaseId}' = lease.provider_lease_id
+            and lease.metadata#>>'{remoteExecutionTermination,state}' in ('stopped', 'destroyed'))), false)))`;
+}
+
 /**
  * A file-preservation hold binds a newer task owner only until automatic
  * recovery saved the stopped run's files. That owner's turn is a fresh
  * assignment, not a replay: the stopped run's unknown outcomes stay with its
- * own agent, which keeps the hold. A Stop fenced before any provider turn has
- * no unknown outcome, so its hold releases for the same agent too. The proof is
+ * own agent, which keeps the hold. A Stop fenced before any provider turn, or a
+ * shutdown that interrupted preparation before any provider work, has no
+ * unknown outcome, so its hold releases for the same agent too. The proof is
  * the durable completed-recovery receipt bound to this action, so later reuse
  * of the workspace by the current owner (new epoch, writer or snapshot) cannot
  * re-arm the hold.
@@ -213,7 +263,7 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
             and task.execution_state->>'status' = 'pending'
             and task.execution_state->'currentParticipant'->>'type' = 'agent'
             and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))
-          or ${stoppedBeforeProviderTurnCondition()}))`,
+          or ${stoppedBeforeProviderTurnCondition()} or ${interruptedPreparationBeforeProviderWorkCondition()}))`,
     completedWorkspaceRecoveryCondition(sourceRunId),
     // Copyback put the files back into the task workspace that the new owner
     // reuses. A snapshot-only save needs an explicit fresh-workspace request
@@ -338,7 +388,9 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
   )).limit(1) : [];
   let nextAction = action.nextAction;
-  if (canRetry && !eligibleContinuation) nextAction += " Try again or send a new message to continue once the previous execution has stopped.";
+  // Retry is a person's control on this task. Say so, so an agent reading this
+  // record points the person to it instead of re-running the work itself.
+  if (canRetry && !eligibleContinuation) nextAction += ` ${EXECUTION_BLOCKER_PERSON_RETRY_ACTION}`;
   if (chatBinding && !restoreHold) {
     if (chatBinding.state === "endpoint_removed" || !chatBinding.endpointStatus || chatBinding.endpointStatus === "archived") {
       nextAction = "This chat connection was removed. Inspect the stopped run and create a new task to continue the work.";

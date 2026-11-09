@@ -513,7 +513,7 @@ export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWor
     void draining?.catch(() => undefined);
     const confirmed = (state?: Awaited<ReturnType<typeof executeEnvironmentTask>>) => state?.kind === "status" && state.executionStopped === true &&
       (!(startup || startupCleanup?.requiresPreparationStop) || state.preparationStopped === true);
-    let state = options.executionStopObserved === true && !startup && !startupCleanup
+    let state = options.executionStopObserved === true
       ? await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "status" } }) : undefined;
     if (!confirmed(state)) {
       await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "stop" } });

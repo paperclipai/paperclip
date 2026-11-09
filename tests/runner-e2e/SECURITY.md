@@ -363,11 +363,41 @@ each wrapped runnerd launch. In CI a missing or ineffective sandbox stops the
 attempt. Landlock does not hide that a path exists (`stat` still works); it
 denies reading and listing.
 
+Each runnerd launch is also scoped to its own run, so an eval agent learns
+nothing about the case from another run's saved session, run log or provider
+trace, or from the attempt instance's database files and secrets. The launcher passes the instance root to the server entry, and each
+runnerd launch additionally hides the instance's `durable-sessions/`,
+`runner/`, `control-plane/` and `opencode/` directories under
+`runtime/paperclip-runner/`, and `data/run-logs/`, `data/provider-traces/`,
+`data/backups/`, `db/` and `secrets/`. It then exposes only the launch's own
+entries, found from its `--state-dir`, `--session-id` and provider trace path:
+its durable session directory (or Codex runner state directory), its OpenCode
+session directory and its trace file. Landlock does not check path traversal,
+so a rule on an exposed path grants it although the directory above it has
+none; listing that directory stays denied, and entries created there later
+(another run's new session) stay unreadable. The server creates the exposed
+entries, and the shared directories the product creates beside them on first
+use, before the launch, because their hidden or ungranted parents accept no new
+entries from inside the sandbox. The helper fails the launch unless every
+hidden path is denied and every exposed path is readable. The setup probe
+repeats this on a fixture instance (another run's session, OpenCode database,
+run log, trace, `pg_wal`, secrets and control-plane state denied; the run's own
+session, OpenCode directory and trace writable) and stops the attempt in CI on
+any failure. A run still sees its own session's control-plane state.
+
+Landlock cannot hide `/proc/<pid>/cmdline`. Same-user `hidepid` does not help
+either: it hides only other users' processes. Landlock does deny reading a
+process's environment, memory and file descriptors outside the sandbox, so CI
+passes the selected cell in `PAPERCLIP_RUNNER_E2E_SELECTED_ID` instead of
+`--id`; the launcher reads and removes it. The workflow keeps `--id` for target
+branches that predate this.
+
 Limits: Codex cells keep Codex's own bubblewrap sandbox, which cannot mount
 inside Landlock. Legacy adapters, installed-release launches and macOS run
 without this sandbox. A process that can reach the Docker daemon can still
-mount the checkout into a container, and `ps` shows the launcher's command
-line. Case fixtures that create their own private directories directly in the
+mount the checkout into a container, and `ps` shows every harness process's
+command line (paths, but no longer the selected cell in CI). Other agents' homes
+and task workspaces in the same instance stay readable. Case fixtures that create their own private directories directly in the
 shared temporary directory stay readable. The boundary is filesystem only: the
 scenarios and graders are public on GitHub, and agents have network access for
 their model provider. Daytona cells run the agent in a remote sandbox that holds only the

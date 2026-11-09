@@ -3,7 +3,10 @@ import { and, eq, gt, inArray, ne } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { retiredReusableLeasePredecessors } from "../environment-lease-handoff.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
+import { hasConfirmedSandboxStopAndRetain } from "../sandbox-stop-and-retain.js";
+import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../workspace-restore-recovery-state.js";
 import { readNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
+import { nativeWorkspaceExportPendingForLease } from "./native-workspace-finalization-state.js";
 
 /** Durable run events that prove a provider session did work in a run. */
 export const NATIVE_PROVIDER_DURABLE_EVENT_TYPES = new Set([
@@ -28,6 +31,12 @@ export function nativeHarnessBackupManifestSha256(manifestBytes: Buffer | string
  * stamp names exactly this backup, and no provider work for the session was
  * recorded after the backup completed. This is the same proof a confirmed
  * replacement relies on, reached through a lease that was retired first.
+ *
+ * A settled workspace-restore hold is the other retired source. The hold
+ * changed the lease to `retain_on_failure`, which reuse never selects, and
+ * stopped the sandbox under a stop-only receipt that permits no provider work.
+ * Releases before the hold settlement restored warm reuse left such rows
+ * stranded, so this also unsticks state saved by those releases.
  */
 export async function retiredSourceAuthorizesNativeBackupRestore(db: Db, input: {
   companyId: string;
@@ -48,13 +57,14 @@ export async function retiredSourceAuthorizesNativeBackupRestore(db: Db, input: 
   const lease = tips[0]!;
   if (!retiredReusableLeasePredecessors(lease, source.filter(row => row.id !== lease.id))) return false;
   const termination = lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined;
-  // A released lease can still be selected for resume; only a retired one is final.
-  if (!["expired", "failed"].includes(lease.status) || !hasRemoteTerminationReceipt(lease)
-    || termination?.state !== "destroyed") return false;
+  const destroyed = ["expired", "failed"].includes(lease.status) && hasRemoteTerminationReceipt(lease)
+    && termination?.state === "destroyed";
   const stamp = readNativeHarnessBackupStamp(lease.metadata?.nativeHarnessBackup, lease.providerLeaseId!);
   if (!stamp || stamp.manifestSha256 !== input.manifestSha256
     || stamp.normalizedSessionId !== input.normalizedSessionId
     || stamp.runnerInstanceId !== input.manifest.runnerInstanceId) return false;
+  // A released lease can still be selected for resume; only a retired one is final.
+  if (!destroyed && !await settledRestoreHoldRetiresSource(db, lease)) return false;
   // Provider work recorded after the checkpoint means the destroyed sandbox
   // held newer state than this backup. Restoring would silently rewind it.
   const later = await db.select({ runId: heartbeatRunEvents.runId }).from(heartbeatRunEvents)
@@ -68,4 +78,22 @@ export async function retiredSourceAuthorizesNativeBackupRestore(db: Db, input: 
       gt(heartbeatRunEvents.createdAt, new Date(stamp.completedAt)),
     )).limit(1);
   return later.length === 0;
+}
+
+/**
+ * A stopped, released lease is retired only when it is a workspace-restore hold
+ * that nothing can select for resume: `retain_on_failure` with the hold's own
+ * marker, a confirmed stop-and-retain receipt whose state is `stopped`, and no
+ * unsaved writer or pending native workspace export bound to the allocation.
+ * A stopped `reuse_by_environment` lease stays ambiguous and fails closed.
+ */
+async function settledRestoreHoldRetiresSource(db: Db, lease: typeof environmentLeases.$inferSelect): Promise<boolean> {
+  const marker = lease.metadata?.workspaceRestoreRecovery as { schema?: unknown; runId?: unknown } | undefined;
+  if (lease.leasePolicy !== "retain_on_failure" || lease.status !== "released" || !lease.heartbeatRunId
+    || marker?.schema !== LEGACY_WORKSPACE_RECOVERY_SCHEMA || marker.runId !== lease.heartbeatRunId) return false;
+  // Provider expiry cannot revive the allocation; it only makes the source
+  // more final. Every other stop-and-retain receipt check stays strict.
+  if (!hasConfirmedSandboxStopAndRetain({ ...lease, expiresAt: null })) return false;
+  // Includes the dirty remote writer source (`preparedRemoteWorkspaceSource`).
+  return !await nativeWorkspaceExportPendingForLease(db, lease);
 }

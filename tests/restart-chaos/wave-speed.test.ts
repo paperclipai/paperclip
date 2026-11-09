@@ -21,9 +21,12 @@ describe("wave speed grade", () => {
 
     const slow = gradeWaveSpeed("local", [run("a", "codex", 40_000), run("b", "codex", 40_000,
       [{ eventType: "run.performance.budget_exceeded", createdAt: "2026-11-08T00:00:00.000Z", payload: {} }])], [], 1);
-    expect(slow.rows.find(row => row.metric === "time_to_first_activity")?.breaches).toEqual(["p50", "p95"]);
+    expect(slow.rows.find(row => row.metric === "time_to_first_activity")?.breaches).toEqual([]);
     expect(slow.rows.find(row => row.metric === "ttft")).toMatchObject({ budget: null, breaches: [] });
-    expect(slow).toMatchObject({ breaches: 4, singleRunBreaches: 2, runBudgetExceeded: 1 });
+    expect(slow).toMatchObject({ breaches: 2, singleRunBreaches: 2, runBudgetExceeded: 1 });
+    const slowFive = gradeWaveSpeed("local", ["a", "b", "c", "d", "e"].map(id => run(id, "codex", 40_000)), [], 0);
+    expect(slowFive.rows.find(row => row.metric === "time_to_first_activity")?.breaches).toEqual(["p50", "p95"]);
+    expect(slowFive).toMatchObject({ breaches: 7, singleRunBreaches: 5 });
     const heldButFast = gradeWaveSpeed("local", [run("c", "codex", 4_000,
       [{ eventType: "run.performance.budget_exceeded", createdAt: "2026-11-08T00:00:00.000Z", payload: {} }])], [], 1);
     expect(heldButFast).toMatchObject({ breaches: 0, singleRunBreaches: 0, runBudgetExceeded: 1 });
@@ -46,7 +49,8 @@ describe("wave speed grade", () => {
       events: [{ eventType: "turn.started", createdAt: new Date(10_000 + 30_000).toISOString() }] };
     const speed = gradeWaveSpeed("local", [recovered], [{ kind: "K1", readyAt: 10_000, runIds: ["r"] }], 0);
     // Nothing reloaded, so the whole latency is Paperclip's share and is judged.
-    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ adapter: "claude", breaches: ["p50", "p95"] });
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ adapter: "claude", breaches: [] });
+    expect(speed).toMatchObject({ singleRunBreaches: 1, breaches: 1 });
     expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ budget: null, breaches: [], measured: { p50: 30_000 } });
   });
 
@@ -90,6 +94,25 @@ describe("wave speed grade", () => {
     expect(budgetFor("daytona", "codex", "ttft", "cold")).toBeNull();
     expect(budgetFor("local", "unknown", "ttft", "cold")).toBeNull();
     expect(breachesOf({ n: 1, p50: 99_000, p95: 99_000, max: 99_000 }, null)).toEqual([]);
+  });
+
+  it("judges aggregate p50 and p95 only from five samples and reports smaller rows as an insufficient sample", () => {
+    const budget = { p50Ms: 1_000, p95Ms: 2_000 };
+    expect(breachesOf({ n: 4, p50: 9_000, p95: 9_000, max: 9_000 }, budget)).toEqual([]);
+    expect(breachesOf({ n: 5, p50: 9_000, p95: 9_000, max: 9_000 }, budget)).toEqual(["p50", "p95"]);
+    const speed = gradeWaveSpeed("local", [], [], 0);
+    speed.rows.push({ adapter: "codex", metric: "agent_boot", start: "cold", measured: { n: 2, p50: 9_000, p95: 9_000, max: 9_000 },
+      budget, breaches: [] });
+    expect(speedMarkdown(speed)).toContain("| insufficient sample (n < 5) |");
+  });
+
+  it("fails a run's speed read instead of paging forever when a full page has no seq", async () => {
+    let reads = 0;
+    const api = { get: async () => { reads += 1; return Array.from({ length: 500 }, () => ({ eventType: "x", createdAt: new Date(0).toISOString() })); } } as unknown as ChaosApi;
+    const speed = await collectWaveSpeed(api, "local", [{ issueId: "i", adapter: "codex", samples: [{ runs: [{ id: "r", status: "succeeded",
+      createdAt: new Date(0).toISOString(), finishedAt: null }] }] as never }], []);
+    expect(speed.errors).toEqual([expect.stringMatching(/^r: .*seq/)]);
+    expect(reads).toBe(3);
   });
 
   const traced = (trace: number, spans: Array<[string, number, number]>): BaselineRun => ({

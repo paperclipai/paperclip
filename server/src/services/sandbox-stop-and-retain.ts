@@ -1,5 +1,6 @@
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
@@ -198,7 +199,11 @@ export async function settleStopOnlyCleanup(db: Db, lease: Lease, options: { att
     ? { [ORPHANED_SANDBOX_RECOVERY_KEY]: { recoveredOrphanedRunLease: true, ownerProof: recordedIntent.ownerProof ?? null,
       runId: lease.heartbeatRunId, recoveredAt: now.toISOString(), fromStopIntent: true } } : {};
   const [updated] = await writeEnvironmentCleanup(db, async tx => {
-    if (stopped) await notifyRetainedNativeSessionCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId! });
+    if (stopped) {
+      await notifyRetainedNativeSessionCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId! });
+      // A stop receipt is new evidence for a save hold waiting on it.
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
+    }
     return tx.update(environmentLeases).set({
       status: stopped ? "released" : "pending_cleanup", cleanupStatus: stopped ? "success" : "failed",
       failureReason: stopped ? null : "sandbox_stop_pending",

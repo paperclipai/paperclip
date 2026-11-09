@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { NATIVE_POOL_FAILURE_CODES, DEFINITIVE_NATIVE_RUNNER_FAILURE_CODES, nativePoolFailureKind } from "./native-pool-failure.js";
+import { currentControllerProcess } from "../controller-process-identity.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
@@ -2228,7 +2229,7 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string
 
 /** `paperclip-runnerd` is always launched with `--run-id <runId>`. A failed or
  * slow process listing proves nothing, so it keeps the caller blocked. */
-async function noLocalRunnerProcessForRun(runId: string): Promise<boolean> {
+export async function noLocalRunnerProcessForRun(runId: string): Promise<boolean> {
   const listing = await new Promise<string | null>(resolve => {
     execFile("ps", ["-axww", "-o", "command="], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 * 1024 },
       (error, stdout) => resolve(error ? null : stdout));
@@ -6453,7 +6454,7 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
   verify?: typeof verifyRemoteRunnerReattachment;
   waitMs?: number;
   pollMs?: number;
-} = {}): Promise<"no_prior_runner" | "absent_confirmed" | "stopped" | "killed" | "stop_failed"> {
+} = {}): Promise<"no_prior_runner" | "absent_confirmed" | "stopped" | "killed" | "stop_failed" | "stop_unproven"> {
   const target = input.runnerExecutionTarget;
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return "no_prior_runner";
   const providerLeaseId = target.sandboxLeaseAcquisition?.providerLeaseId;
@@ -6469,7 +6470,7 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
   } catch (error) {
     // No runner with this run's exact identity and generation is alive here.
     return error instanceof RemoteRunnerRecoveryError && error.remoteRunnerRecovery.reason === "process_not_running"
-      ? "absent_confirmed" : "no_prior_runner";
+      ? "absent_confirmed" : "stop_unproven";
   }
   try {
     let outcome: "stopped" | "killed" = "stopped";
@@ -9947,6 +9948,7 @@ async function executePaperclipNativeSessionAttempt(
   const leaseOwner =
     input.leaseOwner ?? `${effectiveRunnerInstanceId}:${randomUUID()}`;
   const controller = await currentNativeControllerIdentity();
+  const controllerHostHash = (await currentControllerProcess()).hostHash;
   const executionLeaseTtlMs = input.runnerExecutionTarget?.kind === "remote"
     ? REMOTE_CONTROLLER_LEASE_MS : NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
   let attempt: number;
@@ -10144,8 +10146,8 @@ async function executePaperclipNativeSessionAttempt(
               // Start the full lease after claim locks and lineage reads finish.
               leaseExpiresAt: sql`clock_timestamp() + ${executionLeaseTtlMs} * interval '1 millisecond'`,
               controllerBootId: controller.bootId,
+              controllerHostHash,
               controllerPid: controller.pid,
-              controllerHostHash: controller.hostHash ?? null,
               controllerProcessStartedAt: controller.processStartedAt,
               controllerGeneration: nextControllerGeneration,
               failureCode: null,
@@ -16867,11 +16869,15 @@ async function createRunnerdBackendWithinSessionClaim(
       await recordAdmittedRemoteProviderPack(providerPackAuthority, message => input.onLog?.("stderr", message));
     }
   };
+  let replacementBackend: ManagedRunnerdBackend | null = null;
   return {
-    bindManagedSession: wrapManagedSession,
-    providerAdmissionRequired: () => Boolean(artifactStorage
-      && (providerArtifacts || !legacyProviderContinuity && !liveProviderRecovery)),
+    bindManagedSession: (session, options) => replacementBackend
+      ? replacementBackend.bindManagedSession(session, options) : wrapManagedSession(session),
+    providerAdmissionRequired: () => replacementBackend?.providerAdmissionRequired
+      ? replacementBackend.providerAdmissionRequired()
+      : Boolean(artifactStorage && (providerArtifacts || !legacyProviderContinuity && !liveProviderRecovery)),
     providerAdmissionPersisted: artifactStorage ? async () => {
+      if (replacementBackend) return replacementBackend.providerAdmissionPersisted?.();
       const backupOwner = sessionHarnessBackupOwners.get(authorityEpoch);
       if ((liveProviderRecovery || legacyProviderContinuity) && !providerArtifacts) return;
       if (!backupOwner || !expectedProviderPackManifest || !remoteCommandRunner) {
@@ -16889,6 +16895,7 @@ async function createRunnerdBackendWithinSessionClaim(
         source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal }));
     } : undefined,
     bindDiagnosticSession: session => {
+      if (replacementBackend) return replacementBackend.bindDiagnosticSession?.(session);
       const retained = nativeSessionDiagnostics(session);
       if (retained && retained !== diagnostics) {
         const lease = retained.activate(diagnosticOwner, input.onLog);
@@ -16896,6 +16903,7 @@ async function createRunnerdBackendWithinSessionClaim(
       } else diagnostics.bind(session);
     },
     sessionCheckpointPersisted: snapshot => {
+      if (replacementBackend) return replacementBackend.sessionCheckpointPersisted?.(snapshot);
       const staged = runnerControlPlane?.store.state.stagedRunAttachment;
       if (staged && snapshot.identity.runId === staged.targetIdentity.runId &&
           snapshot.identity.sessionId === staged.targetIdentity.normalizedSessionId) {
@@ -16904,7 +16912,7 @@ async function createRunnerdBackendWithinSessionClaim(
         }
       }
     },
-    descriptor: () => backend.descriptor(),
+    descriptor: () => (replacementBackend ?? backend).descriptor(),
     openSession: async (sessionInput) => {
       cursorCloudRuntime?.register();
       try {
@@ -16925,12 +16933,33 @@ async function createRunnerdBackendWithinSessionClaim(
       } catch (error) { cursorCloudRuntime?.unregister(); throw error; }
     },
     openReplacementSession: async (sessionInput, previous) => {
+      const reattachClaim = input.restartRecovery?.kind === "reattach_remote_runner" ? input.restartRecovery : null;
+      if (!reattachClaim && input.remoteWarmRecovery) {
+        throw new Error("native_runner_replacement_requires_fresh_launch");
+      }
+      if (reattachClaim) {
+        const stopped = await stopStaleRemoteRunnerBeforeBootstrap({ execution: input.execution,
+          runnerExecutionTarget: input.runnerExecutionTarget, identity: durableIdentity ?? {}, onLog: input.onLog });
+        if (stopped === "stop_failed" || stopped === "stop_unproven") {
+          throw new Error(`native_runner_replacement_${stopped}`);
+        }
+      }
       await measureNativeRunnerSpan(
         input.trace,
         "provider.session.archive_before_replacement",
         () => archiveContinuityState(previous),
         { parentName: "native.session.execute" },
       );
+      if (reattachClaim) {
+        const { remote: _remote, stagedAttachment: _staged, ...claim } = reattachClaim;
+        const fresh = await createRunnerdBackendWithinSessionClaim({
+          ...input,
+          remoteWarmRecovery: undefined,
+          restartRecovery: { ...claim, kind: "bootstrap_incomplete" },
+        }, sessionScopeId);
+        replacementBackend = fresh;
+        return fresh.openSession(sessionInput);
+      }
       cursorCloudRuntime?.register();
       try {
         const session = await backend.openSession(sessionInput);
