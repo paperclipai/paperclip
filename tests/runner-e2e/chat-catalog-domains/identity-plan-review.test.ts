@@ -44,6 +44,7 @@ describe("versioned approval and revised publication scope", () => {
   it("allows actual attributed local chat draft without unnecessarily requiring delegation", () => { const d = planReviewIdentityCases[1]!; const o = valid(d.scenarioId); o.tasks = []; o.runs = o.runs.filter(run => run.agentId === "ceo"); o.documents[0] = { ...o.documents[0]!, issueId: "chat" }; o.revisions[0] = { ...o.revisions[0]!, createdByRunId: "lead-run", createdByAgentId: "ceo" }; o.links = ["#document-plan"]; expect(d.grade(o).passed).toBe(true); o.links = []; expect(d.grade(o).passed).toBe(false); });
   it("does not grade the draft's or reply's wording", () => { const d = planReviewIdentityCases[1]!; const o = valid(d.scenarioId); const marker = String(o.state.scopeMarker);
     o.documents[0] = { ...o.documents[0]!, body: `# Introduction copy\n${marker}\nA notebook for small science teams.` }; o.reply = "Held back the page. Your copy is linked above."; expect(d.grade(o).passed).toBe(true);
-    o.documents[0] = { ...o.documents[0]!, body: "# Introduction copy without the launch scope" }; expect(d.grade(o).passed).toBe(false); });
+    o.documents[0] = { ...o.documents[0]!, body: "# Research Notes\nA calmer place for your team's experiments." }; expect(d.grade(o).passed).toBe(true);
+    o.documents[0] = { ...o.documents[0]!, id: "plan" }; expect(d.grade(o).passed).toBe(false); });
   it("rejects an otherwise real draft revision written by an unrelated run", () => { const d = planReviewIdentityCases[1]!; const o = valid(d.scenarioId); o.revisions[0]!.createdByRunId = "unrelated-run"; expect(d.grade(o).passed).toBe(false); });
 });
