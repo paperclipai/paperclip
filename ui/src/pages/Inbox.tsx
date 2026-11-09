@@ -1,4 +1,4 @@
-import { isTransientError } from "@/api/errors";
+import { errorCodes, isTransientError } from "@/api/errors";
 import { useQueryView } from "@/components/QueryView";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
@@ -2597,7 +2597,12 @@ function StreamlinedInbox({
     ?? (issueFilters.externalObjectStatuses.length > 0 ? externalObjectSummariesError : null);
   const rawOptionalSourceError = dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError
     ?? (tab === "mine" ? mineIssuesError : touchedIssuesError);
-  const optionalSourceError = isTransientError(rawOptionalSourceError) ? null : rawOptionalSourceError;
+  // A query error means retries are over. Transient errors usually clear on their own, but a read
+  // that keeps hitting the inbox timeout leaves items missing, so say so and offer a retry.
+  const optionalReadTimeoutError = [approvalsError, joinRequestsError]
+    .find((error) => errorCodes(error).includes("TIMEOUT")) ?? null;
+  const optionalSourceError = optionalReadTimeoutError
+    ?? (isTransientError(rawOptionalSourceError) ? null : rawOptionalSourceError);
   const retryFailedSources = () => {
     // Optional failures belong to the aggregate read, whose task rows stay usable.
     if (tab === "mine" && (mineSnapshot?.failureError || mineSnapshot?.contextError)) {

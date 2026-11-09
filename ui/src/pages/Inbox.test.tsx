@@ -10,6 +10,7 @@ import type { Approval, CompactIssue, HeartbeatRun, InboxMineSnapshot, Issue } f
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
 import { ApiError } from "../api/client";
+import { shouldRetryRequest } from "../lib/query-client";
 import {
   clearLocalInboxArchive,
   getLocalInboxArchiveIssueIds,
@@ -1978,6 +1979,25 @@ describe("Inbox toolbar", () => {
         await renderInbox(client, root);
         await vi.waitFor(() => expect(apiMocks.approvalsList).toHaveBeenCalledTimes(2));
         await vi.waitFor(() => expect(rowKeys()).toEqual(["PAP-4001", "PAP-4002"]));
+      } finally { await act(() => root.unmount()); client.clear(); }
+    });
+
+    it.each([
+      ["approvals", () => apiMocks.approvalsList],
+      ["join requests", () => apiMocks.joinRequestsList],
+    ] as const)("shows the missing-items notice when %s keep timing out under the app retry policy", async (_label, mock) => {
+      routerMock.location.pathname = "/inbox/mine";
+      twoRows();
+      mock().mockRejectedValue(new ApiError("Timed out", 408, { error: "TIMEOUT" }));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: shouldRetryRequest, retryDelay: 0, gcTime: 0 } } });
+      const root = createRoot(container);
+      try {
+        await renderInbox(client, root);
+        await vi.waitFor(() => expect(rowKeys()).toEqual(["PAP-4001", "PAP-4002"]));
+        await vi.waitFor(() => expect(document.body.textContent).toContain("Some inbox items couldn’t load."));
+        expect(mock().mock.calls.length).toBeGreaterThan(1);
+        expect(document.body.textContent).toContain("Retry missing items");
+        expect(document.body.textContent).not.toContain("Inbox zero.");
       } finally { await act(() => root.unmount()); client.clear(); }
     });
 
