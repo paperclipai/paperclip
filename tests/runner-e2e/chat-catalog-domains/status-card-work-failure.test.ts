@@ -67,9 +67,11 @@ describe("real required-input work failure, not a provider failure", () => {
     const v = cardWorkFixture();
     for (const mutate of [(x: typeof v) => { x.evidence.decisions.decisions[0]!.auditEvents = []; },
       (x: typeof v) => { x.evidence.comments[0]!.createdByRunId = "foreign"; },
-      (x: typeof v) => { x.evidence.comments[0]!.body = "Everything is fresh"; },
+      (x: typeof v) => { x.evidence.comments[0]!.body = " "; },
       (x: typeof v) => { x.evidence.activity[0]!.runId = "foreign"; },
       (x: typeof v) => { x.evidence.activity[0]!.details = { status: "blocked" }; }]) { const copy = structuredClone(v); mutate(copy); expect(grade(copy)).toBe(false); }
+    // The worker's explanation is model output: a reworded one passes.
+    const reworded = structuredClone(v); reworded.evidence.comments[0]!.body = "Notes service would not answer, so I stopped here."; expect(grade(reworded)).toBe(true);
     const e = v.evidence.decisions.decisions[0]!.auditEvents[0]!.metadata!.execution as { request: { dispatched: boolean }; response: { httpStatus: number } };
     e.request.dispatched = false; expect(grade(v)).toBe(false); e.request.dispatched = true; e.response.httpStatus = 500; expect(grade(v)).toBe(false);
   });

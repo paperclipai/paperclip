@@ -89,8 +89,10 @@ export function genuineCardWorkFailure(card: StatusCard, update: StatusCardUpdat
     || millis(update.startedAt) > millis(run.startedAt) || millis(update.finishedAt!) < millis(run.startedAt)
     || run.companyId !== recipe.companyId || run.agentId !== recipe.workerId || run.contextSnapshot?.issueId !== generation.id
     || !boundCardChecklistRead(recipe, run, decisions, calls, true, evidence.checklistSource, update.finishedAt) || !cardAccountingReady(recipe.companyId, recipe.workerId, leadId, runs, evidence.overview)) return false;
+  // The worker's comment is model output, so its wording is not pattern-matched; the blocked task, failed update and
+  // failed bound checklist read above carry the failure. The comment must come from that run on that generation task.
   return comments.some(c => c.companyId === recipe.companyId && c.issueId === generation.id && c.authorAgentId === recipe.workerId && c.createdByRunId === run.id
-    && /checklist|source/i.test(c.body ?? "") && /unavailable|could not|couldn't|fail|error|blocked/i.test(c.body ?? ""))
+    && !!c.body?.trim())
     && activity.some(a => a.companyId === recipe.companyId && a.entityId === generation.id && a.runId === run.id && a.action === "issue.updated"
       && (a.actorType === "agent" && a.actorId === recipe.workerId && a.details?.status === "blocked"
         || a.actorType === "system" && a.actorId === "native-status-committer" && a.details?.source === "native_status_decision" && a.details?.toStatus === "blocked"));

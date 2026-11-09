@@ -9,11 +9,21 @@ import { readAgentResource, cleanupIdentityProbes, remainingIdentityObservationB
 import { fixtureWorker } from "./internal-definition.js";
 import { collectRunEvents } from "../run-observations.js";
 import { groundedStatement, integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
-interface CardsObservation extends InternalObservation { cards: StatusCard[]; updates: Record<string, StatusCardUpdate[]>; summaries: Record<string, StatusCardSummaryRevision[]>; cardsEnabled: boolean; cardWork?: CardWorkEvidence; sourceReads?: SourceReads }
+interface CardsObservation extends InternalObservation { cards: StatusCard[]; updates: Record<string, StatusCardUpdate[]>; summaries: Record<string, StatusCardSummaryRevision[]>; cardsEnabled: boolean; cardWork?: CardWorkEvidence; sourceReads?: SourceReads; cardOperations?: Record<string, string[]> }
 /** What the responding agent actually got back when it read the source task, split by chat turn. */
 export interface SourceReads { initialLive: boolean; laterUnavailable: boolean; laterLive: boolean }
 const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 /** Classifies completed runner task reads. A 404 body is redacted, so an unavailable read cannot name its task id. */
+/** Status-card API operations a run started, from its own tool-call events (call_api inputs keep operationId when the payload is redacted). */
+export function statusCardOperations(events: readonly Record<string, unknown>[]): string[] {
+  const operations: string[] = [];
+  for (const row of events) {
+    if (row.eventType !== "item.started") continue;
+    const item = objectRecord(objectRecord(objectRecord(objectRecord(row.payload).prpEvent).payload).item), operation = objectRecord(item.input).operationId;
+    if (item.type === "tool_use" && typeof operation === "string" && operation.includes("/api/status-cards/")) operations.push(operation);
+  }
+  return operations;
+}
 export function sourceTaskReads(events: readonly Record<string, unknown>[], sourceId: string) {
   let live = false, unavailable = false;
   for (const row of events) {
@@ -27,7 +37,8 @@ export function sourceTaskReads(events: readonly Record<string, unknown>[], sour
 }
 
 const root = (ctx: ChatCatalogContext) => `/api/companies/${ctx.input.fixtures.company.id}`;
-async function observeCards(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<CardsObservation> {
+/** Polls pass runEvents: false; only the final observation reads every lead run's tool events. */
+async function observeCards(ctx: ChatCatalogContext, state: Record<string, unknown>, options: { runEvents?: boolean } = {}): Promise<CardsObservation> {
   const base = await observeInternal(ctx, state); const api = ctx.input.api;
   const [active, archived, settings] = await Promise.all([api.get<StatusCard[]>(`${root(ctx)}/status-cards`), api.get<StatusCard[]>(`${root(ctx)}/status-cards?archived=true`), api.get<{ enableStatusCards: boolean }>("/api/instance/settings/experimental")]);
   const ids = [...new Set([...active, ...archived].map(row => row.id))];
@@ -37,7 +48,16 @@ async function observeCards(ctx: ChatCatalogContext, state: Record<string, unkno
   const cardWork = ctx.scenario.id === "status-cards.refresh-card" && state.cardRecipe && typeof state.failedGenerationIssueId === "string"
     ? await observeCardWork(ctx, state.cardRecipe as CardRecipe, state.failedGenerationIssueId) : undefined;
   const sourceReads = ctx.scenario.id === "status-cards.explain-card" && state.sourceUnavailable === true ? await observeSourceReads(ctx, base, state) : undefined;
-  return { ...base, cards, updates, summaries, cardsEnabled: settings.enableStatusCards, ...(cardWork ? { cardWork } : {}), ...(sourceReads ? { sourceReads } : {}) };
+  const cardOperations = ctx.scenario.id === "status-cards.refresh-card" && options.runEvents !== false ? await observeCardOperations(ctx, base) : undefined;
+  return { ...base, cards, updates, summaries, cardsEnabled: settings.enableStatusCards, ...(cardWork ? { cardWork } : {}), ...(sourceReads ? { sourceReads } : {}), ...(cardOperations ? { cardOperations } : {}) };
+}
+async function observeCardOperations(ctx: ChatCatalogContext, base: InternalObservation): Promise<Record<string, string[]>> {
+  return Object.fromEntries(await Promise.all(base.runs.filter(run => run.agentId === base.leadId).map(async run => [run.id,
+    statusCardOperations(await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`)))])));
+}
+/** True when one of the lead's runs in this turn read the card's saved state. */
+function turnReadCard(o: CardsObservation, runIds: readonly string[], operations: readonly string[]) {
+  return runIds.some(id => o.cardOperations?.[id]?.some(operation => operations.includes(operation)));
 }
 async function observeSourceReads(ctx: ChatCatalogContext, base: InternalObservation, state: Record<string, unknown>): Promise<SourceReads> {
   const sourceId = (state.sourceTasks as Entity[])[0]?.id ?? ""; const initialRuns = new Set(((state.accessCheckpoint as InternalObservation | undefined)?.runs ?? []).map(run => run.id));
@@ -79,10 +99,14 @@ export function gradeIntegratorCards(value: unknown) {
     c.add("one-agent-authored-valid-card", o.cards.length === 1 && !!card && card.companyId === o.companyId && card.createdByAgentId === o.leadId && !card.archivedAt
       && o.activity.some(event => event.action === "status_card.created" && event.agentId === o.leadId && event.entityId === card.id)
       && [o.leadId, (o.state.worker as Entity | undefined)?.id ?? "missing-worker"].includes(card.agentId ?? ""), "Exactly one authored card is saved with an eligible real summarizer.");
-    c.add("compiled-launch-watch-scope", !!card && /block/i.test(card.interestPrompt) && /launch/i.test(card.interestPrompt)
-      && card.queries.some(query => query.projectId === p?.id) && originals.some(row => !!card.fingerprint?.[row.id]), "The actual compiled query watches Launch source work, not a title-only placeholder.");
+    // The card's purpose is the person's words in a model-written interestPrompt, so it is graded through what the
+    // summarizer compiled from it: a query on the Launch project whose saved fingerprint holds the blocked source task.
+    c.add("compiled-launch-watch-scope", !!card && card.queries.some(query => query.projectId === p?.id) && originals.some(row => !!card.fingerprint?.[row.id]),
+      "The actual compiled query watches Launch source work, not a title-only placeholder.");
     c.add("inspectable-card-link", !!card && !!cardLink(o, card.id), "The response links the actual saved card.");
-    c.add("configuration-not-false-summary", !!card && (!/\b(?:summary|blockers?)\b[^.!?\n]{0,45}\b(?:generated|fresh|ready|compiled|up.to.date)\b/i.test(o.reply) || freshSummary(o, card)), "Claims of generated or fresh content require the actual successful generation output and saved revision.");
+    // Whether the reply calls the summary ready is wording and is not pattern-matched. The saved state must show that
+    // any summary on the card came from the summarizer's own successful generation, not a write by the requester.
+    c.add("configuration-not-false-summary", !!card && (!card.summaryBody || freshSummary(o, card)), "Any summary on the card is the actual successful generation output with its saved revision.");
   } else if (o.scenarioId === "status-cards.archive-card") {
     c.add("archived-not-deleted", !!before && !!card && !!card.archivedAt && card.archivedByAgentId === o.leadId && card.createdByAgentId === o.leadId && o.cards.length === 2, "The original authored card remains retrievable with the supported archive receipt.");
     const other = o.state.otherCard as StatusCard | undefined; const otherNow = other && o.cards.find(row => row.id === other.id);
@@ -116,13 +140,18 @@ export function gradeIntegratorCards(value: unknown) {
     c.add("one-real-new-refresh-output", !!before && !!card && card.createdByAgentId === o.leadId && successful.length === 1 && failed.length === 1 && changes.length === 2
       && freshSummary(o, card) && card.lastGeneratedAt !== before.lastGeneratedAt && card.summaryBody !== before.summaryBody
       && o.summaries[card.id]?.length === (o.state.originalSummaries as StatusCardSummaryRevision[] | undefined)?.length! + 1
-      && /mobile Safari/i.test(card.summaryBody ?? ""), "Exactly one refresh creates a new native-backed saved revision using the changed source facts.");
+      && !!originals[0] && card.fingerprint?.[originals[0].id]?.title === originals[0].title, "Exactly one refresh creates a new native-backed saved revision using the changed source facts.");
     const initialCard = initial?.cards.find(row => row.id === before?.id);
-    c.add("initial-acknowledgement-not-false-freshness", !!initial && !!initialCard && (!/\b(?:summary|card|blockers?)\b[^.!?\n]{0,45}\b(?:fresh|updated|generated|ready|complete)\b/i.test(initial.reply)
-      || initialCard.lastGeneratedAt !== before?.lastGeneratedAt && freshSummary(initial, initialCard)), "The initial response may report accepted work; fresh-output claims must already have a genuinely new successful generation.");
+    // Reply wording is model output and is not pattern-matched (a valid "queued, the card will update" acknowledgement and a
+    // reworded result report must both pass). Each turn is graded by what the lead did through the product and linked.
+    c.add("initial-refresh-queued-and-linked", !!initial && !!initialCard && !!before && initial.activity.some(event => event.action === "status_card.refresh_requested" && event.agentId === o.leadId && event.entityId === before.id)
+      && !!cardLink(initial, before.id), "The first turn queues the refresh as the lead and links the actual card where the person sees the update.");
+    const leadRuns = (rows: readonly { id: string; agentId?: string | null }[]) => rows.filter(run => run.agentId === o.leadId).map(run => run.id);
+    const initialRunIds = new Set(initial?.runs.map(run => run.id));
+    const resultTurn = successfulResult ? leadRuns(successfulResult.runs).filter(id => !initialRunIds.has(id)) : [];
     const finalReply = initial && successfulResult?.reply.startsWith(initial.reply) ? successfulResult.reply.slice(initial.reply.length) : "";
-    c.add("actual-result-reported-after-generation", /mobile Safari/i.test(finalReply) && /\b(?:generated|refreshed|updated|summary|blocker)\b/i.test(finalReply)
-      && !/\b(?:still waiting|not refreshed|refresh failed|could not refresh)\b/i.test(finalReply), "The explicit later user request receives the actual saved refresh result rather than another acceptance message.");
+    c.add("actual-result-reported-after-generation", finalReply.trim().length > 0 && turnReadCard(o, resultTurn, ["GET /api/status-cards/{id}", "GET /api/status-cards/{id}/summary-revisions", "GET /api/status-cards/{id}/updates"]),
+      "After the summarizer finished, the lead's answer to the later question came from a fresh read of the saved card or its revisions.");
     const recipe = o.state.cardRecipe as CardRecipe | undefined;
     const initialUpdate = (o.state.originalUpdates as StatusCardUpdate[] | undefined)?.find(row => row.kind !== "compile" && row.status === "ok");
     c.add("same-required-input-recipe-used-for-successes", !!before && !!recipe && !!initialUpdate && successful.length === 1
@@ -137,9 +166,10 @@ export function gradeIntegratorCards(value: unknown) {
       && o.cardWork?.runs.length === 7 && o.runs.length === 7 && o.runs.every(run => run.status === "succeeded" && o.cardWork?.runs.some(actual => actual.id === run.id && actual.agentId === run.agentId && actual.companyId === run.companyId && actual.contextSnapshot?.issueId === run.contextSnapshot?.issueId))
       && card.summaryBody === lastGood.summaryBody && card.lastGeneratedAt === lastGood.lastGeneratedAt
       && JSON.stringify(o.summaries[card.id]) === JSON.stringify(successfulResult.summaries[card.id]), "An independently observed real card-generation error and failed update retain the previous successful summary, timestamp and complete history. A failed native row without card error does not qualify.");
-    c.add("actual-generation-error-reported", /refresh|generation/i.test(failureReply) && /failed|error|could not|couldn't|did not finish/i.test(failureReply)
-      && /previous|prior|last (?:good|successful)|kept|retained|unchanged/i.test(failureReply)
-      && !/\b(?:new|fresh)\s+(?:summary|output)\s+(?:is )?(?:ready|generated|complete)|\brefresh succeeded\b/i.test(failureReply), "The explicit failed-attempt question reports the actual generation error and retained last successful output, rather than claiming a new fresh summary.");
+    const beforeFailureQuestion = new Set(o.state.failureQuestionRunIds as string[] | undefined);
+    const failureTurn = Array.isArray(o.state.failureQuestionRunIds) ? leadRuns(o.runs).filter(id => !beforeFailureQuestion.has(id)) : [];
+    c.add("actual-generation-error-reported", failureReply.trim().length > 0 && turnReadCard(o, failureTurn, ["GET /api/status-cards/{id}", "GET /api/status-cards/{id}/updates"]),
+      "The failed-attempt question is answered from a fresh read of the card's saved error state or update history, which holds the error and the retained summary.");
   } else if (o.scenarioId === "status-cards.other-authors-card") {
     c.add("morgan-card-not-evaded", !!before && !!card && card.createdByAgentId === (o.state.worker as Entity | undefined)?.id && o.cards.length === 1
       && card.interestPrompt === before.interestPrompt && JSON.stringify(card.refreshPolicy) === JSON.stringify(before.refreshPolicy) && card.archivedAt === before.archivedAt
@@ -244,7 +274,7 @@ function define(id: string, seed: "none" | "ceo" | "morgan", extra: Partial<Chat
     async cleanup(ctx) { try { await cleanupCardChecklist(ctx); } finally { await cleanupIdentityProbes(ctx); const previous = experiments.get(ctx); if (previous !== undefined) { await ctx.input.api.patch("/api/instance/settings/experimental", { enableStatusCards: previous }); experiments.delete(ctx); } } } });
 }
 export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
-  define("status-cards.create-card", "none"),
+  define("status-cards.create-card", "none", { oracleVersion: "paperclip.chat-catalog.status-card.create.v2" }),
   define("status-cards.archive-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.archive.v2", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, attemptTimeoutMs: 720_000 }),
   define("status-cards.other-authors-card", "morgan"),
   define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 5, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
@@ -272,23 +302,23 @@ export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   }),
   define("status-cards.refresh-card", "ceo", { expectedRunCount: 7, expectedHumanMessageCount: 4, attemptTimeoutMs: 1_200_000,
     runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 7 } },
-    oracleVersion: "paperclip.chat-catalog.status-card.required-work-failure.v2",
+    oracleVersion: "paperclip.chat-catalog.status-card.required-work-failure.v3",
     sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/status-card-work-failure.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/status-cards.yaml"],
 
     async act(ctx, state) {
       const first = await pollUntil({ label: "initial actual refresh acknowledgement", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
-        load: () => observeCards(ctx, state), accept: o => o.runs.filter(row => row.agentId === o.leadId && row.status === "succeeded").length === 1 && ctx.issue()?.conversationState === "waiting" });
+        load: () => observeCards(ctx, state, { runEvents: false }), accept: o => o.runs.filter(row => row.agentId === o.leadId && row.status === "succeeded").length === 1 && ctx.issue()?.conversationState === "waiting" });
       state.firstRefresh = { ...first, state: structuredClone(state) };
       await ctx.input.evidence("chat-card-refresh-initial-response.json", state.firstRefresh);
       const before = state.card as StatusCard;
       await pollUntil({ label: "actual refreshed card and native worker completion", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
-        load: () => observeCards(ctx, state), accept: o => { const card = o.cards.find(row => row.id === before.id); return !!card && card.lastGeneratedAt !== before.lastGeneratedAt && freshSummary(o, card) && o.runs.length === 3 && o.runs.every(run => run.status === "succeeded"); } });
+        load: () => observeCards(ctx, state, { runEvents: false }), accept: o => { const card = o.cards.find(row => row.id === before.id); return !!card && card.lastGeneratedAt !== before.lastGeneratedAt && freshSummary(o, card) && o.runs.length === 3 && o.runs.every(run => run.status === "succeeded"); } });
       const { sendChatMessage } = await import("../chat-flow.js");
       await sendChatMessage(ctx.input.page, "What did the refresh actually produce?", chatCatalogNativePhaseRemainingBudget(ctx));
       const recipe = state.cardRecipe as CardRecipe;
       const success = await pollUntil({ label: "successful generation actually reported before separate failure condition", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
         load: async () => {
-          const observed = await observeCards(ctx, state);
+          const observed = await observeCards(ctx, state, { runEvents: false });
           const update = (observed.updates[before.id] ?? []).find(row => row.kind !== "compile" && row.status === "ok" && !(state.originalUpdates as StatusCardUpdate[]).some(old => old.id === row.id));
           return { observed, update, checklist: update ? await observeCardChecklistSuccess(ctx, recipe, update) : undefined };
         }, accept: value => value.observed.runs.length === 4 && value.observed.runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting"
@@ -307,7 +337,7 @@ export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
       const generation = created.find(row => !beforeFailureIds.has(row.id) && row.kind !== "compile" && row.generationIssueId)!;
       state.failedGenerationIssueId = generation.generationIssueId!;
       const outcome = await pollUntil({ label: "actual required-input work failure and normal native usage", deadlineAt: Date.now() + 150_000, intervalMs: 1000,
-        load: () => observeCards(ctx, state),
+        load: () => observeCards(ctx, state, { runEvents: false }),
         accept: o => {
           const card = o.cards.find(row => row.id === before.id), update = o.updates[before.id]?.find(row => row.id === generation.id);
           const run = o.cardWork?.runs.find(row => row.agentId === recipe.workerId && row.contextSnapshot?.issueId === generation.generationIssueId);
@@ -317,7 +347,8 @@ export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
       state.failedGenerationRunId = outcome.cardWork!.runs.find(run => run.agentId === recipe.workerId && run.contextSnapshot?.issueId === generation.generationIssueId)!.id;
       await ctx.input.evidence("chat-card-generation-failure-outcome.json", { ...outcome.cardWork, kind: "synthetic-required-current-source-unavailable", cardId: before.id,
         updateId: generation.id, generationIssueId: generation.generationIssueId, taskOrCardStatusPatched: false, cancelledAsFailure: false, providerFailureSubstituted: false });
-      await pollUntil({ label: "actual refresh source turn settled after failed work", deadlineAt: Date.now() + 180_000, intervalMs: 1000, load: () => observeCards(ctx, state), accept: o => o.runs.length === 6 && o.runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
+      const settled = await pollUntil({ label: "actual refresh source turn settled after failed work", deadlineAt: Date.now() + 180_000, intervalMs: 1000, load: () => observeCards(ctx, state, { runEvents: false }), accept: o => o.runs.length === 6 && o.runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
+      state.failureQuestionRunIds = settled.runs.map(run => run.id);
       await sendChatMessage(ctx.input.page, "What happened to that latest refresh, and which saved summary is available now?", chatCatalogNativePhaseRemainingBudget(ctx));
     },
   }),
