@@ -43,6 +43,8 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
+import * as workspacePreparation from "../services/heartbeat/workspace-preparation.js";
+import { WorkspaceBusyDeferral } from "../services/heartbeat/retries.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -131,6 +133,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await heartbeat.drainActiveRunExecutions();
+    vi.restoreAllMocks();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -565,7 +568,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(recoveredIntent).toMatchObject({ status: "coalesced" });
   });
 
-  it.each(["answered", "accepted", "rejected", "pending", "missing", "wrong_issue", "agent_resolved", "changed_before_dispatch"] as const)(
+  it.each(["answered", "accepted", "rejected", "pending", "missing", "wrong_issue", "agent_resolved", "changed_before_dispatch",
+    "workspace_wait", "workspace_wait_changed", "blocker_finishes"] as const)(
     "delivers only a saved human response while dependencies remain blocked: %s", async response => {
       const companyId = randomUUID(), agentId = randomUUID(), blockerId = randomUUID(), issueId = randomUUID();
       await db.insert(companies).values({ id: companyId, name: "Response fixture",
@@ -597,19 +601,45 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       }).returning();
       const context = { issueId, mutation: "interaction", interactionId: response === "missing" ? randomUUID() : interaction.id,
         interactionKind: interaction.kind, interactionStatus: status, wakeReason: "issue_commented" };
-      const service = response === "changed_before_dispatch" ? heartbeatService(db, {
-        beforeResolvedInteractionContinuationDispatchCheck: async () => {
-          await db.update(issueThreadInteractions).set({ resolvedByUserId: null, resolvedByAgentId: agentId })
-            .where(eq(issueThreadInteractions.id, interaction.id));
+      const resourceWait = response === "workspace_wait" || response === "workspace_wait_changed";
+      let deferredSourceId: string | null = null;
+      const workspace = resourceWait ? vi.spyOn(workspacePreparation, "prepareHeartbeatWorkspace")
+        .mockRejectedValueOnce(new WorkspaceBusyDeferral({ holder: { runId: randomUUID(), agentId,
+          issueId: blockerId, issueIdentifier: null }, executionWorkspaceId: randomUUID(),
+          wasIssueAssignee: true, deferralAttempt: 0 })) : null;
+      const service = response === "changed_before_dispatch" || resourceWait || response === "blocker_finishes" ? heartbeatService(db, {
+        beforeChatControlRecoveryCheck: async ({ stage }) => {
+          if (response === "blocker_finishes" && stage === "claim")
+            await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
+        },
+        beforeResolvedInteractionContinuationDispatchCheck: async ({ runId }) => {
+          if (response === "changed_before_dispatch" || response === "workspace_wait_changed" && deferredSourceId && runId !== deferredSourceId)
+            await db.update(issueThreadInteractions).set({ resolvedByUserId: null, resolvedByAgentId: agentId })
+              .where(eq(issueThreadInteractions.id, interaction.id));
         },
       }) : heartbeat;
       const wake = await service.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
         payload: context, contextSnapshot: context, requestedByActorType: "user", requestedByActorId: "responsible-user" });
-      const shouldDeliver = ["answered", "accepted", "rejected"].includes(response);
+      let dispatchedRunId = wake?.id;
+      if (resourceWait) {
+        expect(wake).not.toBeNull();
+        await service.drainActiveRunExecutions();
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake!.id)))[0])
+          .toMatchObject({ status: "cancelled", errorCode: "workspace_busy" });
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+        const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, wake!.id));
+        expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "workspace_busy" });
+        deferredSourceId = wake!.id;
+        dispatchedRunId = retry.id;
+        workspace!.mockRestore();
+        expect((await service.promoteDueScheduledRetries(new Date(Date.now() + 5 * 60_000))).runIds).toContain(retry.id);
+        await service.resumeQueuedRuns();
+      }
+      const shouldDeliver = ["answered", "accepted", "rejected", "workspace_wait", "blocker_finishes"].includes(response);
       if (shouldDeliver) {
         expect(wake).not.toBeNull();
         await service.drainActiveRunExecutions();
-        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake!.id));
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, dispatchedRunId!));
         expect({ status: run.status, error: run.error, errorCode: run.errorCode })
           .toEqual({ status: "succeeded", error: null, errorCode: null });
         expect(run).toMatchObject({ status: "succeeded", contextSnapshot: {
@@ -634,10 +664,10 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
             .where(eq(issueThreadInteractions.id, interaction.id));
           expect(await retryGate()).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
         }
-      } else if (response === "changed_before_dispatch") {
+      } else if (response === "changed_before_dispatch" || response === "workspace_wait_changed") {
         expect(wake).not.toBeNull();
         await service.drainActiveRunExecutions();
-        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake!.id)))[0])
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, dispatchedRunId!)))[0])
           .toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
         expect(mockAdapterExecute).not.toHaveBeenCalled();
       } else {
@@ -645,7 +675,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         expect(mockAdapterExecute).not.toHaveBeenCalled();
       }
       expect(await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, issueId))).toHaveLength(1);
-      expect((await db.select().from(issues).where(eq(issues.id, blockerId)))[0].status).toBe("backlog");
+      expect((await db.select().from(issues).where(eq(issues.id, blockerId)))[0].status)
+        .toBe(response === "blocker_finishes" ? "done" : "backlog");
       expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("blocked");
       expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${blockerId}`)).toHaveLength(0);
     },

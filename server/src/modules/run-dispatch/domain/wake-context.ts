@@ -29,6 +29,9 @@ export const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
   "cancelled",
   "rejected",
 ]);
+const RESOLVED_INTERACTION_RESOURCE_WAIT_REASONS = new Set([
+  WORKSPACE_BUSY_RETRY_REASON, AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON,
+]);
 
 // A run silent for this long no longer counts as the shared-workspace holder
 // it was waiting behind. Kept here so the deferral gate and the parked-wait
@@ -202,6 +205,8 @@ export function isResolvedInteractionContinuationWakeContext(contextSnapshot: un
   return (
     (mutation === "interaction" && wakeReason === "issue_commented") ||
     (mutation === "interaction" && retryReason === RUNNER_REVISION_WAIT_RETRY_REASON) ||
+    (mutation === "interaction" && context.dependencyBlockedInteraction === true && retryReason !== null
+      && RESOLVED_INTERACTION_RESOURCE_WAIT_REASONS.has(retryReason)) ||
     wakeReason === INTERACTION_CONTINUATION_INFRA_WAKE_REASON ||
     retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
   );

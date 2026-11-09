@@ -2232,7 +2232,7 @@ export function heartbeatService(
             .then((rows) => rows.get(issueId) ?? null)
         : null;
       const dependencyResponse = issueId && issueContext?.status === "blocked"
-        && issueDependencyReadiness?.isDependencyReady === false && context.dependencyBlockedInteraction === true
+        && context.dependencyBlockedInteraction === true
         && await isVerifiedDependencyInteractionResponse(db, { companyId: agent.companyId,
           issueId, agentId: agent.id, context });
       if (
