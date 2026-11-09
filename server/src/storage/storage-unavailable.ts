@@ -55,21 +55,23 @@ export function isStorageUnavailableError(error: unknown): boolean {
 
 export const STORAGE_OUTAGE_WAIT = { budgetMs: 5 * 60_000, firstDelayMs: 2_000, maxDelayMs: 30_000 } as const;
 
-const outageWaitScope = new AsyncLocalStorage<true>();
+type OutageWaitScope = { waitedMs: number };
+const outageWaitScope = new AsyncLocalStorage<OutageWaitScope>();
 
 export function waitOutStorageOutages<T>(work: () => Promise<T>): Promise<T> {
-  return outageWaitScope.run(true, work);
+  return outageWaitScope.getStore() ? work() : outageWaitScope.run({ waitedMs: 0 }, work);
 }
 
 export async function retryThroughStorageOutage<T>(send: () => Promise<T>, signal?: AbortSignal,
   policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number } = STORAGE_OUTAGE_WAIT): Promise<T> {
-  const startedAt = Date.now();
+  const budget = outageWaitScope.getStore() ?? { waitedMs: 0 };
   for (let wait = policy.firstDelayMs; ; wait = Math.min(wait * 2, policy.maxDelayMs)) {
     try {
       return await send();
     } catch (error) {
-      if (signal?.aborted || !isStorageUnavailableError(error) || Date.now() - startedAt + wait > policy.budgetMs) throw error;
+      if (signal?.aborted || !isStorageUnavailableError(error) || budget.waitedMs + wait > policy.budgetMs) throw error;
       recordStorageBackoff(wait);
+      budget.waitedMs += wait;
       await delay(wait, undefined, { signal }).catch((interrupted: unknown) => {
         throw signal?.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? error : interrupted;
       });

@@ -388,10 +388,13 @@ async function loadWorkspaceSnapshotArchiveTimed(input: Parameters<typeof loadWo
     const timer = setTimeout(() => idle.abort(stalled), DOWNLOAD_IDLE_TIMEOUT_MS);
     timer.unref();
     try {
+      let attempts = 0;
       await timedStep(input.timing, "downloadMs", "storage.snapshot.download", () => sendThroughStorageOutage(async () => {
-        timer.refresh();
-        received = 0; digest = createHash("sha256");
-        await rm(ciphertext, { force: true });
+        if (attempts++ > 0) {
+          timer.refresh();
+          received = 0; digest = createHash("sha256");
+          await rm(ciphertext, { force: true });
+        }
         const object = await input.storage.getObject(ref.companyId, ref.objectKey, { signal });
         const bounded = new Transform({ transform(bytes, _encoding, callback) {
           if (bytes.length > 0) timer.refresh();

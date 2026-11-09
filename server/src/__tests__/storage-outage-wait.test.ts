@@ -117,6 +117,19 @@ describe("the shared storage outage wait", () => {
     expect(isStorageUnavailableError(stopped)).toBe(false);
   });
 
+  it("shares one outage budget across a run's storage calls", async () => {
+    let calls = 0;
+    const failing = async () => { calls++; return outage(); };
+    await waitOutStorageOutages(async () => {
+      await expect(retryThroughStorageOutage(failing, undefined, policy)).rejects.toMatchObject({ name: "ServiceUnavailable" });
+      const spent = calls;
+      await waitOutStorageOutages(() => expect(retryThroughStorageOutage(failing, undefined, policy))
+        .rejects.toMatchObject({ name: "ServiceUnavailable" }));
+      expect(spent).toBeGreaterThan(4);
+      expect(calls - spent).toBeLessThan(3);
+    });
+  });
+
   it("never retries a failure that is not an outage", async () => {
     let calls = 0;
     await expect(retryThroughStorageOutage(async () => { calls++; throw new Error("object_journal_conflict"); }, undefined, policy))
