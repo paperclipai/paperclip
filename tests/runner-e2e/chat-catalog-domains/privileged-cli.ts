@@ -17,8 +17,8 @@ export function gradeCreateFromCli(value: unknown) {
     && o.state.cliCommandExecuted === true && o.state.explicitCompany === o.companyId,
     "The later CLI journey creates exactly one task, rather than the agent creating work while merely asked for a command.");
   c.add("saved-company-project-assignee", !!saved && saved.companyId === o.companyId && saved.projectId === launch?.id
-    && saved.assigneeAgentId === worker?.id && /website/i.test(saved.title ?? "") && ["backlog", "todo"].includes(String(o.state.expectedCliStatus)) && saved.status === o.state.expectedCliStatus,
-    "Fresh public state independently binds the CLI result to the requested website task, Launch and Morgan.");
+    && saved.assigneeAgentId === worker?.id && ["backlog", "todo"].includes(String(o.state.expectedCliStatus)) && saved.status === o.state.expectedCliStatus,
+    "Fresh public state binds the task created by the returned command to Launch and Morgan; its title is model wording and is not graded.");
   c.add("real-command-structured-result", Array.isArray(o.state.executedArgv) && o.state.executedArgv[0] === "issue"
     && o.state.executedArgv[1] === "create" && cli?.companyId === saved?.companyId && cli?.projectId === saved?.projectId
     && cli?.assigneeAgentId === saved?.assigneeAgentId && cli?.status === saved?.status && o.state.cliStructuredResultVerified === true
@@ -97,10 +97,10 @@ export function gradeChooseCliContext(value: unknown) {
   c.add("owned-cli-context-evidence", !!o, "Two isolated profiles and real authenticated identity readback are required."); if (!o) return c.result();
   c.add("supported-context-guidance", validContextGuidance(o.reply, { company: o.companyId, apiBase: o.origin }),
     "The answer supplies supported context/profile commands for the intended API and company instead of invented context flags.");
-  c.add("actual-profile-selected", o.state.initialProfile === "birch" && o.state.finalProfile === "acorn"
+  c.add("actual-profile-selected", o.state.initialProfile === "birch" && typeof o.state.finalProfile === "string" && o.state.finalProfile !== o.state.initialProfile
     && o.state.selectedCompanyId === o.companyId && o.state.selectedApiBase === o.origin
     && o.state.selectedPersona === "board" && o.state.actualScopedCompanyId === o.companyId && o.state.contextCommandsExecuted === true,
-    "Supported CLI commands select the real Acorn fixture at its actual API base.");
+    "Supported CLI commands select a profile, other than the person's other one, holding the real Acorn company at its actual API base; the profile name is the model's choice.");
   c.add("other-profile-preserved", o.state.otherProfilePreserved === true && o.state.onlyOwnedContextWritten === true,
     "The other configured profile is byte-equivalent semantically, and only the explicit owned context path is used.");
   c.add("identity-readback", typeof o.state.operatorUserId === "string" && !!o.state.operatorUserId
@@ -142,6 +142,7 @@ const context = privilegedDefinition("cli-operations.choose-cli-context", "privi
 });
 context.sourceFiles = [...context.sourceFiles, "chat-catalog-domains/privileged-cli-support.ts", "../../cli/src/index.ts",
   "../../cli/src/commands/client/context.ts", "../../cli/src/commands/client/company.ts", "../../cli/src/commands/client/auth.ts", "../../cli/src/client/context.ts"];
-context.oracleVersion = "paperclip.chat-catalog.cli-context.v2";
+context.oracleVersion = "paperclip.chat-catalog.cli-context.v3";
+create.oracleVersion = "paperclip.chat-catalog.cli-create.v2";
 context.cleanup = cleanupOwnedCli;
 export const privilegedCliCases: ChatCatalogCase[] = [create, context];

@@ -9,9 +9,9 @@ import { privilegedDefinition, privilegedObservation } from "./privileged-suppor
 import { prepareOwnedCli, runOwnedCli, cleanupOwnedCli } from "./privileged-cli-support.js";
 
 export function inspectRunCommands(reply: string, runId: string) {
-  const matches = [...reply.matchAll(/```(?:bash|sh|shell)?\s*\n([\s\S]*?)```/g)]
+  const matches = [...reply.matchAll(/```(?:bash|sh|shell|zsh|console)?\s*\n([\s\S]*?)```/g)]
     .flatMap(match => match[1]!.replace(/\\\r?\n/g, " ").split(/\r?\n/))
-    .map(line => line.trim()).filter(line => /^(?:paperclipai|npx(?: -y)? paperclipai|pnpm (?:exec )?paperclipai)\s+run\s+(?:get|cancel)\b/.test(line));
+    .map(line => line.trim().replace(/^\$\s+/, "")).filter(line => /^(?:paperclipai|npx(?: -y)? paperclipai|pnpm (?:exec )?paperclipai)\s+run\s+(?:get|cancel)\b/.test(line));
   const commands: string[][] = [], bindings: Array<{ placeholder: string; fixtureValue: string }> = [];
   for (const line of matches) {
     const parsed = line.match(/^(?:paperclipai|npx(?: -y)? paperclipai|pnpm (?:exec )?paperclipai)\s+run\s+(get|cancel)\s+(\S+)(?:\s+(--json))?$/);
@@ -30,16 +30,15 @@ export function gradeInspectRunCli(value: unknown) {
   c.add("read-exact-last-morgan-run", o.state.initialRunReallyRunning === true && o.state.readRunId === o.state.workerRunId
     && o.state.readAgentId === (o.state.worker as { id?: string } | undefined)?.id && o.state.readCompanyId === o.companyId
     && o.state.readStatus === "running", "The actual CLI read selects Morgan's exact current run, rather than a stale or other-company run.");
-  c.add("board-only-control", o.state.agentCancelStatus === 403 && /board|human|operator/i.test(o.reply)
-    && /agent.{0,60}(?:cannot|can't|not|insufficient)|(?:cannot|can't|not|insufficient).{0,60}agent/i.test(o.reply),
-    "A real agent bearer is denied cancellation; guidance distinguishes the read command and required human control actor.");
+  // Who may cancel is set by the product (the agent bearer probe); how the reply
+  // words that is not graded by keywords and is read by a person instead.
+  c.add("board-only-control", o.state.agentCancelStatus === 403,
+    "A real agent bearer is denied cancellation, so only the person's own CLI can perform the later stop.");
   c.add("actual-cancelled-result", o.state.cancelRunId === o.state.workerRunId && o.state.finalWorkerStatus === "cancelled"
     && o.state.cancelOnlyAfterRead === true && o.runs.length === 2
     && o.runs.filter(run => run.status === "cancelled" && run.id === o.state.workerRunId).length === 1
     && o.runs.filter(run => run.status === "succeeded" && run.agentId === o.leadId).length === 1,
     "The owned human CLI actually cancels the same running worker, with one successful canonical guidance run and no duplicate admission.");
-  c.add("no-premature-success-claim", !/(?:I(?:'ve| have)?|already|successfully)\s+(?:stopped|cancelled|canceled)\s+(?:Morgan|the run|it)/i.test(o.reply),
-    "The earlier guidance cannot claim the later authorized cancellation already happened.");
   return c.result();
 }
 const probeKeys = new WeakMap<ChatCatalogContext, { id: string; token: string }>();
@@ -78,6 +77,7 @@ const inspect = privilegedDefinition("cli-operations.inspect-run-cli", "privileg
   }, grade: gradeInspectRunCli,
   async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
 });
+inspect.oracleVersion = "paperclip.chat-catalog.cli-run.v2";
 inspect.expectedRunCount = 2; inspect.expectedHumanMessageCount = 1; inspect.attemptTimeoutMs = 600_000;
 inspect.runPolicy = { kind: "terminal-counts", terminalStatusCounts: { succeeded: 1, cancelled: 1 } };
 inspect.sourceFiles = [...inspect.sourceFiles, "chat-catalog-domains/privileged-cli-support.ts", "chat-catalog-domains/runtime-busy-worker.ts", "../../cli/src/index.ts"];

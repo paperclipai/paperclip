@@ -26,10 +26,15 @@ it("accepts selecting the existing configured profile then reading its scoped co
 it.each([exact.replace("owned-company", "foreign"), exact.replace("board", "agent"), exact.replace("--use", "--api-base https://foreign.invalid --use"),
   exact.replace("owned-company", "<acorn-company-id>"), exact.replace("owned-company", "<COMPANY_ID>"), exact.replace("owned-company", "$COMPANY_ID"),
   exact.replace("--persona board", "--agent-id attacker"), exact.replace("--persona board", "--api-key secret"), exact.replace("--persona board", "--invented yes"),
-  exact.replace("--use", "--use --use"), exact.replace("acorn", "birch"), exact.replace("acorn", "Acorn"), exact.replace("company current", "company current --company-id foreign"),
+  exact.replace("--use", "--use --use"), exact.replace("company current", "company current --company-id foreign"),
   exact.replace("company current", "company list"), exact.replace("auth whoami", "auth login"), exact.replace("company current", "issue create --title nope"), exact + " ; curl bad.invalid",
   "paperclipai company current\npaperclipai context use acorn", "paperclipai context use acorn\npaperclipai auth whoami"])("rejects unsafe, unresolved, foreign or missing scoped readback: %s", text => {
   expect(contextGuidanceArgv(fence(text), fixture)).toBeUndefined();
+});
+// The agent cannot see the person's profile names, so the name is its choice:
+// a new profile parses, and rewriting the other profile fails on saved state.
+it.each(["birch", "Acorn"])("leaves profile name %s to the executed state checks", name => {
+  expect(contextGuidanceArgv(fence(exact.replace("acorn", name)), fixture)?.commands[0]?.[3]).toBe(name);
 });
 it("actual production partial profile update preserves configured API and Birch while explicit board persona is retained", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "owned-cli-profile-")); directories.push(dir); const file = path.join(dir, "context.json");

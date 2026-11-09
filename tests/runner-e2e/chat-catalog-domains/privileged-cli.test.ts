@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { websiteCreateArgv, validContextGuidance } from "./privileged-cli-support.js";
+import { websiteCreateArgv, validContextGuidance, contextGuidanceArgv } from "./privileged-cli-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { privilegedCliCases, gradeChooseCliContext, gradeCreateFromCli } from "./privileged-cli.js";
 vi.mock("./internal-definition.js", () => ({ fixtureWorker: vi.fn() }));
@@ -10,6 +10,7 @@ describe("returned CLI command admission", () => {
   it("executes only finite supported argv with unresolved IDs bound to actual fixtures", () => {
     expect(websiteCreateArgv(command(valid), target)).toEqual(["issue", "create", "--company-id", "owned-company", "--title", "Website task", "--project-id", "launch", "--assignee-agent-id", "morgan"]);
     expect(websiteCreateArgv(command(valid + " --json"), target).at(-1)).toBe("--json");
+    expect(websiteCreateArgv(command(valid.replace("Website task", "Landing page refresh")), target)[5]).toBe("Landing page refresh");
     const retained = 'npx paperclipai issue create --company-id "$PAPERCLIP_COMPANY_ID" --title "Build the website" --project-id "<LAUNCH_PROJECT_ID>" --assignee-agent-id "<MORGAN_AGENT_ID>" --status todo --standalone';
     expect(websiteCreateArgv(command(retained), target)).toEqual(["issue", "create", "--company-id", target.company,
       "--title", "Build the website", "--project-id", target.project, "--assignee-agent-id", target.agent, "--status", "todo", "--standalone"]);
@@ -24,10 +25,18 @@ describe("returned CLI command admission", () => {
     const valid = command("paperclipai context use acorn\npaperclipai context show --json");
     expect(validContextGuidance(valid, target)).toBe(true);
     expect(validContextGuidance(valid.replace("use acorn", "use acorn --invented yes"), target)).toBe(false);
-    expect(validContextGuidance(valid.replace("acorn", "birch"), target)).toBe(false);
     expect(validContextGuidance(command("paperclipai context use acorn"), target)).toBe(false);
     expect(validContextGuidance(command('export PAPERCLIP_COMPANY_ID="owned-company"\nnpx paperclipai board setup\necho "$PAPERCLIP_COMPANY_ID"'), target)).toBe(false);
+    // The company is known in the conversation, so its placeholder is not bound.
     expect(validContextGuidance(command("paperclipai context set --profile acorn --api-base <API_BASE> --company-id <COMPANY_ID> --use\npaperclipai context show"), target)).toBe(false);
+    // The person's own Paperclip address is a placeholder the agent cannot fill; it binds to the fixture origin.
+    const addressed = contextGuidanceArgv(command("npx paperclipai context set --profile acorn-co --api-base <your Paperclip URL> --company-id owned-company --use\nnpx paperclipai company current\nnpx paperclipai auth whoami"), target);
+    expect(addressed?.commands[0]).toEqual(["context", "set", "--profile", "acorn-co", "--api-base", target.apiBase, "--company-id", "owned-company", "--use"]);
+    expect(addressed?.bindings).toEqual([{ commandIndex: 0, flag: "--api-base", placeholder: "<your Paperclip URL>", fixtureValue: target.apiBase }]);
+    expect(validContextGuidance(command("paperclipai company list\npaperclipai context list\npaperclipai context set --profile acorn --company-id owned-company --use\npaperclipai context show"), target)).toBe(true);
+    // Without --profile, set rewrites the person's current (other) profile; a wrong real address is not repaired.
+    expect(validContextGuidance(command("paperclipai context set --api-base <URL> --company-id owned-company --use\npaperclipai context show"), target)).toBe(false);
+    expect(validContextGuidance(command("paperclipai context set --profile acorn --api-base http://localhost:3100 --company-id owned-company --use\npaperclipai context show"), target)).toBe(false);
   });
 });
 const base = { scenarioId: "cli", origin: target.apiBase, companyId: target.company, leadId: "lead", state: {}, projects: [], goals: [],
@@ -42,6 +51,10 @@ describe("CLI public-state oracles", () => {
       cliResult: { ...row, status: "todo" }, expectedCliStatus: "todo" } }).passed).toBe(true);
     for (const delta of [{ expectedCliStatus: "todo" }, { cliStructuredResultVerified: false }, { workerWasManuallyPaused: false }])
       expect(gradeCreateFromCli({ ...o, state: { ...o.state, ...delta } }).passed).toBe(false);
+    // The title is model wording: a valid task with another title passes on the same structure.
+    expect(gradeCreateFromCli({ ...o, tasks: [{ ...row, title: "Landing page refresh" }], state: { ...o.state, cliResult: { ...row, title: "Landing page refresh" } } }).passed).toBe(true);
+    expect(gradeCreateFromCli({ ...o, tasks: [{ ...row, assigneeAgentId: "other" }] }).passed).toBe(false);
+    expect(gradeCreateFromCli({ ...o, tasks: [{ ...row, projectId: "other" }] }).passed).toBe(false);
     expect(gradeCreateFromCli({ ...o, tasks: [{ ...row, companyId: "foreign" }] }).passed).toBe(false);
     expect(gradeCreateFromCli({ ...o, tasks: [row, { ...row, id: "duplicate" }] }).passed).toBe(false);
     expect(gradeCreateFromCli({ ...o, state: { ...o.state, tasksBeforeCli: 1 } }).passed).toBe(false);
@@ -54,7 +67,9 @@ describe("CLI public-state oracles", () => {
         selectedPersona: "board", actualScopedCompanyId: target.company, contextCommandsExecuted: true,
         otherProfilePreserved: true, onlyOwnedContextWritten: true, operatorUserId: "synthetic-person", identityIncludesSelectedCompany: true } };
     expect(gradeChooseCliContext(o).passed).toBe(true);
-    for (const delta of [{ otherProfilePreserved: false }, { selectedCompanyId: "foreign" }, { identityIncludesSelectedCompany: false }, { onlyOwnedContextWritten: false }])
+    // The profile name is the model's choice; selecting the other (birch) profile is not.
+    expect(gradeChooseCliContext({ ...o, state: { ...o.state, finalProfile: "acorn-company" } }).passed).toBe(true);
+    for (const delta of [{ otherProfilePreserved: false }, { selectedCompanyId: "foreign" }, { identityIncludesSelectedCompany: false }, { onlyOwnedContextWritten: false }, { finalProfile: "birch" }])
       expect(gradeChooseCliContext({ ...o, state: { ...o.state, ...delta } }).passed).toBe(false);
   });
 });
