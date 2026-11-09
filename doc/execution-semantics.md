@@ -3818,6 +3818,17 @@ provider event, or process-launch evidence may exist. Environment cleanup still
 requires the same receipts. This historical proof permits explicit Retry or a
 newer saved user message; it does not replay the cancelled input.
 
+Workspace and AI-capacity waits use the same pre-dispatch classification for
+recovery and stop proof. A cancelled legacy run must retain its matching
+`workspace_wait` or `ai_connection_wait` receipt with `providerWorkStarted: false`.
+The runtime must remain unresolved, and the stage must be `preparing` or
+`settled`. Native execution references, workspace recovery obligations, a live
+controller lease, retained resources, or dispatch events still reject the proof.
+Remote cleanup requires the exact termination receipt. This rule also covers
+historical waits without a process ID; neither an old timestamp nor a different
+server boot proves that a run stopped. Pause and terminate can then finish,
+while a subsequent run still requires ordinary admission and new authorization.
+
 The existing bounded saved-message worker rechecks this proof after restart.
 Admission atomically settles an unclaimed coordinator and admits one fresh turn,
 preserving history, unknown action outcomes, and attempt counts. Pauses, approvals,
