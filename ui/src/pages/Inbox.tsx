@@ -18,6 +18,7 @@ import { dashboardApi } from "../api/dashboard";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { useSecondTick } from "../hooks/useSecondTick";
+import { taskRetryNotStartedReason } from "../hooks/useTaskRetry";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -1952,6 +1953,13 @@ function StreamlinedInbox({
         });
         queryClient.setQueryData<Issue>(queryKeys.issues.detail(issueId), current =>
           current ? { ...current, interruption: result.presentation } : current);
+        const notStarted = taskRetryNotStartedReason(result);
+        if (notStarted) {
+          retryRequestKeys.current.delete(run.id);
+          await Promise.all([queryKeys.issues.listMineByMe(run.companyId), queryKeys.heartbeats(run.companyId),
+            queryKeys.heartbeats(run.companyId, run.agentId)].map(queryKey => queryClient.invalidateQueries({ queryKey })));
+          throw new Error(notStarted);
+        }
         return { newRun: { runId: null, issueId }, originalRun: run };
       }
       const result = await agentsApi.retryFailedRun(
