@@ -35,7 +35,8 @@ const RUNNER_LIFECYCLE_COMMAND_TYPES = new Set(["runner.suspend", "runner.drain"
 
 function outcomeUnknown(command: Record<string, unknown>): boolean {
   return command.status === "indeterminate" ||
-    (command.status === "failed" && record(command.result).code === "execution_indeterminate");
+    (command.status === "failed" && (record(command.result).code === "execution_indeterminate" ||
+      record(record(command.result).result).code === "execution_indeterminate"));
 }
 
 export function unsettledControllerCommands(commands: readonly Record<string, unknown>[]): Record<string, unknown>[] {

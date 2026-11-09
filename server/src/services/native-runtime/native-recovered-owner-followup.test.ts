@@ -129,8 +129,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     try {
       // Shape the file-backed journal first; the database checkpoint captures
       // it when persistence moves to the controller's external writer.
-      const unknownOutcome = { status: "failed", result: { code: "execution_indeterminate",
-        message: "runner recovered after journaling this command; it will not execute twice" } };
+      const unknownOutcome = { status: "failed", result: { commandType: "turn.start", status: "failed",
+        result: { code: "execution_indeterminate", message: "runner recovered after journaling this command; it will not execute twice" } } };
       const answers = {
         "failed-turn-start": { status: "failed", result: { status: "failed" } },
         "rejected-turn-start": { status: "rejected", result: { status: "rejected" } },
@@ -138,13 +138,12 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
         "unknown-outcome-turn-start": unknownOutcome,
       } as const;
       const answered = answers as Record<string, unknown>;
-      const commands = [...(control in answered ? ["run.prepare", "session.open", "turn.start"] : []),
-        "run.prepare", "session.open", "turn.start", "runner.suspend"].slice(control in answered ? 2 : 0)
+      const commands = ["run.prepare", "session.open", ...(control in answered ? ["turn.start"] : []), "turn.start", "runner.suspend"]
         .map(type => controller.queueCommand(type));
       for (const command of control === "pending-command" ? commands.slice(0, -1) : commands) {
         Object.assign(command, { status: "completed", result: { status: "completed" } });
       }
-      if (control in answered) Object.assign(commands[0]!, answers[control as keyof typeof answers]);
+      if (control in answered) Object.assign(commands[2]!, answers[control as keyof typeof answers]);
       if (control === "unsuperseded-unknown-outcome-turn-start") {
         Object.assign(commands.find(command => command.type === "turn.start")!, unknownOutcome);
       }
