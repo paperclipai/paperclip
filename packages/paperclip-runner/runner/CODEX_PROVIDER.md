@@ -14,7 +14,15 @@ execution and finalization path.
 - The server also binds the immutable completion-contract revision and criterion
   identifiers. A completed Codex turn emits one `run.result.proposed` followed
   by one `run.terminal`; server finalization accepts only that bound pair.
-- `session.open` initializes Codex and starts a thread. A recovered runner
+- A fresh local Codex `run.prepare` also spawns the app-server process, after
+  the credential observer records its baseline. It sends no request. The
+  startup fence records the spawn, so a lost runner retires it as it would
+  retire a spawn from `session.open`.
+- `session.open` initializes Codex and starts a thread. It adopts the process
+  that `run.prepare` spawned when that process still runs and the prepared
+  launch is unchanged. Otherwise it stops that process, retires its startup
+  fence, and spawns a new one. Any other command, an authority rotation, or a
+  shutdown before `session.open` stops the early process. A recovered runner
   resumes the recorded thread and reads it before accepting another turn.
 - `turn.start` requires bounded non-empty `payload.text`. `turn.steer`,
   `turn.interrupt`, `turn.stop`, and `run.cancel` use Codex's native turn IDs,

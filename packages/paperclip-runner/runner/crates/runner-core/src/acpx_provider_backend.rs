@@ -39,8 +39,12 @@ use crate::provider_events::{
 };
 use crate::qualified_launch::{verify_executable_launch_artifact, verify_launch_artifact};
 
+#[path = "acpx_early_sidecar.rs"]
+mod early_sidecar;
 #[path = "acpx_park_preparation.rs"]
 mod park_preparation;
+
+pub use early_sidecar::PreparedAcpxLaunch;
 
 fn bounded_turn_timing(response: &Value, elapsed: Duration) -> Value {
     let mut receipt = serde_json::Map::new();
@@ -399,6 +403,16 @@ impl AcpxProviderDescriptor {
         expected_identity: Option<AcpxProviderSessionIdentity>,
         launch_profile: Option<&AcpxLaunchProfile>,
     ) -> Result<AcpxProviderSessionConfig, DurableRunnerError> {
+        self.session_config_with_transport(tool_set, expected_identity, launch_profile, None)
+    }
+
+    fn session_config_with_transport(
+        &self,
+        tool_set: AuthorizedToolSet,
+        expected_identity: Option<AcpxProviderSessionIdentity>,
+        launch_profile: Option<&AcpxLaunchProfile>,
+        verified: Option<AcpxSidecarTransportConfig>,
+    ) -> Result<AcpxProviderSessionConfig, DurableRunnerError> {
         let candidate_admission =
             launch_profile.and_then(|profile| profile.candidate_admission.clone());
         if let Some(admission) = &candidate_admission {
@@ -412,7 +426,7 @@ impl AcpxProviderDescriptor {
                 .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
         }
         secure_directory(&self.runtime_directory, "ACPX runtime")?;
-        let transport = self.verified_transport(launch_profile)?;
+        let transport = self.verified_transport_with(launch_profile, verified)?;
         // Keep the controller's full authority catalog durable so terminal
         // semantic results can be correlated through the reserved bridge.
         // The ACPX provider session receives only dynamic operations: its
@@ -464,9 +478,18 @@ impl AcpxProviderDescriptor {
         })
     }
 
+    #[cfg(test)]
     fn verified_transport(
         &self,
         launch_profile: Option<&AcpxLaunchProfile>,
+    ) -> Result<AcpxSidecarTransportConfig, DurableRunnerError> {
+        self.verified_transport_with(launch_profile, None)
+    }
+
+    fn verified_transport_with(
+        &self,
+        launch_profile: Option<&AcpxLaunchProfile>,
+        verified: Option<AcpxSidecarTransportConfig>,
     ) -> Result<AcpxSidecarTransportConfig, DurableRunnerError> {
         let launch_profile = launch_profile.ok_or_else(|| {
             DurableRunnerError::invalid(
@@ -480,67 +503,76 @@ impl AcpxProviderDescriptor {
                 "ACPX descriptor sidecar launch does not match the runner-owned qualified profile",
             ));
         }
-
-        let mut verified = HashMap::new();
-        for artifact in &launch_profile.artifacts {
-            if verified.contains_key(&artifact.path) {
-                return Err(DurableRunnerError::invalid(
-                    "ACPX runner launch profile repeats an artifact path",
-                ));
-            }
-            let snapshot = if artifact.path == launch_profile.command {
-                verify_executable_launch_artifact(artifact, "ACPX")?
-            } else {
-                verify_launch_artifact(artifact, "ACPX")?
-            };
-            verified.insert(artifact.path.clone(), snapshot);
+        match verified {
+            Some(transport) => Ok(transport),
+            None => verify_launch_profile(launch_profile),
         }
-        let command = verified
-            .get(&launch_profile.command)
-            .cloned()
-            .ok_or_else(|| {
-                DurableRunnerError::invalid(
-                    "ACPX runner launch profile does not authenticate its command",
-                )
-            })?;
-        let verified_args = launch_profile
-            .args
-            .iter()
-            .enumerate()
-            .map(|(index, argument)| {
-                let path = Path::new(argument);
-                if !path.is_absolute() {
-                    return Ok(VerifiedProcessArgument::Literal(argument.clone()));
-                }
-                verified
-                    .get(path)
-                    .cloned()
-                    .map(|artifact| {
-                        if index == 0 {
-                            VerifiedProcessArgument::CommonJsArtifact(artifact)
-                        } else {
-                            VerifiedProcessArgument::Artifact(artifact)
-                        }
-                    })
-                    .ok_or_else(|| {
-                        DurableRunnerError::invalid(
-                            "ACPX runner launch profile does not authenticate an absolute argument",
-                        )
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(AcpxSidecarTransportConfig {
-            command: launch_profile.command.clone(),
-            args: launch_profile.args.clone(),
-            verified_launch: Some(
-                VerifiedProcessLaunch::new(command, verified_args)
-                    .with_inherited_runtime_executable(),
-            ),
-            request_timeout: Duration::from_secs(30),
-            shutdown_grace: Duration::from_secs(2),
-        })
     }
+}
 
+fn verify_launch_profile(
+    launch_profile: &AcpxLaunchProfile,
+) -> Result<AcpxSidecarTransportConfig, DurableRunnerError> {
+    let mut verified = HashMap::new();
+    for artifact in &launch_profile.artifacts {
+        if verified.contains_key(&artifact.path) {
+            return Err(DurableRunnerError::invalid(
+                "ACPX runner launch profile repeats an artifact path",
+            ));
+        }
+        let snapshot = if artifact.path == launch_profile.command {
+            verify_executable_launch_artifact(artifact, "ACPX")?
+        } else {
+            verify_launch_artifact(artifact, "ACPX")?
+        };
+        verified.insert(artifact.path.clone(), snapshot);
+    }
+    let command = verified
+        .get(&launch_profile.command)
+        .cloned()
+        .ok_or_else(|| {
+            DurableRunnerError::invalid(
+                "ACPX runner launch profile does not authenticate its command",
+            )
+        })?;
+    let verified_args = launch_profile
+        .args
+        .iter()
+        .enumerate()
+        .map(|(index, argument)| {
+            let path = Path::new(argument);
+            if !path.is_absolute() {
+                return Ok(VerifiedProcessArgument::Literal(argument.clone()));
+            }
+            verified
+                .get(path)
+                .cloned()
+                .map(|artifact| {
+                    if index == 0 {
+                        VerifiedProcessArgument::CommonJsArtifact(artifact)
+                    } else {
+                        VerifiedProcessArgument::Artifact(artifact)
+                    }
+                })
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid(
+                        "ACPX runner launch profile does not authenticate an absolute argument",
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(AcpxSidecarTransportConfig {
+        command: launch_profile.command.clone(),
+        args: launch_profile.args.clone(),
+        verified_launch: Some(
+            VerifiedProcessLaunch::new(command, verified_args).with_inherited_runtime_executable(),
+        ),
+        request_timeout: Duration::from_secs(30),
+        shutdown_grace: Duration::from_secs(2),
+    })
+}
+
+impl AcpxProviderDescriptor {
     fn public_descriptor(&self, identity: Option<&AcpxProviderSessionIdentity>) -> Value {
         let mut descriptor = json!({
             "provider": "acpx",
@@ -965,6 +997,8 @@ pub struct AcpxCommandExecutor {
     #[cfg(test)]
     fail_after_state_rename: bool,
     launch_profile: Option<AcpxLaunchProfile>,
+    prepared_launch: Option<PreparedAcpxLaunch>,
+    early_sidecar: Option<early_sidecar::EarlyAcpxSidecar>,
     recovery_pending_effects: Option<usize>,
     /// The failed turn-end restart's cause, reported by the next turn start.
     failed_turn_end_restart: Option<String>,
@@ -1016,6 +1050,8 @@ impl AcpxCommandExecutor {
             #[cfg(test)]
             fail_after_state_rename: false,
             launch_profile: config.acpx_launch_profile.clone(),
+            prepared_launch: None,
+            early_sidecar: None,
         }
     }
 
@@ -1375,21 +1411,38 @@ impl AcpxCommandExecutor {
         Ok(true)
     }
 
-    fn start_session(&self, recovering: bool) -> Result<AcpxProviderSession, DurableRunnerError> {
+    fn start_session(
+        &mut self,
+        recovering: bool,
+    ) -> Result<AcpxProviderSession, DurableRunnerError> {
         let state = self
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
         let expected = recovering.then(|| state.identity.clone()).flatten();
-        let config = state.descriptor.session_config(
-            state.tool_set.clone(),
-            expected,
-            self.launch_profile.as_ref(),
-        )?;
-        let mut session = AcpxProviderSession::start(&config).map_err(|error| {
-            DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
-                .with_provider_failure(error.provider_failure())
-        })?;
+        let descriptor = state.descriptor.clone();
+        let tool_set = state.tool_set.clone();
+        let mut session = match expected {
+            None => self.start_fresh_session(&descriptor, &tool_set)?,
+            Some(expected) => {
+                self.discard_early_sidecar();
+                let verified = self.take_verified_launch();
+                let config = descriptor.session_config_with_transport(
+                    tool_set,
+                    Some(expected),
+                    self.launch_profile.as_ref(),
+                    verified,
+                )?;
+                AcpxProviderSession::start(&config).map_err(|error| {
+                    DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
+                        .with_provider_failure(error.provider_failure())
+                })?
+            }
+        };
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
         if session.identity().profile_digest != state.descriptor.command_digest {
             let _ = session.shutdown("qualified ACPX profile digest mismatch");
             return Err(DurableRunnerError::invalid(
@@ -2969,6 +3022,9 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
+        if command.command_type != "session.open" {
+            self.discard_early_sidecar();
+        }
         self.restore()?;
         if self
             .candidate_admission()
@@ -3049,6 +3105,7 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.discard_early_sidecar();
         self.recovery_pending_effects = None;
         self.context.run_id = config.run_id.clone();
         self.context.normalized_session_id = config.normalized_session_id.clone();
@@ -3122,6 +3179,7 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+        self.discard_early_sidecar();
         if let Some(error) = self.persistence_error.clone() {
             // Reap our owned process even when durable cleanup is uncertain,
             // but do not overwrite the last atomic snapshot or claim success.

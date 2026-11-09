@@ -412,6 +412,14 @@ while retaining the existing Runner authority. Live adoption and ordinary
 commands retain their 30-second bounds. Closing the transport cancels admission;
 an acknowledgement received after the admission deadline cannot revive it.
 
+A Runner with an ACPX launch profile verifies the qualified sidecar artifacts on a
+background thread at startup, so `session.open` does not wait for that hash. A
+fresh Claude `run.prepare` then spawns the sidecar process and sends it nothing.
+`session.open` sends `initialize` to that process, which starts the ACP agent as
+before. It uses a new sidecar when the early one has exited or the prepared launch
+changed. Any other command, an authority rotation, or a shutdown first stops the
+early sidecar. Other ACPX agents still spawn their sidecar at `session.open`.
+
 The board's transcript parser coalesces consecutive identical Pi runtime-failure
 display rows within one run, turn and session, including the exit handler and
 its late prompt rejection. Both original PRP facts remain in the run log.

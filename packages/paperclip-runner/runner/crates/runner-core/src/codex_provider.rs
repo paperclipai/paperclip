@@ -191,6 +191,11 @@ pub(crate) enum ProviderStartupStage {
     Admission,
 }
 
+pub(crate) struct CodexStartupHandshake {
+    dynamic_tools: Vec<Value>,
+    resume_thread_id: Option<String>,
+}
+
 pub(crate) enum ProviderStartupObservation {
     /// Launch checks passed and the process spawn is about to begin. Until
     /// this is durable, a startup intent provably owns no process.
@@ -1095,6 +1100,29 @@ impl CodexProvider {
         completion_contract: Option<(&str, &[String])>,
         observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
     ) -> Result<Self, LocalRunnerError> {
+        let (provider, handshake) = Self::launch_observed(
+            config,
+            authorized_tools,
+            resume_thread_id,
+            process_generation,
+            opencode_launch_profile,
+            cursor_cloud_launch_profile,
+            completion_contract,
+            observe,
+        )?;
+        provider.complete_startup(handshake, observe)
+    }
+
+    pub(crate) fn launch_observed(
+        config: &CodexProviderConfig,
+        authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
+        resume_thread_id: Option<&str>,
+        process_generation: u64,
+        opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
+        cursor_cloud_launch_profile: Option<&CursorCloudLaunchProfile>,
+        completion_contract: Option<(&str, &[String])>,
+        observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
+    ) -> Result<(Self, CodexStartupHandshake), LocalRunnerError> {
         config.validate()?;
         if config.provider == "codex"
             && std::env::var("PAPERCLIP_RUNNER_HOME_MODE").as_deref() != Ok("preconfigured")
@@ -1264,7 +1292,7 @@ impl CodexProvider {
             });
             return Err(error);
         }
-        let mut provider = Self {
+        let provider = Self {
             process,
             _stdio_mcp: stdio_mcp,
             stderr_tail: BoundedLogBuffer::new(
@@ -1322,6 +1350,28 @@ impl CodexProvider {
             permission_profile,
             exit_drain: None,
         };
+        Ok((
+            provider,
+            CodexStartupHandshake {
+                dynamic_tools,
+                resume_thread_id: resume_thread_id.map(str::to_owned),
+            },
+        ))
+    }
+
+    pub(crate) fn complete_startup(
+        self,
+        handshake: CodexStartupHandshake,
+        observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
+    ) -> Result<Self, LocalRunnerError> {
+        let mut provider = self;
+        let config = provider.config.clone();
+        let config = &config;
+        let CodexStartupHandshake {
+            dynamic_tools,
+            resume_thread_id,
+        } = handshake;
+        let resume_thread_id = resume_thread_id.as_deref();
         let mut stage = ProviderStartupStage::Initialize;
         let initialized_result = (|| -> Result<(), LocalRunnerError> {
             let initialized = provider.request(
@@ -1455,6 +1505,10 @@ impl CodexProvider {
 
     pub fn process_id(&self) -> u32 {
         self.process.id()
+    }
+
+    pub(crate) fn launched_process_running(&mut self) -> bool {
+        matches!(self.process.try_wait(), Ok(None))
     }
 
     pub(crate) fn process_generation(&self) -> u64 {

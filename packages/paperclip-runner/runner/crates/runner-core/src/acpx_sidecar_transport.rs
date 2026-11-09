@@ -417,6 +417,10 @@ impl AcpxSidecarTransport {
         self.process.id()
     }
 
+    pub(crate) fn running(&mut self) -> bool {
+        matches!(self.process.try_wait(), Ok(None))
+    }
+
     pub(crate) fn buffered_events(&self) -> impl ExactSizeIterator<Item = &AcpxSidecarEvent> {
         self.buffered_events.iter()
     }

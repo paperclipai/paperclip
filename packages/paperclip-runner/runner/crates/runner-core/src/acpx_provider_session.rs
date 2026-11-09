@@ -383,16 +383,31 @@ pub(crate) fn goal_is_dormant(projection: &Value) -> bool {
 
 impl AcpxProviderSession {
     pub fn start(config: &AcpxProviderSessionConfig) -> Result<Self, LocalRunnerError> {
-        config.validate()?;
-        let mut tool_bridge = ProviderToolBridge::default();
-        tool_bridge
-            .prepare(config.tool_set.clone())
-            .map_err(|error| {
-                LocalRunnerError::invalid(format!("ACPX authorized tools are invalid: {error}"))
-            })?;
-        let reserved_tool_bridge = reserved_terminal_tool_bridge()?;
-        let mut transport =
-            AcpxSidecarTransport::start_for_agent(&config.transport, &config.agent)?;
+        let (tool_bridge, reserved_tool_bridge) = session_tool_bridges(config)?;
+        let transport = AcpxSidecarTransport::start_for_agent(&config.transport, &config.agent)?;
+        Self::bootstrap_with(config, tool_bridge, reserved_tool_bridge, transport)
+    }
+
+    pub(crate) fn start_with_transport(
+        config: &AcpxProviderSessionConfig,
+        mut transport: AcpxSidecarTransport,
+    ) -> Result<Self, LocalRunnerError> {
+        let (tool_bridge, reserved_tool_bridge) = match session_tool_bridges(config) {
+            Ok(bridges) => bridges,
+            Err(error) => {
+                let cleanup = transport.shutdown();
+                return Err(with_cleanup_error(error, cleanup));
+            }
+        };
+        Self::bootstrap_with(config, tool_bridge, reserved_tool_bridge, transport)
+    }
+
+    fn bootstrap_with(
+        config: &AcpxProviderSessionConfig,
+        tool_bridge: ProviderToolBridge,
+        reserved_tool_bridge: ProviderToolBridge,
+        mut transport: AcpxSidecarTransport,
+    ) -> Result<Self, LocalRunnerError> {
         let bootstrap = bootstrap(&mut transport, config);
         let (identity, state, turn_controls) = match bootstrap {
             Ok(value) => value,
@@ -1591,6 +1606,19 @@ impl Drop for AcpxProviderSession {
             let _ = self.terminate_transport();
         }
     }
+}
+
+fn session_tool_bridges(
+    config: &AcpxProviderSessionConfig,
+) -> Result<(ProviderToolBridge, ProviderToolBridge), LocalRunnerError> {
+    config.validate()?;
+    let mut tool_bridge = ProviderToolBridge::default();
+    tool_bridge
+        .prepare(config.tool_set.clone())
+        .map_err(|error| {
+            LocalRunnerError::invalid(format!("ACPX authorized tools are invalid: {error}"))
+        })?;
+    Ok((tool_bridge, reserved_terminal_tool_bridge()?))
 }
 
 fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Value]) -> Value {

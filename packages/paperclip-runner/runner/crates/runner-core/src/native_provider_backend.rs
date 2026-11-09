@@ -3,7 +3,9 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::acpx_provider_backend::{AcpxCommandExecutor, ACPX_PROVIDER_STATE_FILE};
+use crate::acpx_provider_backend::{
+    AcpxCommandExecutor, PreparedAcpxLaunch, ACPX_PROVIDER_STATE_FILE,
+};
 use crate::credential_observer::CredentialObserver;
 use crate::durable::{
     Command, CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
@@ -134,18 +136,24 @@ pub struct NativeProviderCommandExecutor {
     selected: Option<SelectedExecutor>,
     recovery_checked: bool,
     credentials: CredentialObserver,
+    prepared_acpx_launch: Option<PreparedAcpxLaunch>,
 }
 
 impl NativeProviderCommandExecutor {
     pub fn with_runner_config(state_dir: impl Into<PathBuf>, config: &DurableRunnerConfig) -> Self {
         let state_dir = state_dir.into();
         let credentials = CredentialObserver::new(&state_dir, &config.normalized_session_id);
+        let prepared_acpx_launch = config
+            .acpx_launch_profile
+            .as_ref()
+            .and_then(PreparedAcpxLaunch::start);
         Self {
             state_dir,
             config: config.clone(),
             selected: None,
             recovery_checked: false,
             credentials,
+            prepared_acpx_launch,
         }
     }
 
@@ -212,7 +220,8 @@ impl NativeProviderCommandExecutor {
             ))
         } else if acpx {
             Some(SelectedExecutor::Acpx(
-                AcpxCommandExecutor::with_runner_config(&self.state_dir, &self.config),
+                AcpxCommandExecutor::with_runner_config(&self.state_dir, &self.config)
+                    .with_prepared_launch(self.prepared_acpx_launch.take()),
             ))
         } else if codex {
             Some(SelectedExecutor::LocalFacade(
@@ -306,10 +315,10 @@ impl NativeProviderCommandExecutor {
             "codex" | "opencode" | "cursor_cloud" => SelectedExecutor::LocalFacade(
                 CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ),
-            "acpx" => SelectedExecutor::Acpx(AcpxCommandExecutor::with_runner_config(
-                &self.state_dir,
-                &self.config,
-            )),
+            "acpx" => SelectedExecutor::Acpx(
+                AcpxCommandExecutor::with_runner_config(&self.state_dir, &self.config)
+                    .with_prepared_launch(self.prepared_acpx_launch.take()),
+            ),
             "claude_managed" | "aws_agentcore" => SelectedExecutor::Managed(
                 ManagedProviderCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ),
@@ -429,6 +438,15 @@ impl CommandExecutor for NativeProviderCommandExecutor {
             .execute(command);
         if result.is_ok() && matches!(command.command_type.as_str(), "run.prepare" | "run.attach") {
             self.credentials.configure(&command.payload)?;
+        }
+        if result.is_ok() && command.command_type == "run.prepare" {
+            match self.selected.as_mut() {
+                Some(SelectedExecutor::LocalFacade(executor)) => {
+                    executor.start_provider_early(command)
+                }
+                Some(SelectedExecutor::Acpx(executor)) => executor.start_provider_early(),
+                _ => {}
+            }
         }
         if matches!(command.command_type.as_str(), "session.open" | "run.attach") {
             self.credentials.activate()?;
