@@ -451,6 +451,65 @@ describe("executeNativeSession recovery", () => {
       dispositionOnlyRecoveryTurnId: "turn-3" });
   });
 
+  it.each(["restart", "receipt-limit"])("restores borrowed disposition ownership after an accepted continuation restart (%s)", async (cause) => {
+    const lost = { code: cause === "restart" ? "provider_turn_lost_on_restore" : "semantic_tool_receipt_limit_recovered", recoverable: true };
+    const originalTransport = new FakeCodexTransport();
+    const recoveredTransport = new FakeCodexTransport();
+    const transports = [originalTransport, recoveredTransport];
+    const executionInput = { ...input, workspace: { ...input.workspace, cwd: WORKSPACE } };
+    const backend = createCodexNativeSessionBackend(executionInput, {
+      runnerInstanceId: "runner-recovery",
+      transportFactory: () => transports.shift()!,
+    });
+    const original = await backend.openSession({ identity, workingDirectory: WORKSPACE });
+    await original.startTurn({ message: { role: "user", text: "Finish the assigned review." } });
+    let checkpoint = await original.snapshot();
+    expect(checkpoint).toMatchObject({ activeTurnId: "turn-1", semanticResult: null });
+    checkpoint = { ...checkpoint, activeTurnId: "turn-2",
+      dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-2",
+      terminalTurns: [{ turnId: "turn-1", fingerprint: JSON.stringify({
+        error: lost, result: null, terminalState: cause === "restart" ? "failed" : "interrupted",
+      }) }] };
+    await original.close({ reason: "controller lost during the turn" });
+    recoveredTransport.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+      turns: [{ id: "turn-1", status: cause === "restart" ? "failed" : "interrupted", error: lost, items: [] },
+        { id: "turn-2", status: "inProgress", items: [] }] } };
+    const turnStarts = () => recoveredTransport.calls.filter(call => call.method === "turn/start");
+    Object.defineProperty(recoveredTransport, "turnStartResponse", {
+      get: () => Promise.resolve({ turn: { id: `turn-${turnStarts().length + 2}`, status: "inProgress", items: [] } }),
+    });
+    const checkpoints: PersistedNativeSession[] = [];
+    const completeRun = vi.fn(async () => undefined);
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession(value) { checkpoints.push(structuredClone(value)); },
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      completeRun,
+    };
+    const execution = executeNativeSession({
+      input: executionInput, backend, controlPlane: port, persistedSession: checkpoint,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", resumeInterruptedTurn: true,
+    });
+    let executionError: unknown;
+    void execution.catch(error => { executionError = error; });
+    await vi.waitFor(() => { if (executionError) throw executionError; expect(recoveredTransport.calls.some(call => call.method === "thread/read")).toBe(true); });
+    expect(turnStarts()).toHaveLength(0);
+    // Like the RC-60 Claude turns: the continuation ends saying it will wait
+    // for a background command, with no paperclip_finish.
+    recoveredTransport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
+    await vi.waitFor(() => expect(turnStarts()).toHaveLength(1));
+    const disposition = JSON.stringify(turnStarts()[0]!.params);
+    expect(disposition).toContain("Paperclip semantic-result recovery after a restart continuation");
+    recoveredTransport.push("paperclip/runResult", { threadId: "thread-1", turnId: "turn-3", result });
+    recoveredTransport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-3", status: "completed", items: [] } });
+    await expect(execution).resolves.toMatchObject({ result, turnId: "turn-3" });
+    expect(completeRun).toHaveBeenCalledOnce();
+    expect(turnStarts()).toHaveLength(1);
+    expect(checkpoints.at(-1)).toMatchObject({ semanticResult: result, dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: "turn-3" });
+  });
+
   it.each([
     "completed", "pending", "duplicate", "conflicting", "other turn", "newer turn",
     "wrong session", "invalid", "restore-lost live", "restore-lost read",

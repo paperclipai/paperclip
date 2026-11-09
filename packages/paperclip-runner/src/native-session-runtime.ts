@@ -2720,7 +2720,9 @@ export async function executeNativeSession(
           && nativeRestartInterruptedTurnId(recoveredSnapshot, "restart") !== persistedSession.activeTurnId
         ? persistedSession : null;
     let restartContinuationStarted = recoveredContinuation !== null;
-    let borrowedContinuationTurnId: string | null = null;
+    let borrowedContinuationTurnId: string | null = recoveredContinuation?.dispositionOnlyRecoveryConsumed === true
+      && recoveredContinuation.dispositionOnlyRecoveryTurnId === recoveredContinuation.activeTurnId
+      ? recoveredContinuation.activeTurnId ?? null : null;
     let restartContinuationTurnId: string | null = recoveredContinuation?.activeTurnId ?? null;
     let settleStartupDecision: () => void = () => undefined;
     const startupDecision = new Promise<void>(resolve => { settleStartupDecision = resolve; });

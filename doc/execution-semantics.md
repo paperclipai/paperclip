@@ -4984,13 +4984,21 @@ their existing contracts.
 
 A reservation for pending tool results is temporary backpressure. Reject only the
 new call with retry guidance; do not stop admitted calls. A full durable receipt
-ledger can rotate the turn only after all admitted calls have settled.
+ledger can rotate the turn only after all admitted calls have settled. Runner
+persists a deferred capacity stop while those calls settle, then arms the
+interrupt with the last result receipt. A provider completion before the
+capacity stop is confirmed cannot substitute for the rejected operation.
 
 After a provider-confirmed internal interruption, Runner records its internal
 cause only if no tool outcome is pending, no semantic result exists, and no goal
 owns continuation. The native runtime may then continue the same conversation
 once, with the preserved workspace and instructions to reuse completed work.
 The existing durable continuation marker covers crashes during that handoff.
+Recovery restores ownership of its borrowed disposition allowance from the
+consumed marker and accepted continuation turn. A resultless completion can
+then request its one remaining disposition turn. Older Runner snapshots omit
+the deferred-stop field and decode with no deferred stop; no session reset or
+database migration is required.
 A second interruption ends the attempt; it cannot create an unbounded retry loop.
 
 Operator Stop overrides an internal interruption. Missing provider terminal

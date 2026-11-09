@@ -879,7 +879,10 @@ fn retain_goal_notification(
 }
 
 fn goal_continues_after_turn(state: &CodexProviderState, goal_active: bool) -> bool {
-    goal_active && !terminal_completion_rejected(state)
+    goal_active
+        && !terminal_completion_rejected(state)
+        && state.receipt_limit_stop_deferred.is_none()
+        && !state.receipt_limit_interrupt_pending
 }
 
 fn receipt_limit_can_continue(state: &CodexProviderState, event_type: Option<&str>) -> bool {
@@ -898,7 +901,9 @@ fn terminal_events(
     event_type: &str,
     goal_status: Option<&str>,
 ) -> Vec<NormalizedProviderEvent> {
-    let rejected_completion = terminal_completion_rejected(state);
+    let rejected_completion = terminal_completion_rejected(state)
+        || ((state.receipt_limit_stop_deferred.is_some() || state.receipt_limit_interrupt_pending)
+            && state.active_provider_result_fingerprint.is_none());
     if goal_continues_after_turn(state, goal_status == Some("active")) {
         return Vec::new();
     }
@@ -1333,6 +1338,8 @@ struct CodexProviderState {
     #[serde(default)]
     receipt_limit_interrupt_pending: bool,
     #[serde(default)]
+    receipt_limit_stop_deferred: Option<(String, String)>,
+    #[serde(default)]
     receipt_limit_interrupt_accepted: bool,
     #[serde(default)]
     receipt_limit_interrupt_attempts: u8,
@@ -1431,6 +1438,7 @@ impl CodexProviderState {
             settled_provider_turn_filter: DurableReplayFilter::default(),
             receipt_limit_diagnostic_emitted: false,
             receipt_limit_interrupt_pending: false,
+            receipt_limit_stop_deferred: None,
             receipt_limit_interrupt_accepted: false,
             receipt_limit_interrupt_attempts: 0,
             receipt_limit_interrupt_deadline_unix_ms: None,
@@ -1535,6 +1543,7 @@ impl CodexProviderState {
             .then(|| delivery.turn_id.clone());
         self.receipt_limit_diagnostic_emitted = false;
         self.receipt_limit_interrupt_pending = false;
+        self.receipt_limit_stop_deferred = None;
         self.receipt_limit_interrupt_accepted = false;
         self.receipt_limit_interrupt_attempts = 0;
         self.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -1686,6 +1695,15 @@ impl CodexProviderState {
             || self
                 .completed_turn_process_generation
                 .is_some_and(|generation| generation > self.provider_process_generation)
+            || self
+                .receipt_limit_stop_deferred
+                .as_ref()
+                .is_some_and(|(call_id, operation_id)| {
+                    self.active_provider_turn_id.is_none()
+                        || self.receipt_limit_interrupt_pending
+                        || call_id.is_empty()
+                        || operation_id.is_empty()
+                })
             || (self.receipt_limit_diagnostic_emitted && self.active_provider_turn_id.is_none())
             || (self.receipt_limit_interrupt_pending
                 && (!self.receipt_limit_diagnostic_emitted
@@ -1774,6 +1792,24 @@ impl CodexProviderState {
             self.pending_events.push_back(event);
         }
         Ok(())
+    }
+
+    fn arm_deferred_receipt_limit_stop(&mut self) -> Result<bool, DurableRunnerError> {
+        if self.active_provider_turn_id.is_none()
+            || self.tool_bridge.pending_calls().next().is_some()
+        {
+            return Ok(false);
+        }
+        let Some((call_id, operation_id)) = self.receipt_limit_stop_deferred.clone() else {
+            return Ok(false);
+        };
+        self.begin_receipt_limit_stop(
+            call_id,
+            operation_id,
+            receipt_limit_deadline_after(RECEIPT_LIMIT_INTERRUPT_TERMINAL_DEADLINE_MS)?,
+        )?;
+        self.receipt_limit_stop_deferred = None;
+        Ok(true)
     }
 
     fn begin_receipt_limit_stop(
@@ -2709,6 +2745,7 @@ impl CodexCommandExecutor {
                 state.completed_provider_turn_id = None;
                 state.receipt_limit_diagnostic_emitted = false;
                 state.receipt_limit_interrupt_pending = false;
+                state.receipt_limit_stop_deferred = None;
                 state.receipt_limit_interrupt_accepted = false;
                 state.receipt_limit_interrupt_attempts = 0;
                 state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -2765,6 +2802,7 @@ impl CodexCommandExecutor {
                 state.completed_provider_turn_id = None;
                 state.receipt_limit_diagnostic_emitted = false;
                 state.receipt_limit_interrupt_pending = false;
+                state.receipt_limit_stop_deferred = None;
                 state.receipt_limit_interrupt_accepted = false;
                 state.receipt_limit_interrupt_attempts = 0;
                 state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -2915,6 +2953,7 @@ impl CodexCommandExecutor {
                     }
                     state.receipt_limit_diagnostic_emitted = false;
                     state.receipt_limit_interrupt_pending = false;
+                    state.receipt_limit_stop_deferred = None;
                     state.receipt_limit_interrupt_accepted = false;
                     state.receipt_limit_interrupt_attempts = 0;
                     state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -3542,6 +3581,7 @@ impl CodexCommandExecutor {
         next_state.completed_provider_turn_id = None;
         next_state.receipt_limit_diagnostic_emitted = false;
         next_state.receipt_limit_interrupt_pending = false;
+        next_state.receipt_limit_stop_deferred = None;
         next_state.receipt_limit_interrupt_accepted = false;
         next_state.receipt_limit_interrupt_attempts = 0;
         next_state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -3706,6 +3746,7 @@ impl CodexCommandExecutor {
             state.active_provider_turn_id = active_provider_turn_id.clone();
             state.receipt_limit_diagnostic_emitted = false;
             state.receipt_limit_interrupt_pending = false;
+            state.receipt_limit_stop_deferred = None;
             state.receipt_limit_interrupt_accepted = false;
             state.receipt_limit_interrupt_attempts = 0;
             state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -3791,6 +3832,7 @@ impl CodexCommandExecutor {
         state.completed_provider_turn_id = None;
         state.receipt_limit_diagnostic_emitted = false;
         state.receipt_limit_interrupt_pending = false;
+        state.receipt_limit_stop_deferred = None;
         state.receipt_limit_interrupt_accepted = false;
         state.receipt_limit_interrupt_attempts = 0;
         state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -4166,6 +4208,7 @@ impl CodexCommandExecutor {
         state.completed_provider_turn_id = None;
         state.receipt_limit_diagnostic_emitted = false;
         state.receipt_limit_interrupt_pending = false;
+        state.receipt_limit_stop_deferred = None;
         state.receipt_limit_interrupt_accepted = false;
         state.receipt_limit_interrupt_attempts = 0;
         state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -4289,6 +4332,7 @@ impl CodexCommandExecutor {
         state.completed_provider_turn_id = None;
         state.receipt_limit_diagnostic_emitted = false;
         state.receipt_limit_interrupt_pending = false;
+        state.receipt_limit_stop_deferred = None;
         state.receipt_limit_interrupt_accepted = false;
         state.receipt_limit_interrupt_attempts = 0;
         state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -4632,6 +4676,12 @@ impl CodexCommandExecutor {
             !state.receipt_limit_interrupt_pending
                 && state.tool_bridge.pending_calls().next().is_some()
         }) {
+            self.state
+                .as_mut()
+                .expect("capacity stop has state")
+                .receipt_limit_stop_deferred
+                .get_or_insert((call_id.clone(), operation_id.clone()));
+            self.save_state()?;
             return self.reject_tool_call(
                 call_id,
                 operation_id,
@@ -4748,6 +4798,7 @@ impl CodexCommandExecutor {
         state.completed_turn_authoritative = false;
         state.receipt_limit_diagnostic_emitted = false;
         state.receipt_limit_interrupt_pending = false;
+        state.receipt_limit_stop_deferred = None;
         state.receipt_limit_interrupt_accepted = false;
         state.receipt_limit_interrupt_attempts = 0;
         state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -4811,6 +4862,15 @@ impl CodexCommandExecutor {
     }
 
     fn retry_receipt_limit_interrupt(&mut self) -> Result<(), DurableRunnerError> {
+        if self
+            .state
+            .as_mut()
+            .map(|state| state.arm_deferred_receipt_limit_stop())
+            .transpose()?
+            .unwrap_or(false)
+        {
+            self.save_state()?;
+        }
         let Some(deadline_unix_ms) = self.receipt_limit_interrupt_deadline()? else {
             return Ok(());
         };
@@ -4997,6 +5057,9 @@ impl CodexCommandExecutor {
         if let Some((operation_id, input)) = terminal_tool_input {
             admit_terminal_tool_authority(&mut next_state, &operation_id, &input, result.is_error)?;
         }
+        if !delivery_detached {
+            next_state.arm_deferred_receipt_limit_stop()?;
+        }
         next_state.push_event(semantic_result_event(&identity, &result))?;
         self.persist_state(&next_state)?;
         self.state = Some(next_state);
@@ -5021,6 +5084,7 @@ impl CodexCommandExecutor {
                 "failed to return semantic tool result to Codex: {error}"
             ))
         })?;
+        self.retry_receipt_limit_interrupt()?;
         Ok(CommandExecution::result(json!({
             "status": "delivered",
             "callId": result.call_id,
@@ -5103,6 +5167,7 @@ impl CodexCommandExecutor {
         state.ambiguous_turn_start_pending = false;
         state.receipt_limit_diagnostic_emitted = false;
         state.receipt_limit_interrupt_pending = false;
+        state.receipt_limit_stop_deferred = None;
         state.receipt_limit_interrupt_accepted = false;
         state.receipt_limit_interrupt_attempts = 0;
         state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -5564,7 +5629,6 @@ impl CodexCommandExecutor {
                             state.completed_provider_turn_id = None;
                         }
                         state.receipt_limit_diagnostic_emitted = false;
-                        state.receipt_limit_interrupt_pending = false;
                         state.receipt_limit_interrupt_accepted = false;
                         state.receipt_limit_interrupt_attempts = 0;
                         state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -5631,6 +5695,8 @@ impl CodexCommandExecutor {
                         } else {
                             terminal_events(state, event_type, goal_status)
                         };
+                        state.receipt_limit_interrupt_pending = false;
+                        state.receipt_limit_stop_deferred = None;
                         terminal_goal_events.extend(normalized);
                         state.extend_terminal_events(with_terminal_outcome(
                             terminal_goal_events,
@@ -5919,6 +5985,7 @@ impl CommandExecutor for CodexCommandExecutor {
                 "turn.interrupt" | "run.cancel" => {
                     if let Some(state) = self.state.as_mut() {
                         state.receipt_limit_interrupt_pending = false;
+                        state.receipt_limit_stop_deferred = None;
                         state.receipt_limit_interrupt_accepted = false;
                         state.receipt_limit_interrupt_attempts = 0;
                         state.receipt_limit_interrupt_deadline_unix_ms = None;
@@ -7644,6 +7711,71 @@ done
     }
 
     #[test]
+    fn deferred_receipt_limit_survives_restart_and_arms_only_after_all_results_settle() {
+        let mut state = declared_completion_and_read_state("paperclip_finish");
+        for call_id in ["pending-first", "pending-last"] {
+            assert!(matches!(
+                state
+                    .admit_tool_call(call_id, "read_context", &json!({}))
+                    .unwrap(),
+                ToolCallAdmission::Pending(_)
+            ));
+        }
+        state.receipt_limit_stop_deferred =
+            Some(("rejected-read".to_owned(), "read_context".to_owned()));
+        let mut state: CodexProviderState =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        state.validate().unwrap();
+        assert!(!state.arm_deferred_receipt_limit_stop().unwrap());
+        assert!(!state.receipt_limit_interrupt_pending);
+        let terminal = terminal_events(&state, "turn.completed", None);
+        assert!(terminal
+            .iter()
+            .all(|event| event.event_type != "run.result.proposed"));
+        assert!(terminal
+            .iter()
+            .any(|event| event.event_type == "run.terminal"
+                && event.payload["runTerminalState"] == "failed"));
+        for (index, call_id) in ["pending-first", "pending-last"].iter().enumerate() {
+            state
+                .tool_bridge
+                .apply_result(ToolResult {
+                    call_id: (*call_id).to_owned(),
+                    operation_id: "read_context".to_owned(),
+                    result: json!({"ok":true}),
+                    is_error: false,
+                })
+                .unwrap();
+            assert_eq!(state.arm_deferred_receipt_limit_stop().unwrap(), index == 1);
+            assert_eq!(state.receipt_limit_interrupt_pending, index == 1);
+            state = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+            state.validate().unwrap();
+        }
+        assert!(state.receipt_limit_stop_deferred.is_none());
+        assert!(receipt_limit_can_continue(&state, Some("turn.interrupted")));
+        assert_eq!(
+            state
+                .pending_events
+                .iter()
+                .filter(|event| event.payload["code"] == "semantic_tool_turn_receipt_limit")
+                .count(),
+            1
+        );
+        assert!(!state.arm_deferred_receipt_limit_stop().unwrap());
+        assert!(terminal_events(&state, "turn.completed", None)
+            .iter()
+            .all(|event| event.event_type != "run.result.proposed"));
+        let mut legacy = serde_json::to_value(&state).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("receiptLimitStopDeferred");
+        let legacy: CodexProviderState = serde_json::from_value(legacy).unwrap();
+        legacy.validate().unwrap();
+        assert!(legacy.receipt_limit_stop_deferred.is_none());
+    }
+
+    #[test]
     fn capacity_rejected_completion_remains_continuable_but_invalid_reports_do_not() {
         for terminal_operation in ["paperclip_finish", "paperclip_block"] {
             let mut state = declared_completion_and_read_state(terminal_operation);
@@ -7757,6 +7889,7 @@ done
                 Some("turn.interrupted")
             ));
             state.receipt_limit_interrupt_pending = false;
+            state.receipt_limit_stop_deferred = None;
             assert!(matches!(
                 state
                     .admit_tool_call("retry-completion", operation, &completion)
@@ -7996,6 +8129,7 @@ done
         assert!(!receipt_limit_can_continue(&state, Some("turn.failed")));
         assert!(!receipt_limit_can_continue(&state, None));
         state.receipt_limit_interrupt_pending = false;
+        state.receipt_limit_stop_deferred = None;
         assert!(!receipt_limit_can_continue(
             &state,
             Some("turn.interrupted")
@@ -8310,6 +8444,7 @@ done
             settled_provider_turn_filter: DurableReplayFilter::default(),
             receipt_limit_diagnostic_emitted: false,
             receipt_limit_interrupt_pending: false,
+            receipt_limit_stop_deferred: None,
             receipt_limit_interrupt_accepted: false,
             receipt_limit_interrupt_attempts: 0,
             receipt_limit_interrupt_deadline_unix_ms: None,
@@ -8573,6 +8708,7 @@ done
         state.lifecycle = "session_open".to_owned();
         state.receipt_limit_diagnostic_emitted = false;
         state.receipt_limit_interrupt_pending = false;
+        state.receipt_limit_stop_deferred = None;
         state.receipt_limit_interrupt_accepted = false;
         state.receipt_limit_interrupt_attempts = 0;
         state.receipt_limit_interrupt_deadline_unix_ms = None;
