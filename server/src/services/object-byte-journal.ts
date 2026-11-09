@@ -255,6 +255,60 @@ async function objectIO<T>(
   }
 }
 
+// Segments and index nodes are content-addressed: each key ends in the SHA-256
+// of the object's bytes, and load() verifies that digest. Their bytes cannot
+// change, so repeated reads of a run's tail (live polling, reopening a task)
+// reuse them instead of paying one object-store round trip per object. Only the
+// mutable head is read again. The cache is bounded by total bytes and evicts the
+// least recently used objects first. Readers authorize before any read.
+const READ_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const READ_CACHE_MAX_OBJECT_BYTES = 1024 * 1024;
+const readCache = new Map<string, Buffer>();
+const readsInFlight = new Map<string, Promise<Buffer>>();
+let readCacheBytes = 0;
+function cachedObject(key: string) {
+  const bytes = readCache.get(key);
+  if (bytes) {
+    readCache.delete(key);
+    readCache.set(key, bytes);
+  }
+  return bytes;
+}
+function cacheObject(key: string, bytes: Buffer) {
+  if (bytes.length > READ_CACHE_MAX_OBJECT_BYTES || readCache.has(key)) return;
+  readCache.set(key, bytes);
+  readCacheBytes += bytes.length;
+  for (const [oldestKey, oldest] of readCache) {
+    if (readCacheBytes <= READ_CACHE_MAX_BYTES) break;
+    readCache.delete(oldestKey);
+    readCacheBytes -= oldest.length;
+  }
+}
+export function clearObjectJournalReadCache() {
+  readCache.clear();
+  readCacheBytes = 0;
+}
+
+// One range read fetches its objects with bounded overlap. The shared objectIO
+// limiter still caps the process; this keeps one tail read from taking all of
+// its slots or filling the interactive wait queue.
+const READ_RANGE_CONCURRENCY = 4;
+function concurrencyLimit(max: number) {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async <T>(operation: () => Promise<T>): Promise<T> => {
+    if (active >= max) await new Promise<void>((resolve) => waiting.push(resolve));
+    else active++;
+    try {
+      return await operation();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active--;
+    }
+  };
+}
+
 export interface ObjectByteJournalOptions {
   provider: StorageProvider;
   prefix: string;
@@ -462,11 +516,34 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
   }
   async function load(ref: Reference, signal?: AbortSignal) {
     validateReference(ref);
-    const stored = await getBytes(ref.key, MAX_OBJECT_BYTES * 2, signal);
-    const bytes = options.decode ? await options.decode(stored.bytes) : stored.bytes;
-    if (bytes.length > MAX_OBJECT_BYTES || sha256(bytes) !== ref.sha256)
-      throw new Error("object_journal_integrity_error");
-    return bytes;
+    const cached = cachedObject(ref.key);
+    if (cached) return cached;
+    const pending = readsInFlight.get(ref.key);
+    if (pending) {
+      // Share a concurrent fetch, but do not inherit another reader's abort.
+      try {
+        return await pending;
+      } catch (error) {
+        signal?.throwIfAborted();
+        const shared = cachedObject(ref.key);
+        if (shared) return shared;
+        if (error instanceof Error && error.message === "object_journal_integrity_error") throw error;
+      }
+    }
+    const loading = (async () => {
+      const stored = await getBytes(ref.key, MAX_OBJECT_BYTES * 2, signal);
+      const bytes = options.decode ? await options.decode(stored.bytes) : stored.bytes;
+      if (bytes.length > MAX_OBJECT_BYTES || sha256(bytes) !== ref.sha256)
+        throw new Error("object_journal_integrity_error");
+      cacheObject(ref.key, bytes);
+      return bytes;
+    })();
+    readsInFlight.set(ref.key, loading);
+    try {
+      return await loading;
+    } finally {
+      if (readsInFlight.get(ref.key) === loading) readsInFlight.delete(ref.key);
+    }
   }
   async function save(
     bytes: Buffer,
@@ -540,33 +617,39 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     if ((!snapshot.root && !snapshot.roots?.length) || limit === 0 || start >= snapshot.end)
       return Buffer.alloc(0);
     const end = Math.min(snapshot.end, start + limit),
-      chunks: Buffer[] = [];
+      pieces: Array<{ start: number; bytes: Buffer }> = [],
+      limited = concurrencyLimit(READ_RANGE_CONCURRENCY),
+      failed = new AbortController(),
+      readSignal = signal ? AbortSignal.any([signal, failed.signal]) : failed.signal;
+    const overlaps = (ref: Reference) => ref.end > start && ref.start < end;
+    // Siblings are fetched concurrently; pieces are reassembled by offset.
     async function readPayload(ref: Reference) {
-      const bytes = await load(ref, signal);
+      const bytes = await limited(() => load(ref, readSignal));
       if (bytes.length !== ref.end - ref.start)
         throw new Error("object_journal_invalid_segment_length");
-      chunks.push(
-        bytes.subarray(Math.max(0, start - ref.start), Math.min(bytes.length, end - ref.start)),
-      );
+      pieces.push({
+        start: ref.start,
+        bytes: bytes.subarray(Math.max(0, start - ref.start), Math.min(bytes.length, end - ref.start)),
+      });
     }
-    async function visit(ref: Reference, expectedLevel?: number) {
-      const node = await loadNode(ref, signal);
+    async function visit(ref: Reference, expectedLevel?: number): Promise<void> {
+      const node = await limited(() => loadNode(ref, readSignal));
       if (expectedLevel !== undefined && node.level !== expectedLevel)
         throw new Error("object_journal_invalid_index_level");
-      for (const child of node.children) {
-        if (child.end <= start || child.start >= end) continue;
-        if (node.level > 0) await visit(child, node.level - 1);
-        else await readPayload(child);
-      }
+      await Promise.all(node.children.filter(overlaps).map((child) =>
+        node.level > 0 ? visit(child, node.level - 1) : readPayload(child)));
     }
-    if (snapshot.roots) {
-      for (const root of snapshot.roots) {
-        if (root.end <= start || root.start >= end) continue;
-        if (root.level === 0) await readPayload(root);
-        else await visit(root, root.level - 1);
-      }
-    } else if (snapshot.root) await visit(snapshot.root);
-    const bytes = Buffer.concat(chunks);
+    try {
+      if (snapshot.roots) {
+        await Promise.all(snapshot.roots.filter(overlaps).map((root) =>
+          root.level === 0 ? readPayload(root) : visit(root, root.level - 1)));
+      } else if (snapshot.root) await visit(snapshot.root);
+    } catch (error) {
+      failed.abort(error);
+      throw error;
+    }
+    pieces.sort((a, b) => a.start - b.start);
+    const bytes = Buffer.concat(pieces.map((piece) => piece.bytes));
     if (bytes.length !== end - start) throw new Error("object_journal_missing_range");
     return bytes;
   }
