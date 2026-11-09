@@ -1991,6 +1991,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         riskLevel: invocation.riskLevel,
         argumentsHash: invocation.argumentsHash ?? "",
         arguments: {},
+        argumentsUnknown: false,
       })) return false;
       if (input.filters.allowAny === true) return true;
       return Boolean(invocation.argumentsHash && allowedHashes.has(invocation.argumentsHash));
