@@ -1254,7 +1254,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       sql`${workspaceOperations.metadata}->>'boundary' = 'final'`))).map(save => save.metadata?.saveTiming);
     const duration = expect.any(Number), archive = { byteSize: expect.any(Number), entries: expect.any(Number) };
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "failed", totalMs: duration,
-      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, at: expect.any(String) }]);
+      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, storage: expect.objectContaining({ requests: expect.any(Object) }),
+      at: expect.any(String) }]);
     const beforeSuccess = await workspace(reserved.id);
     const saved = await saveRemoteWorkspace({ db, storage, workspace: beforeSuccess, runId: ids.run,
       lease: prepared.lease, target: first, assertOwned: async () => undefined });
@@ -1266,6 +1267,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await finalTiming()).toEqual([succeededTiming]);
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "succeeded", totalMs: duration,
       captureMs: duration, transferMs: duration, verifyMs: duration, uploadMs: duration, publishMs: duration, ...archive,
+      storage: expect.objectContaining({ encryptMs: duration, digestMs: duration, putMs: duration, verifyMs: duration,
+        bytes: expect.any(Number), requests: expect.any(Object) }),
       at: expect.any(String) }]);
     expect(await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
   }, 60_000);

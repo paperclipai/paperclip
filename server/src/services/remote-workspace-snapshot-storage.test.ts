@@ -12,12 +12,13 @@ import { eq } from "drizzle-orm";
 import { applyPendingMigrations, closeRegisteredClients, createDb, executionWorkspaceSnapshots } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
+import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 
 // Pass-through, so one test can report a changed archive between the two
 // identity reads that bracket encryption.
@@ -74,6 +75,19 @@ suite("remote workspace snapshot storage", () => {
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref.id));
     expect(row?.status).toBe("uploaded"); // The owning service still controls atomic publication.
   });
+  it("records where a save and a restore spend their time", async () => {
+    const f = await fixture();
+    const saveTiming = newWorkspaceSnapshotStorageTiming();
+    const ref = await uploadWorkspaceSnapshot({ ...f.upload, timing: saveTiming });
+    const step = expect.any(Number);
+    expect(saveTiming).toMatchObject({ priorAttemptCheckMs: step, encryptMs: step, digestMs: step, putMs: step, verifyMs: step,
+      bytes: ref.byteSize });
+    const restoreTiming = newWorkspaceSnapshotStorageTiming();
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: path.join(root, "timed.pcws"), timing: restoreTiming });
+    expect(restoreTiming).toMatchObject({ downloadMs: step, decryptMs: step, plaintextVerifyMs: step, publishMs: step,
+      bytes: ref.byteSize });
+  });
+
   it("preserves multi-chunk archive bytes through encryption, authenticated readback, and cold restore", async () => {
     const content = randomBytes(3 * 1024 * 1024 + 137), f = await fixture(content);
     const verifiedArchivePath = path.join(root, "verified-large.pcws");

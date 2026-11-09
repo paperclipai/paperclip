@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { THROTTLED_PART_ATTEMPTS, putS3MultipartFile } from "../storage/s3-multipart.js";
+import { collectStorageRequestStats, newStorageRequestStats } from "../storage/request-stats.js";
 
 // Record each requested wait and resolve it at once, so the schedule is
 // observable without waiting for it.
@@ -40,12 +41,17 @@ describe("file-backed S3 multipart backoff schedule", () => {
       return {};
     });
     waits.length = 0;
+    const stats = newStorageRequestStats();
     try {
-      await expect(putS3MultipartFile(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream",
-        contentLength: size, body: Buffer.alloc(0), sourceFile: file })).resolves.toEqual({ integrity: "server_verified_md5" });
+      await expect(collectStorageRequestStats(stats, () => putS3MultipartFile(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream",
+        contentLength: size, body: Buffer.alloc(0), sourceFile: file }))).resolves.toEqual({ integrity: "server_verified_md5" });
       expect(partOneAttempts).toBe(THROTTLED_PART_ATTEMPTS);
       // Half of each ceiling: 1, 2, 4, 8, 16, then 20, 20 seconds.
       expect(waits).toEqual([500, 1_000, 2_000, 4_000, 8_000, 10_000, 10_000]);
+      // The run log can see the throttling: every request, failure and wait is counted.
+      expect(stats).toMatchObject({ parts: 3, throttled: 7, backoffMs: 35_500, failedRequests: 7 });
+      // create + 7 throttled and 3 accepted part sends + complete.
+      expect(stats.requests).toBe(12);
     } finally {
       random.mockRestore(); send.mockRestore(); client.destroy();
       await fs.rm(dir, { recursive: true, force: true });

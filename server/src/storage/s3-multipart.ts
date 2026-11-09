@@ -1,4 +1,5 @@
 import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CreateMultipartUploadCommand, UploadPartCommand, type S3Client } from "@aws-sdk/client-s3";
+import { recordStorageBackoff, recordStoragePart } from "./request-stats.js";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createReadStream } from "node:fs";
@@ -201,6 +202,7 @@ export async function putS3MultipartFile(
           }), { abortSignal: controller.signal }));
           if (!result.ETag) throw new Error("S3 upload part is incomplete");
           parts[index] = { ETag: result.ETag, PartNumber: index + 1 };
+          recordStoragePart();
           return;
         } catch (error) {
           // A part read from disk can be resent; the stream path cannot.
@@ -209,10 +211,13 @@ export async function putS3MultipartFile(
             if (++throttles >= THROTTLED_PART_ATTEMPTS) throw error;
             if (sentAfter === reductions) { concurrency = Math.max(1, Math.floor(concurrency / 2)); reductions++; }
             const ceiling = Math.min(THROTTLE_BACKOFF_MAX_MS, THROTTLE_BACKOFF_BASE_MS * 2 ** (throttles - 1));
-            await delay(Math.floor(Math.random() * ceiling), undefined, { signal: controller.signal });
+            const wait = Math.floor(Math.random() * ceiling);
+            recordStorageBackoff(wait, true);
+            await delay(wait, undefined, { signal: controller.signal });
             continue;
           }
           if (++failures >= FILE_PART_ATTEMPTS) throw error;
+          recordStorageBackoff(failures * 500, false);
           await delay(failures * 500, undefined, { signal: controller.signal });
         } finally { body.destroy(); }
       }

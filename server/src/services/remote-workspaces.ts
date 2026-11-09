@@ -33,8 +33,10 @@ import {
   type RemoteWorkspaceSavePhaseTiming,
 } from "./remote-workspace-transport.js";
 import {
-  beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
+  beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, uploadWorkspaceSnapshot,
+  type WorkspaceSnapshotStorageTiming,
 } from "./remote-workspace-snapshot-storage.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
 import { restoreRemoteWorkspaceArchive, readRemoteWorkspaceArchiveDirectories } from "./remote-workspace-snapshot-archive.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
@@ -62,6 +64,8 @@ type RemoteWorkspaceSaveTiming = RemoteWorkspaceSavePhaseTiming & {
   /** Read the archive manifest and commit the saved authority. */
   publishMs?: number;
   reusedUpload?: boolean;
+  /** Where the upload spent its time, and the storage requests it sent. */
+  storage?: WorkspaceSnapshotStorageTiming;
 };
 const RETIRED_SAVE_SCHEMA = "paperclip.remote-workspace-retired-save.v1";
 type SaveWork = { schema: typeof SAVE_WORK_SCHEMA; activeIds: string[]; unknown: boolean; quiescedAt: string | null };
@@ -446,10 +450,10 @@ export async function prepareRemoteWorkspace(input: {
           step = "snapshot_download";
           await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
           step = "sandbox_restore";
-          restoredExport = await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
+          restoredExport = await measureRunPhase("workspace.snapshot.sandbox_restore", () => restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
             restorationIdentity: preparationIdentity, restorationEpoch: initial.epoch, allowEmptyRoot: migration !== null,
             allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [],
-            replaceRetiredRoot });
+            replaceRetiredRoot }));
         } finally { await rm(scratch, { recursive: true, force: true }); }
       } catch (error) {
         // Cancellation keeps its own handling, as do lookup refusals.
@@ -865,7 +869,7 @@ export async function saveRemoteWorkspace(input: {
     const uploadStarted = performance.now();
     const saved = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage ?? getStorageService(), snapshotId: snapshot.id,
       companyId: input.workspace.companyId, workspaceId: input.workspace.id, archivePath: captured?.archivePath ?? "",
-      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest });
+      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest, timing: timing.storage ??= newWorkspaceSnapshotStorageTiming() });
     timing.uploadMs = Math.max(0, Math.round(performance.now() - uploadStarted));
     await input.assertOwned();
     const publishStarted = performance.now();

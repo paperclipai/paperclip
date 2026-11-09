@@ -614,6 +614,39 @@ settlement record. The record does not imply exactly-once emission across
 controller recovery, and failure to write it is logged without changing the
 already-settled outcome.
 
+## Durable storage timing
+
+A saved remote workspace is one encrypted archive in durable object storage.
+Restoring it before a turn, and saving it after one, runs these steps as named
+run phases:
+
+| Phase | Step |
+| --- | --- |
+| `storage.snapshot.download` | Get the encrypted archive from storage and hash it while it streams. |
+| `storage.snapshot.decrypt` | Decrypt the archive to private scratch. |
+| `storage.snapshot.verify_plaintext` | Hash the decrypted archive against its sealed digest. |
+| `storage.snapshot.publish` | Copy the verified archive to its destination. |
+| `workspace.snapshot.sandbox_restore` | Upload and unpack the archive in the sandbox. |
+| `storage.snapshot.prior_attempts` | Check whether an earlier upload attempt already landed. |
+| `storage.snapshot.encrypt` | Hash and encrypt the archive in one pass. |
+| `storage.snapshot.digest` | Hash the encrypted file that is uploaded. |
+| `storage.snapshot.put` | Upload the encrypted archive (multipart above 16 MiB). |
+| `storage.snapshot.verify` | Confirm the stored object (its size when the backend checked every part, otherwise a full read-back). |
+
+A restore runs inside run preparation, so each of its steps of 50 ms or more is
+a `run.performance.span` row of the run. A save runs after the turn. Its step
+durations are recorded on its `remote_workspace_snapshot` workspace operation,
+in `metadata.saveTiming.storage`:
+- `priorAttemptCheckMs`, `encryptMs`, `digestMs`, `putMs` and `verifyMs`;
+- `bytes`;
+- `requests`, the storage requests the save sent. These are `requests`,
+  `attempts` (SDK attempts across them), `failedRequests`, `retryDelayMs` (SDK
+  waits between its own retries), `parts`, `throttled` (part sends the backend
+  rate-limited with 503, 429 or SlowDown) and `backoffMs` (the uploader's waits
+  before resending a part).
+
+These are counts and durations only: no object keys, paths or provider text.
+
 ## System notices and final replies
 
 Automatic comments with a stored `system_notice` presentation, including
