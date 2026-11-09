@@ -231,9 +231,9 @@ export function prefetchIssueComments(queryClient: QueryClient, issueRef: string
  * `history: true` also warms every other read that gates the compact chat's
  * first reveal (activity, runs, comment input facts, interactions,
  * attachments, live runs). Callers
- * pass it when an open is likely: a press, focus, keyboard selection, or a
- * hover that rests on the link. A pointer passing over rows warms only the
- * issue and its recent comments.
+ * pass it when an open is likely: a mouse or pen press, a click, keyboard
+ * selection, or a hover or focus that rests on the link. A pointer, touch or
+ * focus passing over rows warms only the issue and its recent comments.
  */
 export function prefetchIssueDetailForNavigation(
   queryClient: QueryClient,

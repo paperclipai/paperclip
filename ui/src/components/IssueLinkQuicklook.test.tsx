@@ -152,10 +152,36 @@ describe("IssueLinkQuicklook", () => {
       expect(navigationPrefetches).toEqual([{ ref: "PAP-1", history: false }, { ref: "PAP-1", history: true }]);
     });
 
-    it("warms the full chat history at once when the task is pressed", () => {
+    const press = (link: HTMLAnchorElement, pointerType: string) =>
+      act(() => { link.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType })); });
+
+    it("warms the full chat history at once when the task is pressed with a mouse", () => {
       const link = renderLink();
-      act(() => { link.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+      press(link, "mouse");
       expect(navigationPrefetches).toEqual([{ ref: "PAP-1", history: true }]);
+    });
+
+    it("keeps a touch that may start a scroll to the light set until the click", () => {
+      const link = renderLink();
+      press(link, "touch");
+      act(() => { link.dispatchEvent(new TouchEvent("touchstart", { bubbles: true })); });
+      act(() => { vi.advanceTimersByTime(1_000); });
+      expect(navigationPrefetches.every((prefetch) => !prefetch.history)).toBe(true);
+      expect(navigationPrefetches.length).toBeGreaterThan(0);
+      act(() => { link.click(); });
+      expect(navigationPrefetches.at(-1)).toEqual({ ref: "PAP-1", history: true });
+    });
+
+    it("warms history for keyboard focus only when the focus rests on the task", () => {
+      const link = renderLink();
+      act(() => { link.focus(); });
+      act(() => { vi.advanceTimersByTime(ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS - 1); });
+      act(() => { link.blur(); });
+      act(() => { vi.advanceTimersByTime(1_000); });
+      expect(navigationPrefetches).toEqual([{ ref: "PAP-1", history: false }]);
+      act(() => { link.focus(); });
+      act(() => { vi.advanceTimersByTime(ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS); });
+      expect(navigationPrefetches.at(-1)).toEqual({ ref: "PAP-1", history: true });
     });
   });
 
