@@ -71,9 +71,11 @@ const remoteExecutionTerminated = sql`exists (select 1 from ${environmentLeases}
 /** A native run's receipt source is closed only with positive stop evidence,
  * after recovery ended in terminal failure without a result:
  * - Local: the run no longer records a process identity and its latest
- *   server-authored process event is the verified local stop. Only a failed
- *   run closes this way; a cancelled local run keeps its accounting drain,
- *   since Stop recovery can still reattach a recorder.
+ *   server-authored process event is the verified local stop. This holds for
+ *   any terminal status (failed, cancelled, timed out, interrupted): a stopped
+ *   process reports no more usage. Settlement still imports spooled receipts,
+ *   and a receipt a reattached recorder delivers later posts through
+ *   late-receipt reconciliation.
  * - Remote: every allocation has a termination receipt for its sandbox, so
  *   neither the original nor a reattached runner can report usage. That proof
  *   does not clear the recorded remote process identity.
@@ -122,8 +124,10 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
 
 /** Waiting for closure evidence is bounded. Past the remote runner reconnect
  * grace plus a margin, a terminal run whose recovery has settled no longer
- * holds new company work: its debt settles as unpriced, flagged so the
- * blocking policy still counts it and the board sees which run it was. */
+ * holds new company work: its debt settles as unpriced and is flagged so the
+ * board sees which run it was. The flag also exempts the charge from the
+ * blocking unpriced-usage policy (budget-exposure.ts): accounting is never a
+ * company gate. */
 /** A run's accounting settled: an admission hold may have cleared. Held work
  * (queued runs, saved messages and Retries, and tasks whose start or
  * continuation was refused) waits passively, so wake its owners. */
@@ -146,8 +150,9 @@ function closureEvidenceTimedOut(at: Date = new Date()) {
  * certify what it missed. It is bounded like missing closure evidence: past
  * the same bound, once native recovery will not run the provider again, its
  * known usage settles as unpriced (or as a lower-bound estimate) and is
- * flagged so the blocking policy still counts it. Without the bound such a
- * run held company admission until its UTC budget window rolled over. */
+ * flagged, which exempts it from the blocking unpriced-usage policy
+ * (budget-exposure.ts). Without the bound such a run held company admission
+ * until its UTC budget window rolled over. */
 function captureFailureBoundPassed(at: Date = new Date()) {
   return sql`${heartbeatRuns.usageJson}->>'accountingCaptureFailed' = 'true'
   and ${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
