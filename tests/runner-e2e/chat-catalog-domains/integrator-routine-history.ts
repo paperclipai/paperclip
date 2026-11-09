@@ -42,9 +42,14 @@ const FAILURE = new RegExp(`${negated}\\b(?:fail(?:ed|s|ure)?|unsuccessful|errou
  * completed invocation): the reply must speak about each task, give it its recorded outcome, and never give it the
  * other one. Saved status, not wording, is what makes an outcome right; the vocabulary only detects which one is claimed. */
 export function preservesRecordedOutcomes(reply: string, failedTask: Entity, completedTask: Entity) {
-  const units = taskOutcomeUnits(reply, [failedTask, completedTask]);
+  // Quoted tool output (`success: false`, "Synthetic write failed") is data the reply cites, not its own claim.
+  const prose = reply.replace(/`([^`\n]*)`|"([^"\n]*)"|“([^”\n]*)”/g, (_quote, ...spans: Array<string | undefined>) => {
+    const text = spans.slice(0, 3).find(span => span !== undefined) ?? "";
+    return /^[A-Z][A-Z0-9]*-\d+$/.test(text.trim()) ? text : " ";
+  });
+  const units = taskOutcomeUnits(prose, [failedTask, completedTask]);
   const failed = units.get(failedTask.id) ?? [], completed = units.get(completedTask.id) ?? [];
-  const blanket = reply.split(/(?<=[.!?])\s+|\n+/).some(sentence => /\b(?:all|both)\b[^.!?]{0,40}\b(?:runs?|executions?|summar(?:y|ies))\b[^.!?]{0,30}\b(?:succeeded|completed|successful(?:ly)?)\b/i.test(sentence));
+  const blanket = prose.split(/(?<=[.!?])\s+|\n+/).some(sentence => /\b(?:all|both)\b[^.!?]{0,40}\b(?:runs?|executions?|summar(?:y|ies))\b[^.!?]{0,30}\b(?:succeeded|completed|successful(?:ly)?)\b/i.test(sentence));
   return failed.some(unit => FAILURE.test(unit)) && completed.some(unit => SUCCESS.test(unit))
     && !failed.some(unit => SUCCESS.test(unit)) && !completed.some(unit => FAILURE.test(unit)) && !blanket;
 }
@@ -118,5 +123,5 @@ export const integratorRoutineHistoryCases = [integratorDefinition("routines", "
   const routine = state.routine as RoutineDetail;
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/routines/${routine.id}/history`, routine.title);
 }, { sourceFiles: ["chat-catalog-domains/integrator-routine-history.ts", "chat-catalog-domains/routine-history-work-failure.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/routines.yaml"],
-  oracleVersion: "paperclip.chat-catalog.integrator.routine-work-failure.v3", authentication: "human-session", cleanup: cleanupHistoryNotes, expectedRunCount: 3, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 3 } }, attemptTimeoutMs: 720_000,
+  oracleVersion: "paperclip.chat-catalog.integrator.routine-work-failure.v4", authentication: "human-session", cleanup: cleanupHistoryNotes, expectedRunCount: 3, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 3 } }, attemptTimeoutMs: 720_000,
 })];
