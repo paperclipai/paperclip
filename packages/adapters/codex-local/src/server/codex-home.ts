@@ -1,7 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type {
+  AdapterExecutionContext,
+  AdapterRuntimeMcpToolPolicy,
+} from "@paperclipai/adapter-utils";
 import type { SandboxManagedRuntimeAssetProvision } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { buildCodexAuthInboundProvision, CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME } from "./codex-auth-merge-scripts.js";
@@ -71,6 +74,7 @@ export type ManagedCodexMcpGateway = {
   name: string;
   endpointPath: string;
   bearerToken: string;
+  tools: AdapterRuntimeMcpToolPolicy[];
 };
 
 export function mergeManagedCodexMcpGateways(
@@ -352,12 +356,32 @@ function buildManagedMcpBlock(input: {
       );
     }
     const url = new URL(gateway.endpointPath, input.apiBaseUrl).toString();
+    const toolsByName = new Map<string, AdapterRuntimeMcpToolPolicy>();
+    for (const tool of gateway.tools) {
+      const name = tool.name.trim();
+      if (!name) continue;
+      const existing = toolsByName.get(name);
+      if (existing && existing.approvalMode !== tool.approvalMode) {
+        throw new Error(`Conflicting managed MCP approval modes for tool "${name}"`);
+      }
+      toolsByName.set(name, { name, approvalMode: tool.approvalMode });
+    }
+    const tools = [...toolsByName.values()].sort((left, right) => left.name.localeCompare(right.name));
     lines.push(
       "",
       `[mcp_servers.${tomlString(managedName)}]`,
       `url = ${tomlString(url)}`,
       `http_headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
+      `enabled_tools = [${tools.map((tool) => tomlString(tool.name)).join(", ")}]`,
+      'default_tools_approval_mode = "prompt"',
     );
+    for (const tool of tools) {
+      lines.push(
+        "",
+        `[mcp_servers.${tomlString(managedName)}.tools.${tomlString(tool.name)}]`,
+        `approval_mode = ${tomlString(tool.approvalMode === "unattended" ? "approve" : "prompt")}`,
+      );
+    }
   });
   lines.push(MANAGED_MCP_BLOCK_END);
   return { block: lines.join("\n"), warnings };

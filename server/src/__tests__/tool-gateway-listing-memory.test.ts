@@ -93,6 +93,25 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     expect(event?.details).not.toHaveProperty("visibleTools");
   });
 
+  it("derives provider-neutral client approval modes from the effective gateway policy", async () => {
+    const fixture = await createListingFixture(db, 6);
+    const service = createToolGatewayService(db);
+    const input = { gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token };
+    const visible = await service.listToolsForNamedGateway(input);
+    const policies = await service.listRuntimeToolPoliciesForNamedGateway(input);
+
+    expect(policies.map((entry) => entry.name).sort()).toEqual(visible.map((tool) => tool.name).sort());
+    for (const tool of visible) {
+      expect(policies).toContainEqual({
+        name: tool.name,
+        approvalMode: tool.risk === "read" ? "unattended" : "prompt",
+      });
+    }
+    expect(policies.some((entry) => entry.approvalMode === "unattended")).toBe(true);
+    expect(policies.some((entry) => entry.approvalMode === "prompt")).toBe(true);
+    expect(policies).toHaveLength(4);
+  });
+
   it("keeps query growth bounded with several connections", async () => {
     const small = await createListingFixture(db, 50, { connectionCount: 4 });
     const large = await createListingFixture(db, 500, { connectionCount: 4 });

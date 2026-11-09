@@ -3373,6 +3373,16 @@ reads lightweight thread state, and fetches paginated turn metadata or specific
 turn items only when execution reconciliation needs them. Unsupported
 or incomplete history is an explicit error, not evidence of idle execution.
 
+For legacy Codex CLI runs, Paperclip writes each managed MCP gateway with the
+effective server-authorized tool names and a prompt-by-default Codex approval
+policy. Tools that Paperclip has already admitted without human approval receive
+Codex's per-tool `approve` mode so `approval_policy = "never"` can deliver them
+unattended. Tools whose Paperclip decision still requires approval remain in
+Codex's `prompt` mode, and unspecified tools are not enabled. The gateway
+re-evaluates policy for every call; this generated client policy does not replace
+server authorization. Rebuilding an isolated Codex home replaces the managed
+block from the current assignment snapshot and does not retain revoked tools.
+
 Built-in remote Codex launches install the current sealed skill inventory into
 the isolated provider home's `skills` directory before starting Codex. Explicit
 skill inputs use that same discovery path; a separate immutable context copy does

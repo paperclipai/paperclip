@@ -345,6 +345,11 @@ export interface ToolGatewayDescriptor extends AgentToolDescriptor {
   providerMetadata?: ConnectedMcpGatewayMetadata | Record<string, unknown>;
 }
 
+export interface ToolGatewayRuntimeToolPolicy {
+  name: string;
+  approvalMode: "unattended" | "prompt";
+}
+
 export interface ToolGatewaySession {
   id: string;
   token: string;
@@ -3230,10 +3235,10 @@ export function createToolGatewayService(
     ];
   }
 
-  async function buildToolsForContext(
+  async function buildToolsForContextWithPolicy(
     session: ToolGatewaySession,
     signal?: AbortSignal,
-  ): Promise<ToolGatewayDescriptor[]> {
+  ): Promise<Array<{ tool: ToolGatewayDescriptor; approvalMode: "unattended" | "prompt" }>> {
     signal?.throwIfAborted();
     if (session.agentId) {
       await measureRunPhase("connectors.discovery.agent", () => assertAgentInCompany(session.companyId, session.agentId!));
@@ -3262,8 +3267,10 @@ export function createToolGatewayService(
           decision.allowed || decision.decision === "require_approval",
       )
       .map(({ tool, decision }) =>
-        decision.decision === "require_approval"
-          ? {
+        ({
+          approvalMode: decision.decision === "require_approval" ? "prompt" as const : "unattended" as const,
+          tool: decision.decision === "require_approval"
+            ? {
               ...tool,
               description: [
                 tool.description?.trim(),
@@ -3271,8 +3278,9 @@ export function createToolGatewayService(
               ]
                 .filter(Boolean)
                 .join(" "),
-            }
-          : tool,
+              }
+            : tool,
+        }),
       );
     if (onDemandTargets.length > 0) {
       const targetDecisions = await measureRunPhase("connectors.discovery.on_demand_policy", () => decideToolsForListing(
@@ -3287,10 +3295,35 @@ export function createToolGatewayService(
             decision.allowed || decision.decision === "require_approval",
         )
       ) {
-        visibleTools.push(...VIRTUAL_TOOLS);
+        visibleTools.push(
+          { tool: VIRTUAL_SEARCH_TOOLS, approvalMode: "unattended" },
+          { tool: VIRTUAL_RUN_TOOL, approvalMode: "prompt" },
+        );
       }
     }
-    return deduplicateToolDescriptors(visibleTools);
+    const modes = new Map<string, "unattended" | "prompt">();
+    for (const entry of visibleTools) {
+      const previous = modes.get(entry.tool.name);
+      if (previous && previous !== entry.approvalMode) {
+        throw new ToolGatewayHttpError(
+          409,
+          `Conflicting approval modes share the tool name ${JSON.stringify(entry.tool.name)}.`,
+          "tool_name_collision",
+        );
+      }
+      modes.set(entry.tool.name, entry.approvalMode);
+    }
+    return deduplicateToolDescriptors(visibleTools.map((entry) => entry.tool)).map((tool) => ({
+      tool,
+      approvalMode: modes.get(tool.name) ?? "prompt",
+    }));
+  }
+
+  async function buildToolsForContext(
+    session: ToolGatewaySession,
+    signal?: AbortSignal,
+  ): Promise<ToolGatewayDescriptor[]> {
+    return (await buildToolsForContextWithPolicy(session, signal)).map(({ tool }) => tool);
   }
 
   async function executeBuiltinTool(
@@ -9352,6 +9385,27 @@ export function createToolGatewayService(
         },
       });
       return tools;
+    },
+
+    async listRuntimeToolPoliciesForNamedGateway(input: {
+      gatewayId?: string | null;
+      gatewayPublicId?: string | null;
+      bearerToken: string;
+      callerHeaders?: Record<string, string | string[] | undefined>;
+      signal?: AbortSignal;
+    }): Promise<ToolGatewayRuntimeToolPolicy[]> {
+      input.signal?.throwIfAborted();
+      const session = await namedGatewaySessionFromBearer({
+        gatewayId: input.gatewayId ?? null,
+        gatewayPublicId: input.gatewayPublicId ?? null,
+        bearerToken: input.bearerToken,
+        protocolMethod: "tools/list",
+        callerHeaders: input.callerHeaders,
+      });
+      await assertGatewayTokenAction(session, "tools/list");
+      return (await buildToolsForContextWithPolicy(session, input.signal)).map(
+        ({ tool, approvalMode }) => ({ name: tool.name, approvalMode }),
+      );
     },
 
     async executeContextForNamedGateway(input: {

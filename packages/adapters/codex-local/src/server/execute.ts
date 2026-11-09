@@ -323,7 +323,15 @@ function managedMcpGatewaysFromContext(context: Record<string, unknown>): Manage
       const endpointPath = asString(gateway.endpointPath, "").trim();
       const bearerToken = asString(gateway.bearerToken, "").trim();
       if (!name || !endpointPath || !bearerToken) return null;
-      return { name, endpointPath, bearerToken };
+      const rawTools = Array.isArray(gateway.tools) ? gateway.tools : [];
+      const tools: ManagedCodexMcpGateway["tools"] = rawTools.flatMap((rawTool) => {
+        const tool = parseObject(rawTool);
+        const toolName = asString(tool.name, "").trim();
+        const approvalMode = tool.approvalMode;
+        if (!toolName || (approvalMode !== "unattended" && approvalMode !== "prompt")) return [];
+        return [{ name: toolName, approvalMode }];
+      });
+      return { name, endpointPath, bearerToken, tools };
     })
     .filter((gateway): gateway is ManagedCodexMcpGateway => Boolean(gateway));
 }
@@ -803,6 +811,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       name: server.name,
       endpointPath: server.url,
       bearerToken: server.token,
+      tools: server.tools ?? [],
     }));
     const managedMcpGateways = mergeManagedCodexMcpGateways(
       runtimeMcpGateways,

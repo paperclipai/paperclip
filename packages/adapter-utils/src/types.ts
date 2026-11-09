@@ -197,6 +197,12 @@ export interface AdapterRuntimeMcpServer {
   url: string;
   token: string;
   connectionId: string;
+  tools?: AdapterRuntimeMcpToolPolicy[];
+}
+
+export interface AdapterRuntimeMcpToolPolicy {
+  name: string;
+  approvalMode: "unattended" | "prompt";
 }
 
 export interface AdapterRuntimeMcpAccess {
