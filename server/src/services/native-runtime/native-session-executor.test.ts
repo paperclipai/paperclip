@@ -20574,7 +20574,7 @@ it("records a runner process exit that closed the provider event stream as runne
   const code = nativeSessionFailureSourceCode(lost);
   expect(code).toBe("native_runner_process_exited");
   expect(nativeSessionFailureDisposition(1, new Date(), code)).toMatchObject({ phase: "retryable_failure", failureCode: "native_session_interrupted" });
-  expect(nativeSessionFailureDisposition(3, new Date(), code)).toEqual({ phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null });
+  expect(nativeSessionFailureDisposition(3, new Date(), code)).toEqual({ phase: "terminal_failure", failureCode: "native_provider_runner_failed", nextAttemptAt: null });
   // Other closed-stream causes, and the runner code only inside provider text, stay provider failures.
   expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("notification_transport_failed", false,
     "Notification transport failed closed: provider stream ended"))).toBe("native_provider_terminal_failed");
