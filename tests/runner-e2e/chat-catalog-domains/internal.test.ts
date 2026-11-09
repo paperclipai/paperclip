@@ -313,7 +313,8 @@ function valid(scenario: string): InternalObservation {
       const blocked = { id: "blocked", identifier: "ACORN-2", title: "Accessibility review", status: "blocked", description: "Waiting for approved launch colors." }; const done = { id: "done", identifier: "ACORN-3", title: "Launch brief delivered", status: "done" };
       o.state.blockedTask = blocked; o.state.doneTask = done; o.tasks.push(blocked, done); o.state.worker = { id: "morgan" }; o.agents = [{ id: "morgan", status: "idle" }];
       o.state.blocker = "approved launch colors"; o.state.hiddenMarker = "hidden acquisition";
-      o.reply = "Right now, ACORN-1 Website task is underway (1 active task).\nACORN-2 Accessibility review is blocked, waiting for approved launch colors (1 blocked task).\nACORN-3 Launch brief delivered is done (1 completed task).\nMorgan is idle.";
+      o.runs = [{ ...o.runs[0]!, startedAt: "2026-10-26T12:00:00Z", finishedAt: "2026-10-26T12:01:00Z" } as typeof o.runs[number]]; o.state.timezone = "UTC";
+      o.reply = "As of 12:00 UTC, ACORN-1 Website task is underway (1 active task).\nACORN-2 Accessibility review is blocked, waiting for approved launch colors (1 blocked task).\nACORN-3 Launch brief delivered is done (1 completed task).\nMorgan is idle.";
       o.links.push("/ACORN/issues/blocked", "/ACORN/issues/done"); break;
     }
     case "activity.audit-change": {
