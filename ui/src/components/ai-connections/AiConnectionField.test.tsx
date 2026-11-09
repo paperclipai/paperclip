@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
-import type { AiConnectionPool, AiManagedConnectionSummary, AiRuntimeConnectionBinding } from "@paperclipai/shared";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPool, type AiManagedConnectionSummary, type AiRuntimeConnectionBinding } from "@paperclipai/shared";
 import { AiConnectionField, aiProviderForAdapter } from "./AiConnectionField";
 import { ApiError } from "@/api/client";
 import type { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
@@ -237,7 +237,7 @@ it("shows readable copy with a retry when connections cannot be loaded", async (
 });
 
 const mixedPool = (overrides: Partial<AiConnectionPool> = {}): AiConnectionPool => ({
-  id: "00000000-0000-4000-8000-000000000010", companyId: "company", pluginKey: "pool", revision: 1,
+  id: "00000000-0000-4000-8000-000000000010", companyId: "company", pluginKey: BUILTIN_AI_FAILOVER_ROUTER_KEY, revision: 1,
   name: "Mixed backup pool", enabled: true, mode: "failover", thresholdPercent: 90,
   members: [{ id: "member", binding: { mode: "shared", provider: "openai", method: "subscription", connectionId: "codex-account", grantId: "codex-grant" }, profile: { provider: "codex", model: "gpt-5.6-sol" } }],
   ...overrides,
@@ -266,6 +266,26 @@ it.each(["claude_local", "codex_local", "grok_local", "opencode_local"])("offers
   expect(onChange).toHaveBeenLastCalledWith(saved);
 });
 
+it.each([false, true])("keeps a compatible plugin-owned Pi pool selectable with a saved pool=%s", async saved => {
+  const pluginPool = mixedPool({ id: "00000000-0000-4000-8000-000000000020", pluginKey: "plugin.pi-router", name: "Pi plugin pool",
+    members: [{ id: "pi-member", binding: { mode: "shared", provider: "openai", method: "api_key", connectionId: "pi-account", grantId: "pi-grant" },
+      profile: { provider: "codex", model: "openai/gpt-5.6-sol" } }],
+  });
+  const incompatible = mixedPool({ id: "00000000-0000-4000-8000-000000000030", pluginKey: "plugin.other-router" });
+  const disabled = { ...pluginPool, id: "00000000-0000-4000-8000-000000000040", enabled: false };
+  await mountPoolField([mixedPool(), pluginPool, incompatible, disabled], saved
+    ? { mode: "router", connectionId: pluginPool.id }
+    : { mode: "responsible_user", provider: "openai", method: "api_key" }, "pi_local");
+  const select = container.querySelector("select");
+  expect(select).not.toBeNull();
+  expect([...select!.options].map(option => option.text)).toEqual(["Individual account", "Pi plugin pool"]);
+  expect(container.textContent).not.toContain("pool is unavailable");
+  if (!saved) {
+    flushSync(() => { select!.value = pluginPool.id; select!.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ mode: "router", connectionId: pluginPool.id });
+  }
+});
+
 it("retains an unavailable saved pool and explains why it cannot be used", async () => {
   const pool = mixedPool({ enabled: false });
   await mountPoolField([pool], { mode: "router", connectionId: pool.id });
@@ -274,7 +294,7 @@ it("retains an unavailable saved pool and explains why it cannot be used", async
   expect(onChange).not.toHaveBeenCalled();
 });
 
-it("keeps unsupported local harnesses from choosing pools", async () => {
+it("keeps unsupported local harnesses from choosing built-in pools", async () => {
   await mountPoolField([mixedPool()], { mode: "responsible_user", provider: "google", method: "api_key" }, "gemini_local");
   expect(container.querySelector("select")).toBeNull();
 });

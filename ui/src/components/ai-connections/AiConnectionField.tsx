@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   aiConnectionBindingSchema,
+  BUILTIN_AI_FAILOVER_ROUTER_KEY,
   isAiConnectionCompatible,
   type AiRuntimeConnectionBinding,
   type AiAuthMethod,
@@ -131,8 +132,12 @@ export function AiConnectionField({
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
     ?? (provider === "openrouter" || provider === "google" || provider === "github" ? "api_key" : "subscription");
   const poolAdapterType = routerAdapterType ?? adapterType;
-  const supportsPools = ["paperclip_runner", "claude_local", "codex_local", "grok_local", "opencode_local"].includes(poolAdapterType);
-  const compatiblePools = agentId && supportsPools ? accounts.data?.pools?.filter(pool => pool.enabled) ?? [] : [];
+  const supportsBuiltInPools = ["paperclip_runner", "claude_local", "codex_local", "grok_local", "opencode_local"].includes(poolAdapterType);
+  const compatiblePools = agentId ? accounts.data?.pools?.filter(pool => pool.enabled && (
+    pool.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY ? supportsBuiltInPools
+      : pool.members.some(member => isAiConnectionCompatible(member.binding, poolAdapterType,
+        member.profile.model, member.profile.provider, member.profile.acpxAgent))
+  )) ?? [] : [];
   const selectedPoolUnavailable = value?.mode === "router" && accounts.isSuccess && !compatiblePools.some(pool => pool.id === value.connectionId);
   if (!provider) return null;
   if (legacy && !value && !adopting)
