@@ -1,22 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { gradeIntegratorCaseFacts } from "./integrator-case-facts.js";
+import { corrected, gradeIntegratorCaseFacts } from "./integrator-case-facts.js";
+const FIRST = "Updated case COM-C1: browser is now **\"Mobile Safari only\"**, with customer, expected result, and severity preserved. See [COM-1](/COM/issues/COM-1).";
+// Recorded follow-up reply from run 42584001490 (escalation value substituted).
+const FOLLOW_UP = "Yes. The case's saved facts still include your correction: `browser` = **Mobile Safari only**. The other facts are unchanged: customer **Acorn Test Shop**, expected **Pay should submit a single order**, severity **normal**.\n\nThe saved support escalation is **support-123**.\n\nOne caveat: the separate reproduction brief document still says \"The affected device has not yet been confirmed.\" Case COM-C1 is linked to [COM-1](/COM/issues/COM-1).";
+function withFollowUp(reply: string) { const v = valid(); v.state.collaborationCheckpoint.reply = `${FIRST}\n${reply}`; return v; }
 function valid() {
-  const original = { id: "case", workIssueId: "primary", handoffVersion: 1, fields: { browser: "Safari; device unknown", customer: "Acorn", severity: "normal", expected: "one order" } };
+  const original = { id: "case", identifier: "COM-C1", workIssueId: "primary", handoffVersion: 1, fields: { browser: "Safari; device unknown", customer: "Acorn", severity: "normal", expected: "one order" } };
   const brief = { id: "brief", issueId: "primary", latestRevisionId: "v1", body: "Customer reproduction" };
   const fields = { ...original.fields, browser: "Mobile Safari only", supportEscalation: "support-123" };
   const base = { scenarioId: "cases.update-case-facts", origin: "https://fixture.test", companyId: "company", leadId: "ceo",
     state: { initialRunId: "initial", worker: { id: "morgan" }, case: original, brief, collaboratorValue: "support-123", reviewer: { id: "riley" } }, caseRecord: { ...original, fields }, brief,
-    briefRevisions: [{ id: "v1", issueId: "primary", body: brief.body }], projects: [], tasks: [], goals: [], documents: [], revisions: [], comments: [], links: [], activity: [], humanQueries: [],
+    briefRevisions: [{ id: "v1", issueId: "primary", body: brief.body }], projects: [], tasks: [{ id: "primary", identifier: "COM-1" }], goals: [], documents: [], revisions: [], comments: [], links: [], activity: [], humanQueries: [],
     reply: "The reproduction occurs exclusively on mobile Safari. Support escalation is support-123.",
     runs: [{ id: "initial", status: "cancelled", runtimeMode: "native", agentId: "morgan", contextSnapshot: { issueId: "primary", paperclipCase: { id: "case", taskId: "primary", data: "{}" } } }, { id: "review", status: "succeeded", runtimeMode: "native", agentId: "riley", contextSnapshot: { issueId: "primary", paperclipCase: { id: "case", taskId: "primary", data: JSON.stringify({ fields }) } } }] };
-  return { ...base, caseRecord: { ...base.caseRecord, handoffVersion: 2 }, state: { ...base.state, firstCorrection: structuredClone(base), collaborationCheckpoint: structuredClone(base) } };
+  const first = { ...structuredClone(base), reply: FIRST };
+  return { ...base, caseRecord: { ...base.caseRecord, handoffVersion: 2 }, state: { ...base.state, firstCorrection: first, collaborationCheckpoint: { ...structuredClone(base), reply: `${FIRST}\n${FOLLOW_UP}` } } };
 }
 describe("current case facts and real subsequent context", () => {
   it("accepts a substantive correction, preserved collaborator field and actual native projection", () => {
     expect(gradeIntegratorCaseFacts(valid()).passed).toBe(true);
     expect(gradeIntegratorCaseFacts(undefined).passed).toBe(false);
-    const natural = valid(); natural.state.collaborationCheckpoint.reply = "This affects mobile Safari only. The current support escalation is support-123.";
-    expect(gradeIntegratorCaseFacts(natural).passed).toBe(true);
+    for (const reply of ["COM-C1 still limits the bug to iOS Safari — nothing was overwritten. The current support escalation is support-123.",
+      "Your correction survived support's edit on [COM-1](/COM/issues/COM-1): affected browser is Safari on iPhone. Escalation saved: support-123."])
+      expect(gradeIntegratorCaseFacts(withFollowUp(reply)).passed).toBe(true);
     const structured = valid(); structured.caseRecord.fields.browser = "mobile Safari"; expect(gradeIntegratorCaseFacts(structured).passed).toBe(true);
   });
   it("rejects lost unrelated fields and an initially wrong correction repaired later", () => {
@@ -31,7 +37,23 @@ describe("current case facts and real subsequent context", () => {
     const missing = valid(); missing.briefRevisions = []; expect(gradeIntegratorCaseFacts(missing).passed).toBe(false);
   });
   it("rejects a plausible contrary chat report and missing collaborative acknowledgement", () => {
-    const falseReport = valid(); falseReport.state.collaborationCheckpoint.reply = "It is not only mobile Safari. Support escalation is support-123."; expect(gradeIntegratorCaseFacts(falseReport).passed).toBe(false);
-    const missing = valid(); missing.state.collaborationCheckpoint.reply = "Mobile Safari only."; expect(gradeIntegratorCaseFacts(missing).passed).toBe(false);
+    for (const reply of ["No. Your mobile Safari only correction on COM-C1 was overwritten by support. Escalation: support-123.",
+      "COM-C1 no longer includes your browser correction. Support escalation is support-123.",
+      "Yes, COM-C1 still says mobile Safari only. The escalation is support-999.",
+      "Yes, COM-C1 still says mobile Safari only.",
+      "Yes, it still says mobile Safari only. Support escalation is support-123.",
+      `${FIRST}`])
+      expect(gradeIntegratorCaseFacts(withFollowUp(reply)).passed, reply).toBe(false);
+    // The first reply already named the case; the follow-up must answer on its own.
+    const reusedFirst = valid(); reusedFirst.state.collaborationCheckpoint.reply = `${FIRST}\nYes, it still says mobile Safari only. Support escalation is support-123.`;
+    expect(gradeIntegratorCaseFacts(reusedFirst).passed).toBe(false);
+  });
+  it("grades the saved browser by normalized tokens, not keywords anywhere in the fields", () => {
+    for (const browser of ["Mobile Safari only", "mobile Safari", "iOS Safari", "Safari on iPhone/iPad only", "Safari (iOS)"]) expect(corrected({ browser }), browser).toBe(true);
+    expect(corrected({ browser: "Safari", platform: "mobile only" })).toBe(true);
+    expect(corrected({ affectedBrowsers: ["iOS Safari"] })).toBe(true);
+    for (const fields of [{ browser: "Safari (desktop and mobile Safari)", note: "only intermittent" }, { browser: "Safari; affected device not yet confirmed" }, { browser: "Desktop Safari only" },
+      { browser: "not mobile Safari" }, { browser: "Safari", note: "mobile only" }, { browser: "Chrome and mobile Safari" }, { affectedBrowsers: ["iOS Safari", "Chrome"] }, { browser: "Safari; device unknown", affectedBrowser: "iOS Safari" }, {}])
+      expect(corrected(fields), JSON.stringify(fields)).toBe(false);
   });
 });

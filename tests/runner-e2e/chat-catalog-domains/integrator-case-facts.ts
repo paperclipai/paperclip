@@ -19,11 +19,42 @@ async function observeFacts(ctx: ChatCatalogContext, state: Record<string, unkno
   return { ...base, caseRecord: await ctx.input.api.get<CaseRecord>(`/api/cases/${row.id}`), brief: await ctx.input.api.get<IssueDocument>(`/api/issues/${row.workIssueId}/documents/brief`), briefRevisions: await ctx.input.api.get<DocumentRevision[]>(`/api/issues/${row.workIssueId}/documents/brief/revisions`) };
 }
 function factsObservation(value: unknown): FactsObservation | undefined { const o = value as FactsObservation; return observation(value) && !!o.caseRecord && !!o.brief && Array.isArray(o.briefRevisions) ? o : undefined; }
-function corrected(fields: unknown) {
-  const text = JSON.stringify(fields); const record = fields && typeof fields === "object" ? fields as Record<string, unknown> : {};
-  const singleBrowser = [record.browser, record.affectedBrowser].some(value => typeof value === "string" && /^mobile Safari$/i.test(value.trim()))
-    || Array.isArray(record.affectedBrowsers) && record.affectedBrowsers.length === 1 && /^mobile Safari$/i.test(String(record.affectedBrowsers[0]));
-  return /mobile Safari/i.test(text) && (singleBrowser || /\bonly\b|\bexclusive/i.test(text)) && !/not (?:only |exclusive[^ ]* )?mobile Safari|desktop Safari only/i.test(text);
+/** The setup records the reproduction browser in `browser`; the person's correction is "only on mobile Safari".
+ * A corrected value is graded by its normalized tokens: Safari plus a mobile-platform qualifier and nothing
+ * else (filler such as "only"/"on" is ignored). "iOS Safari" and "Safari on iPhone/iPad" are the same fact;
+ * any other token (desktop, "not", "and", a second browser, the stale "not yet confirmed") is a different one. */
+const FILLER = new Set(["only", "on", "exclusively", "just", "the", "browser", "browsers", "device", "devices", "affected"]);
+const MOBILE = new Set(["mobile", "ios", "iphone", "ipad", "ipados"]);
+const tokens = (value: string) => value.toLowerCase().split(/[^a-z0-9]+/).filter(token => token && !FILLER.has(token));
+function mobileSafariOnly(value: unknown) {
+  if (typeof value !== "string") return false; const t = tokens(value);
+  return t.includes("safari") && t.some(token => MOBILE.has(token)) && t.every(token => token === "safari" || MOBILE.has(token));
+}
+function mobilePlatformOnly(value: unknown) { if (typeof value !== "string") return false; const t = tokens(value); return t.length > 0 && t.every(token => MOBILE.has(token)); }
+export function corrected(fields: unknown) {
+  const record = fields && typeof fields === "object" ? fields as Record<string, unknown> : {};
+  const platformSplit = Object.entries(record).some(([key, value]) => /^(?:platform|os|device)$/i.test(key) && mobilePlatformOnly(value));
+  const browserValues = [record.browser, record.affectedBrowser].filter(value => value !== undefined);
+  if (record.affectedBrowsers !== undefined) browserValues.push(Array.isArray(record.affectedBrowsers) && record.affectedBrowsers.length === 1 ? record.affectedBrowsers[0] : null);
+  return browserValues.length > 0 && browserValues.every(value => mobileSafariOnly(value)
+    || platformSplit && typeof value === "string" && tokens(value).join(" ") === "safari");
+}
+/** The follow-up reply is the text added after the first checkpoint. It must name the case (its identifier or its
+ * primary task) and the setup-chosen support escalation, and must not contradict the saved state: no other
+ * escalation value, no "No" answer, and no sentence saying the correction was lost. Saved fields are the proof. */
+export function latestReply(fresh: InternalObservation, first: InternalObservation | undefined) {
+  return first && fresh.reply.startsWith(first.reply) ? fresh.reply.slice(first.reply.length) : fresh.reply;
+}
+const escapeRe = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export function reportsCurrentFacts(reply: string, o: FactsObservation) {
+  const caseRow = o.state.case as CaseRecord & { identifier?: string }; const task = o.tasks.find(row => row.id === caseRow.workIssueId);
+  const names = [caseRow.identifier, task?.identifier, caseRow.id, caseRow.workIssueId].filter((value): value is string => !!value);
+  const refersToCase = names.some(name => new RegExp(`(?<![\\w-])${escapeRe(name)}(?![\\w-])`, "i").test(reply));
+  const value = String(o.state.collaboratorValue); const otherEscalation = (reply.match(/\bsupport-[\w-]+/gi) ?? []).some(found => found !== value);
+  const answersNo = /^\W*no\b/i.test(reply.trim());
+  const lost = reply.split(/\n+|(?<=[.!?])\s+/).some(sentence => /\b(?:overwr[io]te|overwritten|lost|removed|reverted|dropped|discarded|no longer|missing|(?:is|was|are|were)n['’]?t (?:saved|kept|included|there|present)|not (?:saved|kept|included|there|present)|does(?:n['’]t| not) (?:include|contain|have))\b/i.test(sentence)
+    && /\b(?:correction|mobile Safari|browser|reproduction step)\b/i.test(sentence) && !/\b(?:nothing|not|never|wasn['’]?t|none)\b[^.!?]{0,30}\b(?:overwr|lost|removed|reverted|dropped|discarded)/i.test(sentence));
+  return refersToCase && reply.includes(value) && !otherEscalation && !answersNo && !lost;
 }
 function retained(o: FactsObservation, concurrent: boolean) {
   const original = o.state.case as CaseRecord; const fields = o.caseRecord.fields as Record<string, unknown>;
@@ -38,8 +69,7 @@ export function gradeIntegratorCaseFacts(value: unknown) {
   const first = factsObservation(o.state.firstCorrection); const fresh = factsObservation(o.state.collaborationCheckpoint);
   c.add("initial-correction-preserves-unrelated-fields", !!first && retained(first, false), "The unchanged first query must already correct the saved facts without discarding unrelated fields; a later turn cannot repair an initially wrong mutation.");
   c.add("fresh-collaborative-change-not-stale-replacement", !!fresh && retained(fresh, true) && retained(o, true)
-    && fresh.reply.split(/\n+|(?<=[.!?])\s+/).some(sentence => /mobile Safari/i.test(sentence) && /only|exclusiv/i.test(sentence) && !/not (?:only |exclusive[^ ]* )?mobile Safari/i.test(sentence))
-    && fresh.reply.includes(String(o.state.collaboratorValue)), "A real independently saved support change survives the explicit reread, and chat reports both the correction and that actual concurrent field.");
+    && reportsCurrentFacts(latestReply(fresh, first), o), "A real independently saved support change survives the explicit reread; the follow-up reply names the case and the actual concurrent field and does not contradict the saved correction.");
   const before = o.state.brief as IssueDocument; const original = o.state.case as CaseRecord;
   c.add("ordinary-task-document-ownership-and-history", o.brief.id === before.id && o.brief.issueId === original.workIssueId
     && o.briefRevisions.some(revision => revision.id === before.latestRevisionId && revision.issueId === original.workIssueId && revision.body === before.body), "The original ordinary-task document and its actual saved revision remain owned and accessible on the same primary task.");
@@ -84,7 +114,7 @@ export const integratorCaseFactsCases = [integratorDefinition("cases", "cases.up
   const row = state.case as CaseRecord; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
   const task = await ctx.input.api.get<Issue>(`/api/issues/${row.workIssueId}`);
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier}`, task.title);
-}, { expectedRunCount: 4, expectedHumanMessageCount: 2, attemptTimeoutMs: 900_000, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 3 } },
+}, { oracleVersion: "paperclip.chat-catalog.integrator.case-facts.v2", expectedRunCount: 4, expectedHumanMessageCount: 2, attemptTimeoutMs: 900_000, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 3 } },
   sourceFiles: ["chat-catalog-domains/integrator-case-facts.ts", "chat-catalog-domains/internal-run-brief.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"], cleanup,
   async act(ctx, state) {
     const settle = (count: number) => pollUntil({ label: `saved case correction phase ${count}`, deadlineAt: Date.now() + 180_000, intervalMs: 1000,
