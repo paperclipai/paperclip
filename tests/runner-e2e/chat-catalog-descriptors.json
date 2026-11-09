@@ -4780,9 +4780,10 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-catalog-domains/runtime-runs-adapters.ts",
       "chat-scenarios/runs-adapters.yaml",
-      "chat-catalog-domains/model-option-catalog.ts"
+      "chat-catalog-domains/model-option-catalog.ts",
+      "run-observations.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.model-options.scoped-catalog.v4",
+    "oracleVersion": "paperclip.chat-catalog.model-options.scoped-catalog.v5",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,

@@ -1,10 +1,10 @@
-import { modelDiscoveryEndpoint } from "./runtime-runs-adapters.js";
+import { countModelDiscoveryReads, modelDiscoveryEndpoint } from "./runtime-runs-adapters.js";
 import { it, expect } from "vitest";
 import { gradeModelOptions } from "./runtime-runs-adapters.js";
 function valid() {
   const worker = { id: "morgan", companyId: "company", adapterType: "paperclip_runner", adapterConfig: { model: "gpt-5.6-sol" }, permissions: {} };
   return { scenarioId: "runs-adapters.list-model-options", companyId: "company", leadId: "ceo", state: { worker,
-    admittedModels: [{ id: "gpt-5.6-sol", label: "GPT 5.6 Sol" }], discoveryStatus: 200, agentRuntimeInventoryStatus: 403, secretScanComplete: true, secretLeaked: false },
+    admittedModels: [{ id: "gpt-5.6-sol", label: "GPT 5.6 Sol" }], discoveryStatus: 200, agentDiscoveryReads: 1, agentRuntimeInventoryStatus: 403, secretScanComplete: true, secretLeaked: false },
     agents: [structuredClone(worker)], tasks: [], links: [], activity: [], runs: [], humanQueries: [],
     reply: "The current catalog includes gpt-5.6-sol. Available models still depend on the selected configured account binding and environment qualification." };
 }
@@ -12,6 +12,13 @@ it("accepts an actual admitted option with account qualification distinguished",
 it("accepts natural qualified model-option guidance", () => { const o = valid(); o.reply = "gpt-5.6-sol appears among the model options. Whether you can use it depends on the account connection selected for this runtime and its qualification."; expect(gradeModelOptions(o).passed).toBe(true); });
 it("accepts a reworded answer without account keywords", () => { const o = valid(); o.reply = "Morgan can pick gpt-5.6-sol; whether it runs is down to the key Morgan is set up with."; expect(gradeModelOptions(o).passed).toBe(true); });
 it("rejects an answer that names no discovered option", () => { const o = valid(); o.reply = "Morgan can use the usual models."; expect(gradeModelOptions(o).passed).toBe(false); });
+it("rejects an answer whose run never read model discovery", () => { const o = valid(); (o.state as Record<string, unknown>).agentDiscoveryReads = 0; expect(gradeModelOptions(o).passed).toBe(false); });
+it("counts only successful model discovery results from the answering runs", () => {
+  const ev = (runId: string, result: Record<string, unknown>, eventType = "item.completed") => ({ eventType, payload: { prpEvent: { runId, payload: { item: { type: "tool_result", result } } } } });
+  const ok = { ok: true, status: 200, apiOperationId: "GET /api/companies/{companyId}/adapters/{type}/models" };
+  expect(countModelDiscoveryReads([ev("run", ok), ev("run", { ...ok, ok: false, status: 403 }), ev("other", ok), ev("run", ok, "item.started"),
+    ev("run", { ...ok, apiOperationId: "GET /api/companies/{companyId}/ai-connections" })], ["run"])).toBe(1);
+});
 it("rejects missing discovery evidence", () => expect(gradeModelOptions(undefined).passed).toBe(false));
 it("rejects an invented vendor model presented alongside a real option", () => {
   const o = valid(); o.reply += " You can also use gpt-99-ultra."; expect(gradeModelOptions(o).passed).toBe(false);
