@@ -982,7 +982,11 @@ for (const execution of executions) {
         const checks = await runChatBoundaryFlow({ journeyKind: "browser-boundary", boundaryTarget: catalogDescriptor.boundaryTarget,
           scenario, page, api, execution, nonce, credentials: { ...credentials, ...privateInputs?.credentials }, privateSecrets: secrets, privateDir, deadlineAt: startedAtMs + deadlineMs,
           capture: captureScreenshot,
-          captureFinalState: () => capturePrivateScreenshot("final-state", "final-state.png"),
+          async captureFinalState(boundaryPage) {
+            const screenshotPath = path.join(privateDir, "final-state.png");
+            await boundaryPage.screenshot({ path: screenshotPath, fullPage: true });
+            await testInfo.attach("final-state", { path: screenshotPath, contentType: "image/png" });
+          },
           evidence: async (name, value) => {
             await writeSanitizedJson(snapshotsDir, name, value, secrets);
             if (name === "chat-boundary-observation.json") boundaryObservation = value;

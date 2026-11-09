@@ -68,6 +68,7 @@ export const signInIdentityBoundaryCases: readonly IdentityBoundaryCase[] = [{
     const expiredComposerAbsent = await page.getByTestId("task-chat-composer-input").count() === 0;
     await person.signInThroughBrowser(page, intendedReturnPath); person.bindApiSession(api);
     await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+    await ctx.captureFinalState(page);
     const returned = await api.get<{ user: { id: string } }>("/api/auth/get-session");
     const same = await api.get<{ id: string }>(`${root}/chats/${fixtures.agent.id}`);
     const other = await createAuthenticatedPerson({ api, browser, secrets: ctx.privateSecrets, name: "Unenrolled Riley" }); resources.other = other;

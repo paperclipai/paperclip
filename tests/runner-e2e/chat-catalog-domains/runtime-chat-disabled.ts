@@ -96,6 +96,7 @@ export const runtimeDisabledChatCases: readonly IdentityBoundaryCase[] = [{
     await expect(page).toHaveURL(url => /\/chats\/[^/]+$/.test(url.pathname));
     await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
     const chatAlternativePath = new URL(page.url()).pathname;
+    await ctx.captureFinalState(page);
     const key = await api.postSensitive<{ id: string; token: string }>(`/api/agents/${fixtures.agent.id}/keys`, { name: "conference-off-permission-probe" });
     ctx.privateSecrets.push(key.token); resource.keyId = key.id;
     const denied = await fetch(new URL("/api/instance/settings/experimental", api.baseURL), { method: "PATCH", redirect: "error", signal: AbortSignal.timeout(15_000),
