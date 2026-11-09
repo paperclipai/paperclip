@@ -4514,6 +4514,52 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("names the existing order in a blocking-cycle denial and keeps it", async () => {
+    const companyId = randomUUID();
+    await seedIssueCompany(db, companyId);
+
+    const website = randomUUID();
+    const design = randomUUID();
+    const copy = randomUUID();
+    await db.insert(issues).values([
+      { id: website, companyId, identifier: "COM-1", title: "Website", status: "backlog", priority: "medium" },
+      { id: design, companyId, identifier: "COM-2", title: "Design", status: "backlog", priority: "medium" },
+      { id: copy, companyId, identifier: "COM-3", title: "Copy", status: "backlog", priority: "medium" },
+    ]);
+    await svc.update(design, { blockedByIssueIds: [website] });
+
+    const direct = await svc
+      .update(website, { blockedByIssueIds: [design] })
+      .catch((error: unknown) => error);
+    expect(direct).toMatchObject({
+      status: 422,
+      message:
+        "Blocking relations cannot contain cycles: COM-2 (Design) waits for COM-1 (Website), so COM-1 (Website) cannot also wait for COM-2 (Design). " +
+        "No dependencies were changed and the existing ones are kept. " +
+        "Do not remove or reverse an existing dependency to make this fit; ask whoever requested the change which order they want and change dependencies only after they choose.",
+      details: {
+        code: "blocking_cycle",
+        issueId: website,
+        requestedBlockerIssueId: design,
+        existingChain: [
+          { id: website, identifier: "COM-1", title: "Website" },
+          { id: design, identifier: "COM-2", title: "Design" },
+        ],
+      },
+    });
+
+    await svc.update(copy, { blockedByIssueIds: [design] });
+    const transitive = await svc
+      .update(website, { blockedByIssueIds: [copy] })
+      .catch((error: unknown) => error);
+    expect((transitive as Error).message).toContain(
+      "COM-2 (Design) waits for COM-1 (Website), and COM-3 (Copy) waits for COM-2 (Design), so COM-1 (Website) cannot also wait for COM-3 (Copy).",
+    );
+
+    expect((await svc.getRelationSummaries(design)).blockedBy.map((relation) => relation.id)).toEqual([website]);
+    expect((await svc.getRelationSummaries(website)).blockedBy).toEqual([]);
+  });
+
   it("only returns dependents once every blocker is done", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
