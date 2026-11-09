@@ -9533,11 +9533,10 @@ export async function executePaperclipNativeSession(input: {
       }
       return preparedInput;
     };
+    const stageAttachments = () => createRunPreparationTiming(runId, "native.controller")("attachment_staging", prepareAttachments);
     return needsWarmRetirement
-      ? await executePaperclipNativeSessionWithinScope(input, prepareAttachments, false, ownDiagnosticLease)
-      : await executePaperclipNativeSessionWithinScope(
-        await createRunPreparationTiming(runId, "native.controller")("attachment_staging", prepareAttachments),
-        undefined, false, ownDiagnosticLease);
+      ? await executePaperclipNativeSessionWithinScope(input, stageAttachments, false, ownDiagnosticLease)
+      : await executePaperclipNativeSessionWithinScope(await stageAttachments(), undefined, false, ownDiagnosticLease);
   } catch (error) {
     executionFailure = error;
     if (error instanceof NativeControllerRecoveryWaitingError) {
