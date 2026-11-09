@@ -35,6 +35,8 @@
       "../../maps/agent-access-map/access.md",
       "../../server/src/routes/access.ts",
       "../../server/src/routes/agent-permission-grants.ts",
+      "../../server/src/routes/openapi.ts",
+      "../../ui/src/App.tsx",
       "../../server/src/routes/agents.ts",
       "../../packages/shared/src/validators/agent.ts"
     ],
@@ -60,13 +62,12 @@
       "../../maps/agent-access-map/access.md",
       "../../server/src/routes/access.ts",
       "../../server/src/routes/agent-permission-grants.ts",
+      "../../server/src/routes/openapi.ts",
+      "../../ui/src/App.tsx",
       "../../server/src/routes/agents.ts",
       "../../packages/shared/src/validators/agent.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.access-grant.v2",
-    "coverageGaps": [
-      "No project-management permission key exists, and company member permission edits are board-only even for agents holding users:manage_permissions; the case premise needs a product decision."
-    ],
+    "oracleVersion": "paperclip.chat-catalog.identity.manage-membership.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
