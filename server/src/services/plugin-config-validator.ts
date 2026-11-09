@@ -10,13 +10,7 @@
 
 import Ajv, { type ErrorObject } from "ajv";
 import addFormats from "ajv-formats";
-import type { JsonSchema } from "@paperclipai/shared";
-import {
-  collectSecretRefPaths,
-  parseSecretRefBindingObject,
-  readConfigValueAtPath,
-  writeConfigValueAtPath,
-} from "./json-schema-secret-refs.js";
+import { envBindingSecretRefSchema, type JsonSchema } from "@paperclipai/shared";
 
 export interface ConfigValidationResult {
   valid: boolean;
@@ -28,14 +22,43 @@ export interface ConfigValidationResult {
  * plugin secrets API store the `{ type: "secret_ref", secretId, version }` binding
  * object there. Validate the binding's secret id in its place so the schema
  * checks the field without rejecting the only shape the secrets handler accepts.
+ * The walk follows object properties, array items and schema combinators, and
+ * accepts a binding only when the secrets handler's own parser accepts it.
  */
-function secretRefsAsIds(configJson: Record<string, unknown>, schema: JsonSchema) {
-  let candidate = configJson;
-  for (const path of collectSecretRefPaths(schema as Record<string, unknown>)) {
-    const binding = parseSecretRefBindingObject(readConfigValueAtPath(candidate, path));
-    if (binding) candidate = writeConfigValueAtPath(candidate, path, binding.secretId);
+function secretRefsAsIds(value: unknown, schema: unknown): unknown {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return value;
+  const node = schema as Record<string, unknown>;
+
+  if (node.format === "secret-ref") {
+    const binding = envBindingSecretRefSchema.safeParse(value);
+    if (binding.success) return binding.data.secretId;
   }
-  return candidate;
+
+  let result = value;
+  for (const keyword of ["allOf", "anyOf", "oneOf"] as const) {
+    const branches = node[keyword];
+    if (!Array.isArray(branches)) continue;
+    for (const branch of branches) result = secretRefsAsIds(result, branch);
+  }
+
+  if (Array.isArray(result)) {
+    const items = node.items;
+    if (items && typeof items === "object") {
+      const itemSchemaAt = (index: number) => (Array.isArray(items) ? items[index] : items);
+      result = result.map((item, index) => secretRefsAsIds(item, itemSchemaAt(index)));
+    }
+    return result;
+  }
+
+  const properties = node.properties;
+  if (result && typeof result === "object" && properties && typeof properties === "object") {
+    const record = { ...(result as Record<string, unknown>) };
+    for (const [key, propertySchema] of Object.entries(properties as Record<string, unknown>)) {
+      if (key in record) record[key] = secretRefsAsIds(record[key], propertySchema);
+    }
+    result = record;
+  }
+  return result;
 }
 
 /**
