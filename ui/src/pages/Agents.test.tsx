@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider, onlineManager } from "@tanstack/react
 import type { Agent, Environment, EnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
@@ -413,6 +414,92 @@ describe("Agents", () => {
     await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Clear search"]')!.click());
     expect(findAgentRow(container, "Alpha")).not.toBeNull();
     expect(mockRouterState.navigate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["streamlined", Agents],
+    ["production", ProductionAgents],
+  ] as const)("%s: combines metadata filters, keeps hidden selections, and retains org ancestors", async (_mode, AgentList) => {
+    const agents = [
+      makeAgent({ id: "manager", name: "Manager", adapterType: "process" }),
+      makeAgent({ id: "alpha", name: "Alpha", status: "idle", adapterConfig: { model: "custom-model" }, reportsTo: "manager" }),
+      makeAgent({ id: "beta", name: "Beta", status: "paused", adapterType: "claude_local", adapterConfig: { model: "other-model" } }),
+    ];
+    mockAgentsApi.list.mockResolvedValue(agents);
+    mockAgentsApi.org.mockResolvedValue([
+      { ...agents[0], reports: [{ ...agents[1], reports: [] }] }, { ...agents[2], reports: [] },
+    ]);
+    root = createRoot(container);
+    await act(async () => root!.render(<QueryClientProvider client={queryClient}><TooltipProvider><ToastProvider><AgentList /></ToastProvider></TooltipProvider></QueryClientProvider>));
+    await flushReact();
+    await flushReact();
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="List view"]')!.click());
+    await flushReact();
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Select Beta"]')!.click());
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Filter agents"]')!.click());
+    const select = async (field: string, value: string) => {
+      const control = document.querySelector<HTMLSelectElement>(`select[aria-label="${field}"]`)!;
+      expect(control).not.toBeNull();
+      await act(() => { control.value = value; control.dispatchEvent(new Event("change", { bubbles: true })); });
+    };
+    await select("Model", "model:custom-model");
+    await select("Status", "idle");
+    await select("Harness", "codex_local");
+    await select("Connection", "local");
+    expect(container.querySelector("tbody")?.textContent).toContain("Alpha");
+    expect(container.querySelector("tbody")?.textContent).not.toContain("Beta");
+    expect(container.querySelector("tbody")?.textContent).not.toContain("Manager");
+    expect(document.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("1 hidden by filters");
+    expect(container.querySelector('[aria-label="Filter agents"]')?.textContent).toBe("4");
+    expect(container.querySelector('[aria-label="Agent filters"]')?.textContent).toContain("1 agent");
+    await act(() => { queryClient.setQueryData(queryKeys.agents.list("company-1"), agents.map(agent => agent.id === "alpha" ? { ...agent, adapterConfig: { model: "new-model" } } : agent)); });
+    await flushReact();
+    expect(document.querySelector<HTMLSelectElement>('select[aria-label="Model"]')?.selectedOptions[0].textContent).toBe("Previously selected model");
+    expect(container.textContent).toContain("No agents match these filters.");
+    await act(() => { queryClient.setQueryData(queryKeys.agents.list("company-1"), agents); });
+    await flushReact();
+    await select("Connection", "external");
+    expect(container.textContent).toContain("No agents match these filters.");
+    await select("Connection", "local");
+    // Close the nonmodal popover before switching views.
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Filter agents"]')!.click());
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Org chart view"]')!.click());
+    await flushReact();
+    await flushReact();
+    expect(container.textContent).toContain("Alpha");
+    expect(container.textContent).toContain("Manager");
+    expect(container.textContent).not.toContain("Beta");
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Filter agents"]')!.click());
+    await select("Status", "paused");
+    expect(container.textContent).toContain("No agents match");
+    const clear = [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Clear filters")!;
+    await act(() => clear.click());
+    expect(container.textContent).toContain("Beta");
+    expect(container.querySelector('[aria-label="Filter agents"]')?.textContent).toBe("");
+  });
+
+  it("intersects metadata filters with search and keeps search when filters are cleared", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "alpha", name: "Alpha", status: "idle" }),
+      makeAgent({ id: "beta", name: "Beta", status: "paused" }),
+    ]);
+    root = createRoot(container);
+    await act(async () => renderAgentsView(root, queryClient));
+    await flushReact();
+    await flushReact();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Search agents"]')!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "beta");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Filter agents"]')!.click());
+    const status = document.querySelector<HTMLSelectElement>('select[aria-label="Status"]')!;
+    await act(() => { status.value = "idle"; status.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(container.textContent).toContain("No agents match these filters.");
+    await act(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Clear filters")!.click());
+    expect(input.value).toBe("beta");
+    expect(container.querySelector("tbody")?.textContent).toContain("Beta");
+    expect(container.querySelector("tbody")?.textContent).not.toContain("Alpha");
   });
 
   it.each([
