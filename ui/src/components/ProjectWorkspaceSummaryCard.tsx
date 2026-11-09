@@ -1,4 +1,5 @@
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CopyText } from "./CopyText";
@@ -10,8 +11,8 @@ import { timeAgo } from "../lib/timeAgo";
 import { Copy, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
-function workspaceKindLabel(kind: ProjectWorkspaceSummary["kind"]) {
-  return kind === "execution_workspace" ? "Execution workspace" : "Project workspace";
+function workspaceKindLabel(kind: ProjectWorkspaceSummary["kind"], t: (key: string) => string) {
+  return kind === "execution_workspace" ? t("workspaces.card.kindExecution") : t("workspaces.card.kindProject");
 }
 
 function truncatePath(path: string) {
@@ -46,6 +47,7 @@ export function ProjectWorkspaceSummaryCard({
   onRuntimeAction,
   onCloseWorkspace,
 }: ProjectWorkspaceSummaryCardProps) {
+  const { t } = useTranslation();
   const { hideHostPaths } = useManagedSandboxOnly();
   const visibleIssues = summary.issues.slice(0, 4);
   const hiddenIssueCount = Math.max(summary.linkedIssueCount - visibleIssues.length, 0);
@@ -63,10 +65,10 @@ export function ProjectWorkspaceSummaryCard({
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="border-border bg-background px-2.5 py-1 text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                {workspaceKindLabel(summary.kind)}
+                {workspaceKindLabel(summary.kind, t)}
               </Badge>
               <Badge variant="outline" className="border-border/70 bg-background px-2.5 py-1 text-muted-foreground">
-                Updated {timeAgo(summary.lastUpdatedAt)}
+                {t("workspaces.card.updated", { time: timeAgo(summary.lastUpdatedAt) })}
               </Badge>
               {summary.serviceCount > 0 ? (
                 <Badge variant="outline"
@@ -83,7 +85,7 @@ export function ProjectWorkspaceSummaryCard({
                       hasRunningServices ? "bg-emerald-500" : "bg-muted-foreground/40",
                     )}
                   />
-                  {summary.runningServiceCount}/{summary.serviceCount} services
+                  {t("workspaces.card.servicesCount", { running: summary.runningServiceCount, total: summary.serviceCount })}
                 </Badge>
               ) : null}
               {summary.executionWorkspaceStatus ? (
@@ -152,7 +154,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Branch</div>
+                  <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("projects.ProjectWorkspaceSummaryCard.branch")}</div>
                   <div className="flex items-start gap-2">
                     <CopyText
                       text={summary.branchName}
@@ -184,7 +186,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <FolderOpen className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Path</div>
+                  <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("projects.ProjectWorkspaceSummaryCard.path")}</div>
                   <div className="flex items-start gap-2">
                     <CopyText
                       text={summary.cwd}
@@ -212,7 +214,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0">
-                  <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Service</div>
+                  <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("projects.ProjectWorkspaceSummaryCard.service")}</div>
                   <a
                     href={summary.primaryServiceUrl}
                     target="_blank"
@@ -235,7 +237,7 @@ export function ProjectWorkspaceSummaryCard({
         {summary.issues.length > 0 ? (
           <div className="space-y-2">
             <div className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-              Linked tasks
+              {t("projects.ProjectWorkspaceSummaryCard.linkedTasks")}
             </div>
             <div className="flex flex-wrap gap-2">
               {visibleIssues.map((issue) => (

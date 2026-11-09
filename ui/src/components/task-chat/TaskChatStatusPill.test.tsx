@@ -113,7 +113,7 @@ describe("TaskChatStatusPill whimsy", () => {
       vi.advanceTimersByTime(1200);
     });
     expect(container.textContent).toContain("1.2s");
-    expect(container.textContent).toContain("18,240/200,000 ctx");
+    expect(container.textContent).toContain(`${(18240).toLocaleString()}/${(200000).toLocaleString()} ctx`);
   });
 
   it("permanently reserves the interstitial row while live so layout never jumps (round 9)", () => {
@@ -150,7 +150,7 @@ describe("TaskChatStatusPill whimsy", () => {
     expect(row?.contains(line)).toBe(true);
     expect(container.textContent).not.toContain("Responding…");
     expect(container.textContent).toContain("1.2s");
-    expect(container.textContent).toContain("18,240/200,000 ctx");
+    expect(container.textContent).toContain(`${(18240).toLocaleString()}/${(200000).toLocaleString()} ctx`);
     expect(container.querySelector(".animate-pulse")).not.toBeNull();
     // Viewport + transition classes: 1lh clip outside, transform-only inner.
     expect(line?.className).toContain("tc-line-scroll");

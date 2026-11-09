@@ -15,10 +15,12 @@ import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { Badge } from "@/components/ui/badge";
+import { useTranslation } from "@/i18n";
 
 type StatusFilter = "pending" | "all";
 
 export function Approvals() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -29,8 +31,8 @@ export function Approvals() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Approvals" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("approvals.breadcrumb") }]);
+  }, [setBreadcrumbs, t]);
 
   const approvalsQuery = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
@@ -54,7 +56,7 @@ export function Approvals() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(describeError(err, { action: "approve this request" }).body);
+      setActionError(describeError(err, { action: t("errorActions.approveThisRequest") }).body);
     },
   });
 
@@ -65,7 +67,7 @@ export function Approvals() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(describeError(err, { action: "reject this request" }).body);
+      setActionError(describeError(err, { action: t("errorActions.rejectThisRequest") }).body);
     },
   });
 
@@ -80,7 +82,7 @@ export function Approvals() {
   ).length;
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
+    return <p className="text-sm text-muted-foreground">{t("approvals.selectCompany")}</p>;
   }
 
   // Keep loaded approvals on screen through a failed refetch; only a real
@@ -93,7 +95,7 @@ export function Approvals() {
       <QueryErrorState
         size="page"
         error={approvalsView.error}
-        action="load approvals"
+        action={t("errorActions.loadApprovals")}
         onRetry={approvalsView.retry}
         retrying={approvalsView.isFetching}
       />
@@ -105,7 +107,7 @@ export function Approvals() {
       <div className="flex items-center justify-between">
         <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
           <PageTabBar items={[
-            { value: "pending", label: <>Pending{pendingCount > 0 && (
+            { value: "pending", label: <>{t("approvals.tabs.pending")}{pendingCount > 0 && (
               <Badge variant="ghost" className={cn(
                 "ml-1.5 px-1.5 text-(length:--text-nano)",
                 "bg-yellow-500/20 text-yellow-500"
@@ -113,7 +115,7 @@ export function Approvals() {
                 {pendingCount}
               </Badge>
             )}</> },
-            { value: "all", label: "All" },
+            { value: "all", label: t("approvals.tabs.all") },
           ]} />
         </Tabs>
       </div>
@@ -124,7 +126,7 @@ export function Approvals() {
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <ShieldCheck className="h-8 w-8 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">
-            {statusFilter === "pending" ? "No pending approvals." : "No approvals yet."}
+            {statusFilter === "pending" ? t("approvals.emptyPending") : t("approvals.emptyAll")}
           </p>
         </div>
       )}

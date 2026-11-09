@@ -6,6 +6,7 @@ import {
   type MentionOption,
 } from "@/components/MarkdownEditor";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 
 interface TaskChatRichInputProps {
   value: string;
@@ -37,10 +38,11 @@ export function TaskChatRichInput({
   onUploadingChange,
   ariaLabelledBy,
   testId = "task-chat-rich-input",
-  attachAriaLabel = "Attach image",
+  attachAriaLabel,
   showImageAttachControls = false,
   questionAnswer = false,
 }: TaskChatRichInputProps) {
+  const { t } = useTranslation();
   const editorRef = useRef<MarkdownEditorRef>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadCountRef = useRef(0);
@@ -69,7 +71,7 @@ export function TaskChatRichInput({
       setUploadError(
         error instanceof Error
           ? error.message
-          : "The image could not be uploaded.",
+          : t("issues.TaskChatRichInput.uploadFailed"),
       );
       throw error;
     } finally {
@@ -116,7 +118,7 @@ export function TaskChatRichInput({
             type="file"
             accept="image/*"
             className="hidden"
-            aria-label={attachAriaLabel}
+            aria-label={attachAriaLabel ?? t("issues.TaskChatRichInput.attachImage")}
             onChange={(event) => {
               void chooseImage(event.target.files?.[0] ?? null);
               event.target.value = "";
@@ -135,9 +137,9 @@ export function TaskChatRichInput({
             ) : (
               <ImagePlus aria-hidden className="h-3.5 w-3.5" />
             )}
-            Attach image
+            {t("issues.TaskChatRichInput.attachImage")}
           </Button>
-          <span>or drop/paste an image into the note</span>
+          <span>{t("issues.TaskChatRichInput.dropOrPasteHint")}</span>
         </div>
       ) : null}
       {uploadError ? (

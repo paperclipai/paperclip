@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Network, Monitor } from "lucide-react";
@@ -31,41 +32,49 @@ const providers = [
   {
     id: "openai",
     name: "OpenAI",
-    description: "ChatGPT subscription or API key",
   },
   {
     id: "anthropic",
     name: "Anthropic",
-    description: "Claude subscription or API key",
   },
-  { id: "google", name: "Google", description: "Antigravity sign-in or Gemini API key" },
-  { id: "xai", name: "xAI", description: "Grok subscription or API key" },
+  { id: "google", name: "Google" },
+  { id: "xai", name: "xAI" },
   {
     id: "openrouter",
     name: "OpenRouter",
-    description: "Models through one API key",
     advanced: true,
   },
   {
     id: "bedrock",
     name: "Amazon Bedrock",
-    description: "Bedrock API key and AWS region",
     advanced: true,
   },
   {
     id: "gateway",
     name: "Custom gateway",
-    description: "Emissary or another compatible endpoint",
     advanced: true,
   },
   {
     id: "local",
     name: "Local endpoint",
-    description: "A model server in the agent’s environment",
     advanced: true,
   },
 ] as const;
 type ProviderChoice = (typeof providers)[number]["id"] | "github";
+
+function providerDescription(id: string) {
+  switch (id) {
+    case "openai": return t("agents.AiProviderSetup.providerDescription.openai");
+    case "anthropic": return t("agents.AiProviderSetup.providerDescription.anthropic");
+    case "google": return t("agents.AiProviderSetup.providerDescription.google");
+    case "xai": return t("agents.AiProviderSetup.providerDescription.xai");
+    case "openrouter": return t("agents.AiProviderSetup.providerDescription.openrouter");
+    case "bedrock": return t("agents.AiProviderSetup.providerDescription.bedrock");
+    case "gateway": return t("agents.AiProviderSetup.providerDescription.gateway");
+    case "local": return t("agents.AiProviderSetup.providerDescription.local");
+    default: return "";
+  }
+}
 
 export function AiProviderSetup({
   companyId,
@@ -94,6 +103,7 @@ export function AiProviderSetup({
     binding: Exclude<AiConnectionBinding, { mode: "responsible_user" }>,
   ) => void;
 }) {
+  const { t } = useTranslation();
   const [provider, setProvider] = useState<ProviderChoice | undefined>(
     reconnect
       ? reconnect.routing?.kind === "gateway" ||
@@ -137,7 +147,7 @@ export function AiProviderSetup({
     queryFn: () => agentsApi.list(companyId),
   });
   const agentsView = useQueryView(agents);
-  const label = providerLabel ?? providers.find((p) => p.id === provider)?.name ?? (provider === "github" ? "GitHub Copilot" : "provider");
+  const label = providerLabel ?? providers.find((p) => p.id === provider)?.name ?? (provider === "github" ? "GitHub Copilot" : t("agents.AiProviderSetup.providerFallback"));
   const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "bedrock", "gateway", "local"].includes(provider ?? "");
   const nativeProvider: AiProvider =
     provider === "bedrock"
@@ -219,6 +229,7 @@ export function AiProviderSetup({
         .filter((p) => Boolean("advanced" in p && p.advanced) === advancedOnly)
         .map((p) => ({
           ...p,
+          description: providerDescription(p.id),
           icon:
             p.id === "gateway" || p.id === "local" ? (
               <span className="flex size-9 items-center justify-center rounded-lg bg-muted">
@@ -243,16 +254,15 @@ export function AiProviderSetup({
   );
   const modelSettings = (
     <label className="block space-y-2 text-xs text-muted-foreground">
-      Model IDs (comma separated)
+      {t("agents.AiProviderSetup.modelIds")}
       <Input
-        aria-label="Model IDs"
+        aria-label={t("agents.AiProviderSetup.modelIdsAria")}
         value={models}
         onChange={(e) => setModels(e.target.value)}
         disabled={Boolean(reconnect)}
       />
       <span className="block">
-        Use the provider’s model ID or your gateway’s alias. You can
-        also enter one on the agent.
+        {t("agents.AiProviderSetup.modelIdsHint")}
       </span>
     </label>
   );
@@ -272,35 +282,35 @@ export function AiProviderSetup({
       installAgentIds={agentIds}
       setInstallAgentIds={setAgentIds}
       disabled={save.isPending}
-      notice={!canManageConnections ? ["Only a connection manager can share this credential with everyone or give every agent access."] : undefined}
+      notice={!canManageConnections ? [t("agents.AiProviderSetup.onlyManagersShare")] : undefined}
     />
   ) : undefined;
   const cancel = () => reconnect || initialProvider ? onCancel() : setStep("provider");
-  if (!reconnect && (accounts.isPending || accountsView.kind === "reconnecting")) return <p role="status">Loading connection permissions…</p>;
-  if (!reconnect && accountsView.kind === "error") return <QueryErrorState error={accounts.error} action="load connection permissions" onRetry={accountsView.retry} retrying={accountsView.isFetching} />;
+  if (!reconnect && (accounts.isPending || accountsView.kind === "reconnecting")) return <p role="status">{t("agents.AiProviderSetup.loadingPermissions")}</p>;
+  if (!reconnect && accountsView.kind === "error") return <QueryErrorState error={accounts.error} action={t("errorActions.loadConnectionPermissions")} onRetry={accountsView.retry} retrying={accountsView.isFetching} />;
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6" onSubmit={(event) => event.stopPropagation()}>
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">
           {step === "provider"
-            ? "Connect a model provider"
-            : `${reconnect ? "Reconnect" : "Connect"} ${label}`}
+            ? t("agents.AiProviderSetup.connectProviderTitle")
+            : reconnect ? t("agents.AiProviderSetup.reconnectTitle", { label }) : t("agents.AiProviderSetup.connectTitle", { label })}
         </h2>
       </div>
-      {agentsView.kind === "error" && <QueryErrorState size="inline" error={agents.error} action="load agents" onRetry={agentsView.retry} retrying={agentsView.isFetching} />}
+      {agentsView.kind === "error" && <QueryErrorState size="inline" error={agents.error} action={t("errorActions.loadAgents")} onRetry={agentsView.retry} retrying={agentsView.isFetching} />}
       {step === "provider" ? (
         <>
           {advancedOnly ? choices(true) : <>
           {choices(false)}
           <details>
             <summary className="cursor-pointer text-sm text-muted-foreground">
-              Advanced providers
+              {t("agents.AiProviderSetup.advancedProviders")}
             </summary>
             <div className="pt-4">{choices(true)}</div>
           </details>
           </>}
           <Button type="button" variant="ghost" onClick={onCancel}>
-            Cancel
+            {t("agents.AiProviderSetup.cancel")}
           </Button>
         </>
       ) : !advanced ? (
@@ -332,9 +342,9 @@ export function AiProviderSetup({
           {(provider === "gateway" || provider === "local") && (
             <>
               <label className="block space-y-2 text-xs text-muted-foreground">
-                Provider URL
+                {t("agents.AiProviderSetup.providerUrl")}
                 <Input
-                  aria-label="Provider URL"
+                  aria-label={t("agents.AiProviderSetup.providerUrl")}
                   placeholder={
                     provider === "local"
                       ? "http://localhost:11434/v1"
@@ -346,7 +356,7 @@ export function AiProviderSetup({
                 />
               </label>
               <label className="block space-y-2 text-xs text-muted-foreground">
-                API format
+                {t("agents.AiProviderSetup.apiFormat")}
                 <Select
                   value={protocol}
                   onValueChange={(v) => {
@@ -356,7 +366,7 @@ export function AiProviderSetup({
                   }}
                   disabled={Boolean(reconnect) || Boolean(initialProtocol)}
                 >
-                  <SelectTrigger aria-label="API format" className="w-full">
+                  <SelectTrigger aria-label={t("agents.AiProviderSetup.apiFormat")} className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -376,9 +386,9 @@ export function AiProviderSetup({
           )}
           {provider === "bedrock" && (
             <label className="block space-y-2 text-xs text-muted-foreground">
-              AWS region
+              {t("agents.AiProviderSetup.awsRegion")}
               <Input
-                aria-label="AWS region"
+                aria-label={t("agents.AiProviderSetup.awsRegion")}
                 value={region}
                 onChange={(e) => setRegion(e.target.value)}
                 disabled={Boolean(reconnect)}
@@ -387,29 +397,29 @@ export function AiProviderSetup({
           )}
           {provider !== "openrouter" && (
             <label className="block space-y-2 text-xs text-muted-foreground">
-              Authentication
+              {t("agents.AiProviderSetup.authentication")}
               <Select
                 value={auth}
                 onValueChange={(v) => setAuth(v as typeof auth)}
                 disabled={Boolean(reconnect)}
               >
-                <SelectTrigger aria-label="Authentication" className="w-full">
+                <SelectTrigger aria-label={t("agents.AiProviderSetup.authentication")} className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="bearer">
                     {provider === "bedrock"
-                      ? "Bedrock API key"
-                      : "Bearer token"}
+                      ? t("agents.AiProviderSetup.bedrockApiKey")
+                      : t("agents.AiProviderSetup.bearerToken")}
                   </SelectItem>
                   {provider !== "bedrock" && (
                     <>
                       {protocol === "messages" && (
                         <SelectItem value="api_key">
-                          API key · x-api-key
+                          {t("agents.AiProviderSetup.apiKeyXApiKey")}
                         </SelectItem>
                       )}
-                      <SelectItem value="none">No authentication</SelectItem>
+                      <SelectItem value="none">{t("agents.AiProviderSetup.noAuthentication")}</SelectItem>
                     </>
                   )}
                 </SelectContent>
@@ -419,9 +429,9 @@ export function AiProviderSetup({
           {
             auth !== "none" && (
               <label className="block space-y-2 text-xs text-muted-foreground">
-                API key
+                {t("agents.AiProviderSetup.apiKey")}
                 <Input
-                  aria-label="API key"
+                  aria-label={t("agents.AiProviderSetup.apiKey")}
                   type="password"
                   autoComplete="new-password"
                   value={apiKey}
@@ -430,15 +440,14 @@ export function AiProviderSetup({
               </label>
             )
           }
-          {reconnect && <details><summary className="cursor-pointer text-sm text-muted-foreground">Model settings</summary>{modelSettings}</details>}
+          {reconnect && <details><summary className="cursor-pointer text-sm text-muted-foreground">{t("agents.AiProviderSetup.modelSettings")}</summary>{modelSettings}</details>}
           <p className="text-xs text-muted-foreground">
-            Test the connection with your chosen model in the agent’s execution
-            environment after connecting.
+            {t("agents.AiProviderSetup.testConnection")}
           </p>
           {save.error && (
             <p role="alert" className="text-sm text-destructive">
               {save.error instanceof Error && save.error.name === "ZodError"
-                ? "Check the URL, API format, and authentication fields."
+                ? t("agents.AiProviderSetup.zodError")
                 : describeError(save.error).body}
             </p>
           )}
@@ -450,7 +459,7 @@ export function AiProviderSetup({
               onClick={cancel}
               disabled={save.isPending}
             >
-              Back
+              {t("agents.AiProviderSetup.back")}
             </Button>
             <Button
               type="submit"
@@ -461,10 +470,10 @@ export function AiProviderSetup({
               }
             >
               {save.isPending
-                ? submitLabel ? "Saving…" : "Connecting…"
+                ? submitLabel ? t("agents.AiProviderSetup.saving") : t("agents.AiProviderSetup.connecting")
                 : reconnect
-                  ? "Reconnect"
-                  : submitLabel ?? "Connect"}
+                  ? t("agents.AiProviderSetup.reconnectAction")
+                  : submitLabel ?? t("agents.AiProviderSetup.connectAction")}
             </Button>
           </div>
         </form>

@@ -1,6 +1,7 @@
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 /**
  * Shown above a composer while a send waits for the connection. The text stays
@@ -28,18 +29,20 @@ export function PendingSendNotice({
   onCancel: () => void;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const replayable = Boolean(onResendNow);
+  const nounLabel = t(`common.pendingSendNotice.nouns.${noun}`, { defaultValue: noun });
   const title = !replayable
-    ? `We couldn’t confirm whether this ${noun} was sent.`
+    ? t("common.pendingSendNotice.unconfirmedTitle", { noun: nounLabel })
     : resending
-      ? "Sending…"
+      ? t("common.pendingSendNotice.sending")
       : stalled
-        ? `Couldn’t send this ${noun} yet.`
-        : "Sending when reconnected…";
+        ? t("common.pendingSendNotice.stalledTitle", { noun: nounLabel })
+        : t("common.pendingSendNotice.waitingTitle");
   const detail = replayable
-    ? persisted ? `Your ${noun} is saved on this device.`
-      : "Browser storage is unavailable. Keep this tab open or copy your text before leaving."
-    : "It may already be in the conversation. Check it before sending again; Cancel keeps your text.";
+    ? persisted ? t("common.pendingSendNotice.savedDetail", { noun: nounLabel })
+      : t("common.pendingSendNotice.noStorageDetail")
+    : t("common.pendingSendNotice.unknownDetail");
   return (
     <div
       role="status"
@@ -55,11 +58,11 @@ export function PendingSendNotice({
       <div className="flex items-center gap-2">
         {onResendNow ? (
           <Button type="button" size="sm" variant="outline" disabled={resending} onClick={onResendNow}>
-            Resend now
+            {t("common.pendingSendNotice.resendNow")}
           </Button>
         ) : null}
         <Button type="button" size="sm" variant="ghost" disabled={resending} onClick={onCancel}>
-          Cancel
+          {t("common.pendingSendNotice.cancel")}
         </Button>
       </div>
     </div>

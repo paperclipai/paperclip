@@ -8,11 +8,13 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { NativeSelect } from "@/components/ui/select";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { AppLogo } from "@/pages/apps/AppLogo";
+import { useTranslation } from "@/i18n";
 
 export function GoogleWorkspaceServiceFields({ value, onChange }: {
   value: GoogleWorkspaceServiceSelection;
   onChange: (value: GoogleWorkspaceServiceSelection) => void;
 }) {
+  const { t } = useTranslation();
   return <div className="divide-y">
     {GOOGLE_WORKSPACE_SERVICE_GROUPS.map(group => <div key={group.id} className="flex items-center gap-3 py-3">
       <AppLogo name={group.name} brandKey={group.brandKey} size={28} />
@@ -20,10 +22,10 @@ export function GoogleWorkspaceServiceFields({ value, onChange }: {
         <label htmlFor={`workspace-service-${group.id}`} className="text-sm font-medium">{group.name}</label>
         {"description" in group && <p className="text-xs text-muted-foreground">{group.description}</p>}
       </div>
-      <NativeSelect aria-label={`${group.name} access`} disabled={!value[group.id]} value={value[group.id] ?? "write"}
+      <NativeSelect aria-label={t("apps.GoogleWorkspaceServiceFields.accessLabel", { name: group.name })} disabled={!value[group.id]} value={value[group.id] ?? "write"}
         className="w-auto shrink-0 disabled:opacity-50"
         onChange={event => onChange({ ...value, [group.id]: event.target.value as "read" | "write" })}>
-        <option value="read">Read only</option><option value="write">Read &amp; write</option>
+        <option value="read">{t("apps.GoogleWorkspaceServiceFields.readOnly")}</option><option value="write">{t("apps.GoogleWorkspaceServiceFields.readWrite")}</option>
       </NativeSelect>
       <ToggleSwitch id={`workspace-service-${group.id}`} aria-label={group.name} checked={Boolean(value[group.id])}
         onCheckedChange={checked => {
@@ -44,14 +46,15 @@ type DialogProps = {
 };
 
 export function GoogleWorkspaceServicesDialog(props: DialogProps) {
+  const { t } = useTranslation();
   const existing = props.connection ?? null;
   const oauth = props.connection?.config?.oauth as { pendingWorkspaceServiceRequests?: Record<string, { requestedScopes?: unknown; requestedAt?: string }> } | undefined;
   const pendingRequests = oauth?.pendingWorkspaceServiceRequests;
   const grants = useQuery({ queryKey: ["workspace-service-consent", existing?.id], queryFn: () => toolsApi.listConnectionGrants(existing!.id), enabled: Boolean(existing) });
   const grantsView = useQueryView(grants);
   if (existing && !grants.data) return <Dialog open onOpenChange={open => { if (!open) props.onCancel(); }}><DialogContent>
-    <DialogTitle>Connect Google Workspace</DialogTitle><DialogDescription>{(grantsView.kind === "error") ? "Could not load your saved service access. Your connection has not changed." : "Loading your saved service access…"}</DialogDescription>
-    <footer className="flex items-center justify-between gap-3"><Button variant="ghost" onClick={() => props.onCancel()}>Cancel</Button>{(grantsView.kind === "error") && <Button onClick={() => void grants.refetch()}>Try again</Button>}</footer>
+    <DialogTitle>{t("apps.GoogleWorkspaceServicesDialog.connectTitle")}</DialogTitle><DialogDescription>{(grantsView.kind === "error") ? t("apps.GoogleWorkspaceServicesDialog.loadError") : t("apps.GoogleWorkspaceServicesDialog.loading")}</DialogDescription>
+    <footer className="flex items-center justify-between gap-3"><Button variant="ghost" onClick={() => props.onCancel()}>{t("apps.GoogleWorkspaceServicesDialog.cancel")}</Button>{(grantsView.kind === "error") && <Button onClick={() => void grants.refetch()}>{t("apps.GoogleWorkspaceServicesDialog.tryAgain")}</Button>}</footer>
   </DialogContent></Dialog>;
   const grant = grants.data?.grants.find(grant => existing?.credentialPolicy === "per_user"
     ? grant.kind === "user" && grant.subjectUserId === grants.data?.currentUserId
@@ -78,19 +81,20 @@ export function GoogleWorkspaceServicesDialog(props: DialogProps) {
 }
 
 function ServicePicker({ onContinue, onCancel, initial = GOOGLE_WORKSPACE_DEFAULT_SELECTION }: DialogProps) {
+  const { t } = useTranslation();
   const [selection, setSelection] = useState(initial);
   const empty = Object.keys(selection).length === 0;
   return <Dialog open onOpenChange={open => { if (!open) onCancel(selection); }}>
     <DialogContent className="sm:max-w-3xl">
       <DialogHeader className="text-left">
-        <div className="flex items-center gap-3"><AppLogo name="Google Workspace" brandKey="google" size={40} /><DialogTitle>Connect Google Workspace</DialogTitle></div>
-        <DialogDescription className="sr-only">Choose the Google services to connect.</DialogDescription>
+        <div className="flex items-center gap-3"><AppLogo name="Google Workspace" brandKey="google" size={40} /><DialogTitle>{t("apps.ServicePicker.connectTitle")}</DialogTitle></div>
+        <DialogDescription className="sr-only">{t("apps.ServicePicker.description")}</DialogDescription>
       </DialogHeader>
       <GoogleWorkspaceServiceFields value={selection} onChange={setSelection} />
-      {empty && <p role="status" className="text-xs text-muted-foreground">Select at least one service to continue.</p>}
+      {empty && <p role="status" className="text-xs text-muted-foreground">{t("apps.ServicePicker.selectOne")}</p>}
       <footer className="flex items-center justify-between gap-3 pt-4">
-        <Button variant="ghost" onClick={() => onCancel(selection)}>Cancel</Button>
-        <Button disabled={empty} onClick={() => onContinue(selection)}>Continue</Button>
+        <Button variant="ghost" onClick={() => onCancel(selection)}>{t("apps.ServicePicker.cancel")}</Button>
+        <Button disabled={empty} onClick={() => onContinue(selection)}>{t("apps.ServicePicker.continue")}</Button>
       </footer>
     </DialogContent>
   </Dialog>;

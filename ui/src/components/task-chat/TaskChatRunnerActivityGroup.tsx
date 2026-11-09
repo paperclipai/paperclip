@@ -33,6 +33,7 @@ import { TaskChatReasoningSummary } from "./TaskChatReasoningSummary";
 import { latestReasoningHeadline } from "./reasoning-summary";
 import { toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
+import { t, useTranslation } from "@/i18n";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
 
@@ -159,7 +160,7 @@ function presentation(item: Activity, active: boolean, taskLabel?: string): Acti
     const running = active && Boolean(item.streaming);
     return {
       icon: Brain,
-      label: running ? "Thinking" : "Thought",
+      label: running ? t("issues.TaskChatRunnerActivityGroup.thinking") : t("issues.TaskChatRunnerActivityGroup.thought"),
       target:
         latestReasoningHeadline(item.lines.join("\n")) ??
         item.lines
@@ -206,7 +207,7 @@ function presentation(item: Activity, active: boolean, taskLabel?: string): Acti
     .join(" · ");
   return {
     icon: Gauge,
-    label: item.label ?? "Token usage",
+    label: item.label ?? t("issues.TaskChatRunnerActivityGroup.tokenUsage"),
     target: usage || item.detail,
     mono: false,
     running: false,
@@ -317,7 +318,7 @@ function ActivityRowContent({
               )}
               data-tool-exit-code={exitCode}
             >
-              exit {exitCode}
+              {t("issues.TaskChatRunnerActivityGroup.exitCode", { code: exitCode })}
             </span>
           ) : null}
           {durationMs != null ? (
@@ -407,6 +408,7 @@ function ActivityDetails({ item }: { item: Activity }) {
 }
 
 function ActivityDetailsBody({ item }: { item: Activity }) {
+  const { t } = useTranslation();
   if (item.kind === "thinking")
     return <TaskChatReasoningSummary text={item.lines.join("\n")} streaming={Boolean(item.streaming)} />;
   if (item.kind === "usage") return <TaskChatUsageReadout item={item} />;
@@ -428,16 +430,16 @@ function ActivityDetailsBody({ item }: { item: Activity }) {
       {item.target ? (
         <p className="break-all font-mono">{item.target}</p>
       ) : null}
-      {item.blockedReason ? <p className="text-destructive">Blocked: {item.blockedReason}</p> : null}
+      {item.blockedReason ? <p className="text-destructive">{t("issues.TaskChatRunnerActivityGroup.blockedReason", { reason: item.blockedReason })}</p> : null}
       {item.detail ? (
         <pre className="whitespace-pre-wrap break-words font-mono">
           {item.detail}
         </pre>
       ) : null}
-      {item.decision ? <p>Permission {item.decision}</p> : null}
+      {item.decision ? <p>{t("issues.ActivityDetails.permissionDecision", { decision: item.decision })}</p> : null}
       {item.diff ? (
         <p className="break-all font-mono">
-          {item.diff.path} · +{item.diff.added} −{item.diff.removed}
+          {item.diff.path} {t("issues.TaskChatRunnerActivityGroup.text")}{item.diff.added} −{item.diff.removed}
         </p>
       ) : null}
     </>
@@ -548,6 +550,7 @@ function readRunPreview(items: ToolActivity[]): string {
 }
 
 function ReadRunActivity({ items }: { items: ToolActivity[] }) {
+  const { t } = useTranslation();
   const id = `runner-reads:${items[0]!.id}`;
   const [open, setOpen] = useTaskChatExpansion(id, false);
   const listId = useId();
@@ -565,7 +568,7 @@ function ReadRunActivity({ items }: { items: ToolActivity[] }) {
             <BookOpen className="size-3.5" aria-hidden="true" />
           </span>
           <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap">
-            <span className="shrink-0 text-xs">Read {items.length} files</span>
+            <span className="shrink-0 text-xs">{t("issues.TaskChatRunnerActivityGroup.readFiles", { count: items.length })}</span>
             <span className="truncate font-mono text-xs text-muted-foreground">{readRunPreview(items)}</span>
           </span>
         </span>
@@ -590,6 +593,7 @@ export function TaskChatRunnerActivityGroup({
   item: TaskChatActivityPhaseItem;
   defaultExpanded?: boolean;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useTaskChatExpansion(
     item.id,
     defaultExpanded,
@@ -601,7 +605,7 @@ export function TaskChatRunnerActivityGroup({
   const latest = activities.at(-1);
   const summary = completedActivitySummary(activities);
   const SummaryIcon = summary.icon;
-  const countLabel = `${activities.length} ${activities.length === 1 ? "activity" : "activities"}`;
+  const countLabel = t("issues.TaskChatRunnerActivityGroup.activityCount", { count: activities.length });
   const editTotals = activities.reduce(
     (sum, activity) =>
       activity.kind === "tool" && activity.diff
@@ -636,7 +640,7 @@ export function TaskChatRunnerActivityGroup({
             onClick={() => setExpanded(!expanded)}
             aria-expanded={expanded}
             aria-controls={expanded ? historyId : undefined}
-            aria-label={`${expanded ? "Collapse" : "Expand"} ${item.active ? countLabel : `${summary.fullLabel.toLowerCase()} (${countLabel})`}`}
+            aria-label={`${expanded ? t("issues.TaskChatRunnerActivityGroup.collapse") : t("issues.TaskChatRunnerActivityGroup.expand")} ${item.active ? countLabel : `${summary.fullLabel.toLowerCase()} (${countLabel})`}`}
           >
             {!item.active ? (
               <span
@@ -679,7 +683,7 @@ export function TaskChatRunnerActivityGroup({
             <ol
               id={historyId}
               className="flex min-w-0 flex-col gap-1"
-              aria-label="Activity history"
+              aria-label={t("issues.TaskChatRunnerActivityGroup.activityHistory")}
               data-testid="task-chat-runner-activity-list"
             >
               {foldReadRuns(activities).map((row) =>

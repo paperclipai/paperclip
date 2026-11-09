@@ -1,8 +1,9 @@
 import { type ReactNode } from "react";
+import { t } from "@/i18n";
 import { ArrowUpDown, Check, Layers, ListFilter } from "lucide-react";
 import {
-  ATTENTION_GROUP_BY_OPTIONS,
-  ATTENTION_SORT_OPTIONS,
+  attentionGroupByOptions,
+  attentionSortOptions,
   buildAttentionFilterOptions,
   countActiveAttentionFilters,
   defaultAttentionFilterState,
@@ -13,17 +14,20 @@ import {
   type AttentionSortOrder,
 } from "../lib/attention";
 import { cn } from "../lib/utils";
+import { useTranslation } from "@/i18n";
 import { ToolbarSearch } from "./ToolbarSearch";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
-const SEVERITY_LABELS: Record<string, string> = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-};
+function severityLabels(): Record<string, string> {
+  return {
+    critical: t("inbox.decisionsToolbar.severity.critical"),
+    high: t("inbox.decisionsToolbar.severity.high"),
+    medium: t("inbox.decisionsToolbar.severity.medium"),
+    low: t("inbox.decisionsToolbar.severity.low"),
+  };
+}
 
 interface DecisionsToolbarProps {
   query: string;
@@ -58,10 +62,11 @@ export function DecisionsToolbar({
   sortOrder,
   onSortOrderChange,
 }: DecisionsToolbarProps) {
+  const { t } = useTranslation();
   const activeFilterCount = countActiveAttentionFilters(filters);
   return (
-    <div data-canonical-toolbar="decisions" role="toolbar" aria-label="Decisions controls" className="flex flex-wrap items-center gap-2">
-      <ToolbarSearch query={query} onQueryChange={onQueryChange} label="Search decisions" placeholder="Search decisions…" />
+    <div data-canonical-toolbar="decisions" role="toolbar" aria-label={t("inbox.decisionsToolbar.controls")} className="flex flex-wrap items-center gap-2">
+      <ToolbarSearch query={query} onQueryChange={onQueryChange} label={t("inbox.decisionsToolbar.searchLabel")} placeholder={t("inbox.decisionsToolbar.searchPlaceholder")} />
       {/* Filter */}
       <Popover>
         <PopoverTrigger asChild>
@@ -70,9 +75,9 @@ export function DecisionsToolbar({
             variant="outline"
             size="icon"
             className={cn("h-8 w-8 shrink-0", activeFilterCount > 0 && "bg-accent")}
-            title="Filter"
+            title={t("inbox.decisionsToolbar.filter")}
             data-active={activeFilterCount > 0}
-            aria-label="Filter"
+            aria-label={t("inbox.decisionsToolbar.filter")}
           >
             <ListFilter className="h-3.5 w-3.5" />
           </Button>
@@ -89,16 +94,16 @@ export function DecisionsToolbar({
             variant="outline"
             size="icon"
             className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
-            title="Group"
+            title={t("inbox.decisionsToolbar.group")}
             data-active={groupBy !== "none"}
-            aria-label="Group"
+            aria-label={t("inbox.decisionsToolbar.group")}
           >
             <Layers className="h-3.5 w-3.5" />
           </Button>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-40 p-2">
           <div className="space-y-0.5">
-            {ATTENTION_GROUP_BY_OPTIONS.map(([value, label]) => (
+            {attentionGroupByOptions().map(([value, label]) => (
               <button
                 key={value}
                 type="button"
@@ -123,15 +128,15 @@ export function DecisionsToolbar({
             variant="outline"
             size="icon"
             className="h-8 w-8 shrink-0"
-            title="Sort"
-            aria-label="Sort"
+            title={t("inbox.decisionsToolbar.sort")}
+            aria-label={t("inbox.decisionsToolbar.sort")}
           >
             <ArrowUpDown className="h-3.5 w-3.5" />
           </Button>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-44 p-2">
           <div className="space-y-0.5">
-            {ATTENTION_SORT_OPTIONS.map(([value, label]) => (
+            {attentionSortOptions().map(([value, label]) => (
               <button
                 key={value}
                 type="button"
@@ -148,7 +153,7 @@ export function DecisionsToolbar({
           </div>
         </PopoverContent>
       </Popover>
-      <span data-toolbar-count className="w-full text-xs text-muted-foreground" aria-live="polite">{visibleCount} {visibleCount === 1 ? "decision" : "decisions"}</span>
+      <span data-toolbar-count className="w-full text-xs text-muted-foreground" aria-live="polite">{t("inbox.decisionsToolbar.count", { count: visibleCount })}</span>
     </div>
   );
 }
@@ -167,25 +172,26 @@ function FilterMenu({
     const nextList = list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
     onChange({ ...filters, [key]: nextList });
   };
+  const { t } = useTranslation();
   const hasActive = countActiveAttentionFilters(filters) > 0;
 
   return (
     <div className="max-h-(--sz-70vh) overflow-y-auto">
       <div className="flex items-center justify-between px-3 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Filter</span>
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("inbox.decisionsToolbar.filter")}</span>
         {hasActive && (
           <button
             type="button"
             className="text-xs text-muted-foreground hover:text-foreground"
             onClick={() => onChange(defaultAttentionFilterState)}
           >
-            Clear
+            {t("inbox.decisionsToolbar.clear")}
           </button>
         )}
       </div>
 
       {options.sourceKinds.length > 1 && (
-        <FilterSection title="Type">
+        <FilterSection title={t("inbox.decisionsToolbar.type")}>
           {options.sourceKinds.map((kind) => (
             <FilterRow
               key={kind}
@@ -198,11 +204,11 @@ function FilterMenu({
       )}
 
       {options.severities.length > 1 && (
-        <FilterSection title="Severity">
+        <FilterSection title={t("inbox.decisionsToolbar.severityTitle")}>
           {options.severities.map((severity) => (
             <FilterRow
               key={severity}
-              label={SEVERITY_LABELS[severity] ?? severity}
+              label={severityLabels()[severity] ?? severity}
               checked={filters.severities.includes(severity)}
               onToggle={() => toggle("severities", severity)}
             />
@@ -211,7 +217,7 @@ function FilterMenu({
       )}
 
       {(options.projects.length > 0 || options.hasNoProject) && (
-        <FilterSection title="Project">
+        <FilterSection title={t("inbox.decisionsToolbar.project")}>
           {options.projects.map((project) => (
             <FilterRow
               key={project.id}
@@ -222,7 +228,7 @@ function FilterMenu({
           ))}
           {options.hasNoProject && (
             <FilterRow
-              label="No project"
+              label={t("inbox.decisionsToolbar.noProject")}
               checked={filters.projectIds.includes(NO_GROUP_SENTINEL)}
               onToggle={() => toggle("projectIds", NO_GROUP_SENTINEL)}
             />
@@ -231,7 +237,7 @@ function FilterMenu({
       )}
 
       {(options.workspaces.length > 0 || options.hasNoWorkspace) && (
-        <FilterSection title="Workspace">
+        <FilterSection title={t("inbox.decisionsToolbar.workspace")}>
           {options.workspaces.map((workspace) => (
             <FilterRow
               key={workspace.id}
@@ -242,7 +248,7 @@ function FilterMenu({
           ))}
           {options.hasNoWorkspace && (
             <FilterRow
-              label="No workspace"
+              label={t("inbox.decisionsToolbar.noWorkspace")}
               checked={filters.workspaceIds.includes(NO_GROUP_SENTINEL)}
               onToggle={() => toggle("workspaceIds", NO_GROUP_SENTINEL)}
             />

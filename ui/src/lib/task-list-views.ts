@@ -1,13 +1,16 @@
 import type { Issue } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
-export const taskListViews = [
-  { value: "inbox", label: "Mine" },
-  { value: "unread", label: "Unread" },
-  { value: "blocked", label: "Needs attention" },
-  { value: "all", label: "All tasks" },
-] as const;
+export type TaskListView = "inbox" | "unread" | "blocked" | "all";
 
-export type TaskListView = typeof taskListViews[number]["value"];
+export function taskListViews(): ReadonlyArray<{ value: TaskListView; label: string }> {
+  return [
+    { value: "inbox", label: t("issues.taskListViews.inbox") },
+    { value: "unread", label: t("issues.taskListViews.unread") },
+    { value: "blocked", label: t("issues.taskListViews.blocked") },
+    { value: "all", label: t("issues.taskListViews.all") },
+  ];
+}
 type ViewIssue = Pick<Issue, "createdByUserId" | "assigneeUserId" | "status">;
 
 /** Apply within the current company's accessible tasks; ancestors are added separately. */
@@ -36,7 +39,7 @@ function browserStorage(): ViewStorage | null {
 export function loadTaskListView(key: string, storage: ViewStorage | null = browserStorage(), defaultView: TaskListView = "all"): TaskListView {
   try {
     const value = storage?.getItem(key);
-    return taskListViews.find(option => option.value === value)?.value ?? defaultView;
+    return taskListViews().find(option => option.value === value)?.value ?? defaultView;
   } catch {
     return defaultView;
   }

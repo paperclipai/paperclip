@@ -1,8 +1,46 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+// Os textos em inglês das telas moram no catálogo. O contrato junta ao código da tela só os
+// textos das chaves que ela própria usa com t("..."): se a tela deixar de usar uma chave, o
+// texto some e a verificação falha.
+const enCatalog = JSON.parse(
+  readFileSync(new URL("../../../i18n/locales/en.json", import.meta.url), "utf8"),
+) as Record<string, unknown>;
+
+function catalogText(key: string): string[] {
+  let node: unknown = enCatalog;
+  for (const part of key.split(".")) {
+    if (node === null || typeof node !== "object") return [];
+    node = (node as Record<string, unknown>)[part];
+  }
+  if (typeof node === "string") return [node];
+  // Plural: t("key", { count }) lê key_one e key_other.
+  const parent = key.split(".").slice(0, -1).reduce<unknown>(
+    (current, part) => (current && typeof current === "object" ? (current as Record<string, unknown>)[part] : undefined),
+    enCatalog,
+  ) as Record<string, unknown> | undefined;
+  const leaf = key.split(".").at(-1) as string;
+  return ["one", "other"].flatMap((form) => {
+    const value = parent?.[`${leaf}_${form}`];
+    return typeof value === "string" ? [value] : [];
+  });
+}
+
+function referencedCatalogText(text: string): string {
+  const keys = new Set([...text.matchAll(/\bt\(\s*["'`]([A-Za-z0-9_.-]+)["'`]/g)].map((match) => match[1] as string));
+  return [...keys].flatMap(catalogText).join("\n");
+}
+
+function rawSource(relativePath: string) {
+  return readFileSync(new URL(relativePath, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+}
+
 function source(relativePath: string) {
-  return readFileSync(new URL(relativePath, import.meta.url), "utf8");
+  const text = rawSource(relativePath);
+  return relativePath.endsWith("ChatEndpointSetup.tsx") || relativePath.endsWith("ChatEndpointDetail.tsx")
+    ? `${text}\n${referencedCatalogText(text)}`
+    : text;
 }
 
 describe("chat connector UI contract", () => {
@@ -31,11 +69,11 @@ describe("chat connector UI contract", () => {
     expect(issue).toMatch(
       /agentsApi\.retryFailedRun\(\s*failedRun\.agentId,\s*failedRun\.runId,\s*companyId/,
     );
-    expect(issue).toContain("Retry queued");
+    expect(issue).toContain('t("issues.issueDetail.toasts.retryQueuedTitle")');
     for (const file of ["Inbox.tsx", "LegacyInbox.tsx"]) {
       const page = source(`../../${file}`);
       expect(page).toMatch(
-        /const retryRunMutation = useMutation\(\{[\s\S]*?onError: \(error\) => \{\s*pushToast\(\{\s*title: "Run retry failed"/,
+        /const retryRunMutation = useMutation\(\{[\s\S]*?onError: \(error\) => \{\s*pushToast\(\{\s*title: (?:"Run retry failed"|t\("[^"]*runRetryFailed"\))/,
       );
     }
   });
@@ -48,7 +86,7 @@ describe("chat connector UI contract", () => {
   });
 
   it("provides every settled detail tab and no detach control", () => {
-    const detail = source("./ChatEndpointDetail.tsx");
+    const detail = rawSource("./ChatEndpointDetail.tsx");
     for (const tab of ["settings", "access", "conversations", "activity"]) {
       expect(detail).toContain(`"${tab}"`);
     }
@@ -185,7 +223,7 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("/task@bot_username");
     expect(setup).toContain("registers its command menu automatically");
     expect(setup).toContain(
-      "ordinary\n          mentions are not delivered to bots",
+      "ordinary mentions are not delivered to bots",
     );
     expect(setup).toContain("Create Azure Bot");
     expect(setup).toContain("Microsoft 365 work or school organization");

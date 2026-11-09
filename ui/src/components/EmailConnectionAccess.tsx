@@ -6,6 +6,7 @@ import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
 import { RadioCardGroup } from "@/components/ui/radio-card";
+import { useTranslation } from "@/i18n";
 
 export function EmailConnectionAccess({
   companyId,
@@ -16,6 +17,7 @@ export function EmailConnectionAccess({
   connectionId: string;
   agents: Agent[];
 }) {
+  const { t } = useTranslation();
   const cache = useQueryClient();
   const grants = useQuery({
     queryKey: queryKeys.tools.connectionGrants(connectionId),
@@ -42,23 +44,23 @@ export function EmailConnectionAccess({
     return (
       <QueryErrorState
         error={failedView.error}
-        action="load connection access"
+        action={t("apps.emailConnectionAccess.loadAction")}
         onRetry={failedView.retry}
         retrying={failedView.isFetching}
       />
     );
   if (grants.isLoading || installs.isLoading || grantsView.kind === "reconnecting" || installsView.kind === "reconnecting")
-    return <p className="text-sm text-muted-foreground">Loading access…</p>;
+    return <p className="text-sm text-muted-foreground">{t("apps.emailConnectionAccess.loading")}</p>;
   const active = grants.data?.grants.filter((g) => g.status === "active") ?? [];
   const everyone = active.some((g) => g.kind === "organization");
   const personal = active.find((g) => g.kind === "user");
   const humanLabel = everyone
-    ? "Any human in the organization"
+    ? t("apps.emailConnectionAccess.anyHuman")
     : personal
       ? personal.subjectUserId === grants.data?.currentUserId
-        ? "Just me"
-        : "Only the credential owner"
-      : "Access revoked";
+        ? t("apps.emailConnectionAccess.justMe")
+        : t("apps.emailConnectionAccess.onlyOwner")
+      : t("apps.emailConnectionAccess.accessRevoked");
   const allAgents =
     installs.data?.installs.some((i) => i.targetType === "company") ?? false;
   const selected = new Set(
@@ -71,22 +73,22 @@ export function EmailConnectionAccess({
     <div className="space-y-8">
       <section className="space-y-3">
         <h2 className="text-sm font-semibold">
-          Which humans can use this credential?
+          {t("apps.emailConnectionAccess.whichHumans")}
         </h2>
         <p className="text-sm">{humanLabel}</p>
       </section>
       <section className="space-y-4">
         <h2 className="text-sm font-semibold">
-          Which agents can use this connection?
+          {t("apps.emailConnectionAccess.whichAgents")}
         </h2>
         <RadioCardGroup
-          ariaLabel="Which agents can use this connection"
+          ariaLabel={t("apps.emailConnectionAccess.whichAgents")}
           value={allAgents ? "all" : "selected"}
           disabled={disabled}
           className="sm:grid-cols-2"
           options={[
-            { value: "selected", title: "Just agents I pick" },
-            { value: "all", title: "Any agent" },
+            { value: "selected", title: t("apps.emailConnectionAccess.justAgents") },
+            { value: "all", title: t("apps.emailConnectionAccess.anyAgent") },
           ]}
           onValueChange={(value) =>
             save.mutate(
@@ -115,7 +117,7 @@ export function EmailConnectionAccess({
           />
         )}
         <p className="text-xs text-muted-foreground">
-          Removing an assigned agent stops receiving and sending from its inbox.
+          {t("apps.emailConnectionAccess.removing")}
         </p>
         {save.error && (
           <p role="alert" className="text-sm text-destructive">

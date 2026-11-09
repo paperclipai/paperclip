@@ -95,6 +95,7 @@ import { statusBadge } from "../lib/status-colors";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { deriveOriginatingActor, ISSUE_STATUSES, ISSUE_DISPLAY_STATUSES, type Issue, type IssueDisplayStatus, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
+import { t } from "@/i18n";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
@@ -581,13 +582,13 @@ function SubIssueProgressSummaryStrip({
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <span className="font-medium text-foreground">
-              {summary.doneCount}/{summary.totalCount} done
+              {summary.doneCount}/{summary.totalCount} {t("issues.LegacyIssuesList.doneWord")}
             </span>
             <span className="text-muted-foreground">
-              {summary.inProgressCount} in progress
+              {summary.inProgressCount} {t("issues.LegacyIssuesList.inProgressWord")}
             </span>
             <span className="text-muted-foreground">
-              {summary.blockedCount} blocked
+              {summary.blockedCount} {t("issues.LegacyIssuesList.blockedWord")}
             </span>
             {showCostSummary && (
               <>
@@ -599,17 +600,17 @@ function SubIssueProgressSummaryStrip({
                     costSummary.issueCount === 1 ? "" : "s"
                   }`}
                 >
-                  {formatTokens(totalTokens)} tokens
+                  {formatTokens(totalTokens)} {t("issues.LegacyIssuesList.tokensWord")}
                 </span>
                 <span className="text-muted-foreground tabular-nums">
-                  {formatDurationMs(costSummary.runtimeMs)} runtime
+                  {formatDurationMs(costSummary.runtimeMs)} {t("issues.LegacyIssuesList.runtimeWord")}
                 </span>
               </>
             )}
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-tasks completion progress"
+            aria-label={t("issues.LegacyIssuesList.subTasksProgress")}
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -646,11 +647,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-tasks</div>
+            <div className="text-sm font-medium text-foreground">{t("issues.LegacyIssuesList.noActiveSubtasks")}</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-tasks done</div>
+            <div className="text-sm font-medium text-foreground">{t("issues.LegacyIssuesList.allSubtasksDone")}</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-tasks</div>
+            <div className="text-sm font-medium text-foreground">{t("issues.LegacyIssuesList.noActionableSubtasks")}</div>
           )}
         </div>
       </div>
@@ -1724,12 +1725,12 @@ export function IssuesList({
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {/* View mode toggle */}
-          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
+          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label={t("issues.LegacyIssuesList.viewMode")}>
             <button
               className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
-              aria-label="List view"
+              title={t("issues.LegacyIssuesList.listView")}
+              aria-label={t("issues.LegacyIssuesList.listView")}
               aria-pressed={viewState.viewMode === "list"}
             >
               <List className="h-3.5 w-3.5" />
@@ -1737,8 +1738,8 @@ export function IssuesList({
             <button
               className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
-              aria-label="Board view"
+              title={t("issues.LegacyIssuesList.boardView")}
+              aria-label={t("issues.LegacyIssuesList.boardView")}
               aria-pressed={viewState.viewMode === "board"}
             >
               <SquareKanban className="h-3.5 w-3.5" />
@@ -1790,7 +1791,7 @@ export function IssuesList({
                       "h-8 shrink-0 gap-1.5 px-2",
                       viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE && "bg-accent",
                     )}
-                    title="Cards per column"
+                    title={t("issues.LegacyIssuesList.cardsPerColumn")}
                   >
                     <ListCollapse className="h-3.5 w-3.5" />
                     <span className="min-w-4 text-xs tabular-nums">{viewState.boardColumnPageSize}</span>
@@ -1810,7 +1811,7 @@ export function IssuesList({
                         )}
                         onClick={() => updateView({ boardColumnPageSize: pageSize })}
                       >
-                        <span>{pageSize} per column</span>
+                        <span>{pageSize} {t("issues.LegacyIssuesList.perColumn")}</span>
                         {viewState.boardColumnPageSize === pageSize && <Check className="h-3.5 w-3.5" />}
                       </button>
                     ))}
@@ -1828,7 +1829,7 @@ export function IssuesList({
                   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
                 })}
                 disabled={!boardDensityCustomized}
-                title="Reset board density"
+                title={t("issues.LegacyIssuesList.resetBoardDensity")}
               >
                 <RotateCcw className="h-3.5 w-3.5" />
               </Button>
@@ -1865,7 +1866,7 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("issues.LegacyIssuesList.sort")}>
                   <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
@@ -1912,7 +1913,7 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("issues.LegacyIssuesList.group")}>
                   <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
@@ -1949,18 +1950,18 @@ export function IssuesList({
       </div>
 
       {(isLoading || externalObjectFilterLoading) && <PageSkeleton variant="issues-list" />}
-      {error ? <QueryErrorState error={error} action="load tasks" onRetry={onRetry} retrying={retrying} /> : null}
+      {error ? <QueryErrorState error={error} action={t("errorActions.loadTasks")} onRetry={onRetry} retrying={retrying} /> : null}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
-          Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
+          {t("issues.LegacyIssuesList.searchLimit", { limit: ISSUE_SEARCH_RESULT_LIMIT })}
         </p>
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
-          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
+          {t("issues.LegacyIssuesList.boardLimit", { limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT })}
         </p>
       )}
-      {hierarchy.error ? <p className="text-sm text-destructive">Failed to load task hierarchy: {describeError(hierarchy.error).body}</p> : null}
+      {hierarchy.error ? <p className="text-sm text-destructive">{t("issues.LegacyIssuesList.failedHierarchy")} {describeError(hierarchy.error).body}</p> : null}
       {!isLoading && !error && !externalObjectFilterLoading && visibleListRowCount === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
@@ -2158,7 +2159,7 @@ export function IssuesList({
                           <>
                             {hasChildren && !isExpanded ? (
                               <span className="ml-1.5 text-xs text-muted-foreground">
-                                ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
+                                ({t("issues.LegacyIssuesList.subTaskCount", { count: totalDescendants })})
                               </span>
                             ) : null}
                             {issueBadge ? (
@@ -2284,7 +2285,7 @@ export function IssuesList({
                                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
                                             <User className="h-3.5 w-3.5" />
                                           </span>
-                                          Assignee
+                                          {t("issues.LegacyIssuesList.assignee")}
                                         </span>
                                       )}
                                     </button>
@@ -2314,7 +2315,7 @@ export function IssuesList({
                                           assignIssue(issue.id, null, null);
                                         }}
                                       >
-                                        No responsible
+                                        {t("issues.LegacyIssuesList.noResponsible")}
                                       </button>
                                       {currentUserId && (
                                         <button
@@ -2329,7 +2330,7 @@ export function IssuesList({
                                           }}
                                         >
                                           <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                          <span>Me</span>
+                                          <span>{t("issues.LegacyIssuesList.meLabel")}</span>
                                         </button>
                                       )}
                                       {(agents ?? [])

@@ -9,6 +9,7 @@ import { useAutoResend } from "./useDurableSubmit";
 import { useDraftOwner, useDraftOwnerReader } from "./useDraftOwner";
 import { trackPendingWrite } from "@/lib/reload-safety";
 import { hasUnverifiedSession } from "@/lib/cached-session";
+import { t } from "@/i18n";
 
 export type DurableAutosaveStatus =
   | "idle"
@@ -327,7 +328,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     if (admittedOwner !== undefined) registry.delete(JSON.stringify([undefined, target]));
     const job: Job = { token: Symbol(), dirtyVersion: dirtyWrites.current.get(target)?.version, registryKey: JSON.stringify([admittedOwner, target]), resends: 0, id: ++sequence.current, target, owner: admittedOwner, account: client ? bindAccount(client) : null, draft,
       beforeSave: overrides.beforeSave, save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
-      onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? "save" };
+      onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? t("errorActions.save") };
     const previous = jobs.current.get(target);
     if (previous) releaseJob(previous);
     let revision = registry.get(job.registryKey);

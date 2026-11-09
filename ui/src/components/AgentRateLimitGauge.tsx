@@ -7,6 +7,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 type Tone = ProviderRateLimitSummary["tone"];
 
@@ -50,6 +51,7 @@ export function AgentRateLimitPanel({ snapshot, summary, now }: {
   summary: ProviderRateLimitSummary;
   now: number;
 }) {
+  const { t } = useTranslation();
   const reachedId = summary.limited ? snapshot.limitReached?.windowId ?? null : null;
   const creditTone = summary.usingCredits ? "warn" : null;
   const credits = snapshot.credits;
@@ -65,7 +67,7 @@ export function AgentRateLimitPanel({ snapshot, summary, now }: {
               <span className={cn("shrink-0 tabular-nums", textClass[tone])}>
                 {Math.round(pct)}%
                 {window.resetsAt && (
-                  <span className="text-muted-foreground"> · resets {formatRateLimitClock(window.resetsAt, now)}</span>
+                  <span className="text-muted-foreground"> {t("agents.AgentRateLimitGauge.resetsWhen", { when: formatRateLimitClock(window.resetsAt, now) })}</span>
                 )}
               </span>
             </div>
@@ -74,7 +76,7 @@ export function AgentRateLimitPanel({ snapshot, summary, now }: {
         );
       })}
       {summary.usingCredits && (
-        <div className="text-xs text-(--status-task-icon-todo)">Limit reached; work continues on account credits.</div>
+        <div className="text-xs text-(--status-task-icon-todo)">{t("agents.AgentRateLimitGauge.limitReachedWorkContinues")}</div>
       )}
       {credits && (credits.unlimited || credits.balance !== null || credits.hasCredits === false) && (
         <div className="text-xs text-muted-foreground">
@@ -99,6 +101,7 @@ export function AgentRateLimitPropertyValue({ snapshot, now = Date.now(), defaul
   detailsHref?: string;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const summary = summarizeProviderRateLimits(snapshot, now);
   if (!snapshot || !summary) return null;
   const { window, tone } = summary;
@@ -127,11 +130,11 @@ export function AgentRateLimitPropertyValue({ snapshot, now = Date.now(), defaul
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72 space-y-3 p-3">
-        <div className="text-xs font-medium">{snapshot.provider === "openai" ? "Codex" : "Claude"} usage limits</div>
+        <div className="text-xs font-medium">{t("agents.AgentRateLimitGauge.providerUsageLimits", { provider: snapshot.provider === "openai" ? "Codex" : "Claude" })}</div>
         <AgentRateLimitPanel snapshot={snapshot} summary={summary} now={now} />
         <div className="flex items-center justify-between gap-3 text-(length:--text-micro) text-muted-foreground">
-          <span>Reported {formatRateLimitClock(snapshot.observedAt, now)}</span>
-          {detailsHref && <Link to={detailsHref} className="hover:text-foreground hover:underline">View agent</Link>}
+          <span>{t("agents.AgentRateLimitGauge.reportedWhen", { when: formatRateLimitClock(snapshot.observedAt, now) })}</span>
+          {detailsHref && <Link to={detailsHref} className="hover:text-foreground hover:underline">{t("agents.AgentRateLimitGauge.viewAgent")}</Link>}
         </div>
       </PopoverContent>
     </Popover>

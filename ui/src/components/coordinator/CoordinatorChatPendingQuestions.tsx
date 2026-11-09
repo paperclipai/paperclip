@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import type { AttentionItem } from "@paperclipai/shared";
 import { ArrowUpRight } from "lucide-react";
@@ -32,10 +33,10 @@ export function CoordinatorChatPendingQuestion({ item }: { item: AttentionItem }
   if (!task) return null;
   const href = `${(task.href ?? `/issues/${task.id}`).split("#")[0]}#interaction-${item.subject.id}`;
   return <section data-testid="coordinator-chat-pending-question" className="space-y-3">
-    <p className="text-sm text-muted-foreground">{item.originAgentName ?? "Your agent"} needs your input on {task.title ?? task.identifier ?? "this task"}.</p>
+    <p className="text-sm text-muted-foreground">{t("coordinator.chatQuestions.needsInput", "{{agent}} needs your input on {{task}}.", { agent: item.originAgentName ?? t("common.yourAgent", "Your agent"), task: task.title ?? task.identifier ?? t("common.thisTask", "this task") })}</p>
     <article className="coordinator-decision-card space-y-4 rounded-xl border border-border bg-card p-6">
       <AttentionInteractionResolver companyId={task.companyId} issueId={task.id} interactionId={item.subject.id} currentUserId={userId} presentation="coordinator-decision" footerSlot={<Link to={href} className="flex max-w-full items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
-        <span className="shrink-0">{task.identifier ?? "Open task"}</span><span className="truncate">{task.title}</span><ArrowUpRight className="size-4 shrink-0" />
+        <span className="shrink-0">{task.identifier ?? t("common.openTask", "Open task")}</span><span className="truncate">{task.title}</span><ArrowUpRight className="size-4 shrink-0" />
       </Link>} />
 
     </article>
@@ -45,6 +46,6 @@ export function CoordinatorChatPendingQuestion({ item }: { item: AttentionItem }
 export function CoordinatorChatQuestionStatus({ query }: { query: ReturnType<typeof useCoordinatorChatPendingQuestions> }) {
   if (!query.enabled || !query.isError) return null;
   return <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-    <span>Task questions couldn’t load.</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button>
+    <span>{t("coordinator.chatQuestions.loadError", "Task questions couldn’t load.")}</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>{t("common.retry", "Retry")}</Button>
   </div>;
 }

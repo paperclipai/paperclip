@@ -8,6 +8,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { t, useTranslation } from "@/i18n";
 
 type Platform = "mac" | "windows" | "linux";
 
@@ -17,33 +18,35 @@ const platforms: { id: Platform; label: string; icon: typeof Apple }[] = [
   { id: "linux", label: "Linux", icon: Terminal },
 ];
 
-const instructions: Record<Platform, { steps: string[]; tip?: string }> = {
+function getInstructions(): Record<Platform, { steps: string[]; tip?: string }> {
+  return {
   mac: {
     steps: [
-      "Open Finder and navigate to the folder.",
-      "Right-click (or Control-click) the folder.",
-      "Hold the Option (⌥) key — \"Copy\" changes to \"Copy as Pathname\".",
-      "Click \"Copy as Pathname\", then paste here.",
+      t("common.pathInstructionsModal.macStep1"),
+      t("common.pathInstructionsModal.macStep2"),
+      t("common.pathInstructionsModal.macStep3"),
+      t("common.pathInstructionsModal.macStep4"),
     ],
-    tip: "You can also open Terminal, type cd, drag the folder into the terminal window, and press Enter. Then type pwd to see the full path.",
+    tip: t("common.pathInstructionsModal.macTip"),
   },
   windows: {
     steps: [
-      "Open File Explorer and navigate to the folder.",
-      "Click in the address bar at the top — the full path will appear.",
-      "Copy the path, then paste here.",
+      t("common.pathInstructionsModal.windowsStep1"),
+      t("common.pathInstructionsModal.windowsStep2"),
+      t("common.pathInstructionsModal.windowsStep3"),
     ],
-    tip: "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\".",
+    tip: t("common.pathInstructionsModal.windowsTip"),
   },
   linux: {
     steps: [
-      "Open a terminal and navigate to the directory with cd.",
-      "Run pwd to print the full path.",
-      "Copy the output and paste here.",
+      t("common.pathInstructionsModal.linuxStep1"),
+      t("common.pathInstructionsModal.linuxStep2"),
+      t("common.pathInstructionsModal.linuxStep3"),
     ],
-    tip: "In most file managers, Ctrl+L reveals the full path in the address bar.",
+    tip: t("common.pathInstructionsModal.linuxTip"),
   },
-};
+  };
+}
 
 function detectPlatform(): Platform {
   const ua = navigator.userAgent.toLowerCase();
@@ -61,19 +64,20 @@ export function PathInstructionsModal({
   open,
   onOpenChange,
 }: PathInstructionsModalProps) {
+  const { t } = useTranslation();
   const [platform, setPlatform] = useState<Platform>(detectPlatform);
 
-  const current = instructions[platform];
+  const current = getInstructions()[platform];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base">How to get a full path</DialogTitle>
+          <DialogTitle className="text-base">{t("common.pathInstructionsModal.title")}</DialogTitle>
           <DialogDescription>
-            Paste the absolute path (e.g.{" "}
+            {t("common.pathInstructionsModal.descriptionBefore")}{" "}
             <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>
-            ) into the input field.
+            {t("common.pathInstructionsModal.descriptionAfter")}
           </DialogDescription>
         </DialogHeader>
 
@@ -124,6 +128,7 @@ export function PathInstructionsModal({
  * Drop-in replacement for the old showDirectoryPicker buttons.
  */
 export function ChoosePathButton({ className }: { className?: string }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -135,7 +140,7 @@ export function ChoosePathButton({ className }: { className?: string }) {
         )}
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("common.pathInstructionsModal.choose")}
       </button>
       <PathInstructionsModal open={open} onOpenChange={setOpen} />
     </>

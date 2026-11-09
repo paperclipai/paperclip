@@ -1,12 +1,13 @@
 import { cloneElement, isValidElement, useState } from "react";
 import { CalendarRange } from "lucide-react";
 import {
-  ATTENTION_DATE_RANGE_OPTIONS,
+  attentionDateRangeOptions,
   type AttentionDateRangeId,
 } from "../lib/attention";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { useTranslation } from "@/i18n";
 
 export interface AttentionCustomRange {
   from: string | null;
@@ -26,11 +27,12 @@ interface DecisionDateChipsProps {
  * filter on the client. "Custom" opens a from/to range picker.
  */
 export function DecisionDateChips({ value, custom, onChange }: DecisionDateChipsProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   return (
     <div className="flex flex-wrap items-center gap-1.5" data-decision-date-chips>
-      {ATTENTION_DATE_RANGE_OPTIONS.map(([id, label]) => (
+      {attentionDateRangeOptions().map(([id, label]) => (
         <ChipButton key={id} active={value === id} onClick={() => onChange(id, custom)}>
           {label}
         </ChipButton>
@@ -49,7 +51,7 @@ export function DecisionDateChips({ value, custom, onChange }: DecisionDateChips
         <PopoverContent align="start" className="w-auto space-y-2 p-3">
           <div className="flex flex-col gap-1.5">
             <label className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
-              From
+              {t("inbox.DecisionDateChips.from")}
             </label>
             <input
               type="date"
@@ -61,7 +63,7 @@ export function DecisionDateChips({ value, custom, onChange }: DecisionDateChips
           </div>
           <div className="flex flex-col gap-1.5">
             <label className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
-              To
+              {t("inbox.DecisionDateChips.to")}
             </label>
             <input
               type="date"
@@ -81,7 +83,7 @@ export function DecisionDateChips({ value, custom, onChange }: DecisionDateChips
                 setOpen(false);
               }}
             >
-              Clear
+              {t("inbox.DecisionDateChips.clear")}
             </Button>
           </div>
         </PopoverContent>

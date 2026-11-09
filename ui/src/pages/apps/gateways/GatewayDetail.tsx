@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Send } from "lucide-react";
@@ -14,7 +15,7 @@ import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { GATEWAY_TABS, gatewayTabHref, isGatewayTabKey, type GatewayTabKey } from "./gateway-tabs";
+import { gatewayTabs, gatewayTabHref, isGatewayTabKey, type GatewayTabKey } from "./gateway-tabs";
 import { gatewaysQueryKey } from "./NewGatewayDialog";
 import { ConnectClientDialog } from "./ConnectClientDialog";
 import { EditGatewayDialog } from "./EditGatewayDialog";
@@ -28,6 +29,7 @@ import { CopyableGatewayUrl } from "./CopyableGatewayUrl";
 import { describeError } from "@/api/errors";
 
 export function GatewayDetail() {
+  const { t } = useTranslation();
   const { gatewayId = "", tab } = useParams<{ gatewayId: string; tab?: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -105,12 +107,12 @@ export function GatewayDetail() {
   useEffect(() => {
     if (!gateway) return;
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
-      { label: "Gateways", href: "/apps/gateways" },
+      { label: t("apps.GatewayDetail.connectorsBreadcrumb"), href: "/apps" },
+      { label: t("apps.GatewayDetail.gatewaysBreadcrumb"), href: "/apps/gateways" },
       { label: gateway.name },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, gateway]);
+  }, [setBreadcrumbs, gateway, t]);
 
   const toggleMutation = useMutation({
     mutationFn: () =>
@@ -119,25 +121,25 @@ export function GatewayDetail() {
       }),
     onSuccess: async (updated) => {
       pushToast({
-        title: updated.status === "active" ? "Gateway on" : "Gateway off",
+        title: updated.status === "active" ? t("apps.GatewayDetail.gatewayOn") : t("apps.GatewayDetail.gatewayOff"),
         body:
           updated.status === "active"
-            ? `${updated.name} is exposing its tools again.`
-            : `${updated.name} is off — every client goes silent.`,
+            ? t("apps.GatewayDetail.gatewayOnBody", { name: updated.name })
+            : t("apps.GatewayDetail.gatewayOffBody", { name: updated.name }),
         tone: "success",
       });
       await queryClient.invalidateQueries({ queryKey: gatewaysQueryKey(selectedCompanyId!) });
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't update the gateway",
+        title: t("apps.GatewayDetail.couldntUpdate"),
         body: describeError(error).body,
         tone: "error",
       }),
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage gateways.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("apps.GatewayDetail.selectOrganization")}</div>;
   }
   if (!activeTab) {
     return <Navigate replace to={gatewayTabHref(gatewayId, "overview")} />;
@@ -156,7 +158,7 @@ export function GatewayDetail() {
       <QueryErrorState
         size="page"
         error={gatewaysQuery.error}
-        action="load the gateway"
+        action={t("errorActions.loadTheGateway")}
         onRetry={gatewaysView.retry}
         retrying={gatewaysView.isFetching}
       />
@@ -165,9 +167,9 @@ export function GatewayDetail() {
   if (!gateway) {
     return (
       <div className="max-w-3xl p-6">
-        <p className="text-sm text-muted-foreground">We couldn’t find that gateway.</p>
+        <p className="text-sm text-muted-foreground">{t("apps.GatewayDetail.notFound")}</p>
         <Button className="mt-4" variant="outline" onClick={() => navigate("/apps/gateways")}>
-          Back to gateways
+          {t("apps.GatewayDetail.backToGateways")}
         </Button>
       </div>
     );
@@ -179,7 +181,7 @@ export function GatewayDetail() {
         <div className="min-w-0">
           <div className="text-xs text-muted-foreground">
             <Link to="/apps/gateways" className="hover:underline">
-              Apps · Gateways
+              {t("apps.GatewayDetail.appsGatewaysLink")}
             </Link>
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">{gateway.name}</h1>
@@ -188,17 +190,17 @@ export function GatewayDetail() {
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => setEditing(true)}>
             <Pencil className="mr-1.5 h-4 w-4" />
-            Edit
+            {t("apps.GatewayDetail.edit")}
           </Button>
           <Button onClick={() => setSnippetOpen(true)}>
             <Send className="mr-1.5 h-4 w-4" />
-            Client snippets
+            {t("apps.GatewayDetail.clientSnippets")}
           </Button>
         </div>
       </div>
 
-      <nav className="flex items-center gap-6 overflow-x-auto border-b border-border text-sm" aria-label="Gateway tabs">
-        {GATEWAY_TABS.map((item) => {
+      <nav className="flex items-center gap-6 overflow-x-auto border-b border-border text-sm" aria-label={t("apps.GatewayDetail.gatewayTabsAria")}>
+        {gatewayTabs().map((item) => {
           const isActive = item.key === activeTab;
           return (
             <Link

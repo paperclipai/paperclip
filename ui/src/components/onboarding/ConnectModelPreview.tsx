@@ -1,6 +1,7 @@
 import { AgentCharacter } from "../AgentCharacter";
 import { useState } from "react";
 import { MotionConfig } from "motion/react";
+import { useTranslation } from "@/i18n";
 
 import { Checkbox } from "../ui/checkbox";
 import { AgentPreview } from "./AgentPreview";
@@ -83,6 +84,7 @@ export function ConnectModelPreview({
   const [selectedId, setSelectedId] = useState<string | null>(initialSourceId);
   const [useApiKeys, setUseApiKeys] = useState(initialUseApiKeys);
   const mode: CredentialMode = useApiKeys ? "api" : "subscription";
+  const { t } = useTranslation();
 
   return (
     // The arc's own convention: OS-level reduced motion neutralises the
@@ -106,14 +108,14 @@ export function ConnectModelPreview({
         <div className="pt-6">
           <OnboardingHeading
             center
-            title="Connect a model"
-            lede="Paperclip works with your existing subscription or API keys."
+            title={t("onboarding.connectModelPreview.title")}
+            lede={t("onboarding.connectModelPreview.lede")}
           />
         </div>
 
         <div className="space-y-2 pt-12">
           <ModelSourceTiles
-            label="Model source"
+            label={t("onboarding.connectModelPreview.modelSource")}
             sources={MODEL_SOURCES}
             mode={mode}
             selectedId={selectedId}
@@ -133,7 +135,7 @@ export function ConnectModelPreview({
                 onCheckedChange={(checked) => setUseApiKeys(checked === true)}
               />
               <span className="text-sm font-medium text-foreground">
-                Use API keys instead
+                {t("onboarding.connectModelPreview.useApiKeys")}
               </span>
             </label>
           )}
@@ -143,7 +145,7 @@ export function ConnectModelPreview({
             disabled rather than failing on press. */}
         <FooterNav
           onBack={() => {}}
-          primaryLabel="Connect"
+          primaryLabel={t("onboarding.connectModelPreview.connect")}
           primaryDisabled={selectedId === null}
           onPrimary={() => {}}
         />

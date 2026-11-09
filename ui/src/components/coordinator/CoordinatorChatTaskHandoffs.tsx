@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { useMemo, useRef } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import type { ConversationTaskHandoff, ConversationTaskHandoffPage, IssueThreadInteraction } from "@paperclipai/shared";
@@ -63,10 +64,10 @@ export function CoordinatorChatTaskHandoff({ handoff, animateEntry = false }: { 
 export function CoordinatorChatHandoffStatus({ query, scroll = false }: { scroll?: boolean; query: ReturnType<typeof useCoordinatorChatTaskHandoffs> }) {
   if (!query.enabled) return null;
   if (query.isError) return <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-    <span>Created tasks couldn’t load.</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button>
+    <span>{t("coordinator.chatHandoffs.loadError", "Created tasks couldn’t load.")}</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>{t("common.retry", "Retry")}</Button>
   </div>;
   if (!scroll && query.hasNextPage) return <Button size="sm" variant="ghost" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
-    {query.isFetchingNextPage ? "Loading earlier tasks…" : "Load earlier tasks"}
+    {query.isFetchingNextPage ? t("coordinator.chatHandoffs.loadingEarlier", "Loading earlier tasks…") : t("coordinator.chatHandoffs.loadEarlier", "Load earlier tasks")}
   </Button>;
   return null;
 }

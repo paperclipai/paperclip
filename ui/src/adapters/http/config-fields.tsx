@@ -5,6 +5,7 @@ import {
   DraftInput,
   help,
 } from "../../components/agent-config-primitives";
+import { useTranslation } from "@/i18n";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -18,8 +19,9 @@ export function HttpConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   return configFieldsForSection(section, (
-    <Field label="Webhook URL" hint={help.webhookUrl}>
+    <Field label={t("agents.HttpConfigFields.webhookUrl")} hint={help.webhookUrl}>
       <DraftInput
         value={
           isCreate

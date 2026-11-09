@@ -2,6 +2,7 @@ import { AlertTriangle, ExternalLink } from "lucide-react";
 import type { AgentPermissions } from "@paperclipai/shared";
 import { getTrustPreset } from "@/lib/trust-policy-ui";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 
 export const LOW_TRUST_AGENT_GUIDE =
   "https://docs.paperclip.ing/administration/trust-and-low-trust-review/";
@@ -16,6 +17,7 @@ export function GitHubAgentTrustWarning({
   onChangeToLowTrust?: () => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   if (!agent || getTrustPreset(agent.permissions) === "low_trust_review")
     return null;
   return (
@@ -25,20 +27,17 @@ export function GitHubAgentTrustWarning({
     >
       <p className="flex items-center gap-2 font-medium">
         <AlertTriangle className="size-4 shrink-0" />
-        {agent.name} is not configured for low-trust review
+        {t("agents.githubAgentTrustWarning.notConfigured", { name: agent.name })}
       </p>
       <p>
-        GitHub comments and pull requests can contain malicious instructions. We
-        recommend a low-trust agent with a scoped work boundary and an isolated
-        sandbox runtime.
+        {t("agents.githubAgentTrustWarning.commentsWarning")}
       </p>
       <p className="text-xs text-muted-foreground">
-        Continuing keeps this agent’s current permissions. A restricted guest
-        profile does not replace the agent’s trust and runtime settings.
+        {t("agents.githubAgentTrustWarning.continuing")}
       </p>
       {onChangeToLowTrust && (
         <Button variant="outline" className="h-auto whitespace-normal" disabled={disabled} onClick={onChangeToLowTrust}>
-          Change {agent.name} to a low trust agent
+          {t("agents.githubAgentTrustWarning.changeToLowTrust", { name: agent.name })}
         </Button>
       )}
       <a
@@ -47,7 +46,7 @@ export function GitHubAgentTrustWarning({
         target="_blank"
         rel="noreferrer"
       >
-        Learn about low-trust agents
+        {t("agents.githubAgentTrustWarning.learnMore")}
         <ExternalLink className="size-3.5" />
       </a>
     </div>

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { Button } from "@/components/ui/button";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -23,14 +24,15 @@ export function ManagedAiConnectionRow({
 }: {
   connection: ToolConnection;
 }) {
+  const { t } = useTranslation();
   const metadata = connection.config?.ai as AiConnectionMetadata | undefined;
   if (!metadata) return null;
   return (
     <p className="text-xs text-muted-foreground">
       {metadata.routing ? metadata.routing.kind === "bedrock" ? `Bedrock · ${metadata.routing.region}` : metadata.routing.kind === "openrouter" ? "OpenRouter" : metadata.routing.baseUrl : aiMethodLabel(metadata.provider, metadata.method)} ·{" "}
       {connection.credentialPolicy === "per_user"
-        ? "Personal"
-        : "Company shared"}
+        ? t("agents.ManagedAiConnectionDetails.personal")
+        : t("agents.ManagedAiConnectionDetails.companyShared")}
     </p>
   );
 }
@@ -39,6 +41,7 @@ export function ManagedAiConnectionDetails({
 }: {
   connection: ToolConnection;
 }) {
+  const { t } = useTranslation();
   const client = useQueryClient();
   const navigate = useNavigate();
   const runs = useQuery({
@@ -96,7 +99,7 @@ export function ManagedAiConnectionDetails({
           if (grants.error) void grants.refetch();
         }}
       >
-        Retry
+        {t("agents.ManagedAiConnectionDetails.retry")}
       </Button>
     </div>
   ) : null;
@@ -105,8 +108,8 @@ export function ManagedAiConnectionDetails({
     return (
       <p role="status" className="text-sm text-muted-foreground">
         {accounts.isPending || grants.isPending || sessionView.kind === "reconnecting" || accountsView.kind === "reconnecting" || grantsView.kind === "reconnecting"
-          ? "Loading AI account…"
-          : "This account is not available to you."}
+          ? t("agents.ManagedAiConnectionDetails.loadingAccount")
+          : t("agents.ManagedAiConnectionDetails.accountUnavailable")}
       </p>
     );
   return (
@@ -116,7 +119,7 @@ export function ManagedAiConnectionDetails({
       {defaults.error && defaults.failedProvider && <AiDefaultError provider={AI_PROVIDERS[defaults.failedProvider].name}
         pending={defaults.pending(defaults.failedProvider)} onRetry={defaults.retry} />}
       <AiConnectionAccountDetails account={account} grant={grant} />
-      {account.routing && <details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-medium">Provider settings</summary><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><dt className="text-muted-foreground">Destination</dt><dd className="break-all">{account.routing.baseUrl ?? (account.routing.kind === "bedrock" ? account.routing.region : "OpenRouter")}</dd><dt className="text-muted-foreground">API format</dt><dd>{account.routing.kind === "openrouter" ? "Selected by harness" : account.routing.protocol}</dd><dt className="text-muted-foreground">Authentication</dt><dd>{account.routing.auth}</dd><dt className="text-muted-foreground">Models</dt><dd>{account.routing.models.map(m => m.label ?? m.id).join(", ") || "Enter a model ID on the agent"}</dd></dl></details>}
+      {account.routing && <details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-medium">{t("agents.ManagedAiConnectionDetails.providerSettings")}</summary><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><dt className="text-muted-foreground">{t("agents.ManagedAiConnectionDetails.destination")}</dt><dd className="break-all">{account.routing.baseUrl ?? (account.routing.kind === "bedrock" ? account.routing.region : "OpenRouter")}</dd><dt className="text-muted-foreground">{t("agents.ManagedAiConnectionDetails.apiFormat")}</dt><dd>{account.routing.kind === "openrouter" ? t("agents.ManagedAiConnectionDetails.selectedByHarness") : account.routing.protocol}</dd><dt className="text-muted-foreground">{t("agents.ManagedAiConnectionDetails.authentication")}</dt><dd>{account.routing.auth}</dd><dt className="text-muted-foreground">{t("agents.ManagedAiConnectionDetails.models")}</dt><dd>{account.routing.models.map(m => m.label ?? m.id).join(", ") || t("agents.ManagedAiConnectionDetails.enterModelId")}</dd></dl></details>}
       <AiConnectionAccountControls
         account={account}
         grant={grant}
@@ -130,7 +133,7 @@ export function ManagedAiConnectionDetails({
               <QueryErrorState
                 size="inline"
                 error={runs.error}
-                action="load active runs"
+                action={t("errorActions.loadActiveRuns")}
                 onRetry={runsView.retry}
                 retrying={runsView.isFetching}
               />
@@ -149,7 +152,7 @@ export function ManagedAiConnectionDetails({
                   disabled={stop.isPending}
                   onClick={() => stop.mutate(run.id)}
                 >
-                  Stop run
+                  {t("agents.ManagedAiConnectionDetails.stopRun")}
                 </Button>
               </div>
             ))}

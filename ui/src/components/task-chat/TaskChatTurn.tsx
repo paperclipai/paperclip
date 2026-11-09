@@ -1,5 +1,6 @@
 import { groupImageResources } from "./image-resources";
 import { useState, type ReactNode } from "react";
+import { t } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { TaskChatRunHealthBanner } from "./TaskChatRunHealthBanner";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
@@ -102,12 +103,14 @@ export function TaskChatTurn({
             />
           ) : null}
           {!item.historical ? <span className="min-w-0 truncate">
-            {item.continuedAfterSteering ? "Continued after steering · " : ""}
+            {item.continuedAfterSteering ? t("issues.taskChatTurn.continuedAfterSteering") : ""}
             {item.summary.durationLabel
-              ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
+              ? item.summary.failed
+                ? t("issues.taskChatTurn.stoppedFor", { duration: item.summary.durationLabel })
+                : t("issues.taskChatTurn.workedFor", { duration: item.summary.durationLabel })
               : item.summary.failed
-                ? "Stopped"
-                : "Worked"}
+                ? t("issues.taskChatTurn.stopped")
+                : t("issues.taskChatTurn.worked")}
           </span> : null}
         </div> : null}
         <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />

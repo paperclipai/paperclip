@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/timeAgo";
 import { formatContextTokens } from "@/lib/context-tokens";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { useTranslation } from "@/i18n";
 
 export { formatContextTokens };
 
@@ -117,18 +118,19 @@ function CompactAction({ compact, level }: { compact: ContextCompactState; level
 
 /** The hover card body; exported for Storybook galleries. */
 export function ContextUsageCard({ usage, compact }: { usage: ContextUsage; compact?: ContextCompactState | null }) {
+  const { t } = useTranslation();
   const percent = Math.min(100, Math.round((usage.usedTokens / usage.contextWindow) * 100));
   const level = contextUsageLevel(usage);
   const totals = usage.totals;
   return (
     <div className="flex flex-col">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="font-medium text-foreground">Context window</span>
+        <span className="font-medium text-foreground">{t("agents.ContextUsageMeter.contextWindow")}</span>
         <span className={cn("font-medium tabular-nums", LEVEL_TEXT[level])}>{percent}%</span>
       </div>
       <p className="mt-0.5 text-muted-foreground tabular-nums">
-        {formatContextTokens(usage.usedTokens)} of {formatContextTokens(usage.contextWindow)} tokens
-        {usage.observedAt ? <> · updated {timeAgo(usage.observedAt)}</> : null}
+        {t("agents.ContextUsageMeter.usedOfTotalTokens", { used: formatContextTokens(usage.usedTokens), total: formatContextTokens(usage.contextWindow) })}
+        {usage.observedAt ? <> {t("agents.ContextUsageMeter.updatedWhen", { when: timeAgo(usage.observedAt) })}</> : null}
       </p>
       <Bar percent={percent} level={level} className="mt-2 w-full" />
       {level !== "normal" ? (
@@ -182,6 +184,7 @@ export function ContextUsageMeter({
   compact?: ContextCompactState | null;
   defaultOpen?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(defaultOpen);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const percent = Math.min(100, Math.round((usage.usedTokens / usage.contextWindow) * 100));
@@ -211,7 +214,7 @@ export function ContextUsageMeter({
           <Bar percent={percent} level={level} className="w-12 shrink-0" />
           <span className={cn("truncate tabular-nums", level === "normal" ? "text-foreground" : LEVEL_TEXT[level])}>
             {percent}%
-            <span className="text-muted-foreground"> of {windowLabel}</span>
+            <span className="text-muted-foreground"> {t("agents.ContextUsageMeter.ofWindow", { window: windowLabel })}</span>
           </span>
         </button>
       </PopoverTrigger>
