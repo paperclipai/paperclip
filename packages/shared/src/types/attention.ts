@@ -336,9 +336,9 @@ export function supportsAttentionRecoveryResolution(cause: string): boolean {
 
 export function isActionableAttention(item: Pick<AttentionItem, "sourceKind" | "inlineResolvable" | "subject">): boolean {
   if (item.sourceKind === "recovery_action") return item.subject.metadata?.hasResolutionActions === true;
+  if (item.sourceKind === "approval") return item.inlineResolvable || Boolean(item.subject.href);
   if (!item.inlineResolvable) return false;
   switch (item.sourceKind) {
-    case "approval":
     case "decision":
     case "issue_thread_interaction":
     case "join_request":

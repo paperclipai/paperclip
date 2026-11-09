@@ -231,6 +231,7 @@ export function CoordinatorNeedsYou() {
       const stalledReview = item.sourceKind === "review" && item.subject.kind === "issue" && isInlineResolvable(item) && item.subject.metadata?.reviewAttentionState === "stalled";
       const taskRef = item.relatedIssue ?? (item.subject.kind === "issue" ? item.subject : null);
       const taskLink = taskRef?.href ? <button type="button" onClick={() => { if (taskRef.href) navigate(taskRef.href); }} className="flex max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground"><span className="shrink-0">{taskRef.identifier ?? "Open task"}</span><span className="truncate">{taskRef.title}</span><ArrowUpRight className="size-4 shrink-0" /></button> : null;
+      const approvalLink = item.subject.href ? <Button variant="outline" onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>View full request<ArrowUpRight className="size-4" /></Button> : taskLink;
       const id = `${item.sourceKind}:${item.subject.id}`;
       const receipt = settlingIds.has(id) ? recentItems.find(entry => entry.id === id) : undefined;
       const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
@@ -244,7 +245,9 @@ export function CoordinatorNeedsYou() {
         }} />
           : decision ? <DecisionResolver companyId={selectedCompanyId} decisionId={item.subject.id} originIssue={item.relatedIssue} agentMap={agentMap} onResolved={() => onResolved(item)} />
           : item.sourceKind === "recovery_action" ? <AttentionRecoveryResolver item={item} companyId={selectedCompanyId} agentMap={agentMap} onResolved={() => onResolved(item)} />
-          : item.sourceKind === "approval" ? <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p><ApprovalResolver item={item} companyId={selectedCompanyId} toggle={taskLink} onResolved={() => onResolved(item)} /></>
+          : item.sourceKind === "approval" ? <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p>{item.inlineResolvable
+            ? <ApprovalResolver item={item} companyId={selectedCompanyId} toggle={approvalLink} onResolved={() => onResolved(item)} />
+            : <Button onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>Review request<ArrowUpRight className="size-4" /></Button>}</>
           : item.sourceKind === "join_request" ? <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p><JoinRequestResolver item={item} companyId={selectedCompanyId} toggle={taskLink} onResolved={() => onResolved(item)} /></>
           : stalledReview ? <><h2 className="text-lg font-medium">Choose how this task continues</h2><p className="text-sm">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p><StalledReviewActions footerSlot={taskLink} issueId={item.subject.id} companyId={selectedCompanyId} reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)} approveLabel="Mark task done" onResolved={() => { void feed.refetch(); void recent.refetch(); }} /></>
           : <div role="alert"><p>This request could not be loaded.</p><Button variant="outline" onClick={() => void feed.refetch()}>Retry</Button></div>}

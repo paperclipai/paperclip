@@ -60,6 +60,19 @@ async function click(text: string) {
   await act(async () => button!.click()); await flush();
 }
 describe("Coordinator Needs You", () => {
+  it.each([true, false])("keeps the full approval review path (inline: %s)", async inlineResolvable => {
+    fixture.pending = [{ id: "approval", sourceKind: "approval", inlineResolvable,
+      subject: { id: "request-1", kind: "approval", title: "Review the complete proposal", href: "/PAP/approvals/request-1",
+        metadata: { approvalType: inlineResolvable ? "hire_agent" : "request_board_approval" } },
+      activityAt: new Date().toISOString() } as unknown as AttentionItem];
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter><CoordinatorNeedsYou /></MemoryRouter></QueryClientProvider>));
+    await flush(); await flush();
+    await click(inlineResolvable ? "View full request" : "Review request");
+    expect(fixture.navigate).toHaveBeenCalledWith("/PAP/approvals/request-1");
+    expect(fixture.approve).not.toHaveBeenCalled();
+    if (!inlineResolvable) expect([...container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Approve")).toBe(false);
+  });
   it("reveals and focuses a linked decision beyond the first rendering window, then consumes only its URL parameter", async () => {
     fixture.url = "/decisions?decisionId=target&q=kept";
     fixture.pending = Array.from({ length: 61 }, (_, index) => ({ ...fixture.pending[0], id: `decision-${index}`, sourceKind: "decision",

@@ -81,6 +81,7 @@ export interface IssueRecoveryActionCardProps {
   forcedState?: RecoveryCardCardState;
   /** Optional click handler for resolve menu actions. If omitted, the buttons are not rendered. */
   onResolve?: (outcome: RecoveryResolveOutcome) => void;
+  resolvePending?: boolean;
   /**
    * Optional handler for the workspace_validation "Re-issue on isolated workspace" action.
    * Rendered only for a git-worktree branch-incoherence divergence with a resolvable live ref.
@@ -989,6 +990,7 @@ export function IssueRecoveryActionCard({
   scheduledRetry = null,
   forcedState,
   onResolve,
+  resolvePending = false,
   onReissueIsolated,
   reissuePending = false,
   onReconcileForward,
@@ -1350,6 +1352,7 @@ export function IssueRecoveryActionCard({
                   variant="default"
                   data-testid="recovery-action-resolve-trigger"
                   aria-label="Resolve recovery"
+                  disabled={resolvePending}
                 >
                   Resolve…
                 </Button>
@@ -1367,7 +1370,8 @@ export function IssueRecoveryActionCard({
                     <button
                       key={option.outcome}
                       type="button"
-                      onClick={() => onResolve?.(option.outcome)}
+                      disabled={resolvePending}
+                      onClick={() => { if (!resolvePending) onResolve?.(option.outcome); }}
                       className={cn(
                         "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
                         "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",

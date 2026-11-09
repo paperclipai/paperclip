@@ -5,6 +5,11 @@ const item = (sourceKind: AttentionItem["sourceKind"], inlineResolvable = true, 
   ({ sourceKind, inlineResolvable, subject: { kind: "issue", metadata } } as AttentionItem);
 
 describe("inbox actionability", () => {
+  it("keeps board approvals that must be reviewed on their approval page", () => {
+    const approval = item("approval", false);
+    approval.subject.href = "/approvals/board-request";
+    expect(isActionableAttention(approval)).toBe(true);
+  });
   it.each([
     "native_session_cleanup_quarantined", "native_workspace_sync_out_retry_exhausted",
     "native_workspace_sync_out_unsafe_archive", "native_workspace_finalization_owner_unverified",

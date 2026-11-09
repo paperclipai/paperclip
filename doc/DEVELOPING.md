@@ -12,6 +12,8 @@ when an operator can resolve them through those controls. Notifications that
 only link to an agent or describe an automatic recovery are available in the
 ordinary attention feed and task diagnostics, without increasing this inbox's
 count. Completed and cancelled dependencies are not presented as current blockers.
+Board approvals that require their full approval page stay in the Inbox with a
+direct review action. Inline approvals also retain their full request link.
 
 Inbox controls use the existing domain APIs and retain their company, permission,
 governance and execution ownership checks. A rejected action remains visible with

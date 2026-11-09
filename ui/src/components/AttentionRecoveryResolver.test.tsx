@@ -8,7 +8,7 @@ import { AttentionRecoveryResolver } from "./AttentionRecoveryResolver";
 
 const api = vi.hoisted(() => ({ read: vi.fn(), resolve: vi.fn(), resolved: vi.fn() }));
 vi.mock("@/api/issues", () => ({ issuesApi: { recoveryActions: api.read, resolveRecoveryAction: api.resolve } }));
-vi.mock("./IssueRecoveryActionCard", () => ({ IssueRecoveryActionCard: ({ onResolve }: { onResolve: (value: string) => void }) => <button onClick={() => onResolve("todo")}>Try again</button> }));
+vi.mock("./IssueRecoveryActionCard", () => ({ IssueRecoveryActionCard: ({ onResolve }: { onResolve: (value: string) => void }) => <><button onClick={() => onResolve("todo")}>Try again</button><button onClick={() => onResolve("in_review")}>Send for review</button></> }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
@@ -47,4 +47,15 @@ it("does not offer actions on an already resolved recovery", async () => {
   await render();
   expect(container.textContent).toContain("no longer awaiting");
   expect(container.querySelector("button")).toBeNull();
+});
+it("submits only one recovery choice while the first request is unsettled", async () => {
+  let finish!: (value: object) => void;
+  api.resolve.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await render();
+  await act(async () => {
+    const buttons = container.querySelectorAll("button");
+    buttons[0]!.click(); buttons[1]!.click();
+  });
+  expect(api.resolve).toHaveBeenCalledOnce();
+  await act(async () => finish({})); await flush();
 });

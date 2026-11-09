@@ -2007,18 +2007,22 @@ describeEmbeddedPostgres("attention service", () => {
     await db.insert(issueRecoveryActions).values({ id: recoveryId, companyId, sourceIssueId: issueId,
       kind: "workspace_validation", status: "active", ownerType: "board", cause: "workspace_branch_diverged",
       fingerprint: recoveryId, nextAction: "Choose how the task workspace should continue." });
+    const boardApprovalId = randomUUID();
+    await db.insert(approvals).values({ id: boardApprovalId, companyId, type: "request_board_approval",
+      requestedByAgentId: workerId, status: "pending", payload: { title: "Review the governed request" } });
     const svc = attentionService(db);
     const operations = await svc.list(companyId, { userId: "board-user", all: true, allowUnscopedAll: true });
     expect(operations.items.some(item => item.subject.id === errorAgentId)).toBe(true);
     const options = { userId: "board-user", actionableOnly: true };
     const feed = await svc.list(companyId, { ...options, all: true, allowUnscopedAll: true });
-    expect(new Set(feed.items.map(item => item.subject.id))).toEqual(new Set([questionId, recoveryId]));
-    expect(feed.totalCount).toBe(2);
+    expect(new Set(feed.items.map(item => item.subject.id))).toEqual(new Set([questionId, recoveryId, boardApprovalId]));
+    expect(feed.items.find(item => item.subject.id === boardApprovalId)).toMatchObject({ inlineResolvable: false, subject: { kind: "approval" } });
+    expect(feed.totalCount).toBe(3);
     const summary = await svc.summary(companyId, options);
     const tasks = await svc.taskIndex(companyId, options);
-    expect(summary.totalCount).toBe(2);
+    expect(summary.totalCount).toBe(3);
     expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
-    expect(tasks.totalCount).toBe(2);
+    expect(tasks.totalCount).toBe(3);
     expect(tasks.taskIds).toEqual([issueId]);
     expect((await svc.list(companyId, { userId: "board-user" })).items.some(item => item.subject.id === errorAgentId)).toBe(true);
   });

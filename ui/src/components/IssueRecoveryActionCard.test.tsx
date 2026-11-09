@@ -258,6 +258,20 @@ describe("IssueRecoveryActionCard", () => {
     expect(onResolve).toHaveBeenCalledExactlyOnceWith("todo");
   });
 
+  it("disables recovery choices already open in the portal while resolution is pending", () => {
+    const action = buildAction({ kind: "active_run_watchdog", ownerType: "board", ownerAgentId: null, wakePolicy: null });
+    const onResolve = vi.fn();
+    const node = render(<IssueRecoveryActionCard action={action} onResolve={onResolve} />);
+    click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+    const choice = () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.includes("Try again"));
+    expect(choice()).toBeTruthy();
+    expect(node.contains(choice()!)).toBe(false);
+    act(() => root?.render(<IssueRecoveryActionCard action={action} onResolve={onResolve} resolvePending />));
+    expect(choice()?.disabled).toBe(true);
+    click(choice() ?? null);
+    expect(onResolve).not.toHaveBeenCalled();
+  });
+
   it("explains issue_graph_liveness in plain language", () => {
     const node = render(
       <IssueRecoveryActionCard
