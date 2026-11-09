@@ -2800,7 +2800,7 @@
       "chat-catalog-domains/internal-website-delivery.ts",
       "registered-artifact.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.website-download.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "minimumRunCount": 2,
@@ -4140,7 +4140,7 @@
       "../fixtures/connection-review-provider.ts",
       "chat-scenarios/questions-and-approvals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.identity.approve-tool-once.v2",
     "expectedRunCount": 4,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 2,
