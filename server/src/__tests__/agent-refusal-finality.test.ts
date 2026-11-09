@@ -91,6 +91,8 @@ describe("agent refusals that are final", () => {
       ["/api/approvals/{id}/approve", "post"],
       ["/api/approvals/{id}/reject", "post"],
     ] as const) expect(paths[path][method]["x-paperclip-authorization"], `${method} ${path}`).toEqual({ actor: "board" });
+    expect(paths["/api/companies/{companyId}/budget-incidents/{incidentId}/resolve"].post.description).toContain("[Open budgets](/<prefix>/activity/budgets)");
+    expect(paths["/api/agents/{agentId}/budgets"].patch.description).toContain("[Open budget](/<prefix>/agents/<agentId>/budgets)");
   });
 
   it("points the API catalog at the checked MCP setup route and the complete model lists", () => {
