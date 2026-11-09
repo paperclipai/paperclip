@@ -414,6 +414,19 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toHaveLength(0);
   });
 
+  // H1 bug B: a pause's stop is told apart from termination by the cause the
+  // pause records on each run it stops.
+  it("records what a pause stopped each active run for", async () => {
+    const agent = await hire();
+    await db.update(companies).set({ status: "paused", pauseReason: "budget" }).where(eq(companies.id, companyId));
+    await db.update(agents).set({ lifecycleState: "pausing", lifecycleHolds: ["company_paused"] }).where(eq(agents.id, agent.id));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "queued" }).returning();
+    await createLifecycleDriver(db, {} as never).runHost(await current(agent.id) as never);
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(stopped.status).toBe("cancelled");
+    expect(stopped.resultJson).toMatchObject({ pauseStop: { holds: ["company_paused"], companyPauseReason: "budget" } });
+  });
+
   it("runs the saved harness test and keeps a failed configuration out of ready", async () => {
     const driver = createLifecycleDriver(db, {} as never);
     const work = worker(driver.runHost);

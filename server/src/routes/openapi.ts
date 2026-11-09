@@ -8649,6 +8649,16 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/skills/{skillId}/update-diff",
+  tags: ["skills"],
+  summary: "Show what a pending skill source update changes (diff installed vs latest revision)",
+  description: "For a skill installed from a tracked GitHub source, compares the installed source revision (currentRef) with the latest tracked revision (latestRef) and returns each changed package file with a unified line diff: lines starting with \"-\" exist only in the installed revision and lines starting with \"+\" only in the latest one. hasUpdate is false and files is empty when the installed revision is already the latest. A file with change \"not_compared\" was left out of a revision's scan, and diffUnavailable says why a file has no diff. truncated is true when the response reached its size budget. Read-only; it does not apply the update. Use this to review an update before installing it.",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/skills/{skillId}/files",
   tags: ["skills"],
   summary: "List skill files",
@@ -9887,7 +9897,7 @@ registry.registerPath({
   tags: ["instance"],
   summary: "Trigger a database backup",
   description: "Instance admins only: agent credentials receive 403, and cloud-managed instances run backups for you. Automatic gzip-compressed backups run about hourly by default; instance admins set how long they are kept in the Backup retention section of the company-prefixed /company/settings page. The web UI has no control that creates or restores a backup. For a backup now, an instance admin calls this endpoint, or an operator with shell access to the server runs `paperclipai db:backup` (add --json for metadata). The result names a gzip-compressed SQL file (backupFile) on the server host and its size. Paperclip has no restore endpoint or command: to check a backup, an operator restores the file with psql into a separate, empty PostgreSQL database, never over the live one, and then checks the restored data.",
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── LLM text endpoints ───────────────────────────────────────────────────────

@@ -33,6 +33,7 @@ import {
   NativeSessionCleanupQuarantinedError,
   NativeSessionProtocolIntegrityError,
   isNativeRestartInterruption,
+  nativeRestartContinuationInFlight,
   nativeRestartInterruptedTurnId,
 } from "./contracts/native-session-backend.js";
 import {
@@ -2327,7 +2328,7 @@ export async function executeNativeSession(
   } | null = null;
   let reconciledRecoveryCheckpoint: PersistedNativeSession | null = null;
   const checkpointedInterruption = persistedSession && nativeRestartInterruptedTurnId(persistedSession);
-  if (checkpointedInterruption && persistedSession) {
+  if (persistedSession && (checkpointedInterruption || nativeRestartContinuationInFlight(persistedSession))) {
     // The turn failed because its process vanished; the conversation is still
     // usable. Keep its terminal fingerprint so replay cannot execute it twice.
     persistedSession = { ...persistedSession, terminal: null };

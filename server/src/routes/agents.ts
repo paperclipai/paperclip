@@ -5551,8 +5551,16 @@ export function agentRoutes(
     const requestedStatus = patchData.status;
     delete patchData.status;
     if (requestedStatus !== undefined && !["paused", "idle", "terminated"].includes(String(requestedStatus))) throw badRequest("Use an agent lifecycle command to change status");
-    // Termination is board-only and irreversible on every route, not just POST /terminate.
+    // Status changes are lifecycle commands. Apply the authority of the dedicated
+    // routes (POST /terminate, /pause, /resume) so PATCH is never a way around them.
     if (requestedStatus === "terminated") await assertBoardCanTerminateAgent(req, existing);
+    if (requestedStatus === "paused") assertBoard(req);
+    if (requestedStatus === "idle") {
+      await assertCanResumeAgent(req, existing);
+      if (existing.orgChainHealth?.status === "invalid_org_chain") {
+        throw conflict(existing.orgChainHealth.repairGuidance ?? "Repair this agent's reporting chain before resuming it");
+      }
+    }
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     // The apply-existing flag is not an agent column. The server binds the fixed

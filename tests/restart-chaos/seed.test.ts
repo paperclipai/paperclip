@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { cloneWorkspaceRepository, createFixtureRepository, seedChaosLab } from "./seed.js";
+import { cloneWorkspaceRepository, createFixtureRepository, seedChaosLab, waitForAgentsReady } from "./seed.js";
 import { Timeline } from "./timeline.js";
 
 type Call = { method: string; route: string; body?: unknown };
@@ -18,6 +18,7 @@ function fakeApi(experimentalResponse: (body: Record<string, unknown>) => Record
     get: async (route: string) => {
       calls.push({ method: "GET", route });
       if (route.includes("/environments")) return [{ id: "environment-1", driver: "local" }];
+      if (route.startsWith("/api/agents/")) return { id: route.split("/")[3], lifecycleState: "ready" };
       throw new Error(`unexpected GET ${route}`);
     },
     post: async (route: string, body?: unknown) => {
@@ -124,5 +125,37 @@ describe("cloneWorkspaceRepository", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("waitForAgentsReady", () => {
+  it("waits for each new agent to finish lifecycle verification and records how long it took", async () => {
+    let reads = 0;
+    const api = { get: async () => ({ lifecycleState: ++reads >= 3 ? "ready" : "verifying" }) } as unknown as ChaosApi;
+    const timeline = new Timeline(null);
+    await waitForAgentsReady(api, { codex: { id: "a1" } }, timeline, 5_000, 1);
+    expect(reads).toBe(3);
+    expect(timeline.entries.find(entry => entry.kind === "seed_agent_ready")).toMatchObject({ adapter: "codex", agentId: "a1" });
+  });
+
+  it("measures each agent's verification from its own creation and stops waiting when the harness is interrupted", async () => {
+    const api = { get: async () => ({ lifecycleState: "ready" }) } as unknown as ChaosApi;
+    const timeline = new Timeline(null);
+    const now = Date.now();
+    await waitForAgentsReady(api, { codex: { id: "a1", createdAt: now - 9_000 }, claude: { id: "a2", createdAt: now - 1_000 } }, timeline, 5_000, 1);
+    const ready = Object.fromEntries(timeline.entries.filter(entry => entry.kind === "seed_agent_ready").map(entry => [entry.adapter, entry.readyAfterMs as number]));
+    expect(ready.codex).toBeGreaterThanOrEqual(9_000);
+    expect(ready.claude).toBeGreaterThanOrEqual(1_000);
+    expect(ready.claude).toBeLessThan(9_000);
+    const stuck = { get: async () => ({ lifecycleState: "verifying" }) } as unknown as ChaosApi;
+    let polls = 0;
+    await expect(waitForAgentsReady(stuck, { codex: { id: "a3" } }, new Timeline(null), 60_000, 1, () => ++polls > 2)).rejects.toThrow(/interrupted/);
+  });
+
+  it("fails the wave when an agent fails verification or never becomes ready", async () => {
+    const failed = { get: async () => ({ lifecycleState: "verifying", lifecycleError: "hello probe failed" }) } as unknown as ChaosApi;
+    await expect(waitForAgentsReady(failed, { claude: { id: "a2" } }, new Timeline(null), 5_000, 1)).rejects.toThrow(/hello probe failed/);
+    const stuck = { get: async () => ({ lifecycleState: "verifying" }) } as unknown as ChaosApi;
+    await expect(waitForAgentsReady(stuck, { claude: { id: "a3" } }, new Timeline(null), 20, 5)).rejects.toThrow(/never reached lifecycleState ready/);
   });
 });

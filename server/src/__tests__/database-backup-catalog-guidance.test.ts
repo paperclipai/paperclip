@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { buildOpenApiDocument } from "../routes/openapi.js";
 import { searchRunnerApi } from "../services/native-runtime/runner-api-catalog.js";
 
 // An agent asked to back up and verify a restore cannot do either. Its API search must give it the real operator
@@ -12,4 +13,12 @@ it.each(["backup instance restore snapshot", "database backups list restore"])("
   expect(description).toContain("Backup retention section of the company-prefixed /company/settings page");
   expect(description).toContain("paperclipai db:backup");
   expect(description).toContain("separate, empty PostgreSQL database, never over the live one");
+});
+
+// The route answers a successful manual backup with 201. This guards the published document, which agents and
+// clients read; the registration and the CREATED_OPERATIONS fixup in openapi.ts both supply that 201.
+it("publishes the status the backup route returns on success", () => {
+  const responses = buildOpenApiDocument().paths["/api/instance/database-backups"].post.responses;
+  expect(Object.keys(responses)).toContain("201");
+  expect(Object.keys(responses)).not.toContain("200");
 });
