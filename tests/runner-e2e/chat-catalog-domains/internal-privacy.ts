@@ -201,9 +201,17 @@ function shareProject(): ChatCatalogCase {
       await ctx.input.page.getByText("Configuration", { exact: true }).last().click();
       await ctx.input.page.getByRole("button", { name: "Manage access", exact: true }).click();
       const dialog = ctx.input.page.getByRole("dialog", { name: "Private project access", exact: true });
-      await dialog.getByRole("combobox").click();
-      await ctx.input.page.getByPlaceholder(/Search people and agents/).last().fill("Riley");
-      await ctx.input.page.getByRole("option", { name: /Riley/ }).first().click();
+      // Opening the dialog focuses the person picker, which opens its search panel by itself.
+      // Click the picker only while that panel is still closed; a second click would close it.
+      const picker = dialog.getByRole("combobox");
+      const pickerPanel = ctx.input.page.getByRole("dialog", { name: "Add a person or agent", exact: true });
+      const search = pickerPanel.getByPlaceholder("Search people and agents", { exact: true });
+      await expect(async () => {
+        if (!await search.isVisible()) await picker.click();
+        await expect(search).toBeVisible({ timeout: 2_000 });
+      }).toPass({ timeout: 30_000 });
+      await search.fill("Riley");
+      await pickerPanel.getByRole("option", { name: /Riley/ }).first().click();
       await dialog.getByRole("button", { name: "Add", exact: true }).click();
       await pollUntil({ label: "Owner-added Riley project membership", deadlineAt: Date.now() + 30_000,
         load: () => ctx.input.api.get<AccessMember[]>(`/api/projects/${p.id}/access-members`),
