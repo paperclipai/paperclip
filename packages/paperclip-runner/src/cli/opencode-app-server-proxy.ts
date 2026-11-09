@@ -217,11 +217,13 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
       // The inner OpenCode driver publishes session-scoped model metadata as
       // an item before any turn exists. The outer Codex protocol facade emits
       // its own model item, so forwarding this unbound duplicate would quite
-      // correctly trip the facade's strict turn-binding validator.
+      // correctly trip the facade's strict turn-binding validator. Token
+      // deltas runnerd does not consume stay here; see the predicate.
       if (
         !shouldForwardOpenCodeProxyItem({
+          eventType: event.eventType,
           turnId: event.turnId,
-          kind: payload.kind,
+          payload,
         })
       )
         continue;
