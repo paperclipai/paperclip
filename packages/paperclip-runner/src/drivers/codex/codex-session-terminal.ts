@@ -223,9 +223,11 @@ export function mapTerminalTurn(
     }
     state.emit(eventType, payload, { turnId });
     finalize(state, status);
-    if (((status === "failed" && isNativeRestartInterruption(turn.error)) ||
-        (status === "interrupted" && isNativeReceiptLimitInterruption(turn.error))) && state.result === null &&
-        (!state.dispositionOnlyRecoveryConsumed || state.dispositionOnlyRecoveryTurnId === turnId)) {
+    const restartContinuationAvailable = status === "failed" && isNativeRestartInterruption(turn.error) &&
+      (!state.dispositionOnlyRecoveryConsumed || state.dispositionOnlyRecoveryTurnId === turnId);
+    const capacityContinuationAvailable = status === "interrupted" && isNativeReceiptLimitInterruption(turn.error) &&
+      !state.dispositionOnlyRecoveryConsumed;
+    if (state.result === null && (restartContinuationAvailable || capacityContinuationAvailable)) {
       // Orchestration may use the paid restart attempt for one same-thread
       // continuation. Its accepted turn id uses the existing durable marker.
       // A later restart that loses that continuation turn itself leaves its
