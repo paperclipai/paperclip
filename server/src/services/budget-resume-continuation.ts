@@ -95,7 +95,11 @@ export async function markBudgetCancelledWorkForResume(db: Db, input: {
         and ${input.scopeType === "agent"
           ? sql`a.id = ${input.scopeId} and (${pauseCause}->'holds') ? 'budget'`
           : sql`(${pauseCause}->'holds') ? 'company_paused' and ${pauseCause}->>'companyPauseReason' = 'budget'`})`;
-    const stoppedByThisScope = or(budgetCancellationScopePredicate(input), lifecycleStop)!;
+    // A queued run that admission cancelled for this budget's board-owned block.
+    const admissionStop = and(
+      sql`${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'scopeType' = ${input.scopeType}`,
+      sql`${heartbeatRuns.resultJson}->'budgetAdmissionStop'->>'scopeId' = ${input.scopeId}`)!;
+    const stoppedByThisScope = or(budgetCancellationScopePredicate(input), lifecycleStop, admissionStop)!;
     // A person's Stop stays stopped, even if budget enforcement also fenced
     // the run while that Stop was being delivered.
     const stoppedByPerson = sql`(coalesce(${heartbeatRuns.resultJson}->'cancellation'->'initiator'->>'type', '') = 'user'

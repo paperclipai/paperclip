@@ -243,6 +243,18 @@ describe.skipIf(!support.supported)("resuming after a budget hard stop", () => {
     expect(await claimOf(task.run.id)).toMatchObject({ state: "abandoned", reason: "chat_failed_run_retry_not_authorized" });
   });
 
+  it("continues a queued run that admission cancelled for this budget", async () => {
+    const scope = await seedScope("admission-stop");
+    const task = await seedTask(scope, { budgetStop: false });
+    await db.update(heartbeatRuns).set({ resultJson: { stopReason: "cancelled",
+      startupCancellation: { requestedAt: new Date(Date.now() - 30_000).toISOString(), errorCode: "cancelled" },
+      budgetAdmissionStop: { scopeType: "company", scopeId: scope.company.id } } }).where(eq(heartbeatRuns.id, task.run.id));
+    await resume(scope);
+    await deliverBudgetResumeContinuations(db);
+    expect(await continuations(scope.company.id)).toEqual([expect.objectContaining({
+      payload: expect.objectContaining({ issueId: task.issue.id }) })]);
+  });
+
   it("never claims a run a manual agent pause stopped", async () => {
     const scope = await seedScope("manual-pause");
     const task = await seedTask(scope, { lifecycleStop: "manual" });

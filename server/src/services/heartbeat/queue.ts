@@ -924,6 +924,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // accounting re-notifies run dispatch. A reached hard stop is the board's.
       if (!run.startedAt && !(await isBoardOwnedBudgetBlock(db, run.companyId, budgetBlock))) return null;
       await cancelRunInternal(run.id, budgetBlock.reason);
+      // Record which budget stopped this queued run, so Raise budget and resume
+      // continues it (budget-resume-continuation.ts). The run is terminal now.
+      await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
+        || jsonb_build_object('budgetAdmissionStop', jsonb_build_object('scopeType', ${budgetBlock.scopeType}::text,
+          'scopeId', ${budgetBlock.scopeId}::text))` })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled")));
       return null;
     }
 
