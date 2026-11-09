@@ -184,17 +184,17 @@ function relayedHumanDecisionAllowed(
 }
 
 /**
- * Denial for a human-only card addressed to someone other than the person the
- * agent is answering. Agents relay this to the asker, so it names who resolves
- * the card and tells them not to send the asker to the card's controls.
+ * Denial for a human-only card addressed to one person. Agents relay it in
+ * chat, so it names who resolves the card. Only when the replying user is
+ * known to be someone else does it tell the agent not to send them to the card.
  */
-export function addressedHumanOnlyDenialMessage(addresseeName: string | null | undefined) {
-  const name = addresseeName?.trim();
-  const who = name ? name : "its addressee (addresseeUserId)";
-  return `This issue-thread interaction is human-only and addressed to ${who}. `
-    + `Only ${name ? name : "the addressee"} can accept or decline it from the card; no other member, board user or agent can resolve it for them, `
-    + "and a chat message from someone else does not count as their decision. This denial is final. "
-    + `Tell the person asking that the card waits on ${name ? name : "the addressee"}, name ${name ? "them" : "the addressee"} as the only one who can resolve it, `
+export function addressedHumanOnlyDenialMessage(addresseeName: string | null | undefined, askerIsNotAddressee: boolean) {
+  const name = addresseeName?.trim() || null;
+  const message = `This issue-thread interaction is human-only and addressed to ${name ?? "one person, its addressee (addresseeUserId)"}. `
+    + `Only ${name ?? "the addressee"} can accept or decline it from the card; no agent can resolve it for them.`;
+  if (!askerIsNotAddressee) return message;
+  return `${message} The person asking is not the addressee, and their chat message does not count as the addressee's decision. `
+    + `This denial is final. Tell them the card waits on ${name ?? "the addressee"}, name ${name ? "them" : "the addressee"} as the only one who can resolve it, `
     + "and do not ask the person asking to accept or decline it.";
 }
 
@@ -301,14 +301,16 @@ export function evaluateIssueThreadInteractionResolverAudience(
       return { allowed: true, effectiveResolverPolicy, reason: "allow_relayed_human" };
     }
     const addresseeUserId = input.interaction.addresseeUserId;
-    if (addresseeUserId && input.actor.type === "agent" && input.actor.relayedHumanUserId !== addresseeUserId) {
+    if (addresseeUserId && input.actor.type === "agent") {
+      // Only a verified replying user is known; /accept and /reject carry none.
+      const askerIsNotAddressee = Boolean(input.actor.relayedHumanUserId) && input.actor.relayedHumanUserId !== addresseeUserId;
       return {
         allowed: false,
         effectiveResolverPolicy,
         status: 403,
         code: "interaction_human_only",
-        message: addressedHumanOnlyDenialMessage(null),
-        details: { addresseeUserId },
+        message: addressedHumanOnlyDenialMessage(null, askerIsNotAddressee),
+        details: { addresseeUserId, askerIsNotAddressee },
       };
     }
     return {

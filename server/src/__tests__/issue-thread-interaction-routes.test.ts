@@ -2815,7 +2815,8 @@ describe("issue thread interaction routes", () => {
     });
     expect(res.body.error).toContain("addressed to Riley.");
     expect(res.body.error).toContain("Only Riley can accept or decline it");
-    expect(res.body.error).toContain("do not ask the person asking to accept or decline it");
+    // /accept carries no verified replying user, so the advice stays neutral.
+    expect(res.body.error).not.toContain("do not ask the person asking");
     expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 
