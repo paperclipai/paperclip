@@ -4,7 +4,7 @@ import type { RemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "./remote-workspace-transport.js";
-import { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS } from "../modules/run-dispatch/domain/wake-context.js";
+import { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS } from "../modules/run-dispatch/index.js";
 
 const object = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
