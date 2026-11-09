@@ -1,5 +1,5 @@
 {
-  "id": "c228b552-bcba-4fe7-a2bb-b6c00bc77d6e",
+  "id": "d54bfeb4-dedb-4f8b-9195-a4d4aa67d71f",
   "prevId": "64e8be1e-e0cb-4cd8-85e0-0fdcce5eafde",
   "version": "7",
   "dialect": "postgresql",
@@ -1221,12 +1221,6 @@
         },
         "run_id": {
           "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "api_key_id": {
-          "name": "api_key_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -35565,6 +35559,27 @@
           ],
           "isUnique": false,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_native_workspace_idx": {
+          "name": "heartbeat_runs_company_native_workspace_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"runner_profile_json\"->'nativeWorkspaceSync'->>'workspaceId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },

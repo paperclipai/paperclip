@@ -1,6 +1,6 @@
 {
-  "id": "30fd1f52-91a9-4b57-a839-71b1acf5df80",
-  "prevId": "c228b552-bcba-4fe7-a2bb-b6c00bc77d6e",
+  "id": "445ff8ad-ea62-4405-97aa-4904eeb4ccf7",
+  "prevId": "d54bfeb4-dedb-4f8b-9195-a4d4aa67d71f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -35571,6 +35571,27 @@
           ],
           "isUnique": false,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_native_workspace_idx": {
+          "name": "heartbeat_runs_company_native_workspace_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"runner_profile_json\"->'nativeWorkspaceSync'->>'workspaceId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
