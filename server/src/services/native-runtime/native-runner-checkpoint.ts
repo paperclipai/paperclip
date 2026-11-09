@@ -1,4 +1,5 @@
 import { readNativeCheckpointRetirement } from "./native-runner-checkpoint-retirement.js";
+import { NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
@@ -349,10 +350,12 @@ export async function listExpiredNativeRunnerAuthorities(db: Db, now: Date, runI
       eq(heartbeatRuns.status, "running"), eq(nativeRunFinalizations.phase, "observed"),
       isNull(nativeRunFinalizations.resultId),
       or(isNull(nativeRunFinalizations.leaseExpiresAt), lte(nativeRunFinalizations.leaseExpiresAt, now)),
-      exists(db.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints).where(and(
+      or(exists(db.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints).where(and(
         eq(nativeRunnerCheckpoints.runId, nativeRunFinalizations.runId),
         eq(nativeRunnerCheckpoints.issueId, nativeRunFinalizations.issueId),
-        eq(nativeRunnerCheckpoints.companyId, nativeRunFinalizations.companyId))))));
+        eq(nativeRunnerCheckpoints.companyId, nativeRunFinalizations.companyId)))),
+        and(sql`${heartbeatRuns.runnerProfileJson}->'nativePreparationFencingVersion' = ${JSON.stringify(NATIVE_PREPARATION_FENCING_VERSION)}::jsonb`,
+          isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt)))));
   return rows.map(row => row.runId);
 }
 

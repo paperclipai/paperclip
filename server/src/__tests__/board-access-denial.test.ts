@@ -43,6 +43,8 @@ describe("board-only denial", () => {
     ["post", "/api/plugins/install", "[Open plugin settings](/<prefix>/company/settings/instance/plugins)"],
     ["post", `/api/plugins/${AGENT_ID}/config`, `[Open the plugin's settings](/<prefix>/company/settings/instance/plugins/${AGENT_ID})`],
     ["post", "/api/plugins/acme.website-preview/disable", "[Open the plugin's settings](/<prefix>/company/settings/instance/plugins/acme.website-preview)"],
+    ["post", `/api/projects/${AGENT_ID}/access-members`, `[Open the project's access settings](/<prefix>/projects/${AGENT_ID}/configuration)`],
+    ["delete", `/api/projects/${AGENT_ID}/access-members/m-1`, `[Open the project's access settings](/<prefix>/projects/${AGENT_ID}/configuration)`],
   ] as const)("tells an agent %s %s is final and names the board page", async (method, path, link) => {
     const res = await request(createApp(agentActor))[method](path).expect(403);
     expect(res.body.error).toBe("Board access required");
@@ -51,6 +53,30 @@ describe("board-only denial", () => {
     expect(res.body.remediation).toContain("do not search for one");
     expect(res.body.remediation).toContain("reply now");
     expect(res.body.remediation).toContain(link);
+  });
+
+  it("links the resolved project when an agent names the project by its short reference", async () => {
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = agentActor;
+      next();
+    });
+    const router = express.Router();
+    router.param("id", (req, _res, next, rawId) => {
+      req.params.id = rawId === "acquisition" ? AGENT_ID : rawId;
+      next();
+    });
+    router.post("/projects/:id/access-members", (req, res) => {
+      assertBoard(req);
+      res.json({ ok: true });
+    });
+    app.use("/api", router);
+    app.use(errorHandler);
+    const resolved = await request(app).post("/api/projects/acquisition/access-members").expect(403);
+    expect(resolved.body.remediation).toContain(`[Open the project's access settings](/<prefix>/projects/${AGENT_ID}/configuration)`);
+    const unresolved = await request(app).post("/api/projects/unknown-project/access-members").expect(403);
+    expect(unresolved.body.remediation).toContain("Link a page only if you already know its route");
+    expect(unresolved.body.remediation).not.toContain("](/");
   });
 
   it("falls back to a general board instruction when no page is known", async () => {
