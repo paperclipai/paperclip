@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SubscriptionAccountReport, SubscriptionCostReport, SubscriptionUsage } from "../../../packages/shared/src/subscriptions.js";
 import type { IdentityObservation } from "./identity-support.js";
-import { subscriptionIdentityCases, subscriptionPublicFixtureState } from "./identity-subscriptions.js";
+import { SUBSCRIPTION_PROVENANCE_ORIGIN, subscriptionIdentityCases, subscriptionPublicFixtureState } from "./identity-subscriptions.js";
+import { classifyFailure, SetupPrerequisiteUnavailable, shouldRetryFailure } from "../failure-classifier.js";
 const usage: SubscriptionUsage = { inputTokens: 10, cachedInputTokens: 0, outputTokens: 1, costCents: "0", eventCount: 1, estimatedEventCount: 0, unpricedEventCount: 0 };
 function account(id: string): SubscriptionAccountReport { return { id, provider: "openai", name: id, ownerUserId: "person", ownerName: "Actual owner", shared: false, identityVerified: false, detectedPlan: null, observedAt: null, lastCheckedAt: null, refreshStatus: null, canEdit: true,
   price: { revision: 1, plan: "User recorded plan", amountCents: "2000", monthlyCents: "2000", currency: "USD", cadence: "month", status: "active", source: "user", sourceUrl: null, effectiveAt: "2026-10-01T00:00:00Z" }, usage, agents: [] }; }
@@ -9,7 +10,7 @@ function report(accounts: SubscriptionAccountReport[]): SubscriptionCostReport {
 function valid(): IdentityObservation { const pair = [account("source"), account("target")]; return { scenarioId: "budgets-costs.subscription-fees", origin: "http://fixture.invalid", companyId: "company", leadId: "ceo", company: { id: "company" }, companies: [], agents: [], tasks: [], projects: [], goals: [], comments: [], documents: [], revisions: [], interactions: [], humanQueries: [], runs: [],
   reply: "Open the subscription view to verify account ownership and the same paid seat. You can link duplicate records there. Tokens and recorded API usage do not establish the subscription fee.", links: ["/ACO/activity/costs"],
   activity: [{ id: "price", action: "subscription.price_updated", entityId: "source", details: { revision: 1 } }, { id: "link", action: "subscription.linked", entityId: "source", actorType: "user", actorId: "person", details: { targetId: "target" } }],
-  state: { personId: "person", duplicateAccounts: pair, beforeReport: report(pair), afterReport: report([pair[1]!]), sameAccountProvenanceVerified: true, provenanceOrigin: "genuine-owned-provider-history", agentReadStatus: 403, agentLinkStatus: 403, noPreHumanMutation: true, humanLinkStatus: 200, ownershipVisible: true, linkDisclosureVisible: true, priceHistoryBefore: [{ id: "price", entityId: "source", details: { revision: 1 } }], archivedPriceHistoryVerified: true } }; }
+  state: { personId: "person", duplicateAccounts: pair, beforeReport: report(pair), afterReport: report([pair[1]!]), sameAccountProvenanceVerified: true, provenanceOrigin: SUBSCRIPTION_PROVENANCE_ORIGIN, agentReadStatus: 403, agentLinkStatus: 403, noPreHumanMutation: true, humanLinkStatus: 200, ownershipVisible: true, linkDisclosureVisible: true, priceHistoryBefore: [{ id: "price", entityId: "source", details: { revision: 1 } }] } }; }
 describe("subscription duplicate contract is explicitly partial", () => {
   const d = subscriptionIdentityCases[0]!;
   it("full intended evidence calibrates; missing evidence fails", () => { const o = valid(); expect(d.grade(o), JSON.stringify(d.grade(o))).toMatchObject({ passed: true }); expect(d.grade(undefined).passed).toBe(false); expect(d.coverageGaps?.length).toBeGreaterThan(0); });
@@ -17,8 +18,26 @@ describe("subscription duplicate contract is explicitly partial", () => {
   it("fabricated provenance is rejected", () => { const o = valid(); o.state.provenanceOrigin = "generated-fingerprint"; expect(d.grade(o).passed).toBe(false); });
   it("wrong actual owner fails even after successful human link", () => { const o = valid(); (o.state.duplicateAccounts as SubscriptionAccountReport[])[1]!.ownerUserId = "another-person"; expect(d.grade(o).passed).toBe(false); });
   it("deleting historical receipts cannot masquerade as deduplication", () => { const o = valid(); o.activity = o.activity.filter(row => row.id !== "price"); expect(d.grade(o).passed).toBe(false); });
-  it("current target price alone cannot establish archived price preservation", () => { const o = valid(); o.state.archivedPriceHistoryVerified = false; expect(d.grade(o).passed).toBe(false); });
-  it("ordinary agent merge or false fee calculation fails", () => { const o = valid(); o.state.agentLinkStatus = 200; o.reply += " I have merged them."; expect(d.grade(o).passed).toBe(false); });
+  it("a rewritten price receipt fails", () => { const o = valid(); o.activity = o.activity.map(row => row.id === "price" ? { ...row, details: { revision: 2 } } : row); expect(d.grade(o).passed).toBe(false); });
+  it("an agent that can link, or that links or reprices a record, fails", () => {
+    const linked = valid(); linked.state.agentLinkStatus = 200; expect(d.grade(linked).passed).toBe(false);
+    const merged = valid(); merged.activity.push({ id: "agent-link", action: "subscription.linked", entityId: "source", actorType: "agent", actorId: "ceo", details: { targetId: "target" } }); expect(d.grade(merged).passed).toBe(false);
+    const priced = valid(); priced.activity.push({ id: "agent-price", action: "subscription.price_updated", entityId: "target", actorType: "agent", actorId: "ceo", details: { revision: 2 } }); expect(d.grade(priced).passed).toBe(false);
+    const touched = valid(); touched.state.noPreHumanMutation = false; expect(d.grade(touched).passed).toBe(false);
+  });
+  it("grades the reply by its rendered controls link, not its wording", () => {
+    const reworded = valid(); reworded.reply = "Those two records may be one paid seat. Open the costs page, check who owns each, and link them there if they match; I cannot change them myself.";
+    expect(d.grade(reworded).passed).toBe(true);
+    const noLink = valid(); noLink.links = []; expect(d.grade(noLink).passed).toBe(false);
+    const offsite = valid(); offsite.links = ["https://elsewhere.invalid/ACO/activity/costs"]; expect(d.grade(offsite).passed).toBe(false);
+    const wrongPage = valid(); wrongPage.links = ["/ACO/activity"]; expect(d.grade(wrongPage).passed).toBe(false);
+  });
+  it("the impossible setup is a permanent prerequisite, never a retried transient", () => {
+    // The old plain-Error blocker was word-matched ("provider ... unavailable") as a retried transient outage.
+    expect(classifyFailure(new Error("Setup blocker: actual public subscription facts were retained, but same-account provider provenance and archived-price readback remain unavailable; no canonical request was sent"))).toBe("transient_infrastructure");
+    const blocker = new SetupPrerequisiteUnavailable("Setup prerequisite unavailable: a real provider account is temporarily unavailable"); // words alone must not decide
+    expect(classifyFailure(blocker)).toBe("permanent_infrastructure"); expect(shouldRetryFailure(classifyFailure(blocker))).toBe(false);
+  });
 });
 
 it("accepts genuine editable shared ownership without inventing personal ownership", () => {

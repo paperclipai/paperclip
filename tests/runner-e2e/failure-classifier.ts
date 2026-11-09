@@ -20,8 +20,21 @@ const CANDIDATE =
 const SANDBOX_TRANSFER_TIMEOUT =
   /RPC call "environmentSync(?:In|Out)" timed out after \d+ms/i;
 
+/** A case fixture proved its required starting state cannot be created on this
+ * lane (no supported product path, or a missing operator-supplied account).
+ * Retrying cannot change that, so it is never transient, whatever the wording. */
+export class SetupPrerequisiteUnavailable extends Error {
+  readonly failureClass = "permanent_infrastructure" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "SetupPrerequisiteUnavailable";
+  }
+}
+
 export function classifyFailure(error: unknown): FailureClass {
   if (error instanceof ObservedStateTimeout || error instanceof RemoteAdmissionReadError) return error.failureClass;
+  // Matched by error type (by name, so a second module instance still counts), never by message words.
+  if (error instanceof Error && error.name === "SetupPrerequisiteUnavailable") return "permanent_infrastructure";
   const message =
     error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   if (/browser bootstrap failed before task creation/i.test(message))
