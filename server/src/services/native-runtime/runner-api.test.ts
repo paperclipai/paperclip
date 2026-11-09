@@ -820,6 +820,8 @@ describe("runner API request boundary", () => {
     const call = { operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, query: {}, responseText: { limitBytes: 8192 } };
     await expect(executeRunnerApi(call, context, io(request))).rejects.toThrow(/not sent.*requires body.*name.*Received arguments: operationId, pathParams, query, responseText/);
     expect(() => validateRunnerApiCall({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: {} }, context)).not.toThrow();
+    // Recovery validates saved calls without dispatch: an older accepted body-less PATCH stays readable.
+    expect(() => validateRunnerApiCall({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" } }, context)).not.toThrow();
     expect(request).not.toHaveBeenCalled();
   });
   it("rejects binary, invalid UTF-8 and offsets that split text", async () => {
