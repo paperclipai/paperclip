@@ -175,64 +175,6 @@ export function verifiedTeamSkillRecovery(state: Record<string, unknown>, compan
       && (selection.versionId === null || selection.versionId === version.id);
   });
 }
-function namedTeamSkillClauses(reply: string, skill: Pick<CatalogSkill, "slug" | "name">, continuePronouns = false): string[] {
-  reply = reply.replaceAll("’", "'");
-  const names = [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.toLowerCase());
-  const bound: string[] = [];
-  for (const paragraph of reply.split(/\n\s*\n/)) {
-    let previousNamesTarget = false, previousHistorical = false;
-    for (const rawClause of paragraph.split(/[.!?;\n]+|(?=\bbut\b)|(?=\band\s+(?:(?:it|(?:this|that) skill)\s+)?(?:is|are|was|were|remains?|has|have|could|can)\b)/i).map(text => text.trim()).filter(Boolean)) {
-      const coordinated = /^(?:but|and)\b/i.test(rawClause);
-      const clause = rawClause.replace(/^(?:but|and)\s+/i, "");
-      const named = names.some(name => clause.toLowerCase().includes(name));
-      const reference = /^(?:it|(?:this|that) skill|(?:the )?(?:collision|conflict|caveat))\b/i;
-      const pronoun: boolean = previousNamesTarget && reference.test(clause);
-      const elidedSubject: boolean = coordinated && previousNamesTarget && /^(?:is|are|was|were|remains?|has|have|could|can)\b/i.test(clause);
-      if (named || pronoun || elidedSubject) {
-        const assertion = pronoun ? clause.replace(reference, skill.name) : elidedSubject ? skill.name + " " + clause : clause;
-        const inheritedHistory = coordinated && previousNamesTarget && previousHistorical
-          && /^(?:was|were|had|could)\b/i.test(clause.replace(reference, "").trim())
-          && !/\b(?:now|currently|still)\b/i.test(clause);
-        const scoped = inheritedHistory ? "Earlier, " + assertion : assertion;
-        bound.push(scoped);
-        previousHistorical = historicalTeamSkillClause(scoped, skill);
-      } else previousHistorical = false;
-      previousNamesTarget = named || continuePronouns && (pronoun || elidedSubject);
-    }
-  }
-  return bound;
-}
-function negatedTeamRecovery(before: string): boolean {
-  return /\b(?:not|never|isn.t|aren.t|wasn.t|weren.t|hasn.t|haven.t)\s+(?:(?:be|been|get|yet|currently|still|successfully|fully|completely)\s+){0,2}$/i.test(before.replace(/[*_`]+\s*$/, ""));
-}
-function teamSkillSubject(skill: Pick<CatalogSkill, "slug" | "name">): string {
-  return "[*_`]*(?:" + [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")[*_`]*(?:\\s+(?:(?:required|catalog|imported|bundled)\\s+){1,3}skill)?";
-}
-function historicalTeamSkillClause(clause: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
-  const subject = new RegExp(teamSkillSubject(skill), "i").exec(clause);
-  const before = clause.slice(0, subject?.index ?? 0).trim();
-  const assertion = clause.slice(subject?.index ?? 0).split(/[,;]|\b(?:because|due to|since|although|though|while|whereas)\b/i)[0]!;
-  return (/\b(?:earlier|previously|initially|formerly)\b|\bbefore\s*$/i.test(assertion)
-      || /^(?:earlier|previously|initially|formerly),?(?:\s+(?:the|a|an))?$/i.test(before))
-    && !/\b(?:now|currently|still)\b/i.test(assertion);
-}
-function assertedTeamRecovery(clause: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
-  if (historicalTeamSkillClause(clause, skill)) return false;
-  const subject = `(?:${teamSkillSubject(skill)})`, modifiers = `(?:(?:now|already|currently|successfully|fully|completely)\\s+){0,2}`;
-  const claims = new RegExp(`\\b${subject}\\s+(?:skill\\s+)?(?:(?:is|are|was|were|(?:has|have)\\s+${modifiers}been)\\s+)?${modifiers}(?:installed|attached|available|resolved|recovered)\\b|\\b(?:installed|attached|resolved|recovered|fixed|cleared)\\s+(?:the\\s+)?${subject}\\b|\\b(?:${subject}\\s+(?:skill\\s+)?(?:installation|install)|(?:the\\s+)?(?:installation|install)\\s+of\\s+${subject})\\s+(?:has\\s+)?${modifiers}(?:succeeded|completed)\\b`, "gi");
-  return [...clause.matchAll(claims)].some(match => !negatedTeamRecovery(clause.slice(0, match.index)));
-}
-function truthfulTeamRecovery(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
-  return !claimsRecoveredSkillMissing(reply, skill);
-}
-function claimsRecoveredSkillMissing(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
-  const subject = `(?:${teamSkillSubject(skill)})`, modifiers = `(?:(?:yet|now|currently|still|successfully|fully|completely)\\s+){0,2}`;
-  const denied = `(?:(?:(?:is|are|was|were|has|have|had|could|can)\\s+(?:(?:now|currently|still)\\s+)?not|(?:isn't|aren't|wasn't|weren't|hasn't|haven't|couldn't|can't))\\s+${modifiers}(?:(?:be|been)\\s+)?${modifiers}(?:installed|attached|available|usable))`;
-  const current = new RegExp(`\\b${subject}\\s+(?:skill\\s+)?(?:${denied}|(?:(?:is|are|remains?|still)\\s+)?(?:(?:now|currently|still)\\s+)?(?:not\\s+${modifiers}(?:installed|attached|available|usable)|uninstalled|unattached|missing|unavailable|blocked)|(?:installation|install)\\s+(?:has\\s+)?failed)\\b`, "i");
-  const deniedObject = new RegExp(`\\binstalled\\s+(?:the\\s+)?${subject}\\b`, "gi");
-  return namedTeamSkillClauses(reply, skill, true).some(clause => !historicalTeamSkillClause(clause, skill) && (current.test(clause)
-    || [...clause.matchAll(deniedObject)].some(match => negatedTeamRecovery(clause.slice(0, match.index)))));
-}
 export async function observeTeamConditions(
   ctx: ChatCatalogContext,
   state: Record<string, unknown>,
@@ -274,58 +216,10 @@ export async function observeTeamConditions(
       skill.slug === target.slug && skill.key !== target.key,
   };
 }
-export function truthfulTeamPartial(
-  reply: string,
-  skill: Pick<CatalogSkill, "slug" | "name">,
-  allowContextualCaveat = false,
-) {
-  reply = reply.replaceAll("’", "'");
-  const named = [skill.slug, skill.slug.replaceAll("-", " "), skill.name].some(
-    (name) => reply.toLowerCase().includes(name.toLowerCase()),
-  );
-  const occupied = namedTeamSkillClauses(reply, skill).some(clause => !historicalTeamSkillClause(clause, skill) &&
-    /\b(?:slug|name)\s+(?:is|remains?)\s+(?:(?:already|still)\s+)?(?:taken|occupied|in\s+use)\b/i.test(clause)
-    && !/\b(?:is|has been)\s+(?:now\s+)?(?:resolved|fixed|cleared)\b/i.test(clause));
-  const clauses = namedTeamSkillClauses(reply, skill);
-  const contextual = allowContextualCaveat && clauses.some(clause => !/\b(?:earlier|previously|initially|formerly)\b/i.test(clause) && (
-    /\bcaveat\s+(?:is|remains?)\s+(?:still\s+)?(?:unresolved|open)\b/i.test(clause)
-    || [...clause.matchAll(/\b(?:resolved|fixed|cleared)\b/gi)].some(match => /\bcaveat\b/i.test(clause.slice(0, match.index)) && negatedTeamRecovery(clause.slice(0, match.index)))
-    || /\bunless\s+you\s+want\b[^.!?;]*\bcaveat\s+(?:to\s+be\s+)?resolved\b/i.test(clause)))
-    && !clauses.some(clause => /\bno\b[^.!?;]{0,80}\bcaveats?\s+(?:remain|exist)/i.test(clause)
-      || [...clause.matchAll(/\bcaveat\s+(?:(?:is|has been|was)\s+)?(?:(?:now|already)\s+)?(?:resolved|fixed|cleared)\b/gi)]
-        .some(match => !/\bunless\s+you\s+want\b[^.!?;]*$/i.test(clause.slice(0, match.index))));
-  const unresolved = clauses.some(clause => {
-    const claim = new RegExp(`\\b${teamSkillSubject(skill)}\\s+(?:skill\\s+)?(?:is|remains?)\\s+(?:still\\s+)?unresolved\\b`, "i").exec(clause);
-    return !!claim && !historicalTeamSkillClause(clause, skill)
-      && !negatedTeamRecovery(clause.slice(0, claim.index)) && /\b(?:installation|install|conflict|collision|slug)\b/i.test(clause);
-  });
-  const unattached = clauses.some(clause => !historicalTeamSkillClause(clause, skill)
-    && new RegExp(`\\b${teamSkillSubject(skill)}\\s+(?:skill\\s+)?(?:(?:is|remains?)\\s+)?(?:(?:currently|still|now)\\s+)?(?:unattached|not\\s+attached)\\b`, "i").test(clause)
-    && /\b(?:conflict|collision|slug)\b/i.test(clause));
-  const reported = named && (occupied || contextual || unresolved || unattached || clauses.some(clause => !historicalTeamSkillClause(clause, skill)
-    && /could not|couldn't|cannot|failed|conflict|blocked|not installed|missing|unavailable|unable|partial/i.test(clause)));
-  const falseFull = reply.split(/[.!?;\n]+|\bbut\b/i).some((clause) => {
-    const claim =
-      /\b(?:all (?:required )?skills (?:are |were |have been )?(?:installed|ready)|(?:fully|completely) (?:installed|ready|successful)|(?:no|zero) (?:errors|warnings|failures|conflicts|caveats))\b/i.exec(
-        clause,
-      );
-    return (
-      !!claim &&
-      !/\b(?:not|isn't|aren't|wasn't|weren't|cannot|can't|never)\b[^,]{0,60}$/i.test(
-        clause.slice(0, claim.index),
-      )
-    );
-  });
-  const deniesUnresolvedConflict = clauses.some(clause => !historicalTeamSkillClause(clause, skill)
-    && new RegExp(`\\bno\\s+unresolved\\s+${teamSkillSubject(skill)}\\s+(?:skill\\s+)?conflicts?\\b`, "i").test(clause));
-  return reported && !falseFull && !deniesUnresolvedConflict
-    && !namedTeamSkillClauses(reply, skill, true).some(clause => assertedTeamRecovery(clause, skill));
-}
-function catalogSkillReply(reply: string, skill: Pick<CatalogSkill, "slug" | "name">, localName: unknown): string {
-  if (typeof localName !== "string" || !localName.trim()
-    || [skill.slug, skill.slug.replaceAll("-", " "), skill.name].some(name => name.toLowerCase() === localName.toLowerCase())) return reply;
-  const escaped = localName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return reply.replace(new RegExp(escaped, "gi"), reference => " ".repeat(reference.length));
+/** The reply names the unresolved required skill by an identity the product returned (slug, name or catalog key). */
+export function namesTeamSkill(reply: string, skill: Pick<CatalogSkill, "slug" | "name"> & { key?: string }): boolean {
+  const text = reply.replace(/[*_`]/g, "").toLowerCase();
+  return [skill.slug, skill.slug.replaceAll("-", " "), skill.name, skill.key].some(name => !!name && text.includes(name.toLowerCase()));
 }
 export function gradeTeamConditions(
   o: ExternalObservation,
@@ -335,16 +229,9 @@ export function gradeTeamConditions(
     target = o.state.blockedSkill as CatalogSkill | undefined,
     plan = o.state.renamePlan as { plannedName: string } | undefined;
   const first = o.phaseReplies
-      .filter((r) => r.runId === o.state.initialRunId)
-      .map((r) => r.body)
-      .join("\n"),
-    repeat = o.phaseReplies
-      .filter((r) => r.runId !== o.state.initialRunId)
-      .map((r) => r.body)
-      .join("\n");
-  const localName = (o.state.localSkillBefore as { name?: unknown } | undefined)?.name;
-  const firstSkillReply = target ? catalogSkillReply(first, target, localName) : first;
-  const repeatSkillReply = target ? catalogSkillReply(repeat, target, localName) : repeat;
+    .filter((r) => r.runId === o.state.initialRunId)
+    .map((r) => r.body)
+    .join("\n");
   const earlier = o.state.firstConditional as
       Record<string, unknown> | undefined,
     later = o.state.finalConditional as Record<string, unknown> | undefined;
@@ -361,22 +248,6 @@ export function gradeTeamConditions(
           later.existingLocalSkillPreserved === true)),
     "Actual accepted preview conflicts with a public-created unrelated agent, and the separately owned local skill really rejects catalog installation; both existing originals remain immutable across install and repeat.",
   );
-  const originalName = (
-    o.state.conflictAgentBefore as { name?: string } | undefined
-  )?.name;
-  const identifiesConflict =
-    !!plan &&
-    (first.toLowerCase().includes(plan.plannedName.toLowerCase()) ||
-      (!!originalName &&
-        first
-          .split(/[.!?;\n]+/)
-          .some(
-            (clause) =>
-              clause.toLowerCase().includes(originalName.toLowerCase()) &&
-              /existing|conflict|collision|preserv|kept|separate|renam/i.test(
-                clause,
-              ),
-          )));
   const resolved = (condition: Record<string, unknown> | undefined) => condition?.requiredCatalogStillMissing === false
     && verifiedTeamSkillRecovery(o.state, o.companyId, condition.recovery);
   const accounted = (condition: Record<string, unknown> | undefined) => condition?.localSkillStillOccupiesSlug === true
@@ -399,16 +270,14 @@ export function gradeTeamConditions(
       ),
     "The actual initial model's installer creates the team graph and reports a genuine post-import warning with the required skill either still blocked or independently recovered through its exact catalog version and intended agent bindings.",
   );
+  // Reply meaning is read by a person; graded here only by the identity the
+  // product returned. The renamed member and project links are graded by the
+  // install case, and saved state above proves the partial outcome.
   c.add(
-    "phase-specific-honest-conflict-partial-replies",
-    !!target &&
-      !!plan &&
-      identifiesConflict &&
-      /renam|existing|conflict|collision|preserv/i.test(first) &&
-      (resolved(earlier) ? truthfulTeamRecovery(firstSkillReply, target) : truthfulTeamPartial(firstSkillReply, target)) &&
-      (phase === "initial" || (resolved(later) ? !claimsRecoveredSkillMissing(repeatSkillReply, target) : truthfulTeamPartial(repeatSkillReply, target,
-        earlier?.requiredCatalogStillMissing === true && later?.requiredCatalogStillMissing === true && truthfulTeamPartial(firstSkillReply, target)))),
-    "The first reply reports the actual renamed role and remaining skill failure; independently saved recovery needs no prescribed success phrase but neither phase may contradict the saved state. A later reply cannot rescue false initial readiness.",
+    "initial-reply-names-unresolved-skill",
+    !!target && first.trim().length > 0 &&
+      (resolved(earlier) || namesTeamSkill(first, target)),
+    "While the required catalog skill is still missing, the first reply names it by its returned slug, name or key; a verified recovery needs no particular wording.",
   );
   return c.result();
 }

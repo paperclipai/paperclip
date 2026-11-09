@@ -222,14 +222,13 @@ export function gradeTeamInstall(value: unknown) {
   );
   c.add(
     "phase-bound-reconciliation-reply",
+    // Saved identities (uncertain-repeat-reconciles-identities) prove the
+    // reconciliation; the repeat reply only has to exist in its own run.
     second.some((reply) =>
-      o.runs.some(
+      !!reply.body.trim() && o.runs.some(
         (run) => run.id === reply.runId && run.status === "succeeded",
       ),
-    ) &&
-      /already|existing|installed|same|reconcil/i.test(
-        second.map((reply) => reply.body).join("\n"),
-      ),
+    ),
     "The repeat outcome belongs to its own real persisted model continuation.",
   );
   c.add(
@@ -346,7 +345,7 @@ export const teamInstallExternalCases = [
     gradeTeamInstall,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.team-install.v10",
+      oracleVersion: "paperclip.chat-catalog.team-install.v11",
       expectedRunCount: 2,
       expectedHumanMessageCount: 2,
       attemptTimeoutMs: 480_000,

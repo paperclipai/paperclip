@@ -6030,9 +6030,10 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/external-teams.ts",
       "chat-scenarios/teams.yaml",
+      "run-observations.ts",
       "chat-catalog-domains/identity-support.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.team-discovery.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -6057,7 +6058,7 @@
       "chat-flow.ts",
       "chat-scenarios/teams.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.team-install.v10",
+    "oracleVersion": "paperclip.chat-catalog.team-install.v11",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
@@ -6073,9 +6074,10 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/external-teams.ts",
       "chat-scenarios/teams.yaml",
+      "run-observations.ts",
       "chat-catalog-domains/identity-support.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.team-discovery.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
