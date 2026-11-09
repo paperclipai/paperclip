@@ -183,6 +183,37 @@ describe("TaskObserver", () => {
     expect(artifacts.stop).toMatchObject({ runId: "r1", runStatus: "cancelled", runsStartedBeforeContinue: [], continuePosted: true });
   });
 
+  it("S1: counts a run recovery started between the poll's reads and the continue request", async () => {
+    let runs: Array<Record<string, unknown>> = [{ id: "r1", status: "running", createdAt: new Date(0).toISOString(), finishedAt: null }];
+    let stopped = false;
+    const base = fakeApi({ "/runs": () => runs, "/comments": () => [], "/documents/": () => null, "/workspace-operations": () => [] }, "in_progress");
+    let sentAt = 0;
+    const api = { ...base.api, async get(route: string) {
+      const value = await base.api.get(route);
+      if (stopped && route.endsWith("/runs") && runs.length === 1) {
+        runs = [...runs, { id: "r2", status: "queued", createdAt: new Date(sentAt - 5).toISOString(), finishedAt: null }];
+      }
+      return value;
+    }, async post(route: string) {
+      if (route === "/api/heartbeat-runs/r1/cancel") { stopped = true; runs = [{ ...runs[0]!, status: "cancelled" }]; return { id: "r1" }; }
+      if (route.endsWith("/comments")) return { id: "continue-1" };
+      return { id: "i1", identifier: "CHA-1" };
+    } } as unknown as ChaosApi;
+    const observer = new TaskObserver({ ...plan, workload: "S1", followUpAfterMs: 1_000 }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 2_000);
+    const at = start + 2_000 + STOP_CONTINUE_AFTER_MS + 1;
+    sentAt = at + 100;
+    runs = [runs[0]!];
+    observer.record.followUp = { at, sentAt, postedAt: sentAt + 50, commentId: "continue-1", error: null, duringRun: false };
+    observer.record.samples.push({ at: sentAt + 200, reachable: true, serverReady: true, issueStatus: "in_progress", interruption: null,
+      activeRecoveryAction: false, recoveryOwner: null, executionBlocker: false, scheduledRetry: false,
+      runs: [runs[0], { id: "r2", status: "queued", createdAt: new Date(sentAt - 5).toISOString(), finishedAt: null }] } as never);
+    const artifacts = await observer.collectArtifacts();
+    expect(artifacts.stop?.runsStartedBeforeContinue).toEqual(["r2"]);
+  });
+
   it("closes an open task as unfinished at interrupt, so the wave grades it as a failure", async () => {
     const { api } = fakeApi({}, "in_progress");
     const timeline = new Timeline(null);

@@ -530,11 +530,12 @@ export class TaskObserver {
     // C1 targets a live run (B8); wait for one unless the task already rests.
     const running = (sample.runs ?? []).some(run => run.status === "running");
     if (!running && !definition.stopBeforeFollowUp && !isResting(sample)) return false;
+    const sentAt = Math.max(now, Date.now());
     try {
       const comment = await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body: definition.followUp(this.plan.nonce) });
-      this.record.followUp = { at: now, postedAt: Math.max(now, Date.now()), commentId: comment?.id ?? null, error: null, duringRun: running };
+      this.record.followUp = { at: now, sentAt, postedAt: Math.max(now, Date.now()), commentId: comment?.id ?? null, error: null, duringRun: running };
     } catch (error) {
-      this.record.followUp = { at: now, commentId: null, error: error instanceof Error ? error.message : String(error), duringRun: running };
+      this.record.followUp = { at: now, sentAt, commentId: null, error: error instanceof Error ? error.message : String(error), duringRun: running };
     }
     this.timeline.add("task_follow_up", { taskId: this.plan.taskId, ...this.record.followUp });
     return true;
@@ -603,7 +604,7 @@ export class TaskObserver {
   private stopArtifacts(stop: NonNullable<TaskRecord["stop"]>): NonNullable<OracleArtifacts["stop"]> {
     const runs = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
     for (const sample of this.record.samples) for (const run of sample.runs ?? []) runs.set(run.id, run);
-    const continueAt = this.record.followUp?.at ?? null;
+    const continueAt = this.record.followUp?.sentAt ?? this.record.followUp?.at ?? null;
     const continueCommentId = this.record.followUp?.commentId ?? null;
     const startedBeforeContinue = [...runs.values()].filter(run => run.id !== stop.runId && run.createdAt
       && !(continueCommentId && (run.wakeCommentIds ?? []).includes(continueCommentId))

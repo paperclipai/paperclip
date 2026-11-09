@@ -282,7 +282,7 @@ export interface TaskRecord {
   finalStatus: string | null;
   deadlineAt: number | null;
   timedOut: boolean;
-  followUp: { at: number; postedAt?: number; commentId: string | null; error: string | null; duringRun?: boolean } | null;
+  followUp: { at: number; sentAt?: number; postedAt?: number; commentId: string | null; error: string | null; duringRun?: boolean } | null;
   stop?: { at: number; runId: string; httpStatus: number | null; error: string | null };
   faultIds: string[];
   sweep: RestSweep | null;
