@@ -3,6 +3,22 @@ import { api, type RequestOptions } from "./client";
 
 export type { RunLivenessState } from "@paperclipai/shared";
 
+export const ISSUE_HISTORY_PAGE_MAX = 100;
+
+async function fullIssueHistory<T>(issueId: string, kind: "activity" | "runs", getId: (row: T) => string) {
+  const rows: T[] = [];
+  let before: string | undefined;
+  for (;;) {
+    const params = new URLSearchParams({ limit: String(ISSUE_HISTORY_PAGE_MAX) });
+    if (before) params.set("before", before);
+    const page = await api.get<T[]>(`/issues/${issueId}/${kind}?${params}`);
+    if (before !== undefined && page.length > 0 && getId(page[page.length - 1]!) === before) return rows;
+    rows.push(...page);
+    if (page.length !== ISSUE_HISTORY_PAGE_MAX) return rows;
+    before = getId(page[page.length - 1]!);
+  }
+}
+
 export interface RunForIssue {
   runId: string;
   execution?: ExecutionProjection | null;
@@ -89,9 +105,9 @@ export const activityApi = {
     }
     return (await Promise.all(batches)).flat();
   },
-  forIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity`),
+  forIssue: (issueId: string) => fullIssueHistory<ActivityEvent>(issueId, "activity", (event) => event.id),
   recentRunsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs?view=recent`),
-  runsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs`),
+  runsForIssue: (issueId: string) => fullIssueHistory<RunForIssue>(issueId, "runs", (run) => run.runId),
   runsByIdsForIssue: (issueId: string, runIds: string[]) => {
     const ids = [...new Set(runIds)];
     return Promise.all(Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) =>

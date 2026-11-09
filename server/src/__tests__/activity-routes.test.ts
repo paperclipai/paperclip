@@ -35,7 +35,8 @@ vi.mock("../services/case-activity-access.js", () => ({
   caseActivityReadSqlCondition: vi.fn(async () => caseReadCondition),
 }));
 
-vi.mock("../services/activity.js", () => ({
+vi.mock("../services/activity.js", async (importOriginal) => ({
+  normalizeIssueHistoryLimit: (await importOriginal<typeof import("../services/activity.js")>()).normalizeIssueHistoryLimit,
   activityService: () => mockActivityService,
   normalizeActivityLimit: (limit: number | undefined) => {
     if (!Number.isFinite(limit)) return 100;
@@ -149,7 +150,7 @@ describe("activity routes", () => {
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
       action: "issue:read", resource: expect.objectContaining({ companyId: "company-1", issueId: "issue-1" }),
     }));
-    expect(mockActivityService.forIssue).toHaveBeenCalledWith("issue-1");
+    expect(mockActivityService.forIssue).toHaveBeenCalledWith("issue-1", { limit: 50, before: undefined });
     expect(res.body).toEqual([{ action: "issue.recovery_action_resolved", actorType: "system" }]);
   });
 
@@ -329,7 +330,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-475");
     expect(mockIssueService.getById).not.toHaveBeenCalled();
-    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1");
+    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1", { limit: 50, before: undefined });
     expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
   });
 
@@ -345,6 +346,19 @@ describe("activity routes", () => {
       const denied = await requestApp(app, base => request(base).get("/api/issues/PAP-1/runs").query({ runIds: ids }));
       expect(denied.status).toBe(400);
     }
+  });
+
+  it("passes bounded issue history query options while preserving the array response", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({ id: "issue-uuid-1", companyId: "company-1" });
+    mockActivityService.forIssue.mockResolvedValue([{ id: "activity-1" }]);
+    const cursor = "a4a0e55c-3865-43ed-a97c-f832210cc377";
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .get(`/api/issues/pc1a2-475/activity?limit=1000&before=${cursor}`));
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.forIssue).toHaveBeenCalledWith("issue-uuid-1", { limit: 100, before: cursor });
+    expect(Array.isArray(res.body)).toBe(true);
   });
 
   it("requires company access before creating activity events", async () => {

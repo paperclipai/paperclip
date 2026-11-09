@@ -33,7 +33,8 @@ describe("activity parity commands", () => {
     const fetchMock = vi
       .fn()
       .mockImplementationOnce(() => Promise.resolve(jsonResponse([])))
-      .mockImplementation(() => Promise.resolve(jsonResponse()));
+      .mockImplementationOnce(() => Promise.resolve(jsonResponse()))
+      .mockImplementation(() => Promise.resolve(jsonResponse([])));
     vi.stubGlobal("fetch", fetchMock);
 
     await run(["activity", "list", "--company-id", COMPANY_ID, "--agent-id", "agent-1"]);
@@ -43,8 +44,50 @@ describe("activity parity commands", () => {
     expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
       ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/activity?agentId=agent-1`],
       ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/activity`],
-      ["GET", `http://localhost:3100/api/issues/${ISSUE_ID}/activity`],
+      ["GET", `http://localhost:3100/api/issues/${ISSUE_ID}/activity?limit=100`],
     ]);
+  });
+
+  it("walks issue activity pages until a short page", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({ id: `activity-${index}` }));
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => Promise.resolve(jsonResponse(firstPage)))
+      .mockImplementationOnce(() => Promise.resolve(jsonResponse([{ id: "activity-100" }])));
+    vi.stubGlobal("fetch", fetchMock);
+    const log = vi.mocked(console.log);
+
+    await run(["activity", "issue", ISSUE_ID, "--json"]);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      `http://localhost:3100/api/issues/${ISSUE_ID}/activity?limit=100`,
+      `http://localhost:3100/api/issues/${ISSUE_ID}/activity?limit=100&before=activity-99`,
+    ]);
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toHaveLength(101);
+  });
+
+  it("stops when a server that ignores the page parameters repeats the cursor", async () => {
+    const fullList = Array.from({ length: 100 }, (_, index) => ({ id: `activity-${index}` }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(fullList)));
+    vi.stubGlobal("fetch", fetchMock);
+    const log = vi.mocked(console.log);
+
+    await run(["activity", "issue", ISSUE_ID, "--json"]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toHaveLength(100);
+  });
+
+  it("keeps a full list from a server that ignores the page parameters", async () => {
+    const fullList = Array.from({ length: 120 }, (_, index) => ({ id: `activity-${index}` }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(fullList)));
+    vi.stubGlobal("fetch", fetchMock);
+    const log = vi.mocked(console.log);
+
+    await run(["activity", "issue", ISSUE_ID, "--json"]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toHaveLength(120);
   });
 });
 

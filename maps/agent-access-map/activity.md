@@ -46,7 +46,7 @@ Review: `baseline`.
 API: `present` — representative operation IDs:
 
 - `GET /api/companies/{companyId}/activity`.
-- `GET /api/issues/{id}/activity` (UUID or issue identifier).
+- `GET /api/issues/{id}/activity` (UUID or issue identifier; pages of at most 100 rows, `limit` and `before`).
 - `GET /api/companies/{companyId}/audit/agent-actions?actorScope=all&entityType=case&entityId={caseRef}`
   (case UUID or identifier).
 
@@ -108,7 +108,7 @@ API: `present` — representative operation IDs:
 - `GET /api/heartbeat-runs/{runId}/log`.
 - `GET /api/heartbeat-runs/{runId}/workspace-operations`.
 - `GET /api/heartbeat-runs/{runId}/issues`.
-- `GET /api/issues/{id}/runs`.
+- `GET /api/issues/{id}/runs` (pages of at most 100 rows, `limit` and `before`).
 - `GET /api/issues/{id}/recovery-actions`.
 
 Agent access: `available` — REST / native call_api / CLI run. Sandbox agents can

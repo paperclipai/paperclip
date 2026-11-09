@@ -19,7 +19,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { activityService } from "../services/activity.ts";
+import { activityService, normalizeIssueHistoryLimit } from "../services/activity.ts";
 import { issueReadSqlCondition } from "../services/authorization.ts";
 import { issueService } from "../services/issues.ts";
 import { documentService } from "../services/documents.ts";
@@ -34,6 +34,20 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres activity service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describe("issue history limits", () => {
+  it.each([
+    [undefined, 50],
+    [1.9, 1],
+    [100, 100],
+    [500, 100],
+    [0, 1],
+    [-3, 1],
+    [Number.NaN, 50],
+  ] as const)("normalizes %s to %s", (input, expected) => {
+    expect(normalizeIssueHistoryLimit(input)).toBe(expected);
+  });
+});
 
 async function waitForIssueRun(
   service: ActivityService,
@@ -151,6 +165,64 @@ describeEmbeddedPostgres("activity service", () => {
     const result = await activityService(db).list({ companyId, limit: 2 });
 
     expect(result.map((event) => event.action)).toEqual(["test.newest", "test.middle"]);
+  });
+
+  it("pages issue activity and runs stably through large histories and rejects foreign cursors", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyId, name: "History", issuePrefix: `H${randomUUID().slice(0, 6)}` },
+      { id: otherCompanyId, name: "Other history", issuePrefix: `O${randomUUID().slice(0, 6)}` },
+    ]);
+    await db.insert(agents).values([
+      { id: agentId, companyId, name: "History agent", role: "engineer", status: "idle", adapterType: "codex_local" },
+      { id: otherAgentId, companyId: otherCompanyId, name: "Other agent", role: "engineer", status: "idle", adapterType: "codex_local" },
+    ]);
+    await db.insert(issues).values([
+      { id: issueId, companyId, title: "Paged issue", status: "todo", priority: "medium" },
+      { id: otherIssueId, companyId, title: "Other issue", status: "todo", priority: "medium" },
+    ]);
+    const timestamp = new Date("2026-04-21T11:00:00.000Z");
+    const activityRows = Array.from({ length: 123 }, () => ({
+      id: randomUUID(), companyId, actorType: "system" as const, actorId: "system", action: "history.event",
+      entityType: "issue", entityId: issueId, createdAt: timestamp,
+    }));
+    const foreignActivity = { id: randomUUID(), companyId, actorType: "system" as const, actorId: "system", action: "foreign.event", entityType: "issue", entityId: otherIssueId, createdAt: timestamp };
+    await db.insert(activityLog).values([...activityRows, foreignActivity]);
+    const runRows = Array.from({ length: 123 }, () => ({
+      id: randomUUID(), companyId, agentId, issueId, scopeKind: "issue" as const, status: "queued" as const, createdAt: timestamp,
+    }));
+    const foreignRun = { id: randomUUID(), companyId, agentId, issueId: otherIssueId, scopeKind: "issue" as const, status: "queued" as const, createdAt: timestamp };
+    const inconsistentAgentRun = { id: randomUUID(), companyId, agentId: otherAgentId, issueId, scopeKind: "issue" as const, status: "queued" as const, createdAt: new Date(timestamp.getTime() + 1_000) };
+    await db.insert(heartbeatRuns).values([...runRows, foreignRun, inconsistentAgentRun]);
+
+    const service = activityService(db);
+    const allActivity: Array<{ id: string }> = [];
+    let activityCursor: string | undefined;
+    do {
+      const page = await service.forIssue(issueId, { limit: 17, before: activityCursor });
+      allActivity.push(...page);
+      activityCursor = page.length === 17 ? page.at(-1)?.id : undefined;
+    } while (activityCursor);
+    expect(allActivity).toHaveLength(123);
+    expect(new Set(allActivity.map((row) => row.id)).size).toBe(123);
+    expect(await service.forIssue(issueId, { before: foreignActivity.id })).toEqual([]);
+
+    const allRuns: Array<{ runId: string }> = [];
+    let runCursor: string | undefined;
+    do {
+      const page = await service.runsForIssue(companyId, issueId, null, { limit: 17, before: runCursor });
+      if (allRuns.length === 0) expect(page).toHaveLength(17);
+      allRuns.push(...page);
+      runCursor = page.length === 17 ? page.at(-1)?.runId : undefined;
+    } while (runCursor);
+    expect(allRuns).toHaveLength(123);
+    expect(new Set(allRuns.map((run) => run.runId)).size).toBe(123);
+    expect(await service.runsForIssue(companyId, issueId, null, { before: foreignRun.id })).toEqual([]);
   });
 
   it("filters company activity rows whose entity is a private issue", async () => {

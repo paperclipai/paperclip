@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { activityService, normalizeActivityLimit } from "../services/activity.js";
+import { activityService, normalizeActivityLimit, normalizeIssueHistoryLimit } from "../services/activity.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
@@ -105,6 +105,11 @@ const createActivitySchema = z.object({
 });
 
 const agentActionAuditActorScopeSchema = z.enum(["agents", "all"]);
+
+const issueHistoryQuerySchema = z.object({
+  limit: z.coerce.number().int().optional(),
+  before: z.string().uuid().optional(),
+});
 
 const agentActionAuditQuerySchema = z.object({
   actorScope: agentActionAuditActorScopeSchema.default("agents"),
@@ -365,7 +370,12 @@ export function activityRoutes(db: Db) {
       res.json(await svc.inputFactsForIssue(issue.companyId, issue.id, parsed.data));
       return;
     }
-    const result = await (req.query.view === "recent" ? svc.forIssue(issue.id, 50) : svc.forIssue(issue.id));
+    const parsedQuery = issueHistoryQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) throw badRequest("Invalid issue activity query", parsedQuery.error.issues);
+    const result = await svc.forIssue(issue.id, {
+      limit: normalizeIssueHistoryLimit(parsedQuery.data.limit ?? (req.query.view === "recent" ? 50 : undefined)),
+      before: parsedQuery.data.before,
+    });
     res.json(result);
   });
 
@@ -374,6 +384,8 @@ export function activityRoutes(db: Db) {
     const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const parsedQuery = issueHistoryQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) throw badRequest("Invalid issue runs query", parsedQuery.error.issues);
     const viewerUserId = req.actor.type === "board" ? getActorInfo(req).actorId : null;
     if (req.query.runIds !== undefined) {
       const parsed = z.array(z.string().uuid()).min(1).max(100).safeParse(
@@ -383,9 +395,10 @@ export function activityRoutes(db: Db) {
       res.json(await svc.runsForIssue(issue.companyId, issue.id, viewerUserId, undefined, parsed.data));
       return;
     }
-    const result = await (req.query.view === "recent"
-      ? svc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2)
-      : svc.runsForIssue(issue.companyId, issue.id, viewerUserId));
+    const result = await svc.runsForIssue(issue.companyId, issue.id, viewerUserId, {
+      limit: normalizeIssueHistoryLimit(parsedQuery.data.limit ?? (req.query.view === "recent" ? 2 : undefined)),
+      before: parsedQuery.data.before,
+    });
     res.json(result);
   });
 
