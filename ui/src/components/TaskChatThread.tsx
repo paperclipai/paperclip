@@ -3227,10 +3227,22 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // Only these may stop holding the reveal after the budget: live output
   // streams into the tail, and settled compact output becomes a fixed control.
   // Other settled runs insert output around saved replies, so they keep waiting.
-  const budgetedTranscriptRunKey = pendingTranscriptRuns
-    .filter((run) => !isTerminalRunStatus(run.status) || compactTranscriptDeferral)
-    .map((run) => `${run.id}\t${isTerminalRunStatus(run.status) ? "settled" : "live"}`)
-    .join("\n");
+  // A live run with steering or timeline anchors also keeps waiting: its
+  // pre-anchor segments enter the main chronology above the anchored messages.
+  const budgetedTranscriptRuns = pendingTranscriptRuns
+    .filter((run) => {
+      if (isTerminalRunStatus(run.status)) return compactTranscriptDeferral;
+      const anchors = isNativePaperclipRunnerRun(run)
+        ? steeringAnchorsByRun.get(run.id)
+        : legacyTimelineAnchorsByRun.get(run.id);
+      return (anchors?.length ?? 0) === 0;
+    })
+    .map((run) => ({ runId: run.id, settled: isTerminalRunStatus(run.status) }));
+  // The budget timer reads the runs that are still pending when it fires, so
+  // a transcript that hydrates early does not restart the budget.
+  const budgetedTranscriptRunsRef = useRef(budgetedTranscriptRuns);
+  budgetedTranscriptRunsRef.current = budgetedTranscriptRuns;
+  const hasBudgetedTranscriptRuns = budgetedTranscriptRuns.length > 0;
   // Hydrating a run inserts activity around its saved reply and can move the
   // latest viewport substantially. Compact opens hydrate only their bounded
   // recent window, but its saved cards and latest turn must arrive together so
@@ -3261,24 +3273,32 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   useEffect(() => {
     if (revealCachedHeader) setRevealedHistoryKey(historyKey);
   }, [revealCachedHeader, historyKey]);
+  // The budget is one deadline per history key. It starts the first time
+  // saved history is ready, and later changes to the pending runs keep it.
+  const transcriptRevealDeadline = useRef<{ historyKey: typeof historyKey; at: number } | null>(null);
   useEffect(() => {
-    if (historyRevealed || savedHistoryPending || !budgetedTranscriptRunKey) return;
+    if (historyRevealed || savedHistoryPending) return;
+    if (transcriptRevealDeadline.current?.historyKey !== historyKey) {
+      transcriptRevealDeadline.current = { historyKey, at: Date.now() + INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS };
+    }
+    if (!hasBudgetedTranscriptRuns) return;
     const timer = window.setTimeout(() => {
-      const expired = budgetedTranscriptRunKey.split("\n").map((entry) => entry.split("\t"));
+      const expired = budgetedTranscriptRunsRef.current;
+      if (expired.length === 0) return;
       setSlowTranscripts((current) => {
         const previous = current && current.issueId === issueId ? current : null;
         return {
           issueId,
-          ids: new Set([...(previous?.ids ?? []), ...expired.map(([runId]) => runId!)]),
+          ids: new Set([...(previous?.ids ?? []), ...expired.map((run) => run.runId)]),
           deferred: new Set([
             ...(previous?.deferred ?? []),
-            ...expired.filter(([, state]) => state === "settled").map(([runId]) => runId!),
+            ...expired.filter((run) => run.settled).map((run) => run.runId),
           ]),
         };
       });
-    }, INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS);
+    }, Math.max(0, transcriptRevealDeadline.current.at - Date.now()));
     return () => window.clearTimeout(timer);
-  }, [historyRevealed, savedHistoryPending, budgetedTranscriptRunKey, issueId]);
+  }, [historyRevealed, savedHistoryPending, hasBudgetedTranscriptRuns, historyKey, issueId]);
   const historyShellRef = useRef<HTMLDivElement>(null);
   const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
   const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;

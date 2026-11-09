@@ -946,11 +946,56 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
     try {
       render(<TaskChatThread issueId="settled-full-history" onAdd={async () => {}} comments={createLongThreadComments()}
         linkedRuns={[{ ...retryRun, runId: "failed-run", status: "failed", startedAt: retryRun.createdAt }]} />);
-      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS + 100); });
-      vi.useRealTimers();
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      await passTranscriptBudget();
       expect(historyLoading()).toBe(true);
       expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "failed-run" }]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps the transcript budget when another transcript hydrates first", async () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        issueId: "two-live-runs", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+        linkedRuns: [
+          { ...retryRun, runId: "fast-run", status: "running", startedAt: retryRun.createdAt },
+          { ...retryRun, runId: "slow-run", status: "running", startedAt: retryRun.createdAt },
+        ],
+        comments: createLongThreadComments(),
+      };
+      render(<TaskChatThread {...props} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 100); });
+      transcriptState.hydratedRunIds = new Set(["fast-run"]);
+      nativeTranscriptState.hydratedRunIds = new Set(["fast-run"]);
+      render(<TaskChatThread {...props} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(99); });
+      expect(historyLoading()).toBe(true);
+      // The budget still ends at its first deadline. It does not restart
+      // because the fast transcript finished.
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(false);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "fast-run" }, { id: "slow-run" }]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps waiting for a live transcript that splits around a steering message", async () => {
+    vi.useFakeTimers();
+    try {
+      const steering = {
+        ...createLongThreadComments()[0], id: "steering-comment", body: "Change course now.",
+        steeredIntoRunId: "live-run", conversationAnchorAt: new Date("2026-08-25T18:00:02.000Z"),
+        createdAt: new Date("2026-08-25T18:00:02.000Z"), updatedAt: new Date("2026-08-25T18:00:02.000Z"),
+      };
+      render(<TaskChatThread issueId="steered-live-run" compactHistory onAdd={async () => {}} onExpandHistory={vi.fn()}
+        comments={[...createLongThreadComments(), steering]}
+        linkedRuns={[{ ...retryRun, runId: "live-run", status: "running", startedAt: retryRun.createdAt }]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      await passTranscriptBudget();
+      // Its pre-steer output enters the main chronology above the steering
+      // message, so revealing before it loads would move visible messages.
+      expect(historyLoading()).toBe(true);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "live-run" }]);
     } finally { vi.useRealTimers(); }
   });
 
