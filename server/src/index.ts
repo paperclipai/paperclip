@@ -1411,6 +1411,8 @@ async function startServerWithDatabaseTeardown(
     deliverResumeContinuations: () => deliverBudgetResumeContinuations(db, { ...budgetResumeDelivery,
       resumeTaskRetry: (companyId, requestId) => accountingHeartbeat.resumeTaskRetry(companyId, requestId) }),
   });
+  // Its stop also removes the run-status listener that wakes resume delivery.
+  server.on("close", () => { void budgetEnforcementWorker.stop(); });
   const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
   server.on("close", accountingWorker.stop);
   skillSourceSync.start(deliveryWork);

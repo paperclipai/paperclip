@@ -72,6 +72,11 @@ describe("budget accounting delivery", () => {
     publishLiveEvent({ companyId: "company-1", type: "heartbeat.run.status", payload: { runId: "run-1", status: "cancelled" } } as never);
     await vi.advanceTimersByTimeAsync(1_500);
     expect(deliverResumeContinuations).toHaveBeenCalledTimes(2);
+    // Stopping the worker removes the listener: later Stops wake nothing.
+    await worker.stop();
+    publishLiveEvent({ companyId: "company-1", type: "heartbeat.run.status", payload: { runId: "run-2", status: "cancelled" } } as never);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(2);
   });
 
   it("wakes when a failed dispatcher's resume claim goes stale", async () => {
