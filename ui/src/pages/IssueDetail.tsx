@@ -3326,11 +3326,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   if (issueId && !conversation && queryClient.getQueryData([...queryKeys.issues.detail(issueId), "core"]) === undefined) {
     startIssueChatBootstrap(queryClient, bootstrapCompanyId, issueId);
   }
-  const coreIssueOptions = getIssueCoreQueryOptions(queryClient, issueId!);
+  // The core issue keeps its own small, fast read so the header never waits
+  // for the larger chat bootstrap; a preloaded task already has it cached.
   const coreIssueQuery = useQuery({
-    ...coreIssueOptions,
-    queryFn: (context: { signal: AbortSignal }) =>
-      readFromIssueChatBootstrap(issueId!, (item) => item.issue, () => coreIssueOptions.queryFn(context)),
+    ...getIssueCoreQueryOptions(queryClient, issueId!),
     enabled: !!issueId,
   });
   const { historyExpanded, expandHistory, recent: recentComments, retainComment, acknowledgedComments } = useIssueHistoryWindow(
