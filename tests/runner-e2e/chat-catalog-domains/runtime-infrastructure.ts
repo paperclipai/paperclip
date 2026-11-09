@@ -5,7 +5,7 @@ import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { checks, type Entity } from "./internal-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
-import { faultOwnedNativeProcess, type NativeFaultRun } from "./runtime-native-fault.js";
+import { faultOwnedNativeProcess, NATIVE_INFRASTRUCTURE_FAULT_CODES, type NativeFaultRun } from "./runtime-native-fault.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
 export function isExhaustedNativeRecovery(action: IssueRecoveryAction | undefined, run: NativeFaultRun, companyId: string, issueId: string, agentId: string) {
   return !!action && action.companyId === companyId && action.sourceIssueId === issueId && action.kind === "active_run_watchdog" && action.cause === "native_session_retry_exhausted"
@@ -40,7 +40,7 @@ export function gradeInfrastructureRecovery(value: unknown) {
   const s = o.state, task = s.task as Issue, run = s.failure as NativeFaultRun, before = s.recoveryBefore as IssueRecoveryAction, after = s.recoveryAfter as IssueRecoveryAction;
   c.add("genuine-bounded-infrastructure-exhaustion", !!run && isExhaustedNativeRecovery(before, run, o.companyId, task.id, (s.worker as Entity).id)
     && Array.isArray(s.setupFaults) && s.setupFaults.length === 3 && new Set(s.setupFaults.map(row => (row as { pid: number }).pid)).size === 3
-    && (s.setupFaults as Array<{ runId: string; errorCode: string }>).every(row => row.runId === run.id && ["native_runner_process_exited", "provider_transport_failed", "provider_stdout_closed", "provider_process_output_closed", "native_session_cleanup_quarantined"].includes(row.errorCode)),
+    && (s.setupFaults as Array<{ runId: string; errorCode: string }>).every(row => row.runId === run.id && NATIVE_INFRASTRUCTURE_FAULT_CODES.includes(row.errorCode)),
   "The actual original native run exhausts three coordinator attempts with real process loss evidence; model failure, cancellation or a fabricated attempt counter cannot qualify.");
   c.add("retained-source-owner-cause-and-next-action", !!after && after.id === before.id && after.sourceIssueId === task.id && after.recoveryIssueId == null
     && after.ownerType === "board" && after.cause === before.cause && after.nextAction === before.nextAction && after.evidence.runId === run.id

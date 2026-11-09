@@ -47,6 +47,15 @@ async function processIdentity(run: NativeFaultRun): Promise<OwnedNativeIdentity
     return { pid, uid: Number(uid), group: Number(group), startedAt, executable: await realpath(ownedNativeExecutablePath(pid, executable)), commandRunId: argument("run-id"), commandRunnerId: argument("runner-id"), runtimeRoot: await realpath(argument("state-dir")) };
   } catch { throw new Error("Native infrastructure fault could not independently verify the actual process; private diagnostics withheld"); }
 }
+/** Codes the product records for a lost Runner, or for its cleanup quarantine. */
+export const NATIVE_INFRASTRUCTURE_FAULT_CODES = ["native_runner_process_exited", "native_session_interrupted", "native_session_retry_exhausted", "provider_transport_failed",
+  "provider_stdout_closed", "provider_process_output_closed", "native_session_cleanup_quarantined"];
+/** `failed` once the run settled failed; `resumed` once a new Runner process serves the same run. */
+export function nativeFaultOutcome(run: Pick<NativeFaultRun, "status" | "finishedAt" | "errorCode" | "processPid">, killedPid: number): "failed" | "resumed" | null {
+  if (run.status === "failed" && !!run.finishedAt && !!run.errorCode) return "failed";
+  if (run.status === "running" && !!run.processPid && run.processPid !== killedPid) return "resumed";
+  return null;
+}
 /** Authoring primitive only: this function is invoked solely inside the coordinator's selected live attempt. */
 export async function verifyOwnedNativeRunner(ctx: ChatCatalogContext, binding: { runId: string; issueId: string; agentId: string }) {
   if (ctx.input.execution.environment.id !== "local" || typeof process.getuid !== "function") throw new Error("Owned infrastructure fault requires a supported local UID/process identity");
@@ -68,11 +77,18 @@ export async function faultOwnedNativeProcess(ctx: ChatCatalogContext, binding: 
   await ctx.input.evidence("runtime-owned-native-process-fault.json", { runId: current.id, companyId: current.companyId, agentId: current.agentId,
     issueId: current.nativeIssueId, runnerInstanceId: current.runnerInstanceId, processPid: confirmed.pid, processGroupId: confirmed.group, processStartedAt: confirmed.startedAt,
     uidMatches: true, executableMatches: true, runtimeRootWithinAttempt: true, identityReadTwice: true, signal: "SIGKILL", processGroupSignalled: false });
-  const failed = await pollUntil({ label: "Real owned native infrastructure failure after verified Runner process loss", deadlineAt: Date.now() + 150_000,
-    load, accept: run => run.status === "failed" && !!run.finishedAt && !!run.errorCode,
-    reject: run => ["cancelled", "succeeded", "timed_out"].includes(run.status) ? "The real process fault did not produce a failed native infrastructure run" : undefined });
-  if (!["native_runner_process_exited", "provider_transport_failed", "provider_stdout_closed", "provider_process_output_closed", "native_session_cleanup_quarantined"].includes(failed.errorCode ?? ""))
-    throw new Error("The owned process fault did not retain a source-qualified infrastructure/cleanup failure; actual classification is not relabelled");
-  await ctx.input.evidence("runtime-owned-native-process-failure.json", { runId: failed.id, status: failed.status, errorCode: failed.errorCode, finishedAt: failed.finishedAt, nativePhase: (failed as NativeFaultRun & { nativePhase?: string }).nativePhase ?? null });
+  // The product settles a lost Runner either as a failed run or, when its
+  // bounded same-run recovery applies, by relaunching a new Runner for the same
+  // run. Both are the product's own record; the cause is read from it.
+  const settled = await pollUntil({ label: "Real owned native infrastructure outcome after verified Runner process loss", deadlineAt: Date.now() + 150_000,
+    load, accept: run => nativeFaultOutcome(run, confirmed.pid) !== null,
+    reject: run => ["cancelled", "succeeded", "timed_out"].includes(run.status) ? "The real process fault did not produce a failed or resumed native infrastructure run" : undefined });
+  const outcome = nativeFaultOutcome(settled, confirmed.pid)!;
+  const errorCode = outcome === "failed" ? settled.errorCode : settled.execution?.cause ?? null;
+  await ctx.input.evidence("runtime-owned-native-process-failure.json", { runId: settled.id, status: settled.status, outcome, errorCode, finishedAt: settled.finishedAt,
+    nativePhase: settled.nativePhase ?? null, execution: settled.execution ?? null });
+  if (!NATIVE_INFRASTRUCTURE_FAULT_CODES.includes(errorCode ?? ""))
+    throw new Error(`The owned process fault did not retain a source-qualified infrastructure/cleanup failure (recorded ${String(errorCode).slice(0, 80)}); actual classification is not relabelled`);
+  const failed = { ...settled, errorCode } as NativeFaultRun;
   return failed;
 }
