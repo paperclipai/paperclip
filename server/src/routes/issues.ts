@@ -8831,7 +8831,7 @@ export function issueRoutes(
     if (!userId) throw new HttpError(401, "A signed-in board user is required");
     const readCondition = await timing.time("access", () => issueReadSqlCondition(db, req.actor));
     const listFilters: IssueFilters = {
-      readCondition, touchedByUserId: userId, inboxArchivedByUserId: userId,
+      readCondition, touchedByUserId: userId, touchedCandidates: "participation", inboxArchivedByUserId: userId,
       status: INBOX_MINE_ISSUE_STATUS_FILTER, listProjection: "index",
       sortField: "updated", sortDir: "desc", limit: 100,
       includeRoutineExecutions: true, includeLiveDescendantSummary: true,

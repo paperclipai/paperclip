@@ -1867,7 +1867,7 @@ export function parseStatusFilter(
 
 /** Closed, content-free phases of `issueService.list`, for response timing headers. */
 export type IssueListPhase =
-  | "query" | "labels" | "active_runs" | "user_stats" | "read_stats" | "last_activity"
+  | "candidates" | "query" | "labels" | "active_runs" | "user_stats" | "read_stats" | "last_activity"
   | "archives" | "blocked_by" | "live_descendants" | "attention";
 
 export interface IssueListOptions {
@@ -1898,6 +1898,14 @@ export interface IssueFilters {
   oneChildPerParent?: boolean;
   assigneeUserId?: string;
   touchedByUserId?: string;
+  /**
+   * `participation` ranks touched issues from the indexed participation
+   * UNION (see `mineParticipationIssueIds`) and loads full rows only for the
+   * selected page, instead of scanning every status-matching issue with the
+   * five-way `touchedByUserCondition`. Same rows and order. Requires
+   * `touchedByUserId`; ignored with search or `oneChildPerParent`.
+   */
+  touchedCandidates?: "participation";
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
@@ -3026,6 +3034,36 @@ function unreadForUserCondition(companyId: string, userId: string) {
       ) OR ${pendingUserRequestCondition(companyId, userId, myLastRequestReadAt)})
     )
   `;
+}
+
+/**
+ * Ids of every issue the user participated in, built from indexed sources.
+ * Each UNION member is one branch of `touchedByUserCondition`, so membership
+ * equals that condition. The result is aliased `mine_participants` (`id`).
+ */
+function mineParticipationIssueIds(db: Db, companyId: string, userId: string) {
+  const directlyParticipated = or(
+    and(eq(issues.createdByUserId, userId), humanCreatedIssueCondition()),
+    eq(issues.assigneeUserId, userId),
+  );
+  const participationSources = unionAll(
+    db.select({ id: sql<string | null>`${issues.id}`.as("id") }).from(issues).where(and(
+      eq(issues.companyId, companyId),
+      directlyParticipated,
+    )),
+    db.select({ id: sql<string | null>`case when length(${activityLog.entityId}) = 36 and ${activityLog.entityId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then ${activityLog.entityId}::uuid end`.as("id") }).from(activityLog).where(and(
+      userParticipationActivityCondition(companyId, userId),
+      notInArray(activityLog.entityId, db.select({ id: sql<string>`${issues.id}::text` }).from(issues)
+        .where(and(eq(issues.companyId, companyId), directlyParticipated))),
+    )),
+    db.select({ id: sql<string | null>`${issueComments.issueId}`.as("id") }).from(issueComments).where(and(
+      eq(issueComments.companyId, companyId), eq(issueComments.authorUserId, userId), directHumanCommentCondition(),
+    )),
+    db.select({ id: sql<string | null>`${issues.id}`.as("id") }).from(issueThreadInteractions)
+      .innerJoin(issues, and(eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, companyId)))
+      .where(pendingUserRequestRowCondition(companyId, userId)),
+  ).as("mine_participation_sources");
+  return db.selectDistinct({ id: participationSources.id }).from(participationSources).as("mine_participants");
 }
 
 function inboxVisibleForUserCondition(companyId: string, userId: string) {
@@ -8239,28 +8277,7 @@ export function issueService(db: Db) {
     unreadInboxIssueIds: async (companyId: string, userId: string, readCondition: SQL<boolean>) => {
       // Rank the visible Mine set before counting unread, just like the inbox.
       // This projection never reads descriptions, run payloads, or recovery details.
-      const directlyParticipated = or(
-        and(eq(issues.createdByUserId, userId), humanCreatedIssueCondition()),
-        eq(issues.assigneeUserId, userId),
-      );
-      const participationSources = unionAll(
-        db.select({ id: sql<string | null>`${issues.id}`.as("id") }).from(issues).where(and(
-          eq(issues.companyId, companyId),
-          directlyParticipated,
-        )),
-        db.select({ id: sql<string | null>`case when length(${activityLog.entityId}) = 36 and ${activityLog.entityId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then ${activityLog.entityId}::uuid end`.as("id") }).from(activityLog).where(and(
-          userParticipationActivityCondition(companyId, userId),
-          notInArray(activityLog.entityId, db.select({ id: sql<string>`${issues.id}::text` }).from(issues)
-            .where(and(eq(issues.companyId, companyId), directlyParticipated))),
-        )),
-        db.select({ id: sql<string | null>`${issueComments.issueId}`.as("id") }).from(issueComments).where(and(
-          eq(issueComments.companyId, companyId), eq(issueComments.authorUserId, userId), directHumanCommentCondition(),
-        )),
-        db.select({ id: sql<string | null>`${issues.id}`.as("id") }).from(issueThreadInteractions)
-          .innerJoin(issues, and(eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, companyId)))
-          .where(pendingUserRequestRowCondition(companyId, userId)),
-      ).as("mine_participation_sources");
-      const participated = db.selectDistinct({ id: participationSources.id }).from(participationSources).as("mine_participants");
+      const participated = mineParticipationIssueIds(db, companyId, userId);
       const eligible = db.select({ id: issues.id, updatedAt: issues.updatedAt })
         .from(participated).innerJoin(issues, eq(issues.id, sql`"mine_participants"."id"`)).where(and(
         eq(issues.companyId, companyId),
@@ -8354,6 +8371,10 @@ export function issueService(db: Db) {
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
       const taskSearch = parseTaskSearch(rawSearch);
+      // Rank page ids from the user's participation set, then load full rows
+      // only for that page (see IssueFilters.touchedCandidates).
+      const participationCandidates = filters?.touchedCandidates === "participation"
+        && touchedByUserId !== undefined && !hasSearch && !filters?.oneChildPerParent;
       if (filters?.createdFromIssueId) {
         conditions.push(createdFromIssueCondition(companyId, filters.createdFromIssueId));
       }
@@ -8402,7 +8423,9 @@ export function issueService(db: Db) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
       }
       if (touchedByUserId) {
-        conditions.push(touchedByUserCondition(companyId, touchedByUserId));
+        conditions.push(participationCandidates
+          ? sql<boolean>`${issues.id} IN (SELECT "mine_participants"."id" FROM ${mineParticipationIssueIds(db, companyId, touchedByUserId)})`
+          : touchedByUserCondition(companyId, touchedByUserId));
       }
       if (inboxArchivedByUserId) {
         conditions.push(
@@ -8483,6 +8506,28 @@ export function issueService(db: Db) {
         description: sql<string | null>`NULL`,
         descriptionTruncated: sql<boolean>`false`,
       } : issueListSelect;
+      const orderBy = [
+        ...(filters?.oneChildPerParent ? [asc(issues.parentId)] : []),
+        ...issueListOrderBy(companyId, {
+          hasSearch,
+          priorityOrder,
+          searchOrder,
+          sortField: filters?.sortField,
+          sortDir: filters?.sortDir,
+        }),
+      ];
+      const paginate = <Q extends { limit(limit: number): Q; offset(offset: number): Q }>(query: Q) =>
+        offset > 0
+          ? limit === undefined ? query.offset(offset) : query.limit(limit).offset(offset)
+          : limit === undefined ? query : query.limit(limit);
+      // Phase 1 of the participation path: the page's ids in final order. The
+      // select-list subqueries below then run only for these rows.
+      const pageIds = participationCandidates
+        ? (await timePhase("candidates", async () => paginate(
+          db.select({ id: issues.id }).from(issues).where(and(...conditions)).orderBy(...orderBy).$dynamic(),
+        ))).map((row) => row.id)
+        : null;
+      if (pageIds?.length === 0) return [];
       const issueSource = (filters?.oneChildPerParent
         ? db.selectDistinctOn([issues.parentId], selectedFields)
         : db.select(selectedFields)).from(issues);
@@ -8492,27 +8537,22 @@ export function issueService(db: Db) {
             SELECT m.id, ${taskSearchScore(taskSearch)} AS score FROM matched m
           ) task_search`, sql`task_search.id = ${issues.id}`)
         : issueSource;
-      const baseQuery = searchedSource
-        .where(and(...conditions))
-        .orderBy(
-          ...(filters?.oneChildPerParent ? [asc(issues.parentId)] : []),
-          ...issueListOrderBy(companyId, {
-            hasSearch,
-            priorityOrder,
-            searchOrder,
-            sortField: filters?.sortField,
-            sortDir: filters?.sortDir,
-          }),
-        );
-      const pageQuery =
-        offset > 0
-          ? limit === undefined
-            ? baseQuery.offset(offset)
-            : baseQuery.limit(limit).offset(offset)
-          : limit === undefined
-            ? baseQuery
-            : baseQuery.limit(limit);
-      const rows = (await timePhase("query", async () => pageQuery)).map((row) => ({
+      const pageQuery = pageIds
+        // Re-check company, visibility and read access for the selected ids;
+        // the rows are put back into the phase 1 order below.
+        ? searchedSource.where(and(
+          eq(issues.companyId, companyId),
+          inArray(issues.id, pageIds),
+          visibleIssueCondition(),
+          filters?.readCondition,
+        ))
+        : paginate(searchedSource.where(and(...conditions)).orderBy(...orderBy).$dynamic());
+      const pageRows = await timePhase("query", async () => pageQuery);
+      if (pageIds) {
+        const position = new Map(pageIds.map((id, index) => [id, index]));
+        pageRows.sort((a, b) => position.get(a.id)! - position.get(b.id)!);
+      }
+      const rows = pageRows.map((row) => ({
         ...row,
         description: decodeDatabaseTextPreview(
           row.description,

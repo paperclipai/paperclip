@@ -112,7 +112,7 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
     }));
     for (const phase of [
       "paperclip_inbox", "inbox_access", "inbox_issues", "inbox_parents", "inbox_failures", "inbox_failure_context",
-      "inbox_issues_query", "inbox_issues_labels", "inbox_issues_user_stats", "inbox_issues_read_stats",
+      "inbox_issues_candidates", "inbox_issues_query", "inbox_issues_labels", "inbox_issues_user_stats", "inbox_issues_read_stats",
       "inbox_issues_last_activity", "inbox_issues_archives", "inbox_issues_live_descendants",
     ]) expect(timingPhases.get(phase), phase).toBeGreaterThanOrEqual(0);
     expect(snapshot).not.toHaveProperty("failureError");
