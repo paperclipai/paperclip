@@ -16,7 +16,10 @@ interface Grant {tokens:Tokens;id:string;userId:string;clientId:string;client:Aw
 interface PrivateFixture {old?:Grant;other?:Grant;gate?:Awaited<ReturnType<typeof prepareRuntimeWorkerGate>>;released?:boolean}
 const fixtures=new WeakMap<ChatCatalogContext,PrivateFixture>();
 async function grant(ctx:ChatCatalogContext,label:"Old test assistant"|"Current test assistant",write:boolean):Promise<Grant>{
- const request=await beginConnection(write,undefined,false,label);ctx.input.privateSecrets!.push(request.state,request.verifier);
+ // OAuth state is a CSRF nonce, not a credential: the server must store it to
+ // return it on the redirect (mcp_oauth_requests.state). Only the verifier, code
+ // and tokens are private, and the server stores those hashed or not at all.
+ const request=await beginConnection(write,undefined,false,label);ctx.input.privateSecrets!.push(request.verifier);
  const consent=await ctx.input.api.postSensitive<{redirectUrl:string}>(`/api/mcp/requests/${request.requestId}/consent`,{decision:"approve",companyId:ctx.input.fixtures.company.id,allowWrites:write,allowConfiguration:false});
  const callback=new URL(consent.redirectUrl),code=callback.searchParams.get("code");if(code)ctx.input.privateSecrets!.push(code);if(!code||callback.searchParams.get("state")!==request.state)throw new Error("Actual private human consent did not return its own authorization code/state");
  const response=await oauthPost("token",{grant_type:"authorization_code",client_id:request.clientId,redirect_uri:request.redirect,resource,code,code_verifier:request.verifier});if(response.status!==200){await response.body?.cancel();throw new Error("Private selected assistant exchange failed; response withheld");}
