@@ -1,6 +1,6 @@
 import {it, expect} from "vitest";
 import {gradeModelOptions} from "./runtime-runs-adapters.js";
-import {openRouterCatalogScope, modelChoiceMatches, publicOpenRouterCatalogEndpoint} from "./model-option-catalog.js";
+import {openRouterCatalogScope, modelChoiceMatches, observedModelChoices, publicOpenRouterCatalogEndpoint} from "./model-option-catalog.js";
 function valid() {
   const config = {provider:"opencode",model:"openrouter/deepseek/deepseek-v4.1-flash-1017",env:{OPENROUTER_API_KEY:{type:"secret_ref",secretId:"company-openrouter-reference",version:"latest"}}};
   const worker = {id:"morgan",companyId:"company",adapterType:"paperclip_runner",defaultEnvironmentId:"owned",adapterConfig:structuredClone(config)}, lead={...structuredClone(worker),id:"ceo"};
@@ -9,6 +9,7 @@ function valid() {
     agents:[structuredClone(worker),lead],tasks:[],links:[],activity:[],runs:[],humanQueries:[],reply:"Morgan's configured model is `openrouter/deepseek/deepseek-v4.1-flash-1017`. The native options include `opencode/big-pickle`. The public OpenRouter catalog also lists `gpt-5.3-codex` and `anthropic/claude-sonnet-5.5`; availability depends on the selected account/key and environment. Not all catalog models are qualified or tested."};
 }
 it("accepts actually catalogued options with explicit current-account limits, without testing another model",()=>expect(gradeModelOptions(valid()).passed).toBe(true));
+it("treats a family name such as GPT-5.x as prose, not a model ID",()=>{const o=valid();o.reply+=" Coding highlights: the GPT-5.x Codex family, such as `openai/gpt-5.3-codex`.";expect(gradeModelOptions(o).passed).toBe(true);expect(observedModelChoices("GPT-5.x and gpt-5.3-codex")).toEqual(["gpt-5.3-codex"])});
 it("accepts the same options reworded without caveat keywords",()=>{const o=valid();o.reply="Today Morgan runs `openrouter/deepseek/deepseek-v4.1-flash-1017`. Built in: `opencode/big-pickle`. OpenRouter also lists `gpt-5.3-codex` and `anthropic/claude-sonnet-5.5`, but its list is not a promise that the key works for each.";expect(gradeModelOptions(o).passed).toBe(true)});
 it("uses the existing company-scoped public metadata endpoint",()=>expect(publicOpenRouterCatalogEndpoint("company")).toBe("/api/companies/company/adapters/opencode_local/models?provider=openrouter"));
 it.each(["gpt-99-ultra","openrouter/openai/not-a-real-model","wrong-vendor/gpt-5.3-codex","anthropic/gpt-5.3-codex"])("rejects invented/out-of-catalog or wrong-vendor choice %s",id=>{const o=valid();o.reply+=` Another option is \`${id}\`.`;expect(gradeModelOptions(o).passed).toBe(false)});
