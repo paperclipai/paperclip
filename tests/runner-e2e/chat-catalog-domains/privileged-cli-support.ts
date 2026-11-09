@@ -67,37 +67,41 @@ export function websiteCreateArgv(reply: string, fixture: { company: string; pro
     fields.set(flag, value);
   }
   if ((fields.get("--company-id") ?? fields.get("-C")) !== fixture.company || fields.get("--project-id") !== fixture.project
-    || fields.get("--assignee-agent-id") !== fixture.agent || !/website/i.test(fields.get("--title") ?? "")
+    || fields.get("--assignee-agent-id") !== fixture.agent || !fields.get("--title")
     || fields.has("--status") && !["backlog", "todo"].includes(fields.get("--status")!) || fields.has("--api-base") && fields.get("--api-base") !== fixture.apiBase)
     throw new Error("Creation command does not target exactly the intended company, project and Morgan");
   if (fields.has("--company-id") && fields.has("-C")) throw new Error("Duplicate company context flags are ambiguous");
   return argv;
 }
 
+/** The person's own Paperclip address is not knowable to the agent; a placeholder for it binds to the fixture origin. */
+const addressPlaceholder = /^(?:<[^<>]+>|\$\{?[A-Z_]+\}?)$/;
+const profileName = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 export function contextGuidanceArgv(reply: string, fixture: { company: string; apiBase: string }) {
-  const lines = [...reply.matchAll(/```(?:bash|sh|shell)?\s*\n([\s\S]*?)```/g)]
+  const lines = [...reply.matchAll(/```(?:bash|sh|shell|zsh|console)?\s*\n([\s\S]*?)```/g)]
     .flatMap(match => match[1]!.replace(/\\\r?\n/g, " ").split(/\r?\n/))
-    .map(line => line.trim()).filter(line => line && !line.startsWith("#"));
+    .map(line => line.trim().replace(/^\$\s+/, "")).filter(line => line && !line.startsWith("#"));
   let selected = false, readback = false;
   const commands: string[][] = [], bindings: Array<{ commandIndex: number; flag: string; placeholder: string; fixtureValue: string }> = [];
   for (const line of lines) {
     if (/[`;|&\n\r]|\$\(/.test(line)) return;
-    const prefix = /^(?:paperclipai|npx(?: -y)? paperclipai|pnpm (?:exec )?paperclipai)\s+/;
+    const prefix = /^(?:paperclipai|npx(?: -y)? paperclipai(?:@latest)?|pnpm (?:exec )?paperclipai)\s+/;
     if (!prefix.test(line)) return;
     let tokens: string[];
-    try { tokens = line.replace(prefix, "").match(/"(?:[^"\\]|\\.)*"|'[^']*'|[^\s]+/g)!.map(token => token.startsWith('"') ? JSON.parse(token) as string : token.startsWith("'") ? token.slice(1, -1) : token); }
+    try { tokens = line.replace(prefix, "").match(/<[^<>]+>|"(?:[^"\\]|\\.)*"|'[^']*'|[^\s]+/g)!.map(token => token.startsWith('"') ? JSON.parse(token) as string : token.startsWith("'") ? token.slice(1, -1) : token); }
     catch { return; }
     const original = tokens;
     const family = original[0];
     const command = original[1], args = original.slice(2);
     if (family === "company" || family === "auth") {
-      if (!selected || family === "company" && command !== "current" || family === "auth" && command !== "whoami"
+      // Reads only: listing companies, the selected company and the signed-in identity.
+      if (family === "company" && command !== "current" && command !== "list" || family === "auth" && command !== "whoami"
         || args.length > 1 || args.length === 1 && args[0] !== "--json") return;
-      if (family === "company") readback = true;
+      if (family === "company" && command === "current" && selected) readback = true;
       commands.push(original); continue;
     }
     if (family !== "context") return;
-    if (command === "use") { if (args.shift() !== "acorn") return; selected = true; }
+    if (command === "use") { const name = args.shift(); if (!name || !profileName.test(name)) return; selected = true; }
     else if (command !== "show" && command !== "set" && command !== "list") return;
     let profile: string | undefined, company: string | undefined, apiBase: string | undefined, persona: string | undefined, use = false;
     const allowedFlags = command === "set" ? ["--profile", "--company-id", "--api-base", "--persona", "--use", "--json"]
@@ -116,12 +120,19 @@ export function contextGuidanceArgv(reply: string, fixture: { company: string; a
       if (flag === "--api-base") apiBase = value;
       if (flag === "--persona") persona = value;
     }
-    if (profile !== undefined && profile !== "acorn") return;
+    if (profile !== undefined && !profileName.test(profile)) return;
     if (command === "set") {
-      // Acorn is independently configured. A genuine partial upsert may keep
-      // those values, but supplied values must match: never fix placeholders.
-      if (profile !== "acorn" || company !== undefined && company !== fixture.company
-        || apiBase !== undefined && apiBase !== fixture.apiBase || persona !== undefined && persona !== "board") return;
+      // A set without --profile rewrites the person's current (other) profile.
+      // The company is known in the conversation, so it must be the real id;
+      // only the person's own Paperclip address may stay a placeholder.
+      if (profile === undefined || company !== undefined && company !== fixture.company
+        || apiBase !== undefined && apiBase !== fixture.apiBase && !addressPlaceholder.test(apiBase)
+        || persona !== undefined && persona !== "board") return;
+      if (apiBase !== undefined && apiBase !== fixture.apiBase) {
+        const index = original.indexOf(apiBase);
+        bindings.push({ commandIndex: commands.length, flag: "--api-base", placeholder: apiBase, fixtureValue: fixture.apiBase });
+        original[index] = fixture.apiBase;
+      }
       selected ||= use;
     }
     if (command === "show") readback ||= selected;

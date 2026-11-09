@@ -8,15 +8,16 @@ import { checks, putDocument } from "./internal-support.js";
 import { privilegedDefinition, privilegedObservation, settlePrivilegedChat } from "./privileged-support.js";
 import { prepareOwnedCli, runOwnedCli, cleanupOwnedCli } from "./privileged-cli-support.js";
 
-export function documentExportCommand(reply: string, sourceId: string) {
-  const blocks = [...reply.matchAll(/```(?:bash|sh|shell)?\s*\n([\s\S]*?)```/g)].map(match => match[1]!.replace(/\\\r?\n/g, " ").trim());
-  const matches = blocks.flatMap(block => block.split(/\r?\n/)).map(line => line.match(/^(?:paperclipai|npx(?: -y)? paperclipai|pnpm (?:exec )?paperclipai)\s+issue\s+document:get\s+(\S+)\s+plan\s+--json\s*\|\s*jq\s+(-[rj]+)\s+['"]?\.body['"]?\s*>\s*([A-Za-z0-9][A-Za-z0-9_.-]*)$/)).filter(Boolean);
+export function documentExportCommand(reply: string, sourceId: string, sourceIdentifier?: string) {
+  const blocks = [...reply.matchAll(/```(?:bash|sh|shell|zsh|console)?\s*\n([\s\S]*?)```/g)].map(match => match[1]!.replace(/\\\r?\n/g, " ").trim());
+  const matches = blocks.flatMap(block => block.split(/\r?\n/)).map(line => line.trim().replace(/^\$\s+/, "").match(/^(?:paperclipai|npx(?: -y)? paperclipai|pnpm (?:exec )?paperclipai)\s+issue\s+document:get\s+(\S+)\s+plan\s+--json\s*\|\s*jq\s+(-[rj]+)\s+['"]?\.body['"]?\s*>\s*([A-Za-z0-9][A-Za-z0-9_.-]*)$/)).filter(Boolean);
   if (matches.length !== 1) throw new Error("One supported plan JSON-to-file command is required; arbitrary shell is not admitted");
   const command = matches[0]!;
-  const original = command[1]!, id = /^(?:<[A-Z_ -]+>|\$\{?[A-Z_]+\}?)$/.test(original) ? sourceId : original;
+  // The CLI resolves a task by its UUID or its identifier (such as COM-1).
+  const original = command[1]!, id = /^(?:<[A-Z_ -]+>|\$\{?[A-Z_]+\}?)$/.test(original) || original === sourceIdentifier ? sourceId : original;
   if (id !== sourceId || path.basename(command[3]!) !== command[3]!) throw new Error("Document export targets a different task or destination");
   return { argv: ["issue", "document:get", id, "plan", "--json"], filterArgs: [command[2]!, ".body"], filename: command[3]!,
-    unresolvedIssueBinding: original === id ? undefined : { placeholder: original, fixtureValue: id } };
+    unresolvedIssueBinding: original === id || original === sourceIdentifier ? undefined : { placeholder: original, fixtureValue: id } };
 }
 export function gradeExportDocumentCli(value: unknown) {
   const c = checks(), o = privilegedObservation(value);
@@ -24,7 +25,10 @@ export function gradeExportDocumentCli(value: unknown) {
   c.add("correct-saved-revision", typeof o.state.documentRevisionId === "string" && o.state.exportRevisionId === o.state.documentRevisionId
     && o.state.documentUnchanged === true && o.state.exportIssueId === o.state.sourceIssueId,
     "The downloaded structured document is the exact selected saved plan revision on the authorized source task.");
-  c.add("actual-file-bytes", o.state.actualFileSha256 === o.state.savedBodySha256 && typeof o.state.actualFileSha256 === "string"
+  // jq -r ends its output with one newline; a text file that differs only by
+  // that final newline is the same saved document.
+  c.add("actual-file-bytes", typeof o.state.actualFileSha256 === "string"
+    && (o.state.actualFileSha256 === o.state.savedBodySha256 || o.state.actualFileSha256 === o.state.savedBodyWithNewlineSha256)
     && o.state.fileReadBack === true && o.state.fileWithinOwnedDirectory === true,
     "The actual terminal output file is read back and matches the saved document body byte-for-byte.");
   c.add("no-summary-substitute", o.state.cliExecuted === true && typeof o.state.commandSha256 === "string"
@@ -40,11 +44,12 @@ const exportPlan = privilegedDefinition("cli-operations.export-document-cli", "p
     const body = `# Website plan\n\nA saved synthetic revision for Acorn.\n\nReference ${ctx.input.nonce}.`;
     const document = await putDocument(ctx, issue.id, body);
     return { ...operator, sourceIssueId: issue.id, documentRevisionId: document.latestRevisionId,
-      savedBodySha256: createHash("sha256").update(body).digest("hex") };
+      sourceIdentifier: issue.identifier, savedBodySha256: createHash("sha256").update(body).digest("hex"),
+      savedBodyWithNewlineSha256: createHash("sha256").update(`${body}\n`).digest("hex") };
   },
   async act(ctx, state) {
     const reply = await settlePrivilegedChat(ctx), sourceId = String(state.sourceIssueId);
-    const command = documentExportCommand(reply.reply, sourceId);
+    const command = documentExportCommand(reply.reply, sourceId, typeof state.sourceIdentifier === "string" ? state.sourceIdentifier : undefined);
     const json = await runOwnedCli(ctx, command.argv), document = JSON.parse(json) as IssueDocument;
     // Execute the actual finite jq filter from the returned command; never a shell.
     const bytes = execFileSync("jq", command.filterArgs, { input: json, timeout: 5_000, maxBuffer: 1_048_576 });
@@ -68,5 +73,6 @@ const exportPlan = privilegedDefinition("cli-operations.export-document-cli", "p
   async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
 });
 exportPlan.sourceFiles = [...exportPlan.sourceFiles, "chat-catalog-domains/privileged-cli-support.ts", "../../cli/src/index.ts"];
+exportPlan.oracleVersion = "paperclip.chat-catalog.cli-document.v2";
 exportPlan.cleanup = cleanupOwnedCli;
 export const privilegedDocumentCliCases = [exportPlan];

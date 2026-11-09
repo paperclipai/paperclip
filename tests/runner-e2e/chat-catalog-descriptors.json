@@ -1843,7 +1843,7 @@
       "../../cli/src/commands/client/auth.ts",
       "../../cli/src/client/context.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.cli-context.v2",
+    "oracleVersion": "paperclip.chat-catalog.cli-context.v3",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -1861,7 +1861,7 @@
       "chat-catalog-domains/privileged-cli-support.ts",
       "../../cli/src/index.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+    "oracleVersion": "paperclip.chat-catalog.cli-create.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -1886,7 +1886,7 @@
       "chat-catalog-domains/privileged-cli-support.ts",
       "../../cli/src/index.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+    "oracleVersion": "paperclip.chat-catalog.cli-document.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -1935,7 +1935,7 @@
       "chat-catalog-domains/runtime-busy-worker.ts",
       "../../cli/src/index.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+    "oracleVersion": "paperclip.chat-catalog.cli-run.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 1,
