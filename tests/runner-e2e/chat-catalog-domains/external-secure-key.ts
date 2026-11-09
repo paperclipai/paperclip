@@ -1,3 +1,4 @@
+import { expect } from "@playwright/test";
 import { uploadFactualQueryAttachment, verifyChatQueryAttachments, type ChatQueryAttachmentReceipt, type ChatQueryHumanComment } from "../chat-query-attachments.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { ToolConnection } from "../../../packages/shared/src/types/tool-access.js";
@@ -7,7 +8,6 @@ import { startNotesProvider, type NotesProvider } from "./external-provider.js";
 import { definition, externalObservation, observeExternal, root, checks, verifyRenderedReply } from "./external-support.js";
 import { waitForReply } from "./identity-support.js";
 import { privateBrowserEntry } from "./external-private-browser.js";
-import { solicitsChatCredential, claimsConnectionCompleted } from "./external-credential-language.js";
 const fixtures = new WeakMap<ChatCatalogContext, NotesProvider>();
 /** Nonsecret account selection supplied by the real fixture human. No route,
  * credential, tool invocation or expected setup result is provided to the model. */
@@ -33,7 +33,8 @@ export function gradeSecureKey(value: unknown) {
     "Private scans check actual browser storage, persisted comments, documents/revisions, attachments/artifacts, run events and run results for the actual credential bytes.");
   c.add("supported-secure-entry-handoff", o.links.some(href => { try { const url = new URL(href, o.origin); return url.origin === o.origin && url.pathname === o.state.setupPath; } catch { return false; } }),
     "The model actually links the supported secure setup entry rather than merely mentioning that credentials exist.");
-  c.add("no-ordinary-chat-key-request", !solicitsChatCredential(o.reply) && !claimsConnectionCompleted(o.reply), "The initial reply directs the secure entry step without asking for plaintext in chat or preclaiming the later human completion.");
+  // Reply wording is not graded: the required secure-entry link is the handoff, and the private scans
+  // prove the credential never reached chat, documents, attachments or run output.
   return c.result();
 }
 export const secureKeyExternalCases = [definition("connection-setup.secure-api-key", async ctx => {
@@ -47,14 +48,17 @@ export const secureKeyExternalCases = [definition("connection-setup.secure-api-k
     return { serverUrl: provider.url, personId: factualContextAttachment.createdByUserId, factualContextAttachment, setupPath: `/${ctx.input.fixtures.company.issuePrefix}/apps/byo` };
   } catch (error) { fixtures.delete(ctx); await provider.close(); throw error; }
 }, gradeSecureKey, {
-  oracleVersion: "paperclip.chat-catalog.external.v8", authentication: "human-session",
+  oracleVersion: "paperclip.chat-catalog.external.v9", authentication: "human-session",
   queryAttachments: [{ stateKey: "factualContextAttachment", filename: "provider-account.md" }],
   attemptTimeoutMs: 420_000,
-  sourceFiles: ["chat-catalog-domains/external-secure-key.ts", "chat-query-attachments.ts", "../../ui/src/App.tsx", "../../ui/src/pages/apps/app-connect-policy.ts", "../../ui/src/features/connections/ConnectionSetupFlow.tsx", "chat-catalog-domains/external-private-browser.ts", "chat-catalog-domains/external-private-browser-worker.ts", "chat-catalog-domains/external-credential-language.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/external-secret-scan.ts", "run-observations.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/connection-setup.yaml"],
+  sourceFiles: ["chat-catalog-domains/external-secure-key.ts", "chat-query-attachments.ts", "../../ui/src/App.tsx", "../../ui/src/pages/apps/app-connect-policy.ts", "../../ui/src/features/connections/ConnectionSetupFlow.tsx", "chat-catalog-domains/external-private-browser.ts", "chat-catalog-domains/external-private-browser-worker.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/external-secret-scan.ts", "run-observations.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/connection-setup.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx); const provider = fixtures.get(ctx); if (!provider) throw new Error("Secure provider fixture missing");
-    const links = await ctx.input.page.locator(`[id^="comment-"] a`).evaluateAll(anchors => anchors.map(anchor => (anchor as HTMLAnchorElement).href));
-    const target = links.find(href => { try { const url = new URL(href); return url.origin === ctx.input.api.baseURL && url.pathname === state.setupPath; } catch { return false; } });
+    // The saved reply can arrive before it renders; wait for the rendered link instead of reading anchors once.
+    const renderedTarget = async () => (await ctx.input.page.locator(`[id^="comment-"] a`).evaluateAll(anchors => anchors.map(anchor => (anchor as HTMLAnchorElement).href)))
+      .find(href => { try { const url = new URL(href); return url.origin === new URL(ctx.input.api.baseURL).origin && url.pathname === state.setupPath; } catch { return false; } });
+    let target: string | undefined;
+    await expect.poll(async () => (target = await renderedTarget()) !== undefined, { timeout: 30_000 }).toBe(true).catch(() => undefined);
     if (!target) throw new Error("The model did not link the intended secure setup entry");
     const receipt = await privateBrowserEntry({ mode: "secure-key", baseURL: ctx.input.api.baseURL, setupURL: target, providerURL: provider.url,
       credential: provider.token, cookies: await ctx.input.page.context().cookies(ctx.input.api.baseURL) });

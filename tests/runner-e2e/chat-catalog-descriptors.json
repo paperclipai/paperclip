@@ -896,7 +896,7 @@
       "chat-scenarios/app-permissions.yaml",
       "chat-catalog-domains/identity-support.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -1033,7 +1033,7 @@
       "public-mcp-client.ts",
       "chat-scenarios/assistant-connections.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -1672,7 +1672,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/chat-channels.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -2596,7 +2596,6 @@
       "../../ui/src/features/connections/ConnectionSetupFlow.tsx",
       "chat-catalog-domains/external-private-browser.ts",
       "chat-catalog-domains/external-private-browser-worker.ts",
-      "chat-catalog-domains/external-credential-language.ts",
       "chat-catalog-domains/external-provider.ts",
       "chat-catalog-domains/external-secret-scan.ts",
       "run-observations.ts",
@@ -2605,7 +2604,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/connection-setup.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v8",
+    "oracleVersion": "paperclip.chat-catalog.external.v9",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 420000,
@@ -2656,7 +2655,7 @@
       "../../server/src/services/connection-intents.ts",
       "chat-scenarios/connection-setup.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.v2",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 1,
     "minimumRunCount": 2,

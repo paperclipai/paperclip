@@ -52,6 +52,10 @@ export function definition(id: string, setup: ChatCatalogCase["setup"], grade: C
     async cleanup(ctx, state) { try { await result.cleanup?.(ctx, state); } finally { await cleanupIdentityProbes(ctx); } },
   };
 }
+/** True when the reply rendered a same-origin link to one of the case's setup-chosen pages. */
+export function repliedWithPageLink(o: { links: string[]; origin: string }, path: unknown): boolean {
+  return typeof path === "string" && o.links.some(href => { try { const url = new URL(href, o.origin); return url.origin === o.origin && url.pathname === path; } catch { return false; } });
+}
 export function sameRows(before: unknown, after: unknown): boolean { return JSON.stringify(before) === JSON.stringify(after); }
 export { checks };
 
