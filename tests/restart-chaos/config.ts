@@ -140,7 +140,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     env,
     adapters: list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]),
     // The governance scenarios (G1, H1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1")),
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1")),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),

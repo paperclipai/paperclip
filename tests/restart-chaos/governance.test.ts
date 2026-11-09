@@ -260,6 +260,8 @@ describe("governance wave options", () => {
     expect(command.options.workloads).not.toContain("G1");
     expect(command.options.workloads).not.toContain("H1");
     expect(triggerFitsWorkload("approval", "G1")).toBe(true);
+    expect(triggerFitsWorkload("stop", "S1")).toBe(true);
+    expect(triggerFitsWorkload("stop", "C1")).toBe(false);
     expect(triggerFitsWorkload("approval", "A1")).toBe(false);
     expect(triggerFitsWorkload("paused", "H1")).toBe(true);
     expect(() => planTasks({ seed: 1, tasks: 2, workloads: ["A1"], adapters: ["codex"], faults: ["K1"], triggers: ["approval"] }))

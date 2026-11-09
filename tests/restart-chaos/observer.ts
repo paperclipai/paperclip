@@ -50,6 +50,7 @@ const RESULT_TRIGGER_EVENTS = new Set(["run.result.proposed", "run.result.accept
 export const REST_CONFIRM_MS = 12_000;
 export const CHILD_WAKE_GRACE_MS = 60_000;
 export const CHILD_STALL_CHECK_MS = 10_000;
+export const STOP_CONTINUE_AFTER_MS = 20_000;
 
 export function childrenPending(children: ReadonlyArray<{ status: string | null }> | null): boolean {
   return !children || children.some(child => !["done", "cancelled", "blocked"].includes(child.status ?? ""));
@@ -344,6 +345,11 @@ export class TaskObserver {
       case "tool": return this.record.benchFirstSeenAt ?? null;
       case "approval": return this.record.governance?.approvalSeenAt ?? null;
       case "paused": return this.record.governance?.budgetPausedAt ?? null;
+      case "stop": {
+        const stop = this.record.stop;
+        if (!stop) return null;
+        return stop.error ? "missed" : stop.at;
+      }
       case "result": {
         // B8: the run that received the follow-up has accepted its result but
         // has not settled yet. A follow-up posted at rest cannot cross it.
@@ -414,6 +420,10 @@ export class TaskObserver {
     if (await this.observeChildStalls(now)) {
       this.restCandidateSince = null;
       this.childrenSettledAt = null;
+    }
+    if (await this.maybeStop(sample, now)) {
+      this.restCandidateSince = null;
+      return;
     }
     if (await this.maybeFollowUp(sample, now)) {
       // The comment response is not the agent's answer: require fresh samples.
@@ -490,18 +500,42 @@ export class TaskObserver {
     }
   }
 
+  private async maybeStop(sample: TaskSample, now: number): Promise<boolean> {
+    if (!this.definition.stopBeforeFollowUp || this.record.stop || this.plan.followUpAfterMs === null || !sample.reachable) return false;
+    if (now < this.record.createdAt! + this.plan.followUpAfterMs) return false;
+    const running = (sample.runs ?? []).find(run => run.status === "running");
+    if (!running) return false;
+    const stop: NonNullable<TaskRecord["stop"]> = { at: now, runId: running.id, httpStatus: null, error: null };
+    try {
+      await this.api.post(`/api/heartbeat-runs/${running.id}/cancel`, { cancellationRequestId: randomUUID() });
+      stop.httpStatus = 200;
+    } catch (error) {
+      stop.httpStatus = error instanceof ChaosApiError ? error.status : null;
+      stop.error = error instanceof Error ? error.message : String(error);
+    }
+    this.record.stop = stop;
+    this.timeline.add("task_stop_clicked", { taskId: this.plan.taskId, ...stop });
+    return true;
+  }
+
   private async maybeFollowUp(sample: TaskSample, now: number): Promise<boolean> {
     const definition = this.definition;
     if (!definition.followUp || this.record.followUp || this.plan.followUpAfterMs === null || !sample.reachable) return false;
     if (now < this.record.createdAt! + this.plan.followUpAfterMs) return false;
+    if (definition.stopBeforeFollowUp) {
+      const stop = this.record.stop;
+      if (!stop || now - stop.at < STOP_CONTINUE_AFTER_MS || this.supervisor.faultInProgress) return false;
+      if ((sample.runs ?? []).some(run => run.status === "running" || run.status === "queued")) return false;
+    }
     // C1 targets a live run (B8); wait for one unless the task already rests.
     const running = (sample.runs ?? []).some(run => run.status === "running");
-    if (!running && !isResting(sample)) return false;
+    if (!running && !definition.stopBeforeFollowUp && !isResting(sample)) return false;
+    const sentAt = Math.max(now, Date.now());
     try {
       const comment = await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body: definition.followUp(this.plan.nonce) });
-      this.record.followUp = { at: now, postedAt: Math.max(now, Date.now()), commentId: comment?.id ?? null, error: null, duringRun: running };
+      this.record.followUp = { at: now, sentAt, postedAt: Math.max(now, Date.now()), commentId: comment?.id ?? null, error: null, duringRun: running };
     } catch (error) {
-      this.record.followUp = { at: now, commentId: null, error: error instanceof Error ? error.message : String(error), duringRun: running };
+      this.record.followUp = { at: now, sentAt, commentId: null, error: error instanceof Error ? error.message : String(error), duringRun: running };
     }
     this.timeline.add("task_follow_up", { taskId: this.plan.taskId, ...this.record.followUp });
     return true;
@@ -565,6 +599,18 @@ export class TaskObserver {
       }
     }
     return this.retryBlockedChildren(blocked, now);
+  }
+
+  private stopArtifacts(stop: NonNullable<TaskRecord["stop"]>): NonNullable<OracleArtifacts["stop"]> {
+    const runs = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
+    for (const sample of this.record.samples) for (const run of sample.runs ?? []) runs.set(run.id, run);
+    const continueAt = this.record.followUp?.sentAt ?? this.record.followUp?.at ?? null;
+    const continueCommentId = this.record.followUp?.commentId ?? null;
+    const startedBeforeContinue = [...runs.values()].filter(run => run.id !== stop.runId && run.createdAt
+      && !(continueCommentId && (run.wakeCommentIds ?? []).includes(continueCommentId))
+      && Date.parse(run.createdAt) > stop.at && (continueAt === null || Date.parse(run.createdAt) < continueAt)).map(run => run.id);
+    return { runId: stop.runId, runStatus: runs.get(stop.runId)?.status ?? null, runsStartedBeforeContinue: startedBeforeContinue,
+      continuePosted: Boolean(this.record.followUp?.commentId) };
   }
 
   private async retryBlockedChildren(childIds: readonly string[], now: number): Promise<boolean> {
@@ -831,6 +877,7 @@ export class TaskObserver {
       agentComments: (comments ?? []).filter(comment => comment.authorAgentId).map(comment => String(comment.body ?? "")),
       files, commands, workspacePath,
       ...(this.plan.workload === "B5" ? { benchProgressObserved: this.record.benchProgressSeen?.length ?? 0 } : {}),
+      ...(this.record.stop ? { stop: this.stopArtifacts(this.record.stop) } : {}),
       ...(definition.collect.childDocuments ? { children: await this.collectChildren(issueId),
         childStalls: this.record.childStalls ?? [], stallWakes: await this.collectStallWakes(issueId) } : {}),
       ...(this.plan.workload === "G1" ? { approvals: await this.collectApprovals(issueId) } : {}),
