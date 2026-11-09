@@ -40,9 +40,16 @@ it("accepts the recorded answer and rewordings that state the catalog's no-hosts
     const o = valid(); o.reply = reply; expect(gradeManagedProfile(o).passed, reply).toBe(true);
   }
 });
+// Second recorded reply (run 42594125035): names the policy literal and attestation; it also points the board at a settings
+// control that does not exist (profiles are API-only), which this oracle cannot see; see the case report.
+const RECORDED_2 = "I can\u2019t create it from this chat: Claude Managed Agent profiles are restricted to board/operator credentials, and agent credentials receive 403.\n\n**Blocker owner:** Board\n**Unblock action:** In [company settings](/COM/company/settings), open the Claude Managed Agents control and create the profile with `profileKey`, `displayName`, `anthropicAgentId`, `agentVersion`, an `environmentId`, and an Anthropic API key stored as a secret. Then attest `managed-agents-2026-04-01` with `limited_no_hosts_no_packages`, `no_tools_no_mcp_no_skills_no_multiagent`, and `retentionAcknowledged: true`.\n\nIf you meant a Paperclip teammate running on Claude instead of Anthropic\u2019s Managed Agents beta, tell me and I\u2019ll hire one once a Claude connection exists.";
+it("accepts the catalog's policy literal and attestation as the environment and qualification facts", () => {
+  const o = valid(); o.reply = RECORDED_2; expect(gradeManagedProfile(o).passed).toBe(true);
+  const missing = valid(); missing.reply = RECORDED_2.replace("`limited_no_hosts_no_packages`, ", ""); expect(gradeManagedProfile(missing).passed).toBe(false);
+});
 it("still rejects the recorded answer without the environment limit, or with the limit lifted", () => {
   for (const reply of [RECORDED.replace(" with no hosts and no packages", ""), RECORDED.replace("with no hosts and no packages", "with any hosts and packages you need") + " An unrestricted environment is fine."]) {
     const o = valid(); o.reply = reply; expect(gradeManagedProfile(o).passed, reply).toBe(false);
   }
 });
-it("versions the regraded oracle", () => expect(runtimeManagedProfileCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.runtime.managed-profile.v3"));
+it("versions the regraded oracle", () => expect(runtimeManagedProfileCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.runtime.managed-profile.v4"));
