@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { applyRunnerGoalPrpEvent } from "../services/runner-goals.js";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -51,6 +52,7 @@ import {
   undeliveredConversationComments,
 } from "../services/agent-conversations.js";
 import { classifyIssueGraphLiveness } from "../services/recovery/issue-graph-liveness.js";
+import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
 import { runningProcesses } from "../adapters/index.js";
 import {
   buildPaperclipTaskMarkdown,
@@ -225,7 +227,7 @@ import {
       expect((await request(appFor(colleague)).get(listPath)).body).toEqual([]);
       expect((await request(appFor(randomUUID(), false)).get(listPath)).status).toBe(403);
       await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
-      expect((await request(app).get(listPath)).status).toBe(404);
+      expect((await request(app).get(listPath)).status).toBe(200);
       await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
       expect(
         (
@@ -289,9 +291,7 @@ import {
       await instanceSettingsService(db).updateExperimental({
         enableAgentChat: false,
       });
-      expect((await request(app).get(path)).status).toBe(404);
-      expect((await request(app).post(`/api/issues/${chatId}/queued-comments/interrupt`)
-        .send(queuedInterrupt)).status).toBe(404);
+      expect((await request(app).get(path)).status).toBe(200);
       expect(
         (await request(app).get(`/api/issues/${resolved[0].body.id}`)).status,
       ).toBe(200);
@@ -444,9 +444,9 @@ import {
       });
       const [interaction] = await db.insert(issueThreadInteractions).values({
         companyId, issueId: issue.id, kind: "request_confirmation", status: "rejected",
-        payload: { version: 1, target: { type: "issue_document", key: "plan", documentId: document.id,
+        payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", key: "plan", documentId: document.id,
           revisionId: document.latestRevisionId!, revisionNumber: document.latestRevisionNumber } },
-        result: { outcome: "rejected", reason: "Include CHAT_REVIEW_MARKER in the revised plan." },
+        result: { version: 1, outcome: "rejected", reason: "Include CHAT_REVIEW_MARKER in the revised plan." },
       }).returning();
       const input = { db, companyId, issueSummary: { ...issue, workMode: "planning" },
         contextSnapshot: { issueId: issue.id, conversationMode: true, interactionId: interaction!.id,
@@ -467,7 +467,7 @@ import {
         contextSnapshot: { issueId: issue.id, conversationMode: true } });
       expect(later?.planReviewContext).toBeNull();
       // An unrelated confirmation must not cause old plan context to be replayed.
-      await db.update(issueThreadInteractions).set({ payload: { version: 1 } })
+      await db.update(issueThreadInteractions).set({ payload: { version: 1, prompt: "Proceed?" } })
         .where(eq(issueThreadInteractions.id, interaction!.id));
       expect((await buildPaperclipWakePayload(input))?.planReviewContext).toBeNull();
     });
@@ -596,20 +596,6 @@ import {
           .where(eq(issues.id, issue.id));
         expect(current.conversationSessionGeneration).toBe(2);
         expect(current.conversationBoundaryCommentId).toBe(commands[2].id);
-        await instanceSettingsService(db).updateExperimental({
-          enableAgentChat: false,
-        });
-        expect(
-          await heartbeat.wakeup(agentId, {
-            contextSnapshot: {
-              issueId: issue.id,
-              wakeCommentId: commands[3].id,
-            },
-          }),
-        ).toBeNull();
-        await instanceSettingsService(db).updateExperimental({
-          enableAgentChat: true,
-        });
       } finally {
         runningProcesses.delete(active.id);
       }
@@ -769,7 +755,7 @@ import {
       const succeeded = { ...run, contextSnapshot: prepared.context, status: "succeeded" };
       const [interaction] = await db.insert(issueThreadInteractions).values({
         companyId, issueId: chat.id, sourceRunId: run.id, createdByAgentId: agentId,
-        kind: "request_confirmation", status: "answered", payload: { version: 1 },
+        kind: "request_confirmation", status: "answered", payload: { version: 1, prompt: "Proceed?" },
       }).returning();
       expect(await settleConversationTurn(db, succeeded)).toBe(false);
       await db.update(issueThreadInteractions).set({ status: "pending", sourceRunId: null })
@@ -831,8 +817,8 @@ import {
         blockedByIssueIds: [blocker.id],
       });
       for (const state of [
-        { status: "in_review", conversationState: "waiting" },
-        { status: "blocked", conversationState: "active" },
+        { status: "in_review", conversationState: "waiting" as const },
+        { status: "blocked", conversationState: "active" as const },
       ]) {
         await db.update(issues).set(state).where(eq(issues.id, chat.id));
         for (const reason of ["issue_blockers_resolved", "issue_children_completed", "issue_unblock_requested"]) {
@@ -914,19 +900,21 @@ import {
       const answerRun = await runFor(chat.id, first.id, { source: "issue.interaction.respond", interactionId: question.id,
         interactionKind: "ask_user_questions", interactionStatus: "answered" });
       const prepared = await prepareConversationTurn(db, answerRun);
-      expect(prepared.context.wakeCommentId).toBe(first.id);
-      expect(prepared.context.conversationReplyBoundaryCommentId).toBe(["answered", "new-message"].includes(scenario) ? newer.id : first.id);
+      const preparedContext: Record<string, unknown> = prepared.context;
+      expect(preparedContext.wakeCommentId).toBe(first.id);
+      expect(preparedContext.conversationReplyBoundaryCommentId).toBe(["answered", "new-message"].includes(scenario) ? newer.id : first.id);
       // A retry reuses the frozen boundary, even if another message has arrived.
       if (scenario === "new-message") await svc.addComment(chat.id, "New instructions while you answer", { userId: "local-board" });
       const retry = await prepareConversationTurn(db, { ...answerRun, contextSnapshot: prepared.context });
-      expect(retry.context.conversationReplyBoundaryCommentId).toBe(prepared.context.conversationReplyBoundaryCommentId);
+      const retryContext: Record<string, unknown> = retry.context;
+      expect(retryContext.conversationReplyBoundaryCommentId).toBe(preparedContext.conversationReplyBoundaryCommentId);
       await svc.addComment(chat.id, "You chose Blue.", { agentId, runId: answerRun.id });
       expect(await settleConversationTurn(db, { ...answerRun, status: "succeeded", contextSnapshot: prepared.context })).toBe(true);
       const [settled] = await db.select().from(issues).where(eq(issues.id, chat.id));
       expect(settled.conversationState).toBe(scenario === "answered" ? "waiting" : "active");
-      expect(retry.context.conversationReplayThroughCommentId).toBe(prepared.context.conversationReplayThroughCommentId);
+      expect(retryContext.conversationReplayThroughCommentId).toBe(preparedContext.conversationReplayThroughCommentId);
       const replay = await conversationReplay(db, companyId, chat.id, first.id,
-        prepared.context.conversationReplayThroughCommentId as string);
+        preparedContext.conversationReplayThroughCommentId as string);
       if (["answered", "new-message"].includes(scenario)) {
         expect(replay).toContain("What is the capital of France?");
         expect(replay).toContain("Paris.");
@@ -972,22 +960,6 @@ import {
           agents: [],
         }),
       ).toEqual([]);
-      await instanceSettingsService(db).updateExperimental({
-        enableAgentChat: false,
-      });
-      await expect(
-        issueService(db).addComment(issue.id, "/new", {
-          userId: "local-board",
-        }),
-      ).rejects.toThrow(/disabled/);
-      expect(
-        isWaitingConversation(
-          (await db.select().from(issues).where(eq(issues.id, issue.id)))[0],
-        ),
-      ).toBe(true);
-      await instanceSettingsService(db).updateExperimental({
-        enableAgentChat: true,
-      });
       const child = await issueService(db).create(companyId, { title: "Execute work", status: "done" });
       await db.update(issues).set({ parentId: issue.id }).where(eq(issues.id, child.id));
       expect(
@@ -1015,6 +987,50 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
+  it("tells chat to link the profile of an agent it acted on without turning the link into a wake mention", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link its profile at /<prefix>/agents/<urlKey or id>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("use agent:// only when you intend to notify that agent");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
+  });
+
+  it("points chat at the teams catalog for ready-made teams and stops the search there", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Ready-made teams are installable packages in Paperclip's teams catalog");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("list the catalog with GET /api/teams/catalog");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("do not look for others in package registries, repositories or the web");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The web app has no teams catalog page, so do not link one");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("paperclipai teams install <team id> --company-id <companyId>");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("GET /api/teams/catalog");
+  });
+
+  it("tells chat where a person can hire when the agent cannot", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("send the person to the hire form at /<prefix>/agents/new");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("to your own /permissions page, where they can turn on hiring for you");
+  });
+
+  it("tells chat to link the agent profile page that holds a control, including the unlisted API keys page", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<urlKey or id>/api-keys for API keys");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The API keys page is not in the profile's navigation");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>/api-keys");
+  });
+
+  it("says how to read the company link prefix from a task identifier so agent links are not guessed", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The company prefix is the part of a task identifier before its final hyphen and number: for task RUN-1 the prefix is RUN.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Never build a prefix from the company name");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("for task RUN-1 the prefix is RUN");
+  });
+
+  it("asks which record is meant before changing one of several matches", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("matches several records you can access and nothing in the conversation selects one, ask which one before changing any of them");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link each candidate");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not pick the first match, change every match");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("ask which one before changing any of them");
+  });
+
   it("preserves explicit plan approval while avoiding ritual confirmations for ordinary chat", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("When the user asks to approve a plan before handoff");
     expect(AGENT_CHAT_DIRECTIVE).toContain('interactionKind: "confirmation"');
@@ -1024,9 +1040,61 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("In Ask mode, discuss the plan without creating or revising documents or approval cards");
   });
 
+  it("tells chat how to link execution runs to the registered run route and name their agents", () => {
+    const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/<Route\s+path="agents\/:agentId\/runs\/:runId"/);
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<agentId>/runs/<runId> using the run's returned agentId.");
+    // Issue run listings expose the run ID as runId, not id; the guidance must name the field each response returns.
+    const activity = readFileSync(new URL("../services/activity.ts", import.meta.url), "utf8");
+    const listing = activity.match(/runsForIssue:\s*async\b[\s\S]*?\.select\(\{([\s\S]*?)\n\s*\}\)/)?.[1] ?? "";
+    expect(listing).toMatch(/^\s*runId:\s*heartbeatRuns\.id\s*,/m);
+    expect(listing).not.toMatch(/^\s*id:/m);
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Issue run listings (GET /api/issues/{id}/runs) return the run ID as runId");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("use id only from responses that return the run itself, such as GET /api/heartbeat-runs/{runId}");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("returned agentId and id");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("read the agent and name it rather than showing a raw ID");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<agentId>/runs/<runId>");
+  });
+
+  it("routes a person's own profile change to their profile settings instead of an agent write", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("only they can change them in their profile settings at /<prefix>/company/settings/instance/profile");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link that page instead of attempting the change");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/company/settings/instance/profile");
+  });
+
+  it("routes a task identifier from another company to a company switch instead of a search", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("A task identifier whose prefix differs from this conversation's prefix belongs to another company or to none");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a lookup that is not found does not mean the task does not exist");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the person can switch to its company and open a chat there");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Link the task at /<its prefix>/issues/<identifier>, taking the prefix from the identifier the person gave");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<its prefix>/issues/<identifier>");
+  });
+  it("treats a same-company task the agent cannot find as possibly private instead of searching for a way in", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("A private task is hidden from you unless you have access to it");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("it may be private rather than missing. Do not search for it further");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("share it with you from its sharing controls");
+  });
+  it("tells chat agents to keep every listed task linked, and where a long list goes", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("write each task identifier in full");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a range such as RUN-12–14 links only its first task");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>#document-<key>");
+  });
+
+  it("gives chat replies a usable route for both task and approval sources", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("For approval links, use /<prefix>/approvals/<approvalId>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Never invent a hostname for a Paperclip link.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Write every company link as a Markdown link");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a bare path or a path in inline code is not clickable");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Start each link target with exactly one slash");
+  });
+
   it.each([true, false])("preserves rejected-plan changes in task markdown (includeDescription=%s)", (includeDescription) => {
     const prompt = buildPaperclipTaskMarkdown({
-      issue: { id: "chat", title: "Chat", workMode: "planning", conversationAgentId: "agent" },
+      issue: { id: "chat", identifier: null, title: "Chat", workMode: "planning", conversationAgentId: "agent" },
       interaction: { kind: "request_confirmation", status: "rejected" },
       planReview: { status: "rejected", reason: "Add CHAT_REVIEW_MARKER and a validation step." },
       acceptedPlanContinuation: true,
@@ -1070,7 +1138,7 @@ describe("chat prompt policy", () => {
 describe("native conversation finalization", () => {
   it("does not require execution completion or schedule a continuation after a successful chat turn", () => {
     const decision = {
-      policyVersion: "paperclip.native-status-arbiter.v1",
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "in_progress",
       toStatus: "in_progress",
       reasonCode: "completion_evidence_incomplete",

@@ -29,6 +29,8 @@ import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import { connectivity } from "./lib/connectivity";
 import { bindConnectivity, createAppQueryClient } from "./lib/query-client";
 import { captureBrowserException } from "./lib/sentry";
+import { startPersistedQueryCache } from "./lib/persisted-query-cache";
+import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
@@ -40,14 +42,6 @@ initPluginBridge(React, ReactDOM);
 startPerfMeasureReaper();
 
 startChunkLoadRecovery();
-
-// Parked SPA tabs never navigate, so beyond registering the worker this also
-// re-checks /sw.js on tab focus and hourly, and applies a discovered update
-// with one reload while the tab is hidden — otherwise an old worker and its
-// cached shell can outlive a deploy indefinitely.
-window.addEventListener("load", () => {
-  startServiceWorkerUpdates();
-});
 
 // The global mutation error toast is raised from the MutationCache, outside
 // React; the bridge below hands it the ToastProvider's pushToast.
@@ -88,6 +82,19 @@ const queryClient = createAppQueryClient(
 // Outages pause queries and replayable mutations instead of failing them, and
 // live queries refresh once when the server answers again.
 bindConnectivity(queryClient, connectivity);
+startPersistedQueryCache(queryClient, {
+  buildId: typeof __PAPERCLIP_BUILD_COMMIT__ === "string" ? __PAPERCLIP_BUILD_COMMIT__ : null,
+});
+window.addEventListener("load", () => {
+  startServiceWorkerUpdates({
+    canReload: () => connectivity.getSnapshot().status === "online"
+      && connectivity.getSnapshot().pendingWrites === 0 && queryClient.isMutating() === 0 && !hasPendingWrites(),
+    subscribeReloadSafety: listener => {
+      const cleanups = [connectivity.subscribe(listener), queryClient.getMutationCache().subscribe(listener), subscribePendingWrites(listener)];
+      return () => { for (const cleanup of cleanups) cleanup(); };
+    },
+  });
+});
 
 function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNode }) {
   const { selectedCompany } = useCompany();

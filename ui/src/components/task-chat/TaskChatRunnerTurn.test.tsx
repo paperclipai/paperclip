@@ -40,7 +40,7 @@ describe("TaskChatRunnerTurn", () => {
       item: TaskChatRuntimeRequestItem,
       decision: TaskChatRuntimeRequestDecision,
     ) => void,
-    suppressFinal = false,
+    awaitingContinuation = false,
     continuedAfterSteering = false,
     execution?: ExecutionProjection,
     preparationLabel?: string,
@@ -58,7 +58,7 @@ describe("TaskChatRunnerTurn", () => {
               execution={execution}
               preparationLabel={preparationLabel}
               startedAtMs={Date.now() - 2_000}
-              suppressFinal={suppressFinal}
+              awaitingContinuation={awaitingContinuation}
               continuedAfterSteering={continuedAfterSteering}
               onRuntimeRequestDecision={onRuntimeRequestDecision}
             />
@@ -309,7 +309,7 @@ describe("TaskChatRunnerTurn", () => {
     const commentary = container.querySelector('[data-testid="task-chat-phase-interstitial"]');
     const activity = container.querySelector('[data-testid="task-chat-activity-viewport"]');
     expect(commentary?.textContent).toContain("Running the exact command now.");
-    expect(activity?.textContent).toContain("Running a command");
+    expect(activity?.textContent).toContain("Running$ ");
     expect(activity?.textContent).toContain("STREAM-$i");
     expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
     expect(commentary?.compareDocumentPosition(activity!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -796,7 +796,7 @@ describe("TaskChatRunnerTurn", () => {
         family: "safety",
         eventType: "safety.review.started",
         status: "running",
-        expected: "Reviewing safety",
+        expected: "Auto-reviewing",
       },
       {
         family: "terminal",

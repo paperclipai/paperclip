@@ -1,3 +1,4 @@
+import { budgetServiceInTransaction } from "./budgets.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -33,7 +34,6 @@ import {
   companyMemberships,
   instanceUserRoles,
 } from "@paperclipai/db";
-import { compareCents } from "@paperclipai/shared";
 import type {
   AgentPermissions,
   EmailEndpointSetupInput,
@@ -539,7 +539,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         );
       await authorizeRead(endpoint.companyId, issueId, actor);
       const [agent] = await db
-        .select({ ...getTableColumns(agents), spentMonthlyCentsExact: sql<string>`${agents.spentMonthlyCents}::text` })
+        .select(getTableColumns(agents))
         .from(agents)
         .where(
           and(
@@ -550,8 +550,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       if (
         !agent ||
         ["paused", "terminated", "pending_approval"].includes(agent.status) ||
-        (agent.budgetMonthlyCents > 0 &&
-          compareCents(agent.spentMonthlyCentsExact, agent.budgetMonthlyCents) >= 0)
+        await budgetServiceInTransaction(db).getInvocationBlock(endpoint.companyId, actor.agentId, { issueId })
       )
         throw forbidden("Agent is not available to send email");
       if (!actor.runId)
@@ -1356,6 +1355,8 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             {
               ...(defaults.projectId !== undefined ? { projectId: defaults.projectId } : {}),
               ...placement,
+              // Boundary placement is a trust decision; the agent depth limit must not move it.
+              parentDepthPolicy: "allow_nested",
               ...(defaults.workspace ? { workspaceSelection: defaults.workspace, workspaceSelectionSource: "channel" as const } : {}),
               title: message.subject.slice(0, 200),
               description: `Email conversation for ${current.botExternalId}`,
@@ -1586,6 +1587,8 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           {
             title: input.subject!,
             parentId: input.parentIssueId,
+            // Channel tasks stay inside their source/boundary subtree.
+            parentDepthPolicy: "allow_nested",
             projectId: sourceTask.projectId,
             executionWorkspaceSettings: sourceTask.executionWorkspaceSettings,
             description: `Email conversation from ${endpoint.botExternalId}`,

@@ -1,4 +1,5 @@
 import type { LiveEvent } from "@paperclipai/shared";
+import { beginIdleTrackedWork } from "../services/task-admission.js";
 
 export const LIVE_DELIVERY_MAX_ITEMS = 1_000;
 export const LIVE_DELIVERY_MAX_BYTES = 1024 * 1024;
@@ -29,6 +30,7 @@ export function createLiveEventDelivery(input: {
   let draining = false;
   let disposed = false;
   let needsResync = false;
+  let resyncReason = "delivery_overflow";
   let notifiedRevision = -1;
   let congestionTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingReadTimer: ReturnType<typeof setTimeout> | undefined;
@@ -57,14 +59,15 @@ export function createLiveEventDelivery(input: {
   }
   function resync() {
     if (!needsResync || !isOpen() || notifiedRevision === revision) return;
-    if (control({ type: "live.resync", version: 1, revision, reason: "delivery_overflow" })) notifiedRevision = revision;
+    if (control({ type: "live.resync", version: 1, revision, reason: resyncReason })) notifiedRevision = revision;
   }
-  function overflow() {
+  function overflow(reason = "delivery_overflow") {
     if (!negotiated) { socket.close(1013, "event backlog"); return; }
     epoch += 1;
     for (const item of queued) { retainedBytes -= item.bytes; retainedItems -= 1; }
     queued = [];
     needsResync = true;
+    resyncReason = reason;
     if (!congestionTimer) {
       congestionTimer = setTimeout(() => {
         congestionTimer = undefined;
@@ -88,6 +91,7 @@ export function createLiveEventDelivery(input: {
   async function drain() {
     if (draining) return;
     draining = true;
+    const finishIdleWork = beginIdleTrackedWork();
     try {
       while (queued.length && isOpen()) {
         const item = queued.shift()!;
@@ -119,7 +123,10 @@ export function createLiveEventDelivery(input: {
           retainedBytes -= item.bytes; retainedItems -= 1;
         }
       }
-    } finally { draining = false; resync(); }
+    } finally {
+      try { draining = false; resync(); }
+      finally { finishIdleWork(); }
+    }
   }
   return {
     receive(raw: string) {
@@ -162,6 +169,7 @@ export function createLiveEventDelivery(input: {
       queued.push({ event, bytes, epoch }); retainedBytes += bytes; retainedItems += 1;
       void drain();
     },
+    requestResync: () => overflow("controller_change"),
     dispose,
     metrics: () => ({ retainedBytes, retainedItems, negotiated, revision, needsResync }),
   };

@@ -7,7 +7,7 @@ import { formatRetryReason } from "@/lib/runRetryState";
 import type { IssueScheduledRetry } from "@paperclipai/shared";
 import { useRetryNowMutation, type RetryNowError } from "../hooks/useRetryNowMutation";
 import { Badge } from "@/components/ui/badge";
-import { InlineBanner } from "@/components/InlineBanner";
+import { describeError } from "@/api/errors";
 
 const MAX_TURN_CONTINUATION = "max_turns_continuation";
 
@@ -33,13 +33,9 @@ export function IssueScheduledRetryCard({
   if (!scheduledRetry || !issueId) return null;
   if (scheduledRetry.status !== "scheduled_retry") return null;
 
-  if (scheduledRetry.scheduledRetryReason === "workspace_busy") {
-    return (
-      <InlineBanner tone="info" icon={Clock} title="Waiting for workspace" className="mb-3">
-        Another task is using this workspace. Work starts automatically when it is available.
-      </InlineBanner>
-    );
-  }
+  // Workspace contention is a transient wait with nothing for the user to do.
+  // The composer strip and properties row carry the quiet status instead.
+  if (scheduledRetry.scheduledRetryReason === "workspace_busy") return null;
 
   const continuation = isContinuationReason(scheduledRetry.scheduledRetryReason);
   const dueAtIso = scheduledRetry.scheduledRetryAt
@@ -118,7 +114,8 @@ export function IssueScheduledRetryCard({
               Last attempt failed: {scheduledRetry.error}{/[.!?]$/.test(scheduledRetry.error.trim()) ? "" : "."} Paperclip will retry automatically.
             </div>
           ) : null}
-          {isError ? (
+          {isError ? ( // query-error-ok: mutation result
+
             <RetryErrorBand
               error={retryNow.lastError}
               onRetry={() => {
@@ -192,7 +189,7 @@ export function RetryErrorBand({ error, onRetry, className }: RetryErrorBandProp
       <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1">
         <div className="font-medium">Couldn't retry now</div>
-        <div className="mt-0.5 text-muted-foreground">{error.message}</div>
+        <div className="mt-0.5 text-muted-foreground">{describeError({ status: error.status, body: { message: error.message } }).body}</div>
       </div>
       <button
         type="button"

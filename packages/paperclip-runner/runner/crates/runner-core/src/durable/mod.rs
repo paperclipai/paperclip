@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub use runner::{
-    run_durable_runner, CommandExecution, CommandExecutor, PolledEvent,
-    TerminalDeliveryReconciliation,
+    run_durable_runner, run_durable_runner_with_host_control, CommandExecution, CommandExecutor,
+    PolledEvent, TerminalDeliveryReconciliation,
 };
 pub(crate) use state::{
     create_private_temporary_file, open_private_regular_file, redact_sensitive_text_values,
@@ -37,12 +37,46 @@ pub fn redact_diagnostic_text(input: &str) -> String {
     state::redact_text(input)
 }
 
+/// Saved provider state was written under a launch or provider profile that
+/// this runner cannot adopt. The outcome is deterministic for this runner
+/// build: retrying the same restore cannot succeed.
+pub const PROVIDER_STATE_INCOMPATIBLE: &str = "provider_state_incompatible";
+
+/// The runner refused to attach a new run to a saved provider session because
+/// the durable provider profile or a protected launch argument would change.
+/// The refusal leaves the saved state unchanged and repeats on every retry.
+pub const PROVIDER_ATTACH_REFUSED: &str = "provider_attach_refused";
+
+/// The saved provider session still owns a side-effecting tool call without a
+/// recorded result. Replacing the session could repeat or lose that action.
+pub const PROVIDER_SIDE_EFFECT_PENDING: &str = "provider_side_effect_pending";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DurableRunnerError(String);
+pub struct DurableRunnerError(String, Option<serde_json::Value>, Option<&'static str>);
 
 impl DurableRunnerError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self(message.into(), None, None)
+    }
+
+    pub fn with_provider_failure(mut self, value: Option<serde_json::Value>) -> Self {
+        self.1 = crate::provider_failure::validated_provider_failure(value);
+        self
+    }
+
+    pub fn provider_failure(&self) -> Option<serde_json::Value> {
+        self.1.clone()
+    }
+
+    /// Adds a closed failure class that the controller reads from the command
+    /// result instead of parsing the message.
+    pub fn with_classification(mut self, classification: &'static str) -> Self {
+        self.2 = Some(classification);
+        self
+    }
+
+    pub fn classification(&self) -> Option<&'static str> {
+        self.2
     }
 }
 
@@ -187,6 +221,12 @@ pub struct OpenCodeLaunchProfile {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorCloudLaunchProfile {
+    pub command: QualifiedLaunchArtifact,
+    pub proxy_script: QualifiedLaunchArtifact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerConfig {
     pub connect_url: String,
     pub ca_bundle_path: Option<PathBuf>,
@@ -201,6 +241,7 @@ pub struct DurableRunnerConfig {
     pub runner_digest: String,
     pub acpx_launch_profile: Option<AcpxLaunchProfile>,
     pub opencode_launch_profile: Option<OpenCodeLaunchProfile>,
+    pub cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
     pub max_outbox_bytes: usize,
     pub p0_reserve_bytes: usize,
     pub max_frame_bytes: usize,
@@ -339,6 +380,25 @@ impl DurableRunnerConfig {
                 ));
             }
         }
+        if let Some(profile) = self.cursor_cloud_launch_profile.as_ref() {
+            if [&profile.command, &profile.proxy_script]
+                .iter()
+                .any(|artifact| {
+                    !artifact.path.is_absolute()
+                        || artifact.path.to_str().is_none()
+                        || artifact.sha256.len() != 71
+                        || !artifact.sha256.starts_with("sha256:")
+                        || !artifact.sha256[7..]
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                })
+                || profile.command.path == profile.proxy_script.path
+            {
+                return Err(DurableRunnerError::invalid(
+                    "Cursor Cloud runner launch profile is malformed",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -362,6 +422,7 @@ mod tests {
             runner_digest: "sha256:digest".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 1024 * 1024,
             p0_reserve_bytes: 64 * 1024,
             max_frame_bytes: 64 * 1024,

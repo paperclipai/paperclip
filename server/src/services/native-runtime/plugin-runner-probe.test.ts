@@ -229,7 +229,7 @@ describe("plugin Runner setup", () => {
         await mkdir(resources.provider_state!, { recursive: true });
         await writeFile(join(resources.provider_state!, "AGENTS.md"), "Installed persistent instructions");
         const retained = vi.fn(async () => {});
-        const owner = createPluginRunnerTaskOwner({ task, projectAuthCheckVersion: 1, projectIds: [], harness: "codex", onSessionRetained: retained, pollMs: 1 });
+        const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectAuthCheckVersion: 1, projectIds: [], harness: "codex", onSessionRetained: retained, pollMs: 1 });
         const first = createRunnerdCodexTransport({ ...owner.driver, stateDirectory, runnerArtifact: artifact,
           runtimeContext: context("first"), prpIdentity: identity, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } });
         let thread: Record<string, unknown>;
@@ -245,7 +245,7 @@ describe("plugin Runner setup", () => {
         for (const run of ["same", "next"]) {
           if (run !== "same") await writeFile(join(resources.provider_state!, "AGENTS.md"), `Installed persistent instructions ${run}`);
           const priorRun = "run-first";
-          const nextOwner = createPluginRunnerTaskOwner({ task, projectAuthCheckVersion: 1, projectIds: [], harness: "codex", resumeFrom: "task", pollMs: 1,
+          const nextOwner = createPluginRunnerTaskOwner({ taskId: "task", task, projectAuthCheckVersion: 1, projectIds: [], harness: "codex", resumeFrom: "task", pollMs: 1,
             priorIdentity: { ...identity, runId: priorRun, turnId: identity.turnId, itemId: identity.itemId } });
           const second = createRunnerdCodexTransport({ ...nextOwner.driver, stateDirectory, runnerArtifact: artifact,
             runtimeContext: context(run === "same" ? "first" : run),

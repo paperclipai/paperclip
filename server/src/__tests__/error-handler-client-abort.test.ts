@@ -1,0 +1,100 @@
+import { createServer } from "node:http";
+import express from "express";
+import request from "supertest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { errorHandler } from "../middleware/error-handler.js";
+
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../sentry.js", () => ({ captureException: captureExceptionMock }));
+vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => null }));
+
+// The S3 client rejects an aborted GetObject with this error.
+function storageAbortError() {
+  return Object.assign(new Error("Request aborted"), { name: "AbortError" });
+}
+
+/** Routes that cancel their storage read when the response closes. */
+function createApp(onReadStarted: () => void, onErrorHandled: (err: unknown) => void = () => {}) {
+  const app = express();
+  const cancellableRead = (abortError: (signal: AbortSignal) => unknown) =>
+    async (_req: express.Request, res: express.Response) => {
+      const controller = new AbortController();
+      const cancelRead = () => controller.abort();
+      res.once("close", cancelRead);
+      try {
+        await new Promise((_resolve, reject) => {
+          controller.signal.addEventListener("abort", () => reject(abortError(controller.signal)));
+          onReadStarted();
+        });
+      } finally {
+        res.off("close", cancelRead);
+      }
+    };
+  app.get("/log", cancellableRead(() => storageAbortError()));
+  // A reader that rejects with the signal's own reason (a DOMException).
+  app.get("/log-reason", cancellableRead((signal) => signal.reason));
+  app.get("/failure", async () => {
+    throw storageAbortError();
+  });
+  app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      errorHandler(err, req, res, next);
+    } finally {
+      onErrorHandled(err);
+    }
+  });
+  return app;
+}
+
+async function withServer(app: express.Express, run: (baseUrl: string) => Promise<void>) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP port");
+    await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+describe("errorHandler client aborts", () => {
+  beforeEach(() => {
+    captureExceptionMock.mockReset();
+  });
+
+  it.each([
+    { path: "/log", message: "Request aborted" },
+    { path: "/log-reason", message: "This operation was aborted" },
+  ])("does not report work cancelled because the client disconnected ($path)", async ({ path, message }) => {
+    let readStarted!: () => void;
+    const started = new Promise<void>((resolve) => { readStarted = resolve; });
+    let errorHandled!: (err: unknown) => void;
+    const handled = new Promise<unknown>((resolve) => { errorHandled = resolve; });
+    await withServer(createApp(() => readStarted(), (err) => errorHandled(err)), async (baseUrl) => {
+      const clientRequest = request(baseUrl).get(path);
+      const settled = clientRequest.then(() => undefined, () => undefined);
+      await started;
+      clientRequest.abort();
+      await settled;
+      // Wait until the route's rejection has passed through the error handler.
+      await expect(handled).resolves.toMatchObject({ name: "AbortError", message });
+    });
+
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it("still reports an AbortError while the client is connected", async () => {
+    await withServer(createApp(() => {}), async (baseUrl) => {
+      const response = await request(baseUrl).get("/failure");
+      expect(response.status).toBe(500);
+    });
+
+    expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({
+      name: "AbortError",
+      message: "Request aborted",
+    }));
+  });
+});

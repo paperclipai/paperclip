@@ -29,7 +29,8 @@ export const responseRunColumns = {
     and ${heartbeatRuns.runtimeMode} = 'native'
     and ${heartbeatRuns.nativePhase} = 'committed'
     and ${heartbeatRuns.resultJson}->>'finalizationPhase' = 'committed'
-    and ${heartbeatRuns.resultJson}->>'finalizationReasonCode' = 'external_chat_response_waiting'
+    and ${heartbeatRuns.resultJson}->>'finalizationReasonCode' in
+      ('external_chat_response_waiting', 'preserved_result_status_unproven')
     and ${heartbeatRuns.resultJson}->'nativeResult'->>'schema' = 'paperclip.run_result.v1'
     and ${heartbeatRuns.resultJson}->'nativeResult'->>'reportedWorkDisposition' = 'yielded'
     and ${heartbeatRuns.resultJson}->'nativeResult'->'continuation'->>'kind' = 'response_wake'

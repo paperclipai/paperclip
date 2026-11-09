@@ -9,6 +9,8 @@ export const SYSTEM_RECOVERY_WINDOW_MS = 30 * 60_000;
 export function infrastructureRetryDelayMs(retryNumber: number, sample: number) {
   return Math.round(30_000 * 2 ** (retryNumber - 1) * (0.8 + Math.min(1, Math.max(0, sample)) * 0.4));
 }
+/** Assumed provider limit cooldown when the provider reports no reset time. */
+export const PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS = 60 * 60_000;
 
 export const recoveryFailureCodes = [
   "historical_source_missing", "source_binding_invalid", "allocation_ownership_ambiguous",
@@ -34,6 +36,14 @@ export const workspaceSourceVerificationFailureSchema = z.object({
   observedLeasePolicy: z.enum([...ENVIRONMENT_LEASE_POLICIES, "unrecognized"]).optional(),
 });
 
+/** Why an attempt failed, in closed labels only. Provider text never appears. */
+export const recoveryFailureCauseSchema = z.object({
+  label: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/),
+  code: z.string().regex(/^[A-Z][A-Z0-9_]{1,31}$/).nullable(),
+  status: z.number().int().min(100).max(599).nullable(),
+});
+export type RecoveryFailureCause = z.infer<typeof recoveryFailureCauseSchema>;
+
 export const systemRecoverySchema = z.object({
   schema: z.literal("paperclip.system-recovery.v1"),
   policyVersion: z.literal(SYSTEM_RECOVERY_POLICY_VERSION),
@@ -55,6 +65,7 @@ export const systemRecoverySchema = z.object({
     retryClass: z.enum(recoveryRetryClasses),
     evidenceFingerprint: z.string(),
     sourceVerification: workspaceSourceVerificationFailureSchema.optional(),
+    cause: recoveryFailureCauseSchema.optional(),
   }).nullable(),
   preservationOperationIds: z.array(z.string().uuid()),
   freshAttemptRunId: z.string().uuid().nullable(),
@@ -92,7 +103,7 @@ export function reserveSystemRecoveryAttempt(state: SystemRecoveryState, now = D
 /** The caller persists this timestamp. A restart must not recalculate jitter. */
 export function failSystemRecovery(
   state: SystemRecoveryState, failure: SystemRecoveryFailure,
-  options: { now?: number; retryAfterAt?: number; evidenceFingerprint?: string } = {},
+  options: { now?: number; retryAfterAt?: number; evidenceFingerprint?: string; cause?: RecoveryFailureCause } = {},
 ): SystemRecoveryState {
   const now = options.now ?? Date.now();
   const firstFailureAt = state.firstFailureAt ?? now;
@@ -104,12 +115,27 @@ export function failSystemRecovery(
   const retryable = ["retry_transient", "recheck_evidence"].includes(failure.retryClass);
   const retry = retryable && retryNumber <= SYSTEM_RECOVERY_MAX_RETRIES && nextAttemptAt < deadlineAt;
   const sourceVerification = workspaceSourceVerificationFailureSchema.safeParse(failure.sourceVerification);
+  const cause = recoveryFailureCauseSchema.safeParse(options.cause);
   return { ...state, revision: state.revision + 1, firstFailureAt, deadlineAt,
     providerCooldownAt: options.retryAfterAt ?? null,
     state: retry ? failure.retryClass === "recheck_evidence" ? "awaiting_evidence" : "scheduled" : "exhausted",
     nextAttemptAt: retry ? nextAttemptAt : null,
     failure: { code: failure.code, retryClass: failure.retryClass,
       ...(sourceVerification.success ? { sourceVerification: sourceVerification.data } : {}),
+      ...(cause.success ? { cause: cause.data } : {}),
       evidenceFingerprint: options.evidenceFingerprint ?? createHash("sha256").update(`${state.sourceRunId}:${failure.code}`).digest("hex") },
   };
+}
+
+/** User-facing text for a spent recovery budget. It names what happens next and
+ * never asks a person to inspect a sandbox or environment. The code stays for support. */
+export function exhaustedSystemRecoveryAction(state: SystemRecoveryState): string {
+  // Another Retry cannot release a copyback owner that stopped without reporting.
+  if (state.failure?.code === "copyback_stop_unconfirmed")
+    return "Recovery of saved work is waiting for the previous server's file copy to stop. "
+      + "Recovery resumes once Paperclip can confirm that it stopped. No provider turn is submitted.";
+  const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
+  const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
+  return `Automatic recovery of saved work stopped after ${state.attempts} attempts${reason}. `
+    + "Retry to try again; the agent will not repeat its work.";
 }

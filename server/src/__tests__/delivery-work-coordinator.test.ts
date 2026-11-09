@@ -334,6 +334,24 @@ describe("delivery work coordinator", () => {
     expect(t.run).toHaveBeenCalledTimes(1);
     expect(idleWorkSnapshot().active).toBe(0);
   });
+  it("keeps admitted owner commands live while dispatch queues stop, then closes every worker", async () => {
+    const s = setup(), dispatch = task(), commands = task();
+    await s.coordinator.register(DELIVERY_QUEUES.queuedRunDispatch, dispatch).ready;
+    await s.coordinator.register(DELIVERY_QUEUES.nativeCancellation, commands).ready;
+    await s.coordinator.stop(new Set([DELIVERY_QUEUES.nativeCancellation]));
+    await s.enqueue(DELIVERY_QUEUES.queuedRunDispatch);
+    await s.enqueue(DELIVERY_QUEUES.nativeCancellation);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(dispatch.run).toHaveBeenCalledTimes(1);
+    expect(commands.run).toHaveBeenCalledTimes(2);
+    expect(() => s.coordinator.register(DELIVERY_QUEUES.feedback, task())).toThrow("stopped");
+    await s.coordinator.stop();
+    await s.enqueue(DELIVERY_QUEUES.nativeCancellation);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(commands.run).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(idleWorkSnapshot().active).toBe(0);
+  });
   it("awaits in-flight work on shutdown and releases the subscription for restart", async () => {
     const s = setup(), t = task();
     let release!: () => void;
@@ -363,4 +381,21 @@ describe("delivery work coordinator", () => {
     expect(idleWorkSnapshot().active).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
   });
+});
+
+it("invalidates owner reconciliation synchronously before awaiting an active stop", async () => {
+  const s = setup();
+  let finish!: () => void;
+  const onStop = vi.fn();
+  const worker = s.coordinator.register(DELIVERY_QUEUES.feedback, {
+    ...task(), onStop,
+    run: async () => { await new Promise<void>(resolve => { finish = resolve; }); },
+  });
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  let stopped = false;
+  const stopping = s.coordinator.stop().then(() => { stopped = true; });
+  expect(onStop).toHaveBeenCalledOnce();
+  expect(stopped).toBe(false);
+  finish(); await worker.ready; await stopping;
+  expect(stopped).toBe(true);
 });

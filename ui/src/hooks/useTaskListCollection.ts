@@ -8,7 +8,7 @@ const expanded: ReadonlySet<string> = new Set();
 
 /** Shared collection behavior for the proposed task UI. Supply accessible data;
  * this hook scopes presentation, and does not replace server authorization. */
-export function useTaskListCollection({ items, companyId, userId, viewStorageKey, initialQuery = "", query: controlledQuery, onQueryChange, view: controlledView, initialFilters, searchMode = "local", liveIssueIds }: {
+export function useTaskListCollection({ items, companyId, userId, viewStorageKey, initialQuery = "", query: controlledQuery, onQueryChange, view: controlledView, layout: controlledLayout, onLayoutChange, initialFilters, searchMode = "local", liveIssueIds }: {
   items: readonly TaskListItem[];
   companyId: string | null;
   userId: string | null;
@@ -17,6 +17,8 @@ export function useTaskListCollection({ items, companyId, userId, viewStorageKey
   query?: string;
   onQueryChange?: (query: string) => void;
   view?: TaskListView;
+  layout?: "list" | "board";
+  onLayoutChange?: (layout: "list" | "board") => void;
   initialFilters?: Partial<IssueFilterState>;
   /** Server results may match comments, documents, or normalized identifiers. */
   searchMode?: "local" | "server";
@@ -26,7 +28,8 @@ export function useTaskListCollection({ items, companyId, userId, viewStorageKey
   const query = controlledQuery ?? queryState;
   const [preference, setPreference] = useState(() => ({ key: viewStorageKey, view: loadTaskListView(viewStorageKey) }));
   const view = controlledView ?? (preference.key === viewStorageKey ? preference.view : loadTaskListView(viewStorageKey));
-  const [layout, setLayout] = useState<"list" | "board">("list");
+  const [layoutState, setLayoutState] = useState<"list" | "board">("list");
+  const layout = controlledLayout ?? layoutState;
   const [filters, setFilters] = useState<IssueFilterState>(() => ({ ...defaultIssueFilterState, ...initialFilters }));
   const [collapse, setCollapse] = useState({ companyId, ids: expanded });
   const collapsedIds = collapse.companyId === companyId ? collapse.ids : expanded;
@@ -67,7 +70,7 @@ export function useTaskListCollection({ items, companyId, userId, viewStorageKey
   const clear = () => { setQuery(""); setFilters(defaultIssueFilterState); setView("all"); };
 
   return {
-    query, setQuery, view, setView, layout, setLayout, filters, updateFilters, clear,
+    query, setQuery, view, setView, layout, setLayout: onLayoutChange ?? setLayoutState, filters, updateFilters, clear,
     companyItems, matchingItems, visibleItems, creators: [...creatorsById.values()],
     collapsedIds, setCollapsedIds, allExpanded,
     toggleExpanded: () => setCollapsedIds(allExpanded ? parentIds : expanded),

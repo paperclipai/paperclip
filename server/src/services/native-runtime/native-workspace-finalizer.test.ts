@@ -205,7 +205,7 @@ describe("native workspace finalization recovery", () => {
     await db.update(issueRecoveryActions).set({ nextAction: "Start a replacement run" }).where(eq(issueRecoveryActions.id, seed.actionId));
     await withNativeWorkspaceFinalizationOwnership(seed, async () => "unexpected");
     const [repaired] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seed.actionId));
-    expect(repaired.nextAction).toContain("workspace-copyback processes have stopped");
+    expect(repaired.nextAction).toContain("confirm that the previous server stopped");
     expect(repaired.attemptCount).toBe(action.attemptCount);
     expect(repaired.evidence?.recoveryBudget).toEqual(action.evidence?.recoveryBudget);
   });
@@ -219,12 +219,19 @@ describe("native workspace finalization recovery", () => {
       observed.push(db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, seed.runId)).then(rows => rows[0].profile));
     });
+    const queued: Array<Promise<unknown>> = [];
+    const stopQueued = subscribeDeliveryWork(db, DELIVERY_QUEUES.queuedRunDispatch, () => {
+      queued.push(db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, seed.runId)).then(rows => rows[0].profile));
+    });
     let receipt: Awaited<ReturnType<typeof resumeNativeWorkspaceAfterOwnerStop>>;
     try {
       receipt = await resumeNativeWorkspaceAfterOwnerStop(seed);
       await vi.waitFor(() => expect(observed).toHaveLength(1));
       expect(await Promise.all(observed)).toEqual([{ preserved: "workspace descriptor" }]);
-    } finally { stop(); }
+      await vi.waitFor(() => expect(queued).toHaveLength(1));
+      expect(await Promise.all(queued)).toEqual([{ preserved: "workspace descriptor" }]);
+    } finally { stop(); stopQueued(); }
     expect(receipt).toEqual({ runId: seed.runId, resultId: before.resultId, status: "queued" });
     const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId));
     expect(after).toEqual(before);
@@ -392,7 +399,7 @@ describe("native workspace finalization recovery", () => {
 
   it("does not reopen an old result after a newer task execution exists", async () => {
     const seed = await seedAbandonedCopyback();
-    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", nativeIssueId: seed.issueId });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", startedAt: new Date(), nativeIssueId: seed.issueId });
     await expect(resumeNativeWorkspaceAfterOwnerStop(seed)).rejects.toThrow("no longer current");
   });
 
@@ -696,7 +703,8 @@ describe("native workspace finalization recovery", () => {
     expect(work).not.toHaveBeenCalled();
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
     expect(action).toMatchObject({ ownerType: "board", cause: "native_workspace_finalization_owner_unverified", wakePolicy: null, evidence: { runId: seeded.runId, owner } });
-    expect(action.nextAction).toContain("previous controller");
+    expect(action.nextAction).toContain("confirm that the previous server stopped");
+    expect(action.nextAction).not.toMatch(/\bverify\b/i);
     await expect(withNativeWorkspaceFinalizationOwnership({ db, companyId: foreignCompanyId, runId: seeded.runId }, work))
       .rejects.toThrow("native_workspace_finalization_binding_missing");
     const [held] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));

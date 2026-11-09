@@ -59,7 +59,7 @@ import {
   updateToolProfileWithEntriesSchema,
 } from "@paperclipai/shared";
 import { filterConnectionManagementRows, filterConnectionManagementPolicies, connectionManagementGuard, requiredConnectionUserAction, connectionRequestActor, connectionRequestContext, connectionRequestUserId } from "./connection-management-authz.js";
-import { connectionManagementService } from "../services/connection-management.js";
+import { assertAgentConnectionInstallAccess, connectionManagementService } from "../services/connection-management.js";
 import { validate } from "../middleware/validate.js";
 import { getActorInfo, assertBoard, assertBoardOrAgent, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
@@ -287,6 +287,7 @@ export function toolAccessRoutes(
     if (loaded.interaction.status !== "pending") return loaded.interaction;
     const interaction = input.outcome === "connected" && input.connectionId
       ? await connectionIntents.complete(input.interactionId, input.connectionId, input.userId, {
+          oauthCompletion: true,
           canManageOrganizationGrant: input.canManageOrganizationGrant,
           bypassCurrentMembershipCheck: input.bypassCurrentMembershipCheck,
         })
@@ -1921,6 +1922,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(delegation);
   });
 
+  router.get("/tool-connections/:connectionId/review-counts", managementGuard("connections:read", "GET /tool-connections/:connectionId/review-counts", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
+    const { resource } = connectionRequestContext(req)!;
+    if (!hasCompanyAccess(req, resource.companyId)) throw notFound("Tool connection not found");
+    assertCompanyAccess(req, resource.companyId);
+    res.json(await svc.getConnectionReviewCounts(resource.companyId, resource.connectionId!));
+  });
+
   router.get("/tool-connections/:connectionId/usage", managementGuard("connections:read", "GET /tool-connections/:connectionId/usage", { personal: true }), async (req, res) => {
     assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
@@ -1968,22 +1977,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
             .filter((install) => install.targetType === "agent")
             .map((install) => install.targetId),
         )];
-        for (const agentId of changedAgentIds) {
-          const [agent] = await db
-            .select({ id: agents.id, companyId: agents.companyId })
-            .from(agents)
-            .where(and(eq(agents.id, agentId), eq(agents.companyId, connection.companyId)))
-            .limit(1);
-          if (!agent) throw forbidden("The target agent is not available in this company");
-          const decision = await access.decide({
-            actor: req.actor,
-            action: "agent_config:update",
-            resource: { type: "agent", companyId: connection.companyId, agentId: agent.id },
-          });
-          if (!decision.allowed) {
-            throw forbidden(`You cannot edit agent ${agent.id}, so you cannot change its connection installs`);
-          }
-        }
+        await assertAgentConnectionInstallAccess(db, req.actor, connection.companyId, changedAgentIds);
       }
       const snapshot = await svc.putConnectionInstalls(connection.id, req.body, connectionRequestActor(req));
       await logActivity(db, {
@@ -2325,6 +2319,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json({ profiles: await filterConnectionManagementRows(db, req, "connections:profiles", await svc.listProfiles(companyId), row => ({ profileId: row.id })) });
+  });
+
+  router.get("/tool-connections/:connectionId/profile-configuration", managementGuard("connections:profiles", "GET /tool-connections/:connectionId/profile-configuration", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    const profiles = await svc.listConnectionProfileConfiguration(existing.companyId, existing.id,
+      rows => filterConnectionManagementRows(db, req, "connections:profiles", rows, row => ({ profileId: row.id })));
+    res.json({ profiles });
   });
 
   router.get("/tool-profiles/:profileId/new-tools", managementGuard("connections:profiles", "GET /tool-profiles/:profileId/new-tools", { personal: true }), async (req, res) => {

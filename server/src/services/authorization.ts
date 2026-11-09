@@ -212,11 +212,13 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
 }
 
 function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
-  if (agent.role === "ceo") return true;
-  // Raw agent rows may predate permission normalization; apply the same
-  // defaults the agent service applies on read so enforcement matches what
-  // the API reports.
-  return normalizeAgentPermissions(agent.permissions).canCreateAgents;
+  // An explicit canCreateAgents value is the saved access policy, including
+  // for CEOs: the board can turn hiring off on any agent's permissions page,
+  // and the CEO title must not override that denial. The CEO role only fills
+  // in hiring authority for rows that never saved an explicit value. Raw rows
+  // may predate permission normalization; apply the same defaults the agent
+  // service applies on read so enforcement matches what the API reports.
+  return normalizeAgentPermissions(agent.permissions, { role: agent.role }).canCreateAgents;
 }
 
 function scopeValueList(value: unknown): string[] {
@@ -1887,30 +1889,20 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       principalType: PrincipalType,
       principalId: string,
     ): Promise<AuthorizationDecision> {
-      const configureDecision = await decidePrincipalGrant({
-        companyId,
-        principalType,
-        principalId,
-        action: input.action,
-        permissionKey: "agents:configure",
-        scope: input.scope,
-      });
-      if (configureDecision.allowed || configureDecision.reason === "deny_missing_membership") {
-        return configureDecision;
+      let denied: AuthorizationDecision | null = null;
+      for (const permissionKey of ["agents:read", "agents:configure", "agents:suggest-changes"] as const) {
+        const decision = await decidePrincipalGrant({
+          companyId,
+          principalType,
+          principalId,
+          action: input.action,
+          permissionKey,
+          scope: input.scope,
+        });
+        if (decision.allowed || decision.reason === "deny_missing_membership") return decision;
+        if (!denied || decision.reason === "deny_scope") denied = decision;
       }
-
-      const suggestDecision = await decidePrincipalGrant({
-        companyId,
-        principalType,
-        principalId,
-        action: input.action,
-        permissionKey: "agents:suggest-changes",
-        scope: input.scope,
-      });
-      if (suggestDecision.allowed || suggestDecision.reason === "deny_missing_grant") {
-        return suggestDecision;
-      }
-      return configureDecision;
+      return denied!;
     }
 
     async function decideWithProtectedChangeGrants(

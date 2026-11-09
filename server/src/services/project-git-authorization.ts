@@ -136,7 +136,7 @@ export function projectGitAuthorizationService(db: Db) {
       return read(companyId, projectId, userId);
     },
     async resolve(
-      input: { companyId: string; projectId: string; workspaceId: string },
+      input: { companyId: string; projectId: string; workspaceId: string; expectedRepository?: string },
       scope?: {
         projectId: string;
         workspaceId?: string;
@@ -166,6 +166,8 @@ export function projectGitAuthorizationService(db: Db) {
         );
       if (!workspace?.repoUrl) throw forbidden("Git credentials require a configured project repository");
       const repo = normalizeProjectRepositoryUrl(workspace.repoUrl);
+      if (input.expectedRepository && repo.fullName.toLowerCase() !== input.expectedRepository.toLowerCase())
+        throw forbidden("Project repository changed before GitHub authorization");
       const isPrivate = await projectRepositoryIsPrivate(db, input.companyId, workspace);
       if (scope.runId || scope.agentId) {
         if (!scope.runId || !scope.agentId) throw forbidden("Incomplete foreground Git identity");

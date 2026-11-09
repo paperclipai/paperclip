@@ -20,6 +20,7 @@ import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
@@ -208,11 +209,13 @@ export function Agents() {
   const builtInAgentIds = useMemo(() => new Set(builtInByAgentId.keys()), [builtInByAgentId]);
   const [configureState, setConfigureState] = useState<BuiltInAgentState | null>(null);
 
-  const { data: agents, isLoading, error } = useQuery({
+  const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: agents, isLoading } = agentsQuery;
+  const agentsView = useQueryView(agentsQuery);
 
   const { data: orgTree } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -308,8 +311,21 @@ export function Agents() {
     return <EmptyState icon={Bot} message="Select a company to view agents." />;
   }
 
-  if (isLoading) {
+  // Keep a loaded list on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || agentsView.kind === "reconnecting") {
     return <PageSkeleton variant="list" />;
+  }
+  if (agentsView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={agentsView.error}
+        action="load agents"
+        onRetry={agentsView.retry}
+        retrying={agentsView.isFetching}
+      />
+    );
   }
 
   const filtered = filterAgents(agents ?? [], tab, builtInAgentIds);
@@ -366,7 +382,7 @@ export function Agents() {
         subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
-        className="group"
+        className="agent-roster-identity group py-3"
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
@@ -375,7 +391,6 @@ export function Agents() {
         secondaryRowClassName={cn("pl-11", !builtInCluster && !showEnvironmentColumn && !agent.lastHeartbeatAt && "sm:hidden")}
         secondaryRow={(agent.status === "paused" || builtInCluster || showEnvironmentColumn || agent.lastHeartbeatAt) && (
           <div className="flex flex-wrap items-center gap-2">
-            {agent.status === "paused" && <span className="sm:hidden"><AgentStatusBadge status={agent.status} /></span>}
             {builtInCluster}
             {showEnvironmentColumn && <span className="text-xs text-muted-foreground" title={resolveRenderedEnvironment(agent.id).title}>
               {resolveRenderedEnvironment(agent.id).label} · {resolveRenderedEnvironment(agent.id).detail}
@@ -383,25 +398,22 @@ export function Agents() {
             {agent.lastHeartbeatAt && <span className="text-xs text-muted-foreground" title="Last heartbeat">{relativeTime(agent.lastHeartbeatAt)}</span>}
           </div>
         )}
-        trailing={
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-3">
-              {liveRunByAgent.has(agent.id) && (
-                <LiveRunIndicator
-                  agentRef={agentRouteRef(agent)}
-                  runId={liveRunByAgent.get(agent.id)!.runId}
-                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                />
-              )}
-              <span className="w-20 flex justify-end">
-                <AgentStatusBadge status={agent.status} />
-              </span>
-            </div>
-          </div>
-        }
       />
     );
   };
+
+  const renderAgentStatus = (agent: Agent) => (
+    <div className="flex items-center gap-3">
+      {liveRunByAgent.has(agent.id) && (
+        <LiveRunIndicator
+          agentRef={agentRouteRef(agent)}
+          runId={liveRunByAgent.get(agent.id)!.runId}
+          liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+        />
+      )}
+      <AgentStatusBadge status={agent.status} />
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -447,8 +459,6 @@ export function Agents() {
         <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
       )}
 
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
@@ -462,7 +472,7 @@ export function Agents() {
       {effectiveView === "list" && agents && agents.length > 0 && (
         <AgentBulkRoster key={selectedCompanyId} companyId={selectedCompanyId}
           agents={agents.filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status))}
-          visibleAgents={filtered} renderAgent={renderAgentRow} />
+          visibleAgents={filtered} renderAgent={renderAgentRow} renderStatus={renderAgentStatus} />
       )}
 
 

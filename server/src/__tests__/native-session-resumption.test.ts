@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { spawn } from "node:child_process";
@@ -5,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
   agentWakeupRequests,
@@ -342,6 +343,7 @@ describe("P6-25 pre-result native session recovery", () => {
         {
           runId: eligibleRunId,
           leaseOwner: expect.stringContaining("bounded-reaper:resume:"),
+          attempt: expect.any(Number),
         },
       ]);
       const held = await db
@@ -388,14 +390,14 @@ describe("P6-25 pre-result native session recovery", () => {
       leaseExpiresAt: null,
       nextAttemptAt: new Date(0),
     }).where(eq(nativeRunFinalizations.runId, runId));
-    const dispatched: Array<{ runId: string; leaseOwner: string }> = [];
+    const dispatched: Array<{ runId: string; leaseOwner: string; attempt: number }> = [];
     await expect(dispatchNativeSessionResumptions({
       db,
       runnerInstanceId: "heartbeat-reaper",
       runIds: [runId],
       dispatch: (claim) => dispatched.push(claim),
     })).resolves.toHaveLength(1);
-    expect(dispatched).toEqual([{ runId, leaseOwner: expect.stringContaining("heartbeat-reaper:resume:") }]);
+    expect(dispatched).toEqual([{ runId, leaseOwner: expect.stringContaining("heartbeat-reaper:resume:"), attempt: 1 }]);
     await expect(db.select().from(heartbeatRuns)).resolves.toHaveLength(8);
     await expect(db.select().from(nativeRunFinalizations)).resolves.toHaveLength(8);
   });
@@ -406,7 +408,7 @@ describe("P6-25 pre-result native session recovery", () => {
       runnerInstanceId: "reaper",
       runIds: [bootstrapRetryRunId],
     })).resolves.toEqual([
-      { runId: bootstrapRetryRunId, leaseOwner: expect.stringContaining("reaper:resume:") },
+      { runId: bootstrapRetryRunId, leaseOwner: expect.stringContaining("reaper:resume:"), attempt: 1 },
     ]);
   });
 
@@ -724,6 +726,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         identifier: "NRR-1",
         title: "Recover one native heartbeat",
         description: null,
+        prompt: "Recover one native heartbeat",
         workMode: "standard",
       },
       workspace: {
@@ -736,6 +739,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         normalizedSessionId: sessionId,
         driverKind: "codex_app_server",
         protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
       },
       provider: { kind: "codex", model: null },
       completionContract: {
@@ -1063,7 +1067,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         const freshIdentity = {
           ...checkpoint.identity,
           runId: freshRunId,
-          sessionId: executionInput.session.normalizedSessionId,
+          sessionId: executionInput.session.normalizedSessionId!,
         };
         let releaseStart!: () => void;
         const started = new Promise<void>((resolve) => {
@@ -1530,11 +1534,11 @@ describe("goal-less native task-session publication", () => {
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
-    await closeRegisteredClients(process.env.PAPERCLIP_TEST_DATABASE_URL ?? database!.connectionString);
+    await closeRegisteredClients(process.env.PAPERCLIP_TEST_DATABASE_URL ?? database!.connectionString, { scope: "database" });
     await database?.cleanup();
   });
 
-  it.each(["retained", "reset"] as const)("publishes the completed task session before provider cleanup and resumes an ordinary comment (%s)", async mode => {
+  it.each(["retained", "reset", "fresh", "migrated"] as const)("publishes the completed task session before provider cleanup and resumes an ordinary comment (%s)", async mode => {
     const home = createIsolatedTestHome();
     const previousHome = process.env.PAPERCLIP_HOME;
     process.env.PAPERCLIP_HOME = home.home;
@@ -1563,7 +1567,7 @@ describe("goal-less native task-session publication", () => {
       const currentProviderSessionId = `provider-${execution.session.normalizedSessionId}`;
       providerSessionId ??= currentProviderSessionId;
       const turnId = `turn-${currentRunId}`;
-      const identity = { companyId, agentId, issueId, runId: currentRunId, sessionId: execution.session.normalizedSessionId };
+      const identity = { companyId, agentId, issueId, runId: currentRunId, sessionId: execution.session.normalizedSessionId! };
       const result = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
       result.completionClaim.contractRevision = execution.completionContract.contract.revision;
       result.completionClaim.criteria = execution.completionContract.contract.criteria.map(criterion => ({
@@ -1608,7 +1612,9 @@ describe("goal-less native task-session publication", () => {
       await db.insert(projects).values({ id: projectId, companyId, name: "Pointer project", status: "active" });
       await db.insert(projectWorkspaces).values({ id: projectWorkspaceId, companyId, projectId, name: "Pointer workspace", cwd: repoRoot, isPrimary: true });
       await db.insert(agents).values({ id: agentId, companyId, name: "Pointer agent", adapterType: "paperclip_runner", status: "active",
-        adapterConfig: { provider: "codex", workspaceStrategy: { type: "project_primary" } },
+        // This scenario is per-turn publication: each run closes its session.
+        // An unset lifecycle now resolves to warm for local Codex.
+        adapterConfig: { provider: "codex", lifecycleMode: "per_turn", workspaceStrategy: { type: "project_primary" } },
         runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
       await db.insert(issues).values({ id: issueId, companyId, projectId, projectWorkspaceId, issueNumber: 1,
         identifier: `${issuePrefix}-1`, title: "Deliver the saved artifact", status: "in_progress", assigneeAgentId: agentId, workMode: "standard",
@@ -1636,6 +1642,17 @@ describe("goal-less native task-session publication", () => {
       releaseClose();
       await heartbeat.drainActiveRunExecutions();
       if (mode === "reset") expect(await heartbeat.listTaskSessions(agentId)).toEqual([]);
+      if (mode === "migrated") {
+        // Migration 0443 clears the stored per_turn creation default between
+        // turns. The saved task session and its provider history must survive.
+        const migration = await readFile(new URL("../../../packages/db/src/migrations/0443_native_warm_follow_up_default.sql", import.meta.url), "utf8");
+        await db.execute(sql.raw(migration));
+        const [migratedAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
+        expect(migratedAgent.adapterConfig).not.toHaveProperty("lifecycleMode");
+        const audit = (await db.select().from(activityLog).where(eq(activityLog.entityId, agentId)))
+          .filter(row => row.actorId === "migration:native-warm-follow-up-default");
+        expect(audit).toEqual([expect.objectContaining({ action: "agent.updated" })]);
+      }
       // The normal comment route reopens a completed task before its user wake.
       // Use those public services; a raw comment on a still-done task is stale.
       const issuesSvc = issueService(db);
@@ -1643,16 +1660,17 @@ describe("goal-less native task-session publication", () => {
       const comment = await issuesSvc.addComment(issueId, "Continue using the saved artifact.", { userId: "pointer-user" });
       const second = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
         requestedByActorType: "user", requestedByActorId: "pointer-user", payload: { issueId, commentId: comment.id, mutation: "comment", reopenedFrom: "done" },
-        contextSnapshot: { issueId, taskId: issueId, wakeCommentId: comment.id, reopenedFrom: "done", skipIssueComment: true } });
+        contextSnapshot: { issueId, taskId: issueId, wakeCommentId: comment.id, reopenedFrom: "done", skipIssueComment: true,
+          ...(mode === "fresh" ? { forceFreshSession: true } : {}) } });
       expect(second).not.toBeNull();
       await heartbeat.drainActiveRunExecutions();
       const after = await heartbeat.getRun(second!.id);
       expect(after?.status).toBe("succeeded");
       expect(inputs).toHaveLength(2);
-      if (mode === "retained") {
+      if (mode === "retained" || mode === "migrated") {
         const changedKeys = [...new Set(configs.flatMap(config => Object.keys(config)))].filter(key =>
           JSON.stringify(configs[0]?.[key]) !== JSON.stringify(configs.at(-1)?.[key]));
-        expect(changedKeys).toEqual([]);
+        expect(changedKeys).toEqual(mode === "migrated" ? ["lifecycleMode"] : []);
         expect(after).toMatchObject({ nativeSessionId: persisted.nativeSessionId, sessionIdAfter: providerSessionId });
         expect(openSession).toHaveBeenCalledOnce();
         expect(recoverSession).toHaveBeenCalledOnce();
@@ -1664,6 +1682,27 @@ describe("goal-less native task-session publication", () => {
       }
       expect(startTurn).toHaveBeenCalledTimes(2);
       expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, second!.id))).toHaveLength(1);
+      if (mode === "fresh") {
+        expect(await heartbeat.listTaskSessions(agentId)).toEqual([expect.objectContaining({
+          lastRunId: second!.id, sessionParamsJson: expect.objectContaining({ sessionId: after!.nativeSessionId }),
+          sessionDisplayId: after!.sessionIdAfter,
+        })]);
+        await issuesSvc.update(issueId, { status: "todo", actorUserId: "pointer-user" });
+        const followup = await issuesSvc.addComment(issueId, "Continue the fresh session's saved work.", { userId: "pointer-user" });
+        const third = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
+          requestedByActorType: "user", requestedByActorId: "pointer-user",
+          payload: { issueId, commentId: followup.id, mutation: "comment", reopenedFrom: "done" },
+          contextSnapshot: { issueId, taskId: issueId, wakeCommentId: followup.id, reopenedFrom: "done", skipIssueComment: true } });
+        expect(third).not.toBeNull();
+        await heartbeat.drainActiveRunExecutions();
+        expect(await heartbeat.getRun(third!.id)).toMatchObject({ status: "succeeded",
+          nativeSessionId: after!.nativeSessionId, sessionIdAfter: after!.sessionIdAfter });
+        expect(inputs).toHaveLength(3);
+        expect(openSession).toHaveBeenCalledTimes(2);
+        expect(recoverSession).toHaveBeenCalledOnce();
+        expect(startTurn).toHaveBeenCalledTimes(3);
+        expect(await db.select().from(nativeRunResults).where(inArray(nativeRunResults.runId, [first!.id, second!.id, third!.id]))).toHaveLength(3);
+      }
     } finally {
       releaseClose();
       try {

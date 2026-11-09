@@ -21,11 +21,13 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../services/chat-control-recovery-stop.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { commitNativeStatusDecision, dispatchPendingNativeStatusEffects } from "../services/native-runtime/status-decision-committer.js";
+import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "../services/native-runtime/status-arbiter.js";
 import { claimQueuedNativeReviewRun } from "../services/native-runtime/native-review-dispatch.js";
 import { createChatPublicationResolution } from "../services/chat-channels/publications/resolution.js";
 import { createChatPublicationWorker } from "../services/chat-channels/publications/worker.js";
 import { CAPABILITIES } from "../services/chat-channels/provider-catalog.js";
 import { createChatPublicationFailures } from "../services/chat-channels/publications/failures.js";
+import { logger } from "../middleware/logger.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -58,9 +60,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(errors).toEqual([]);
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
+  function chatContextSnapshot(scope = f) {
+    return { issueId: scope.issueId, source: "chat:slack", endpointId: scope.endpointId, wakeCommentId: scope.commentId };
+  }
   function runValues(scope = f, patch: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
     return { id: randomUUID(), companyId: scope.companyId, agentId: scope.agentId, responsibleUserId: scope.userId, status: "running", updatedAt: new Date(),
-      contextSnapshot: { issueId: scope.issueId, source: "chat:slack", endpointId: scope.endpointId, wakeCommentId: scope.commentId }, ...patch };
+      contextSnapshot: chatContextSnapshot(scope), ...patch };
   }
   async function run(scope = f, patch: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
     const values = runValues(scope, patch);
@@ -155,7 +160,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     let admittedId: string | undefined;
     await adapter.withIssueExecutionLock({ companyId: f.companyId, runId: finishing.id, now: new Date() }, async (locked, ports) => {
       const input = { companyId: f.companyId, issue: locked.primaryIssue, finishingRun: locked.run,
-        contextSnapshot: runValues().contextSnapshot, responsibleUserId: f.userId, sessionBefore: null, now: new Date(),
+        contextSnapshot: chatContextSnapshot(), responsibleUserId: f.userId, sessionBefore: null, now: new Date(),
       };
       const agent = { id: f.agentId, companyId: f.companyId, name: "Maya", invokable: true };
       if (kind === "deferred") {
@@ -186,7 +191,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     dependencies.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
     await start(); await flush(); await quiet();
     const admitted = await service.enqueueWakeup(f.agentId, { source: "on_demand", reason: "issue_commented",
-      contextSnapshot: runValues().contextSnapshot, requestedByActorType: "user", requestedByActorId: f.userId,
+      contextSnapshot: chatContextSnapshot(), requestedByActorType: "user", requestedByActorId: f.userId,
     });
     expect(admitted).toMatchObject({ status: "queued", companyId: f.companyId });
     await flush();
@@ -268,7 +273,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     dependencies.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
     await start(); await flush(); await quiet();
     const admitted = await service.enqueueWakeup(replacement.id, { source: "on_demand", reason: "issue_commented",
-      contextSnapshot: runValues().contextSnapshot, requestedByActorType: "user", requestedByActorId: f.userId,
+      contextSnapshot: chatContextSnapshot(), requestedByActorType: "user", requestedByActorId: f.userId,
     });
     expect(admitted).toMatchObject({ agentId: replacement.id, status: "queued" });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, old.id)))[0])
@@ -326,7 +331,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.transaction(async tx => {
       await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
         createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
-          companyId: f.companyId, activeExecutionRunId: seeded.id, mergedContextSnapshot: runValues().contextSnapshot,
+          companyId: f.companyId, activeExecutionRunId: seeded.id, activeExecutionRunStatus: seeded.status, mergedContextSnapshot: chatContextSnapshot(),
           agentId: f.agentId, source: "on_demand", triggerDetail: null, payload: { issueId: f.issueId },
           requestedByActorType: "user", requestedByActorId: f.userId, idempotencyKey: null,
         });
@@ -411,11 +416,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     });
     return { companyId: f.companyId, issueId: f.issueId, runId: native.row.id, assessmentId,
       priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null,
-      decision: { policyVersion: "phase6-v1", statusAction: "preserve" as const, toStatus: "in_progress" as const,
+      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "preserve" as const, toStatus: "in_progress" as const,
         reasonCode: "live_continuation_registered", unblockDescriptor: null,
         effects: [{ kind: "enqueue_continuation" as const, agentId: f.agentId, continuationKind: "same_agent" as const,
           summary: "Continue responding", idempotencyKey: `continuation:${native.row.id}` }],
-      },
+      } satisfies NativeStatusDecision,
     };
   }
   it("wakes from a governed native reviewer claim and leaves repeated claims quiet", async () => {
@@ -576,7 +581,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const delivery = questionResponseDeliveryService(db, { heartbeat: {
       cancelRun: async () => { throw new Error("The source is already terminal"); },
       wakeup: async (_agentId, options) => {
-        const values = runValues(f, { status: "queued", contextSnapshot: options.contextSnapshot });
+        const values = runValues(f, { status: "queued", contextSnapshot: options?.contextSnapshot });
         const [target] = await db.insert(heartbeatRuns).values(values).returning();
         targetId = target.id;
         await flush();
@@ -714,6 +719,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     let beforeReceiptKeys: string[] | undefined;
     await start(); await flush(); await quiet();
     const deliver = questionResponseDeliveryService(db, { heartbeat: {
+      cancelRun: async () => { throw new Error("The source is already terminal"); },
       wakeup: async () => {
         const [target] = await db.insert(heartbeatRuns).values(runValues(f, {
           id: targetId, status: "queued", contextSnapshot: { issueId: f.issueId },
@@ -731,7 +737,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     });
     // Controlled transport/authorization ports; actual attempt lease, receipt
     // transaction, question delivery receipt and milestone worker use PostgreSQL.
-    const worker = createChatPublicationWorker(db, {
+    const worker = createChatPublicationWorker(db, ({
       CAPABILITIES, settleGitHubAutomaticPublication: async () => false,
       ensureDurablePublicationTransport: async publication => publication,
       tryProcessTeamsFilePublication: async () => false,
@@ -749,7 +755,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       postSafePublication: post, commitTaskControlCompletion: async () => {}, receiptReactionCompletionRunId: async () => null,
       finalizePublicationFailure: async (_publication, error) => { errors.push(error); return false; },
       redactError: String,
-    } as Parameters<typeof createChatPublicationWorker>[1]);
+    } satisfies Partial<Parameters<typeof createChatPublicationWorker>[1]>) as unknown as Parameters<typeof createChatPublicationWorker>[1]);
     await worker.processSelectedPublication(prompt);
     expect(post).toHaveBeenCalledTimes(1);
     expect((await db.select().from(chatPublications).where(eq(chatPublications.id, prompt.id)))[0]).toMatchObject({ state: "published", providerMessageId: "published-question" });
@@ -787,14 +793,21 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     });
     const failure = Object.assign(new Error("provider rejected the send"), { status: state === "retry" ? 429 : 400 });
     // The finalizer receives the selection from before the attempt increment.
+    const warn = vi.spyOn(logger, "warn");
     await expect(failures.finalizePublicationFailure({ ...prompt, attempts: 0 }, failure, state === "delivery_unknown")).resolves.toBe(true);
     expect((await db.select().from(chatPublications).where(eq(chatPublications.id, prompt.id)))[0].state).toBe(state);
+    if (state === "delivery_unknown") {
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ publicationId: prompt.id, disposition: state, cause: "provider rejected the send" }), "chat publication failed");
+    } else {
+      expect(warn).not.toHaveBeenCalledWith(expect.objectContaining({ cause: expect.anything() }), "chat publication failed");
+    }
+    warn.mockRestore();
     await flush();
     expect((await publications()).some(row => row.idempotencyKey === `run:${source.id}:failed:${f.endpointId}`)).toBe(state === "failed");
     await quiet();
     if (resolution) {
       const targetId = randomUUID();
-      await questionResponseDeliveryService(db, { heartbeat: { wakeup: async () => {
+      await questionResponseDeliveryService(db, { heartbeat: { cancelRun: async () => { throw new Error("The source is already terminal"); }, wakeup: async () => {
         const [target] = await db.insert(heartbeatRuns).values(runValues(f, {
           id: targetId, status: "queued", contextSnapshot: { issueId: f.issueId },
         })).returning();
@@ -804,11 +817,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect((await publications()).some(row => row.idempotencyKey.startsWith(`run:${targetId}:`))).toBe(false);
       await quiet();
       const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
-      const resolver = createChatPublicationResolution(db, {
+      const resolver = createChatPublicationResolution(db, ({
         endpointRecord: async () => ({ endpoint, assignedAgentName: "Maya", connectionName: "Chat", applicationId: "test", credentialSecretRefs: [] }),
         withCredentialMutationLease: async (_endpoint, operation) => operation({ assertOwned: async () => {} }),
-        commitTaskControlCompletion: async () => {}, processPendingPublications: async () => {},
-      } as Parameters<typeof createChatPublicationResolution>[1]);
+        commitTaskControlCompletion: async () => {}, processPendingPublications: async () => 0,
+      } satisfies Partial<Parameters<typeof createChatPublicationResolution>[1]>) as unknown as Parameters<typeof createChatPublicationResolution>[1]);
       await resolver.resolvePublication(f.endpointId, prompt.id, resolution, f.userId);
       await flush();
       const keys = (await publications()).map(row => row.idempotencyKey);
@@ -928,7 +941,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await start(); await flush(); expect(await publications()).toEqual([]); await quiet();
     await db.transaction(async tx => {
       await notifyChatRunMilestones(tx, f);
-      await tx.update(heartbeatRuns).set({ contextSnapshot: runValues().contextSnapshot }).where(eq(heartbeatRuns.id, row.id));
+      await tx.update(heartbeatRuns).set({ contextSnapshot: chatContextSnapshot() }).where(eq(heartbeatRuns.id, row.id));
     });
     await flush(); expect(await publications()).toHaveLength(1); await quiet();
   });

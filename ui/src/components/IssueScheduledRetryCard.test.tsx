@@ -121,11 +121,9 @@ function getRetryNowButton() {
 }
 
 describe("IssueScheduledRetryCard", () => {
-  it("shows workspace contention as an automatic wait without failure or retry controls", () => {
+  it("raises no conversation notice for workspace contention the user cannot act on (N-14)", () => {
     renderWithProviders(<IssueScheduledRetryCard issueId="issue-1" scheduledRetry={{ ...baseRetry, scheduledRetryReason: "workspace_busy" }} />);
-    expect(container.textContent).toContain("Waiting for workspace");
-    expect(container.textContent).toContain("Work starts automatically");
-    expect(container.textContent).not.toMatch(/failed|Retry|Attempt|Replaces run/);
+    expect(container.textContent).toBe("");
     expect(getRetryNowButton()).toBeNull();
   });
   it("surfaces model capacity and the automatic retry without a generic failure", () => {

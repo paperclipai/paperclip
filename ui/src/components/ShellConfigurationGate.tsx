@@ -1,3 +1,5 @@
+import { useLayoutEffect } from "react";
+import { scheduleMainContentFocus } from "@/lib/main-content-focus";
 import { Outlet, useLocation } from "@/lib/router";
 import { PaperclipLoading } from "./AnimatedPaperclipIcon";
 
@@ -7,7 +9,15 @@ export function ShellConfigurationGate({ loaded, allowPendingTaskDetail = false 
   const segments = pathname.split("/").filter(Boolean);
   const isTaskDetail = segments.length === 3 && segments[1] === "issues"
     && !["all", "active", "backlog", "done", "recent"].includes(segments[2]!);
-  // Task detail owns a second presentation gate. It can show its account-bound
-  // title editor while identity loads, without exposing variant-specific tools.
-  return loaded || (allowPendingTaskDetail && isTaskDetail) ? <Outlet /> : <PaperclipLoading />;
+  useLayoutEffect(() => {
+    if (!loaded) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== document.documentElement) return;
+    return scheduleMainContentFocus(document.getElementById("main-content"));
+  }, [loaded]);
+  const prepareOutlet = loaded || (allowPendingTaskDetail && isTaskDetail);
+  return <>
+    {!loaded ? <div data-testid="shell-configuration-loading"><PaperclipLoading /></div> : null}
+    {prepareOutlet ? <div hidden={!loaded} inert={!loaded} aria-hidden={!loaded || undefined} className={loaded ? "contents" : "hidden"} data-testid="shell-prepared-outlet"><Outlet /></div> : null}
+  </>;
 }

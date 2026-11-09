@@ -19,10 +19,10 @@ const input = { companyId: "company", userId: "alice", binding: { provider: "goo
 let sequence = 0;
 let scope = { companyId: "company", accountKey: "" };
 beforeEach(() => { vi.clearAllMocks(); scope = { companyId: "company", accountKey: `catalog-${++sequence}` }; mocks.cleanup.mockResolvedValue(undefined); mocks.managed.mockImplementation(async () => {
-  await reconcileRetainedGoogleCleanup(scope);
+  void reconcileRetainedGoogleCleanup(scope).catch(() => undefined);
   return {
   attribution: { method: "subscription" }, config: { env: { GEMINI_HOME: "/private/selected-google-home" } },
-  cleanup: mocks.cleanup, retainedCleanupScope: scope,
+  cleanup: () => mocks.cleanup(), retainedCleanupScope: scope,
 }; }); });
 afterEach(async () => { vi.useRealTimers(); mocks.cleanup.mockResolvedValue(undefined); await reconcileRetainedGoogleCleanup(scope); });
 
@@ -105,21 +105,22 @@ it("waits for native retirement, then lets the durable journal own failed writeb
   expect(JSON.stringify(mocks.warn.mock.calls)).not.toContain("private-token");
 });
 
-it("settles the original failed journal cleanup before retrying model discovery", async () => {
+it("retries the original failed journal cleanup independently of model discovery", async () => {
   const order: string[] = [];
   mocks.discover.mockImplementation(async () => { order.push("provider"); return { models: [] }; });
   mocks.cleanup.mockImplementationOnce(async () => { order.push("journal-failed"); throw new Error("storage unavailable"); })
     .mockImplementation(async () => { order.push("journal-saved"); });
   await expect(antigravityConnectionModels({} as never, input)).rejects.toThrow("Could not complete Google account credential cleanup");
   await expect(antigravityConnectionModels({} as never, input)).resolves.toEqual([]);
-  expect(order).toEqual(["provider", "journal-failed", "journal-saved", "provider", "journal-saved"]);
+  expect(order.filter(step => step === "provider")).toHaveLength(2);
+  expect(order.filter(step => step === "journal-saved")).toHaveLength(2);
 });
 
-it("blocks another provider launch while the original cleanup still cannot journal", async () => {
+it("allows another provider launch while the original cleanup still cannot journal", async () => {
   mocks.discover.mockResolvedValue({ models: [] });
   mocks.cleanup.mockRejectedValue(new Error("storage unavailable"));
   await expect(antigravityConnectionModels({} as never, input)).rejects.toThrow("Could not complete Google account credential cleanup");
-  await expect(antigravityConnectionModels({} as never, input)).rejects.toThrow("still completing credential cleanup");
-  expect(mocks.discover).toHaveBeenCalledTimes(1);
-  expect(mocks.cleanup).toHaveBeenCalledTimes(2);
+  await expect(antigravityConnectionModels({} as never, input)).rejects.toThrow("Could not complete Google account credential cleanup");
+  expect(mocks.discover).toHaveBeenCalledTimes(2);
+  expect(mocks.cleanup).toHaveBeenCalledTimes(3);
 });

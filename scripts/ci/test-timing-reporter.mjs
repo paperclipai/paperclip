@@ -8,11 +8,16 @@ export function fileTiming(module, root = process.cwd()) {
   if (module.project.name !== "@paperclipai/server" || module.state() !== "passed") return null;
   const file = path.relative(root, module.moduleId).split(path.sep).join("/");
   if (!/^server\/(?:src|scripts)\/.+\.test\.[cm]?[jt]s$/.test(file)) return null;
-  const timing = module.diagnostic();
-  const phases = [timing.duration, timing.collectDuration, timing.setupDuration,
-    timing.prepareDuration, timing.environmentSetupDuration];
+  const durationMs = moduleDurationMs(module.diagnostic());
+  return durationMs === null ? null : { version: 1, file, durationMs };
+}
+
+// A file's whole cost: tests and hooks plus collection, setup and environment.
+export function moduleDurationMs(timing) {
+  const phases = [timing?.duration, timing?.collectDuration, timing?.setupDuration,
+    timing?.prepareDuration, timing?.environmentSetupDuration];
   if (phases.some(value => !Number.isFinite(value) || value < 0)) return null;
-  return { version: 1, file, durationMs: Math.ceil(phases.reduce((sum, value) => sum + value, 0)) };
+  return Math.ceil(phases.reduce((sum, value) => sum + value, 0));
 }
 
 export default class TestTimingReporter {

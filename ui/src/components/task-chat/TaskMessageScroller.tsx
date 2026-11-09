@@ -68,6 +68,7 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
   const scrollbarIdleDelayRef = useRef<number | null>(null);
   const [pillPhase, setPillPhase] = useState<PillPhase>("hidden");
   const previousScrollTop = useRef(0);
+  const previousScrollHeight = useRef(0);
   const touchStartY = useRef<number | null>(null);
   const requestingHistory = useRef(false);
   const upwardIntent = useRef(false);
@@ -186,13 +187,21 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
     // the reader scrolls or navigation selects a different position.
     rememberAnchor(false);
     previousScrollTop.current = el.scrollTop;
+    previousScrollHeight.current = el.scrollHeight;
   }, [rememberAnchor, scrollToBottom, hidePill]);
 
   const handleScroll = useCallback(() => {
     if (!ref.current?.clientHeight) return;
     const top = ref.current.scrollTop;
+    const moved = top !== previousScrollTop.current;
     const scrollingUp = top < previousScrollTop.current;
     previousScrollTop.current = top;
+    if (previousScrollHeight.current > 0 && pinnedRef.current && !scrollingUp && !upwardIntent.current &&
+      ref.current.scrollHeight > previousScrollHeight.current) {
+      reconcileContent();
+      hidePill();
+      return;
+    }
     if ((scrollingUp || upwardIntent.current) && top <= 192 && !easingRef.current) requestEarlierHistory();
     showScrollbarWhileScrolling();
     // A growing composer shrinks this viewport. Some browsers dispatch the
@@ -213,11 +222,12 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
         pinnedRef.current = true;
         hidePill();
       }
-      rememberAnchor();
+      rememberAnchor(moved);
       return;
     }
     pinnedRef.current = pinned;
-    rememberAnchor();
+    if (pinned) upwardIntent.current = false;
+    rememberAnchor(moved);
     if (pinned) hidePill();
     else showPill();
   }, [
@@ -228,10 +238,12 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
     showPill,
     showScrollbarWhileScrolling,
     requestEarlierHistory,
+    reconcileContent,
   ]);
 
   const handleJumpToLatest = useCallback(() => {
     pendingHashTarget.current = null;
+    upwardIntent.current = false;
     const el = ref.current;
     if (!el) return;
     if (isPinned()) {

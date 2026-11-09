@@ -1,11 +1,12 @@
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
-import { CoordinatorTasks } from "./CoordinatorTasks";
+import { CoordinatorTaskViews } from "./CoordinatorTaskViews";
 import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { DesignSandboxTasks } from "./DesignSandboxTasks";
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Navigate, useLocation, useNavigate, useSearchParams } from "@/lib/router";
+import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -19,6 +20,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
+import { readIssueSortParams, type IssueSort } from "../lib/issue-sort";
 import { TaskViewsMenu } from "../components/TaskViewsMenu";
 import { Button } from "@/components/ui/button";
 import { CircleDot, Plus } from "lucide-react";
@@ -100,20 +102,9 @@ export function Issues() {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
-  const [params] = useSearchParams();
-  const location = useLocation();
-  const requestedView = normalizeTaskViewKey(params.get(TASK_VIEW_PARAM));
-  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId"].some(param => params.getAll(param).some(Boolean));
-  // Saved merged-Inbox URLs retain their original surface inside Coordinator.
-  // Its effective Combined Inbox setting is off, so these routes do not loop.
-  if (!designSandbox && coordinatorEnabled && !organizationScoped && requestedView && taskView(requestedView).surface === "inbox") {
-    const next = new URLSearchParams(params); next.delete(TASK_VIEW_PARAM);
-    const search = next.toString();
-    return <Navigate to={`/inbox/${taskView(requestedView).inboxTab}${search ? `?${search}` : ""}${location.hash}`} replace />;
-  }
   // The merged surface is Combined Inbox + Task List only. With the flag off, and always in
   // the legacy shell, Tasks is the plain task list and Inbox keeps its pages.
-  return designSandbox ? <DesignSandboxTasks /> : coordinatorEnabled ? <CoordinatorTasks /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
+  return designSandbox ? <DesignSandboxTasks /> : coordinatorEnabled ? <CoordinatorTaskViews /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
 }
 
 function StreamlinedTasks() {
@@ -198,6 +189,20 @@ function OrganizationIssues({
     return urlSearch;
   }, [searchOverride, urlSearch, location.search]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, "paperclip:issues-view");
+  const sort = useMemo(() => readIssueSortParams(searchParams), [searchParams]);
+  const includeBlockedBy = sort?.sortField === "workflow";
+  const serverSortField = sort?.sortField === "created" ? "created" : "updated";
+  const serverSortDir = sort?.sortField === "created" || sort?.sortField === "updated" ? sort.sortDir : "desc";
+  const handleSortChange = useCallback((nextSort: IssueSort) => {
+    setSearchParams(current => {
+      const next = new URLSearchParams(current);
+      if (syncedSearch) next.set("q", syncedSearch);
+      else next.delete("q");
+      next.set("sortField", nextSort.sortField);
+      next.set("sortDir", nextSort.sortDir);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams, syncedSearch]);
   const routineTasksOnly = searchParams.get("originKind") === "routine_execution";
   const includeAgentCreatedTasks = showAgentCreatedTasks || routineTasksOnly;
   const originKind = routineTasksOnly ? "routine_execution" : undefined;
@@ -270,14 +275,7 @@ function OrganizationIssues({
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
-  const {
-    data: issuePages,
-    isLoading,
-    isFetchingNextPage,
-    error,
-    hasNextPage,
-    fetchNextPage,
-  } = useInfiniteQuery({
+  const issuesQuery = useInfiniteQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
@@ -290,6 +288,9 @@ function OrganizationIssues({
       originKind,
       "infinite",
       issuePageSize,
+      serverSortField,
+      serverSortDir,
+      includeBlockedBy,
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       projection: streamlinedUiEnabled ? "index" : undefined,
@@ -300,8 +301,9 @@ function OrganizationIssues({
       originKind,
       limit: issuePageSize,
       offset: pageParam,
-      sortField: "updated",
-      sortDir: "desc",
+      sortField: serverSortField,
+      sortDir: serverSortDir,
+      includeBlockedBy: includeBlockedBy || undefined,
     }, { signal }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
@@ -310,6 +312,8 @@ function OrganizationIssues({
     placeholderData: (previousData) => previousData,
   });
 
+  const { data: issuePages, isFetchingNextPage, hasNextPage, fetchNextPage } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
@@ -336,12 +340,13 @@ function OrganizationIssues({
     );
   }
 
+  if (issuesView.kind === "error") return <QueryErrorState size="page" error={issuesView.error} action="load tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
+
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
+      isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       isLoadingMoreIssues={isFetchingNextPage}
-      error={error as Error | null}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
@@ -358,10 +363,12 @@ function OrganizationIssues({
       enableAgentCreatedVisibilityFilter
       routineTasksOnly={routineTasksOnly}
       onRoutineTasksOnlyChange={handleRoutineTasksOnlyChange}
+      sort={sort}
+      onSortChange={handleSortChange}
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter || originKind ? { participantAgentId, workspaceId: workspaceIdFilter, originKind } : undefined}
+      searchFilters={participantAgentId || workspaceIdFilter || originKind || includeBlockedBy ? { participantAgentId, workspaceId: workspaceIdFilter, originKind, ...(includeBlockedBy ? { includeBlockedBy: true } : {}) } : undefined}
     />
   );
 }

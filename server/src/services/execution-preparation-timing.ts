@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { withDatabaseOperation } from "@paperclipai/db";
 import { EXECUTION_PREPARATION_SPAN_ATTRS, getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { createHash } from "node:crypto";
 import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context } from "@opentelemetry/api";
@@ -72,9 +73,9 @@ export type ExecutionPhase =
   | "workspace.checkout.cache_lookup" | "workspace.checkout.cache_publish"
   | "runtime_selection.review" | "runtime_selection.contract_read" | "runtime_selection.contract_ensure"
   | "runtime_selection.resume" | "runtime_selection.recovery_profile" | "runtime_selection.profile" | "runtime_selection.interactions"
-  | "runtime_selection.provider_discovery" | "runtime_selection.bootstrap" | "runtime_selection.run_write" | "runtime_selection.finalization_write"
+  | "runtime_selection.provider_discovery" | "runtime_selection.codex_cli_version" | "runtime_selection.runtime_context" | "runtime_selection.bootstrap" | "runtime_selection.run_write" | "runtime_selection.finalization_write"
   | "runtime_selection.transaction" | "runtime_selection.transaction.entry" | "runtime_selection.transaction.commit" | "runtime_selection.transaction.rollback"
-  | "runtime_selection.row_lock" | "runtime_selection.workspace_sync"
+  | "runtime_selection.row_lock" | "runtime_selection.workspace_sync" | "runtime_selection.skill_assets"
   | "runtime_context.instructions" | "runtime_context.skills" | "runtime_context.mcp"
   | "runtime_context.asset_read" | "runtime_context.asset_manifest" | "runtime_context.asset_cache" | "runtime_context.asset_materialize" | "runtime_context.asset_verify"
   | "workspace_sync.snapshot_git" | "workspace_sync.snapshot_baseline" | "workspace_sync.pack" | "workspace_sync.seed_verify" | "workspace_sync.stage_workspace" | "workspace_sync.restore"
@@ -146,7 +147,55 @@ export function isRunPhaseActive(phase: ExecutionPhase): boolean {
   return endpointEnabled() && owned?.phase === phase && !owned.ended;
 }
 
+/**
+ * Named preparation phases per run for the run log, so a slow step before
+ * dispatch is visible without an OTLP endpoint. Bounded: phases under 50 ms are
+ * left out, at most 200 per run, and at most 256 runs are held until drained.
+ */
+export type RecordedPreparationPhase = { name: string; startedAtMs: number; endedAtMs: number; outcome: "ok" | "failed" };
+const recordedPreparationPhases = new Map<string, RecordedPreparationPhase[]>();
+const MIN_RECORDED_PHASE_MS = 50;
+const MAX_RECORDED_PHASES_PER_RUN = 200;
+const MAX_RECORDED_RUNS = 256;
+
+function isPreparationPhaseName(name: string): boolean {
+  return name.startsWith("heartbeat.prepare.");
+}
+
+function recordPreparationPhase(runId: string, phase: RecordedPreparationPhase) {
+  if (phase.endedAtMs - phase.startedAtMs < MIN_RECORDED_PHASE_MS) return;
+  let phases = recordedPreparationPhases.get(runId);
+  if (!phases) {
+    if (recordedPreparationPhases.size >= MAX_RECORDED_RUNS) {
+      const oldest = recordedPreparationPhases.keys().next().value;
+      if (oldest !== undefined) recordedPreparationPhases.delete(oldest);
+    }
+    phases = [];
+    recordedPreparationPhases.set(runId, phases);
+  }
+  if (phases.length < MAX_RECORDED_PHASES_PER_RUN) phases.push(phase);
+}
+
+/** Returns and forgets the recorded preparation phases of a run. */
+export function drainRunPreparationPhases(runId: string): RecordedPreparationPhase[] {
+  const phases = recordedPreparationPhases.get(runId) ?? [];
+  recordedPreparationPhases.delete(runId);
+  return phases;
+}
+
 function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context): Promise<T> {
+  const startedAtMs = Date.now();
+  const operation = measureTraced(runId, name, work, independent, counts, activeParent);
+  // Only pre-dispatch preparation reaches the run log here; execution attempts
+  // and runtime timings belong to the turn, not to the next attempt's prepare.
+  if (isPreparationPhaseName(name)) operation.then(
+    () => recordPreparationPhase(runId, { name, startedAtMs, endedAtMs: Date.now(), outcome: "ok" }),
+    () => recordPreparationPhase(runId, { name, startedAtMs, endedAtMs: Date.now(), outcome: "failed" }),
+  );
+  return operation;
+}
+
+function measureTraced<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context): Promise<T> {
   let operation: Promise<T> | undefined;
   const run = (span?: { setStatus(status: { code: number }): void; end(): void }, parent?: Context) => {
     if (operation) return operation;
@@ -156,7 +205,7 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
       ended: false,
       details: !independent && previous?.runId === runId ? previous.details : new Map<string, number>(),
     };
-    operation = Promise.resolve().then(() =>
+    operation = withDatabaseOperation(name, () => Promise.resolve().then(() =>
       ownership.run(owned, () => runWithRuntimeParent(owned.parent, work))).then(value => {
         try { span?.end(); } catch {}
         owned.ended = true;
@@ -166,10 +215,18 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
         try { span?.end(); } catch {}
         owned.ended = true;
         throw error;
-      });
+      }));
     return operation;
   };
-  if (!endpointEnabled()) return (async () => work())();
+  if (!endpointEnabled()) {
+    // No tracer: still scope the run so nested measureRunPhase steps reach the run log.
+    const previous = ownership.getStore();
+    const owned: RunScope = { runId, phase: name, parent: undefined, ended: false,
+      details: !independent && previous?.runId === runId ? previous.details : new Map<string, number>() };
+    return withDatabaseOperation(name, () => ownership.run(owned, async () => {
+      try { return await work(); } finally { owned.ended = true; }
+    }));
+  }
   try {
     const parent = independent ? undefined : activeParent ?? getRunExecutionTraceContext(runId);
     const trigger = parent ? undefined : trace.getActiveSpan()?.spanContext();
@@ -202,20 +259,34 @@ export function withRunWorkspaceFinalizationTiming<T>(runId: string, work: () =>
 export function withRunResponsePresentationTiming<T>(runId: string, work: () => T | Promise<T>): Promise<T> {
   const owned = ownership.getStore();
   if (owned?.runId === runId && owned.phase === "task.response_presentation" && !owned.ended) {
-    return (async () => work())();
+    return withDatabaseOperation("task.response_presentation", async () => work());
   }
   return measure(runId, "task.response_presentation", work, true);
 }
 
-export async function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
-  const owned = ownership.getStore();
-  if (!endpointEnabled() || !owned || owned.ended) return work();
-  const count = owned.details.get(phase) ?? 0;
-  if (count >= 16) return work();
-  owned.details.set(phase, count + 1);
-  // A startup step can be more specific than the owning run phase. Keep that
-  // causal parent while the child publishes its own context to plugin workers.
-  return measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined);
+export function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
+  return withDatabaseOperation(phase, async () => {
+    const owned = ownership.getStore();
+    if (!owned || owned.ended) return work();
+    const count = owned.details.get(phase) ?? 0;
+    if (count >= 16) return work();
+    owned.details.set(phase, count + 1);
+    // A step inside a preparation phase reaches the run log with or without a tracer.
+    const recordedRunId = isPreparationPhaseName(owned.phase) ? owned.runId : null;
+    const startedAtMs = Date.now();
+    let outcome: RecordedPreparationPhase["outcome"] = "failed";
+    try {
+      // A startup step can be more specific than the owning run phase. Keep that
+      // causal parent while the child publishes its own context to plugin workers.
+      const value = endpointEnabled()
+        ? await measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined)
+        : await work();
+      outcome = "ok";
+      return value;
+    } finally {
+      if (recordedRunId) recordPreparationPhase(recordedRunId, { name: phase, startedAtMs, endedAtMs: Date.now(), outcome });
+    }
+  });
 }
 
 export function beginRunPhase(phase: ExecutionPhase): (failed?: boolean) => void {

@@ -2,6 +2,7 @@ import { ArrowUpRight, ListTree } from "lucide-react";
 import { Link } from "@/lib/router";
 import { IssueStatusBadge } from "@/components/StatusBadge";
 import type { TaskChatTaskCreatedItem } from "./task-chat-model";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export function TaskChatTaskCreatedCard({ item }: { item: TaskChatTaskCreatedItem }) {
   const { task } = item;
@@ -18,7 +19,7 @@ export function TaskChatTaskCreatedCard({ item }: { item: TaskChatTaskCreatedIte
         <span className="block break-words text-sm font-medium">{task.title}</span>
         <span className="flex flex-wrap items-center gap-2">
           {task.identifier && <span className="font-mono text-xs text-muted-foreground">{task.identifier}</span>}
-          <IssueStatusBadge status={task.status} />
+          <IssueStatusBadge {...taskStatusIconProps(task)} />
         </span>
       </span>
       <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />

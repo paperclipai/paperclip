@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 function setup(canRun = () => true) {
   vi.useFakeTimers();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   const onError = vi.fn();
   coordinator = createDeliveryWorkCoordinator({ owner, canRun, canReconcile: () => true, onError });
   const worker = registerRunEvidenceMigrationWork(owner as unknown as Db, coordinator, canRun);

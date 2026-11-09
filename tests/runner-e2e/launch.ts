@@ -1,3 +1,4 @@
+import { makeDirectoryTreeRemovable } from "./directory-cleanup.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, upgradeArtifactKey } from "./upgrade-artifacts.js";
 import { recoverWorkerTiming } from "./worker-timing.js";
 import { openEvalOperations, type EvalOperations } from "./operations.js";
@@ -13,6 +14,10 @@ import { createRunnerE2ETemporaryRoot } from "./server-config.js";
 import { createExternalControllerDatabase } from "./external-controller-database.js";
 import { createHash, randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
+import {
+  AGENT_FILESYSTEM_SANDBOX_ENV, agentFilesystemSandboxApplies, agentFilesystemSandboxConfig, agentTemporaryParent,
+  defaultPlaywrightCacheDirectory, playwrightCacheDirectory,
+} from "./agent-filesystem-sandbox.js";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { createRequire } from "node:module";
@@ -39,6 +44,7 @@ import { privateCellEvidenceOwner } from "./manual-private-report-assets.js";
 import { readManualPrivateHandoff, sealManualResultEvidence, preserveOriginalFrameworkResult, sealStandardOriginalEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
 import { requiresPrivateManualEvidence } from "./manual-private-retention.js";
 import { copySharedEvidence } from "./shared-evidence.js";
+import { dropDuplicatePlaywrightOutput } from "./private-report-copies.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { mustPreserveRecoveryState, shouldKeepFailedDiagnostics } from "./cleanup-verification.js";
 import { effectiveAutomaticRetryLimit, executeWithAutomaticRetry } from "./automatic-retry.js";
@@ -118,17 +124,6 @@ function secret(bytes = 32) {
   return randomBytes(bytes).toString("base64url");
 }
 
-async function makeDirectoryTreeRemovable(directory: string): Promise<void> {
-  await chmod(directory, 0o700);
-  const entries = await readdir(directory, { withFileTypes: true });
-  await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-      .map((entry) =>
-        makeDirectoryTreeRemovable(path.join(directory, entry.name)),
-      ),
-  );
-}
 
 function stopProcessGroup(pid: number, signal: NodeJS.Signals = "SIGTERM") {
   try {
@@ -501,7 +496,8 @@ async function runAttempt(input: {
   const installedPlugin = await verifyInstalledDaytonaPlugin(process.env, executions);
   const startedAtMs = Date.now();
   const sharedMemoryBaseline = snapshotDarwinSharedMemory();
-  const temporaryParent = await realpath(os.tmpdir());
+  const sandboxedAgents = agentFilesystemSandboxApplies({ platform: process.platform, executions, installedRelease: Boolean(installedCli) });
+  const temporaryParent = agentTemporaryParent(sandboxedAgents);
   const temporaryRoot = await createRunnerE2ETemporaryRoot(temporaryParent);
   const privateDir = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "capture") : path.join(temporaryRoot, "artifacts-private");
   const publishedResults: RunnerE2EResult[] = [];
@@ -563,6 +559,12 @@ async function runAttempt(input: {
       executions,
       repositoryRoot,
     );
+    const agentFilesystemSandbox = agentFilesystemSandboxConfig({
+      platform: process.platform, env: process.env, executions, repositoryRoot, temporaryRoot, privateDir,
+      evidenceRoot: manualPrivateHandoff?.root, installedRelease: Boolean(installedCli),
+    });
+    // Playwright's default cache holds compiled graders in the shared /tmp.
+    if (sandboxedAgents) await rm(defaultPlaywrightCacheDirectory(), { recursive: true, force: true });
     const childEnv: NodeJS.ProcessEnv = {
       ...buildRunnerE2EProcessEnvironment(process.env, executions),
       PATH: providerPath,
@@ -577,6 +579,8 @@ async function runAttempt(input: {
       PAPERCLIP_RUNNER_E2E_PORT: String(port),
       PAPERCLIP_RUNNER_E2E_TEMP_ROOT: temporaryRoot,
       PAPERCLIP_RUNNER_E2E_PRIVATE_DIR: privateDir,
+      [AGENT_FILESYSTEM_SANDBOX_ENV]: agentFilesystemSandbox ? JSON.stringify(agentFilesystemSandbox) : undefined,
+      PWTEST_CACHE_DIR: playwrightCacheDirectory(temporaryRoot),
       PAPERCLIP_RUNNER_E2E_WORKSPACE: workspace,
       PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(privateDir, "server.log"),
       PAPERCLIP_RUNNER_BINARY: runnerBinary,
@@ -836,6 +840,10 @@ async function runAttempt(input: {
           `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
           "utf8",
         );
+        // html-report/data already holds identical bytes of each failure trace
+        // and video; drop the playwright-output copies so failures fit the
+        // private evidence allowance with their HTML report still viewable.
+        await dropDuplicatePlaywrightOutput(casePrivateDir);
         let evidence = await packageEvidence({
           privateDir: casePrivateDir,
           uploadDir,

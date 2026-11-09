@@ -12,6 +12,11 @@ import { assertSkillSnapshotPath, skillFileBytes, skillSnapshotHash, MAX_SKILL_S
 export const MAX_SKILL_PACKAGE_BYTES = MAX_SKILL_SNAPSHOT_BYTES;
 export const MAX_SKILL_PACKAGE_FILES = MAX_SKILL_SNAPSHOT_FILES;
 export const MAX_SKILL_MANIFEST_BYTES = 48 * 1024 * 1024;
+export const MAX_SKILL_PACKAGE_PATH_LENGTH = 4096;
+export class SkillPackageFileTooLarge extends Error {}
+export function assertSkillPackageFileSize(size: number, maxBytes = Number.MAX_SAFE_INTEGER) {
+  if (size > maxBytes) throw new SkillPackageFileTooLarge("Skill file exceeds the requested byte limit");
+}
 export type SkillPackageFile = {
   path: string;
   kind: CompanySkillVersionFileInventoryEntry["kind"];
@@ -41,7 +46,7 @@ export function validateSkillPackageManifest(value: unknown): SkillPackageManife
     assertSkillSnapshotPath(file.path);
     // A portable repository fork adds one generated directory to scanner-accepted paths.
     const sourcePath = file.path.startsWith(`${REPOSITORY_CONTENT_DIR}/`) ? file.path.slice(REPOSITORY_CONTENT_DIR.length + 1) : file.path;
-    if (sourcePath.length > 4096 || sourcePath.split("/").length > 64 || paths.has(file.path)
+    if (sourcePath.length > MAX_SKILL_PACKAGE_PATH_LENGTH || sourcePath.split("/").length > 64 || paths.has(file.path)
       || !kinds.has(file.kind) || !["utf8", "base64"].includes(file.encoding) || typeof file.executable !== "boolean"
       || !Number.isSafeInteger(file.size) || file.size < 0 || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error("Invalid skill package file");
     paths.add(file.path);

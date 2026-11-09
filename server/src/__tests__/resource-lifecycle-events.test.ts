@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
 import { approvalService } from "../services/approvals.js";
-import { budgetService } from "../services/budgets.js";
+import { budgetService, flushBudgetEvaluationWork } from "../services/budgets.js";
 import { projectService } from "../services/projects.js";
 import { recordResourceCreationEvent } from "../services/resource-lifecycle-events.js";
 import { pluginLifecycleInbox } from "../services/plugin-lifecycle-inbox.js";
@@ -154,9 +154,12 @@ describePostgres("Resource lifecycle events", () => {
     await db.insert(budgetPolicies).values({ companyId, scopeType: "agent", scopeId: agent.id, metric: "billed_cents", windowKind: "calendar_month_utc", amount: 100, notifyEnabled: false });
     const [event] = await db.insert(costEvents).values({ companyId, agentId: agent.id, provider: "fixture", model: "fixture", costCents: 150, occurredAt: new Date() }).returning();
     await service.evaluateCostEvent(event);
+    await flushBudgetEvaluationWork(db, { companyId });
     await service.evaluateCostEvent(event);
+    await flushBudgetEvaluationWork(db, { companyId });
     expect(await agentService(db).getById(agent.id)).toMatchObject({ status: "paused", pauseReason: "budget" });
     await service.upsertPolicy(companyId, { scopeType: "agent", scopeId: agent.id, amount: 200 }, "fixture-board");
+    await flushBudgetEvaluationWork(db, { companyId });
     await worker.process(agent.id);
     expect(await agentService(db).getById(agent.id)).toMatchObject({ status: "idle", pauseReason: null });
     expect((await events()).sort((a, b) => a.id - b.id).map(row => row.action)).toEqual(["create", "pause", "resume"]);

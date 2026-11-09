@@ -392,6 +392,16 @@ function comparisonFailures(fixture: Fixture, observed: FixtureObservation): str
   return failures;
 }
 
+// A reconciled run can carry these fields at runtime. The reconciler's declared
+// result type omits them, because its results array is typed by its other pushes.
+type ReconciledRun = Awaited<ReturnType<typeof reconcileNativeFinalizations>>[number] & {
+  decisionId?: string | null;
+  reconciliationAction?: string | null;
+  reconciliationDecision?: NativeStatusDecision;
+  workspaceOperationId?: string;
+  workspaceFinalizeStatus?: string;
+};
+
 describe("P6-31 Section 18.13 executable status-authority corpus", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
@@ -1020,7 +1030,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           phase: "workspace_finalize", status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date(),
         });
       }
-      const [reconciled] = await reconcileNativeFinalizations(db, [seeded.runId]);
+      const [reconciled] = await reconcileNativeFinalizations(db, [seeded.runId]) as ReconciledRun[];
       if (completionState === "policy_version_changed") {
         const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId));
         const assessments = await db.select().from(workAssessments).where(eq(workAssessments.issueId, seeded.issueId));
@@ -1154,7 +1164,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         cwd: process.cwd(),
         finishedAt: new Date(),
       });
-      const [reconciled] = await reconcileNativeFinalizations(db, [seeded.runId]);
+      const [reconciled] = await reconcileNativeFinalizations(db, [seeded.runId]) as ReconciledRun[];
       if (!reconciled || reconciled.reconciliationAction !== "resume_workspace_operation") {
         throw new Error(`${fixture.id}: live workspace reconciliation did not execute (${JSON.stringify(reconciled)})`);
       }
@@ -1472,12 +1482,12 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       const currentVersion = await db.select({ statusVersion: issues.statusVersion })
         .from(issues).where(eq(issues.id, seeded.issueId))
         .then((rows) => Number(rows[0]?.statusVersion ?? 0));
-      const updated = await issueService(db).update(seeded.issueId, {
+      const updated = (await issueService(db).update(seeded.issueId, {
         status: boardTarget,
         statusVersion: currentVersion + 1,
         actorUserId: "status-corpus-board",
         actorAgentId: null,
-      });
+      }))!;
       consumerExecutions.push({
         consumer: "authorized-issue-writer",
         observed: { status: updated.status, statusVersion: updated.statusVersion },
@@ -2480,7 +2490,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
         .innerJoin(issues, eq(issues.id, nativeRunFinalizations.issueId))
         .where(eq(nativeRunFinalizations.runId, seeded.runId));
-      const selected = { ...source, assessmentId: source.assessmentId! };
+      const selected = { ...source, assessmentId: source.assessmentId!, nativeStatusWakeIntentId: null };
       const future = new Date(Date.now() + 60_000);
       const change = changed === "future" ? { nextAttemptAt: future }
         : changed === "claim" ? { leaseOwner: "other-finalizer", leaseExpiresAt: future }
@@ -2631,7 +2641,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
         .innerJoin(issues, eq(issues.id, nativeRunFinalizations.issueId))
         .where(eq(nativeRunFinalizations.runId, seeded.runId));
-      const selected = { ...source, assessmentId: source.assessmentId! };
+      const selected = { ...source, assessmentId: source.assessmentId!, nativeStatusWakeIntentId: null };
       const approvalId = randomUUID(), interactionId = randomUUID(), commentId = randomUUID();
       const approvalCase = changed.startsWith("approval");
       if (approvalCase) {
@@ -2709,7 +2719,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
         .innerJoin(issues, eq(issues.id, nativeRunFinalizations.issueId))
         .where(eq(nativeRunFinalizations.runId, seeded.runId));
-      const selected = { ...source, assessmentId: source.assessmentId! };
+      const selected = { ...source, assessmentId: source.assessmentId!, nativeStatusWakeIntentId: null };
       const blockerId = randomUUID(), workspaceId = randomUUID(), operationId = randomUUID();
       const workspaceCase = changed.startsWith("workspace");
       if (workspaceCase) await db.insert(executionWorkspaces).values({ id: workspaceId, companyId,
@@ -2810,7 +2820,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         contextSnapshot: heartbeatRuns.contextSnapshot,
       }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
         .innerJoin(issues, eq(issues.id, nativeRunFinalizations.issueId)).where(eq(nativeRunFinalizations.runId, seeded.runId));
-      const selected = { ...source, assessmentId: source.assessmentId! };
+      const selected = { ...source, assessmentId: source.assessmentId!, nativeStatusWakeIntentId: null };
       async function change(database: typeof db, revoke: boolean) {
         if (kind.startsWith("work product")) await database.update(issueWorkProducts)
           .set({ reviewState: revoke ? "rejected" : "approved" }).where(eq(issueWorkProducts.id, seeded.workProductId));
@@ -3058,7 +3068,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
   it.each(["queued", "consumed"])("new-evidence reconciliation respects %s child delivery", async (delivery) => {
     const seeded = await seedAutomaticReview();
     // No retired-review receipt: this must use the new-evidence path.
-    await db.update(issueThreadInteractions).set({ status: "cancelled", result: {} })
+    await db.update(issueThreadInteractions).set({ status: "cancelled", result: { version: 1, outcome: "withdrawn" } })
       .where(eq(issueThreadInteractions.id, seeded.interaction.id));
     await db.update(issueWorkProducts).set({ updatedAt: new Date(Date.now() + 1_000) })
       .where(eq(issueWorkProducts.id, seeded.workProductId));

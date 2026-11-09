@@ -1,8 +1,12 @@
-import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyGitHubCompanyChange } from "./github-connection-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
 import { deleteCompany } from "./company-deletion.js";
@@ -35,6 +39,7 @@ import {
 import { environmentService } from "./environments.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import type { Company } from "@paperclipai/shared";
 
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -115,6 +120,8 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     name: companies.name,
     description: companies.description,
     status: companies.status,
+    pauseReason: companies.pauseReason,
+    pausedAt: companies.pausedAt,
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,
     budgetMonthlyCents: companies.budgetMonthlyCents,
@@ -131,9 +138,11 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     updatedAt: companies.updatedAt,
   };
 
-  function enrichCompany<T extends { logoAssetId: string | null }>(company: T) {
+  function enrichCompany<T extends { logoAssetId: string | null; status: string; pauseReason: string | null }>(company: T) {
     return {
       ...company,
+      status: company.status as Company["status"],
+      pauseReason: company.pauseReason as Company["pauseReason"],
       logoUrl: company.logoAssetId ? `/api/assets/${company.logoAssetId}/content` : null,
     };
   }
@@ -335,10 +344,14 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         const renamedPrefix = await resolveRenamedIssuePrefix(tx, id, companyPatch);
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
+          if(willReactivate)await notifyMuseContactVerification(tx,{companyId:id});
           await notifyRunDispatch(tx, { companyId: id });
+          await notifyGitHubCompanyChange(tx, id);
           await notifyDeferredExecutionEligibility(tx, { companyId: id });
+          if (companyPatch.status === "active") await promoteDeferredWorkIntents(tx, { companyId: id, trigger: "pause_lifted" });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyExternalObjectRefresh(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyStatusCardIssueChange(tx, id);
@@ -495,9 +508,11 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
 
         if (!wasAlreadyArchived) {
           await notifyRunDispatch(tx, { companyId: id });
+          await notifyGitHubCompanyChange(tx, id);
           await notifyDeferredExecutionEligibility(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyExternalObjectRefresh(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyStatusCardIssueChange(tx, id);

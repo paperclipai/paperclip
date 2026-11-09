@@ -1,3 +1,4 @@
+import { useQueryView } from "@/components/QueryView";
 import { useContext } from "react";
 import {
   QueryClient,
@@ -16,7 +17,7 @@ export function useChatConnectorsEnabled(): {
   githubEnabled: boolean;
 } {
   const contextClient = useContext(QueryClientContext);
-  const { data, isFetched, isError } = useQuery(
+  const query = useQuery(
     {
       queryKey: queryKeys.instance.experimentalSettings,
       queryFn: () => instanceSettingsApi.getExperimental(),
@@ -24,11 +25,15 @@ export function useChatConnectorsEnabled(): {
     },
     contextClient ?? (detachedClient ??= new QueryClient()),
   );
+  const { data, isFetched } = query;
+  const view = useQueryView(query);
   if (!contextClient)
     return { enabled: false, githubEnabled: false, loaded: true };
+  // Derive the gates from data, not `isError`: cached settings stay visible while a
+  // refetch is failing; only a no-data failure reports `loaded` without the flag.
   return {
-    enabled: !isError && data?.enableChatConnectors === true,
-    githubEnabled: !isError && data?.enableGitHubReviewBots === true,
+    enabled: view.kind !== "error" && data?.enableChatConnectors === true,
+    githubEnabled: view.kind !== "error" && data?.enableGitHubReviewBots === true,
     loaded: isFetched,
   };
 }

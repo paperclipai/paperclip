@@ -93,6 +93,7 @@ import {
 } from "./authorization.js";
 import { redactEventPayload, sanitizeRecord } from "../redaction.js";
 import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
+import { WORKSPACE_OPERATION_FAILURE_REASONS } from "@paperclipai/plugin-sdk";
 import {
   normalizeProviderFamily,
   SANDBOX_STARTUP_SPAN_ATTRS,
@@ -537,8 +538,11 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
   "postUploadCommand",
   "session.open",
   "session.close",
+  "lease.wait_for_teardown", "lease.lookup", "lease.refresh", "lease.channel_cleanup",
+  "lease.start", "lease.recover", "lease.verify", "lease.workspace", "lease.sentinel",
+  "lease.shell", "lease.create", "lease.expiry", "lease.cleanup",
   "plugin.worker", "plugin.host.identity.read", "plugin.host.config.read", "plugin.host.progress.read", "plugin.host.progress.write",
-  "plugin.workspace.prepare", "plugin.storage.queue", "plugin.storage.execute",
+  "plugin.workspace.prepare", "plugin.workspace.failure", "plugin.storage.queue", "plugin.storage.execute",
   "plugin.runtime.queue", "plugin.runtime.prepare", "plugin.runtime.reconcile", "plugin.runtime.verify",
   "plugin.remote.request", "plugin.remote.operation", "plugin.remote.lifecycle",
 ]);
@@ -564,8 +568,12 @@ const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
   SPAN_ATTRS.transferDirection,
-  "plugin.operation", "plugin.reused", "plugin.item_count", "plugin.bytes", "plugin.call_count",
+  SPAN_ATTRS.state,
+  "plugin.operation", "plugin.reused", "plugin.item_count", "plugin.bytes", "plugin.call_count", "plugin.failure_reason",
 ]);
+
+/** The closed value set for `plugin.failure_reason`: a workspace operation failure reason, or `unknown`. */
+const KNOWN_PLUGIN_FAILURE_REASONS: ReadonlySet<string> = new Set<string>([...WORKSPACE_OPERATION_FAILURE_REASONS, "unknown"]);
 
 /** The subset of allowed keys that carry a finite number. */
 const PROVIDER_SPAN_NUMERIC_ATTRS: ReadonlySet<string> = new Set<string>([
@@ -595,11 +603,19 @@ export function clampProviderSpanAttributes(
   if (!raw) return clamped;
   for (const [key, value] of Object.entries(raw)) {
     if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
+    if (key === SPAN_ATTRS.state) {
+      if (typeof value === "string" && ["started", "stopped", "archived", "error", "other"].includes(value)) clamped[key] = value;
+      continue;
+    }
     if (key === "plugin.operation") {
       if (typeof value === "string" && ["request", "queue.wait", "launch.wait", "mount.refresh", "guest.setup", "process.execute", "script.workspace", "script.git", "script.settings", "script.publication", "cleanup", "process.start", "hello", "checkpoint.load"].includes(value)) clamped[key] = value;
       continue;
     }
     if (key === "plugin.reused") { if (typeof value === "boolean") clamped[key] = value; continue; }
+    if (key === "plugin.failure_reason") {
+      if (typeof value === "string" && KNOWN_PLUGIN_FAILURE_REASONS.has(value)) clamped[key] = value;
+      continue;
+    }
     if (key === SPAN_ATTRS.provider) {
       clamped[key] = normalizeProviderFamily(typeof value === "string" ? value : undefined);
       continue;

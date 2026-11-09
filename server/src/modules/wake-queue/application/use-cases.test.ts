@@ -1228,6 +1228,22 @@ describe("admitWakeBehindIssueExecution", () => {
     expect(reader.findExistingDeferredWake).not.toHaveBeenCalled();
   });
 
+  it("retains incoming receipt authority when the locked coalesce target has changed", async () => {
+    const writer = createFakeAdmissionWriter({ coalesceIntoActiveExecutionRun: vi.fn(async () => null) });
+    const reader = createFakeAdmissionReader();
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers: createFakeAdmissionHelpers() });
+    const durableReceipt = { id: "incoming-source", requestedAt: new Date("2026-11-04T00:00:00Z") };
+    expect(await admit(SCOPE, admissionInput({ durableReceipt, wakeCommentId: "new-comment",
+      contextSnapshot: { issueId: "issue-1", wakeCommentId: "new-comment" }, payload: { issueId: "issue-1", commentId: "new-comment" },
+    }))).toEqual({ kind: "deferred" });
+    expect(writer.insertNewDeferredWake).toHaveBeenCalledWith(SCOPE, expect.objectContaining({
+      companyId: "company-1", agentId: "wake-agent", durableReceipt,
+      requestedByActorType: "user", requestedByActorId: "user-1",
+      payload: expect.objectContaining({ issueId: "issue-1", commentId: "new-comment" }),
+    }));
+    expect(writer.mergeIntoExistingDeferredWake).not.toHaveBeenCalled();
+  });
+
   it("merges into the existing deferred wake when the policy returns a merge target", async () => {
     const mergeIntoExistingDeferredWake = vi.fn(
       async (_scope: TransactionScope, _input: Parameters<WakeAdmissionWriter["mergeIntoExistingDeferredWake"]>[1]) => {},

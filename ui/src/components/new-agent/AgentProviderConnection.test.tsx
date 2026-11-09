@@ -380,11 +380,11 @@ describe("AgentProviderConnection reuse", () => {
       flushSync(() => panel().onPromptReady("https://provider.example/authorize"));
       click(adapterType === "claude_local" ? "Sign in to Claude" : "Sign in to OpenAI");
       expect(open).toHaveBeenCalledWith("https://provider.example/authorize", "_blank", "noreferrer,noopener");
-      expect(host.textContent).toContain("Waiting for code");
+      expect(host.textContent).toContain(adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code");
       flushSync(() => panel().onCodeSubmitted());
       expect(host.textContent).toContain("Connecting");
       flushSync(() => panel().onSubmitFailed());
-      expect(host.textContent).toContain("Waiting for code");
+      expect(host.textContent).toContain(adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code");
       flushSync(() => panel().onConnected("session-1"));
       await vi.waitFor(() => expect(onComplete).toHaveBeenCalledWith({ connectionId: "login-account", grantId: "login-grant", method: "subscription" }));
       expect(managedApi.loginResult).toHaveBeenCalledWith("c1", "session-1");

@@ -53,6 +53,14 @@ export class ObjectJournalConflictError extends Error {
     super("The output journal is owned by another writer");
   }
 }
+export class ObjectJournalSourcePrefixProofUnavailableError extends Error {
+  constructor(readonly writer: ObjectJournalWriter) {
+    super("The committed log prefix has no available source proof");
+  }
+}
+class ObjectJournalSourcePrefixProofInvalidError extends Error {
+  constructor() { super("object_journal_source_prefix_proof_invalid"); }
+}
 export function isObjectPreconditionFailure(error: unknown) {
   const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
   return e?.name === "PreconditionFailed" || e?.$metadata?.httpStatusCode === 412;
@@ -196,17 +204,52 @@ async function qualifyConditionalWrites(
   });
 }
 
+export class ObjectJournalBusyError extends Error {
+  readonly code = "object_journal_io_busy";
+  constructor() {
+    super("Object storage is busy; retry shortly");
+  }
+}
+export function isObjectJournalBusyError(error: unknown): error is ObjectJournalBusyError {
+  return error instanceof ObjectJournalBusyError;
+}
+
+export type ObjectJournalIOPriority = "background" | "interactive";
+const MAX_ACTIVE_IO = 8;
+const MAX_WAITING_INTERACTIVE_IO = 32;
 let activeIO = 0;
-const waitingIO: Array<() => void> = [];
-async function objectIO<T>(operation: () => Promise<T>): Promise<T> {
-  if (activeIO >= 8) {
-    if (waitingIO.length >= 32) throw new Error("object_journal_io_capacity_exceeded");
-    await new Promise<void>((resolve) => waitingIO.push(resolve));
+const waitingIO: Record<ObjectJournalIOPriority, Array<() => void>> = {
+  background: [],
+  interactive: [],
+};
+async function objectIO<T>(
+  operation: () => Promise<T>,
+  priority: ObjectJournalIOPriority = "background",
+  signal?: AbortSignal,
+): Promise<T> {
+  signal?.throwIfAborted();
+  if (activeIO >= MAX_ACTIVE_IO) {
+    const queue = waitingIO[priority];
+    if (priority === "interactive" && queue.length >= MAX_WAITING_INTERACTIVE_IO)
+      throw new ObjectJournalBusyError();
+    await new Promise<void>((resolve, reject) => {
+      const grant = () => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = () => {
+        const index = queue.indexOf(grant);
+        if (index >= 0) queue.splice(index, 1);
+        reject(signal!.reason);
+      };
+      queue.push(grant);
+      signal?.addEventListener("abort", abort, { once: true });
+    });
   } else activeIO++;
   try {
     return await operation();
   } finally {
-    const next = waitingIO.shift();
+    const next = waitingIO.background.shift() ?? waitingIO.interactive.shift();
     if (next) next();
     else activeIO--;
   }
@@ -215,6 +258,7 @@ async function objectIO<T>(operation: () => Promise<T>): Promise<T> {
 export interface ObjectByteJournalOptions {
   provider: StorageProvider;
   prefix: string;
+  readPriority?: ObjectJournalIOPriority;
 
   encode?: (bytes: Buffer) => Promise<Buffer>;
   decode?: (bytes: Buffer) => Promise<Buffer>;
@@ -235,9 +279,10 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     throw new Error("Object storage requires conditional writes and scoped listing");
   const headKey = `${prefix}/head.json`;
   const objectPrefix = `${prefix}/objects/`;
+  const readPriority = options.readPriority ?? "background";
   const putConditional = (
     input: Parameters<NonNullable<StorageProvider["putObjectConditional"]>>[0],
-  ) => objectIO(() => provider.putObjectConditional!(input));
+  ) => objectIO(() => provider.putObjectConditional!(input), "background", input.signal);
 
   async function getBytes(key: string, limit: number, signal?: AbortSignal) {
     return objectIO(async () => {
@@ -263,7 +308,7 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       }
       signal?.throwIfAborted();
       return { bytes: Buffer.concat(chunks), etag: result.etag };
-    });
+    }, readPriority, signal);
   }
   async function head(signal?: AbortSignal): Promise<ObjectJournalWriter | null> {
     let result;
@@ -291,6 +336,69 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       throw new Error("object_journal_invalid_head");
     }
     return { head: value, etag: result.etag };
+  }
+  function sourcePrefixProof(snapshot: ObjectJournalHead) {
+    // Leave strict head v1 unchanged for older readers/rollback. Ownership and
+    // close/claim state may change without changing this immutable byte prefix.
+    const fingerprint = sha256(Buffer.from(JSON.stringify({
+      end: snapshot.end, sequence: snapshot.sequence, sourceCursor: snapshot.sourceCursor,
+      root: snapshot.root, roots: snapshot.roots ?? null,
+    })));
+    return {
+      // Existing scoped object cleanup also removes these unreferenced metadata objects.
+      key: `${objectPrefix}source-prefix-proof-v1-${fingerprint}`,
+      bytes: Buffer.from(JSON.stringify({ schema: "paperclip.run-log.source-prefix-proof.v1", fingerprint })),
+    };
+  }
+  async function hasVerifiedSourcePrefix(snapshot: ObjectJournalHead, signal?: AbortSignal) {
+    const proof = sourcePrefixProof(snapshot);
+    let stored: Awaited<ReturnType<typeof getBytes>>;
+    try { stored = await getBytes(proof.key, 4096, signal); }
+    catch (error) { if (isMissing(error)) return false; throw error; }
+    if (!stored.bytes.equals(proof.bytes)) throw new ObjectJournalSourcePrefixProofInvalidError();
+    return true;
+  }
+  async function recordVerifiedSourcePrefix(writer: ObjectJournalWriter, sourceCursor: number, signal?: AbortSignal) {
+    const callerSignal = signal;
+    signal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+      : AbortSignal.timeout(15_000);
+    signal.throwIfAborted();
+    if (!Number.isSafeInteger(sourceCursor) || sourceCursor < writer.head.sourceCursor)
+      throw new Error("object_journal_invalid_source_prefix_cursor");
+    const current = await head(signal);
+    if (!current || current.etag !== writer.etag || current.head.closed || current.head.deleted)
+      throw new ObjectJournalConflictError();
+    // One-time verification can repair legacy max-cursor metadata, never payload bytes.
+    if (sourceCursor !== writer.head.sourceCursor)
+      writer = await publish({ ...writer.head, sourceCursor }, writer.etag, signal);
+    const proof = sourcePrefixProof(writer.head);
+    try {
+      await retryObjectOperation(() => putConditional({
+        objectKey: proof.key, body: proof.bytes, contentLength: proof.bytes.length,
+        contentType: "application/json", ifNoneMatch: "*", signal,
+      }), signal);
+    } catch (error) {
+      callerSignal?.throwIfAborted();
+      if (error instanceof ObjectJournalConflictError) throw error;
+      // A lost reply or an already published identical immutable proof is safe.
+      try {
+        if (await hasVerifiedSourcePrefix(writer.head, signal)) return writer;
+      } catch (readError) {
+        callerSignal?.throwIfAborted();
+        if (readError instanceof ObjectJournalSourcePrefixProofInvalidError ||
+          readError instanceof ObjectJournalConflictError) throw readError;
+        if (signal.aborted || isRetryable(readError))
+          throw new ObjectJournalSourcePrefixProofUnavailableError(writer);
+        throw readError;
+      }
+      // Only this immutable proof publication is optional. The ownership read
+      // and any cursor/head CAS above retain their fatal failure boundary.
+      if (signal.aborted || isRetryable(error))
+        throw new ObjectJournalSourcePrefixProofUnavailableError(writer);
+      throw error;
+    }
+    return writer;
   }
   async function publish(value: ObjectJournalHead, etag: string | null, signal?: AbortSignal) {
     value = headSchema.parse(value);
@@ -559,16 +667,22 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
         signal
           ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
           : AbortSignal.timeout(15_000);
-      const page = await objectIO(() =>
-        provider.listObjects!({ prefix: objectPrefix, continuationToken, signal: deadline() }),
+      const page = await objectIO(
+        () => provider.listObjects!({ prefix: objectPrefix, continuationToken, signal: deadline() }),
+        "background",
+        signal,
       );
       for (const key of page.keys) {
         if (!key.startsWith(objectPrefix)) throw new Error("object_journal_invalid_listing");
-        await objectIO(() => provider.deleteObject({ objectKey: key, signal: deadline() }));
+        await objectIO(
+          () => provider.deleteObject({ objectKey: key, signal: deadline() }),
+          "background",
+          signal,
+        );
       }
       continuationToken = page.continuationToken;
     } while (continuationToken);
   }
-  return { head, claim, append, close, readRange, remove };
+  return { head, claim, append, close, readRange, remove, hasVerifiedSourcePrefix, recordVerifiedSourcePrefix };
 }
 export type ObjectByteJournal = ReturnType<typeof createObjectByteJournal>;

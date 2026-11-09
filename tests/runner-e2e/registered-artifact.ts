@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { IssueAttachment } from "../../packages/shared/src/types/issue.js";
 import type { IssueWorkProduct } from "../../packages/shared/src/types/work-product.js";
-import type { RunnerApi } from "./api.js";
+import type { APIRequestContext } from "@playwright/test";
 
 export class RegisteredArtifactNotFoundError extends Error {
   constructor(artifactName: string) {
@@ -13,7 +13,7 @@ export class RegisteredArtifactNotFoundError extends Error {
 const REGISTERED_ARTIFACT_STATUSES = new Set(["active", "ready_for_review", "approved"]);
 
 /** Registration, attribution and downloaded bytes must agree independently. */
-export async function readRegisteredArtifacts(api: RunnerApi, issueId: string, runId: string, names: readonly string[]) {
+export async function readRegisteredArtifacts(api: { get<T>(route: string): Promise<T>; request: Pick<APIRequestContext, "get"> }, issueId: string, runId: string, names: readonly string[]) {
   if (names.length === 0) return [];
   const [products, attachments] = await Promise.all([
     api.get<IssueWorkProduct[]>(`/api/issues/${encodeURIComponent(issueId)}/work-products`),
