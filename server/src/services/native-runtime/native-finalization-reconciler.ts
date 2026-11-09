@@ -71,6 +71,7 @@ import {
 import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
+import { transitionHeartbeatRunStatus } from "../heartbeat-run-lifecycle.js";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -260,17 +261,19 @@ export async function claimNativeSessionResumptions(input: {
         await notifyInstructionCollection(tx, { companyId: row.run.companyId, runId: row.run.id });
         await notifyCancelledWorkspacePreservation(tx, { companyId: row.run.companyId, runId: row.run.id });
         await notifyUnsafeWorkspaceExportRunChange(tx, row.run);
-        const [updatedRun] = await tx.update(heartbeatRuns).set({
-          status: "failed",
-          finishedAt: now,
-          nativePhase: "terminal_failure",
-          nativePhaseUpdatedAt: now,
-          errorCode: failureCode,
-          error: typeof failureDetail.message === "string"
-            ? failureDetail.message
-            : "Persisted native session state is ambiguous and cannot be resumed safely",
-          updatedAt: now,
-        }).where(eq(heartbeatRuns.id, row.run.id)).returning();
+        const updatedRun = (await transitionHeartbeatRunStatus(tx, row.run.id, {
+          toStatus: "failed",
+          patch: {
+            finishedAt: now,
+            nativePhase: "terminal_failure",
+            nativePhaseUpdatedAt: now,
+            errorCode: failureCode,
+            error: typeof failureDetail.message === "string"
+              ? failureDetail.message
+              : "Persisted native session state is ambiguous and cannot be resumed safely",
+            updatedAt: now,
+          },
+        }))?.run ?? null;
         // Only a genuine transition into "failed" is a new terminal failure.
         // A candidate that is already "failed" (the filter above admits
         // both "running" and "failed") must not send a second Sentry event,
@@ -322,15 +325,17 @@ export async function claimNativeSessionResumptions(input: {
       )).returning({ runId: nativeRunFinalizations.runId }).then((rows) => rows[0] ?? null);
       if (!updated) return false;
       claimedAttempt = row.coordinator.attempt;
-      await tx.update(heartbeatRuns).set({
-        status: "running",
-        finishedAt: null,
-        error: null,
-        errorCode: null,
-        nativePhase: "observed",
-        nativePhaseUpdatedAt: now,
-        updatedAt: now,
-      }).where(eq(heartbeatRuns.id, row.run.id));
+      await transitionHeartbeatRunStatus(tx, row.run.id, {
+        toStatus: "running",
+        patch: {
+          finishedAt: null,
+          error: null,
+          errorCode: null,
+          nativePhase: "observed",
+          nativePhaseUpdatedAt: now,
+          updatedAt: now,
+        },
+      });
       await restoreNativeSessionExecution(tx as unknown as Db, { issue, run, agentName: agent.name, now });
       return true;
     }).catch((error: unknown) => {

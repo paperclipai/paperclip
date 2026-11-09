@@ -131,6 +131,7 @@ import {
   legacyReconciliationRunFields,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
+import { transitionHeartbeatRunStatus } from "../heartbeat-run-lifecycle.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { isExternalChatPresentationContext } from "../heartbeat-run-summary.js";
 import {
@@ -6317,20 +6318,18 @@ export function recoveryService(
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: boundIssueId });
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: boundIssueId });
       }
-      return tx
-        .update(heartbeatRuns)
-        .set({
-          status: terminalStatus,
+      return (await transitionHeartbeatRunStatus(tx, run.id, {
+        toStatus: terminalStatus,
+        patch: {
           finishedAt: run.finishedAt ?? now,
           error: run.error ?? (terminalStatus === "interrupted" ? message : null),
           errorCode:
             run.errorCode ??
             (terminalStatus === "interrupted" ? errorCode : null),
           updatedAt: now,
-        })
-        .where(eligible)
-        .returning()
-        .then((rows) => rows[0] ?? null);
+        },
+        where: eligible,
+      }))?.run ?? null;
     });
     if (!updated) {
       // Another path finalized the run between the read and this write. Keep
