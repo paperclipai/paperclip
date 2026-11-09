@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeInfrastructureRetry } from "./runtime-infrastructure-retry.js";
+import { gradeInfrastructureRetry, isHumanRetryRequest } from "./runtime-infrastructure-retry.js";
 function valid() {
   return { scenarioId: "recovery.retry-exhausted", origin: "http://paperclip.test", companyId: "company", leadId: "ceo", agents: [], links: ["/COM/issues/COM-2"], humanQueries: [], reply: "", tasks: [{ id: "website", status: "done" }], activity: [],
     runs: [{ id: "exhausted", status: "failed" }, ...["canonical", "held", "retry", "final"].map(id => ({ id, status: "succeeded" }))],
@@ -29,3 +29,18 @@ it("rejects borrowing the pre-retry reply for final completion", () => { const o
 it("rejects absent native retry evidence", () => expect(gradeInfrastructureRetry(undefined).passed).toBe(false));
 
 it("rejects substituting a terminal model failure for actual infrastructure exhaustion", () => { const o = valid(); o.state.recoveryBefore.cause = "native_provider_model_rejected"; expect(gradeInfrastructureRetry(o).passed).toBe(false); });
+
+it("accepts the task's own Retry request as the human Retry, for this task and assignee only", () => {
+  const request = (method: string, path: string) => ({ method: () => method, url: () => `http://paperclip.test${path}` });
+  expect(isHumanRetryRequest(request("POST", "/api/issues/website/retry"), "website", "morgan")).toBe(true);
+  expect(isHumanRetryRequest(request("POST", "/api/agents/morgan/wakeup"), "website", "morgan")).toBe(true);
+  expect(isHumanRetryRequest(request("POST", "/api/issues/other/retry"), "website", "morgan")).toBe(false);
+  expect(isHumanRetryRequest(request("POST", "/api/agents/ceo/wakeup"), "website", "morgan")).toBe(false);
+  expect(isHumanRetryRequest(request("GET", "/api/issues/website/retry"), "website", "morgan")).toBe(false);
+  expect(isHumanRetryRequest(request("POST", "/api/issues/website/retry-workspace-export"), "website", "morgan")).toBe(false);
+});
+it("accepts a not-accepted task Retry under the hold, and still rejects a failed request", () => {
+  const held = valid(); held.state.heldRetryStatus = 200; expect(gradeInfrastructureRetry(held).passed).toBe(true);
+  const broken = valid(); broken.state.heldRetryStatus = 500; expect(gradeInfrastructureRetry(broken).passed).toBe(false);
+  const admitted = valid(); admitted.state.noAdmissionUnderBudget = false; expect(gradeInfrastructureRetry(admitted).passed).toBe(false);
+});
