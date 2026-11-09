@@ -4381,14 +4381,19 @@ fn durable_backend_replays_pending_tool_calls_without_mutating_the_event_queue()
 
 #[test]
 fn restart_lost_turn_preserves_rejected_completion_without_changing_ordinary_recovery() {
-    for rejected in [false, true] {
+    for (rejected, capacity, operation_id) in [
+        (false, false, "paperclip_finish"),
+        (true, false, "paperclip_finish"),
+        (true, true, "paperclip_finish"),
+        (true, true, "paperclip_block"),
+    ] {
         let directory = temporary_directory("restart-lost-turn");
         let config = provider_config(
             &directory,
             &["--durable-turn-ids", "--linger-after-turn-start"],
         );
         let operation = AuthorizedTool {
-            operation_id: "paperclip_finish".to_owned(),
+            operation_id: operation_id.to_owned(),
             version: 1,
             description: "Report completed work.".to_owned(),
             input_schema: json!({"type": "object"}),
@@ -4420,6 +4425,12 @@ fn restart_lost_turn_preserves_rejected_completion_without_changing_ordinary_rec
             let state_path = directory.join("codex-provider-state.json");
             let mut saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
             saved["activeTerminalToolRejected"] = json!(true);
+            if capacity {
+                saved["activeTerminalToolRejectionIsCapacity"] = json!(true);
+                saved["receiptLimitDiagnosticEmitted"] = json!(true);
+                saved["receiptLimitInterruptPending"] = json!(true);
+                saved["receiptLimitInterruptDeadlineUnixMs"] = json!(u64::MAX);
+            }
             fs::write(state_path, serde_json::to_vec(&saved).unwrap()).unwrap();
         }
         fs::write(
@@ -4446,7 +4457,7 @@ fn restart_lost_turn_preserves_rejected_completion_without_changing_ordinary_rec
         assert!(!events
             .iter()
             .any(|event| event.event_type == "run.result.proposed"));
-        if rejected {
+        if rejected && !capacity {
             let failure = events
                 .iter()
                 .position(|event| event.event_type == "session.failed")
@@ -4473,6 +4484,12 @@ fn restart_lost_turn_preserves_rejected_completion_without_changing_ordinary_rec
                     || event.event_type == "run.terminal"));
         }
         assert_eq!(call_count(&directory, "turn/start"), 1);
+        if capacity {
+            let continued = restored.execute(&command("continue", 5, "turn.start",
+                json!({"text":"Continue from retained results and submit the rejected completion."}))).unwrap();
+            assert_eq!(continued.result["providerTurnId"], "provider-turn-2");
+            assert_eq!(call_count(&directory, "turn/start"), 2);
+        }
         restored.shutdown().unwrap();
         fs::remove_dir_all(directory).unwrap();
     }

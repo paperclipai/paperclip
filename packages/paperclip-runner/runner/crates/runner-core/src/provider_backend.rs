@@ -2929,6 +2929,8 @@ impl CodexCommandExecutor {
                     .state
                     .as_mut()
                     .expect("Codex state remains available during recovery");
+                let capacity_rejection_continuable = recovered_turn_ended
+                    && receipt_limit_can_continue(state, Some("turn.interrupted"));
                 if recovered_turn_ended {
                     if !provider_epoch_requires_rollover {
                         state.settle_active_provider_turn_identity()?;
@@ -3007,7 +3009,10 @@ impl CodexCommandExecutor {
                                 }) } else { Value::Null },
                             }),
                         };
-                        if restart_continuable && !state.active_terminal_tool_rejected {
+                        if restart_continuable
+                            && (!state.active_terminal_tool_rejected
+                                || capacity_rejection_continuable)
+                        {
                             // No provider result was observed. Preserve the lost
                             // turn as a fact, but leave the run open for the
                             // controller's bounded same-conversation recovery.
