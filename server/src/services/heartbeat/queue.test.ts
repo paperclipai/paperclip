@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { authUsers, agents, agentWakeupRequests, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { authUsers, agents, agentWakeupRequests, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -735,6 +735,41 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await expectSavedMessages(messages);
     await queue.resumeQueuedRuns();
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(runtimeMode === "native" ? 2 : 6);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  async function strandedBehindExecutionBlocker(status: string) {
+    const seeded = await strandedMention();
+    const messages = await addStrandedMessages(seeded);
+    await db.insert(issueRecoveryActions).values({ companyId: seeded.company.id, sourceIssueId: seeded.issue.id,
+      kind: "active_run_watchdog", cause: "uncertain_provider_action", ownerType: "board", status: "active",
+      fingerprint: `stranded-blocker:${seeded.run.id}`, nextAction: "Reconcile", evidence: { runId: seeded.run.id } });
+    await db.update(issues).set({ status }).where(eq(issues.id, seeded.issue.id));
+    return { seeded, messages };
+  }
+
+  // The delivery admits only a live task, so asking for a terminal one writes an
+  // `issue_state_guard_mismatch` receipt on every pass and settles nothing.
+  it.each(["done", "cancelled"])("does not ask saved legacy delivery to run on a %s task", async status => {
+    const { messages } = await strandedBehindExecutionBlocker(status);
+    const deps = callbacks(db), queue = createHeartbeatQueue(db, deps);
+    await queue.resumeQueuedRuns();
+    await queue.resumeQueuedRuns();
+    expect(deps.resumeSavedLegacyComments).not.toHaveBeenCalled();
+    const rows = await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, messages.map(row => row.id)));
+    expect(rows).toHaveLength(messages.length);
+    for (const before of messages) {
+      expect(rows.find(row => row.id === before.id)).toMatchObject({ payload: before.payload,
+        status: "deferred_issue_execution", runId: null, finishedAt: null, error: null });
+    }
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("still delivers saved legacy comments while the task stays live", async () => {
+    const { messages } = await strandedBehindExecutionBlocker("in_progress");
+    const deps = callbacks(db);
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.resumeSavedLegacyComments).toHaveBeenCalledTimes(messages.length);
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
