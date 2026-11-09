@@ -107,3 +107,17 @@ describe("interrupted preparation retries", () => {
     expect(accountingForScheduledRetry(retry, "transient_failure", 2).failureRetries).toBe(2);
   });
 });
+
+describe("storage outage waits", () => {
+  it("keep their count through an intervening workspace wait", () => {
+    const afterStorage = { scheduledRetryReason: "storage_unavailable_wait", scheduledRetryAttempt: 7,
+      contextSnapshot: { executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 } } };
+    const ledger = accountingForScheduledRetry(afterStorage, "workspace_busy", 1);
+    expect(ledger).toMatchObject({ storageWaits: 7, failureRetries: 1 });
+    const afterWorkspaceWait = { scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 1,
+      contextSnapshot: { executionRetryAccounting: ledger } };
+    expect(executionRetryAttemptCount(afterWorkspaceWait, "storage_unavailable_wait")).toBe(7);
+    expect(accountingForScheduledRetry(afterWorkspaceWait, "storage_unavailable_wait", 8)).toMatchObject({ storageWaits: 8, failureRetries: 1 });
+    expect(executionFailureRetryCount(afterWorkspaceWait)).toBe(1);
+  });
+});
