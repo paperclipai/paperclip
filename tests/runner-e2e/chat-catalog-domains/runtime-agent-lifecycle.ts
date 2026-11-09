@@ -52,6 +52,8 @@ export const runtimeLifecycleCases = [runtimeDefinition("agents.pause-agent", ct
     const o = await observeRuntime(ctx, state);
     const source = ctx.input.page.url();
     await openRuntimeAgentProfile(ctx, worker, o);
+    // The profile keeps Pause in its actions menu (#19535), next to Terminate.
+    await ctx.input.page.getByRole("button", { name: `Open actions for ${worker.name}`, exact: true }).click();
     await ctx.input.page.getByRole("button", { name: "Pause", exact: true }).click();
     await pollUntil({ label: "Morgan pause confirmed after native process cleanup", deadlineAt: Date.now() + 90_000,
       load: async () => ({ worker: await ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`), runs: await ctx.allRuns() }),
