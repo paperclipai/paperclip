@@ -16287,8 +16287,8 @@ describe("runnerd provider runtime wiring", () => {
     state.createBackend.mockClear(); state.createTransport.mockClear();
     const openSession = vi.fn(async () => ({ close: async () => undefined }));
     const freshOpenSession = vi.fn(async () => ({ close: async () => undefined }));
-    state.createBackend.mockReturnValueOnce({ kind: "test", openSession } as never)
-      .mockReturnValueOnce({ kind: "test", openSession: freshOpenSession } as never);
+    state.createBackend.mockReturnValueOnce({ kind: "test", openSession, descriptor: () => ({ name: "reattached" }) } as never)
+      .mockReturnValueOnce({ kind: "test", openSession: freshOpenSession, descriptor: () => ({ name: "replacement" }) } as never);
     const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
       runnerIngressAuthorized: true,
       controllerPersistence: { bootId: "successor", runnerArtifact: { version: "admitted-version", digest: `sha256:${"a".repeat(64)}` } },
@@ -16304,7 +16304,10 @@ describe("runnerd provider runtime wiring", () => {
     factory();
     expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({ prpIdentity: identity, adoptExistingRunner: { pid: 123 } });
     const spawnedBefore = driver.mock.calls.at(-1)![0].processStarted;
-    await backend.openReplacementSession!({ identity: current.binding } as never, {} as never);
+    expect(backend.descriptor()).toEqual({ name: "reattached" });
+    const replaced = await backend.openReplacementSession!({ identity: current.binding } as never, {} as never);
+    expect(backend.descriptor()).toEqual({ name: "replacement" });
+    expect(backend.bindManagedSession(replaced)).toBe(replaced);
     expect(openSession).not.toHaveBeenCalled();
     expect(freshOpenSession).toHaveBeenCalledOnce();
     expect(state.createBackend).toHaveBeenCalledTimes(2);

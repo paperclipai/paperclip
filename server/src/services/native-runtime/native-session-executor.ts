@@ -16801,11 +16801,15 @@ async function createRunnerdBackendWithinSessionClaim(
       await recordAdmittedRemoteProviderPack(providerPackAuthority, message => input.onLog?.("stderr", message));
     }
   };
+  let replacementBackend: ManagedRunnerdBackend | null = null;
   return {
-    bindManagedSession: wrapManagedSession,
-    providerAdmissionRequired: () => Boolean(artifactStorage
-      && (providerArtifacts || !legacyProviderContinuity && !liveProviderRecovery)),
+    bindManagedSession: (session, options) => replacementBackend
+      ? replacementBackend.bindManagedSession(session, options) : wrapManagedSession(session),
+    providerAdmissionRequired: () => replacementBackend?.providerAdmissionRequired
+      ? replacementBackend.providerAdmissionRequired()
+      : Boolean(artifactStorage && (providerArtifacts || !legacyProviderContinuity && !liveProviderRecovery)),
     providerAdmissionPersisted: artifactStorage ? async () => {
+      if (replacementBackend) return replacementBackend.providerAdmissionPersisted?.();
       const backupOwner = sessionHarnessBackupOwners.get(authorityEpoch);
       if ((liveProviderRecovery || legacyProviderContinuity) && !providerArtifacts) return;
       if (!backupOwner || !expectedProviderPackManifest || !remoteCommandRunner) {
@@ -16823,6 +16827,7 @@ async function createRunnerdBackendWithinSessionClaim(
         source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal }));
     } : undefined,
     bindDiagnosticSession: session => {
+      if (replacementBackend) return replacementBackend.bindDiagnosticSession?.(session);
       const retained = nativeSessionDiagnostics(session);
       if (retained && retained !== diagnostics) {
         const lease = retained.activate(diagnosticOwner, input.onLog);
@@ -16830,6 +16835,7 @@ async function createRunnerdBackendWithinSessionClaim(
       } else diagnostics.bind(session);
     },
     sessionCheckpointPersisted: snapshot => {
+      if (replacementBackend) return replacementBackend.sessionCheckpointPersisted?.(snapshot);
       const staged = runnerControlPlane?.store.state.stagedRunAttachment;
       if (staged && snapshot.identity.runId === staged.targetIdentity.runId &&
           snapshot.identity.sessionId === staged.targetIdentity.normalizedSessionId) {
@@ -16838,7 +16844,7 @@ async function createRunnerdBackendWithinSessionClaim(
         }
       }
     },
-    descriptor: () => backend.descriptor(),
+    descriptor: () => (replacementBackend ?? backend).descriptor(),
     openSession: async (sessionInput) => {
       cursorCloudRuntime?.register();
       try {
@@ -16876,6 +16882,7 @@ async function createRunnerdBackendWithinSessionClaim(
           remoteWarmRecovery: undefined,
           restartRecovery: { ...claim, kind: "bootstrap_incomplete" },
         }, sessionScopeId);
+        replacementBackend = fresh;
         return fresh.openSession(sessionInput);
       }
       cursorCloudRuntime?.register();
