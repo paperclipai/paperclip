@@ -1,0 +1,1 @@
+ALTER TABLE "case_events" ADD COLUMN "api_key_id" uuid;

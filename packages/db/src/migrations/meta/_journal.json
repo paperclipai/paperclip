@@ -3165,6 +3165,13 @@
       "when": 1794257939094,
       "tag": "0453_reflective_wither",
       "breakpoints": true
+    },
+    {
+      "idx": 454,
+      "version": "7",
+      "when": 1794260951680,
+      "tag": "0454_careless_diamondback",
+      "breakpoints": true
     }
   ]
 }

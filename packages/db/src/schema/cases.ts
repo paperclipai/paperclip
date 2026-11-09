@@ -97,6 +97,7 @@ export const caseEvents = pgTable(
     actorUserId: text("actor_user_id"),
     actorAgentId: uuid("actor_agent_id").references(() => agents.id, { onDelete: "set null" }),
     runId: uuid("run_id"),
+    apiKeyId: uuid("api_key_id"),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
