@@ -543,13 +543,15 @@ export function connectionIntentService(db: Db) {
         connectionId: ready?.id ?? null,
       }});
     }
-    // A chat channel hidden by the instance setting stays findable by name, so the agent can say why
-    // it is unavailable and where it is turned on instead of searching for a route that is not offered.
+    // A chat channel hidden by the instance setting stays findable, so the agent can say why it is
+    // unavailable and where it is turned on instead of searching for a route that is not offered.
     if (!settings.enableChatConnectors) for (const app of APP_STORE_DEFINITIONS) {
       if (!isConnectorFeatureEnabled(app, settings) || discoveryMethods(app).length
         || !getAvailableConnectionMethods(app).some(method => method.purpose === "channel" && method.provider !== "github")) continue;
-      const { score, nameScore } = scoreConnectionSearch(preparedQuery, [app.slug, app.name], "");
-      if (!nameScore) continue;
+      const channelMethods = getAvailableConnectionMethods(app).filter(method => method.purpose === "channel");
+      const { score, nameScore } = scoreConnectionSearch(preparedQuery, [app.slug, app.name],
+        `${app.description ?? ""} ${channelMethods.map(method => `${method.whenToUse} ${method.label ?? ""}`).join(" ")}`);
+      if (!score) continue;
       candidates.push({ score, nameScore, item: {
         service: app.slug, name: app.name, description: app.description ?? null, logoUrl: app.branding.logoUrl ?? null,
         methods: [], source: "catalog", state: "unavailable", connectionId: null,
@@ -713,7 +715,8 @@ export function connectionIntentService(db: Db) {
 
   function directSearchResult(query: string, results: ConnectionSearchResultItem[], prefix: string, suggestions = false): ConnectionsSearchResult {
     // A service the catalog does not list can still be the person's own MCP server; name its secure setup page.
-    const ownServer = `they can add it as their own MCP server on [Connect your own MCP server](/${prefix}/apps/byo), which takes the URL and keeps any API key in a secure field. Link that page; never ask for a key in chat.`;
+    const ownServer = `the person adds it as their own MCP server on [Connect your own MCP server](/${prefix}/apps/byo): they enter the URL and type any API key into that page's secure field themselves. `
+      + "An agent cannot enter the key. Do not create the connection yourself, ask for the key in chat or search for another route; link that page and reply.";
     return { version: 1, query, results, instruction: !results.length
       ? `No verified connection route was found. If the person gave the service's own server URL, ${ownServer} Otherwise explain that support could not be verified; do not invent a provider route or request unsupported services.`
       : !suggestions && isRemoteMcpConnectorId(results[0]!.service) && results[0]!.state !== "unavailable"

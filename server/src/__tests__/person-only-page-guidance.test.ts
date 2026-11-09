@@ -30,6 +30,11 @@ it.each([
   expect(operation!.description).toContain("No agent can call a quarantined action");
 });
 
+it("says chat endpoint creation needs the experiment, and links where it is turned on", () => {
+  const create = searchRunnerApi({ query: "create chat endpoint imessage", limit: 10 }).results.find(row => row.operationId === "POST /api/companies/{companyId}/chat-endpoints");
+  expect(create?.description).toContain("[Experimental settings](/<prefix>/company/settings/instance/experimental)");
+});
+
 it.each([
   "complete connection request for someone else",
   "connection intent resolve decline",
@@ -42,16 +47,21 @@ it.each([
   }
 });
 
+it("says on the interaction listing that only the addressee resolves a connection request card", () => {
+  const list = searchRunnerApi({ query: "GET /api/issues/{id}/interactions" }).results.find(row => row.operationId === "GET /api/issues/{id}/interactions");
+  expect(list?.description).toContain("Only that person can connect or decline it");
+});
+
 // The catalog text is the only place these page paths live on the server, so a renamed UI route
 // would leave agents linking a page that no longer exists. Every page named must be mounted.
 it("names only pages that the board UI mounts", () => {
   const appRoutes = readFileSync(path.join(repoRoot, "ui/src/App.tsx"), "utf8");
   const pages = new Set(
     runnerApiCatalog()
-      .filter(row => /^\/api\/(mcp\/(setup|requests\/\{id\}\/consent)$|connection-intents\/|tool-connections\/\{connectionId\}\/(catalog|review-counts)$|companies\/\{companyId\}\/tools\/apps\/attention$)/.test(row.path))
+      .filter(row => /^\/api\/(mcp\/(setup|requests\/\{id\}\/consent)$|connection-intents\/|tool-connections\/\{connectionId\}\/(catalog|review-counts)$|companies\/\{companyId\}\/(tools\/apps\/attention|chat-endpoints)$)/.test(row.path))
       .flatMap(row => [...(row.description ?? "").matchAll(/\/<prefix>\/([a-z0-9/<>-]+)/gi)].map(match => match[1]!)),
   );
-  expect([...pages].sort()).toEqual(["apps/<connectionId>/permissions", "apps/assistant-connection", "issues/<identifier>"]);
+  expect([...pages].sort()).toEqual(["apps/<connectionId>/permissions", "apps/assistant-connection", "company/settings/instance/experimental", "issues/<identifier>"]);
   const mounted = (page: string) => page
     .replace("apps/<connectionId>/permissions", "apps/:connectionId/:tab")
     .replace("issues/<identifier>", "issues/:issueId");
