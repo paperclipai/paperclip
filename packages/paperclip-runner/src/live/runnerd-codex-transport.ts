@@ -1073,6 +1073,10 @@ async function awaitRunnerSuspensionBarrier(input: {
     existing = undefined;
   }
   if (Date.now() >= input.deadline) return false;
+  // A runnerd that already exited can never answer. A queued suspend would
+  // stay pending in the saved control-plane state and reach the next runnerd
+  // on this root as a stale terminal command.
+  if (!existing && await input.runnerHasExited()) return false;
   let commandId =
     existing?.commandId ??
     `command_close_suspend_${randomUUID().replaceAll("-", "")}`;
