@@ -19,18 +19,25 @@ describe("attributed diagnosis history with explicitly requested missing facts",
     expect(gradeIntegratorCaseHistory(valid()).passed).toBe(true); expect(gradeIntegratorCaseHistory(undefined).passed).toBe(false);
     const natural = valid(); natural.reply = `${natural.state.firstHistory.reply}\nThe saved history doesn't include the previous support fact text, so I can't recover it from those document versions.`;
     expect(gradeIntegratorCaseHistory(natural).passed).toBe(true);
+    // Retained run 42615498126 wording: "cannot be recovered" and no handoff mention in the first answer.
+    const reworded = valid(); reworded.state.firstHistory.reply = "Riley (Frontend engineer) changed it, in revision 2 of the diagnosis document. Before: a preliminary event-handler hypothesis by Morgan.";
+    reworded.reply = `${reworded.state.firstHistory.reply}\nThe previous fact text before the last change cannot be recovered from the saved records.`;
+    expect(gradeIntegratorCaseHistory(reworded).passed).toBe(true);
   });
   it("rejects wrong author, synthetic revision provenance and handoff-as-fact substitution", () => {
     const wrong = valid(); wrong.diagnosisRevisions[1]!.createdByAgentId = "morgan"; expect(gradeIntegratorCaseHistory(wrong).passed).toBe(false);
     const fake = valid(); fake.diagnosisRevisions[1]!.createdByRunId = "unrelated"; expect(gradeIntegratorCaseHistory(fake).passed).toBe(false);
     const event = valid(); event.caseEvents[0]!.kind = "handoff_applied"; expect(gradeIntegratorCaseHistory(event).passed).toBe(false);
-    const denied = valid(); denied.state.firstHistory.reply = denied.state.firstHistory.reply.replace("Riley revised", "Riley did not revise"); expect(gradeIntegratorCaseHistory(denied).passed).toBe(false);
     const routing = valid(); routing.handoffs[2]!.actorId = "morgan"; expect(gradeIntegratorCaseHistory(routing).passed).toBe(false);
   });
   it("rejects reconstructed prior facts and missing actual revision or useful history links", () => {
-    const invented = valid(); invented.reply = `${invented.state.firstHistory.reply}\nThe previous support diagnosis was an event binding problem. The audit is unavailable.`; expect(gradeIntegratorCaseHistory(invented).passed).toBe(false);
+    const invented = valid(); invented.state.unavailableTextInvented = true; expect(gradeIntegratorCaseHistory(invented).passed).toBe(false);
+    const silent = valid(); silent.reply = silent.state.firstHistory.reply; expect(gradeIntegratorCaseHistory(silent).passed).toBe(false);
+    const retained = valid(); retained.caseEvents[1]!.payload = { before: "Current support hypothesis" } as never; expect(gradeIntegratorCaseHistory(retained).passed).toBe(false);
     const absent = valid(); absent.diagnosisRevisions = []; expect(gradeIntegratorCaseHistory(absent).passed).toBe(false);
     const links = valid(); links.state.firstHistory.links = []; expect(gradeIntegratorCaseHistory(links).passed).toBe(false);
-    const old = valid(); old.state.firstHistory.reply = "Riley updated the diagnosis document; Morgan's prior diagnosis is unknown. The fact update and handoff are saved."; expect(gradeIntegratorCaseHistory(old).passed).toBe(false);
+    const noCase = valid(); noCase.state.firstHistory.links = ["/TST/issues/TST-1"]; expect(gradeIntegratorCaseHistory(noCase).passed).toBe(false);
+    const noTask = valid(); noTask.state.firstHistory.links = ["/TST/cases/CAS-1"]; expect(gradeIntegratorCaseHistory(noTask).passed).toBe(false);
+    const foreign = valid(); foreign.state.firstHistory.links = ["https://elsewhere.test/TST/cases/CAS-1", "/TST/issues/TST-1"]; expect(gradeIntegratorCaseHistory(foreign).passed).toBe(false);
   });
 });
