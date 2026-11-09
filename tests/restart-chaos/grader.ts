@@ -1,4 +1,4 @@
-import type { FaultReceipt, OracleResult, RuleId, RuleResult, TaskGrade, TaskRecord, TaskSample } from "./types.js";
+import { UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
 import { g1Decision } from "./workloads.js";
 
 /** Pure R1–R6 grading over observer samples (plan §2). No I/O. */
@@ -89,6 +89,9 @@ export function gradeR2(record: TaskRecord, oracle: OracleResult): RuleResult {
   if (fileChecks.length && record.finalStatus === "done") {
     return { verdict: "fail", detail: `workspace_files_missing_after_done: ${fileChecks.map(check => check.name).join(",")}` };
   }
+  if (record.remoteWorkspace && !record.preFaultFiles) {
+    return { verdict: "n/a", detail: "remote workspace: files before and after the fault are not compared from this host" };
+  }
   const transient = record.samples.some(sample => sample.interruption?.workspaceFailure);
   return { verdict: "pass", detail: transient ? "workspace failure appeared during recovery and cleared" : "no workspace failure at rest" };
 }
@@ -107,6 +110,9 @@ function gradeOwnRetry(record: TaskRecord): RuleResult {
       return { verdict: "fail", detail: `missing_retry: rested ${record.finalStatus ?? "unknown"} with canRetry=${String(last?.interruption?.canRetry ?? false)}` };
     }
     return { verdict: "n/a", detail: "no Retry needed" };
+  }
+  if (record.retry.via === "ui" && (record.retry.error === UI_RETRY_BUTTON_MISSING || record.retry.error === UI_RETRY_NO_REQUEST)) {
+    return { verdict: "fail", detail: `${record.retry.error}${record.retry.bannerText ? ` (user saw: ${record.retry.bannerText})` : ""}` };
   }
   if (record.retry.error || record.retry.accepted !== true) {
     return { verdict: "fail", detail: `retry_rejected: http=${record.retry.httpStatus ?? "none"} accepted=${String(record.retry.accepted)} ${record.retry.error ?? ""}`.trim() };

@@ -128,6 +128,7 @@ import {
   taskRetrySchema,
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
+  confirmRunStoppedSchema,
   confirmOwnerGoneSchema,
   runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
@@ -10106,10 +10107,25 @@ export function issueRoutes(
     const receipt = await requestTaskRetry({ db, companyId: issue.companyId, issueId: issue.id,
       ...req.body, actorId: getActorInfo(req).actorId, actorSource: req.actor.source,
       prepareChatRetry: opts.chatRunRetries?.prepareFailedChatRunRetry });
-    res.status(receipt.accepted ? 202 : 200).json({ ...receipt, presentation: await taskInterruptionPresentation(db, issue) });
+    const actor = getActorInfo(req);
+    const scheduledRetryRunId = "scheduledRetryRunId" in receipt ? receipt.scheduledRetryRunId : undefined;
+    const scheduledRetry = scheduledRetryRunId
+      ? await heartbeat.retryScheduledRetryNow({ issueId: issue.id, actor: { actorType: actor.actorType, actorId: actor.actorId } })
+      : null;
+    if (scheduledRetry) {
+      await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        action: "issue.scheduled_retry_retry_now", entityType: "issue", entityId: issue.id,
+        agentId: scheduledRetry.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+        runId: scheduledRetry.scheduledRetry?.runId ?? scheduledRetryRunId ?? null,
+        details: { outcome: scheduledRetry.outcome, message: scheduledRetry.message, source: "task_retry" } });
+    }
+    res.status(receipt.accepted ? 202 : 200).json({ ...receipt,
+      ...(scheduledRetry ? { scheduledRetry: { outcome: scheduledRetry.outcome, message: scheduledRetry.message } } : {}),
+      presentation: await taskInterruptionPresentation(db, issue) });
     // The receipt commits before dispatch. Maintenance redelivers it after a
     // crash or a lost response; this nudge only reduces perceived latency.
-    if (receipt.chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(receipt.chatActionId).catch(err =>
+    const chatActionId = "chatActionId" in receipt ? receipt.chatActionId : undefined;
+    if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Connected task Retry remains queued"));
     else if (receipt.accepted && receipt.requestId) void heartbeat.resumeTaskRetry(issue.companyId, receipt.requestId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Task Retry remains queued"));
@@ -10136,6 +10152,37 @@ export function issueRoutes(
     const receipt = await resumeNativeWorkspaceAfterOwnerStop({ db, companyId: issue.companyId, issueId: issue.id,
       ...req.body, actorId: getActorInfo(req).actorId });
     res.status(202).json(receipt);
+  });
+
+  router.post("/issues/:id/recovery-actions/confirm-run-stopped", validate(confirmRunStoppedSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const { confirmUnidentifiedLocalRunnerStopped, UnidentifiedRunnerStopRefusedError } = await import("../services/native-local-process-stop.js");
+    const actor = getActorInfo(req);
+    let receipt: Awaited<ReturnType<typeof confirmUnidentifiedLocalRunnerStopped>>;
+    try {
+      receipt = await confirmUnidentifiedLocalRunnerStopped(db, { companyId: issue.companyId, issueId: issue.id,
+        runId: req.body.runId, actorId: actor.actorId });
+    } catch (error) {
+      if (error instanceof UnidentifiedRunnerStopRefusedError) throw conflict(error.message, { code: error.code });
+      throw error;
+    }
+    await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      action: "issue.run_stop_confirmed", entityType: "issue", entityId: issue.id, runId: receipt.runId,
+      details: { runId: receipt.runId, alreadyStopped: receipt.alreadyStopped, stopEvidence: req.body.stopEvidence } });
+    const { promoteDeferredWorkIntents } = await import("../services/work-intent-outbox.js");
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: issue.companyId, trigger: "lock_released", issueId: issue.id }));
+    const parked = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      eq(agentWakeupRequests.reason, "task_retry"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`));
+    for (const wake of parked) {
+      await heartbeat.resumeTaskRetry(issue.companyId, wake.id).catch(err =>
+        logger.warn({ err, issueId: issue.id, requestId: wake.id }, "Task Retry remains queued after the stop was confirmed"));
+    }
+    res.json({ ...receipt, presentation: await taskInterruptionPresentation(db, issue) });
   });
 
   router.post("/issues/:id/recovery-actions/confirm-controller-stopped", validate(confirmNativeControllerStoppedSchema), async (req, res) => {
@@ -10248,6 +10295,12 @@ export function issueRoutes(
         assertBoard(req);
         const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: existing.companyId } });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      }
+      if (executionReconciliation?.controllerStopped !== undefined || executionReconciliation?.controllerAuthorityDigest !== undefined) {
+        assertBoard(req);
+        const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
+          resource: { type: "company", companyId: existing.companyId } });
+        if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
       }
       const actor = getActorInfo(req);
       const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
@@ -10371,6 +10424,11 @@ export function issueRoutes(
           { source: "recovery_action_resolution" },
         );
 
+        if (activeRecoveryAction.kind === "active_run_watchdog" && activeRecoveryAction.ownerType === "board"
+          && activeRecoveryAction.cause === "native_restart_recovery_blocked"
+          && activeRecoveryAction.evidence.reason === "controller_process_space_unverified"
+          && (!executionReconciliation?.controllerStopped || !executionReconciliation.controllerAuthorityDigest))
+          throw conflict("Confirm the original controller and provider stopped and review their action outcomes before resolving this hold.");
         const workspaceRetry = outcome === "restored" && sourceIssueStatus === "todo"
           ? await prepareRestrictedWorkspaceRetry(tx as unknown as Db, lockedIssue, activeRecoveryAction)
           : null;
@@ -10500,7 +10558,21 @@ export function issueRoutes(
           }
         }
 
-        if (
+        const controllerContainment = executionReconciliation?.controllerStopped === true
+          || executionReconciliation?.controllerAuthorityDigest !== undefined;
+        if (controllerContainment) {
+          assertBoard(req);
+          const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
+            resource: { type: "company", companyId: lockedIssue.companyId } });
+          if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
+          if (outcome !== "restored" || sourceIssueStatus !== lockedIssue.status || !actionId
+            || activeRecoveryAction.id !== actionId || workspaceBaseRef || workspaceRetry)
+            throw conflict("Containment only records the original execution. Keep the task unchanged, then use Retry separately.");
+          await validateExecutionReconciliation({ db: tx as unknown as Db, companyId: lockedIssue.companyId,
+            issueId: lockedIssue.id, agentId: lockedIssue.assigneeAgentId,
+            sourceRunId: activeRecoveryAction.evidence.runId, decision: executionReconciliation,
+            controllerContainment: { actionId, actorId: actor.actorId } });
+        } else if (
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
         ) {
@@ -10522,7 +10594,7 @@ export function issueRoutes(
         }
 
         let chatRetry: { actionId: string; issueId: string } | null = null;
-        if (outcome === "restored" && sourceIssueStatus === "todo") {
+        if (!controllerContainment && outcome === "restored" && sourceIssueStatus === "todo") {
           const [chatBinding] = await tx
             .select({ id: chatConversations.id })
             .from(chatConversations)
@@ -10577,6 +10649,7 @@ export function issueRoutes(
             chatRetry
               ? { kind: "chat_failed_run_retry", actionId: chatRetry.actionId }
               : undefined,
+            controllerContainment ? { controllerContainmentOnly: true } : undefined,
           );
         }
         let issue = lockedIssue;
@@ -10732,7 +10805,7 @@ export function issueRoutes(
           issue = updatedIssue;
         }
 
-        const recordedOutcome =
+        const recordedOutcome = controllerContainment ? "restored" :
           outcome === "restored" &&
           issue.status === "todo" &&
           activeRecoveryAction.returnOwnerAgentId != null &&
@@ -14011,7 +14084,9 @@ export function issueRoutes(
       svc.getById(id),
       "Issue not found",
     );
-    if (!issue) return;
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
 
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({

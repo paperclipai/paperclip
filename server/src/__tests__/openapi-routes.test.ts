@@ -23,6 +23,7 @@ const apiPrefixes: Record<string, string> = {
   "adapters.ts": "/api",
   "agents.ts": "/api",
   "agent-project-access.ts": "/api",
+  "agent-permission-grants.ts": "/api",
   "agent-commentary.ts": "/api",
   "agent-chat-messages.ts": "/api",
   "agent-avatars.ts": "/api",
@@ -1186,6 +1187,16 @@ describe("openapi routes", () => {
       missingInSpec: [],
       extraInSpec: [],
       excludedRoutes: [...explicitOpenApiOperationCoverageExclusions].sort(),
+    });
+  });
+
+  it("documents agent permission grants as Board-only with a strict request", () => {
+    const operation = loadSpecRoutes().spec.paths["/api/agents/{id}/permission-grants"].patch;
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(operation.requestBody.content["application/json"].schema).toMatchObject({
+      additionalProperties: false, required: ["permissionKey", "enabled"],
+      properties: { enabled: { type: "boolean" }, permissionKey: { enum: expect.arrayContaining(["commentary:view"]) } },
     });
   });
 

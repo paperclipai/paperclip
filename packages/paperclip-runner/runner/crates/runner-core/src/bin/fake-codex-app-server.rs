@@ -774,6 +774,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let linger_after_turn_start = args
         .iter()
         .any(|value| value == "--linger-after-turn-start");
+    // A tool job that leaves the provider's session (like `nohup job &` in a
+    // Bash tool) and outlives the provider's process group.
+    let escaped_tool_pid_file = argument(&args, "--spawn-escaped-tool-job");
     let hold_turn = args.iter().any(|value| value == "--hold-turn") || linger_after_turn_start;
     let held_output_count = argument(&args, "--held-output-count")
         .map(|value| value.parse::<usize>())
@@ -1660,6 +1663,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         || message.pointer("/params/permissions").is_some())
                 {
                     return Err("turn/start omitted the external sandbox boundary".into());
+                }
+                if let Some(pid_file) = escaped_tool_pid_file.as_deref() {
+                    if turn_start_count == 0 {
+                        std::process::Command::new("perl")
+                            .args([
+                                "-e",
+                                "use POSIX (); POSIX::setsid() or die; open(my $f, '>', \"$ARGV[0].tmp\") or die; print $f $$; close $f; rename(\"$ARGV[0].tmp\", $ARGV[0]) or die; exec '/bin/sh', '-c', 'while :; do sleep 1; done'",
+                                pid_file,
+                            ])
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn()?;
+                    }
                 }
                 turn_start_count += 1;
                 if durable_turn_ids {

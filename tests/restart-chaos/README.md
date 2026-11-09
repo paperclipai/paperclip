@@ -26,6 +26,16 @@ Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 
+Each wave's temporary instance (embedded Postgres, workspaces, often 5–13 GB) is
+deleted when the wave ends, pass or fail, including after an interrupt. Evidence
+is already copied into `results/`. Use `--keep` to inspect the instance itself.
+A kept instance, or one whose processes could not be stopped, gets a
+`.paperclip-runner-e2e-kept.json` marker; creating the next runner E2E or chaos instance removes marked instances older
+than 6 hours whose Postgres is no longer running and that no live process still
+references. An instance whose Daytona cleanup is still pending keeps its database
+as the owner of that cleanup and never expires. Unmarked directories are never
+removed.
+
 `--rc06-masked` keeps the company budget amount but disables its hard stop on
 the isolated Chaos Lab company, so one stuck accounting row (RC-06) cannot
 wedge every later task. Masked tasks are marked `rc06-masked` in the ledger and
@@ -160,6 +170,44 @@ A later K14 in the same wave restarts the current build, like K2. Every K14
 receipt names both commits (`upgrade` in `faults.json`, `upgrade_switched` in the
 timeline). K14 is local-only, because a Daytona runner must match its image, and
 it is never part of a storm's default faults.
+
+## Cloud storage (`--storage s3`, `--storage-faults`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads A1,C1 --faults K1,K2 --concurrency 4 --tasks 8 --seed 24 \
+  --storage s3 --storage-faults ST1,ST2,ST3
+```
+
+`--storage s3` runs the server the way cloud mode does: `PAPERCLIP_STORAGE_PROVIDER=s3`, so run logs
+and provider traces use the `s3_segments` backend and attachments, artifacts and other stored files go
+to object storage. The store is a loopback MinIO (`RELEASE.2025-04-22T22-12-26Z`, built from source at
+`~/.cache/paperclip/tools/minio/minio` or `RESTART_CHAOS_MINIO_BIN`) with its data under the instance
+temp root, behind a fault proxy that every server S3 call goes through. The proxy's request counts by
+method and status are written to `storage-proxy.json`.
+
+`--storage-faults` adds seeded windows of 60–180 s, alongside the restart faults:
+
+| Fault | Store behaviour during the window |
+| --- | --- |
+| ST1 | outage: every request answers 503 `ServiceUnavailable` |
+| ST2 | slow store: 1–10 s added latency with jitter |
+| ST3 | 30% of requests answer 503, half of them `SlowDown` |
+
+`--storage-fault-seconds 15-45` sets the window length range (5–900 s), for example to find how long
+an outage a run survives. The windows are logged in the timeline and written to `storage-faults.json`.
+
+With `--env daytona --storage s3`, each task's workspace is a remote workspace: the controller saves
+and restores it through the store, so the faults also hit workspace save, restore and copyback. R1
+(`--workspace-repo`) runs on Daytona only with `--storage s3`: the project points at the checkout's
+GitHub `origin` over https at its `origin/master` commit, so the sandbox clones the repository and its
+snapshots are Paperclip-sized. Its oracle reads the task's files through the board API and runs its
+commands on a local copy.
+
+Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
+Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
+R3 as `ui_retry_button_missing (user saw: …)`; a click that sends no retry request fails as
+`ui_retry_no_request`. Crash-point waves serve no UI and click Retry through the API.
 
 ## Daytona (`--env daytona`)
 
