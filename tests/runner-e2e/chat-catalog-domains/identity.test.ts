@@ -279,4 +279,15 @@ describe("existing multipart form fidelity", () => {
     o.runs[0]!.contextSnapshot = { issueId: "source", commentId: "foreign-human" };
     expect(gradeQuestions(o).checks.find(c => c.id === "existing-form-not-replaced-before-answer")?.passed).toBe(false);
   });
+  it("wrong reviewer names the setup addressee and links no decision on the card, whatever the wording", () => {
+    const grade = (mutate: (o: IdentityObservation) => void) => { const o = valid("questions-and-approvals.wrong-reviewer"); mutate(o); return gradeQuestions(o).passed; };
+    for (const reply of ["Only Riley, the addressed reviewer, can approve this request.",
+      "That card is Riley's to decide. Your message did not change it, and it stays pending until Riley answers it on [COM-1](/COM/issues/COM-1).",
+      "Paperclip refused (403): Riley must respond to it personally."])
+      expect(grade(o => { o.reply = reply; }), reply).toBe(true);
+    expect(grade(o => { o.reply = "The card is addressed to someone else, so I could not record your approval."; })).toBe(false);
+    expect(grade(o => { o.links = ["/api/issues/source/interactions/riley-card/accept"]; })).toBe(false);
+    expect(grade(o => { o.links = ["http://127.0.0.1:3100/api/issues/source/interactions/riley-card/reject"]; })).toBe(false);
+    expect(grade(o => { o.links = ["/api/issues/source/interactions/other-card/accept"]; })).toBe(true);
+  });
 });

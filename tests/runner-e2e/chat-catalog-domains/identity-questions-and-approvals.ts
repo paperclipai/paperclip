@@ -6,6 +6,8 @@ import { checks, project, entity, hasLink, putDocument, type Entity } from "./in
 import { identityDefinition, identityObservation, observeIdentity, openStandingChat, readAgentResource, waitForReply, remainingIdentityObservationBudget, type Interaction } from "./identity-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
+/** The setup-chosen person the wrong-reviewer card is addressed to. */
+export const WRONG_REVIEWER_ADDRESSEE = "Riley";
 const audiencePeople = new WeakMap<ChatCatalogContext, Awaited<ReturnType<typeof createAuthenticatedPerson>>>();
 
 async function cards(ctx: ChatCatalogContext) {
@@ -108,7 +110,17 @@ export function gradeQuestions(value: unknown) {
       && o.state.alexId !== o.state.rileyId && o.state.realHumanIdentities === true, "A real authenticated Alex sees the request but the production accept route rejects their identity.");
     c.add("no-unapproved-work", o.tasks.length === 0 && !o.activity.some(row => row.agentId === o.leadId && row.action === "issue.interaction_accepted"),
       "The wrong review creates no execution task or accepted-decision audit.");
-    c.add("required-reviewer-explained", /Riley/.test(o.reply) && /(?:only|addressed|reviewer|approve|permission|authoriz)/i.test(o.reply), "The response identifies Riley as the required reviewer.");
+    // Structural only. The addressee's name is a setup literal; the card's own decision routes are
+    // the only action links that would let the asker act on it. Limit: whether the prose tells Alex
+    // to act on the card cannot be checked without matching wording, so a run's reply must still be
+    // read; the product denial now names the addressee as the only resolver and says not to send
+    // the asker to the card.
+    const cardActionLink = !!original?.id && o.links.some(href => {
+      try { return /\/interactions\/[^/]+\/(?:accept|reject|respond)$/.test(new URL(href, o.origin).pathname) && href.includes(original.id); }
+      catch { return false; }
+    });
+    c.add("required-reviewer-explained", o.reply.includes(WRONG_REVIEWER_ADDRESSEE) && !cardActionLink,
+      "The response names the card's addressee and links no accept or decline action on the card.");
     return c.result();
   }
   if (o.scenarioId === "questions-and-approvals.ambiguous-yes") {
@@ -205,7 +217,7 @@ export const questionIdentityCases = [
     // Set the synthetic fixture person's name through their own supported profile API.
     const renamed = await ctx.input.page.context().request.patch(`${ctx.input.api.baseURL}/api/auth/profile`, { data: { name: "Alex" }, headers: { Origin: ctx.input.api.baseURL } });
     if (!renamed.ok()) throw new Error("Synthetic Alex profile setup failed");
-    const riley = await createAuthenticatedPerson({ api: ctx.input.api, browser, secrets, name: "Riley" }); audiencePeople.set(ctx, riley);
+    const riley = await createAuthenticatedPerson({ api: ctx.input.api, browser, secrets, name: WRONG_REVIEWER_ADDRESSEE }); audiencePeople.set(ctx, riley);
     await enrollPrerequisitePerson(ctx, riley);
     const source = await openStandingChat(ctx);
     const original = await ctx.input.api.post<Interaction>(`/api/issues/${source.id}/interactions`, createIssueThreadInteractionSchema.parse({
@@ -216,7 +228,7 @@ export const questionIdentityCases = [
     await expect(ctx.input.page.getByText("Riley's website proposal", { exact: true }).first()).toBeVisible();
     return { original, originalHumanName: session.user.name, alexId: session.user.id, rileyId: riley.id, realHumanIdentities: true, visibleToAlex: true };
   }, gradeQuestions, {
-    authentication: "human-session",
+    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.identity.wrong-reviewer.v2",
     sourceFiles: ["chat-catalog-domains/identity-questions-and-approvals.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/questions-and-approvals.yaml"],
     async act(ctx, state) {
       remainingIdentityObservationBudget(ctx);
