@@ -81,7 +81,8 @@ describe("heartbeat task markdown rendering", () => {
     expect(enabled).toContain("A status card is a saved Paperclip feature, not a document or comment");
     expect(enabled).toContain("POST /api/companies/{companyId}/status-cards");
     expect(enabled).toContain("POST /api/status-cards/{id}/refresh");
-    expect(enabled).toContain("Do not sleep or poll the card. Reply now");
+    expect(enabled).toContain("Do not sleep or poll the card. Report the outcome the response gives");
+    expect(enabled).toContain("enqueued false otherwise means no run started, so say why from card.state");
     expect(enabled).toContain("[Launch blockers](/<prefix>/status/<cardId>)");
     // The named pages are the board's real routes.
     const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
