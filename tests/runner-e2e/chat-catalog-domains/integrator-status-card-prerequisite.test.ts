@@ -18,6 +18,7 @@ function fixture(key: string, deadline: number | undefined) {
     if (path === "/api/instance/settings/experimental") return { enableStatusCards: false };
     if (path === "/api/status-cards/card") { if (late) vi.setSystemTime(deadline! + 1); return card(); }
     if (path.endsWith("/updates") || path.endsWith("/summary-revisions")) return [];
+    if (path === "/api/agents/ceo") return { runtimeConfig: { heartbeat: { maxDailyRuns: 4 } } };
     throw Error("Unexpected fixture read");
   });
   const post = vi.fn(async (path: string) => {
