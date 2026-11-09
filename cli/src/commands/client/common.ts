@@ -132,6 +132,26 @@ export function apiPath(strings: TemplateStringsArray, ...values: Array<string |
   return path;
 }
 
+const ISSUE_HISTORY_PAGE_MAX = 100;
+
+export async function getAllIssueHistory<T>(
+  api: PaperclipApiClient,
+  issueId: string,
+  kind: "activity" | "runs",
+  getId: (row: T) => string,
+): Promise<T[]> {
+  const rows: T[] = [];
+  let before: string | undefined;
+  for (;;) {
+    const query = new URLSearchParams({ limit: String(ISSUE_HISTORY_PAGE_MAX) });
+    if (before) query.set("before", before);
+    const page = (await api.get<T[]>(`${apiPath`/api/issues/${issueId}/${kind}`}?${query}`)) ?? [];
+    rows.push(...page);
+    if (page.length < ISSUE_HISTORY_PAGE_MAX) return rows;
+    before = getId(page[page.length - 1]!);
+  }
+}
+
 export function inferContentTypeFromPath(filePath: string): string | undefined {
   const ext = filePath.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase();
   if (!ext) return undefined;

@@ -33,7 +33,8 @@ describe("activity parity commands", () => {
     const fetchMock = vi
       .fn()
       .mockImplementationOnce(() => Promise.resolve(jsonResponse([])))
-      .mockImplementation(() => Promise.resolve(jsonResponse()));
+      .mockImplementationOnce(() => Promise.resolve(jsonResponse()))
+      .mockImplementation(() => Promise.resolve(jsonResponse([])));
     vi.stubGlobal("fetch", fetchMock);
 
     await run(["activity", "list", "--company-id", COMPANY_ID, "--agent-id", "agent-1"]);
@@ -43,8 +44,26 @@ describe("activity parity commands", () => {
     expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
       ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/activity?agentId=agent-1`],
       ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/activity`],
-      ["GET", `http://localhost:3100/api/issues/${ISSUE_ID}/activity`],
+      ["GET", `http://localhost:3100/api/issues/${ISSUE_ID}/activity?limit=100`],
     ]);
+  });
+
+  it("walks issue activity pages until a short page", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({ id: `activity-${index}` }));
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => Promise.resolve(jsonResponse(firstPage)))
+      .mockImplementationOnce(() => Promise.resolve(jsonResponse([{ id: "activity-100" }])));
+    vi.stubGlobal("fetch", fetchMock);
+    const log = vi.mocked(console.log);
+
+    await run(["activity", "issue", ISSUE_ID, "--json"]);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      `http://localhost:3100/api/issues/${ISSUE_ID}/activity?limit=100`,
+      `http://localhost:3100/api/issues/${ISSUE_ID}/activity?limit=100&before=activity-99`,
+    ]);
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toHaveLength(101);
   });
 });
 

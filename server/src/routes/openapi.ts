@@ -6156,6 +6156,8 @@ registry.registerPath({
   request: { params: z.object({ id: z.string() }), query: z.object({
     view: z.enum(["recent", "comment-inputs"]).optional().describe("Recent activity (at most 50 rows), or original comment/steering facts for selected comments."),
     commentIds: z.string().optional().describe("For comment-inputs: up to 100 comma-separated comment UUIDs. Returns at most two original facts per comment."),
+    limit: z.coerce.number().int().optional().describe("Page size; defaults to 50 and is clamped to 1–100."),
+    before: z.string().uuid().optional().describe("Last activity ID from the previous page; loads older entries."),
   }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
@@ -6165,7 +6167,12 @@ registry.registerPath({
   path: "/api/issues/{id}/runs",
   tags: ["activity"],
   summary: "List runs for an issue",
-  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("recent").optional().describe("At most two recent run summaries."), runIds: z.string().optional().describe("Comma-separated list of 1 to 100 run UUIDs. Returns only those runs linked to this accessible issue.") }) },
+  request: { params: z.object({ id: z.string() }), query: z.object({
+    view: z.literal("recent").optional().describe("At most two recent run summaries."),
+    runIds: z.string().optional().describe("Comma-separated list of 1 to 100 run UUIDs. Returns only those runs linked to this accessible issue."),
+    limit: z.coerce.number().int().optional().describe("Page size; defaults to 50 and is clamped to 1–100."),
+    before: z.string().uuid().optional().describe("Last run ID from the previous page; loads older entries."),
+  }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 

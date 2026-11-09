@@ -38,6 +38,23 @@ export interface ActivityFilters {
 const DEFAULT_ACTIVITY_LIMIT = 100;
 const MAX_ACTIVITY_LIMIT = 500;
 
+export interface IssueHistoryOptions {
+  limit?: number;
+  before?: string;
+}
+
+const DEFAULT_ISSUE_HISTORY_LIMIT = 50;
+const MAX_ISSUE_HISTORY_LIMIT = 100;
+
+export function normalizeIssueHistoryLimit(limit: number | undefined) {
+  if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_ISSUE_HISTORY_LIMIT;
+  return Math.max(1, Math.min(MAX_ISSUE_HISTORY_LIMIT, Math.floor(limit)));
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 export function normalizeActivityLimit(limit: number | undefined) {
   if (!Number.isFinite(limit)) return DEFAULT_ACTIVITY_LIMIT;
   return Math.max(1, Math.min(MAX_ACTIVITY_LIMIT, Math.floor(limit ?? DEFAULT_ACTIVITY_LIMIT)));
@@ -428,25 +445,93 @@ export function activityService(db: Db) {
         .orderBy(commentId, activityLog.action, asc(activityLog.createdAt), asc(activityLog.id));
     },
 
-    forIssue: (issueId: string, limit?: number) => {
+    forIssue: (issueId: string, limitOrOptions?: IssueHistoryOptions | number) => {
+      const options = typeof limitOrOptions === "number" ? { limit: limitOrOptions } : limitOrOptions;
+      if (options?.before && !isUuid(options.before)) return Promise.resolve([]);
+      const limit = options?.limit === undefined && !options?.before ? undefined : normalizeIssueHistoryLimit(options?.limit);
+      const baseCondition = and(
+        sql`${activityLog.companyId} = (select company_id from issues where id = ${issueId})`,
+        or(
+          and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)),
+          and(or(eq(activityLog.action, "project.created"), eq(activityLog.action, "company.skill_created")), sql`${activityLog.details}->>'sourceIssueId' = ${issueId}`),
+        ),
+      );
+      const beforeCondition = options?.before
+        ? sql`(${activityLog.createdAt}, ${activityLog.id}) < (
+            select cursor_row.created_at, cursor_row.id from ${activityLog} cursor_row
+            where cursor_row.id = ${options.before}
+              and cursor_row.company_id = (select company_id from issues where id = ${issueId})
+              and (
+                (cursor_row.entity_type = 'issue' and cursor_row.entity_id = ${issueId})
+                or (cursor_row.action in ('project.created', 'company.skill_created')
+                  and cursor_row.details->>'sourceIssueId' = ${issueId})
+              )
+          )`
+        : undefined;
       const query = db
         .select()
         .from(activityLog)
-        .where(
-          or(
-            and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)),
-            and(or(eq(activityLog.action, "project.created"), eq(activityLog.action, "company.skill_created")), sql`${activityLog.details}->>'sourceIssueId' = ${issueId}`,
-              sql`${activityLog.companyId} = (select company_id from issues where id = ${issueId})`),
-          ),
-        )
+        .where(and(baseCondition, beforeCondition))
         .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
       return limit === undefined ? query : query.limit(limit);
     },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number, selectedRunIds?: string[]) => {
+    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limitOrOptions?: IssueHistoryOptions | number, selectedRunIds?: string[]) => {
       if (selectedRunIds && !selectedRunIds.length) return [];
-      scheduleRunLivenessBackfill(companyId, issueId);
-      const runsQuery = db
+      const options = typeof limitOrOptions === "number" ? { limit: limitOrOptions } : limitOrOptions;
+      if (options?.before && !isUuid(options.before)) return [];
+      const limit = options?.limit === undefined && !options?.before ? undefined : normalizeIssueHistoryLimit(options?.limit);
+      if (!options?.before) scheduleRunLivenessBackfill(companyId, issueId);
+      const issueRunCondition = or(
+        eq(heartbeatRuns.issueId, issueId),
+        sql`exists (
+          select 1
+          from ${activityLog}
+          where ${activityLog.companyId} = ${companyId}
+            and ${activityLog.entityType} = 'issue'
+            and ${activityLog.entityId} = ${issueId}
+            and ${activityLog.runId} = ${heartbeatRuns.id}
+        )`,
+      );
+      const pageQuery = db
+        .select({ runId: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .innerJoin(
+          agents,
+          and(
+            eq(agents.id, heartbeatRuns.agentId),
+            eq(agents.companyId, heartbeatRuns.companyId),
+          ),
+        )
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`(not exists (select 1 from ${issues} where ${issues.id} = ${issueId}
+            and ${issues.companyId} = ${companyId} and ${issues.conversationAgentId} is not null)
+            or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
+          ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
+          issueRunCondition,
+          options?.before ? sql`(${heartbeatRuns.createdAt}, ${heartbeatRuns.id}) < (
+            select cursor_row.created_at, cursor_row.id from ${heartbeatRuns} cursor_row
+            where cursor_row.id = ${options.before}
+              and cursor_row.company_id = ${companyId}
+              and (
+                cursor_row.issue_id = ${issueId}
+                or exists (
+                  select 1 from ${activityLog} cursor_activity
+                  where cursor_activity.company_id = ${companyId}
+                    and cursor_activity.entity_type = 'issue'
+                    and cursor_activity.entity_id = ${issueId}
+                    and cursor_activity.run_id = cursor_row.id
+                )
+              )
+          )` : undefined,
+        ))
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
+      const pageRows = await (limit === undefined ? pageQuery : pageQuery.limit(limit));
+      if (pageRows.length === 0) return [];
+      const pageRunIds = pageRows.map((row) => row.runId);
+      const runs = await db
         .select({
           runId: heartbeatRuns.id,
           runtimeMode: heartbeatRuns.runtimeMode,
@@ -495,26 +580,10 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
-            sql`(not exists (select 1 from ${issues} where ${issues.id} = ${issueId}
-              and ${issues.companyId} = ${companyId} and ${issues.conversationAgentId} is not null)
-              or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
-                ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
-            ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
-            or(
-              eq(heartbeatRuns.issueId, issueId),
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
-            ),
+            inArray(heartbeatRuns.id, pageRunIds),
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
-      const runs = await (limit === undefined ? runsQuery : runsQuery.limit(limit));
 
       if (runs.length === 0) return runs;
       const runIds = runs.map((run) => run.runId);

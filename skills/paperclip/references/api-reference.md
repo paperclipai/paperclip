@@ -109,7 +109,7 @@ POST /api/companies/company-1/exports
 
 **Issue Activity (`GET /api/issues/:issueId/activity`)**
 
-Returns the issue's activity history, including actor, action, timestamp, and sanitized details. Sandbox agents can call this read-only route for issues their identity may read. Company boundaries and issue-read authorization still apply; this does not grant company-wide audit access.
+Returns the issue's activity history, including actor, action, timestamp, and sanitized details. It returns newest entries first, at most 100 per call (`limit`, default 50). To read older entries, send `before=<id of the last entry>`. `GET /api/issues/:issueId/runs` pages the same way, with the last `runId`. Sandbox agents can call this read-only route for issues their identity may read. Company boundaries and issue-read authorization still apply; this does not grant company-wide audit access.
 
 An automatic stale-recovery cancellation has `action: "issue.recovery_action_resolved"` and `details.source: "source_revalidation"`. Page reads use `details.trigger: "read_projection"`. These cancellations belong to the system. Historical reader-attributed rows with that source and trigger do not count as inbox participation or recent issue activity.
 

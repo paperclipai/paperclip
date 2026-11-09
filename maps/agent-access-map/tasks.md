@@ -263,7 +263,7 @@ Read, append/retry, author-delete or queued-cancel messages, attach allowed file
 
 ### `read-history-comment`
 
-API: `present` — GET /api/issues/{id}/comments and /comments/{commentId}; GET /api/issues/{id}/recent-comments returns four latest comments plus the latest human comment, a cursor, and `hasMore`. The compact read also includes the first human instruction when there is no description. Cold task views use `GET /api/issues/{id}/activity?view=recent` (50 rows) and `/runs?view=recent` (two summaries) without changing the default full-read contracts. It uses the same issue authorization and run/trust redaction.
+API: `present` — GET /api/issues/{id}/comments and /comments/{commentId}; GET /api/issues/{id}/recent-comments returns four latest comments plus the latest human comment, a cursor, and `hasMore`. The compact read also includes the first human instruction when there is no description. Cold task views use `GET /api/issues/{id}/activity?view=recent` (50 rows) and `/runs?view=recent` (two summaries). The default activity and run reads return pages of at most 100 rows (`limit`, default 50), newest first; `before=<last id>` reads older rows, and the UI and CLI walk the pages for a full list. It uses the same issue authorization and run/trust redaction.
 
 Agent access: `available` — REST/call_api, CLI issue comments/comment:get; native get_task_history CURRENT task only, declared limit 1..200 but production clamps to 1..100 (default 50).
 
