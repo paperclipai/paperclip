@@ -6223,7 +6223,7 @@ export function issueRoutes(
       return denyIssueThreadInteractionResolution(res, {
         status: decision.status,
         code: decision.code,
-        message: addresseeName ? addressedHumanOnlyDenialMessage(addresseeName) : decision.message,
+        message: addresseeName ? addressedHumanOnlyDenialMessage(addresseeName, decision.details?.askerIsNotAddressee === true) : decision.message,
         details: {
           effectiveResolverPolicy: decision.effectiveResolverPolicy,
           ...(decision.details ?? {}),

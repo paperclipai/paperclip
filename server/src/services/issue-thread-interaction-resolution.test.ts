@@ -179,7 +179,7 @@ describe("issue-thread interaction resolver audience", () => {
 
     it("tells the agent only the addressee resolves it and not to send the asker to the card", () => {
       const decision = evaluateIssueThreadInteractionResolverAudience({ actor: { ...agent, relayedHumanUserId: "alex" }, interaction: card });
-      expect(decision).toMatchObject({ allowed: false, status: 403, code: "interaction_human_only", details: { addresseeUserId: "riley" } });
+      expect(decision).toMatchObject({ allowed: false, status: 403, code: "interaction_human_only", details: { addresseeUserId: "riley", askerIsNotAddressee: true } });
       const message = decision.allowed ? "" : decision.message;
       expect(message).toContain("This issue-thread interaction is human-only and addressed to");
       expect(message).toContain("Only the addressee can accept or decline it");
@@ -187,11 +187,22 @@ describe("issue-thread interaction resolver audience", () => {
     });
 
     it("names the addressee once the route knows their display name", () => {
-      const message = addressedHumanOnlyDenialMessage("Riley");
+      const message = addressedHumanOnlyDenialMessage("Riley", true);
       expect(message).toContain("addressed to Riley.");
       expect(message).toContain("Only Riley can accept or decline it");
       expect(message).toContain("the card waits on Riley");
       expect(message).not.toContain("addresseeUserId");
+    });
+
+    it.each([
+      ["no verified replying user", agent],
+      ["the addressee as the replying user", { ...agent, relayedHumanUserId: "riley" }],
+    ])("keeps the advice neutral with %s", (_name, actor) => {
+      const decision = evaluateIssueThreadInteractionResolverAudience({ actor, interaction: card });
+      expect(decision).toMatchObject({ allowed: false, code: "interaction_human_only", details: { addresseeUserId: "riley", askerIsNotAddressee: false } });
+      const message = decision.allowed ? "" : decision.message;
+      expect(message).toContain("Only the addressee can accept or decline it");
+      expect(message).not.toContain("do not ask the person asking");
     });
 
     it("keeps the plain human-only denial when the card has no addressee", () => {
