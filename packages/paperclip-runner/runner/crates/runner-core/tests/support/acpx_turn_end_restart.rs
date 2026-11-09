@@ -237,14 +237,22 @@ fn a_failed_turn_end_restart_fails_the_next_turn_like_a_failed_turn_start_restar
             starts,
         )
     };
-    let at_turn_end = outcome(true);
+    let mut at_turn_end = outcome(true);
     assert!(
         at_turn_end.0.starts_with("ACPX turn start failed closed:")
             && at_turn_end.0.contains("session.open"),
         "{}",
         at_turn_end.0
     );
-    assert_eq!(at_turn_end, outcome(false));
+    // The turns of this run fail the same way. Unlike a failed restart at turn
+    // start, the failed turn-end restart saves a resumable session, so the next
+    // run resumes the conversation (see the test below).
+    assert_eq!(at_turn_end.2, "suspended");
+    let mut at_turn_start = outcome(false);
+    assert_eq!(at_turn_start.2, "closed");
+    at_turn_end.2 = Value::Null;
+    at_turn_start.2 = Value::Null;
+    assert_eq!(at_turn_end, at_turn_start);
 }
 
 #[test]
@@ -330,4 +338,66 @@ fn an_active_goal_or_a_request_at_the_terminal_keeps_today_s_restart_timing() {
     assert_eq!(at_turn_end.1, at_turn_start.1);
     assert_eq!(at_turn_end.3, at_turn_start.3);
     eprintln!("request at terminal: {at_turn_end:?}");
+}
+
+/// A turn-end restart that fails (for example a slow or loaded host) used to
+/// save the session `closed`. The next run's `run.attach` then refused it and
+/// the controller started a new conversation. The failed restart now saves a
+/// resumable session once the reaped provider is proven gone: later turns of
+/// this run still fail closed, and the next run resumes the same conversation,
+/// in this Runner process or in a new one.
+#[test]
+fn the_next_run_resumes_the_conversation_after_a_failed_turn_end_restart() {
+    for new_runner_process in [false, true] {
+        let mut harness = Harness::new();
+        let old_pid = harness.opened["processId"].clone();
+        let conversation = harness.opened["providerSessionId"].clone();
+        harness.complete_turn("first");
+        harness.fixture.fault("reject-open");
+        harness.executor.prepare_next_turn().unwrap();
+        assert!(!alive(&old_pid));
+        let saved = harness.fixture.state();
+        assert_eq!(saved["lifecycle"], "suspended", "{saved}");
+        assert_eq!(saved["providerExitUnconfirmed"], false);
+        let failed = harness
+            .executor
+            .execute(&command(
+                90,
+                "turn.start",
+                json!({"turnId": "second", "text": "Complete the work."}),
+            ))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            failed.starts_with("ACPX turn start failed closed:"),
+            "{failed}"
+        );
+        harness.sequence = 90;
+        harness.fixture.fault("");
+        let attached = if new_runner_process {
+            // A new Runner process for the next run cold-attaches the saved session.
+            harness.executor.shutdown().unwrap();
+            harness.config.run_id = "run-2".to_owned();
+            harness.executor = NativeProviderCommandExecutor::with_runner_config(
+                &harness.fixture.0,
+                &harness.config,
+            );
+            let payload = harness.attach_payload("run-2", |payload| {
+                payload
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("paperclipNextAuthority");
+            });
+            harness.execute("run.attach", payload)
+        } else {
+            harness.attach("run-2", |_| {}).0
+        };
+        assert_eq!(
+            attached.result["providerSessionId"], conversation,
+            "new_runner_process={new_runner_process}"
+        );
+        harness.complete_turn("next-run");
+        assert_eq!(harness.fixture.state()["descriptor"]["runId"], "run-2");
+        harness.executor.shutdown().unwrap();
+    }
 }
