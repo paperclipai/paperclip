@@ -9885,6 +9885,7 @@ registry.registerPath({
   path: "/api/instance/database-backups",
   tags: ["instance"],
   summary: "Trigger a database backup",
+  description: "Instance admins only: agent credentials receive 403, and cloud-managed instances run backups for you. Automatic gzip-compressed backups run about hourly by default; instance admins set how long they are kept in the Backup retention section of the company-prefixed /company/settings page. The web UI has no control that creates or restores a backup. For a backup now, an instance admin calls this endpoint, or an operator with shell access to the server runs `paperclipai db:backup` (add --json for metadata). The result names a gzip-compressed SQL file (backupFile) on the server host and its size. Paperclip has no restore endpoint or command: to check a backup, an operator restores the file with psql into a separate, empty PostgreSQL database, never over the live one, and then checks the restored data.",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
