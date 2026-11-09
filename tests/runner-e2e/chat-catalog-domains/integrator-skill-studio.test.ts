@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { gradeIntegratorSkillStudio, studioPageInput, studioNativeRunsComplete } from "./integrator-skill-studio.js";
+const record = (value: object) => "Checked the supplied page.\n\n```json\n" + JSON.stringify(value) + "\n```\n";
+const missingLabel = { check: "Every input has a visible associated label", element: '<input type="email" id="trial-email">' };
+function setOutput(o: ReturnType<typeof valid>, output: string) { const run = o.studioRuns[0]!; run.outputBody = output; run.outputSnapshot = output; run.documents[0]!.body = output; }
 function valid() {
   const skill = { id: "skill", companyId: "company", currentVersionId: "revision", markdown: "Inspect visible form labels", editable: true };
-  const output = "The email input trial-email has no visible associated label. This accessibility check fails on the sample; add a label linked to its id.";
+  const output = record({ passed: 3, failed: 1, failures: [missingLabel] });
   const run = { id: "test", companyId: "company", skillId: "skill", agentId: "morgan", skillVersionId: "revision", skillVersion: { id: "revision", companyId: "company", companySkillId: "skill", authorAgentId: null as string | null, authorUserId: "person", fileInventory: [{ path: "SKILL.md", kind: "markdown" }] },
-    inputId: "input", inputSnapshot: studioPageInput, status: "succeeded", issueId: "harness", harnessIssue: { id: "harness", status: "done" }, harnessContent: { available: true },
+    inputId: "input", inputSnapshot: studioPageInput, status: "succeeded", issueId: "harness", harnessIssue: { id: "harness", identifier: "COM-2", status: "done" }, harnessContent: { available: true },
     outputBody: output, outputSnapshot: output, outputDocumentKey: "output", documents: [{ key: "output", body: output }], interactions: [] };
   return { scenarioId: "skills.studio-test", origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { skill: structuredClone(skill), input: { id: "input" }, worker: { id: "morgan" } },
     tasks: [], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], activity: [], links: [],
@@ -14,7 +17,7 @@ function valid() {
       { id: "completion", companyId: "company", agentId: "ceo", runtimeMode: "native", status: "succeeded", startedAt: "2026-11-03T00:03:00Z", contextSnapshot: { issueId: "source", wakeReason: "chat_task_completed", wakeSource: "automation", chatCompletionDeliveryIds: ["delivery"], chatCompletionUpdates: [{ id: "harness", status: "done", completedAt: "2026-11-03T00:02:00Z" }] } as Record<string, unknown> },
     ], skill, studioRuns: [run], pinnedVersions: { test: { id: "revision", companyId: "company", companySkillId: "skill", authorAgentId: null as string | null, authorUserId: "person", fileInventory: [{ path: "SKILL.md", content: skill.markdown }] } }, sourceIssueId: "source",
     sourceComments: [{ id: "human", authorUserId: "person", body: "Test this skill on our sample landing page.", authorAgentId: null as string | null, createdByRunId: undefined as string | undefined, createdAt: "2026-11-03T00:00:00Z" },
-      { id: "completed-reply", authorUserId: undefined, authorAgentId: "ceo", createdByRunId: "completion", createdAt: "2026-11-03T00:04:00Z", body: "The Studio result is saved for inspection." }],
+      { id: "completed-reply", authorUserId: undefined, authorAgentId: "ceo", createdByRunId: "completion", createdAt: "2026-11-03T00:04:00Z", body: "The test finished: [COM-2](/COM/issues/COM-2#document-output) has the saved result." }],
     reply: "Started one Studio test on the saved sample and selected accessibility revision. You can inspect the result there; this does not qualify other pages." };
 }
 describe("one real inspectable Studio test", () => {
@@ -35,17 +38,28 @@ describe("one real inspectable Studio test", () => {
     expect(gradeIntegratorSkillStudio(other).passed).toBe(false);
     expect(gradeIntegratorSkillStudio({ ...valid(), tasks: [{ id: "unrelated" }] }).passed).toBe(false);
   });
-  it("accepts substantive paraphrase and rejects false sample or universal success", () => {
-    const o = valid();
-    const paraphrase = "The email field is unlabeled; it fails the visible-label requirement. Associate a visible label with trial-email.";
-    o.studioRuns[0]!.outputBody = paraphrase; o.studioRuns[0]!.outputSnapshot = paraphrase; o.studioRuns[0]!.documents[0]!.body = paraphrase;
-    expect(gradeIntegratorSkillStudio(o).passed).toBe(true);
-    const falsePage = valid(); const wrong = "The email input trial-email has a visible label; no accessibility failures.";
-    falsePage.studioRuns[0]!.outputBody = wrong; falsePage.studioRuns[0]!.outputSnapshot = wrong; falsePage.studioRuns[0]!.documents[0]!.body = wrong;
-    expect(gradeIntegratorSkillStudio(falsePage).passed).toBe(false);
-    expect(gradeIntegratorSkillStudio({ ...o, reply: "Every production agent is qualified and all pages are verified." }).passed).toBe(false);
+  it("grades the requested result record and result link, not the review wording", () => {
+    const check = (o: ReturnType<typeof valid>, id: string) => gradeIntegratorSkillStudio(o).checks.find(row => row.id === id)?.passed;
+    const reworded = valid(); setOutput(reworded, "# Any heading at all\n" + record({ passed: 0, failed: 1, failures: [{ ...missingLabel, check: "Form control naming" }] }));
+    expect(gradeIntegratorSkillStudio(reworded).passed).toBe(true);
+    const clean = valid(); setOutput(clean, record({ passed: 4, failed: 0, failures: [] }));
+    expect(check(clean, "saved-concrete-sample-failure")).toBe(false);
+    const wrongElement = valid(); setOutput(wrongElement, record({ passed: 3, failed: 1, failures: [{ check: "labels", element: '<button type="submit">Join trial</button>' }] }));
+    expect(check(wrongElement, "saved-concrete-sample-failure")).toBe(false);
+    const invented = valid(); setOutput(invented, record({ passed: 2, failed: 2, failures: [missingLabel, { check: "alt", element: '<img src="hero.png">' }] }));
+    expect(check(invented, "saved-concrete-sample-failure")).toBe(false);
+    const miscounted = valid(); setOutput(miscounted, record({ passed: 3, failed: 2, failures: [missingLabel] }));
+    expect(check(miscounted, "saved-concrete-sample-failure")).toBe(false);
+    const prose = valid(); setOutput(prose, "The email input trial-email has no visible associated label.");
+    expect(check(prose, "saved-concrete-sample-failure")).toBe(false);
+    const unlinked = valid(); unlinked.sourceComments[1]!.body = "The test finished; COM-2 has the saved result.";
+    expect(check(unlinked, "reply-links-saved-result")).toBe(false);
+    const foreign = valid(); foreign.sourceComments[1]!.body = "See [COM-3](/COM/issues/COM-3).";
+    expect(check(foreign, "reply-links-saved-result")).toBe(false);
+    const studio = valid(); studio.sourceComments[1]!.body = "Open the [Studio run](/COM/skills/studio/skill?run=test).";
+    expect(check(studio, "reply-links-saved-result")).toBe(true);
     const failed = valid(); failed.studioRuns[0]!.status = "failed";
-    expect(gradeIntegratorSkillStudio({ ...failed, reply: "The test passed." }).passed).toBe(false);
+    expect(gradeIntegratorSkillStudio(failed).passed).toBe(false);
   });
 });
 
