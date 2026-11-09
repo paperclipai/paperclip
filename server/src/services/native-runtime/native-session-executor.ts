@@ -6725,9 +6725,14 @@ async function restorePerTurnRunnerdController(input: {
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   restartRecovery?: NativeRestartRecoveryClaim;
 }): Promise<void> {
-  if (input.restartRecovery || input.runnerExecutionTarget?.kind !== "remote" ||
+  if ((input.restartRecovery && input.restartRecovery.kind !== "bootstrap_incomplete") ||
+      input.runnerExecutionTarget?.kind !== "remote" ||
       input.execution.session.lifecyclePolicy.mode !== "per_turn") return;
   const root = scopedRunnerdStateRoot(input.execution);
+  if (input.restartRecovery) {
+    const prior = readRunnerdDurableIdentity(root) ?? readRunnerdDurableIdentity(root, true);
+    if (!prior || prior.runId === input.execution.binding.runId) return;
+  }
   await restoreDurableHarnessForExecution(input.db, input.execution, root);
   const identity = readRunnerdDurableIdentity(root);
   const reference = identity ?? readRunnerdDurableIdentity(root, true);

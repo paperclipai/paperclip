@@ -2757,6 +2757,35 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_runner_never_received_commands" });
   });
 
+  it.each([
+    { label: "restarts", inherited: true, providerEvent: false },
+    { label: "keeps a projected provider event held instead of restarting", inherited: true, providerEvent: true },
+  ])("$label an unclaimed remote follow-up that carries only its inherited checkpoint", async ({ providerEvent }) => {
+    const fixture = await seedUnlaunchedRemoteClaim(`UNCLAIMED-INHERITED-${providerEvent}`);
+    await fixture.db.update(nativeRunFinalizations).set({ attempt: 0, controllerGeneration: 0, controllerBootId: null,
+      controllerPid: null, controllerProcessStartedAt: null, leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const [seeded] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { ...seeded.runnerProfileJson, sessionCheckpoint: {
+      driverKind: "codex_app_server", backendKind: "runner", sessionId: "inherited-thread", cursor: null,
+      identity: { companyId, issueId: fixture.issueId, runId: fixture.runId, agentId, sessionId: fixture.native.normalizedSessionId },
+      providerSessionId: "inherited-thread", activeTurnId: null, terminal: null, terminalTurns: [], semanticResult: null,
+      pendingRuntimeRequests: [], lineage: [],
+    } } }).where(eq(heartbeatRuns.id, fixture.runId));
+    if (providerEvent) await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq: 901,
+      stream: "system", level: "info", eventType: "session.started" });
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    if (providerEvent) {
+      expect(claim).not.toMatchObject({ kind: "bootstrap_incomplete" });
+      return;
+    }
+    expect(claim).toMatchObject({ kind: "bootstrap_incomplete", runId: fixture.runId });
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_execution_never_claimed" });
+  });
+
   it("restarts a remote bootstrap retry that shutdown cut before any runner was requested", async () => {
     const fixture = await seedUnlaunchedRemoteClaim("BOOTSTRAP-RETRY", { bootstrapRetry: true });
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,

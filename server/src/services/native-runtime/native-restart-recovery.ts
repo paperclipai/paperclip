@@ -1324,6 +1324,11 @@ export async function claimNativeRestartRecoveries(input: {
       const hasProviderEvidence =
         hasCheckpointProviderIdentity || providerEvents.length > 0;
 
+      const admissionCheckpointOnly = !hasCheckpoint || (checkpointIdentityMatches && checkpointRecord.cursor == null
+        && (!Array.isArray(checkpointRecord.terminalTurns) || checkpointRecord.terminalTurns.length === 0)
+        && checkpointRecord.activeTurnId == null && checkpointRecord.semanticResult == null && checkpointRecord.terminal == null);
+      const inheritedCheckpointOnly = hasCheckpoint && admissionCheckpointOnly && remoteSandbox && !pluginTask
+        && !durableAuthority && stagedAttachment === null && providerEvents.length === 0;
       let unclaimedBootstrap =
         remoteWorkspace?.state === "prepared" &&
         row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION &&
@@ -1344,8 +1349,8 @@ export async function claimNativeRestartRecoveries(input: {
         !row.run.sessionIdBefore &&
         !row.run.sessionIdAfter &&
         Boolean(row.run.nativeSessionId && row.run.runnerInstanceId) &&
-        !hasCheckpoint &&
-        !hasProviderEvidence;
+        (!hasCheckpoint || inheritedCheckpointOnly) &&
+        (!hasProviderEvidence || inheritedCheckpointOnly);
       if (unclaimedBootstrap) {
         if (activeNativeExecutionRunIds.has(row.run.id) &&
             controller.bootId === (await currentNativeControllerIdentity()).bootId) {
@@ -1430,9 +1435,6 @@ export async function claimNativeRestartRecoveries(input: {
       const remoteBootstrapProvenIncomplete = remoteBootstrapProof !== null
         && (!hasProviderEvidence || remoteBootstrapProof === "session_opened_without_turn");
 
-      const admissionCheckpointOnly = !hasCheckpoint || (checkpointIdentityMatches && checkpointRecord.cursor == null
-        && (!Array.isArray(checkpointRecord.terminalTurns) || checkpointRecord.terminalTurns.length === 0)
-        && checkpointRecord.activeTurnId == null && checkpointRecord.semanticResult == null && checkpointRecord.terminal == null);
       const remoteRunnerNeverReceivedCommands = !unclaimedBootstrap && !remoteRunnerNeverLaunched
         && !remoteRunnerExitedBeforeProviderWork && !remoteBootstrapProvenIncomplete
         && remoteSandbox && remoteWorkspace !== null && !pluginTask && !durableAuthority && stagedAttachment === null
@@ -1468,12 +1470,12 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessAlive: providerProcesses.livePids.length > 0,
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
-        hasCheckpoint: hasCheckpoint && !remoteRunnerNeverReceivedCommands,
+        hasCheckpoint: hasCheckpoint && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly),
         stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&
           (!remoteSandbox || remoteWorkspace !== null),
-        hasProviderEvidence,
+        hasProviderEvidence: hasProviderEvidence && !(unclaimedBootstrap && inheritedCheckpointOnly),
         checkpointFailed:
           (checkpointRecord.terminal as Record<string, unknown> | undefined)
             ?.runTerminalState === "failed" &&
