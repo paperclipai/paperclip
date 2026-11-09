@@ -603,8 +603,10 @@ export class TaskObserver {
   private stopArtifacts(stop: NonNullable<TaskRecord["stop"]>): NonNullable<OracleArtifacts["stop"]> {
     const runs = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
     for (const sample of this.record.samples) for (const run of sample.runs ?? []) runs.set(run.id, run);
-    const continueAt = this.record.followUp?.postedAt ?? this.record.followUp?.at ?? null;
+    const continueAt = this.record.followUp?.at ?? null;
+    const continueCommentId = this.record.followUp?.commentId ?? null;
     const startedBeforeContinue = [...runs.values()].filter(run => run.id !== stop.runId && run.createdAt
+      && !(continueCommentId && (run.wakeCommentIds ?? []).includes(continueCommentId))
       && Date.parse(run.createdAt) > stop.at && (continueAt === null || Date.parse(run.createdAt) < continueAt)).map(run => run.id);
     return { runId: stop.runId, runStatus: runs.get(stop.runId)?.status ?? null, runsStartedBeforeContinue: startedBeforeContinue,
       continuePosted: Boolean(this.record.followUp?.commentId) };

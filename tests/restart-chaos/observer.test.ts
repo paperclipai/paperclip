@@ -160,6 +160,29 @@ describe("TaskObserver", () => {
     expect(posted.filter(route => route.endsWith("/cancel"))).toHaveLength(1);
   });
 
+  it("S1: does not count the continue comment's own run as a run after the stop, even when it starts before the comment returns", async () => {
+    let runs: Array<Record<string, unknown>> = [{ id: "r1", status: "running", createdAt: new Date(0).toISOString(), finishedAt: null }];
+    const base = fakeApi({ "/runs": () => runs, "/comments": () => [], "/documents/": () => null, "/workspace-operations": () => [] }, "in_progress");
+    let clock = 0;
+    const api = { ...base.api, get: base.api.get.bind(base.api), async post(route: string) {
+      if (route === "/api/heartbeat-runs/r1/cancel") { runs = [{ ...runs[0]!, status: "cancelled" }]; return { id: "r1" }; }
+      if (route.endsWith("/comments")) {
+        runs = [...runs, { id: "r2", status: "running", createdAt: new Date(clock - 10).toISOString(), finishedAt: null, wakeCommentIds: ["continue-1"] }];
+        return { id: "continue-1" };
+      }
+      return { id: "i1", identifier: "CHA-1" };
+    } } as unknown as ChaosApi;
+    const observer = new TaskObserver({ ...plan, workload: "S1", followUpAfterMs: 1_000 }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 2_000);
+    clock = start + 2_000 + STOP_CONTINUE_AFTER_MS + 1;
+    await observer.poll(clock);
+    await observer.poll(clock + 3_000);
+    const artifacts = await observer.collectArtifacts();
+    expect(artifacts.stop).toMatchObject({ runId: "r1", runStatus: "cancelled", runsStartedBeforeContinue: [], continuePosted: true });
+  });
+
   it("closes an open task as unfinished at interrupt, so the wave grades it as a failure", async () => {
     const { api } = fakeApi({}, "in_progress");
     const timeline = new Timeline(null);
