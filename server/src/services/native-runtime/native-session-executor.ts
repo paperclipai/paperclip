@@ -149,7 +149,7 @@ import {
 } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, hasNativeRunnerCheckpoint, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS, localRunnerProcessReconnectGraceMs } from "./native-runner-recovery-contract.js";
 import type { NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
 import { basename, dirname, join, posix, resolve } from "node:path";
@@ -5826,6 +5826,18 @@ async function migrateRunnerdStateRootForExecution(input: {
       // first state write. No runner for the run is alive on this host and none
       // connected, so no provider started and no command was acknowledged.
       // Keep the partial root for inspection and start the bootstrap again.
+      quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+      return;
+    }
+    const externalMarker = !identity ? readRunnerdDurableIdentity(scoped, true) : null;
+    if (!identity && input.restartRecovery?.kind === "bootstrap_incomplete" &&
+        input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox" &&
+        !input.runnerExecutionTarget.runnerTask &&
+        readRunnerdBootstrapJournal(scoped) === undefined &&
+        durableIdentityMatchesSession(externalMarker, input.execution) &&
+        externalMarker.runId === input.execution.binding.runId &&
+        !(await hasNativeRunnerCheckpoint(input.db, input.execution.binding))) {
+      takeRemoteBootstrapRestartProof(input.execution.binding.runId);
       quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
       return;
     }
