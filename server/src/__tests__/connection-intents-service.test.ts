@@ -232,6 +232,8 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const service = connectionIntentService(db);
     try {
       await settings.updateExperimental({ enableChatConnectors: false });
+      // A longer request, as an agent words it, still finds the hidden channel.
+      expect((await service.search(claims, "iMessage chat messaging with a contact")).results.find(item => item.service === "imessage-photon")?.state).toBe("unavailable");
       const off = await service.search(claims, "iMessage");
       const imessage = off.results.find(item => item.service === "imessage-photon");
       expect(imessage).toMatchObject({ state: "unavailable", methods: [] });
@@ -251,7 +253,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
   it("points a service the catalog does not list at the secure own-server setup page", async () => {
     const result = await connectionIntentService(db).search(claims, "Synthetic notes service");
     expect(result.instruction).toMatch(/\[Connect your own MCP server\]\(\/[A-Z0-9]+\/apps\/byo\)/);
-    expect(result.instruction).toContain("never ask for a key in chat");
+    expect(result.instruction).toContain("Do not create the connection yourself, ask for the key in chat");
   });
 
   it("creates one addressed request, resolves after install, and then reports ready for the responsible user", async () => {
