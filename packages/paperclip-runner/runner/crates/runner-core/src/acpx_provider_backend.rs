@@ -1788,6 +1788,17 @@ impl AcpxCommandExecutor {
                 "ACPX provider lifetime cleanup is not yet proven",
             ));
         }
+        // No path (session.open, a same-run run.attach) reopens a session whose
+        // run failed closed at its turn-end provider restart.
+        if self.session.is_none()
+            && self.state.as_ref().is_some_and(|state| {
+                state.turn_end_restart_failed_run.as_deref() == Some(self.context.run_id.as_str())
+            })
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX session failed closed after this run's turn-end provider restart failed",
+            ));
+        }
         if self.session.is_none() {
             let recovering = self
                 .state

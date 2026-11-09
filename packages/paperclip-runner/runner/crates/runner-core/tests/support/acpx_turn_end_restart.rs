@@ -441,11 +441,30 @@ fn a_runner_restart_in_the_same_run_keeps_the_failed_turn_end_restart_closed() {
         .to_string();
     assert_eq!(failed, "ACPX session is not open");
     assert_eq!(harness.fixture.process_starts().len(), starts);
+    // Neither session.open nor a same-run attach reopens it.
+    let reopened = harness
+        .executor
+        .execute(&command(91, "session.open", json!({})))
+        .unwrap_err()
+        .to_string();
+    assert!(reopened.contains("failed closed"), "{reopened}");
+    let same_run_attach = json!({"provider": harness.descriptor.clone()});
+    let attach_error = harness
+        .executor
+        .execute(&command(92, "run.attach", same_run_attach))
+        .unwrap_err()
+        .to_string();
+    assert!(attach_error.contains("failed closed"), "{attach_error}");
+    assert_eq!(harness.fixture.process_starts().len(), starts);
+    assert_eq!(
+        harness.fixture.state()["turnEndRestartFailedRun"],
+        harness.config.run_id
+    );
     assert_eq!(live_providers(&harness), Vec::<Value>::new());
     assert_eq!(harness.fixture.state()["lifecycle"], "suspended");
     // The next run still resumes the conversation and clears the restriction.
     harness.executor.shutdown().unwrap();
-    harness.sequence = 90;
+    harness.sequence = 92;
     harness.config.run_id = "run-2".to_owned();
     harness.executor =
         NativeProviderCommandExecutor::with_runner_config(&harness.fixture.0, &harness.config);
