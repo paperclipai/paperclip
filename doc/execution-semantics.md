@@ -3602,6 +3602,19 @@ ownership, active controllers, cleanup leases, pause, approval, budget, and norm
 execution gates still apply. Dependency-blocked interaction mode remains limited
 to its existing answer/triage contract.
 
+A saved human answer or confirmation can reach the requesting assignee while
+dependencies remain unfinished. Admission and dispatch verify the stored response
+against its company, task, requesting agent, resolved status, and human resolver.
+The response uses dependency-blocked answer/triage mode. It does not check out the
+task, set it to `in_progress`, resolve its dependencies, or approve another action.
+An absent, changed, pending, or agent-resolved response grants no such exception.
+That bounded response remains a continuation after a workspace or AI-account wait,
+so final dispatch still verifies it. Finishing a dependency during preparation
+does not turn the admitted response into an attempt to check out the task.
+Task interruption notices ignore Retry receipts for a superseded run. A later
+successful conversation must not inherit the old failure banner. This read-only
+projection neither retires Retry authority nor acknowledges independent saved input.
+
 Snapshot preservation and native copyback are distinct receipts. A historical
 workspace recovered as an immutable snapshot does not make its old native sync
 reference finalized. Once recovery settles, the current inbound owner can
