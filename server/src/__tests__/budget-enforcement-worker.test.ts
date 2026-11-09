@@ -63,6 +63,17 @@ describe("budget accounting delivery", () => {
     expect(order).toEqual(["stops", "continuations"]);
   });
 
+  it("wakes resume delivery when a run's Stop settles", async () => {
+    const s = setup();
+    const deliverResumeContinuations = vi.fn(async () => undefined);
+    const worker = registerBudgetEnforcementWork(s.db, s.coordinator, { deliverResumeContinuations });
+    await worker.ready;
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(1);
+    publishLiveEvent({ companyId: "company-1", type: "heartbeat.run.status", payload: { runId: "run-1", status: "cancelled" } } as never);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(2);
+  });
+
   it("wakes when a failed dispatcher's resume claim goes stale", async () => {
     const s = setup();
     const expiry = Date.now() + 60_000;

@@ -35,7 +35,7 @@ export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, 
   let reconciliationFailed = false;
   let nextDeadline: number | null = null;
   let resumeClaimDeadline: number | null = null;
-  return coordinator.register(DELIVERY_QUEUES.budgetEnforcement, {
+  const worker = coordinator.register(DELIVERY_QUEUES.budgetEnforcement, {
     retryMs: 1_000,
     coalesceMs: 1_000,
     runDuringDrain: true,
@@ -76,6 +76,15 @@ export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, 
     nextRunAt: () => nextDeadline === null ? resumeClaimDeadline
       : resumeClaimDeadline === null ? nextDeadline : Math.min(nextDeadline, resumeClaimDeadline),
   });
+  if (!hooks.deliverResumeContinuations) return worker;
+  // A Stop that settles later (a pause's lifecycle Stop, a delivered budget
+  // Stop) makes a pending resume claim deliverable. The terminal status event
+  // is published after its persisted transition; wake for it, so delivery
+  // never waits for unrelated budget work.
+  const unsubscribe = subscribeAllCompanyLiveEvents(event => {
+    if (event.type === "heartbeat.run.status" && String(event.payload.status) === "cancelled") worker.wake();
+  });
+  return { ...worker, stop: async () => { unsubscribe(); await worker.stop(); } };
 }
 
 /** Accounting repairs admitted work and never dispatches another paid turn.
