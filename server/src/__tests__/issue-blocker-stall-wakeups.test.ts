@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueRecoveryActions, issueRelations, issues, type Db,
+  activityLog, agents, agentWakeupRequests, companies, createDb, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issueRelations,
+  issues, type Db,
 } from "@paperclipai/db";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON } from "@paperclipai/shared";
 import { recoveryService } from "../services/recovery/service.js";
@@ -329,5 +330,97 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const service = recoveryService(db, { enqueueWakeup: enqueueWakeup as never });
     for (const f of [agentOwned, doneParent, unassigned, hidden]) await service.reconcileActiveRecoveryActions({ companyId: f.companyId });
     expect(calls.filter(call => call.input.reason === ISSUE_BLOCKER_STALLED_WAKE_REASON)).toEqual([]);
+  });
+
+  // Staging, 2026-11-09: a legacy child (created before subtasks got
+  // their own workspace) shares its parent's remote workspace. The child's save
+  // failed and its automatic recovery was exhausted, so its ended run still
+  // holds the shared workspace, days past the holder cutoff. Each stall wake of
+  // the parent created a run that could only fail setup ("The workspace still
+  // has an unfinished writer or save operation."), twice every ten minutes.
+  async function legacySharedWorkspaceFixture() {
+    const f = await fixture();
+    const endedAt = new Date(Date.now() - 4 * 24 * 60 * 60_000);
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.childAgent,
+      runtimeMode: "native", nativeIssueId: f.child.id, status: "failed", startedAt: new Date(endedAt.getTime() - 15 * 60_000),
+      finishedAt: endedAt, lastOutputAt: endedAt,
+      resultJson: { failureCode: "native_workspace_sync_out_retry_exhausted", finalizationPhase: "terminal_failure" } }).returning();
+    const authority = { schema: "paperclip.remote-workspace.v1" as const, epoch: 2, snapshotId: randomUUID(),
+      source: { kind: "empty" as const }, dirty: true, writerRunId: writer.id,
+      location: { leaseId: randomUUID(), providerLeaseId: randomUUID(), environmentId: randomUUID(), remoteCwd: "/home/daytona/ws" } };
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: f.parent.id,
+      name: "Task workspace", mode: "shared_workspace", strategyType: "project_primary", providerType: "cloud_sandbox",
+      status: "active", cwd: `/workspaces/${randomUUID()}`, metadata: { remoteWorkspace: authority } }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing" })
+      .where(inArray(issues.id, [f.parent.id, f.child.id]));
+    // The child's stall: its exhausted save recovery, handed to the board.
+    await db.update(issueRecoveryActions).set({ kind: "active_run_watchdog", cause: "native_workspace_sync_out_retry_exhausted",
+      ownerType: "board", status: "escalated", evidence: { runId: writer.id, systemRecovery: { state: "exhausted" } } })
+      .where(eq(issueRecoveryActions.id, f.action.id));
+    return { ...f, writer, workspace, authority };
+  }
+
+  it("holds a stall wake while the waiter's workspace is held by a writer reservation would refuse", async () => {
+    const f = await legacySharedWorkspaceFixture();
+    const { calls, enqueueWakeup } = wakeRecorder();
+    const service = recoveryService(db, { enqueueWakeup: enqueueWakeup as never });
+    for (let pass = 0; pass < 3; pass += 1) await service.reconcileActiveRecoveryActions({ companyId: f.companyId });
+    const held = await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, issueId: f.parent.id });
+    // No run is created that could only fail setup; the sweep looks again later.
+    expect(calls.filter(call => call.input.reason === ISSUE_BLOCKER_STALLED_WAKE_REASON)).toEqual([]);
+    expect(held).toMatchObject({ woken: 0, deferred: 1 });
+    expect(held.retryAt).toBeGreaterThan(Date.now());
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+
+    // A writer still inside the holder cutoff parks the run in a workspace wait
+    // instead of failing it, so that wake is delivered as before.
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(), lastOutputAt: new Date() }).where(eq(heartbeatRuns.id, f.writer.id));
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("delivers the held stall wake once the workspace hold settles", async () => {
+    const f = await legacySharedWorkspaceFixture();
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toEqual([]);
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, dirty: false, writerRunId: null } } })
+      .where(eq(executionWorkspaces.id, f.workspace.id));
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls.map(call => call.agentId)).toEqual([f.parentAgent]);
+  });
+
+  it("backs off a stall wake whose run keeps failing, and stops after a bounded number of failed runs", async () => {
+    const f = await fixture();
+    const { calls, enqueueWakeup } = wakeRecorder();
+    const fail = async (minutesAgo: number) => db.update(agentWakeupRequests)
+      .set({ status: "failed", requestedAt: new Date(Date.now() - minutesAgo * 60_000) })
+      .where(eq(agentWakeupRequests.companyId, f.companyId));
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(1);
+    // First failed run: retried after ten minutes.
+    await fail(11);
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(2);
+    // Second failed run: the wait doubles.
+    await fail(11);
+    const backingOff = await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(2);
+    expect(backingOff.retryAt).toBeGreaterThan(Date.now() + 8 * 60_000);
+    await fail(21);
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(3);
+    // Third failed run: the stall is not retried again, and no timer is asked for.
+    await fail(24 * 60);
+    const spent = await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(3);
+    expect(spent.retryAt).toBeNull();
+    // A new stall (a new recovery action) is delivered again.
+    await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date(), outcome: "restored" })
+      .where(eq(issueRecoveryActions.id, f.action.id));
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.child.id, kind: "run_recovery",
+      status: "escalated", ownerType: "board", cause: "execution_recovery_budget_exhausted", fingerprint: "fixture-2", nextAction: "Retry" });
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(4);
   });
 });
