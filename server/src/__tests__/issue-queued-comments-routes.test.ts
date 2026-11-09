@@ -427,7 +427,6 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
         .update(issues)
         .set({
           createdByUserId: "queue-owner",
-          externalConversationState: "active",
         })
         .where(eq(issues.id, seeded.issueId));
       const replacementAgentId = randomUUID();
