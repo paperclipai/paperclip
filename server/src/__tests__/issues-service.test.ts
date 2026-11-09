@@ -6629,6 +6629,7 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     checkoutStatus: "running" | "failed" | "timed_out";
     actorRunStatus?: "running" | "failed" | "timed_out" | "succeeded";
     assigneeMatchesActor?: boolean;
+    issueStatus?: "in_progress" | "in_review" | "blocked";
   }) {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -6689,7 +6690,7 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
       id: issueId,
       companyId,
       title: "Checkout owner recovery",
-      status: "in_progress",
+      status: params.issueStatus ?? "in_progress",
       priority: "high",
       assigneeAgentId,
       checkoutRunId: staleRunId,
@@ -6771,6 +6772,35 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     expect(ownership.executionRunId).toBe(seeded.actorRunId);
     expect(ownership.adoptedFromRunId).toBeNull();
   });
+
+  it.each(["in_review", "blocked"] as const)(
+    "lets the current assignee adopt unowned %s work after terminal-lock cleanup",
+    async (issueStatus) => {
+      const seeded = await seedOwnershipIssue({
+        checkoutStatus: "failed",
+        issueStatus,
+      });
+
+      const ownership = await svc.assertCheckoutOwner(
+        seeded.issueId,
+        seeded.actorAgentId,
+        seeded.actorRunId,
+      );
+
+      expect(ownership).toMatchObject({
+        status: issueStatus,
+        checkoutRunId: seeded.actorRunId,
+        executionRunId: seeded.actorRunId,
+        adoptedFromRunId: null,
+      });
+      expect(await svc.getById(seeded.issueId)).toMatchObject({
+        status: issueStatus,
+        assigneeAgentId: seeded.actorAgentId,
+        checkoutRunId: seeded.actorRunId,
+        executionRunId: seeded.actorRunId,
+      });
+    },
+  );
 
   it("treats timed_out checkout owners as stale and recoverable", async () => {
     const seeded = await seedOwnershipIssue({ checkoutStatus: "timed_out" });

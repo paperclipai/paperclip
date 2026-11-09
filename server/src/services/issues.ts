@@ -7847,6 +7847,7 @@ export function issueService(db: Db) {
     issueId: string;
     actorAgentId: string;
     actorRunId: string;
+    expectedStatus: string;
   }) {
     return db.transaction(async (tx) => {
       await tx.execute(
@@ -7873,7 +7874,7 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, input.issueId),
-            eq(issues.status, "in_progress"),
+            eq(issues.status, input.expectedStatus),
             eq(issues.assigneeAgentId, input.actorAgentId),
             isNull(issues.checkoutRunId),
             or(
@@ -11557,7 +11558,24 @@ export function issueService(db: Db) {
       if (issueData.status && issueData.status !== "cancelled") {
         patch.cancelledAt = null;
       }
-      if (issueData.status && issueData.status !== "in_progress") {
+      const preservesActorRunAcrossPendingStage = Boolean(
+        issueData.status === "in_review" &&
+        expectedExecutionDecisionSnapshot !== undefined &&
+        actorAgentId &&
+        actorRunId &&
+        nextAssigneeAgentId === actorAgentId &&
+        existing.assigneeAgentId === actorAgentId &&
+        (existing.checkoutRunId !== null || existing.executionRunId !== null) &&
+        (existing.checkoutRunId === null ||
+          existing.checkoutRunId === actorRunId) &&
+        (existing.executionRunId === null ||
+          existing.executionRunId === actorRunId),
+      );
+      if (
+        issueData.status &&
+        issueData.status !== "in_progress" &&
+        !preservesActorRunAcrossPendingStage
+      ) {
         patch.checkoutRunId = null;
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
@@ -12718,7 +12736,8 @@ export function issueService(db: Db) {
         executionRunId: string | null;
       }) =>
         actorRunId &&
-        candidate.status === "in_progress" &&
+        candidate.status !== "done" &&
+        candidate.status !== "cancelled" &&
         candidate.assigneeAgentId === actorAgentId &&
         candidate.checkoutRunId == null &&
         (candidate.executionRunId == null ||
@@ -12740,6 +12759,7 @@ export function issueService(db: Db) {
             issueId: id,
             actorAgentId,
             actorRunId: actorRunId!,
+            expectedStatus: candidate.status,
           });
 
           if (adopted) {

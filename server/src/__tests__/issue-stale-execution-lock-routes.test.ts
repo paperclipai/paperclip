@@ -770,6 +770,77 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     },
   );
 
+  it("preserves a native run across consecutive stages owned by the same agent", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const reviewStageId = randomUUID();
+    const approvalStageId = randomUUID();
+    await db.update(heartbeatRuns)
+      .set({ runtimeMode: "native", contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Consecutive same-agent native stages",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          { id: reviewStageId, type: "review", participants: [{ type: "agent", agentId }] },
+          { id: approvalStageId, type: "approval", participants: [{ type: "agent", agentId }] },
+        ],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: reviewStageId,
+        expectedExecutionLastDecisionId: null,
+        comment: "Review approved; continue to approval",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionState: {
+        status: "pending",
+        currentStageId: approvalStageId,
+        currentStageIndex: 1,
+        currentParticipant: { type: "agent", agentId },
+        completedStageIds: [reviewStageId],
+        lastDecisionOutcome: "approved",
+      },
+    });
+    expect(
+      await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, currentRunId)).then((rows) => rows[0]?.status),
+    ).toBe("running");
+  });
+
   it("rejects a cancellation authorized by a stage that advances before the row-locked write", async () => {
     const { companyId, agentId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
