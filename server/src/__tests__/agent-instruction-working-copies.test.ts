@@ -631,7 +631,7 @@ describe("registered run instruction copies", () => {
     expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(edited);
     copies = agentInstructionWorkingCopyService(db);
     expect((await copies.collectStopped({ companyId, runId: copy.runId }))?.receipt).toEqual(saved?.receipt);
-    expect((await revisions.history({ ...target(), entryFile }, board())).revisions).toHaveLength(0);
+    expect((await revisions.history({ ...target(), entryFile }, board())).revisions).toEqual([expect.objectContaining({ actorAgentId: agentId, sourceRunId: copy.runId })]);
     const next = await run();
     expect(await fs.readFile(path.join(next.localRoot, entryFile), "utf8")).toBe(edited);
   });
@@ -733,7 +733,8 @@ describe("registered run instruction copies", () => {
       await makeRemovable(context.instructions.bundle.rootPath);
     }
     expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe("current filesystem contents");
-    expect((await revisions.history({ ...target(), entryFile }, board())).revisions).toHaveLength(0);
+    // Only the run's save is recorded; a direct filesystem write names no writer.
+    expect((await revisions.history({ ...target(), entryFile }, board())).revisions).toEqual([expect.objectContaining({ actorAgentId: agentId, sourceRunId: copy.runId })]);
     await expect(revisions.readCommittedForRuntime({ companyId: randomUUID(), agentId })).rejects.toThrow("Agent not found");
   });
 
@@ -837,7 +838,8 @@ describe("registered run instruction copies", () => {
     await fs.writeFile(path.join(duplicate.localRoot, entryFile), "one final edit");
     await Promise.all([copies.collectStopped({ companyId, runId: duplicate.runId }), copies.collectStopped({ companyId, runId: duplicate.runId })]);
     expect((await copies.get(companyId, duplicate.runId))?.state).toBe("saved");
-    expect((await revisions.history({ ...target(), entryFile }, board())).revisions).toHaveLength(0);
+    expect((await revisions.history({ ...target(), entryFile }, board())).revisions).toEqual([
+      expect.objectContaining({ sourceRunId: duplicate.runId }), expect.objectContaining({ sourceRunId: copy.runId })]);
   });
   it("requires durable stop evidence before recovering an uncaptured copy", async () => {
     const copy = await run();
