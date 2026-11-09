@@ -647,24 +647,29 @@ function isSandboxStateChangeInProgress(error: unknown): boolean {
 }
 
 async function waitOutSandboxTransition(sandbox: Sandbox, deadline: number, readTimeoutMs: number): Promise<void> {
-  while (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") && Date.now() < deadline) {
+  while (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") && Date.now() + SANDBOX_TRANSITION_POLL_MS < deadline) {
     await new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS));
-    await withLivenessTimeout("sandbox.refreshData", readTimeoutMs, () => sandbox.refreshData());
+    await withLivenessTimeout("sandbox.refreshData", Math.min(readTimeoutMs, Math.max(1, deadline - Date.now())),
+      () => sandbox.refreshData());
   }
 }
 
 async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number, scope: SandboxScope): Promise<void> {
+  if (sandbox.state === "started") return;
+  sandboxHandleSessionStore.clear(scope);
   const deadline = Date.now() + timeoutSeconds * 1_000;
   const readTimeoutMs = Math.min(scope.config.livenessTimeoutMs, 30_000);
   for (;;) {
     await waitOutSandboxTransition(sandbox, deadline, readTimeoutMs);
+    const remainingSeconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1_000));
     try {
-      await startSettledSandbox(sandbox, timeoutSeconds, scope);
+      await startSettledSandbox(sandbox, remainingSeconds, scope);
       return;
     } catch (error) {
-      if (!isSandboxStateChangeInProgress(error) || Date.now() >= deadline) throw error;
+      if (!isSandboxStateChangeInProgress(error) || Date.now() + SANDBOX_TRANSITION_POLL_MS >= deadline) throw error;
       await new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS));
-      await withLivenessTimeout("sandbox.refreshData", readTimeoutMs, () => sandbox.refreshData());
+      await withLivenessTimeout("sandbox.refreshData", Math.min(readTimeoutMs, Math.max(1, deadline - Date.now())),
+        () => sandbox.refreshData());
     }
   }
 }

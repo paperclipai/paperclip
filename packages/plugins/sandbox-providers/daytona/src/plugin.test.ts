@@ -279,6 +279,7 @@ describe("Daytona idle eligibility", () => {
   });
 
   describe("a sandbox in a state change during workspace realize", () => {
+    beforeEach(() => { vi.stubEnv("DAYTONA_API_KEY", "host-key"); });
     const realize = (timeoutMs = 300_000) => plugin.definition.onEnvironmentRealizeWorkspace!({
       driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
       config: { timeoutMs, reuseLease: false },
@@ -288,7 +289,6 @@ describe("Daytona idle eligibility", () => {
     const stateChangeInProgress = () => Object.assign(new Error("Sandbox state change in progress"), { statusCode: 409 });
 
     it("waits for a stopping sandbox to settle, then starts it", async () => {
-      process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
       mockGet.mockResolvedValue(sandbox);
       sandbox.refreshData.mockImplementation(async () => { sandbox.state = "stopped"; });
@@ -302,7 +302,6 @@ describe("Daytona idle eligibility", () => {
     });
 
     it("retries a start the provider rejected while its state was changing", async () => {
-      process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopped" });
       mockGet.mockResolvedValue(sandbox);
       sandbox.start.mockRejectedValueOnce(stateChangeInProgress())
@@ -312,7 +311,6 @@ describe("Daytona idle eligibility", () => {
     });
 
     it("gives up when the state change outlasts the start deadline", async () => {
-      process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
       mockGet.mockResolvedValue(sandbox);
       sandbox.start.mockRejectedValue(stateChangeInProgress());
@@ -320,8 +318,18 @@ describe("Daytona idle eligibility", () => {
       expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
     });
 
+    it("gives the start only the budget the wait left", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      let reads = 0;
+      sandbox.refreshData.mockImplementation(async () => { if (++reads === 2) sandbox.state = "stopped"; });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      await expect(realize(4_000)).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(reads).toBe(2);
+      expect(sandbox.start.mock.calls[0]![0]).toBeLessThanOrEqual(2);
+    });
+
     it("fails other start errors at once", async () => {
-      process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopped" });
       mockGet.mockResolvedValue(sandbox);
       sandbox.start.mockRejectedValue(new Error("quota exceeded"));
@@ -3439,6 +3447,26 @@ describe("Daytona sandbox provider plugin", () => {
       expect(freshSessionId).not.toBe(staleSessionId);
       const lastExec = sandbox.process.executeSessionCommand.mock.calls.at(-1)!;
       expect(lastExec[0]).toBe(freshSessionId);
+    });
+
+    it("opens a fresh session after a restart outside the plugin that realize waited out", async () => {
+      vi.stubEnv("DAYTONA_API_KEY", "host-key");
+      const sandbox = autoStoppedSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      const staleSessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+      sandbox.state = "starting";
+      sandbox.refreshData.mockImplementationOnce(async () => { sandbox.state = "started"; });
+      await plugin.definition.onEnvironmentRealizeWorkspace?.({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+        workspace: { localPath: "/tmp/workspace" },
+      } as never);
+      expect(sandbox.start).not.toHaveBeenCalled();
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.createSession.mock.calls[1]![0]).not.toBe(staleSessionId);
     });
 
     it("opens a fresh session after sync-in restarts an auto-stopped sandbox", async () => {
