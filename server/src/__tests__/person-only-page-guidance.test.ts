@@ -6,8 +6,6 @@ import { runnerApiCatalog, searchRunnerApi } from "../services/native-runtime/ru
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
-// Agents asked for a step only a person can take used to search the API until their turn ran out,
-// because no catalog entry they read said who acts or where. Each entry below names both.
 it.each([
   ["connect my assistant mcp setup", "GET /api/mcp/setup"],
   ["assistant connection consent approve access", "POST /api/mcp/requests/{id}/consent"],
@@ -52,8 +50,6 @@ it("says on the interaction listing that only the addressee resolves a connectio
   expect(list?.description).toContain("Only that person can connect or decline it");
 });
 
-// The catalog text is the only place these page paths live on the server, so a renamed UI route
-// would leave agents linking a page that no longer exists. Every page named must be mounted.
 it("names only pages that the board UI mounts", () => {
   const appRoutes = readFileSync(path.join(repoRoot, "ui/src/App.tsx"), "utf8");
   const pages = new Set(
@@ -67,4 +63,13 @@ it("names only pages that the board UI mounts", () => {
     .replace("issues/<identifier>", "issues/:issueId");
   for (const page of pages) expect(appRoutes, page).toContain(`<Route path="${mounted(page)}" element=`);
   expect(readFileSync(path.join(repoRoot, "ui/src/pages/apps/app-tabs.ts"), "utf8")).toContain("\"permissions\"");
+});
+
+it("links only mounted pages from connections_search", () => {
+  const appRoutes = readFileSync(path.join(repoRoot, "ui/src/App.tsx"), "utf8");
+  const search = readFileSync(path.join(repoRoot, "server/src/services/connection-intents.ts"), "utf8");
+  for (const page of ["apps/byo", "company/settings/instance/experimental"]) {
+    expect(search, page).toContain(`}/${page})`);
+    expect(appRoutes, page).toContain(`<Route path="${page}" element=`);
+  }
 });

@@ -11332,7 +11332,6 @@ registerCurrentRoute({
   body: connectionRequestInputSchema,
 });
 
-/** Agents read this in API search; without it they look for a way to resolve another person's card. */
 const ADDRESSED_CONNECTION_REQUEST = "Person-only: a connection request card is addressed to one person, its addresseeUserId. "
   + "Only that person, signed in to their own browser, can open its setup, connect their account or decline it. The server refuses every other member, board user and agent, so nobody can finish it for them. "
   + "When someone else offers to finish it, tell them the addressee must connect their own account from the card on its task, linked as [<identifier>](/<prefix>/issues/<identifier>). "
@@ -11701,7 +11700,6 @@ registerCurrentRoute({
   },
 });
 
-/** Agents read this in API search; without it they cannot find where a quarantined action is reviewed. */
 const QUARANTINED_ACTION_REVIEW = "Catalog entries with status quarantined are new actions that a catalog refresh found and holds for a person's review. "
   + "No agent can call a quarantined action, through this connection or any other transport, until a person who manages the connection allows it on the app's Permissions page, "
   + "[Permissions](/<prefix>/apps/<connectionId>/permissions), with this conversation's company prefix and the connection's id. Allowing it is that person's decision, not an agent's. "
@@ -12923,7 +12921,6 @@ registerCurrentRoute({
     400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
-/** Agents read this in API search; without it they hunt for the page where a person connects an assistant. */
 const ASSISTANT_CONNECTION_SETUP_PERSON_ONLY = "Person-only: a person connects their own assistant, such as Claude, ChatGPT or another MCP client, in their browser on "
   + "[Assistant connections](/<prefix>/apps/assistant-connection), with this conversation's company prefix as <prefix>. "
   + "That page gives the invitation and server URL to paste into the assistant; the assistant then opens a Paperclip consent screen where the person picks the company and approves access. "
