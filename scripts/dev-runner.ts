@@ -240,18 +240,22 @@ if (existingRunner) {
   process.exit(0);
 }
 
-function resolvePnpmBin(): string {
-  if (process.platform !== "win32") return "pnpm";
+function resolvePnpmBin(): { bin: string; useShell: boolean } {
+  if (process.platform !== "win32") return { bin: "pnpm", useShell: false };
   const result = spawnSync("where.exe", ["pnpm"], { encoding: "utf8" });
   if (result.status === 0 && result.stdout) {
-    // where.exe may return multiple lines; prefer the .exe over .cmd
+    // where.exe may return multiple lines. A real .exe can be spawned directly;
+    // .cmd/.bat shims (and extensionless sh shims) cannot, so route those through
+    // a shell, preferring the .cmd over the extensionless shim.
     const lines = result.stdout.trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     const exe = lines.find((l) => l.toLowerCase().endsWith(".exe"));
-    return exe ?? lines[0] ?? "pnpm";
+    if (exe) return { bin: exe, useShell: false };
+    const cmd = lines.find((l) => /\.(cmd|bat)$/i.test(l));
+    if (cmd) return { bin: `"${cmd}"`, useShell: true };
   }
-  return "pnpm";
+  return { bin: "pnpm.cmd", useShell: true };
 }
-const pnpmBin = resolvePnpmBin();
+const { bin: pnpmBin, useShell: pnpmUseShell } = resolvePnpmBin();
 let previousSnapshot = collectWatchedSnapshot();
 let dirtyPaths = new Set<string>();
 let pendingMigrations: string[] = [];
@@ -391,7 +395,7 @@ async function runPnpm(args: string[], options: {
       stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
       env: options.env ?? process.env,
       cwd: options.cwd,
-      shell: false,
+      shell: pnpmUseShell,
     });
 
     const stdoutBuffer = createCapturedOutputBuffer();
@@ -731,7 +735,7 @@ async function startServerChild() {
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env },
+    { stdio: "inherit", env, shell: pnpmUseShell },
   );
 
   childExitPromise = new Promise((resolve, reject) => {
