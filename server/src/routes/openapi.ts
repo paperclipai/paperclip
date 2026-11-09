@@ -3479,7 +3479,8 @@ registerCurrentRoute({
   summary: "Refresh a status card",
   description: "Queues a refresh; it does not return a new summary. The card's summarizer agent writes the update in its own generation run, after which the card's lastGeneratedAt and summary change. "
     + "Do not sleep or poll for it: reply now that the refresh is queued, with the returned card.href as a Markdown link where the person sees the update. "
-    + "alreadyGenerating means an earlier refresh is still running; enqueued false without alreadyGenerating means the card's refresh policy deferred it, and card.state says why (such as paused_budget or paused_hours).",
+    + "alreadyGenerating means an earlier refresh is still running. enqueued false without alreadyGenerating means this request started no run: "
+    + "if card.lastGeneratedAt is newer than before your request, a concurrent refresh already finished; otherwise the card's refresh policy deferred it, and card.state says why (such as paused_budget or paused_hours).",
   body: refreshStatusCardSchema,
 });
 
