@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeChatCatalogRuns, chatCatalogAllowedRunStatuses, assertExpectedWorkerCancellation, chatCatalogRunStatusAllowed, createChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
+import { gradeChatCatalogRuns, chatCatalogAllowedRunStatuses, assertExpectedWorkerCancellation, chatCatalogRunStatusAllowed, createChatCatalogFinalRunVerifier, chatCatalogNeverStartedTerminalTaskRun } from "./chat-catalog-run-policy.js";
 import type { ChatRun } from "./chat-flow.js";
 const succeeded: ChatRun = { id: "source-run", companyId: "company", agentId: "ceo", status: "succeeded", runtimeMode: "native", contextSnapshot: { issueId: "source" } };
 const worker: ChatRun = { id: "worker-run", companyId: "company", agentId: "worker", status: "running", runtimeMode: "native", contextSnapshot: { issueId: "task" } };
@@ -105,4 +105,16 @@ it("keeps an ordinary ownership-denial boundary strict without a cancellation de
     leadId: scope.leadId, observation: undefined });
   expect(verify(scope.source, [succeeded, worker]).passed).toBe(true);
   expect(verify(scope.source, [succeeded, { ...worker, status: "cancelled" }]).passed).toBe(false);
+});
+it("treats only a never-started run cancelled by its own task's terminal status as lifecycle, and still grades it", () => {
+  // Shape recorded for tasks.website-task: the agent cancelled its own stray task before the queued run started.
+  const queued: ChatRun = { id: "stray-run", companyId: "company", agentId: "ceo", status: "cancelled", runtimeMode: "legacy", startedAt: null,
+    errorCode: "issue_terminal_status", error: "Cancelled because issue reached terminal status (cancelled) before the queued run could start",
+    resultJson: { stopReason: "issue_terminal_status", timeoutFired: false }, contextSnapshot: { issueId: "stray-task", wakeReason: "issue_assigned" } };
+  expect(chatCatalogNeverStartedTerminalTaskRun(queued, scope.source)).toBe(true);
+  for (const run of [{ ...queued, startedAt: "2026-11-09T15:27:00Z" }, { ...queued, errorCode: "user_cancelled" }, { ...queued, status: "failed" },
+    { ...queued, resultJson: {} }, { ...queued, contextSnapshot: { issueId: "source" } }, { ...queued, contextSnapshot: {} }])
+    expect(chatCatalogNeverStartedTerminalTaskRun(run, scope.source)).toBe(false);
+  const implementation = { expectedRunCount: 3, runPolicy: { kind: "source-settled-with-active-work" as const, maximumActiveWorkerRuns: 1 } };
+  expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [succeeded, worker, queued] }).passed).toBe(false);
 });

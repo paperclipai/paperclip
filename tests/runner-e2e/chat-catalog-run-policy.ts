@@ -31,6 +31,18 @@ export function chatCatalogRunStatusAllowed(input: {
     && task.companyId === input.companyId && task.assigneeAgentId === worker.id && task.executionRunId === run.id
     && task.id === taskId(run) && task.id !== input.source?.id && run.errorCode === "issue_reassigned";
 }
+/**
+ * A queued run that never started and that the server cancelled because its own
+ * non-source task reached a terminal status is a task lifecycle event, not a
+ * provider failure. Early polling must not stop on it; the run stays in the
+ * ledger, and the run-bound and case checks still grade it.
+ */
+export function chatCatalogNeverStartedTerminalTaskRun(run: ChatRun, source?: ChatIssue): boolean {
+  const issueId = taskId(run);
+  return run.status === "cancelled" && run.errorCode === "issue_terminal_status" && !run.startedAt
+    && record(run.resultJson).stopReason === "issue_terminal_status"
+    && typeof issueId === "string" && issueId.length > 0 && issueId !== source?.id;
+}
 export function gradeChatCatalogRuns(input: {
   implementation: Pick<ChatCatalogCase, "expectedRunCount" | "minimumRunCount" | "runPolicy"> & CancellationCase;
   companyId: string; leadId: string; source?: ChatIssue; runs: ChatRun[];

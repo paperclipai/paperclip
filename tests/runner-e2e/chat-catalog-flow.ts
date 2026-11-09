@@ -6,7 +6,7 @@ import { chatNativeTimeoutEvidence } from "./chat-native-timeout-policy.js";
 import { completeNativeSlackFileConditional, dispatchNativeSlackIngress, prepareNativeSlackOtherThread, slackOtherThreadBoundaryMatches, slackNativeRunCheck } from "./chat-slack-ingress.js";
 import { runScopedCompanionSurface } from "./chat-companion-surface.js";
 import { chatQueryWithAttachments, resolveChatQueryAttachments, verifyChatQueryAttachments, type ChatQueryAttachmentReceipt } from "./chat-query-attachments.js";
-import { chatCatalogRunStatusAllowed, gradeChatCatalogRuns, createChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
+import { chatCatalogNeverStartedTerminalTaskRun, chatCatalogRunStatusAllowed, gradeChatCatalogRuns, createChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
 import { chatCatalogCaseFingerprint, normalizedChatCatalogExecution } from "./chat-catalog-fingerprint.js";
 import { expect } from "@playwright/test";
 import { pollUntil } from "./api.js";
@@ -205,7 +205,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       },
       reject: result => {
         if (result.runs.length > implementation.expectedRunCount) return "Scenario exceeded its declared run bound";
-        if (result.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status) && !chatCatalogRunStatusAllowed({ implementation,
+        if (result.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status) && !chatCatalogNeverStartedTerminalTaskRun(run, result.issue) && !chatCatalogRunStatusAllowed({ implementation,
           run, companyId: input.fixtures.company.id, leadId: input.fixtures.agent.id, source: result.issue, observation }))) return "Observed provider run failed";
         if (result.runs.length && result.runs.every(run => !["queued", "running"].includes(run.status)) && result.issue?.conversationState === "waiting") settledAt ??= Date.now();
         else settledAt = undefined;
