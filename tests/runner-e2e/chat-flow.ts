@@ -1,5 +1,3 @@
-import { archiveFaultClient } from "./chat-archive-fault-control.js";
-import type { ArchiveFaultTransport } from "./chat-catalog-domains/internal-archive-transport.js";
 import { prepareChatCatalogRespondent } from "./chat-catalog-respondent.js";
 import type { ChatPrivateInputs } from "./chat-private-inputs.js";
 import type { ChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
@@ -393,8 +391,6 @@ export function assertChatReassignment(input: {
 export interface ChatFlowInput {
   /** Exact commentary privacy case only: independent GET-only owned run evidence. Never model/product authority. */
   ownedRunEvidenceObserver?: OwnedChatRunEvidenceObserver;
-  /** Test-host-only owned transparent fault transport; never model state. */
-  archiveFaultTransport?: ArchiveFaultTransport;
   page: Page;
   api: RunnerApi;
   fixtures: LiveFixtureValues;
@@ -413,7 +409,6 @@ export interface ChatFlowInput {
   check?: (id: string, passed: boolean, detail: string) => void;
 }
 export async function runChatFlow(input: ChatFlowInput) {
-  input.archiveFaultTransport ??= await archiveFaultClient({ selected: input.execution.id, backendOrigin: input.api.baseURL, privateSecrets: input.privateSecrets });
   if (input.execution.suite.id === CHAT_FEATURE_SUITE) await prepareChatCatalogRespondent(input, findChatCatalogCase(input.execution.task.id));
   const { page, api, fixtures: f, execution, nonce } = input;
   const chatPath = `/api/companies/${f.company.id}/chats/${f.agent.id}`;

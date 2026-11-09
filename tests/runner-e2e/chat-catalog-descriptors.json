@@ -3295,11 +3295,9 @@
       "chat-catalog-domains/internal-inbox-search.ts",
       "chat-scenarios/inbox-search.yaml",
       "chat-catalog-domains/internal-archive-partial.ts",
-      "chat-catalog-domains/internal-archive-transport.ts",
-      "../e2e/fetch-allowed-port.ts",
-      "chat-archive-fault-control.ts"
+      "chat-archive-storage-fault.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.inbox.archive-partial-failure.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
