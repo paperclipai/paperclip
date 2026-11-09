@@ -24,7 +24,6 @@ import { currentControllerBootId } from "./controller-process-identity.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "./recovery/ownership-invariant-report.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
-import { createOwnershipReportState, runOwnershipReconciliationPass } from "./recovery/ownership-invariant-report.js";
 
 const exec = promisify(execFile);
 function deferred() {

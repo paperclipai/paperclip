@@ -455,6 +455,8 @@ describe("report-only ownership reconciliation", () => {
       lastFailure: { code: "remote_workspace_save_abandoned" } });
     const [liveRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs.live));
     expect(liveRun.status).toBe("running");
+  });
+
   it("ends a dirty remote epoch whose writer died during preparation, and keeps every other writer's files", async () => {
     const runs = { preparing: randomUUID(), resolved: randomUUID(), executing: randomUUID(), live: randomUUID(), saving: randomUUID(),
       invoked: randomUUID(), spawned: randomUUID() };
