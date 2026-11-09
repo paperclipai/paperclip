@@ -649,9 +649,10 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
   }, 60_000);
 
   it.each([
-    { label: "an interrupted bootstrap that never opened its session", turnIssued: false },
-    { label: "a bootstrap copy that already issued a turn", turnIssued: true },
-  ])("retires a finished owner past its own quarantined earlier bootstrap: $label", async ({ turnIssued }) => {
+    { label: "an interrupted bootstrap that never opened its session", turnIssued: false, sessionOpened: false },
+    { label: "a remote bootstrap that opened its session without a turn", turnIssued: false, sessionOpened: true },
+    { label: "a bootstrap copy that already issued a turn", turnIssued: true, sessionOpened: false },
+  ])("retires a finished owner past its own quarantined earlier bootstrap: $label", async ({ turnIssued, sessionOpened }) => {
     const prior = await seedRecoveredPriorRun();
     const followUp = await admitFollowUp(prior);
     await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
@@ -662,8 +663,13 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const state = JSON.parse(await readFile(path, "utf8"));
     const bootstrap = state.commands.filter((command: { type: string }) => command.type === "run.prepare" || command.type === "session.open"
       || (turnIssued && command.type === "turn.start"));
-    for (const command of bootstrap) command.status = command.type === "run.prepare" ? "completed" : "pending";
-    await writeFile(path, JSON.stringify({ ...state, commands: bootstrap, committedEvents: [], ackedSourceSeq: 0 }));
+    for (const command of bootstrap) {
+      command.status = command.type === "run.prepare" || (sessionOpened && command.type === "session.open") ? "completed" : "pending";
+    }
+    const opened = sessionOpened ? ["session.started", "session.capabilities.updated"].map((eventType, index) => ({
+      sourceSeq: index + 1, sourceEventId: `opened-${index + 1}`, eventType, priority: 1, envelope: { ...prior.identity },
+      deliveryCount: 1, logicalEffectCount: 1 })) : [];
+    await writeFile(path, JSON.stringify({ ...state, commands: bootstrap, committedEvents: opened, ackedSourceSeq: opened.length }));
     await rm(join(copyRoot, "runner"), { recursive: true, force: true });
     await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
     expect(await followUp.start()).toBe(turnIssued

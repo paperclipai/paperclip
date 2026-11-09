@@ -5633,7 +5633,8 @@ function quarantinedBootstrapOfOwnerHeldNoProviderWork(root: string, identity: R
   if (!isSafeNativeStateDirectory(root)) return false;
   const copied = readRunnerdDurableIdentity(root);
   if (!copied || Object.entries(identity).some(([key, value]) => copied[key] !== value)) return false;
-  return runnerdStateProvesIncompleteBootstrap(root, { localProcesses: localRunner });
+  return runnerdStateProvesIncompleteBootstrap(root, { localProcesses: localRunner })
+    || (!localRunner && runnerdStateProvesNoRemoteProviderTurn(root));
 }
 
 async function retireFinishedPerTurnRunnerdOwner(input: Parameters<typeof inspectFinishedPerTurnRunnerdOwner>[0])
