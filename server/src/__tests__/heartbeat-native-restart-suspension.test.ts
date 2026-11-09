@@ -1,4 +1,4 @@
-import { confirmNativeControllerStopped } from "../services/native-runtime/native-controller-host-recovery.js";
+import { confirmNativeControllerStopped, requestNativeControllerStopConfirmation } from "../services/native-runtime/native-controller-host-recovery.js";
 import { reconcileAbandonedExecutionControl } from "../services/execution-control-reconciliation.js";
 import { nativeControllerAuthorityDigest } from "../services/native-runtime/native-runner-ownership.js";
 import { cancelHeartbeatNativeRun } from "../services/heartbeat/run-control.js";
@@ -648,6 +648,33 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("running");
         expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([]);
       } finally { probe.restore(); unknown?.mockRestore(); }
+    }, 60_000);
+
+    it("keeps a real controller-only attestation from authorizing an in-flight claim", async () => {
+      const f = await seedClaim("CLAIM-CONTROLLER-ONLY", "expired", "foreign-process-space");
+      const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      await requestNativeControllerStopConfirmation(f.db, before);
+      const [action] = await f.db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.sourceIssueId, f.issueId), eq(issueRecoveryActions.status, "active")));
+      expect(action.cause).toBe("native_controller_host_unverified");
+      await expect(confirmNativeControllerStopped({ db: f.db, companyId: fixture.current.companyId,
+        issueId: f.issueId, runId: f.runId, actionId: action.id, actorId: "board-user",
+        stopEvidence: "The original controller stopped; provider effects have not been contained." }))
+        .resolves.toEqual({ runId: f.runId, status: "queued" });
+      const probe = observeOwnerPid(), onClaim = vi.fn();
+      try {
+        expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim }))
+          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified" }]);
+        expect(probe.observed).toEqual([]);
+        expect(onClaim).not.toHaveBeenCalled();
+        const [after] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+        expect(after).toMatchObject({ leaseOwner: before.leaseOwner, leaseExpiresAt: before.leaseExpiresAt,
+          controllerGeneration: before.controllerGeneration, attempt: before.attempt, resultId: null,
+          controllerHostHash: "operator_attested" });
+        expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+          .toMatchObject({ status: "running", resultJson: null });
+        expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([]);
+      } finally { probe.restore(); }
     }, 60_000);
 
     it.each(["live", "expired"] as const)("claims a same-space dead owner with a %s lease and stamps the pending claim", async expires => {

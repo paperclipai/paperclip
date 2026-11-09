@@ -2329,6 +2329,52 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     } finally { unsubscribe(); resetControllerInstanceLeaseForTests(); }
   });
 
+  it.each(["grace", "fenced"] as const)("uses durable foreign controller %s evidence before classifying its namespace", async state => {
+    const fixture = await seedRun(`REMOTE-CONTROLLER-${state}-${randomUUID()}`);
+    const oldBoot = randomUUID();
+    await fixture.db.update(heartbeatRuns).set({
+      runnerProfileJson: { ...fixture.preparedProfile, nativeWorkspaceSync: remotePreparedWorkspace() },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: oldBoot, controllerPid: 7,
+      controllerProcessStartedAt: new Date(Date.now() - 600_000), controllerHostHash: "previous-pid-space",
+      leaseOwner: "previous-preparation", leaseExpiresAt: new Date(0), attempt: 1, controllerGeneration: 1,
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await fixture.db.insert(controllerInstances).values({ bootId: oldBoot, processSpace: "previous-pid-space",
+      pid: 7, leaseExpiresAt: new Date(Date.now() - 1_000),
+      ...(state === "fenced" ? { fencedAt: new Date() } : {}),
+    });
+    registerControllerInstanceDb(fixture.db);
+    const originalKill = process.kill.bind(process);
+    const pidProbe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid === 7 && signal === 0) throw new Error("A foreign controller PID must not be probed");
+      return originalKill(pid, signal);
+    });
+    const stamped = vi.fn(), unsubscribe = onControllerStamp(stamped);
+    try {
+      const [before] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      const [disposition] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "hard", runIds: [fixture.runId] });
+      const [after] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      if (state === "grace") {
+        expect(disposition).toMatchObject({ kind: "awaiting_evidence", reason: "controller_lease_grace", retryAt: expect.any(Date) });
+        expect(stamped).not.toHaveBeenCalled();
+        expect(after).toMatchObject({ leaseOwner: before.leaseOwner, leaseExpiresAt: before.leaseExpiresAt,
+          controllerBootId: before.controllerBootId, controllerHostHash: before.controllerHostHash,
+          controllerGeneration: before.controllerGeneration, attempt: before.attempt });
+        await claimNativeRestartRecoveries({ db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId] });
+        const [repeated] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+        expect(repeated.updatedAt).toEqual(after.updatedAt);
+      } else {
+        expect(disposition).toMatchObject({ kind: "bootstrap_incomplete", runId: fixture.runId });
+        expect(stamped).toHaveBeenCalledOnce();
+        expect(after).toMatchObject({ controllerGeneration: 2, attempt: 1, resultId: null });
+      }
+      expect((await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)))[0])
+        .toMatchObject({ status: "running", processPid: null });
+      expect(await fixture.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId))).toEqual([]);
+    } finally { unsubscribe(); pidProbe.mockRestore(); resetControllerInstanceLeaseForTests(); }
+  });
+
   it("recovers an unclaimed remote startup once without requiring a provider checkpoint", async () => {
     const fixture = await seedRun("REMOTE-UNCLAIMED");
     await fixture.db.update(heartbeatRuns).set({
