@@ -1021,6 +1021,11 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("to your own /permissions page, where they can turn on hiring for you");
   });
 
+  it("tells chat overviews to state their observation time from the message timestamp", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("say when that picture is from as a clock time in UTC, such as \"As of 15:26 UTC\"");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Use the time of the person's latest message, which this prompt lists with each new comment");
+  });
+
   it("tells chat to link the agent profile page that holds a control, including the unlisted API keys page", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<urlKey or id>/api-keys for API keys");
     expect(AGENT_CHAT_DIRECTIVE).toContain("The API keys page is not in the profile's navigation");
