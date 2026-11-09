@@ -5674,7 +5674,7 @@
       "registered-artifact.ts",
       "chat-scenarios/task-coordination.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.independent-review.v3",
     "coverageGaps": [],
     "expectedRunCount": 5,
     "setupHumanMessageCount": 1,

@@ -14,6 +14,13 @@ import { openStandingChat } from "./identity-support.js";
 import { prepareRuntimeWorkerGate, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { observeRuntime, runtimeDefinition, runtimeObservation, runtimeWorker } from "./runtime-support.js";
 const credentials = new WeakMap<ChatCatalogContext, Array<{ id: string; token: string; agentId: string }>>();
+/** Whether a saved reply body has a Markdown link to this exact task page. */
+export function replyLinksTask(body: string, task: { id: string; identifier?: string | null }) {
+  return [...body.matchAll(/\]\(([^)\s]+)\)/g)].some(([, href]) => {
+    try { const parts = new URL(href!, "http://paperclip.invalid").pathname.split("/").map(decodeURIComponent); const index = parts.lastIndexOf("issues");
+      return index >= 0 && index === parts.length - 2 && [task.id, task.identifier].filter(Boolean).includes(parts[index + 1]); } catch { return false; }
+  });
+}
 export function gradeIndependentReview(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("actual-delivery-and-independent-review-evidence", !!o, "Real implementation bytes, pending policy, native independent review and later source report are required."); if (!o) return c.result();
@@ -29,17 +36,17 @@ export function gradeIndependentReview(value: unknown) {
     && s.reviewerActualBriefAccess === true && s.acceptanceContextDelivered === true,
   "The canonical source action starts the configured Riley review on the actual Website, retaining the real deliverable and acceptance context.");
   c.add("cannot-self-approve-while-independent-stage-pending", [403, 422].includes(Number(s.selfApproveStatus)) && s.selfApprovalPreservedPending === true
-    && s.pendingReviewVisible === true && s.pendingReplyAttributed === true && /Riley/i.test(String(s.pendingReply)) && /review/i.test(String(s.pendingReply))
-    && /request|pending|await|before|not yet|reviewing/i.test(String(s.pendingReply)) && !/review (?:has )?(?:passed|approved)|(?:task|website) is (?:now )?(?:done|finished)/i.test(String(s.pendingReply)),
-  "Morgan's actual self-approval request rejects without advancing the policy, and the canonical reply accurately describes requested or pending review.");
+    && s.pendingReviewVisible === true && s.pendingReplyAttributed === true && s.pendingReplyLinksTask === true
+    && !/review (?:has )?(?:passed|approved)|(?:task|website) is (?:now )?(?:done|finished)/i.test(String(s.pendingReply)),
+  "Morgan's actual self-approval request rejects without advancing the policy, and the canonical run's own reply links the governed task without claiming a completed review or finished task.");
   c.add("authorized-review-then-final-completion", current?.id === before.id && current.status === "done" && current.executionState?.status === "completed"
     && current.executionState.lastDecisionOutcome === "approved" && !!current.executionState.lastDecisionId
     && JSON.stringify(current.executionPolicy) === JSON.stringify(before.executionPolicy) && s.rileyApprovalBound === true && s.implementationRetained === true
     && o.runs.length === 5 && o.runs.every(row => row.status === "succeeded") && o.runs.filter(row => row.agentId === (s.reviewer as Entity).id).length === 1 && o.tasks.length === 1,
   "Only Riley's actual native approval resolves the same configured review stage and completes the same work while retaining Morgan's artifact.");
-  c.add("own-later-reply-distinguishes-completed-review-and-result", s.finalReplyAttributed === true && /Riley/i.test(String(s.finalReply)) && /review|approv|sign.off/i.test(String(s.finalReply))
-    && /done|complet|finish|ready|accepted/i.test(String(s.finalReply)) && !/still (?:pending|waiting)|not yet (?:reviewed|finished)/i.test(String(s.finalReply)),
-  "A later declared human question receives its own run-bound report of the actual approved review and final result.");
+  c.add("own-later-reply-reports-the-resolved-task", s.finalReplyAttributed === true && s.finalReplyLinksTask === true
+    && !/still (?:pending|waiting)|not yet (?:reviewed|finished)/i.test(String(s.finalReply)),
+  "A later declared human question receives its own run-bound reply that links the governed task, already approved and done in saved state, without claiming it is still pending.");
   return c.result();
 }
 export const runtimeIndependentReviewCases = [runtimeDefinition("task-coordination.independent-review", async ctx => {
@@ -68,6 +75,7 @@ export const runtimeIndependentReviewCases = [runtimeDefinition("task-coordinati
     actualImplementation: true, setupReviewRunCount: 0, setupRunIds: acknowledged.runs.map(row => row.id), reviewerEligibleBeforeQuery: reviewer.lifecycleState === "ready" && ["active", "idle"].includes(reviewer.status ?? "") };
 }, gradeIndependentReview, {
   authentication: "human-session", setupHumanMessageCount: 1, expectedHumanMessageCount: 3, expectedRunCount: 5, attemptTimeoutMs: 1_020_000,
+  oracleVersion: "paperclip.chat-catalog.runtime.independent-review.v3",
   sourceFiles: ["chat-catalog-domains/runtime-independent-review.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
     const task = state.task as Issue, reviewer = state.reviewer as Entity;
@@ -84,7 +92,7 @@ export const runtimeIndependentReviewCases = [runtimeDefinition("task-coordinati
     const canonicalHumans = sourceComments.filter(row => !row.authorAgentId && row.body === ctx.scenario.query), canonicalReplies = sourceComments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.createdByRunId === canonical.id);
     const canonicalFull = await ctx.input.api.get<{ runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${canonical.id}`);
     state.pendingReplyAttributed = canonicalHumans.length === 1 && canonicalReplies.length > 0 && canonicalFull.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(canonicalHumans[0]!.id) === true;
-    state.pendingReply = canonicalReplies.map(row => row.body).join("\n");
+    state.pendingReply = canonicalReplies.map(row => row.body).join("\n"); state.pendingReplyLinksTask = replyLinksTask(String(state.pendingReply), task);
     const activity = await ctx.input.api.get<ActivityEvent[]>(`/api/issues/${task.id}/activity`);
     state.reviewRequestSourceBound = activity.some(row => row.agentId === ctx.input.fixtures.agent.id && row.runId === canonical.id && row.details?.status === "in_review");
     const keySet = credentials.get(ctx); if (!keySet) throw new Error("Independent review probes lost their actual identities");
@@ -123,14 +131,16 @@ export const runtimeIndependentReviewCases = [runtimeDefinition("task-coordinati
     const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`), human = comments.filter(row => !row.authorAgentId && row.body === followup), replies = comments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.createdByRunId === run.id);
     const full = await ctx.input.api.get<{ runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${run.id}`);
     state.finalReplyAttributed = human.length === 1 && replies.length > 0 && full.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(human[0]!.id) === true;
-    state.finalReply = replies.map(row => row.body).join("\n");
+    state.finalReply = replies.map(row => row.body).join("\n"); state.finalReplyLinksTask = replyLinksTask(String(state.finalReply), task);
   },
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state), task = state.task as Issue;
     if (state.reviewRunId) {
       const actual = await ctx.input.api.get<Issue>(`/api/issues/${task.id}`), activity = await ctx.input.api.get<ActivityEvent[]>(`/api/issues/${task.id}/activity`);
+      // The decision row is Riley's own write from the review run. A native run's final status
+      // comes from its finish report, so the decision write need not carry status "done".
       state.rileyApprovalBound = actual.executionState?.lastDecisionOutcome === "approved" && activity.some(row => row.agentId === (state.reviewer as Entity).id && row.runId === state.reviewRunId
-        && row.details?.status === "done" && (row.details?.executionState as Issue["executionState"])?.lastDecisionId === actual.executionState?.lastDecisionId)
+        && (row.details?.executionState as Issue["executionState"])?.status === "completed" && (row.details?.executionState as Issue["executionState"])?.lastDecisionId === actual.executionState?.lastDecisionId)
         && o.revisions.some(row => row.createdByRunId === state.reviewRunId && row.createdByAgentId === (state.reviewer as Entity).id && (row.body ?? "").includes(String(state.marker)) && /Acorn Notes/i.test(row.body ?? "") && /sign.?up|join|subscribe/i.test(row.body ?? "") && /pass|approv|accept|meet|verif/i.test(row.body ?? ""));
       const [artifact] = await readRegisteredArtifacts(ctx.input.api, task.id, String(state.implementationRunId), ["website.html"]);
       state.implementationRetained = artifact?.sha256 === (state.artifact as { sha256: string }).sha256 && artifact.contentVerified;
