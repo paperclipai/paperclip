@@ -172,7 +172,15 @@ it("rejects a failure the storage fault did not cause or that hit an archived it
   const silent = partial(); firstOf(silent).state.injectedFailures = { one: 0, two: 0, three: 0 }; expect(gradeArchivePartial(silent).passed).toBe(false);
   const wrong = partial(); firstOf(wrong).state.injectedFailures = { one: 1, two: 0, three: 1 }; expect(gradeArchivePartial(wrong).passed).toBe(false);
 });
-it("rejects a first reply that does not point the person to the item that failed", () => { const o = partial(); firstOf(o).links = ["/RUN/issues/RUN-one", "/RUN/issues/RUN-two"]; expect(gradeArchivePartial(o).passed).toBe(false); });
+it("requires the first reply to identify the failed item by link, identifier or title", () => {
+  // Shape of run 42720344901: identifier and title without a task link, plus a no-op reset of the failed item.
+  const real = partial(), first = firstOf(real); first.links = []; first.reply = 'Archived 2 of the 3 done items: RUN-one "Delivery one" and RUN-two "Delivery two".\n\nRUN-three "Delivery three" could not be archived: the endpoint returned HTTP 500 on every attempt. It is still in your inbox.';
+  first.activity.push({ id: "reset", entityId: "three", action: "issue.inbox_unarchived", agentId: "ceo", details: { userId: "person" } }); expect(gradeArchivePartial(real).passed).toBe(true);
+  for (const reply of ["Archived two items. One failed and is still in your inbox.", "Archived RUN-one and RUN-two; RUN-thirty failed."]) {
+    const o = partial(); firstOf(o).links = ["/RUN/issues/RUN-one", "/RUN/issues/RUN-two"]; firstOf(o).reply = reply; expect(gradeArchivePartial(o).passed, reply).toBe(false);
+  }
+});
+it("rejects undoing a saved archive in the first turn", () => { const o = partial(); firstOf(o).activity.push({ id: "undo", entityId: "one", action: "issue.inbox_unarchived", agentId: "ceo", details: { userId: "person" } }); expect(gradeArchivePartial(o).passed).toBe(false); });
 it("rejects repeating successful writes, unarchiving, or leaving the failed item on retry", () => {
   const repeated = partial(); repeated.ownerItems[0]!.archivedAt = "2026-10-26T02:00:00Z"; repeated.ownerItems[0]!.archivedByRunId = "retry"; repeated.activity.push({ id: "again", entityId: "one", action: "issue.inbox_archived", agentId: "ceo", details: { userId: "person" } }); expect(gradeArchivePartial(repeated).passed).toBe(false);
   const undone = partial(); undone.activity.push({ id: "undo", entityId: "one", action: "issue.inbox_unarchived", agentId: "ceo", details: { userId: "person" } }); expect(gradeArchivePartial(undone).passed).toBe(false);

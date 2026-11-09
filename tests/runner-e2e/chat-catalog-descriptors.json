@@ -3297,7 +3297,7 @@
       "chat-catalog-domains/internal-archive-partial.ts",
       "chat-archive-storage-fault.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.inbox.archive-partial-failure.v2",
+    "oracleVersion": "paperclip.chat-catalog.inbox.archive-partial-failure.v3",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
