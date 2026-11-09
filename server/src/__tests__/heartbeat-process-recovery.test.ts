@@ -3562,7 +3562,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }).where(eq(heartbeatRuns.id, runId));
     await heartbeatService(db).reapOrphanedRuns();
     const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(reaped).toMatchObject({ errorCode: "process_lost", error: "Process lost -- server may have restarted" });
+    expect(reaped).toMatchObject({ errorCode: "process_lost", error: "Process lost -- child pid 999999999 is no longer running" });
     expect(reaped.resultJson).toMatchObject({ processLossDiagnostic: { retryEligible: false } });
     expect(await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))).toEqual([]);
