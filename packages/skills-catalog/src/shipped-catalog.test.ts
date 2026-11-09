@@ -193,6 +193,9 @@ describe("shipped skills catalog", () => {
 
     expect(handoff).toMatch(/read the PR head back from GitHub/i);
     expect(handoff).toMatch(/missing\s+check run is not a pass/i);
+    expect(handoff).toMatch(
+      /If QA only reviewed an older commit, request a successor review against the current head/i,
+    );
     expect(handoff).toMatch(/independent QA task through the project's native issue\s+workflow/i);
     expect(handoff).toMatch(/exact commit and run the required independent\s+tests/i);
     expect(handoff).toMatch(/If QA returns `NEEDS_FIX`.*same implementation owner/i);
