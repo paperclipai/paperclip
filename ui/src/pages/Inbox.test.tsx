@@ -135,6 +135,20 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
 }));
 
+const workspaceIdScan = vi.hoisted(() => ({ calls: 0, limit: Number.POSITIVE_INFINITY }));
+
+vi.mock("../lib/inbox", async () => {
+  const actual = await vi.importActual<typeof import("../lib/inbox")>("../lib/inbox");
+  return {
+    ...actual,
+    collectReferencedExecutionWorkspaceIds: (...lists: Parameters<typeof actual.collectReferencedExecutionWorkspaceIds>) => {
+      workspaceIdScan.calls += 1;
+      if (workspaceIdScan.calls > workspaceIdScan.limit) throw new Error("Workspace id scan ran on an unchanged render");
+      return actual.collectReferencedExecutionWorkspaceIds(...lists);
+    },
+  };
+});
+
 vi.mock("../hooks/useInboxBadge", () => ({
   useDismissedInboxAlerts: () => ({ dismissed: new Set(), dismiss: vi.fn() }),
   useInboxDismissals: () => ({ dismissedAtByKey: new Map(), dismiss: vi.fn() }),
@@ -917,6 +931,50 @@ describe("Inbox toolbar", () => {
     expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
     act(() => root.unmount());
+  });
+
+  it("scans a realistic Mine list for workspace ids once per data change, not per render", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "updated"]));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    const base = new Date("2026-03-11T00:00:00.000Z").getTime();
+    const issues = Array.from({ length: 100 }, (_, index) => createIssue({
+      id: `issue-${index}`,
+      identifier: `PAP-${5000 + index}`,
+      title: `Scaled task ${index}`,
+      executionWorkspaceId: `execution-workspace-${String(index).padStart(3, "0")}`,
+      lastActivityAt: new Date(base - index * 1000),
+    }));
+    setIssueRows(issues);
+    workspaceIdScan.calls = 0;
+    workspaceIdScan.limit = Number.POSITIVE_INFINITY;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+      });
+      await vi.waitFor(() => expect(container.querySelectorAll('[data-slot="task-row"]').length).toBe(100));
+      await vi.waitFor(() => expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalled());
+      expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledTimes(1);
+      expect(apiMocks.executionWorkspaceSummaries.mock.calls[0]?.[1]).toEqual({
+        ids: issues.map((issue) => issue.executionWorkspaceId),
+      });
+
+      // Keyboard navigation re-renders the page without changing its data.
+      workspaceIdScan.limit = workspaceIdScan.calls;
+      await act(async () => {
+        for (let press = 0; press < 5; press += 1) {
+          document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
+        }
+      });
+      expect(workspaceIdScan.calls).toBe(workspaceIdScan.limit);
+      expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledTimes(1);
+    } finally {
+      workspaceIdScan.limit = Number.POSITIVE_INFINITY;
+      act(() => root.unmount());
+    }
   });
 
   it("rows reveal while the workspace read is pending when no workspace column or grouping is active", async () => {

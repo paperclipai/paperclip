@@ -147,6 +147,7 @@ import {
   getInboxWorkItems,
   getInboxSearchSupplementIssues,
   getLatestFailedRunsByAgent,
+  collectReferencedExecutionWorkspaceIds,
   matchesInboxIssueSearch,
   getRecentTouchedIssues,
   isInboxEntityDismissed,
@@ -202,6 +203,8 @@ import { taskStatusIconProps } from "@/lib/task-status-presentation";
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 100;
 const INBOX_HOT_PATH_STALE_MS = 30_000;
+// Stable fallback so memos over unloaded or disabled issue reads do not rerun on every render.
+const NO_ISSUES: Issue[] = [];
 const INBOX_COLLECTION_KEY = "inbox";
 
 type StreamlinedInboxViewState = InboxFilterPreferences & {
@@ -1019,7 +1022,7 @@ function StreamlinedInbox({
         error && isTransientError(new ApiError(error.message, error.status, null))) ? 5_000 : false;
     },
   });
-  const { data: mineIssuesRaw = [], isLoading: isMineIssuesLoading, error: mineIssuesError } = mineIssuesQuery;
+  const { data: mineIssuesRaw = NO_ISSUES, isLoading: isMineIssuesLoading, error: mineIssuesError } = mineIssuesQuery;
   const mineIssuesView = useQueryView(mineIssuesQuery);
   const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, currentUserId] as const;
   // Mine owns one coherent response: broadcasting only its task array would
@@ -1043,7 +1046,7 @@ function StreamlinedInbox({
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
-  const { data: touchedIssuesRaw = [], isLoading: isTouchedIssuesLoading, error: touchedIssuesError, dataUpdatedAt: touchedIssuesUpdatedAt } = touchedIssuesQuery;
+  const { data: touchedIssuesRaw = NO_ISSUES, isLoading: isTouchedIssuesLoading, error: touchedIssuesError, dataUpdatedAt: touchedIssuesUpdatedAt } = touchedIssuesQuery;
   const touchedIssuesView = useQueryView(touchedIssuesQuery);
   const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
@@ -1212,7 +1215,7 @@ function StreamlinedInbox({
   const shouldUseIssueSearchSupplement =
     !!selectedCompanyId
     && normalizedSearchQuery.length > 0;
-  const { data: remoteIssueSearchResults = [] } = useQuery({
+  const { data: remoteIssueSearchResults = NO_ISSUES } = useQuery({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
       "compact",
@@ -1248,13 +1251,10 @@ function StreamlinedInbox({
     return [...issueIds];
   }, [mineIssues, remoteIssueSearchResults, touchedIssues]);
   // Only the workspaces these rows reference; a company-wide list can be thousands of rows.
-  const referencedExecutionWorkspaceIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const list of [issues, remoteIssueSearchResults]) {
-      for (const issue of list) if (issue.executionWorkspaceId) ids.add(issue.executionWorkspaceId);
-    }
-    return [...ids].sort();
-  }, [issues, remoteIssueSearchResults]);
+  const referencedExecutionWorkspaceIds = useMemo(
+    () => collectReferencedExecutionWorkspaceIds(issues, remoteIssueSearchResults),
+    [issues, remoteIssueSearchResults],
+  );
   const referencedExecutionWorkspaceIdsKey = referencedExecutionWorkspaceIds.join(",");
   const { data: executionWorkspaces = [], isLoading: isWorkspacesLoading } = useQuery({
     queryKey: queryKeys.executionWorkspaces.summaryList(selectedCompanyId ?? "__disabled__", {
