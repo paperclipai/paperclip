@@ -70,6 +70,29 @@ Skip the `Risk and rollback` section only for clearly trivial PRs (typos, docs).
 - For migrations, include a dry-run plan and reversal steps.
 - For performance changes, include a before/after measurement, not adjectives.
 
+## Exact-SHA QA handoff
+
+After publishing a completed change, read the PR head back from GitHub and record
+the full commit SHA. Check the status of checks for that exact SHA; a missing
+check run is not a pass and does not delay the QA handoff. Treat QA evidence as
+bound to the SHA it reviewed. If QA only reviewed an older commit, request a
+successor review against the current head.
+
+Create or activate the independent QA task through the project's native issue
+workflow as soon as the current head is verified. Include the PR URL, full SHA,
+focused regression commands, expected evidence, and the request for a verdict.
+The reviewer must check out that exact commit and run the required independent
+tests before issuing a verdict. Keep implementation and QA ownership separate.
+
+If QA returns `NEEDS_FIX`, assign the same implementation owner a follow-up on
+the existing PR branch with the finding and exact reviewed SHA. Reproduce the
+finding, fix its cause, run the focused regressions, and publish a new commit;
+then request QA against the new full SHA. Do not retry without accounting for
+the prior result, edit the test corpus or oracle to make a finding disappear, or
+reuse an older verdict for a newer commit. Record each handoff on the existing
+PR and issue through their native comment, assignment, and status controls; do
+not add an overlay or bespoke approval process.
+
 ## Replying to review comments
 
 - Reply on every comment, even with just "fixed in <commit-sha>" — silent fixes leave the reviewer guessing.

@@ -181,6 +181,29 @@ describe("shipped skills catalog", () => {
     expect(resolveCatalogSkillRef(sample.slug)).toMatchObject({ key: sample.key });
   });
 
+  it("documents an exact-SHA QA successor handoff for PR delivery", () => {
+    const workflow = readFileSync(
+      new URL("../catalog/bundled/software-development/github-pr-workflow/SKILL.md", import.meta.url),
+      "utf8",
+    );
+    const handoff = (workflow.split("## Exact-SHA QA handoff")[1]?.split("\n## ")[0] ?? "").replace(
+      /\s+/g,
+      " ",
+    );
+
+    expect(handoff).toMatch(/read the PR head back from GitHub/i);
+    expect(handoff).toMatch(/missing\s+check run is not a pass/i);
+    expect(handoff).toMatch(/independent QA task through the project's native issue\s+workflow/i);
+    expect(handoff).toMatch(/exact commit and run the required independent\s+tests/i);
+    expect(handoff).toMatch(/If QA returns `NEEDS_FIX`.*same implementation owner/i);
+    expect(handoff).toMatch(/new full SHA/i);
+    expect(handoff).toMatch(/Do not retry without\s+accounting for\s+the prior result/i);
+    expect(handoff).toMatch(
+      /existing PR and issue through their native comment, assignment, and status controls/i,
+    );
+    expect(handoff).toMatch(/do not add an overlay or bespoke approval process/i);
+  });
+
   it("keeps the Ramp wrapper fail-closed on mixed-provenance playbooks", () => {
     const rampSkill = readFileSync(new URL("../catalog/optional/finance/ramp/SKILL.md", import.meta.url), "utf8");
 
