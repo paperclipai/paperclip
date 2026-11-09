@@ -3069,7 +3069,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               // so the task explains it and a new click can replace this intent.
               const declineRetry = async (reason: string, message: string) => {
                 await writeDeferredExecutionWait(tx as unknown as Db, { companyId: agent.companyId,
-                  requestId: pending.id }, { reason, message }, { replace: true });
+                  requestId: pending.id }, { reason, message }, { replace: true, publications: issueActivityPublications });
                 logger.warn({ requestId: pending.id, issueId, reason }, "Task Retry could not start");
                 return { kind: "deferred" as const };
               };
@@ -3543,7 +3543,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const condition = { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait };
             if (executionWaitRequestId) {
               await writeDeferredExecutionWait(tx as unknown as Db, { companyId: agent.companyId,
-                requestId: executionWaitRequestId }, condition, { replace: true });
+                requestId: executionWaitRequestId }, condition, { replace: true, publications: issueActivityPublications });
               return { kind: "deferred" as const, admitted: true };
             }
             if (durableRequest || wakeCommentId ||
