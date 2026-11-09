@@ -189,6 +189,7 @@ export const validatePrpStructuredRunResult =
   runner.validatePrpStructuredRunResult;
 
 export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailure;
+export const NativeGovernedWaitSettlementPendingError = runner.NativeGovernedWaitSettlementPendingError;
 export const NativeProviderStateIncompatibleError = runner.NativeProviderStateIncompatibleError;
 export const NativeProviderSideEffectPendingError = runner.NativeProviderSideEffectPendingError;
 export const NativeRunnerSourceReconciliationRequiredError = runner.NativeRunnerSourceReconciliationRequiredError;
