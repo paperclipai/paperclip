@@ -211,6 +211,7 @@ export type NativeMaterializedStatusEffect = {
   targetType: string;
   targetId: string | null;
   payload: Record<string, unknown>;
+  deliveryState?: "skipped";
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -499,8 +500,9 @@ async function enqueueWake(input: {
     companyId: input.companyId, actorAgentId: origin.agentId, targetAgentId: input.agentId, issueId: input.issueId,
     operation: input.originOperation ?? "assign", texts: agentWakeInteractionTexts(input.payload), delivery: true, lock: true,
   }) : null;
-  if (denial) throw forbidden("Agent interaction is not permitted.", denial);
-  await notifyNativeStatusWakeWork(input.tx, { companyId: input.companyId });
+  const refusedParentReport = denial && input.reason === "issue_children_completed" && input.originOperation === "comment";
+  if (denial && !refusedParentReport) throw forbidden("Agent interaction is not permitted.", denial);
+  if (!denial) await notifyNativeStatusWakeWork(input.tx, { companyId: input.companyId });
   const inserted = await input.tx
     .insert(agentWakeupRequests)
     .values({
@@ -509,7 +511,14 @@ async function enqueueWake(input: {
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
-      payload: {
+      ...(denial ? { status: "skipped", error: INTERACTION_DELIVERY_DENIED, finishedAt: new Date() } : {}),
+      payload: denial ? {
+        issueId: input.issueId,
+        taskId: input.issueId,
+        sourceRunId: input.originRunId,
+        ...originPayload,
+        interactionPermissionDenials: { assignment: denial },
+      } : {
         issueId: input.issueId,
         taskId: input.issueId,
         ...input.payload,
@@ -531,6 +540,13 @@ async function enqueueWake(input: {
     .then((rows) => rows[0] ?? null);
   if (!inserted) throw new Error("native_status_wake_not_persisted");
   return inserted.id;
+}
+
+async function refusedWakePolicy(tx: Db, companyId: string, wakeId: string) {
+  const [wake] = await tx.select({ error: agentWakeupRequests.error, payload: agentWakeupRequests.payload })
+    .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
+  return wake?.error === INTERACTION_DELIVERY_DENIED
+    ? record(record(wake.payload).interactionPermissionDenials).assignment : null;
 }
 
 async function validateGovernanceGate(
@@ -2451,18 +2467,29 @@ export async function commitNativeStatusDecision(input: {
           },
           contextSnapshot: childCompletionContext ?? undefined,
         });
+        const reportDenial = isCompletedChildParent ? await refusedWakePolicy(tx as unknown as Db, input.companyId, wakeId) : null;
         materialized.push({
           effectKind: isCompletedChildParent
             ? "parent_dependency_wake"
             : "dependency_wake",
           targetType: "agent_wakeup_request",
           targetId: wakeId,
+          ...(reportDenial ? { deliveryState: "skipped" as const } : {}),
           payload: {
             dependentIssueId: dependent.id,
             resolvedBlockerIssueId: input.issueId,
-            ...(childCompletionContext ?? {}),
+            ...(reportDenial ? { interactionPermissionDenials: { assignment: reportDenial } } : childCompletionContext ?? {}),
           },
         });
+        if (reportDenial) {
+          const dependencyWakeId = await enqueueWake({ tx: tx as unknown as Db, companyId: input.companyId,
+            issueId: dependent.id, agentId: dependent.assigneeAgentId, reason: "issue_blockers_resolved",
+            idempotencyKey: buildIssueBlockersResolvedWakeIdempotencyKey({ dependentIssueId: dependent.id, resolvedBlockerIssueId: input.issueId }),
+            payload: { resolvedBlockerIssueId: input.issueId, blockerIssueIds: dependent.blockerIssueIds },
+          });
+          materialized.push({ effectKind: "dependency_wake", targetType: "agent_wakeup_request", targetId: dependencyWakeId,
+            payload: { dependentIssueId: dependent.id, resolvedBlockerIssueId: input.issueId } });
+        }
       }
       if (parent && !parentIsDependent) {
         const wakeId = await enqueueWake({
@@ -2491,17 +2518,21 @@ export async function commitNativeStatusDecision(input: {
             childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
           },
         });
+        const reportDenial = await refusedWakePolicy(tx as unknown as Db, input.companyId, wakeId);
         materialized.push({
           effectKind: "parent_wake",
           targetType: "agent_wakeup_request",
           targetId: wakeId,
+          ...(reportDenial ? { deliveryState: "skipped" as const } : {}),
           payload: {
             parentIssueId: parent.id,
             completedChildIssueId: input.issueId,
             ...childCompletionDelivery,
-            childIssueSummaries: parent.childIssueSummaries,
-            onboardingCompletion: parent.onboardingCompletion,
-            childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+            ...(reportDenial ? { interactionPermissionDenials: { assignment: reportDenial } } : {
+              childIssueSummaries: parent.childIssueSummaries,
+              onboardingCompletion: parent.onboardingCompletion,
+              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+            }),
           },
         });
       }
@@ -2520,9 +2551,10 @@ export async function commitNativeStatusDecision(input: {
           targetId: effect.targetId,
           idempotencyKey: `native-status:${decisionRow.id}:${index + 1}`,
           payload: effect.payload,
-          deliveryState: "delivered",
+          deliveryState: effect.deliveryState ?? "delivered",
           attemptCount: 1,
-          deliveredAt: new Date(),
+          deliveredAt: effect.deliveryState === "skipped" ? null : new Date(),
+          lastError: effect.deliveryState === "skipped" ? INTERACTION_DELIVERY_DENIED : null,
         })
         .onConflictDoNothing();
     }

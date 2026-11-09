@@ -485,9 +485,11 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
           parentIssueId: effect.type === "create_issue" ? effect.draft.parentId ?? target.id : undefined,
           texts: [interpolate(JSON.stringify(effect), decision.inputValues ?? {})], lock: true,
         });
-        if ("comment" in effect && effect.comment) await assertAgentInteraction(tx, {
+        const effectComment = effect.type === "cancel_issue_tree" ? effect.reasonComment
+          : "comment" in effect ? effect.comment : undefined;
+        if (effectComment) await assertAgentInteraction(tx, {
           companyId: decision.companyId, actorAgentId: decision.originAgentId,
-          operation: "comment", issueId: target.id, texts: [interpolate(effect.comment, decision.inputValues ?? {})], lock: true,
+          operation: "comment", issueId: target.id, texts: [interpolate(effectComment, decision.inputValues ?? {})], lock: true,
         });
         if (effect.type === "cancel_issue_tree") {
           for (const child of referencedIssues.filter(item => item.id !== target.id)) {

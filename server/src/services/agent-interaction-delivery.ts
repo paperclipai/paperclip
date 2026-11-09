@@ -77,6 +77,38 @@ function commentIds(context: unknown): string[] {
     .filter((id): id is string => Boolean(id)))];
 }
 
+function requiresWakeOriginCheck(wake: Wake): boolean {
+  const payload = record(wake.payload);
+  const context = record(payload._paperclipWakeContext);
+  const reason = string(context.wakeReason) ?? wake.reason;
+  const operation = record(payload[ORIGIN_KEY]).operation;
+  if (operation === "assign" || operation === "comment") return true;
+  if (["issue_commented", "issue_reopened_via_comment", "issue_comment_mentioned"].includes(reason ?? "")) return false;
+  if (reason && reason !== "issue_execution_same_name") return true;
+  return commentIds(payload).length === 0 && commentIds(context).length === 0;
+}
+
+async function recheckAssignmentWakes(db: Executor, run: Run, wakes: Wake[], issueId: string | null, hasComments: boolean) {
+  const reason = string(record(run.contextSnapshot).wakeReason);
+  const runHasIndependentOrigin = Boolean(run.retryOfRunId || reason &&
+    !["issue_commented", "issue_reopened_via_comment", "issue_comment_mentioned", "issue_execution_same_name"].includes(reason));
+  const candidates: Array<Wake | undefined> = wakes.length
+    ? wakes.filter(requiresWakeOriginCheck) : hasComments && !runHasIndependentOrigin ? [] : [undefined];
+  let denial: unknown;
+  for (const wake of candidates) {
+    const current = record(record(wake ? wake.payload : run.resultJson)[DENIALS_KEY]).assignment
+      ?? await assignmentDenial(db, run, wake, issueId);
+    if (!current) continue;
+    denial ??= current;
+    if (wake) await db.update(agentWakeupRequests).set({ status: "skipped", finishedAt: new Date(),
+      error: INTERACTION_DELIVERY_DENIED, updatedAt: new Date(),
+      payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{interactionPermissionDenials}',
+        coalesce(${agentWakeupRequests.payload}->'interactionPermissionDenials', '{}'::jsonb) || ${JSON.stringify({ assignment: current })}::jsonb)`,
+    }).where(eq(agentWakeupRequests.id, wake.id));
+  }
+  return denial;
+}
+
 async function unknownOriginDenial(db: Executor, companyId: string, targetAgentId: string,
   operation: "assign" | "comment", issueId: string | null): Promise<DeliveryDenial | null> {
   const [target] = await db.select({ permissions: agents.permissions }).from(agents)
@@ -196,10 +228,10 @@ async function assignmentDenial(db: Executor, run: Run, wake: Wake | undefined, 
   if (actorType === "system" && reason !== "issue_assigned" && reason !== "issue_created") return null;
   if (wake?.source !== "assignment" && run.invocationSource !== "assignment") return null;
   if (issueId) {
-    if (wake && (!actorType || actorType === "system")) {
+    if (!actorType || actorType === "system") {
       const [assignment] = await db.select({ actorType: activityLog.actorType, actorId: activityLog.actorId })
         .from(activityLog).where(and(eq(activityLog.companyId, run.companyId), eq(activityLog.entityType, "issue"),
-          eq(activityLog.entityId, issueId), lte(activityLog.createdAt, wake.requestedAt),
+          eq(activityLog.entityId, issueId), lte(activityLog.createdAt, wake?.requestedAt ?? run.createdAt),
           or(eq(activityLog.action, "issue.created"), eq(activityLog.action, "issue.updated")),
           sql`${activityLog.details}->>'assigneeAgentId' = ${run.agentId}`))
         .orderBy(desc(activityLog.createdAt), desc(activityLog.id)).limit(1);
@@ -256,17 +288,9 @@ export async function recheckQueuedRunInteractions(db: Db, run: Run): Promise<{
       });
       Object.assign(denials, remaining.denials);
       for (const id of [...allowed]) if (!remaining.allowedIds.includes(id)) allowed.delete(id);
-    } else {
-      for (const wake of wakes.length ? wakes : [undefined]) {
-        const denial = record(record(wake?.payload)[DENIALS_KEY]).assignment
-          ?? await assignmentDenial(tx, current, wake, issueId);
-        if (!denial) continue;
-        denials.assignment = denial;
-        if (wake) await tx.update(agentWakeupRequests).set({ status: "skipped", finishedAt: new Date(),
-          error: INTERACTION_DELIVERY_DENIED, payload: { ...record(wake.payload), [DENIALS_KEY]: { assignment: denial } }, updatedAt: new Date(),
-        }).where(eq(agentWakeupRequests.id, wake.id));
-      }
     }
+    const assignment = await recheckAssignmentWakes(tx, current, wakes, issueId, allIds.length > 0);
+    if (assignment) denials.assignment = assignment;
     if (!Object.keys(denials).length) return { run: current, denied: false, denials };
     if (!denials.assignment && allowed.size === allIds.length) return { run: current, denied: false, denials };
     const denied = Boolean(denials.assignment) || (allIds.length > 0 && allowed.size === 0);
@@ -282,6 +306,7 @@ export async function recheckQueuedRunInteractions(db: Db, run: Run): Promise<{
     const [updated] = await tx.update(heartbeatRuns).set({ contextSnapshot,
       resultJson: { ...record(current.resultJson), [DENIALS_KEY]: denials, ...(denied ? { interactionDeliveryDenied: true } : {}) }, updatedAt: new Date(),
     }).where(eq(heartbeatRuns.id, current.id)).returning();
+    if (assignment && issueId && allowed.size) await retainAllowedMessages(tx, current, issueId, [...allowed]);
     return { run: updated ?? current, denied, denials };
   });
 }
@@ -347,26 +372,24 @@ export async function preparedRunInteractionDeliveryDenied(db: Db, run: Run): Pr
   if (accepted) return false;
   const issueId = run.nativeIssueId ?? run.issueId ?? string(record(run.contextSnapshot).issueId);
   const inputIds = commentIds(run.contextSnapshot);
-  if (issueId && inputIds.length) {
-    const allowed = await filterRunMessageInteractionDelivery(db, { companyId: run.companyId, runId: run.id, issueId, commentIds: inputIds });
-    if (allowed.size === inputIds.length) return false;
-    if (allowed.size) await retainAllowedPreparedMessages(db, run, issueId, [...allowed]);
-    return true;
-  }
-  const [wake] = run.wakeupRequestId ? await db.select().from(agentWakeupRequests).where(and(
-    eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId),
-    eq(agentWakeupRequests.agentId, run.agentId))) : [];
-  const denial = record(record(wake?.payload)[DENIALS_KEY]).assignment ?? await assignmentDenial(db, run, wake, issueId);
-  if (!denial) return false;
-  await db.update(heartbeatRuns).set({
-    resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ [DENIALS_KEY]: { assignment: denial }, interactionDeliveryDenied: true })}::jsonb`,
-    updatedAt: new Date(),
+  const allowed = issueId && inputIds.length ? await filterRunMessageInteractionDelivery(db,
+    { companyId: run.companyId, runId: run.id, issueId, commentIds: inputIds }) : new Set<string>();
+  const wakes = await db.select().from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
+    or(eq(agentWakeupRequests.runId, run.id), run.wakeupRequestId ? eq(agentWakeupRequests.id, run.wakeupRequestId) : undefined),
+  )).orderBy(asc(agentWakeupRequests.id));
+  const denial = await recheckAssignmentWakes(db, run, wakes, issueId, inputIds.length > 0);
+  if (!denial && allowed.size === inputIds.length) return false;
+  if (issueId && allowed.size) await db.transaction(tx => retainAllowedMessages(tx, run, issueId, [...allowed]));
+  if (denial) await db.update(heartbeatRuns).set({
+    resultJson: sql`jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), '{interactionPermissionDenials}',
+      coalesce(${heartbeatRuns.resultJson}->'interactionPermissionDenials', '{}'::jsonb) || ${JSON.stringify({ assignment: denial })}::jsonb)
+      || '{"interactionDeliveryDenied": true}'::jsonb`, updatedAt: new Date(),
   }).where(eq(heartbeatRuns.id, run.id));
   return true;
 }
 
-async function retainAllowedPreparedMessages(db: Db, run: Run, issueId: string, allowedIds: string[]) {
-  await db.transaction(async tx => {
+async function retainAllowedMessages(tx: Executor, run: Run, issueId: string, allowedIds: string[]) {
     await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).for("update");
     const [current] = await tx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, run.id)).for("update");
@@ -401,5 +424,4 @@ async function retainAllowedPreparedMessages(db: Db, run: Run, issueId: string, 
     }
     await tx.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
       || ${JSON.stringify({ interactionRetainedMessages: retained })}::jsonb`, updatedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
-  });
 }

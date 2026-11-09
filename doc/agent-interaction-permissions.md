@@ -121,6 +121,10 @@ delivery retains an inspectable permanent policy outcome instead of retrying
 indefinitely. Removing the restriction later does not automatically replay the
 refused delivery.
 
+A refused child-completion report does not undo the child's completed work.
+The report keeps a terminal refusal receipt. Dependency completion can still
+notify the parent with a system event that contains no agent-authored report.
+
 Permission changes do not delete saved comments, rewrite assignments, terminate
 running work, or sanitize historical context. Subsequent actions from running
 agents use current permissions. Older queue records use existing source

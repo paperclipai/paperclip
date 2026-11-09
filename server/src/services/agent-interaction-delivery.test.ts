@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { filterRunMessageInteractionDelivery, hasAutomaticInteractionDeliveryHold, preparedRunInteractionDeliveryDenied, recheckQueuedCommentInteractionDelivery,
   recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "./agent-interaction-delivery.js";
@@ -9,6 +9,7 @@ import { createHeartbeatQueue } from "./heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heartbeat-queue.js";
 import { withPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { recoveryService } from "./recovery/service.js";
+import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("pending agent interaction delivery", () => {
@@ -98,6 +99,86 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
     expect(savedWake.status).toBe("queued");
     expect((savedWake.payload?._paperclipWakeContext as Record<string, unknown>).wakeCommentIds).toEqual([humanComment]);
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issueId))).toHaveLength(2);
+  });
+
+  it.each(["queued", "prepared"] as const)("rechecks every assignment in a %s run with an allowed coalesced comment", async boundary => {
+    for (const assignmentFirst of [true, false]) for (const direction of ["outgoing", "incoming"]) {
+      const f = await seed();
+      const messageId = await comment(f, "user");
+      const primary = await wake(f, assignmentFirst ? {} : { commentIds: [messageId], actorType: "user", actorId: "human" });
+      const primaryOrigin = { actorType: primary.requestedByActorType, actorId: primary.requestedByActorId };
+      await db.update(agentWakeupRequests).set({ payload: { ...primary.payload, interactionOrigin: primaryOrigin } })
+        .where(eq(agentWakeupRequests.id, primary.id));
+      const reason = assignmentFirst ? "issue_commented" : "issue_assigned";
+      const context = { issueId: f.issueId, wakeReason: reason, ...(assignmentFirst ? { wakeCommentId: messageId, wakeCommentIds: [messageId] } : {}) };
+      const actorType = assignmentFirst ? "user" : "agent", actorId = assignmentFirst ? "human" : f.sender;
+      const payload = withInteractionDeliveryOrigin({ issueId: f.issueId, _paperclipWakeContext: context }, actorType, actorId);
+      await db.transaction(tx => createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
+        createAdmissionTransactionScope(f.companyId, tx as unknown as Db), {
+          companyId: f.companyId, agentId: f.recipient, activeExecutionRunId: f.run.id, activeExecutionRunStatus: "queued",
+          mergedContextSnapshot: { ...context, wakeCommentId: messageId, wakeCommentIds: [messageId] },
+          source: "assignment", triggerDetail: "system", payload, requestedByActorType: actorType,
+          requestedByActorId: actorId, idempotencyKey: null,
+        },
+      ));
+      const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, f.run.id));
+      expect(receipts).toHaveLength(2);
+      expect(receipts.find(row => row.id === primary.id)?.payload?.interactionOrigin).toEqual(primaryOrigin);
+      const assignment = receipts.find(row => row.requestedByActorType === "agent")!;
+      expect(assignment.payload?.interactionOrigin).toEqual({ actorType: "agent", actorId: f.sender });
+      if (boundary === "queued") expect((await recheckQueuedRunInteractions(db, await readRun(f.run.id))).denied).toBe(false);
+      else expect(await preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id))).toBe(false);
+      const permission = direction === "outgoing" ? "canAssignTasksToAgents" : "canReceiveAssignmentsFromAgents";
+      await restriction(direction === "outgoing" ? f.sender : f.recipient, { [permission]: false });
+      if (boundary === "queued") expect((await recheckQueuedRunInteractions(db, await readRun(f.run.id))).denied).toBe(true);
+      else expect(await preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id))).toBe(true);
+      const denied = await readRun(f.run.id);
+      expect(denied.resultJson?.interactionDeliveryDenied).toBe(true);
+      expect((denied.resultJson?.interactionPermissionDenials as Record<string, unknown>).assignment)
+        .toMatchObject({ actorAgentId: f.sender, permission });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, assignment.id)))[0])
+        .toMatchObject({ status: "skipped", error: "agent_interaction_delivery_denied", requestedByActorId: f.sender });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]?.assigneeAgentId).toBe(f.recipient);
+      expect(await db.select().from(issueComments).where(eq(issueComments.id, messageId))).toHaveLength(1);
+      const retained = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+        .filter(row => row.status === "deferred_issue_execution");
+      expect(retained).toHaveLength(1);
+      expect(retained[0]).toMatchObject({ requestedByActorType: "user", requestedByActorId: "human", runId: null });
+      await restriction(f.sender, {}); await restriction(f.recipient, {});
+      if (boundary === "queued") expect((await recheckQueuedRunInteractions(db, await readRun(f.run.id))).denied).toBe(true);
+      else expect(await preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id))).toBe(true);
+    }
+  });
+
+  it("does not apply assignment restrictions to a comment-only pending run", async () => {
+    const f = await seed(); const message = await comment(f, "agent"); const receipt = await wake(f, { commentIds: [message] });
+    await restriction(f.sender, { canAssignTasksToAgents: false });
+    await restriction(f.recipient, { canReceiveAssignmentsFromAgents: false });
+    expect((await recheckQueuedRunInteractions(db, await readRun(f.run.id))).denied).toBe(false);
+    expect(await preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id))).toBe(false);
+    await db.update(heartbeatRuns).set({ wakeupRequestId: null, contextSnapshot: {
+      issueId: f.issueId, wakeReason: "issue_execution_same_name", wakeCommentId: message, wakeCommentIds: [message],
+    } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
+    expect((await recheckQueuedRunInteractions(db, await readRun(f.run.id))).denied).toBe(false);
+    expect(await preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id))).toBe(false);
+  });
+
+  it.each(["queued", "prepared"] as const)("recovers an older %s assignment's audit origin when its wake is missing and comments were added", async boundary => {
+    const f = await seed(); const messageId = await comment(f, "user");
+    await db.insert(activityLog).values({ companyId: f.companyId, entityType: "issue", entityId: f.issueId,
+      actorType: "agent", actorId: f.sender, agentId: f.sender, action: "issue.updated",
+      createdAt: new Date(f.run.createdAt.getTime() - 1), details: { assigneeAgentId: f.recipient } });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeReason: "issue_assigned",
+      wakeCommentId: messageId, wakeCommentIds: [messageId] } }).where(eq(heartbeatRuns.id, f.run.id));
+    await restriction(f.sender, { canAssignTasksToAgents: false });
+    if (boundary === "queued") expect((await recheckQueuedRunInteractions(db, await readRun(f.run.id))).denied).toBe(true);
+    else expect(await preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id))).toBe(true);
+    expect(((await readRun(f.run.id)).resultJson?.interactionPermissionDenials as Record<string, unknown>).assignment)
+      .toMatchObject({ actorAgentId: f.sender, permission: "canAssignTasksToAgents" });
+    await restriction(f.sender, {});
+    if (boundary === "queued") expect((await recheckQueuedRunInteractions(db, await readRun(f.run.id))).denied).toBe(true);
+    else expect(await preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id))).toBe(true);
   });
 
   it("makes refused steering permanent while leaving a running task running", async () => {
