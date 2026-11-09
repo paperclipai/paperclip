@@ -57,6 +57,16 @@ export function materializePinnedCopilotBinary(options = {}) {
   return { packageName: distribution.packageName, version: COPILOT_VERSION, sourceDigest, target, manifestPath, closureSha256 };
 }
 
+export function dropGroupWorldWrite(path) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || typeof process.getuid !== "function" || stat.uid !== process.getuid() || (stat.mode & 0o022) === 0) return false;
+    fchmodSync(fd, stat.mode & 0o7755);
+    return true;
+  } finally { closeSync(fd); }
+}
+
 /** Build-only writer for already verified entries; never grants launch authority.
  * Roll back only entries this invocation exclusively created, even when a write
  * failed partway through. Never recursively remove a caller's output directory.
