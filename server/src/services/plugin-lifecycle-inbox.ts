@@ -38,9 +38,22 @@ export function pluginLifecycleInbox(db: Db, pluginId: string) {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw badRequest("limit must be an integer from 1 to 100");
       if (afterId !== undefined && (typeof afterId !== "string" || !/^[1-9]\d*$/.test(afterId) || !Number.isSafeInteger(Number(afterId)))) throw badRequest("Invalid lifecycle page id");
       await assertAvailable(db, companyId);
-      const rows = await db.select().from(resourceLifecycleEvents)
-        .where(and(eq(resourceLifecycleEvents.companyId, companyId), unacknowledged, firstForResource, inArray(resourceLifecycleEvents.resourceType, resourceTypes ?? ["agent", "project"]), afterId === undefined ? undefined : gt(resourceLifecycleEvents.id, Number(afterId))))
-        .orderBy(asc(resourceLifecycleEvents.id)).limit(limit);
+      // Each resource delivers in order, so only its head is deliverable: its
+      // unacknowledged creation, otherwise its lowest unacknowledged event.
+      // This is the set `firstForResource` admits, picked in one pass. Testing
+      // every unacknowledged event against every older event of its resource
+      // costs (acknowledged prefix × backlog) probes and ran for minutes.
+      const heads = db.$with("lifecycle_heads").as(
+        db.selectDistinctOn([resourceLifecycleEvents.resourceType, resourceLifecycleEvents.resourceId])
+          .from(resourceLifecycleEvents)
+          .where(and(eq(resourceLifecycleEvents.companyId, companyId), unacknowledged,
+            inArray(resourceLifecycleEvents.resourceType, resourceTypes ?? ["agent", "project"])))
+          .orderBy(resourceLifecycleEvents.resourceType, resourceLifecycleEvents.resourceId,
+            sql`${resourceLifecycleEvents.action} <> 'create'`, resourceLifecycleEvents.id),
+      );
+      const rows = await db.with(heads).select().from(heads)
+        .where(afterId === undefined ? undefined : gt(heads.id, Number(afterId)))
+        .orderBy(asc(heads.id)).limit(limit);
       return rows.map(row => ({ ...row, id: String(row.id), createdAt: row.createdAt.toISOString() })) as ResourceLifecycleEvent[];
     },
     async acknowledge(companyId: string, eventId: string, credentials?: { snapshot: ProjectSecretSnapshot; changes: unknown }): Promise<void> {
