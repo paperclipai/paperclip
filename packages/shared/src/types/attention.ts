@@ -4,6 +4,8 @@ import type {
   IssueThreadInteractionResolverPolicyProvenance,
 } from "../constants.js";
 import type { InboxDismissalKind } from "./inbox-dismissal.js";
+import { requiresExecutionReconciliation } from "./execution-projection.js";
+import { isNativeWorkspaceExportRepairCause } from "../workspace-restore.js";
 
 export const ATTENTION_SOURCE_KINDS = [
   "approval",
@@ -323,6 +325,15 @@ export interface DecisionHistoryPage {
 }
 
 /** Operational alerts stay inspectable without becoming human decision requests. */
+export function supportsAttentionRecoveryResolution(cause: string): boolean {
+  return !requiresExecutionReconciliation(cause) && !isNativeWorkspaceExportRepairCause(cause) && ![
+    "native_workspace_sync_out_unsafe_archive",
+    "native_workspace_finalization_owner_unverified",
+    "ownership_owner_unprovable",
+    "native_controller_host_unverified",
+  ].includes(cause);
+}
+
 export function isActionableAttention(item: Pick<AttentionItem, "sourceKind" | "inlineResolvable" | "subject">): boolean {
   if (item.sourceKind === "recovery_action") return item.subject.metadata?.hasResolutionActions === true;
   if (!item.inlineResolvable) return false;

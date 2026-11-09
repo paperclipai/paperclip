@@ -1131,4 +1131,4 @@ export * from "./agent-lifecycle.js";
 export * from "./task-workspace.js";
 export type { BoardBootstrap, BoardBootstrapSession } from "./board-bootstrap.js";
 
-export { isActionableAttention } from "./attention.js";
+export { isActionableAttention, supportsAttentionRecoveryResolution } from "./attention.js";

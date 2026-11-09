@@ -1,5 +1,4 @@
-import { requiresExecutionReconciliation, isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
-import { isActionableAttention } from "@paperclipai/shared";
+import { isActionableAttention, supportsAttentionRecoveryResolution } from "@paperclipai/shared";
 import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, loadNewestSettledConfirmationAt, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -1447,7 +1446,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             status: recovery.status,
             href: recoveryIssue ? issueHref(prefix, recoveryIssue) : sourceIssue ? issueHref(prefix, sourceIssue) : null,
             metadata: {
-              hasResolutionActions: !requiresExecutionReconciliation(recovery.cause) && !isNativeWorkspaceExportRepairCause(recovery.cause),
+              hasResolutionActions: supportsAttentionRecoveryResolution(recovery.cause),
               kind: recovery.kind,
               cause: recovery.cause,
               ownerType: recovery.ownerType,

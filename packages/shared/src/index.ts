@@ -2905,4 +2905,4 @@ export {
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
 
-export { isActionableAttention } from "./types/attention.js";
+export { isActionableAttention, supportsAttentionRecoveryResolution } from "./types/attention.js";
