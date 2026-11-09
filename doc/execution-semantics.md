@@ -4039,6 +4039,9 @@ are retained during shutdown so recovery can replay a contiguous journal. They
 carry no permission to start work. Stream closure, stream failure or drain timeout
 after complete usage leaves the saved wait unfinalized until a provider terminal
 is retained; complete token counters alone cannot certify a stopped provider.
+Codex governed-wait settlement allows up to 30 seconds for its interruption
+terminal, matching the transport command window. The caller's execution deadline
+can shorten that window. An interrupt acknowledgement alone is not terminal proof.
 A timeout, missing accounting, or an unproven provider terminal remains a failure;
 the saved wait does not certify successful provider execution.
 
