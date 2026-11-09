@@ -118,19 +118,26 @@ export function statesObservationTime(reply: string, runs: ReadonlyArray<{ start
   let prose = reply.replace(/\]\([^)]*\)/g, "]");
   let stated = false;
   // A full timestamp is judged as a whole: with an offset it must be an instant inside the window; without one, its date and minute must match a zone.
-  prose = prose.replace(/\b(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?(?!\d|:\d)/gi, (whole, date: string, hour: string, minute: string, offset?: string) => {
-    if (offset) {
-      const at = Date.parse(whole.replace(" ", "T"));
-      stated ||= Number.isFinite(at) && at >= from - 60_000 && at <= to;
-    } else stated ||= allowedDated.has(`${date} ${hour}:${minute}`);
-    return " ";
-  });
-  return stated || [...prose.matchAll(/(?<![\d:])(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?!\d)(?:\s*([ap])\.?m\.?(?![a-z]))?/gi)].some(match => {
-    const hour = Number(match[1]); const minute = match[2]!; const meridiem = match[3]?.toLowerCase();
-    if (hour > 23 || Number(minute) > 59 || meridiem && (hour < 1 || hour > 12)) return false;
-    const value = meridiem ? hour % 12 + (meridiem === "p" ? 12 : 0) : hour;
-    return allowedClock.has(`${String(value).padStart(2, "0")}:${minute}`);
-  });
+  prose = prose.replace(/\b(\d{4}-\d{2}-\d{2})(?:T|,?\s+(?:at\s+)?)(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:(Z|[+-]\d{2}:?\d{2})|\s*([ap])\.?m\.?(?![a-z]))?(?!\d|:\d)/gi,
+    (_whole, date: string, hour: string, minute: string, offset?: string, meridiem?: string) => {
+      const clock = clockTime(Number(hour), minute, meridiem);
+      if (!clock) return " ";
+      if (offset) {
+        const zone = offset.toUpperCase() === "Z" ? "Z" : offset.replace(/^([+-]\d{2}):?(\d{2})$/, "$1:$2");
+        const at = Date.parse(`${date}T${clock}:00${zone}`);
+        stated ||= Number.isFinite(at) && at >= from - 60_000 && at <= to;
+      } else stated ||= allowedDated.has(`${date} ${clock}`);
+      return " ";
+    });
+  return stated || [...prose.matchAll(/(?<![\d:])(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?!\d)(?:\s*([ap])\.?m\.?(?![a-z]))?/gi)]
+    .some(match => allowedClock.has(clockTime(Number(match[1]), match[2]!, match[3]) ?? ""));
+}
+/** A stated hour is read as written; only an explicit AM/PM converts it. */
+function clockTime(hour: number, minute: string, meridiem?: string): string | undefined {
+  const marker = meridiem?.toLowerCase();
+  if (hour > 23 || Number(minute) > 59 || marker && (hour < 1 || hour > 12)) return;
+  const value = marker ? hour % 12 + (marker === "p" ? 12 : 0) : hour;
+  return `${String(value).padStart(2, "0")}:${minute}`;
 }
 
 function companyOverview(): ChatCatalogCase {
