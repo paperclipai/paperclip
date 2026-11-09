@@ -119,5 +119,5 @@ export const integratorRelatedWorkCases = [integratorDefinition("cases", "cases.
   await ctx.input.page.goto(source); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${o.caseDetail.identifier}`, o.caseDetail.title);
 }, { sourceFiles: ["chat-catalog-domains/integrator-case-related.ts", "chat-catalog-domains/recorded-work-claims.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"],
-  oracleVersion: "paperclip.chat-catalog.case-related.grounded.v5", expectedRunCount: 2, attemptTimeoutMs: 540_000, cleanup,
+  oracleVersion: "paperclip.chat-catalog.case-related.grounded.v6", expectedRunCount: 2, attemptTimeoutMs: 540_000, cleanup,
 })];

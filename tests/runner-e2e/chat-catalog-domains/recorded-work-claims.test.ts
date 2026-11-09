@@ -49,6 +49,8 @@ describe("actual work/reference roles and explicit negative related-work context
     expect(gradeIntegratorRelatedWork(v).passed).toBe(true);
     v.reply = v.reply.replace("work task", "the task this case was opened for").replace("reference task", "a follow-up linked for reference");
     expect(gradeIntegratorRelatedWork(v).passed).toBe(true);
+    v.reply = "ACN-1 Investigation is the work task and is done, not a reference task. ACN-2 Mobile follow-up is a reference task in backlog, not the primary task.\nACN-3 is explicitly unrelated and has no case link.";
+    expect(gradeIntegratorRelatedWork(v).passed).toBe(true);
   });
   it.each([
     ["primary called the reference task", "ACN-1 Investigation is the reference task and is done. ACN-2 Mobile follow-up is linked and in backlog."],

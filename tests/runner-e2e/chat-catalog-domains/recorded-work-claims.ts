@@ -65,7 +65,11 @@ export function contradictsRecordedCaseRole(reply: string, task: Entity, linkedT
     ? /\|\s*reference\s*\||\b(?:is|as|role[: ]+) (?:a |the )?reference\b|\breference(?:-linked)? (?:task|item)\b/i
     : /\|\s*work\s*\||\b(?:is|as|role[: ]+) (?:a |the )?(?:primary|main|work)\b|\b(?:primary|main|work) (?:task|item)\b/i;
   const denied = role === "work" ? /\bnot (?:the |a )?(?:primary|main|work task)\b/i : /\bnot (?:the |a )?(?:linked|reference)\b/i;
-  return recordedTaskUnits(reply, task, linkedTasks).some(unit => other.test(unit) || denied.test(unit));
+  // A denial of the other role ("a reference task, not the primary task") restates the right role.
+  const deniesOther = role === "work"
+    ? /\b(?:not|never) (?:the |a |an )?reference(?:-linked)?(?: task| item| link)?\b/gi
+    : /\b(?:not|never) (?:the |a |an )?(?:primary|main|work)(?: task| item)?\b/gi;
+  return recordedTaskUnits(reply, task, linkedTasks).some(unit => other.test(unit.replace(deniesOther, "")) || denied.test(unit));
 }
 export function explicitlyUnrelatedWork(reply: string, unrelated: Entity, knownTasks: Entity[]) {
   const units = recordedTaskUnits(reply, unrelated, knownTasks);
