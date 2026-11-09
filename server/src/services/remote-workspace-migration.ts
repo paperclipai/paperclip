@@ -407,12 +407,13 @@ async function lockMigrationRecovery(lock: MigrationTransaction, plans: Migratio
     sources: online.flatMap(({ reserved, onlineSource }) => [...reserved.legacyRecoverySources, ...onlineSource!.companions.flatMap(proof => proof.sources)]),
     holds: online.flatMap(({ reserved, onlineSource }) => [...reserved.onlineRecoveryHolds, ...onlineSource!.companions.flatMap(proof => proof.holds)]) }))
     throw new Error("remote_workspace_migration_blocked:remote_copyback_owned");
-  for (const { input, onlineSource, reserved } of online) {
+  const readers = await Promise.allSettled(online.map(async ({ input, onlineSource, reserved }) => {
     const current = await inspect(input.db, { ...input, onlineSource, operationId: reserved.operation!.id }, cohort);
     if (current.reasons.length || canonical(current.legacyRecoverySources) !== canonical(reserved.legacyRecoverySources)
       || canonical(current.onlineRecoveryHolds) !== canonical(reserved.onlineRecoveryHolds))
       throw new Error("remote_workspace_migration_recovery_source_changed");
-  }
+  }));
+  for (const reader of readers) if (reader.status === "rejected") throw reader.reason;
 }
 
 function createMigrationChildVerifier(input: MigrationInput, onlineSource: OnlineWorkspaceSource | undefined, sourceLock: MigrationTransaction) {
@@ -735,12 +736,13 @@ export async function migrateRemoteWorkspaceCohort(input: {
     || new Set(cohort.members.map(member => member.operationId)).size !== workspaceIds.length
     || pending.some(marker => canonical(marker) !== canonical(cohort))) throw new Error("workspace_cohort_membership_changed");
   const preflight = async (db: ReadDb) => {
-    for (const member of members) {
+    const readers = await Promise.allSettled(members.map(async member => {
       const current = await inspect(db, { ...member.input, onlineSource: member.onlineSource }, cohort);
       if (current.reasons.length) throw new Error(`remote_workspace_migration_blocked:${current.reasons.join(",")}`);
       if (fingerprint(current.workspace) !== fingerprint(initial.find(workspace => workspace.id === member.input.workspaceId)!))
         throw new Error("workspace_cohort_source_changed");
-    }
+    }));
+    for (const reader of readers) if (reader.status === "rejected") throw reader.reason;
   };
   if (!input.apply) { await preflight(input.db); return { companyId, cohortId: cohort.id, applied: false, eligible: true, workspaceIds }; }
   const publications: Parameters<typeof publishActivity>[0][] = [];
