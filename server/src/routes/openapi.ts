@@ -3420,6 +3420,10 @@ registry.registerPath({
   path: "/api/companies/{companyId}/status-cards",
   tags: ["status-cards"],
   summary: "Create a status card",
+  description: "Creates a saved status card on the company's Status page: a live summary of the tasks the interestPrompt describes. "
+    + "agentId names the agent that writes its summary; without it the built-in Summarizer is used when configured. "
+    + "The response is returned before any summary exists: the card's summarizer compiles its query and writes the first summary in its own run. "
+    + "Do not wait or poll for it; reply now with the returned href as a Markdown link, which opens the card at /<prefix>/status/<cardId>.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createStatusCardSchema),
@@ -3473,6 +3477,9 @@ registerCurrentRoute({
   path: "/api/status-cards/{id}/refresh",
   tags: ["status-cards"],
   summary: "Refresh a status card",
+  description: "Queues a refresh; it does not return a new summary. The card's summarizer agent writes the update in its own generation run, after which the card's lastGeneratedAt and summary change. "
+    + "Do not sleep or poll for it: reply now that the refresh is queued, with the returned card.href as a Markdown link where the person sees the update. "
+    + "alreadyGenerating means an earlier refresh is still running; enqueued false without alreadyGenerating means the card's refresh policy deferred it, and card.state says why (such as paused_budget or paused_hours).",
   body: refreshStatusCardSchema,
 });
 
