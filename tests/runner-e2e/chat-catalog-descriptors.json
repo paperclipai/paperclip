@@ -4268,7 +4268,7 @@
       "chat-scenarios/questions-and-approvals.yaml",
       "../../server/src/services/chat-completion-delivery.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.plan-review.v2",
+    "oracleVersion": "paperclip.chat-catalog.plan-review.v3",
     "expectedRunCount": 3,
     "minimumRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -4290,7 +4290,7 @@
       "chat-scenarios/questions-and-approvals.yaml",
       "../../server/src/services/chat-completion-delivery.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.plan-review.v2",
+    "oracleVersion": "paperclip.chat-catalog.plan-review.v3",
     "expectedRunCount": 3,
     "minimumRunCount": 2,
     "turnTimeoutMs": 120000,
