@@ -3,6 +3,7 @@ import type { SecretBindingTargetType } from "@paperclipai/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 
 function throwOrShadowResponsibleUserCompanyAccessDeny(
   req: Request,
@@ -59,8 +60,23 @@ const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray) => [string, s
   [/^\/companies\/[^/]+(?:\/(?:archive|branding|settings))?\/?$/, () => ["company settings", "/<prefix>/company/settings"]],
 ];
 
+// Plugin management pages. A plugin id or key segment opens that plugin's settings
+// (the page accepts either); any other segment (install, tools) opens the manager.
+// An operator can hide plugin management, so link it only while it is visible.
+const PLUGIN_REFERENCE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)+)$/i;
+function pluginControlPage(path: string): [string, string] | null {
+  const match = /^\/plugins(?:\/([^/]+))?(?:\/|$)/.exec(path);
+  if (!match || getHiddenSettings().has("instance.plugins")) return null;
+  const plugin = match[1] && PLUGIN_REFERENCE.test(match[1]) ? match[1] : null;
+  return plugin
+    ? ["the plugin's settings", `/<prefix>/company/settings/instance/plugins/${plugin}`]
+    : ["plugin settings", "/<prefix>/company/settings/instance/plugins"];
+}
+
 function boardControlPage(req: Request) {
   const path = (req.originalUrl ?? "").split("?")[0]!.replace(/^\/api(?=\/)/, "");
+  const pluginPage = pluginControlPage(path);
+  if (pluginPage) return pluginPage;
   for (const [pattern, page] of BOARD_CONTROL_PAGES) {
     const match = pattern.exec(path);
     if (match) return page(match);
