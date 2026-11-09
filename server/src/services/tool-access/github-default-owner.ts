@@ -52,14 +52,15 @@ export function githubDefaultOrganization(github: unknown): string | null {
   if (!login || owners.size !== 1 || owners.has(login)) return null;
   const owner = [...owners.values()][0]!;
   // An installation on another person's account can be visible to a
-  // collaborator; GitHub cannot create organization repositories there.
-  const personal = (Array.isArray(access.repositories) ? access.repositories : []).some((repository) => {
-    const entry = record(repository);
-    return entry.ownerType === "personal"
-      && typeof entry.fullName === "string"
-      && entry.fullName.split("/")[0]?.toLowerCase() === owner.toLowerCase();
-  });
-  return personal ? null : owner;
+  // collaborator, and GitHub cannot create organization repositories there.
+  // Require the snapshot to identify the owner as an organization; snapshots
+  // without account types keep GitHub's behavior until access is refreshed.
+  const ownerTypes = new Set((Array.isArray(access.repositories) ? access.repositories : [])
+    .map(record)
+    .filter((entry) => typeof entry.fullName === "string"
+      && entry.fullName.split("/")[0]?.toLowerCase() === owner.toLowerCase())
+    .map((entry) => entry.ownerType));
+  return ownerTypes.size === 1 && ownerTypes.has("organization") ? owner : null;
 }
 
 /** Whether this call could take a default organization. Checked before the

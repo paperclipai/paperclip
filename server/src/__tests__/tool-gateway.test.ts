@@ -757,7 +757,8 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         },
       } }).where(eq(toolCatalogEntries.id, catalogEntry.id));
       const github = { userId: "1", login: "octocat", installationCount: 1, repositoryCount: 1,
-        repositorySelection: "all" as const, installationIds: ["9"], installationOwnerLogins: ["acme"] };
+        repositorySelection: "all" as const, installationIds: ["9"], installationOwnerLogins: ["acme"],
+        repositories: [{ id: "10", fullName: "acme/site", installationId: "9", ownerType: "organization" as const }] };
       await db.update(connectionGrants).set({ providerTenant: { github } })
         .where(eq(connectionGrants.connectionId, connection.id));
       const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,

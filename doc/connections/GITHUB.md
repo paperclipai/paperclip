@@ -155,8 +155,8 @@ where the App is installed are separate. An organization installation does not
 grant access to the user's personal repositories. Personal repository creation
 needs App access to that personal account; organization creation needs App access
 to that organization and the tool's `organization` argument. When the App is
-installed on exactly one organization and not on the user's personal account,
-`create_repository` and `fork_repository` calls that omit `organization` use
+installed on exactly one account, and its access snapshot identifies that
+account as an organization, `create_repository` and `fork_repository` calls that omit `organization` use
 that organization, because the personal account is unavailable. Paperclip fills
 it in before policy, approval, and audit, so approval cards and test results
 show the owner. An explicit owner is unchanged, and any other installation set

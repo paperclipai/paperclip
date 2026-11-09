@@ -24,8 +24,15 @@ const orgOnly = {
 describe("githubDefaultOrganization", () => {
   it("uses the only installed organization when the personal account has no installation", () => {
     expect(githubDefaultOrganization(orgOnly)).toBe("acme");
-    // Snapshots written before ownerType was recorded behave the same.
-    expect(githubDefaultOrganization({ login: "octocat", installationOwnerLogins: ["acme"] })).toBe("acme");
+  });
+
+  it("requires the snapshot to identify the owner as an organization", () => {
+    // Snapshots written before ownerType was recorded keep GitHub's behavior.
+    expect(githubDefaultOrganization({ login: "octocat", installationOwnerLogins: ["hubot"] })).toBeNull();
+    expect(githubDefaultOrganization({ login: "octocat", installationOwnerLogins: ["hubot"],
+      repositories: [{ fullName: "hubot/tools", installationId: "9" }] })).toBeNull();
+    expect(githubDefaultOrganization({ login: "octocat", installationOwnerLogins: ["acme"],
+      repositories: [{ fullName: "acme/site", ownerType: "organization" }, { fullName: "acme/docs" }] })).toBeNull();
   });
 
   it("keeps GitHub's personal default when the personal account is installed", () => {
@@ -34,8 +41,8 @@ describe("githubDefaultOrganization", () => {
   });
 
   it("does not guess between several organizations", () => {
-    expect(githubDefaultOrganization({ login: "octocat", installationOwnerLogins: ["acme", "globex"] })).toBeNull();
-    expect(githubDefaultOrganization({ login: "octocat", installationOwnerLogins: ["Acme", "acme"] })).toBe("Acme");
+    expect(githubDefaultOrganization({ ...orgOnly, installationOwnerLogins: ["acme", "globex"] })).toBeNull();
+    expect(githubDefaultOrganization({ ...orgOnly, installationOwnerLogins: ["Acme", "acme"] })).toBe("Acme");
   });
 
   it("ignores another person's account and incomplete snapshots", () => {
