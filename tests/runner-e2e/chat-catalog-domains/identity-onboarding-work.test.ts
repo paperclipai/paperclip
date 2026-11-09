@@ -31,6 +31,13 @@ describe("human company creation and genuine first completed website", () => {
     const file = (o.state.websites as Array<{ body: string }>)[0]!; file.body = "<html><body><header><a class=\"brand\">Acorn Notes</a></header><h1>Capture every observation</h1><p>A notebook for small science teams.</p></body></html>";
     expect(gradeFirstWork(o).passed).toBe(true);
   });
+  it("accepts the CEO owning and running the linked task itself, but not an unrelated agent", () => {
+    const own = website(); own.tasks[0]!.assigneeAgentId = "ceo"; own.runs[0]!.agentId = "ceo"; (own.state.websites as Array<{ attachment: Record<string, unknown> }>)[0]!.attachment.createdByAgentId = "ceo";
+    expect(gradeFirstWork(own).passed).toBe(true);
+    const other = website(); other.tasks[0]!.assigneeAgentId = "stranger"; other.runs[0]!.agentId = "stranger"; (other.state.websites as Array<{ attachment: Record<string, unknown> }>)[0]!.attachment.createdByAgentId = "stranger";
+    expect(gradeFirstWork(other).passed).toBe(false);
+    const mismatch = website(); (mismatch.state.websites as Array<{ attachment: Record<string, unknown> }>)[0]!.attachment.createdByAgentId = "ceo"; expect(gradeFirstWork(mismatch).passed).toBe(false);
+  });
   it("rejects a rendered page without a visible heading or without the business name", () => {
     const heading = website(); heading.state.renderedHeading = false; expect(gradeFirstWork(heading).passed).toBe(false);
     const name = website(); name.state.renderedBusinessName = false; expect(gradeFirstWork(name).passed).toBe(false);
