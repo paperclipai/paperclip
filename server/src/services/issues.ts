@@ -7847,6 +7847,7 @@ export function issueService(db: Db) {
     issueId: string;
     actorAgentId: string;
     actorRunId: string;
+    expectedStatus: string;
   }) {
     return db.transaction(async (tx) => {
       await tx.execute(
@@ -7873,7 +7874,7 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, input.issueId),
-            eq(issues.status, "in_progress"),
+            eq(issues.status, input.expectedStatus),
             eq(issues.assigneeAgentId, input.actorAgentId),
             isNull(issues.checkoutRunId),
             or(
@@ -11217,6 +11218,19 @@ export function issueService(db: Db) {
         companyGuard?: string;
         workspaceSelectionActor?: AuthorizationActor;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
+        /**
+         * Server-owned optimistic guard for a staged execution decision that
+         * was derived before this service acquired the issue row lock.
+         */
+        expectedExecutionDecisionSnapshot?: {
+          status: string;
+          assigneeAgentId: string | null;
+          assigneeUserId: string | null;
+          checkoutRunId: string | null;
+          executionRunId: string | null;
+          executionPolicy: unknown;
+          executionState: unknown;
+        };
         expectedStatusVersion?: number;
         /** Defaults to `flatten` for parent changes. Board-user routes pass `allow_nested`. */
         parentDepthPolicy?: IssueParentDepthPolicy;
@@ -11309,6 +11323,7 @@ export function issueService(db: Db) {
         companyGuard,
         workspaceSelectionActor,
         expectedExecutionPolicy,
+        expectedExecutionDecisionSnapshot,
         expectedStatusVersion,
         parentDepthPolicy: _parentDepthPolicy,
         expectedParentId: _expectedParentId,
@@ -11543,7 +11558,22 @@ export function issueService(db: Db) {
       if (issueData.status && issueData.status !== "cancelled") {
         patch.cancelledAt = null;
       }
-      if (issueData.status && issueData.status !== "in_progress") {
+      const preservesActorRunAcrossPendingStage = Boolean(
+        issueData.status === "in_review" &&
+        expectedExecutionDecisionSnapshot !== undefined &&
+        actorAgentId &&
+        actorRunId &&
+        nextAssigneeAgentId === actorAgentId &&
+        existing.assigneeAgentId === actorAgentId &&
+        (existing.checkoutRunId !== null || existing.executionRunId !== null) &&
+        (existing.checkoutRunId === null || existing.checkoutRunId === actorRunId) &&
+        (existing.executionRunId === null || existing.executionRunId === actorRunId),
+      );
+      if (
+        issueData.status &&
+        issueData.status !== "in_progress" &&
+        !preservesActorRunAcrossPendingStage
+      ) {
         patch.checkoutRunId = null;
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
@@ -11584,6 +11614,56 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        // Recheck the caller's run under the same transaction as the issue
+        // write. A reassignment may intentionally stop the caller first; the
+        // exact stop receipt authorizes only this mutation and lock release.
+        const actorRun = actorAgentId && actorRunId
+          ? await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
+              agentId: actorAgentId,
+              runId: actorRunId,
+              stopId: actorRunStopId,
+            })
+          : null;
+        const actorStoppedForThisMutation = Boolean(
+          actorRun?.status === "cancelled" &&
+          actorRunStopId &&
+          actorRun.resultJson?.issueMutationStopId === actorRunStopId,
+        );
+        const executionLockMatchesSnapshot = (
+          actual: string | null,
+          expected: string | null,
+        ) => actual === expected || Boolean(
+          actorStoppedForThisMutation &&
+          expected === actorRunId &&
+          actual === null,
+        );
+        if (
+          expectedExecutionDecisionSnapshot !== undefined &&
+          (receiptExisting.status !== expectedExecutionDecisionSnapshot.status ||
+            receiptExisting.assigneeAgentId !== expectedExecutionDecisionSnapshot.assigneeAgentId ||
+            receiptExisting.assigneeUserId !== expectedExecutionDecisionSnapshot.assigneeUserId ||
+            !executionLockMatchesSnapshot(
+              receiptExisting.checkoutRunId,
+              expectedExecutionDecisionSnapshot.checkoutRunId,
+            ) ||
+            !executionLockMatchesSnapshot(
+              receiptExisting.executionRunId,
+              expectedExecutionDecisionSnapshot.executionRunId,
+            ) ||
+            !isDeepStrictEqual(
+              receiptExisting.executionPolicy ?? null,
+              expectedExecutionDecisionSnapshot.executionPolicy,
+            ) ||
+            !isDeepStrictEqual(
+              receiptExisting.executionState ?? null,
+              expectedExecutionDecisionSnapshot.executionState,
+            ))
+        ) {
+          throw conflict(
+            "The execution stage changed before this decision could be saved. Read the task again before deciding.",
+            { code: "execution_stage_changed" },
+          );
+        }
         if (issueData.executionPolicy !== undefined) assertQualityReviewPolicyMutation({ previousPolicy: receiptExisting.executionPolicy, nextPolicy: issueData.executionPolicy, actorAgentId, actorUserId });
         if ((patch.status ?? receiptExisting.status) === "done" &&
             (receiptExisting.status !== "done" || issueData.executionPolicy !== undefined)) {
@@ -11660,12 +11740,9 @@ export function issueService(db: Db) {
             patch.privacyRootIssueId = receiptExisting.id;
           }
         }
-        if (actorAgentId && actorRunId) {
-          // Recheck under a run lock: a request admitted before Stop must not
-          // commit a late Done after cancellation revoked its credentials.
-          const actorRun = await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
-            agentId: actorAgentId, runId: actorRunId, stopId: actorRunStopId,
-          });
+        if (actorRun) {
+          // The run was rechecked under lock above before evaluating the
+          // stage snapshot, including the exact self-stop exception.
           assertLegacyRunTaskOwnership(actorRun, receiptExisting);
         }
         if (blockedByIssueIds !== undefined) {
@@ -12399,7 +12476,17 @@ export function issueService(db: Db) {
             assigneeUserId: null,
             checkoutRunId,
             executionRunId: checkoutRunId,
-            status: "in_progress",
+            // A staged reviewer/approver is executing work, but the issue is
+            // still in review. Preserve that lifecycle state while acquiring
+            // the run locks; ordinary checkouts still enter in_progress.
+            status: sql`case
+              when ${issues.status} = 'in_review'
+                and ${issues.executionState}->>'status' = 'pending'
+                and ${issues.executionState}->'currentParticipant'->>'type' = 'agent'
+                and ${issues.executionState}->'currentParticipant'->>'agentId' = ${agentId}
+              then 'in_review'
+              else 'in_progress'
+            end`,
             startedAt: now,
             updatedAt: now,
           })
@@ -12612,10 +12699,24 @@ export function issueService(db: Db) {
         checkoutRunId: string | null;
         executionRunId: string | null;
       }) => {
+        const hasRunLock = Boolean(
+          candidate.checkoutRunId || candidate.executionRunId,
+        );
+        const ownsCheckoutLock =
+          candidate.checkoutRunId == null ||
+          candidate.checkoutRunId === actorRunId;
+        const ownsExecutionLock =
+          candidate.executionRunId == null ||
+          candidate.executionRunId === actorRunId;
         if (
-          candidate.status === "in_progress" &&
           candidate.assigneeAgentId === actorAgentId &&
-          sameRunLock(candidate.checkoutRunId, actorRunId)
+          ((candidate.status === "in_progress" &&
+            sameRunLock(candidate.checkoutRunId, actorRunId)) ||
+            (candidate.status !== "in_progress" &&
+              actorRunId !== null &&
+              hasRunLock &&
+              ownsCheckoutLock &&
+              ownsExecutionLock))
         ) {
           return { ...candidate, adoptedFromRunId: null as string | null };
         }
@@ -12629,7 +12730,8 @@ export function issueService(db: Db) {
         executionRunId: string | null;
       }) =>
         actorRunId &&
-        candidate.status === "in_progress" &&
+        candidate.status !== "done" &&
+        candidate.status !== "cancelled" &&
         candidate.assigneeAgentId === actorAgentId &&
         candidate.checkoutRunId == null &&
         (candidate.executionRunId == null ||
@@ -12651,6 +12753,7 @@ export function issueService(db: Db) {
             issueId: id,
             actorAgentId,
             actorRunId: actorRunId!,
+            expectedStatus: candidate.status,
           });
 
           if (adopted) {

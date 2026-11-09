@@ -63,6 +63,7 @@ const support = await getEmbeddedPostgresTestSupport();
     if (kind === "human_only") await db.update(issueThreadInteractions).set({ effectiveResolverPolicy: "human_only" }).where(eq(issueThreadInteractions.id, f.card.id));
     else if (kind !== "ordinary-task") await db.update(issueThreadInteractions).set({ payload: { ...f.card.payload, [kind]: {} } }).where(eq(issueThreadInteractions.id, f.card.id));
     expect(await pendingNativeGovernance({ db, ...f, executionState: null })).toEqual({ kind: "interaction", id: f.card.id });
+    await db.update(issues).set({ executionState: { status: "pending" } }).where(eq(issues.id, f.issueId));
     expect(await pendingNativeGovernance({ db, ...f, executionState: { status: "pending" } })).toEqual({ kind: "execution_stage", id: f.runId });
     expect(await pendingNativeGovernance({ db, ...f, companyId: randomUUID(), executionState: null })).toBeNull();
   });

@@ -3016,7 +3016,7 @@ describe("issue comment reopen routes", () => {
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
-  it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
+  it("uses an explicit execution decision for final approval and records it transactionally", async () => {
     const policy = await normalizePolicy({
       stages: [
         {
@@ -3062,13 +3062,19 @@ describe("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ status: "done", comment: "Approved for ship" });
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: policy.stages[0].id,
+        expectedExecutionLastDecisionId: null,
+        comment: "Approved for ship",
+      });
 
     expect(res.status).toBe(200);
     expect(mockDb.transaction).toHaveBeenCalledTimes(1);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
+        status: "done",
         executionState: expect.objectContaining({
           status: "completed",
           lastDecisionId: expect.any(String),
@@ -3092,6 +3098,87 @@ describe("issue comment reopen routes", () => {
         body: "Approved for ship",
       }),
     );
+  });
+
+  it("keeps an intermediate explicit approval in review and advances to the next participant", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      assigneeUserId: null,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: reviewerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-explicit-review",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        executionDecision: "approve",
+        expectedExecutionStageId: policy.stages[0].id,
+        expectedExecutionLastDecisionId: null,
+        comment: "Review approved",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      executionState: {
+        status: "pending",
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: "local-board" },
+        completedStageIds: [policy.stages[0].id],
+      },
+    });
+    expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
+      status: "in_review",
+      assigneeUserId: "local-board",
+    });
   });
 
   it("auto-approves a reviewer comment with the APPROVED review marker", async () => {
@@ -3972,7 +4059,9 @@ describe("issue comment reopen routes", () => {
     )
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({
-        status: "in_progress",
+        executionDecision: "request_changes",
+        expectedExecutionStageId: policy.stages[0].id,
+        expectedExecutionLastDecisionId: null,
         comment: "Needs another pass",
       });
 

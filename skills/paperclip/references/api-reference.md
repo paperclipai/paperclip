@@ -422,7 +422,7 @@ Interpretation:
 - `returnAssignee` is who gets the task back when changes are requested
 - `lastDecisionOutcome` shows the latest gate decision
 
-There is **no separate execution-decision endpoint**. Review and approval decisions are submitted through `PATCH /api/issues/:issueId`, and Paperclip records the decision row automatically.
+Review and approval decisions use an explicit `executionDecision` operation on `PATCH /api/issues/:issueId`, bound to the observed `executionState.currentStageId` and `executionState.lastDecisionId` through `expectedExecutionStageId` and `expectedExecutionLastDecisionId`; Paperclip records the decision row automatically without treating an intermediate approval as terminal issue status. A stale stage or review-round token returns `409 execution_stage_changed`.
 
 ### Cross-Agent Review Gates
 
@@ -448,8 +448,10 @@ PATCH /api/issues/:issueId
 
 When the executor finishes work, move the source issue to `in_review`. Paperclip advances the issue to the active stage participant through `executionState.currentParticipant`, and that participant decides through the normal issue update route:
 
-- approve/sign off with `PATCH /api/issues/:issueId` using `{ "status": "done", "comment": "Approved: ..." }`
-- request changes with `PATCH /api/issues/:issueId` using `{ "status": "in_progress", "comment": "Changes requested: ..." }`
+- approve/sign off with `PATCH /api/issues/:issueId` using `{ "executionDecision": "approve", "expectedExecutionStageId": "<executionState.currentStageId>", "expectedExecutionLastDecisionId": "<executionState.lastDecisionId>", "comment": "Approved: ..." }`
+- request changes with `PATCH /api/issues/:issueId` using `{ "executionDecision": "request_changes", "expectedExecutionStageId": "<executionState.currentStageId>", "expectedExecutionLastDecisionId": "<executionState.lastDecisionId>", "comment": "Changes requested: ..." }`
+
+Send `expectedExecutionLastDecisionId` as JSON `null` when the observed `executionState.lastDecisionId` is null.
 
 Agent heartbeat implementations should follow the Paperclip skill's **Execution-policy review/approval wakes** procedure when they are assigned as the active gate participant.
 
@@ -569,20 +571,20 @@ GET /api/issues/issue-77
    }
 ```
 
-If `currentParticipant` is you, approve the current stage by patching the issue to `done` with a required comment:
+If `currentParticipant` is you, approve the current stage with the explicit decision field and a required comment:
 
 ```
 PATCH /api/issues/issue-77
-{ "status": "done", "comment": "QA signoff complete. Verified the regression and test coverage." }
+{ "executionDecision": "approve", "expectedExecutionStageId": "<executionState.currentStageId>", "expectedExecutionLastDecisionId": null, "comment": "QA signoff complete. Verified the regression and test coverage." }
 ```
 
 Paperclip writes the execution decision automatically. If another stage remains, the issue stays in `in_review` and is reassigned to the next participant. If this was the final stage, the issue reaches actual `done`.
 
-To request changes, use a non-`done` status with a required comment. Prefer `in_progress`:
+To request changes, use the explicit decision field with a required comment:
 
 ```
 PATCH /api/issues/issue-77
-{ "status": "in_progress", "comment": "Changes requested: add a regression test for the empty-state path." }
+{ "executionDecision": "request_changes", "expectedExecutionStageId": "<executionState.currentStageId>", "expectedExecutionLastDecisionId": null, "comment": "Changes requested: add a regression test for the empty-state path." }
 ```
 
 Paperclip converts that into a `changes_requested` decision, reassigns the issue to `returnAssignee`, and routes it back to the same stage when the executor resubmits.

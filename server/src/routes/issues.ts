@@ -366,6 +366,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  inspectPendingExecutionStage,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
@@ -5786,6 +5787,8 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
       reviewPolicy?: IssueReviewPolicy | null;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
@@ -5896,7 +5899,8 @@ export function issueRoutes(
       }
       return true;
     }
-    if (issue.status !== "in_progress") {
+    const hasRunLock = Boolean(issue.checkoutRunId || issue.executionRunId);
+    if (issue.status !== "in_progress" && !hasRunLock) {
       return true;
     }
     const runId = requireAgentRunId(req, res);
@@ -14342,13 +14346,24 @@ export function issueRoutes(
    */
   async function assertNativeRunKeepsOwnExecutionLock(
     req: Request,
-    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null },
+    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null; executionPolicy?: Record<string, unknown> | null; executionState?: Record<string, unknown> | null },
     requestedStatus: unknown = req.body.status,
   ) {
     const runId = req.actor.type === "agent" ? req.actor.runId : null;
     if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
     if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
-    if (requestedStatus === undefined || requestedStatus === issue.status) return;
+    const pendingStage = req.body.executionDecision === "approve"
+      ? inspectPendingExecutionStage(issue)
+      : { status: "none" as const };
+    const effectiveRequestedStatus = requestedStatus ?? (
+      pendingStage.status === "valid" &&
+      !pendingStage.hasLaterStages &&
+      pendingStage.currentParticipant.type === "agent" &&
+      pendingStage.currentParticipant.agentId === req.actor.agentId
+        ? "done"
+        : undefined
+    );
+    if (effectiveRequestedStatus === undefined || effectiveRequestedStatus === issue.status) return;
     if (isConversation(issue)) return;
     const keepsAssignment =
       (req.body.assigneeAgentId === undefined || req.body.assigneeAgentId === issue.assigneeAgentId) &&
@@ -14357,6 +14372,17 @@ export function issueRoutes(
     const run = await heartbeat.getRun(runId);
     if (!run || run.runtimeMode !== "native" || run.status !== "running"
       || run.agentId !== req.actor.agentId || run.companyId !== issue.companyId) return;
+    // The decision is durable, but a native run must retain its issue lock
+    // until paperclip_finish reports the run outcome. Defer only the derived
+    // final `done` status; the transition still records the stage approval.
+    if (req.body.executionDecision === "approve" &&
+        requestedStatus === undefined &&
+        pendingStage.status === "valid" &&
+        !pendingStage.hasLaterStages &&
+        pendingStage.currentParticipant.type === "agent" &&
+        pendingStage.currentParticipant.agentId === req.actor.agentId) {
+      return true;
+    }
     // A blocker that the dependency rules reject anyway keeps its specific
     // error; otherwise the run reports the block with paperclip_block.
     if (Array.isArray(req.body.blockedByIssueIds) && req.body.blockedByIssueIds.length > 0) {
@@ -14369,7 +14395,7 @@ export function issueRoutes(
       "This run owns the task's execution, so it cannot change the task status directly; doing so would end its access to the task before it reports. " +
         "Report the outcome with paperclip_finish instead: reportedWorkDisposition \"needs_review\" for review, \"done\" when complete, or \"yielded\" with continuation.kind \"monitor\" to wait on a scheduled monitor. " +
         "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
-      { code: "native_run_status_reported_by_finish", requestedStatus },
+      { code: "native_run_status_reported_by_finish", requestedStatus: effectiveRequestedStatus },
     );
   }
 
@@ -14381,6 +14407,41 @@ export function issueRoutes(
         Object.keys(req.body).some(key => key !== "status" && key !== "expectedStatusVersion")
       )) {
         throw unprocessable("expectedStatusVersion requires a status-only backlog-to-todo promotion");
+      }
+      if (req.body?.executionDecision !== undefined && req.body.status !== undefined) {
+        throw unprocessable("executionDecision cannot be combined with status");
+      }
+      if (req.body?.executionDecision !== undefined && Object.keys(req.body).some(
+        (key) => ![
+          "executionDecision",
+          "expectedExecutionStageId",
+          "expectedExecutionLastDecisionId",
+          "comment",
+          "commentClientRequestId",
+          "attachmentIds",
+        ].includes(key),
+      )) {
+        throw unprocessable("executionDecision may only be combined with its decision comment and attachments");
+      }
+      if (req.body?.executionDecision !== undefined && req.body.expectedExecutionStageId === undefined) {
+        throw unprocessable("executionDecision requires expectedExecutionStageId from the task's current executionState");
+      }
+      if (req.body?.expectedExecutionStageId !== undefined && req.body.executionDecision === undefined) {
+        throw unprocessable("expectedExecutionStageId requires executionDecision");
+      }
+      if (
+        req.body?.executionDecision !== undefined &&
+        req.body.expectedExecutionLastDecisionId === undefined
+      ) {
+        throw unprocessable(
+          "executionDecision requires expectedExecutionLastDecisionId from the task's current executionState",
+        );
+      }
+      if (
+        req.body?.expectedExecutionLastDecisionId !== undefined &&
+        req.body.executionDecision === undefined
+      ) {
+        throw unprocessable("expectedExecutionLastDecisionId requires executionDecision");
       }
       next();
     },
@@ -14395,7 +14456,7 @@ export function issueRoutes(
         throw unprocessable("expectedExecutionPolicy requires a policy-only update");
       }
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      let existing = await getAccessibleResource(
         req,
         res,
         svc.getById(id),
@@ -14403,7 +14464,6 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
-      await assertNativeRunKeepsOwnExecutionLock(req, existing);
       if (req.body.expectedStatusVersion !== undefined && (
         existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
       )) {
@@ -14454,6 +14514,20 @@ export function issueRoutes(
         { allowVisibleIssueWrite: true },
       );
       if (!issueMutationAccess) return;
+      // Ownership mediation can clear a terminal prior run and atomically
+      // adopt this task for the current run. Derive every stage decision from
+      // the authoritative post-adoption row and its refreshed run locks.
+      const authoritativeExisting = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(id),
+        "Issue not found",
+      );
+      if (!authoritativeExisting) return;
+      if (!(await assertIssueReadAllowed(req, res, authoritativeExisting))) return;
+      existing = authoritativeExisting;
+      const deferFinalStatusToNativeRun =
+        (await assertNativeRunKeepsOwnExecutionLock(req, existing)) === true;
       if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
       const issueMutationAuthorizationReason =
         req.actor.type === "agent"
@@ -14483,6 +14557,9 @@ export function issueRoutes(
         attachmentIds: commentAttachmentIds,
         reviewInteractionId: requestedReviewInteractionId,
         reviewRequest,
+        executionDecision,
+        expectedExecutionStageId,
+        expectedExecutionLastDecisionId,
         reopen: reopenRequested,
         resume: resumeRequested,
         interrupt: interruptRequested,
@@ -14601,12 +14678,13 @@ export function issueRoutes(
         req.body.reviewPolicy !== existing.reviewPolicy;
       const reviewVerdictRequested =
         existing.status === "in_review" &&
-        (updateFields.status === "done" || updateFields.status === "cancelled");
+        (updateFields.status === "done" || updateFields.status === "cancelled" || executionDecision !== undefined);
       const mcpReviewSensitiveMutation = mcpParticipationChange;
       const reviewPolicySensitiveMutationRequested =
         mcpReviewSensitiveMutation || req.body.reviewPolicy !== undefined ||
         updateFields.status === "done" ||
-        updateFields.status === "cancelled";
+        updateFields.status === "cancelled" ||
+        executionDecision !== undefined;
       if (
         (reviewVerdictRequested || reviewPolicyChangeRequested) &&
         existing.reviewPolicy != null &&
@@ -14669,6 +14747,7 @@ export function issueRoutes(
         reopenRequested || resumeRequested === true;
       const recoveryRelevantSourceMutationRequested =
         req.body.status !== undefined ||
+        executionDecision !== undefined ||
         normalizedAssigneeAgentId !== undefined ||
         req.body.assigneeUserId !== undefined ||
         Array.isArray(req.body.blockedByIssueIds) ||
@@ -14730,6 +14809,7 @@ export function issueRoutes(
           actorId: actor.actorId,
         });
       const effectiveMoveToTodoRequested =
+        executionDecision === undefined &&
         !assigneeSelfCommentOnTerminal &&
         !(isBlocked && !!commentBody && (await getExecutionBlocker(db, existing.companyId, existing.id))?.workspaceRepairRequired) &&
         (explicitMoveToTodoRequested ||
@@ -14771,6 +14851,7 @@ export function issueRoutes(
       const isAgentWorkUpdate =
         req.actor.type === "agent" &&
         (Object.keys(updateFields).length > 0 ||
+          executionDecision !== undefined ||
           reviewRequest !== undefined ||
           hiddenAtRaw !== undefined);
 
@@ -14916,6 +14997,11 @@ export function issueRoutes(
           typeof updateFields.status === "string"
             ? updateFields.status
             : undefined,
+        executionDecision,
+        expectedExecutionStageId,
+        expectedExecutionLastDecisionId,
+        requireExplicitExecutionDecision: true,
+        deferFinalStatusToNativeRun,
         requestedAssigneePatch: {
           assigneeAgentId: normalizedAssigneeAgentId,
           assigneeUserId:
@@ -14946,6 +15032,10 @@ export function issueRoutes(
           lastDecisionId: decisionId,
         };
       }
+      const pendingExecutionStageCancellation =
+        updateFields.status === "cancelled" &&
+        transition.patch.executionState === null &&
+        Boolean(parseIssueExecutionState(existing.executionState)?.currentStageId);
       if (expectedExecutionPolicy !== undefined && (
         (transition.patch.status !== undefined && transition.patch.status !== existing.status) ||
         (transition.patch.assigneeAgentId !== undefined && transition.patch.assigneeAgentId !== existing.assigneeAgentId) ||
@@ -15327,6 +15417,21 @@ export function issueRoutes(
         ...(expectedParentId !== undefined ? { expectedParentId } : {}),
         workspaceSelectionActor: req.actor,
         expectedExecutionPolicy,
+        // Stage decisions and participant-authorized cancellations are both
+        // derived before the service acquires its row lock. Fence the full
+        // stage/ownership snapshot so concurrent advancement, cancellation,
+        // or run-stop races fail closed.
+        expectedExecutionDecisionSnapshot: transition.decision || pendingExecutionStageCancellation
+          ? {
+              status: existing.status,
+              assigneeAgentId: existing.assigneeAgentId,
+              assigneeUserId: existing.assigneeUserId,
+              checkoutRunId: existing.checkoutRunId,
+              executionRunId: existing.executionRunId,
+              executionPolicy: existing.executionPolicy ?? null,
+              executionState: existing.executionState ?? null,
+            }
+          : undefined,
         expectedStatusVersion,
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
@@ -15376,7 +15481,8 @@ export function issueRoutes(
         const lockedReviewVerdictRequested =
           lockedExisting.status === "in_review" &&
           (updateFields.status === "done" ||
-            updateFields.status === "cancelled");
+            updateFields.status === "cancelled" ||
+            executionDecision !== undefined);
         if (
           (lockedReviewVerdictRequested || lockedPolicyChangeRequested) &&
           lockedExisting.reviewPolicy != null &&

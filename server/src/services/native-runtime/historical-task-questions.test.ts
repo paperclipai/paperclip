@@ -271,14 +271,44 @@ describe("historical task questions", () => {
       expect(await nativeCompletionFeedback(db, f.runId, done)).toContain("Tell the user");
     });
 
-  it("preserves linked approvals and configured review stages", async () => {
+  it("preserves linked approvals", async () => {
     const f = await fixture(); await message(f);
     const [approval] = await db.insert(approvals).values({ companyId: f.companyId, type: "request_board_approval",
       status: "pending", payload: { title: "Approve action" } }).returning();
     await db.insert(issueApprovals).values({ companyId: f.companyId, issueId: f.issueId, approvalId: approval.id });
     expect(await gate(f)).toEqual({ kind: "approval", id: approval.id });
     expect(await nativeCompletionFeedback(db, f.runId, done)).toContain("waiting for approval");
-    expect(await pendingNativeGovernance({ db, ...f, executionState: { status: "pending" } }))
+  });
+
+  it("uses the live configured review stage when the caller snapshot is stale", async () => {
+    const f = await fixture(); await message(f);
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          participants: [{ id: randomUUID(), type: "agent", agentId: f.agentId }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: f.agentId },
+        returnAssignee: { type: "agent", agentId: f.agentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, f.issueId));
+
+    expect(await pendingNativeGovernance({ db, ...f, executionState: null }))
       .toEqual({ kind: "execution_stage", id: f.runId });
   });
 
