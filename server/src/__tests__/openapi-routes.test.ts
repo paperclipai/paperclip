@@ -430,6 +430,27 @@ describe("openapi routes", () => {
     expect(create).toContain("/{prefix}/issues/{identifier}");
   });
 
+  it("publishes grant-gated access operations as board_or_agent and keeps member edits board-only", () => {
+    const spec = buildOpenApiSpec() as any;
+    for (const [path, method, grant] of [
+      ["/api/companies/{companyId}/invites", "post", "users:invite"],
+      ["/api/companies/{companyId}/invites", "get", "users:invite"],
+      ["/api/companies/{companyId}/join-requests", "get", "joins:approve"],
+      ["/api/companies/{companyId}/join-requests/{requestId}/approve", "post", "joins:approve"],
+      ["/api/companies/{companyId}/join-requests/{requestId}/reject", "post", "joins:approve"],
+      ["/api/companies/{companyId}/members", "get", "users:manage_permissions"],
+    ] as const) {
+      const operation = spec.paths[path][method];
+      expect(operation["x-paperclip-authorization"], `${method} ${path}`).toEqual({ actor: "board_or_agent" });
+      expect(operation.description).toContain(grant);
+    }
+    expect(spec.paths["/api/companies/{companyId}/invites"].post.description).toContain("inviteUrl");
+    for (const path of [
+      "/api/companies/{companyId}/members/{memberId}/permissions",
+      "/api/companies/{companyId}/members/{memberId}/role-and-grants",
+    ]) expect(spec.paths[path].patch["x-paperclip-authorization"]).toEqual({ actor: "board" });
+  });
+
   it("documents owned conversation reads and exact revision access separately", () => {
     const spec = buildOpenApiSpec() as any;
     const boardSecurity = [{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }];
