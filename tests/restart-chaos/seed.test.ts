@@ -122,6 +122,11 @@ describe("cloneWorkspaceRepository", () => {
       const pinned = cloneWorkspaceRepository(source, path.join(root, "pinned"), first);
       expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: pinned, encoding: "utf8" }).trim()).toBe(first);
       expect(() => cloneWorkspaceRepository(source, path.join(root, "missing"), "0".repeat(40))).toThrow(/no longer has commit/);
+      for (const copy of [clone, pinned]) {
+        expect(execFileSync("git", ["remote"], { cwd: copy, encoding: "utf8" }).trim()).toBe("");
+        expect(() => execFileSync("git", ["push", "--quiet", "origin", "HEAD:refs/heads/agent-push"], { cwd: copy, stdio: "pipe" })).toThrow();
+      }
+      expect(execFileSync("git", ["branch", "--list", "agent-push"], { cwd: source, encoding: "utf8" }).trim()).toBe("");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
