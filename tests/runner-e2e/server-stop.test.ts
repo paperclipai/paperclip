@@ -443,7 +443,7 @@ function crashStopper(signalError: () => Error) {
     createOwner: candidate => {
       const owner = createProcessTreeOwner(candidate);
       return { ...owner, signal: async (signal, selected) => {
-        if (signal === "SIGKILL" && !thrown) { thrown = true; throw signalError(); }
+        if (signal === "SIGKILL" && !thrown) { thrown = true; await owner.observe(); throw signalError(); }
         return await owner.signal(signal, selected);
       } };
     },
@@ -470,9 +470,15 @@ it.skipIf(process.platform === "win32")("fails a crash restart when the group ki
   await once(child, "message");
   const { stop } = crashStopper(eperm);
   await stop.watch(child);
+  const kill = child.kill.bind(child);
   child.kill = () => true;
-  await expect(stop.crashForRestart(child)).rejects.toThrow(/EPERM/);
-  expect([child.exitCode, child.signalCode]).toEqual([null, null]);
+  try {
+    await expect(stop.crashForRestart(child)).rejects.toThrow(/EPERM/);
+    expect([child.exitCode, child.signalCode]).toEqual([null, null]);
+  } finally {
+    child.kill = kill;
+    await stop.stopAll().catch(() => {});
+  }
 });
 
 it.skipIf(process.platform === "win32")("fails a crash restart on a group kill error other than EPERM", async () => {
@@ -481,5 +487,33 @@ it.skipIf(process.platform === "win32")("fails a crash restart on a group kill e
   await once(child, "message");
   const { stop } = crashStopper(() => Object.assign(new Error("kill EINVAL"), { code: "EINVAL" }));
   await stop.watch(child);
-  await expect(stop.crashForRestart(child)).rejects.toThrow(/EINVAL/);
+  try {
+    await expect(stop.crashForRestart(child)).rejects.toThrow(/EINVAL/);
+  } finally { await stop.stopAll().catch(() => {}); }
+});
+
+it.skipIf(process.platform === "win32")("still SIGKILLs a detached descendant without a graceful drain when the first group kill reports EPERM", async () => {
+  const { root } = await fixture();
+  const marker = path.join(root, "graceful-drain.txt"), descendantEntry = path.join(root, "descendant.cjs");
+  await writeFile(descendantEntry, `
+    process.on('SIGTERM', () => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'descendant drained'));
+    process.send('ready'); setInterval(() => {}, 1000);
+  `);
+  const { entry } = await fixture(`
+    const child = require('node:child_process').fork(${JSON.stringify(descendantEntry)}, [], { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    child.once('message', () => process.send({ ready: true, descendantPid: child.pid }));
+    setInterval(() => {}, 1000);
+  `);
+  const controller = start(entry), controllerReady = once(controller, "message");
+  const { stop, logs } = crashStopper(eperm);
+  await stop.watch(controller);
+  try {
+    const [ready] = await controllerReady;
+    await stop.crashForRestart(controller);
+    expect(controller.signalCode).toBe("SIGKILL");
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    const table = await readProcessTable();
+    expect(table!.some(row => row.pid === ready.descendantPid && !row.state?.startsWith("Z"))).toBe(false);
+    expect(logs.join("")).toMatch(/groups still refusing SIGKILL: none/);
+  } finally { await stop.stopAll(); }
 });

@@ -131,7 +131,18 @@ export function createRunnerE2EServerStopper(options: {
           if (!exited(child)) child.kill("SIGKILL");
           while (!exited(child) && Date.now() < state.gracefulDeadline) await wait(25);
           if (!exited(child)) throw error;
-          options.log(`Warning: SIGKILL of the Paperclip process groups reported EPERM after server pid=${child.pid} exited; continuing cleanup\n`);
+          const refused: number[] = [];
+          await settleUncertainIdentity(() => state.owner.observe(), () => state.gracefulDeadline!);
+          for (const group of state.owner.liveGroups()) {
+            try {
+              await state.owner.signal("SIGKILL", new Set([group.processGroupId]));
+            } catch (groupError) {
+              if ((groupError as NodeJS.ErrnoException).code !== "EPERM") throw groupError;
+              refused.push(group.processGroupId);
+            }
+          }
+          options.log(`Warning: SIGKILL of the Paperclip process groups reported EPERM after server pid=${child.pid} exited; `
+            + `groups still refusing SIGKILL: ${refused.join(",") || "none"}; continuing cleanup\n`);
         }
         await stopOnce(child, state, "SIGKILL");
       })();
