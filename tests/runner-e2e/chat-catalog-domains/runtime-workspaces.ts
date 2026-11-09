@@ -44,17 +44,19 @@ export function gradeLocateFiles(value: unknown) {
   c.add("same-projectless-task-binding", !!before?.workspace?.id && !!after && before.workspace.id === after.workspace.id
     && before.workspace.cwd === after.workspace.cwd && after.workspace.companyId === o.companyId && after.workspace.projectId == null
     && !!task && sameTask(task, o.tasks.find(row => row.id === task.id)), "The correct projectless binding persists without reassigning or changing the task.");
-  c.add("concrete-authorized-location", !!after && (o.reply.includes(after.workspace.cwd) || o.reply.includes(after.workspace.id)),
-    "The answer identifies the actual bound workspace rather than inferring an agent default or project directory.");
   c.add("actual-saved-files-retained", o.state.fileAfter === o.state.fileBefore && typeof o.state.fileBefore === "string"
     && o.state.fileBefore.trim() === o.state.marker && o.runs.some(run => run.id === o.state.fixtureRunId && run.agentId === (o.state.worker as Entity).id
       && run.status === "succeeded"), "A genuine worker created the prerequisite file and it remains unchanged.");
-  const resultLinks = workspaceResultLinks(o.reply, o.links);
-  c.add("supported-workspace-view-guidance", (/workspace|files? (?:view|tab|panel)/i.test(o.reply)
-    || !!after && resultLinks.some(href => workspaceLink(o.origin, href, after.workspace.id, String(o.state.companyPrefix))))
-    && !!after && resultLinks.filter(href => { try { return new URL(href, o.origin).pathname.includes("/execution-workspaces/"); } catch { return false; } })
-      .every(href => workspaceLink(o.origin, href, after.workspace.id, String(o.state.companyPrefix))),
-    "The response points to the supported workspace view; any workspace link it does give must identify the actual bound workspace.");
+  // The person needs to reach the bound workspace, so the reply must render a link to its page; the
+  // scripted human then clicks that link. A cwd or id copied as text is not graded: the request did not ask
+  // for a literal, and abbreviated paths are a valid way to name a location the link already identifies.
+  const prefix = String(o.state.companyPrefix);
+  c.add("bound-workspace-page-link", !!after && o.links.some(href => workspaceLink(o.origin, href, after.workspace.id, prefix)),
+    "The rendered reply links the supported view of the workspace actually bound to the task.");
+  c.add("no-other-workspace-link", !!after && workspaceResultLinks(o.reply, o.links)
+    .filter(href => { try { return new URL(href, o.origin).pathname.includes("/execution-workspaces/"); } catch { return false; } })
+    .every(href => workspaceLink(o.origin, href, after.workspace.id, prefix)),
+    "Every workspace link in the reply identifies the bound workspace, not an agent default or another task's workspace.");
   return c.result();
 }
 export function workspaceResultLinks(reply: string, rendered: string[]) {
@@ -73,7 +75,7 @@ export const runtimeWorkspacesCases = [runtimeDefinition("workspaces.locate-file
   return { ...await savedTaskWorkspace(ctx), companyPrefix: ctx.input.fixtures.company.issuePrefix };
 }, gradeLocateFiles, {
   sourceFiles: ["chat-catalog-domains/runtime-workspaces.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/workspaces.yaml", "../../ui/src/components/IsolatedWorkspacesRouteGate.tsx", "../../ui/src/pages/ExecutionWorkspaceDetail.tsx"],
-  expectedRunCount: 2, attemptTimeoutMs: 540_000,
+  expectedRunCount: 2, attemptTimeoutMs: 540_000, oracleVersion: "paperclip.chat-catalog.runtime.locate-files.v3",
   async observe(ctx, state) {
     const id = (state.task as Entity).id;
     state.workspaceAfter = await ctx.input.api.get<WorkspaceView>(`/api/issues/${id}/workspace`);
@@ -90,10 +92,11 @@ export const runtimeWorkspacesCases = [runtimeDefinition("workspaces.locate-file
     if (links.some(link => { try { return new URL(link, o.origin).pathname.includes("/execution-workspaces/")
       && !workspaceLink(o.origin, link, view.workspace.id, prefix); } catch { return false; } }))
       throw new Error("The actual reply supplied an incorrect workspace link");
-    const href = links.find(link => workspaceLink(o.origin, link, view.workspace.id, prefix));
+    // Follow only the link the reply rendered; a typed URL would pass a reply the person cannot act on.
+    const href = o.links.find(link => workspaceLink(o.origin, link, view.workspace.id, prefix));
+    if (!href) throw new Error("The reply rendered no link to the bound workspace page");
     const source = ctx.input.page.url();
-    if (href) await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).first().click();
-    else await ctx.input.page.goto(`/${prefix}/execution-workspaces/${view.workspace.id}`, { waitUntil: "domcontentloaded" });
+    await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).first().click();
     await expect(ctx.input.page).toHaveURL(new RegExp(`/${prefix}/execution-workspaces/${view.workspace.id}(?:[/?#]|$)`));
     await expect(ctx.input.page.getByRole("heading", { name: view.workspace.name, exact: true }).first()).toBeVisible();
     await ctx.input.evidence("runtime-task-workspace-opened.json", { taskId: (state.task as Entity).id, workspaceId: view.workspace.id, url: ctx.input.page.url() });

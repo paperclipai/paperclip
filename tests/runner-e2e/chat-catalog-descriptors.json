@@ -6129,7 +6129,7 @@
       "../../ui/src/components/IsolatedWorkspacesRouteGate.tsx",
       "../../ui/src/pages/ExecutionWorkspaceDetail.tsx"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.locate-files.v3",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,
