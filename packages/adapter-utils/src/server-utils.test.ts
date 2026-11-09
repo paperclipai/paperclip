@@ -28,6 +28,7 @@ import {
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
   resolveLegacyPaperclipDesiredSkillNames,
+  resolveWindowsConsoleCommand,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
   selectInitialCommunicationGuidance,
@@ -4191,5 +4192,66 @@ describe("wake continuation comment ownership", () => {
       executionContinuation: { ...continuation([]), objective },
     }, { suppressIssueDescription: true });
     expect(legacy).toContain(`"objective":"${objective}"`);
+  });
+});
+
+describe("resolveWindowsConsoleCommand", () => {
+  async function consoleFixture() {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-console-command-"));
+    const bin = path.join(root, "bin with space");
+    await fs.mkdir(bin);
+    const wrapper = path.join(bin, "codex.cmd");
+    await fs.writeFile(wrapper, "@echo off\r\n", { mode: 0o755 });
+    const executable = path.join(bin, "claude.exe");
+    await fs.writeFile(executable, "", { mode: 0o755 });
+    return { root, bin, wrapper, executable, env: { PATH: bin, SystemRoot: "C:\\Windows" } };
+  }
+
+  it("runs a .cmd wrapper through cmd.exe with the /d /s /c quoting of local child processes", async () => {
+    const fixture = await consoleFixture();
+    try {
+      const command = await resolveWindowsConsoleCommand(fixture.wrapper, ["login", "--device-auth"], fixture.root, fixture.env);
+      expect(command?.application).toMatch(/cmd\.exe$/i);
+      expect(command?.parameters).toBe(`/d /s /c ""${fixture.wrapper}" login --device-auth"`);
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("quotes an executable's parameters the way CreateProcess parses them", async () => {
+    const fixture = await consoleFixture();
+    try {
+      const command = await resolveWindowsConsoleCommand(
+        fixture.executable, ["setup-token", 'say "hi" there', "C:\\my dir\\", "plain"], fixture.root, fixture.env,
+      );
+      expect(command?.application).toBe(fixture.executable);
+      expect(command?.parameters).toBe('setup-token "say \\"hi\\" there" "C:\\my dir\\\\" plain');
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null for a command that is not installed", async () => {
+    const fixture = await consoleFixture();
+    try {
+      expect(await resolveWindowsConsoleCommand(path.join(fixture.bin, "missing.exe"), [], fixture.root, fixture.env)).toBeNull();
+      expect(await resolveWindowsConsoleCommand("missing-provider-cli", [], fixture.root, fixture.env)).toBeNull();
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32")("finds a bare command name on PATH through PATHEXT", async () => {
+    const fixture = await consoleFixture();
+    try {
+      const command = await resolveWindowsConsoleCommand("codex", ["login"], fixture.root, fixture.env);
+      expect(command?.application).toMatch(/cmd\.exe$/i);
+      expect(command?.parameters.toLowerCase()).toBe(`/d /s /c ""${fixture.wrapper}" login"`.toLowerCase());
+      const executable = await resolveWindowsConsoleCommand("claude", ["setup-token"], fixture.root, fixture.env);
+      expect(executable?.application.toLowerCase()).toBe(fixture.executable.toLowerCase());
+      expect(executable?.parameters).toBe("setup-token");
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
   });
 });
