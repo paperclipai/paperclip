@@ -207,6 +207,13 @@ budget, and company holds still prevent automatic resume. An agent in
 `verifying` returns to `preparing`. An agent that moves away keeps the selection until it is terminated,
 so the plugin keeps its resources until then.
 
+The existing agent configuration permission authorizes this move, including its
+temporary system pause. That permission already controls environment selection
+and resource allocation. Separate permission to issue a manual pause is not
+required for the migration. Configuration and company access checks still run
+before the change; an unauthorized request cannot save the environment or pause
+the agent.
+
 Saving an environment or the instance default that gives such a plugin to `ready`
 or `verifying` agents without that selection returns a conflict. Pause those agents,
 save the change, and then resume them.
