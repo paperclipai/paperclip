@@ -327,6 +327,12 @@ pub trait CommandExecutor {
         Ok(())
     }
 
+    /// The cause of a provider restart after a turn that failed and was
+    /// recovered, once; recorded as a runner diagnostic.
+    fn take_turn_end_restart_failure(&mut self) -> Option<String> {
+        None
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
     fn observe_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
@@ -2175,6 +2181,10 @@ fn poll_executor_events_after_controller_ack<E: CommandExecutor>(
     poll_executor_events(state, store, config, executor)?;
     if state.acked_source_seq >= state.highest_source_seq() {
         executor.prepare_next_turn()?;
+        if let Some(failure) = executor.take_turn_end_restart_failure() {
+            state.record_diagnostic(format!("turn-end provider restart failed: {failure}"));
+            store.save(state)?;
+        }
     }
     Ok(())
 }

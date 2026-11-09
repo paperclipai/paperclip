@@ -351,6 +351,13 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         }
     }
 
+    fn take_turn_end_restart_failure(&mut self) -> Option<String> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.take_turn_end_restart_failure(),
+            _ => None,
+        }
+    }
+
     fn observe_recovery_state(
         &mut self,
         state: &crate::durable::DurableState,
