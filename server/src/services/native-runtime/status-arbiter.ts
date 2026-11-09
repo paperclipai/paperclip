@@ -103,17 +103,25 @@ export function ownsNativeTaskCompletion(
   return issue.assigneeAgentId === agentId && !issue.assigneeUserId;
 }
 
+export function heldByAnotherRun(issue: { executionRunId?: string | null }, runId: string) {
+  return Boolean(issue.executionRunId && issue.executionRunId !== runId);
+}
+
 export function supersedeStaleOwnerCompletion(
   decision: NativeStatusDecision,
-  issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null },
+  issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null;
+    executionRunId?: string | null },
   agentId: string,
+  runId?: string,
 ): NativeStatusDecision {
-  if (decision.statusAction !== "done" || ownsNativeTaskCompletion(issue, agentId)) return decision;
+  if (decision.statusAction !== "done") return decision;
+  const ownerSuperseded = !ownsNativeTaskCompletion(issue, agentId);
+  if (!ownerSuperseded && !(runId && heldByAnotherRun(issue, runId))) return decision;
   return {
     policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
     statusAction: "preserve",
     toStatus: issue.status as NativeAuthoritativeIssueStatus,
-    reasonCode: "completion_owner_superseded",
+    reasonCode: ownerSuperseded ? "completion_owner_superseded" : "completion_run_superseded",
     unblockDescriptor: null,
     effects: [],
   };
