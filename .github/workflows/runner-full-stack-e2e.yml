@@ -647,9 +647,26 @@ jobs:
           [[ "$IMAGE_CONTENT_ID" =~ ^[0-9a-f]{64}$ ]]
           [[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]
           identity="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/runner-full-stack-e2e.yml@"
+          verify_signed() {
+            cosign verify \
+              --certificate-identity-regexp "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$IMAGE_TAG@$1" >/dev/null
+          }
+          # Reuse an existing content tag only when its digest carries this
+          # workflow's signature. A run interrupted between push and sign
+          # leaves an unsigned tag; rebuilding, pushing and signing replaces it
+          # instead of failing every later campaign with "no signatures found".
+          digest=""
           if docker buildx imagetools inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-            digest="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          else
+            existing="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            if verify_signed "$existing" 2>/dev/null; then
+              digest="$existing"
+            else
+              echo "::warning title=Daytona image::Existing $IMAGE_TAG ($existing) has no verifiable workflow signature; rebuilding and signing it"
+            fi
+          fi
+          if [ -z "$digest" ]; then
             cache_args=(
               --cache-from "type=registry,ref=${IMAGE_CACHE}"
             )

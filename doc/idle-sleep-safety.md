@@ -386,6 +386,11 @@ settles, including after the raw socket closes. Detached startup reconciliation
 for built-in agents, managed homes and persisted runtime services also remains
 counted after readiness until its writes settle.
 
+Retained native response presentation also continues after web readiness. Its
+fair scheduler and persisted retry deadlines remain in effect; in-flight work
+stays counted for idle and is joined at shutdown. Web readiness does not require
+the retained reply queue to become idle.
+
 Scheduler work already in flight remains counted until its promise settles.
 Idle holds pause new scheduler admissions. Database backup promises remain
 counted through success or failure. Configured periodic backups block sleep by
@@ -593,6 +598,19 @@ label does not prove that arbitrary worker code has no background activity.
 No plugin approval or configuration bypass is supported. Scheduled and
 externally triggered work needs a durable host wake mechanism before it can
 permit sleep.
+
+The host's agent-runtime lifecycle notification listener has separate ownership
+from its SDK worker. A normal owned safety read retires its exclusive listener
+client only after admitted delivery and journal work settle. Failed or uncertain
+retirement remains a blocker; diagnostics never perform this retirement. Closing
+a subscription alone does not prove that its PostgreSQL backend closed. The
+client belongs only to lifecycle delivery, so retirement preserves the main
+pool and other features' notification channels. Releasing the hold or its existing shared expiry deadline
+recreates the listener and reconstructs delivery from the durable journal before
+normal dispatch, including events whose notification arrived while it was closed.
+This preserves at-least-once delivery and existing company filtering; it does not
+promise exactly-once callback invocation or add a wake guarantee for arbitrary
+external SQL writers while compute is stopped.
 
 This is a single-process admission protocol. A restart clears the owner. The
 host must serialize sleep with deploy/wake operations and bind its final check

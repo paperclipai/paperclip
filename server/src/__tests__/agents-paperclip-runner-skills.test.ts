@@ -19,7 +19,6 @@ describe("paperclip_runner operational skill normalization", () => {
       provider: "codex",
       model: PAPERCLIP_RUNNER_DEFAULT_MODELS.codex,
       codexPermissionMode: "never",
-      lifecycleMode: "per_turn",
     });
   });
 

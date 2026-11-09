@@ -49,6 +49,7 @@ import { firstTaskTasks, onboardingApprovalHistoryTask } from "./first-task-case
 import { APPROVAL_HISTORY_SUITE, approvalHistoryDefinitionDigest } from "./first-task-approval-history.js";
 import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
+import { neutralFixtureSuffix } from "./fixture-names.js";
 import { fileURLToPath } from "node:url";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
@@ -117,11 +118,11 @@ function commonAgent(
   additionalInstructions: readonly string[] = [],
 ) {
   return {
-    name: `Runner E2E ${fixtureId} ${input.executionId}`,
+    name: `Agent ${neutralFixtureSuffix(fixtureId, input.executionId)}`,
     role: "qa",
-    title: "Paid full-stack runner acceptance fixture",
+    title: "Operations agent",
     capabilities:
-      "Completes deterministic standard, planning, and ask-mode runner acceptance tasks.",
+      "Completes standard, planning, and ask-mode tasks for the company.",
     adapterType,
     ...(adapterType === "codex_local" ? { runner: "legacy" as const } : {}),
     adapterConfig,
@@ -504,8 +505,8 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
     expectedExecutionTarget: { kind: "local" },
     buildEnvironment(input) {
       return {
-        name: `Runner E2E local ${input.executionId}`,
-        description: "Ephemeral local runner E2E environment",
+        name: `Local ${neutralFixtureSuffix(input.executionId)}`,
+        description: "Local execution environment",
         driver: "local",
         config: {},
         envVars: {},
@@ -532,8 +533,8 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
         );
       }
       return {
-        name: `Runner E2E Daytona ${input.executionId}`,
-        description: "Ephemeral Daytona runner E2E environment",
+        name: `Daytona ${neutralFixtureSuffix(input.executionId)}`,
+        description: "Daytona sandbox environment",
         driver: "sandbox",
         config: {
           provider: "daytona",
@@ -580,8 +581,8 @@ export const daytonaWarmEnvironment: EnvironmentFixture = {
       );
     }
     return {
-      name: `Runner E2E Daytona warm ${input.executionId}`,
-      description: "Ephemeral reusable Daytona runner E2E environment",
+      name: `Daytona warm ${neutralFixtureSuffix(input.executionId)}`,
+      description: "Reusable Daytona sandbox environment",
       driver: "sandbox",
       config: {
         provider: "daytona",
@@ -1854,8 +1855,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     description: "Production onboarding, first replies, approval, and durable task execution.",
     groups: ["onboarding"],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
-    environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 52,
-    definitionMetadata: { version: 8, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "qualified-platform-wizard-saved-default", claudeDefaultTargets: ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"], legacySetup: "explicit-advanced-runner-choice", productionInstructions: true, qualityGrading: "informational" },
+    environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 56,
+    definitionMetadata: { version: 9, runGrading: "accepted-execution-or-explicit-plan-only", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "qualified-platform-wizard-saved-default", claudeDefaultTargets: ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"], legacySetup: "explicit-advanced-runner-choice", productionInstructions: true, qualityGrading: "informational" },
   },
   {
     id: CHAT_FEATURE_SUITE, label: "Chat feature journeys", manualOnly: true,
@@ -1934,7 +1935,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
         .filter(id => id !== "confirmation-replies.runner-codex.daytona.task-card-accept")),
     tasks: [...firstTaskTasks.filter(task => ["task-reply-accept", "interview-plan-accept", "reject-no-execution", "task-card-accept"].includes(task.id)), ...chatConfirmationTasks],
     expectedMatrixSize: 13,
-    definitionMetadata: { version: 7, managedOnboarding: "ui-owned-qualification-and-physical-file", managedExpectedTaskRuns: 4, managedAutomaticRetries: 0, instructions: "production", grading: "card-message-provenance-before-child-creation", unansweredQuestionComposer: "history-card-only-including-fresh-dismissal", completionObservation: "120-seconds", scheduling: "explicit-only" },
+    definitionMetadata: { version: 8, planApproval: "execute-accepted-interview-scope", managedOnboarding: "ui-owned-qualification-and-physical-file", managedExpectedTaskRuns: 4, managedAutomaticRetries: 0, instructions: "production", grading: "card-message-provenance-before-child-creation", unansweredQuestionComposer: "history-card-only-including-fresh-dismissal", completionObservation: "120-seconds", scheduling: "explicit-only" },
   },
   {
     id: "completion-updates", label: "Delegated Completion Updates", manualOnly: true,
@@ -1945,7 +1946,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [localEnvironment],
     tasks: [...firstTaskTasks.filter(task => task.id === "interview-plan-accept"), ...chatCompletionTasks],
     expectedMatrixSize: 10,
-    definitionMetadata: { version: 28, runGrading: "evidenced-nonexecution-and-refusal", resultNavigation: "loaded-task-header", instructionSetup: "read-before-write-base-hash", requirementEvidence: "recorded-user-comments-and-resolved-answers", busyReferenceWait: "committed-conversation-document-response-held", busyBoundary: "source-tool-in-flight-and-public-deferred-wake", workerReference: "rsvp-code-in-saved-note", judge: "completion-quality-v14-observed-rendered-result-access", judgeMaxDollarsPerRequest: 0.5, instructions: "production", correlation: "authoritative-task-facts-required-in-reply-run", restartBoundary: "done-and-source-provider-at-reference-gate", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "run-isolated-task-directory", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
+    definitionMetadata: { version: 29, runGrading: "accepted-execution-or-explicit-plan-only", resultNavigation: "loaded-task-header", instructionSetup: "read-before-write-base-hash", requirementEvidence: "recorded-user-comments-and-resolved-answers", busyReferenceWait: "committed-conversation-document-response-held", busyBoundary: "source-tool-in-flight-and-public-deferred-wake", workerReference: "rsvp-code-in-saved-note", judge: "completion-quality-v14-observed-rendered-result-access", judgeMaxDollarsPerRequest: 0.5, instructions: "production", correlation: "authoritative-task-facts-required-in-reply-run", restartBoundary: "done-and-source-provider-at-reference-gate", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "run-isolated-task-directory", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
 
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),

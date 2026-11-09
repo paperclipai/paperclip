@@ -1,16 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activityLog, agents, authUsers, companyMemberships, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companyMemberships, companySkillRepositorySnapshots, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-stop.js";
-import { buildNativeRuntimeContext } from "../native-runtime/runtime-context.js";
+import { buildNativeRuntimeContext, materializeSelectedSkills, rehydratePinnedSkillAssets } from "../native-runtime/runtime-context.js";
+import { applyConnectorSkills } from "../connector-runtime.js";
+import * as storageModule from "../../storage/index.js";
+import { createStorageService } from "../../storage/service.js";
+import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
+import { readRuntimeSkillPreservation } from "../native-runtime/runtime-skill-preservation-reference.js";
+import { hasLocalRuntimeSkillObligations } from "../native-runtime/runtime-skill-preservation.js";
+import * as runtimeSkillPreservation from "../native-runtime/runtime-skill-preservation.js";
+import { removeRuntimeAssetTree } from "../native-runtime/runtime-asset-retention.js";
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import { prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-sync.js";
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
@@ -86,6 +94,160 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
+
+  it("rejects invalid local Runner configuration before native authority and retains the preparation owner", async () => {
+    const f = await fixture();
+    await claimPreparation(f);
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-invalid-dot-retry-controller");
+    f.input.runtimeEnv = { PAPERCLIP_RUNNER_BINARY: join(tmpdir(), "ignored-injected-runnerd") };
+    const before = await read(f.run.id);
+    await expect(selectHeartbeatRuntime(db, f.input)).rejects.toThrow("PAPERCLIP_RUNNER_BINARY must be an absolute path");
+    expect(await read(f.run.id)).toEqual(before);
+    expect(await coordinators(f.run.id)).toEqual([]);
+    expect(await db.select().from(completionContracts)).toHaveLength(0);
+    expect(f.input.stopControllerLease).not.toHaveBeenCalled();
+    expect(buildNativeRuntimeContext).not.toHaveBeenCalled();
+  });
+
+  it("ignores an injected runtime Runner value that the local backend does not consume", async () => {
+    const f = await fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", join(tmpdir(), "configuration-only-controller-runnerd"));
+    f.input.runtimeEnv = { PAPERCLIP_RUNNER_BINARY: "relative-ignored-injected-runnerd" };
+    expect((await selectHeartbeatRuntime(db, f.input)).selected).toBe(true);
+    expect((await read(f.run.id)).runtimeMode).toBe("native");
+    expect(await coordinators(f.run.id)).toHaveLength(1);
+  });
+
+  it("does not apply local Runner configuration to remote native selection", async () => {
+    const f = await fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-unused-remote-controller");
+    f.input.workspace.executionTarget = sandbox;
+    expect((await selectHeartbeatRuntime(db, f.input)).selected).toBe(true);
+    expect((await read(f.run.id)).runtimeMode).toBe("native");
+    expect(await coordinators(f.run.id)).toHaveLength(1);
+  });
+
+  it("preserves immutable native recovery when current local Runner configuration is invalid", async () => {
+    const f = await fixture();
+    const selected = await selectHeartbeatRuntime(db, f.input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    const saved = await read(f.run.id);
+    f.input.run = saved;
+    f.input.session.persistedRunnerProfile = saved.runnerProfileJson ?? {};
+    f.input.session.persistedNativeExecutionInput = selected.nativeExecution;
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-unused-recovery-controller");
+    const resumed = await selectHeartbeatRuntime(db, f.input);
+    expect(resumed).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution, nativeRunnerInstanceId: selected.nativeRunnerInstanceId });
+    expect((await read(f.run.id)).runnerProfileJson).toEqual(saved.runnerProfileJson);
+    expect(await coordinators(f.run.id)).toHaveLength(1);
+  });
+
+  async function connectorFixture(durable = true) {
+    const f = await fixture(), { input } = f;
+    const home = await mkdtemp(join(tmpdir(), "selection-connector-assets-"));
+    vi.stubEnv("PAPERCLIP_HOME", home);
+    const config = await applyConnectorSkills({}, [], [{ key: "slack", label: "Slack", skillKey: "paperclipai/paperclip/slack",
+      resources: [{ id: "synthetic-channel", label: "Fixture channel", connectionId: randomUUID() }],
+      tools: [{ name: "fixture_read", description: "Read synthetic messages", inputSchema: { type: "object" } }] }]);
+    input.config.runtimeConfig = config;
+    input.config.runtimeSkillEntries = config.paperclipRuntimeSkills;
+    vi.mocked(buildNativeRuntimeContext).mockImplementation(async () => {
+      const context = nativeRuntimeContextFixture();
+      context.instructions.bundle.rootPath = instructionRoot;
+      context.skills = await materializeSelectedSkills(config, config.paperclipRuntimeSkills, true);
+      return { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) };
+    });
+    const provider = createLocalDiskStorageProvider(join(home, "objects"));
+    const storage = createStorageService(durable ? { ...provider, id: "s3" } : provider);
+    const storageSpy = vi.spyOn(storageModule, "getStorageService").mockReturnValue(storage);
+    return { ...f, home, storage, cleanup: async () => { storageSpy.mockRestore(); await removeRuntimeAssetTree(home); } };
+  }
+
+  it("publishes a dynamic connector skill receipt with admission and rehydrates its exact bytes on a cold host", async () => {
+    const { input, run, agent, home, storage, cleanup } = await connectorFixture();
+    let admitting = true;
+    const getObject = storage.getObject.bind(storage);
+    const readback = vi.spyOn(storage, "getObject").mockImplementation(async (...args) => {
+      if (admitting) {
+        expect((await read(run.id)).runnerProfileJson ?? {}).not.toHaveProperty("nativeExecutionInput");
+        expect(await coordinators(run.id)).toEqual([]);
+      }
+      return getObject(...args);
+    });
+    try {
+      const selected = await selectHeartbeatRuntime(db, input);
+      admitting = false;
+      if (!selected.selected || !selected.nativeExecution || !("runtimeContext" in selected.nativeExecution)) throw new Error("Expected native selection");
+      const saved = await read(run.id);
+      expect(readRuntimeSkillPreservation(saved)).not.toBeNull();
+      expect(await hasLocalRuntimeSkillObligations(db)).toBe(false);
+      const original = selected.nativeExecution.runtimeContext.skills[0]!;
+      expect(original.versionId).toBeNull();
+      const files = await Promise.all(["SKILL.md", "TOOLS.json"].map(async name => ({ name, bytes: await readFile(join(original.bundle.rootPath, name)) })));
+      vi.stubEnv("PAPERCLIP_HOME", join(home, "cold"));
+      const recovered = await rehydratePinnedSkillAssets(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id }, selected.nativeExecution.runtimeContext);
+      expect(recovered.skills[0]!.versionId).toBeNull();
+      expect(recovered.skills[0]!.bundle.digest).toBe(original.bundle.digest);
+      expect(recovered.skills[0]!.bundle.rootPath).not.toBe(original.bundle.rootPath);
+      for (const file of files) {
+        expect(await readFile(join(recovered.skills[0]!.bundle.rootPath, file.name))).toEqual(file.bytes);
+        expect((await stat(join(recovered.skills[0]!.bundle.rootPath, file.name))).mode & 0o777).toBe(0o444);
+      }
+      readback.mockRestore();
+      await removeRuntimeAssetTree(original.bundle.rootPath);
+      const outage = vi.spyOn(storage, "getObject").mockRejectedValue(new Error("Synthetic storage outage"));
+      try {
+        const staged = await runtimeSkillPreservation.stageNativeRuntimeSkillAssets(db, { companyId: agent.companyId, agentId: agent.id,
+          runId: run.id, issueId: selected.nativeExecution.binding.issueId, execution: selected.nativeExecution }, storage);
+        expect(staged?.receipt).toEqual(readRuntimeSkillPreservation(saved));
+        expect(outage).not.toHaveBeenCalled();
+      } finally { outage.mockRestore(); }
+      expect(await coordinators(run.id)).toMatchObject([{ phase: "observed", leaseOwner: null }]);
+    } finally { readback.mockRestore(); await cleanup(); }
+  });
+
+  it.each(["storage failure", "cancelled", "changed binding", "retired package"])("keeps dynamic skill admission unpublished after %s", async failure => {
+    const { input, run, agent, storage, cleanup } = await connectorFixture();
+    const stage = vi.spyOn(runtimeSkillPreservation, "stageNativeRuntimeSkillAssets");
+    const putFile = storage.putFile.bind(storage);
+    const put = ["storage failure", "cancelled"].includes(failure) ? vi.spyOn(storage, "putFile").mockImplementation(async data => {
+      const result = await putFile(data);
+      if (failure === "storage failure") throw new Error("Synthetic storage failure");
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, run.id));
+      return result;
+    }) : null;
+    input.beforeNativeRuntimeSelection = async () => {
+      if (failure === "changed binding") {
+        const execution = structuredClone(stage.mock.calls[0]![1].execution);
+        execution.binding.agentId = randomUUID();
+        await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, run.id));
+      }
+      if (failure === "retired package") await db.update(companySkillRepositorySnapshots).set({ storage: null })
+        .where(eq(companySkillRepositorySnapshots.companyId, agent.companyId));
+    };
+    try {
+      if (failure === "cancelled") expect(await selectHeartbeatRuntime(db, input)).toEqual({ selected: false });
+      else await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow(failure === "storage failure" ? "Synthetic storage failure"
+        : failure === "changed binding" ? "binding_changed" : "package_not_durable");
+      const saved = await read(run.id);
+      expect(saved.runnerProfileJson ?? {}).not.toHaveProperty("nativeRuntimeSkillPreservation");
+      if (failure !== "changed binding") expect(saved.runnerProfileJson ?? {}).not.toHaveProperty("nativeExecutionInput");
+      else expect((saved.runnerProfileJson!.nativeExecutionInput as { binding: { agentId: string } }).binding.agentId).not.toBe(agent.id);
+      expect(await coordinators(run.id)).toEqual([]);
+      expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+    } finally { put?.mockRestore(); stage.mockRestore(); await cleanup(); }
+  });
+
+  it("keeps volume-backed local connector admission independent of object storage", async () => {
+    const { input, run, storage, cleanup } = await connectorFixture(false);
+    const put = vi.spyOn(storage, "putFile").mockRejectedValue(new Error("Local mode must not upload"));
+    try {
+      expect((await selectHeartbeatRuntime(db, input)).selected).toBe(true);
+      expect((await read(run.id)).runnerProfileJson).not.toHaveProperty("nativeRuntimeSkillPreservation");
+      expect(put).not.toHaveBeenCalled();
+      expect(await hasLocalRuntimeSkillObligations(db)).toBe(true);
+    } finally { put.mockRestore(); await cleanup(); }
+  });
 
   it("preserves preparation failure and skips runtime selection", async () => {
     const { input, run } = await fixture();
@@ -219,6 +381,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   it.each([false, true])("persists the Cursor provider API placement and completion authority without a Computer lease (ephemeral: %s)", async ephemeral => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", String(ephemeral));
     const { input, run, issue } = await fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-unused-api-controller");
     input.agent = { ...input.agent, adapterConfig: { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification" } };
     await db.update(agents).set({ adapterConfig: input.agent.adapterConfig }).where(eq(agents.id, input.agent.id));
     input.workspace.activeEnvironmentLease = null;

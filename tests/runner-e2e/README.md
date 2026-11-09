@@ -1845,7 +1845,7 @@ Journey discovery and grader calibration do not establish a live provider pass.
 
 `first-task` is a suite in the main Runner E2E catalog. A full
 `pnpm test:e2e:runner -- --all` run (or an unfiltered full GitHub Actions campaign)
-includes its 52 executions alongside the other suites in one shared dashboard,
+includes its 56 executions alongside the other suites in one shared dashboard,
 campaign result bundle, and history entry. Suite/profile selectors narrow that
 same harness; they do not invoke a separate onboarding reporting program.
 
@@ -1857,8 +1857,8 @@ select the Codex or Claude adapter family; **the production onboarding model
 default is retained**, even when it differs from that profile's normal harness
 model. Configured and provider-observed model identities are reported separately.
 
-There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
-`runner-acpx-claude`, local only (52 cells). `runner-codex` selects OpenAI in the
+There are fourteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
+`runner-acpx-claude`, local only (56 cells). `runner-codex` selects OpenAI in the
 production wizard, omits the runner override, and verifies the saved native
 configuration without changing runners afterward. `runner-acpx-claude` does the
 same for Claude on its qualified default targets and inspects the saved ACPX
@@ -1877,6 +1877,7 @@ separate campaign reservation because they do not create task cost events.
 | First response / control | Complete journey |
 | --- | --- |
 | `interview-first-response` | `interview-plan-accept` |
+| | `plan-only-accept` |
 | `clear-task-first-response` | `task-card-accept` |
 | | `accept-while-running` |
 | `ambiguous-task-first-response` | `task-reply-accept` |
@@ -1890,8 +1891,13 @@ per-attempt marker drive all conversations. Clarification supplies facts only;
 acceptance is a separate explicit user reply or browser-approved confirmation.
 The harness waits for a new user comment to persist before recording a reply
 checkpoint; the composer clearing is only optimistic UI state.
-The interview journey requests a saved plan. Execution journeys require exactly
-one correctly parented/assigned subtask and its completed output document.
+The interview journey saves a plan, accepts its checkbox proposal through the
+browser, and requires exactly one correctly parented/assigned subtask and its
+completed output document. A retained plan alone fails this execution journey.
+The separate `plan-only-accept` journey explicitly forbids implementation after
+plan approval. It requires a retained plan and completed onboarding task, with
+no new agents, execution tasks, or finished output at any observed checkpoint.
+Other execution journeys require the same assigned child and completed output.
 Rejection and revision must not execute the rejected/superseded scope. Closing
 an unexecuted task after rejection is allowed. A completed onboarding parent
 without the approved child is graded as a behavior failure, not retried as an

@@ -1,8 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import { agents, companies, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
-import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
+import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
+import { currentNativeControllerIdentity, evaluateNativeControllerTakeover, recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
 import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
 
 export type RemoteWarmSessionRecovery = {
@@ -10,6 +10,7 @@ export type RemoteWarmSessionRecovery = {
   checkpoint: PersistedNativeSession;
   previousExecution: NativeExecutionInput;
   reuseProcess: boolean;
+  releasedSource?: DurableRecoveryIdentity;
   remote: { providerLeaseId: string; remoteCwd: string };
   revalidate: (leaseOwner: string) => Promise<void>;
 };
@@ -30,10 +31,32 @@ function postTerminalEvents(control: Record<string, unknown>): unknown[] {
 /** A session is settled when its commands finished and nothing is live or waiting.
  * Events after the terminal describe the past, so refusing cannot undo them: they
  * are reported instead. Every event must still authenticate as this session's. */
+const RUNNER_LIFECYCLE_COMMAND_TYPES = new Set(["runner.suspend", "runner.drain", "runner.shutdown"]);
+
+function outcomeUnknown(command: Record<string, unknown>): boolean {
+  return command.status === "indeterminate" ||
+    (command.status === "failed" && (record(command.result).code === "execution_indeterminate" ||
+      record(record(command.result).result).code === "execution_indeterminate"));
+}
+
+export function unsettledControllerCommands(commands: readonly Record<string, unknown>[]): Record<string, unknown>[] {
+  const lastCompletedTurnStart = Math.max(-1, ...commands
+    .filter(command => command.type === "turn.start" && command.status === "completed")
+    .map(command => Number(command.controllerSeq)));
+  return commands.filter(command => {
+    if (command.status === "completed") return false;
+    if (outcomeUnknown(command)) {
+      return !(command.type === "turn.start" && Number(command.controllerSeq) < lastCompletedTurnStart);
+    }
+    return !((command.status === "failed" || command.status === "rejected") &&
+      !RUNNER_LIFECYCLE_COMMAND_TYPES.has(String(command.type)));
+  });
+}
+
 export function isSettledRemoteWarmControlState(control: Record<string, unknown>, identity: Record<string, unknown>): boolean {
   const commands = control.commands;
   const events = control.committedEvents;
-  if (!Array.isArray(commands) || commands.some(command => record(command).status !== "completed") ||
+  if (!Array.isArray(commands) || unsettledControllerCommands(commands.map(record)).length > 0 ||
       !Array.isArray(events) || Object.entries(identity).some(([key, value]) => record(control.identity)[key] !== value)) return false;
   const terminalIndex = events.findLastIndex(event => record(event).eventType === "run.terminal");
   if (terminalIndex < 0) return false;
@@ -142,6 +165,7 @@ export async function inspectRemoteWarmSessionRecovery(input: {
     const stopped = await evaluateNativeControllerTakeover({ owner: prior.owner, now: new Date(), requireStoppedController: true,
       remoteLeaseFenced: persistedRecovery !== null });
     if (!stopped.allowed) return deny();
+    await recordLegacyHostFallbackProof(input.db, prior.run, stopped, "remote_warm_session_recovery");
   };
   await assertPriorStopped();
   const priorLeases = await input.db.select().from(environmentLeases).where(and(

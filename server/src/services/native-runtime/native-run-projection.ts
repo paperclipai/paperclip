@@ -1,4 +1,5 @@
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -203,7 +204,10 @@ export async function projectCommittedRun(input: {
       })
       .where(needsRepair)
       .returning();
-    if (after) await settleNativeTerminalWake(tx, after);
+    if (after) {
+      await settleNativeTerminalWake(tx, after);
+      await promoteDeferredWorkIntents(tx, { companyId: input.run.companyId, trigger: "lock_released", issueId: input.coordinator.issueId });
+    }
     return after ? { before, after } : null;
   });
 

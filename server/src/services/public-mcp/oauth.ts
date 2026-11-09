@@ -1,8 +1,11 @@
+import { consumeMcpDeviceMintContext,assertCurrentMcpDeviceMint,type McpDeviceMintContext } from "./device-mint-authority.js";
+import { requiresMcpDeviceBroker } from "./device-cutover.js";
+import { prepareMcpClientMutation, recordMcpClientChange } from "./client-mirror-mutations.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { authorizeExternalBotOperator, externalBotEnabled } from "../external-bot-authority.js";
 import { updateAgentConfigurationInTransaction } from "../agent-configuration-transaction.js";
 import { instanceSettingsService } from "../instance-settings.js";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { canConfigureAgentConnection } from "../../modules/agent-lifecycle/index.js";
 import { and, eq, gt, inArray, isNull, lt, lte, notExists, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -153,11 +156,15 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
   }
 
   async function issueTokens(tx: Db, grant: typeof mcpOauthGrants.$inferSelect) {
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, grant.id);
+    const [indexed] = await tx.update(mcpOauthGrants).set({ revocationRevision: sql`${mcpOauthGrants.revocationRevision} + 1` })
+      .where(eq(mcpOauthGrants.id, grant.id)).returning({ revision: mcpOauthGrants.revocationRevision });
+    if (!indexed) throw invalidGrant();
     const access = secret("pcmcp_at_");
     const refresh = grant.scopes.includes("offline_access") ? secret("pcmcp_rt_") : null;
     await tx.insert(mcpOauthTokens).values([
-      { grantId: grant.id, tokenHash: hashMcpSecret(access), kind: "access", expiresAt: new Date(Date.now() + accessLifetime) },
-      ...(refresh ? [{ grantId: grant.id, tokenHash: hashMcpSecret(refresh), kind: "refresh" as const,
+      { grantId: grant.id, revocationRevision: indexed.revision, tokenHash: hashMcpSecret(access), kind: "access", expiresAt: new Date(Date.now() + accessLifetime) },
+      ...(refresh ? [{ grantId: grant.id, revocationRevision: indexed.revision, tokenHash: hashMcpSecret(refresh), kind: "refresh" as const,
         expiresAt: dotAgentConnection && grant.purpose === "agent" ? null : new Date(Date.now() + refreshLifetime) }] : []),
     ]);
     if (museAgentConnection) await tx.update(museAgentBindings).set({ workerActivityAt: new Date() })
@@ -207,24 +214,27 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     if (!client.id.startsWith("https://")) return;
     const sourceHash = hashMcpSecret(config.resource + ":" + source);
     // Caller holds the shared registration lock and has admitted this request.
+    await prepareMcpClientMutation(tx);
     await pruneClients(tx);
     const [existing] = await tx.select().from(mcpOauthClients).where(eq(mcpOauthClients.id, client.id));
     if (!existing) await admitClient(tx, sourceHash);
     const value = { name: client.name, redirectUris: client.redirectUris, grantTypes: client.grantTypes };
     await tx.insert(mcpOauthClients).values({ id: client.id, registrationSourceHash: sourceHash, ...value })
       .onConflictDoUpdate({ target: mcpOauthClients.id, set: value });
+    await recordMcpClientChange(tx,client.id,"upsert");
   }
 
   async function pruneClients(tx: Db) {
     const now = new Date();
     await tx.delete(mcpOauthRequests).where(lt(mcpOauthRequests.expiresAt, now));
     await tx.delete(mcpOauthDeviceRequests).where(lt(mcpOauthDeviceRequests.expiresAt, now));
-    await tx.delete(mcpOauthClients).where(and(
+    const deleted = await tx.delete(mcpOauthClients).where(and(
       lt(mcpOauthClients.createdAt, new Date(now.getTime() - 60 * minute)),
       notExists(tx.select({ id: mcpOauthGrants.id }).from(mcpOauthGrants).where(eq(mcpOauthGrants.clientId, mcpOauthClients.id))),
       notExists(tx.select({ id: mcpOauthRequests.id }).from(mcpOauthRequests).where(eq(mcpOauthRequests.clientId, mcpOauthClients.id))),
       notExists(tx.select({ id: mcpOauthDeviceRequests.id }).from(mcpOauthDeviceRequests).where(eq(mcpOauthDeviceRequests.clientId, mcpOauthClients.id))),
-    ));
+    )).returning({id:mcpOauthClients.id});
+    for (const row of deleted) await recordMcpClientChange(tx,row.id,"delete");
   }
 
   async function admitClient(tx: Db, sourceHash: string) {
@@ -263,7 +273,10 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     if ((input.allowWrites || input.allowConfiguration) && membership.membershipRole === "viewer") throw new McpOAuthError("access_denied", "Viewer access is read-only.", 403);
     const scopes = request.scopes.filter(s => (s !== "paperclip:write" || input.allowWrites)
       && (s !== "paperclip:configure" || input.allowConfiguration === true));
-    const [grant] = await tx.insert(mcpOauthGrants).values({ companyId: input.companyId!, userId: actor.userId, clientId: request.clientId, resource: request.resource, scopes, purpose: agentConnection ? "agent" : "personal" }).returning();
+    const grantId=randomUUID();
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, grantId);
+    const [grant] = await tx.insert(mcpOauthGrants).values({ id:grantId, companyId: input.companyId!, userId: actor.userId, clientId: request.clientId, resource: request.resource, scopes, purpose: agentConnection ? "agent" : "personal" }).returning();
     await tx.insert(activityLog).values({ companyId: grant!.companyId, actorType: "user", actorId: actor.userId,
       action: "mcp.connection_authorized", entityType: "mcp_connection", entityId: grant!.id, details: { clientId: grant!.clientId, scopes } });
     return grant!;
@@ -273,6 +286,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
   async function deviceToken(input: Record<string, unknown>, clientId: string) {
     if (typeof input.device_code !== "string") throw invalidGrant();
     const outcome = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
       const [row] = await tx.select().from(mcpOauthDeviceRequests).where(eq(mcpOauthDeviceRequests.deviceCodeHash, hashMcpSecret(input.device_code as string))).for("update");
       if (!row || row.clientId !== clientId || row.resource !== config.resource || row.status === "consumed") return { error: "invalid_grant" };
       const now = new Date();
@@ -283,11 +297,13 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         await tx.update(mcpOauthDeviceRequests).set({ intervalSeconds, nextPollAt: new Date(now.getTime() + intervalSeconds * 1000) }).where(eq(mcpOauthDeviceRequests.id, row.id));
         return { error: "slow_down" };
       }
+      if (row.status === "approved") await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
       await tx.update(mcpOauthDeviceRequests).set({ nextPollAt: new Date(now.getTime() + row.intervalSeconds * 1000) }).where(eq(mcpOauthDeviceRequests.id, row.id));
       if (row.status !== "approved" || !row.grantId) return { error: "authorization_pending" };
       const [grant] = await tx.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.id, row.grantId)).for("update");
       if (!grant) return { error: "invalid_grant" };
       await actorForGrant(grant, tx as unknown as Db);
+      await prepareMcpClientMutation(tx as unknown as Db);
       await tx.update(mcpOauthDeviceRequests).set({ status: "consumed" }).where(eq(mcpOauthDeviceRequests.id, row.id));
       return { tokens: await issueTokens(tx as unknown as Db, grant) };
     });
@@ -375,6 +391,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           throw error;
         }
         decideMuseCodeExchange(observation,[],row);
+        if (!museAgentConnection) await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
         await tx.update(mcpOauthRequests).set({consumedAt:new Date()}).where(eq(mcpOauthRequests.id,row.id));
         const result=await issueTokens(tx as unknown as Db,grant);
         if(observation)await recordMuseCodeSuccess(tx as unknown as Db,observation,row,grant);
@@ -412,7 +429,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       const [row] = await db.select({ resource: mcpOauthDeviceRequests.resource }).from(mcpOauthDeviceRequests).where(eq(mcpOauthDeviceRequests.userCodeHash, deviceHash(userCode)));
       return row?.resource === config.resource;
     },
-    async deviceAuthorize(input: unknown, source = "unknown") {
+    async deviceAuthorize(input: unknown, source = "unknown", context?:McpDeviceMintContext) {
       if (museAgentConnection) throw new McpOAuthError("unsupported_grant_type", "Muse requires public-client PKCE authorization.");
       await assertEnabled();
       const p = z.object({ client_id: z.string().min(1).max(2048), resource: z.literal(config.resource), scope: z.string().max(200).default(requiredScope), company_id: z.uuid().optional() }).safeParse(input);
@@ -421,6 +438,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       if (!scopes.includes(requiredScope) || scopes.some(s => !(scopesSupported as readonly string[]).includes(s))) throw new McpOAuthError("invalid_scope", "Unsupported Paperclip scope.");
       const client = await resolveClient(p.data.client_id, source);
       if (!client?.grantTypes.includes(DEVICE_GRANT)) throw new McpOAuthError("unauthorized_client", "Register a device authorization client.");
+      const mintAuthority=consumeMcpDeviceMintContext(context,config.resource);
       const deviceCode = secret("pcmcp_device_");
       const alphabet = "BCDFGHJKLMNPQRSTVWXYZ23456789";
       const chars = Array.from(randomBytes(8), byte => alphabet[byte % alphabet.length]).join("");
@@ -428,13 +446,16 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       const sourceHash = hashMcpSecret(config.resource + ":" + source);
       await db.transaction(async tx => {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
+        if(mintAuthority)assertCurrentMcpDeviceMint(mintAuthority,config.resource);
+        if(await requiresMcpDeviceBroker(tx as unknown as Db,config.resource)&&!mintAuthority)throw new McpOAuthError("invalid_request","Use the canonical Paperclip device authorization endpoint.");
+        await prepareMcpClientMutation(tx as unknown as Db);
         await tx.execute(sql`SELECT pg_advisory_xact_lock(736721043)`);
         const now = new Date();
         await tx.delete(mcpOauthDeviceRequests).where(lt(mcpOauthDeviceRequests.expiresAt, now));
         const [count] = await tx.select({ total: sql<number>`count(*)::int`, source: sql<number>`(count(*) FILTER (WHERE ${mcpOauthDeviceRequests.sourceHash} = ${sourceHash}))::int` }).from(mcpOauthDeviceRequests);
         if (!count || count.total >= 1000 || count.source >= 10) throw new McpOAuthError("temporarily_unavailable", "Too many device connection attempts. Try again later.", 429);
         await retainMetadataClient(tx as unknown as Db, client, source);
-        await tx.insert(mcpOauthDeviceRequests).values({ clientId: client.id, deviceCodeHash: hashMcpSecret(deviceCode), userCodeHash: deviceHash(userCode),
+        await tx.insert(mcpOauthDeviceRequests).values({ clientId: client.id, ingressOwner:mintAuthority?"cloud":"tenant",deviceCodeHash: hashMcpSecret(deviceCode), userCodeHash: deviceHash(userCode),
           resource: config.resource, scopes, requestedCompanyId: p.data.company_id ?? null, sourceHash, expiresAt: new Date(now.getTime() + 10 * minute) });
       });
       return { device_code: deviceCode, user_code: userCode, verification_uri: authorizationOrigin + "/mcp-device", verification_uri_complete: authorizationOrigin + "/mcp-device?user_code=" + userCode, expires_in: 600, interval: 5 };
@@ -453,8 +474,10 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       await assertEnabled();
       if (actor.type !== "board" || !actor.userId || !["session", "cloud_tenant"].includes(actor.source ?? "")) throw new McpOAuthError("access_denied", "Sign in to approve a connection.", 401);
       return db.transaction(async tx => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
         const [row] = await tx.select().from(mcpOauthDeviceRequests).where(eq(mcpOauthDeviceRequests.userCodeHash, deviceHash(userCode))).for("update");
         if (!row || row.resource !== config.resource || row.status !== "pending" || row.expiresAt <= new Date()) throw invalidGrant();
+        await prepareMcpClientMutation(tx as unknown as Db);
         const grant = input.decision === "approve" ? await approveGrant(tx as unknown as Db, actor, row, input) : null;
         await tx.update(mcpOauthDeviceRequests).set({ status: grant ? "approved" : "denied", grantId: grant?.id ?? null }).where(eq(mcpOauthDeviceRequests.id, row.id));
         return { status: grant ? "approved" as const : "denied" as const };
@@ -470,9 +493,11 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       await db.transaction(async (tx) => {
         // Bound public DCR across replicas, not only per-IP in each process.
         await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
+        await prepareMcpClientMutation(tx as unknown as Db);
         await pruneClients(tx as unknown as Db);
         await admitClient(tx as unknown as Db, client.registrationSourceHash);
         await tx.insert(mcpOauthClients).values(client);
+        await recordMcpClientChange(tx as unknown as Db,client.id,"upsert");
       });
       return { ...parsed.data, client_id: client.id, client_id_issued_at: Math.floor(Date.now() / 1000) };
     },

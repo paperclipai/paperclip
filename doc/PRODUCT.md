@@ -147,6 +147,11 @@ the latest agent that assigned it to them. If no assignment is available, it use
 the latest other commenter, or leaves the recipient empty. A manual recipient
 choice stays selected while task data refreshes.
 
+Task reply and new-task composers submit with Enter by default; Shift+Enter
+adds a new line. Settings → Experimental → **Command/Ctrl+Enter to Submit**
+restores the previous behavior, where Enter adds a new line and Command/Ctrl+Enter
+submits.
+
 ### Routine responsibility
 
 The routine Overview shows its responsible user beside Default agent. People with

@@ -192,6 +192,9 @@ pub(crate) enum ProviderStartupStage {
 }
 
 pub(crate) enum ProviderStartupObservation {
+    /// Launch checks passed and the process spawn is about to begin. Until
+    /// this is durable, a startup intent provably owns no process.
+    SpawnStarting,
     Spawned {
         process_id: u32,
         process_group_id: u32,
@@ -206,6 +209,45 @@ pub(crate) enum ProviderStartupObservation {
 struct ProviderCompletionContract {
     revision: String,
     criterion_ids: Vec<String>,
+}
+
+/// Whether a warm run attachment may keep the live provider process.
+///
+/// The completion contract is run-scoped and changes with each follow-up.
+/// Codex app-server never receives it (runnerd validates the claim), and the
+/// OpenCode proxy receives the current contract with each turn/start, so a
+/// replaced contract needs no cold resume for them. Other providers, a changed
+/// tool set, and adding or removing a contract keep the cold-resume boundary.
+fn warm_attachment_keeps_provider(
+    provider: &str,
+    tools_unchanged: bool,
+    current: Option<&ProviderCompletionContract>,
+    next: Option<&ProviderCompletionContract>,
+) -> bool {
+    if provider == "cursor_cloud" || !tools_unchanged {
+        return false;
+    }
+    current == next
+        || (current.is_some() && next.is_some() && matches!(provider, "codex" | "opencode"))
+}
+
+/// Run-scoped identity a retained OpenCode proxy needs on each turn/start: its
+/// launch parameters belong to the first run it served.
+fn opencode_turn_identity_params(
+    run_id: Option<&str>,
+    contract: Option<&ProviderCompletionContract>,
+) -> Vec<(&'static str, Value)> {
+    let mut params = Vec::new();
+    if let Some(run_id) = run_id {
+        params.push(("paperclipRunId", json!(run_id)));
+    }
+    if let Some(contract) = contract {
+        params.push((
+            "paperclipCompletionContract",
+            json!({"revision": contract.revision, "criterionIds": contract.criterion_ids}),
+        ));
+    }
+    params
 }
 
 fn base64_encode(input: &[u8]) -> String {
@@ -1155,6 +1197,7 @@ impl CodexProvider {
                     ));
                 }
                 let launch = verified_cursor_cloud_launch(profile)?;
+                observe(ProviderStartupObservation::SpawnStarting)?;
                 SupervisedProcess::spawn_verified_with_environment_keys(
                     &launch,
                     Duration::from_secs(2),
@@ -1176,6 +1219,7 @@ impl CodexProvider {
                     ));
                 }
                 let launch = verified_opencode_launch(profile)?;
+                observe(ProviderStartupObservation::SpawnStarting)?;
                 SupervisedProcess::spawn_verified_with_environment_keys(
                     &launch,
                     Duration::from_secs(2),
@@ -1183,6 +1227,7 @@ impl CodexProvider {
                     &environment_keys,
                 )
             } else {
+                observe(ProviderStartupObservation::SpawnStarting)?;
                 SupervisedProcess::spawn_in_directory_with_environment_keys(
                     &config.command,
                     &launch_args,
@@ -1463,18 +1508,18 @@ impl CodexProvider {
         completion_contract: Option<(&str, &[String])>,
         accounting: &mut Vec<(String, Value)>,
     ) -> Result<bool, LocalRunnerError> {
-        if self.config.provider == "cursor_cloud" {
-            return Ok(false);
-        }
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
         let completion_contract =
             completion_contract.map(|(revision, criterion_ids)| ProviderCompletionContract {
                 revision: revision.to_owned(),
                 criterion_ids: criterion_ids.to_vec(),
             });
-        if authorized_tools != self.authorized_tools
-            || completion_contract != self.completion_contract
-        {
+        if !warm_attachment_keeps_provider(
+            &self.config.provider,
+            authorized_tools == self.authorized_tools,
+            self.completion_contract.as_ref(),
+            completion_contract.as_ref(),
+        ) {
             return Ok(false);
         }
         let (tail, result) = self.drain_completed_turn_tail_for_warm_attachment();
@@ -1497,12 +1542,13 @@ impl CodexProvider {
         // The provider process and its thread remain authoritative. Exact
         // settled-turn identities stay in memory so delayed output from an
         // earlier run cannot be accepted as the next turn. A changed semantic
-        // tool or completion contract returns false so the caller can preserve
-        // the existing cold-resume behavior for that incompatible boundary.
+        // tool set (or a changed contract for other providers) returned false
+        // above so the caller preserves the cold-resume boundary.
         self.completed_turn_authority = None;
         self.active_turn_result_authoritative = false;
         self.completion_reconciliation_pending = false;
         self.expected_shutdown = false;
+        self.completion_contract = completion_contract;
         Ok(true)
     }
 
@@ -2080,8 +2126,10 @@ impl CodexProvider {
         // The retained proxy's launch environment belongs to its first run.
         // Only runnerd's rotated authority supplies the current run identity.
         if self.config.provider == "opencode" {
-            if let Some(run_id) = run_id {
-                turn_params_object.insert("paperclipRunId".to_owned(), json!(run_id));
+            for (key, value) in
+                opencode_turn_identity_params(run_id, self.completion_contract.as_ref())
+            {
+                turn_params_object.insert(key.to_owned(), value);
             }
         }
         if let Some(effort) = effort {
@@ -5773,6 +5821,7 @@ done
             None,
             None,
             &mut |observation| match observation {
+                ProviderStartupObservation::SpawnStarting => Ok(()),
                 ProviderStartupObservation::Spawned {
                     process_id,
                     process_group_id,
@@ -6010,6 +6059,80 @@ done
         config.driver = "opencode_server".to_owned();
         config.model = Some("unqualified".to_owned());
         assert!(config.validate().is_err());
+    }
+
+    fn contract(revision: &str) -> ProviderCompletionContract {
+        ProviderCompletionContract {
+            revision: revision.to_owned(),
+            criterion_ids: vec!["objective".to_owned()],
+        }
+    }
+
+    #[test]
+    fn warm_attachment_adopts_a_replaced_contract_only_for_codex_and_opencode() {
+        let (first, second) = (contract("1"), contract("2"));
+        for provider in ["codex", "opencode"] {
+            assert!(warm_attachment_keeps_provider(
+                provider,
+                true,
+                Some(&first),
+                Some(&second)
+            ));
+            assert!(warm_attachment_keeps_provider(
+                provider,
+                true,
+                Some(&first),
+                Some(&first)
+            ));
+            // Adding or removing a contract, or changing tools, still cold-resumes.
+            assert!(!warm_attachment_keeps_provider(
+                provider,
+                true,
+                Some(&first),
+                None
+            ));
+            assert!(!warm_attachment_keeps_provider(
+                provider,
+                true,
+                None,
+                Some(&second)
+            ));
+            assert!(!warm_attachment_keeps_provider(
+                provider,
+                false,
+                Some(&first),
+                Some(&second)
+            ));
+        }
+        assert!(!warm_attachment_keeps_provider(
+            "aws_agentcore",
+            true,
+            Some(&first),
+            Some(&second)
+        ));
+        assert!(!warm_attachment_keeps_provider(
+            "cursor_cloud",
+            true,
+            Some(&first),
+            Some(&first)
+        ));
+    }
+
+    #[test]
+    fn opencode_turns_carry_the_current_run_and_contract() {
+        let current = contract("2");
+        let params = opencode_turn_identity_params(Some("run-2"), Some(&current));
+        assert_eq!(
+            params,
+            vec![
+                ("paperclipRunId", json!("run-2")),
+                (
+                    "paperclipCompletionContract",
+                    json!({"revision": "2", "criterionIds": ["objective"]})
+                ),
+            ]
+        );
+        assert!(opencode_turn_identity_params(None, None).is_empty());
     }
 
     #[test]

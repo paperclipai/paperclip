@@ -68,6 +68,8 @@ import {
   unwrapRunnerdProviderNotifications,
   resolveRunnerdCodexSkillInputs,
   withCodexCollaborationRuntimeInstructions,
+  controllerAcceptedTurnStartId,
+  committedEventWindowComplete,
 } from "./runnerd-codex-transport.js";
 import {
   defaultCapabilityRunnerdBinary,
@@ -76,6 +78,75 @@ import {
   fakeCodexArgs,
   assignedRuntimeContext,
 } from "../../test/support/runnerd-transport.js";
+
+describe("committedEventWindowComplete", () => {
+  const events = (...seqs: number[]) => seqs.map(sourceSeq => ({ sourceSeq }));
+  it("is complete only when every acknowledged event from the first one is retained", () => {
+    expect(committedEventWindowComplete({ committedEvents: events(1, 2, 3), ackedSourceSeq: 3 })).toBe(true);
+    expect(committedEventWindowComplete({ committedEvents: [], ackedSourceSeq: 0 })).toBe(true);
+    expect(committedEventWindowComplete({ committedEvents: events(1, 3, 4), ackedSourceSeq: 4 })).toBe(false);
+    expect(committedEventWindowComplete({ committedEvents: events(2, 3), ackedSourceSeq: 3 })).toBe(false);
+    expect(committedEventWindowComplete({ committedEvents: events(1, 2, 2), ackedSourceSeq: 3 })).toBe(false);
+    expect(committedEventWindowComplete(undefined)).toBe(false);
+  });
+});
+
+describe("controllerAcceptedTurnStartId", () => {
+  // Shapes copied from the RC-59 durable controller journal.
+  const attach = { commandId: "command_prp_00000001", controllerSeq: 1, type: "run.attach", status: "completed", result: {} };
+  const start = (overrides: Record<string, unknown> = {}) => ({
+    commandId: "command_lab_start", controllerSeq: 4, type: "turn.start", status: "completed",
+    payload: { text: "Continue", turnId: "turn_lab_1" },
+    result: { commandType: "turn.start", controllerSeq: 4, status: "completed", result: { providerTurnId: "turn_lab_1", status: "accepted" } },
+    ...overrides,
+  });
+
+  it("names the turn this run's latest completed turn.start accepted", () => {
+    expect(controllerAcceptedTurnStartId([attach, start()])).toBe("turn_lab_1");
+  });
+
+  it.each([
+    ["no turn.start", [attach]],
+    ["a pending turn.start", [attach, start({ status: "pending", result: undefined })]],
+    ["a failed turn.start", [attach, start({ status: "failed" })]],
+    ["a result that did not accept the turn", [attach, start({ result: { result: { providerTurnId: "turn_lab_1", status: "rejected" } } })]],
+    ["a result for a different turn than requested", [attach, start({ result: { result: { providerTurnId: "turn_lab_2", status: "accepted" } } })]],
+    ["a later run attachment", [start({ controllerSeq: 1 }), { ...attach, controllerSeq: 2 }]],
+    ["a later pending turn.start", [attach, start(), start({ controllerSeq: 5, status: "pending", payload: { turnId: "turn_lab_2" }, result: undefined })]],
+  ])("returns null for %s", (_label, commands) => {
+    expect(controllerAcceptedTurnStartId(commands)).toBeNull();
+  });
+
+  // Codex assigns its own provider turn id; only ACPX echoes the requested one.
+  it("accepts a Codex result whose provider turn id differs from the requested id while that turn is the runner's live turn", () => {
+    const codex = start({ result: { result: { providerTurnId: "019a-provider-turn", status: "accepted" } } });
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
+    // A turn the restored runner reports lost (no live turn) is left to the restart continuation.
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: null })).toBeNull();
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: "another" })).toBeNull();
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: true })).toBeNull();
+  });
+
+  // A restart landed right after turn.start: the runner journaled it, died, and
+  // settled it as execution_indeterminate; its restored session reconciled the
+  // ambiguous start to the provider's live replacement turn (t77).
+  const indeterminate = start({ status: "failed", result: { commandType: "turn.start", controllerSeq: 4, status: "failed",
+    result: { code: "execution_indeterminate", message: "runner recovered after journaling this command; it will not execute twice" } } });
+
+  it("names the runner's reconciled active turn for an indeterminate turn.start", () => {
+    expect(controllerAcceptedTurnStartId([attach, indeterminate], {
+      requireRequestedIdentity: false, runnerActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
+  });
+
+  it.each([
+    ["no reconciled active turn", [attach, indeterminate], null, false],
+    ["an ordinary failed turn.start", [attach, start({ status: "failed", result: { result: { code: "provider_turn_failed" } } })], "019a-provider-turn", false],
+    ["a later run attachment", [{ ...indeterminate, controllerSeq: 1 }, { ...attach, controllerSeq: 2 }], "019a-provider-turn", false],
+    ["an ACPX turn other than the requested one", [attach, indeterminate], "turn_lab_other", true],
+  ] as const)("fails closed on an indeterminate start with %s", (_label, commands, active, requireRequestedIdentity) => {
+    expect(controllerAcceptedTurnStartId([...commands], { requireRequestedIdentity, runnerActiveTurnId: active })).toBeNull();
+  });
+});
 
 it("attributes opened candidate sessions to the harness biller instead of the model vendor", () => {
   const provider = runnerdLaunchProfileInternals.openedThreadModelProvider;
@@ -1225,6 +1296,108 @@ it.each([false, true])("uses the same API result envelope and fences handler pub
   }
 }, 20_000);
 
+it.each([false, true])("refuses a terminal call decided before earlier results were seen (seen: %s)", async seen => {
+  // Restart chaos t03: Codex called write_document, the controller was held,
+  // and Codex re-sampled the model until it called paperclip_block. After the
+  // reattach the Runner delivered the backlog in order: write_document ran and
+  // returned, then the stale block arrived before Codex had seen that result.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-stale-terminal-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"blocked\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9000;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `stale-terminal-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `stale-terminal-${seq}`;
+    };
+    const write = { executionId: "exec-write", transport: "dynamic", name: "write_document" };
+    commit("tool.execution.started", { ...write, status: "running" });
+    // Paperclip's result, recorded as the controller records it for the Runner.
+    core.queueCommand("semantic_tool.result", { callId: "exec-write", operationId: "write_document",
+      inputDigest: "sha256:write", result: { created: true }, isError: false }, "command_tool_stale_terminal_write", true);
+    if (seen) commit("tool.execution.completed", { ...write, status: "completed" });
+    // The terminal call's own event bounds the history (in production its
+    // semantic_tool.input event; any later event works the same way).
+    const sourceEventId = commit("tool.execution.started", { executionId: "exec-block", transport: "dynamic", name: "paperclip_block", status: "running" });
+    const blockInput = { summary: "Paperclip has not returned the save" };
+    const outcome = await callbacks.onSemanticToolInput!({ callId: "block-call", operationId: "paperclip_block",
+      input: blockInput, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    if (seen) {
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(outcome.isError).not.toBe(true);
+    } else {
+      expect(handler).not.toHaveBeenCalled();
+      expect(outcome).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results", retryable: true } } });
+      expect(JSON.stringify(outcome.result)).toContain("write_document");
+    }
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("refuses a terminal call that arrives before a held call's result (restart chaos t05)", async () => {
+  // Restart chaos t05: Codex called write_document during a K4 hold, then
+  // re-sampled until it called paperclip_block. After the reattach the
+  // controller recovered the held write while the Runner delivered the block,
+  // and the block arrived a few milliseconds before the write's result.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-held-terminal-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"blocked\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9100;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `held-terminal-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `held-terminal-${seq}`;
+    };
+    commit("tool.execution.started", { executionId: "exec-held-write", transport: "dynamic", name: "write_document", status: "running" });
+    const sourceEventId = commit("tool.execution.started", { executionId: "exec-held-block", transport: "dynamic", name: "paperclip_block", status: "running" });
+    // The recovered write returns just after the block reaches the transport.
+    setTimeout(() => core.queueCommand("semantic_tool.result", { callId: "exec-held-write", operationId: "write_document",
+      inputDigest: "sha256:write", result: { created: false }, isError: false }, "command_tool_held_terminal_write", true), 100);
+    const outcome = await callbacks.onSemanticToolInput!({ callId: "held-block-call", operationId: "paperclip_block",
+      input: { summary: "Paperclip has not confirmed the save" }, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    expect(handler).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results", retryable: true } } });
+    expect(JSON.stringify(outcome.result)).toContain("Those calls have now returned");
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
 it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
   async (mode) => {
@@ -2011,6 +2184,56 @@ it("waits for the exact durable suspension command behind prior close work", asy
     "runner.suspend",
   ]);
   expect(pumpCount).toBeGreaterThanOrEqual(2);
+});
+
+it("retries a rejected suspension within the close deadline instead of failing a settled session", async () => {
+  // An ACPX sidecar can reject session.suspend while the just-completed turn
+  // is still settling. One rejected command must not leave a successful run's
+  // own session closed without a proven suspension.
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  let lifecycle = "ready";
+  const queueSuspend = vi.fn((commandId: string) => {
+    commands.push({ commandId, type: "runner.suspend", status: "pending" });
+  });
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend,
+      readRunnerState: async () => ({ lifecycle }),
+      runnerHasExited: async () => false,
+      pump: () => {
+        const pending = commands.find(command => command.status === "pending");
+        if (!pending) return;
+        if (commands.length === 1) pending.status = "failed";
+        else { pending.status = "completed"; lifecycle = "suspended"; }
+      },
+      deadline: Date.now() + 2_000,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(true);
+  expect(queueSuspend).toHaveBeenCalledTimes(2);
+  expect(new Set(commands.map(command => command.commandId)).size).toBe(2);
+});
+
+it("stops retrying a rejected suspension at its attempt bound or when the runner exits", async () => {
+  for (const exited of [false, true]) {
+    const commands: Array<{ commandId: string; type: string; status: string }> = [];
+    const queueSuspend = vi.fn((commandId: string) => {
+      commands.push({ commandId, type: "runner.suspend", status: "failed" });
+    });
+    await expect(
+      runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+        commands: () => commands,
+        queueSuspend,
+        readRunnerState: async () => ({ lifecycle: "ready" }),
+        runnerHasExited: async () => exited,
+        pump: () => undefined,
+        deadline: Date.now() + 5_000,
+        pollIntervalMs: 0,
+      }),
+    ).resolves.toBe(false);
+    expect(queueSuspend).toHaveBeenCalledTimes(exited ? 1 : 3);
+  }
 });
 
 it("does not accept process exit without durable suspension", async () => {
@@ -6183,13 +6406,17 @@ describe("cold process admission budget", () => {
   it("bounds Pi cold startup and recovery at 60 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", true)).toBe(60_000);
   });
+  it("bounds a cold ACPX Claude session.open at 60 seconds", () => {
+    expect(coldAdmissionTimeoutMs("acpx", "claude", true)).toBe(60_000);
+    expect(coldAdmissionTimeoutMs("acpx", "claude", false)).toBe(30_000);
+  });
   it("bounds a cold OpenCode restore at 60 seconds", () => {
     expect(coldAdmissionTimeoutMs("opencode", undefined, true)).toBe(60_000);
   });
   it("preserves live adoption and every other provider at 30 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", false)).toBe(30_000);
     expect(coldAdmissionTimeoutMs("opencode", undefined, false)).toBe(30_000);
-    for (const agent of ["codex", "claude", "cursor", "copilot", "grok", undefined]) {
+    for (const agent of ["codex", "cursor", "copilot", "grok", undefined]) {
       expect(coldAdmissionTimeoutMs("acpx", agent, true)).toBe(30_000);
     }
     for (const provider of ["codex", "cursor_cloud", undefined]) {

@@ -21,9 +21,10 @@ pnpm exec vitest run --config tests/restart-chaos/vitest.config.ts  # credential
 node scripts/typecheck-test-projects.mjs tests/restart-chaos        # typecheck
 ```
 
-Options: `--triggers time,comment,retry,queued,tool` (fault timing, below),
+Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below),
 `--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
-default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance).
+default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
+`--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 
 `--rc06-masked` keeps the company budget amount but disables its hard stop on
 the isolated Chaos Lab company, so one stuck accounting row (RC-06) cannot
@@ -52,7 +53,110 @@ new task or fault starts, the in-flight tasks drain to rest or their deadline,
 and only launched tasks are graded. Storm tasks show fault `K13` in the ledger;
 `storm_fault`, `storm_started` and `storm_ended` are in the timeline and the
 receipts are in `faults.json`. A replay of a storm task fires the faults that
-crossed it, without a new storm. Only `--triggers time` applies.
+crossed it, without a new storm. `--triggers time,result` may join a storm: a `result` task (C1) also fires its own K1 or K2 (from `--faults`) just after its run accepts a result, the next storm gap runs from its settle, and no triggered fault fires during the drain. Other triggers do not combine with a storm.
+
+## Governance across restarts (G1, H1)
+
+```sh
+# Approval-gated action: the fault fires 0-3 s after the approval appears pending.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads G1 --faults K1,K2,K4 --triggers approval --concurrency 4 --tasks 6 --seed 31
+# Budget hard stop: its own wave, one task at a time.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads H1 --faults K1,K2,K4 --triggers paused --concurrency 1 --tasks 3 --seed 32
+```
+
+**G1.** The agent asks for board approval through its `call_api` tool
+(`POST /api/companies/{companyId}/approvals`, type `request_board_approval`,
+linked to its task), blocks the task and ends its turn. The `approval` trigger
+fires the planned fault once the observer sees the approval pending.
+
+After the restart, with the server ready, the harness acts as the board through
+the board's own routes. It either approves (`POST /api/approvals/:id/approve`),
+or rejects (`POST /api/approvals/:id/reject`) and cancels the task. The
+decision is fixed by the task's nonce, so about half approve and half reject.
+
+On approval, the woken agent creates exactly one backlog subtask named after the
+nonce and finishes. The oracle checks these points:
+
+- exactly one approval was requested (a restart that made the agent ask twice fails);
+- it was still pending when the board decided after the restart;
+- it reached the board's decision;
+- the subtask exists exactly once on approval, and never after a rejection.
+
+A rejected task rests `cancelled`; R1 and R3 grade against that status.
+
+**H1.** Before launch, the harness sets the company budget to its observed spend
+plus one cent through the board's budget route. The task's first priced usage
+then crosses the hard stop mid-run, which pauses the company. The `paused`
+trigger fires the fault once the observer sees `paused` with `pauseReason`
+`budget`.
+
+After the restart, the pause must hold for 30 s with the server ready. The
+harness records every run that started while paused (there must be none), then
+resolves the incident with `raise_budget_and_resume` (spend plus 3000 cents).
+The task must then finish its brief on its own. H1 pauses the whole company, so
+it runs alone (`--workloads H1 --concurrency 1`) and never with `--rc06-masked`.
+
+Neither G1 nor H1 is in the default workloads. The board's actions and what the
+observer saw are in the timeline (`governance_*`) and in each task's grade
+(`governance`).
+
+## Stop while running, then continue (S1, `--triggers stop`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads S1 --faults K1,K2,K4 --triggers stop --concurrency 4 --tasks 6 --seed 23
+```
+
+S1 is the board's Stop button. While the task's run is running, the harness cancels it through
+`POST /api/heartbeat-runs/:id/cancel`. The `stop` trigger fires the fault 0–2 s later. At least
+20 s after the stop, once no run is running or queued and no fault is in progress, the harness
+comments that it stopped the run on purpose and asks the agent to continue with an extra marker
+line. The oracle checks that the stopped run ended `cancelled`, that nothing started between the
+stop and the continue comment (recovery must not restart work the operator stopped), and that the
+finished brief has both markers. S1 is not a default workload.
+
+## Code change in a real repository (R1, `--workspace-repo`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads R1,C1 --workspace-repo /path/to/paperclip \
+  --faults K1,K2,K4 --concurrency 4 --tasks 8 --seed 22
+```
+
+The harness clones the given git repository (shallow, from its committed HEAD)
+as the project's workspace, in place of the chaoscli fixture. R1 asks the agent
+to add a TypeScript module and a `node:test` file under
+`packages/shared/src/chaos/`, named with the task's nonce so concurrent tasks
+share the repository without colliding. The oracle runs the agent's test and a
+hidden case against its module. B1 and B5 need the chaoscli fixture, so they do
+not combine with `--workspace-repo`. Local only.
+
+## Upgrade mid-run (K14, `--upgrade-from`)
+
+```sh
+git worktree add ../paperclip-838e9bf3 838e9bf3d2        # an older master build
+(cd ../paperclip-838e9bf3 && node scripts/agent-preflight.mjs)
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads A1,C1,M1 --faults K14 --upgrade-from ../paperclip-838e9bf3 \
+  --concurrency 4 --tasks 8 --seed 21
+```
+
+The wave's server starts from the older checkout. The first K14 stops it
+gracefully (SIGTERM, as a deploy does) and starts this checkout against the same
+database, instance directory, port and secrets, so the new build applies its
+migrations to the old build's data and resumes what the old build saved. Each
+task is graded as usual. Pass means:
+
+- no task needed Retry (R3);
+- C1's follow-up comment reached the work (T);
+- the wave-end sweep finds no stuck records (R6).
+
+A later K14 in the same wave restarts the current build, like K2. Every K14
+receipt names both commits (`upgrade` in `faults.json`, `upgrade_switched` in the
+timeline). K14 is local-only, because a Daytona runner must match its image, and
+it is never part of a storm's default faults.
 
 ## Daytona (`--env daytona`)
 
@@ -91,7 +195,10 @@ through Paperclip, by deleting the wave's own environment.
 top to bottom (honouring `.wh.` and `.wh..wh..opq` whiteouts), extracts only
 those two paths, checks the ELF header, the pack manifest and the image labels,
 records their digests in `receipt.json`, and deletes the layer blobs. The result
-is cached in `results/daytona-images/<digest>/`, so it runs once per image.
+is cached in `tests/restart-chaos/results/daytona-images/<digest>/` (or
+`$RESTART_CHAOS_IMAGE_CACHE`), shared by every wave and crash-point run, so it
+runs once per image. A copy that fails part-way, or stalls past its 20-minute bound
+(`RESTART_CHAOS_SKOPEO_ATTEMPT_TIMEOUT_MS`), retries from an empty directory.
 Run it alone with `node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/daytona-image.ts <image>`.
 
 Before starting, the harness compares the image's `io.paperclip.runner.content-id`
@@ -118,7 +225,9 @@ fixture from `catalog.ts`, and the native Codex platform-qualification probe.
 **R6 sweep.** After the wave, `daytona-sweep.ts` lists (read-only) the
 sandboxes whose `paperclip-company-id` and `paperclip-environment-id` labels
 both equal the UUIDs this wave's isolated instance minted, re-checks every row,
-and reconciles them with the environment's leases. A sandbox archived after its
+and reconciles them with the environment's leases. It retries for the product's
+pending-cleanup backoff plus 90 seconds (6.5 minutes, capped at 8) before
+calling anything a leak. A sandbox archived after its
 lease was released is expected (the plugin archives on release and Daytona
 deletes it after 60 minutes). Any other live sandbox without a held lease, or
 an `active`/`pending_cleanup` lease, is a leak: it fails R6 for the
@@ -126,7 +235,10 @@ task whose run owns it, or the wave when no task does. The harness then deletes
 the wave's environment through Paperclip and lists again: a wave sandbox that
 is still neither archived nor destroyed after 90 seconds fails the wave and is
 reported for a person to act on (the environment's 60-minute ttl also expires
-it). The result is in `<wave>/sandbox-sweep.json`.
+it). An environment DELETE that returns 409 because a sandbox cleanup is still
+pending is retried for the same settle window; if it is still blocked then, the
+wave fails (not as a harness error) and the instance is kept, because its
+database owns the cleanup work. The result is in `<wave>/sandbox-sweep.json`.
 
 ## Fault timing (`--triggers`)
 
@@ -137,6 +249,7 @@ the observer, after a seeded delay:
 | Trigger | Fires | Plan |
 | --- | --- | --- |
 | `comment` | 0–5 s after the C1 follow-up was posted to a live run (C1 only) | C1 + K1, B8 |
+| `result` | 0–3 s after the run that received the C1 follow-up proposed or accepted its result, only while that run is still `running` (C1 only) | C1 + K1, B8 |
 | `retry` | 0–2 s after an accepted Retry click, as an extra K1 after the planned fault | K8 |
 | `queued` | on the first poll whose run is still `queued` with no start | B1 |
 | `tool` | 15–60 s after `bench.sh` progress first appears (B5 only) | B6 |
@@ -158,7 +271,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `scheduler.ts` | Seeded plan: workload × adapter × fault cells and a random fire time per task. Saved to `results/<wave>/plan.json`. `--replay` reruns one task alone with the same choices and fires the recorded sequence of faults that crossed it (other tasks' faults included) at the same offsets from launch. |
 | `observer.ts` | Polls each issue and its runs. When a task rests needing Retry it calls `POST /api/issues/:id/retry` once (once more only if a later fault started after that click), with the body `useTaskRetry.ts` sends. Collects T-oracle artifacts and the R6 sweep. |
 | `grader.ts` | Pure R1–R6 grading over the samples. |
-| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, with their T-oracles. |
+| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, with their T-oracles. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
@@ -182,8 +295,10 @@ re-arms the task's own triggered faults instead of using their offsets.
 - B5 passes only when `bench.sh` wrote its own completion record showing it
   ran, and the harness itself saw at least three `.bench/progress` values
   while polling. This is best-effort against a deliberately adversarial agent.
-- R4 allows at most one active (queued, running or scheduled-retry) run per
-  sample. A wake comment may be served again only after a run that did not
+- R4 fails when two runs of the issue executed at the same time: both
+  `running` in one sample, or overlapping started→finished windows. A queued
+  or scheduled wake behind a running run is not a duplicate unless it starts
+  executing. A wake comment may be served again only after a run that did not
   succeed.
 - T-oracle commands (B1 tests and CLI) run agent-editable code. They run under
   a macOS Seatbelt sandbox with a scratch `HOME`, no network and no read access
@@ -193,5 +308,119 @@ re-arms the task's own triggered faults instead of using their offsets.
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
-- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life.
+- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time.
+- The wave fingerprints the checkout and `packages/paperclip-runner/dist` at start and after every fault. A build, install or branch switch during a wave would make later restarts run different code, so it fails the wave as a harness error (`worktree_changed_mid_wave`). The baseline is taken after the harness's own setup (preflight rebuilds provider entrypoints) and covers the tracked diff, untracked file contents, the runner `dist` and the runnerd binary. Build before the wave, never during it.
+- `faults.json` and `task-faults.json` (each task's launch time and the faults that crossed it) are written after every fault, so `--replay` of a task in an interrupted or wedged wave, or a storm task, re-fires the faults that crossed it at the same offsets.
 - A fault that fails to complete fails the wave as a harness error (exit 2), even when recovery brings the server back.
+
+## Crash-point suite (`scripts/crash-points.mjs`)
+
+Plan: [durable ownership, "Testing: enumerate crash points"](../../doc/plans/2026-11-07-durable-ownership-and-reconciliation.md).
+Random waves find a 20 ms–1 s window between two durable writes by luck. The
+crash-point suite kills the control plane at each named window on purpose.
+
+```sh
+set -a; source ~/.secrets; set +a           # provider keys, process env only
+node scripts/crash-points.mjs --list                                   # selected points, kinds, invariants
+node scripts/crash-points.mjs --points 'runner.*,native.*' --adapters codex --workloads A1
+node scripts/crash-points.mjs --kinds wake_request_claimed --nth 2
+```
+
+Options: `--points <glob,...>` (`*`, `?`), `--kinds <ownable kind id,...>`
+(ids from `server/src/services/recovery/ownership-registry.ts`), `--adapters`
+(default `codex`), `--workloads` (default `A1`), `--nth` (fire at the nth hit,
+default 1), `--env local|daytona` (a point runs only in the environments its
+registry entry lists), plus `--daytona-image`, `--daytona-cpu`, `--budget-cents`,
+`--poll-ms`, `--lifecycle` and `--keep`, passed to each wave.
+
+The suite runs one wave, `main.ts --crash-point <a>:<nth>,<b>:<nth>,...`:
+
+1. One isolated control plane boots once, with `PAPERCLIP_CRASH_POINT_CONTROL`
+   set to an empty control file (nothing armed) and without the Vite UI.
+2. For each point in turn: invariants are read as a baseline, the harness
+   arms the point by writing `<token> <name>:<nth>` to the control file, and
+   the point's batch launches (one task per adapter × workload). Creating an
+   assigned issue already queues its wake, so the point is armed first.
+3. At the nth hit the server appends a receipt and SIGKILLs itself. The
+   supervisor treats it as K1: it empties the control file, kills what is
+   left of the server's process tree, starts a replacement, and waits for ready.
+4. When the batch rests, the point is disarmed. `invariants.ts` runs the
+   Phase 1 report-only reconciler against the wave's database
+   (`record: false`), and the point is charged only with violations that are
+   new since its baseline:
+   - two passes at the real clock for I1 (owned) and I2 (settled);
+   - one pass with the clock moved 15 minutes ahead for I3 (admission), I4
+     (exactly-once intents) and I7 (visible next action).
+   Each violation carries its wake and run state as evidence. Two run-log
+   checks complete the set:
+   - I6: a run that failed on a stale-generation event. Since #19960 an
+     earlier generation's event is history and must never fail the current
+     turn.
+   - I8: every `run.performance.budget_exceeded` event the speed budgets
+     wrote (TTFT, agent boot, restart recovery).
+   I5 (work-based budgets) is a known gap: charge decisions are not recorded
+   per restart claim, so the suite cannot tell a charged restart from an
+   uncharged one. R3 bounds it (no point may need a Retry).
+5. Every task is graded R1–R6 and T at the end, as in any wave.
+
+The first full local run (14 points, codex A1) took 11.8 minutes: one boot,
+then about 40–60 seconds per point. One point alone takes about 3 minutes,
+boot included.
+
+Limits: the server kills itself without warning, so there is no pre-fault
+workspace snapshot and R2 checks workspace failures but not lost files
+(`notMeasured` in `crash-point.json`). `--replay` of a crash-point task fires
+the recorded K1 restart at its offset instead of re-arming the point; to
+reproduce a point, rerun the suite for it.
+
+Results: `results/crash-points/<run>/SUMMARY.md` and `summary.json`, plus the
+wave directory with `crash-point.json` (per point: receipt, task grades,
+violations with evidence). Outcomes: `pass`, `fail` (a task failed R1–R6/T or an invariant was
+violated, or the wave exited 1 for a wave-level reason such as a Daytona
+sandbox left after cleanup), `not_reached` (the chosen workloads never crossed the point: pick a
+workload or `--nth` that does) and `harness_error`. Exit code 0, 1, 3 and 2.
+
+**Daytona points.** Six points are reachable only with `--env daytona`
+(`node scripts/crash-points.mjs --list --env daytona`). The run needs
+`DAYTONA_API_KEY` and an image matching this checkout (`--daytona-image` or
+`PAPERCLIP_E2E_DAYTONA_IMAGE`; see "Daytona" above), and refuses to start
+without them. A plain codex task reaches both `sandbox.create.*` points and
+both `environment.teardown.*` points (a native run releases its sandbox through
+teardown). `environment.lease_release.after_provider_before_lease` (the plain
+release path) and `environment.stop_retain.after_claim_before_stop` (a
+stop-and-retain export) were not reached by any workload on 2026-11-08; a
+`not_reached` result prints what each needs.
+
+`environment.stop_retain.after_claim_before_stop` needs `--daytona-reuse-lease`:
+the chaos environment then keeps reusable sandboxes, so each per-turn run stops
+and keeps its sandbox.
+
+**CI.** `.github/workflows/crash-points.yml` runs the same command on demand
+(`workflow_dispatch`, inputs `points`, `kinds`, `adapters`, `workloads`, `nth`).
+It is not a required PR check. It runs only from the default branch, for
+allowlisted actors, in the `runner-e2e-paid` environment, and uploads summaries
+and grades only (no server logs).
+
+### Add a crash point
+
+1. Add an entry to `packages/shared/src/crash-point-registry.ts`. Name it
+   `<subsystem>.<record>.<before|after>_<step>` after the gap it marks, for
+   example `sandbox.create.after_provider_before_lease`. Give a description of
+   what is durable and what is not at that instant, the environments that reach
+   it, the ownable kind ids it affects and the invariants at risk.
+2. Call `crashPoint("<name>")` at the gap: after the first durable write (or
+   outside effect) returns and before the next one starts. Server code imports
+   `crashPoint` from `@paperclipai/shared/crash-points`. Controller code in
+   `packages/paperclip-runner` uses `src/crash-point.ts` (add the name to its
+   union too). Do not put a point inside a transaction; the gap is between
+   commits.
+3. `server/src/__tests__/crash-point-call-sites.test.ts` fails until every
+   registered point has a call site and every kind id exists.
+4. Run the point: `node scripts/crash-points.mjs --points <name>`. A
+   `not_reached` result means the workload never crosses it.
+
+Disarmed, a point costs one comparison (about 4 ns), and the arming variables
+(`PAPERCLIP_CRASH_POINT`, `PAPERCLIP_CRASH_POINT_CONTROL`) are ignored under
+`NODE_ENV=production`, so points may sit on the path before `turn.start`.
+In-process tests use `armCrashPointForTest("<name>:<nth>")`, which throws
+`CrashPointReached` at the hit instead of killing the test runner.

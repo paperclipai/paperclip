@@ -266,6 +266,14 @@ describeEmbeddedPostgres("built-in agents", () => {
     ])).toThrow("defaultAdapterType must be allowed");
   });
 
+  it("retains the actual operator on a provisioned existing agent budget", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const svc = builtInAgentService(db);
+    const original = await svc.ensure(companyId, "briefs");
+    await svc.provision(companyId, "briefs", { budgetMonthlyCents: 5000 }, { requestedByUserId: "budget-operator" });
+    expect(await db.select().from(budgetPolicies).where(eq(budgetPolicies.scopeId, original.agentId!))).toMatchObject([{ amount: 5000, createdByUserId: "budget-operator" }]);
+  });
+
   it.each([{ platform: "linux", architecture: "x64" }, { platform: "linux", architecture: "arm64" }, { platform: "darwin", architecture: "arm64" }, { platform: "darwin", architecture: "x64" }])("lazily provisions one agent per company/key and updates the same row on setup ($platform/$architecture)", async ({ platform, architecture }) => {
     runnerTarget.platform = platform;
     runnerTarget.architecture = architecture;

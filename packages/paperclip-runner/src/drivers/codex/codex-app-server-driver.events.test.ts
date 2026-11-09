@@ -46,6 +46,51 @@ import {
 import { RUNNERD_RUNTIME_ACTIVITY } from "./codex-driver-values.js";
 
 describe("Codex app-server Codex driver", () => {
+  it("binds a semantic result that arrives before its pending turn start settles", async () => {
+    // Runnerd can deliver the new turn's semantic result before turn/start's
+    // response binds the turn (as after a restart continuation). Like a
+    // terminal, the result waits for the start to settle instead of failing
+    // the session as an unbound result.
+    const transport = new FakeCodexTransport();
+    let releaseStart!: (value: Record<string, unknown>) => void;
+    transport.turnStartResponse = new Promise(resolve => { releaseStart = resolve; });
+    const session = await makeDriver([transport]).openSession({
+      runId: "early-result", normalizedSessionId: "early-result-session", workingDirectory: WORKSPACE,
+    });
+    const starting = session.startTurn({ message: { role: "user", text: "Finish." } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: "turn-1", result });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    releaseStart({ turn: { id: "turn-1", status: "inProgress", items: [] } });
+    await expect(starting).resolves.toMatchObject({ turnId: "turn-1" });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some(event => event.eventType === "session.failed")).toBe(false);
+    expect(events.at(-1)?.eventType).toBe("turn.completed");
+    expect(events.filter(event => event.eventType === "run.result.proposed"))
+      .toEqual([expect.objectContaining({ turnId: "turn-1" })]);
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("names its own protocol failure when that failure ends a pending turn start", async () => {
+    // The protocol failure closes the transport, so runnerd exits and the
+    // pending start reports a runner exit. The run must keep the real cause.
+    const transport = new FakeCodexTransport();
+    let rejectStart!: (error: Error) => void;
+    transport.turnStartResponse = new Promise((_resolve, reject) => { rejectStart = reject; });
+    const session = await makeDriver([transport]).openSession({
+      runId: "start-protocol-failure", normalizedSessionId: "start-protocol-failure-session", workingDirectory: WORKSPACE,
+    });
+    const starting = session.startTurn({ message: { role: "user", text: "Finish." } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    transport.push("item/started", { threadId: "thread-1", turnId: "unbound-turn", item: { id: "item-1", type: "agentMessage" } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    rejectStart(new Error("runnerd exited before provider turn startup"));
+    await expect(starting).rejects.toThrow(/codex_turn_start_protocol_failure: turn_binding_mismatch/);
+    await expect(starting).rejects.not.toThrow(/runnerd exited/);
+    await session.close({ reason: "fixture complete" }).catch(() => undefined);
+  });
+
   it("rejects provider-forged and previous-run activity notifications", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

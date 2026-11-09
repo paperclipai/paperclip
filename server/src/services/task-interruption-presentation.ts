@@ -36,12 +36,14 @@ type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "st
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
   Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode" | "startedAt"
-    | "scheduledRetryReason">> & {
+    | "scheduledRetryReason" | "createdAt" | "finishedAt">> & {
   /** Due time of the native coordinator's own same-run resume, if one is pending. */
   nativeResumeAt?: Date | null;
+  /** When the native coordinator saved this run's terminal failure, if it did. */
+  nativeFailedAt?: Date | null;
 };
 type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
-  preparationStatus?: string | null; preparationRetryAt?: number | string | null;
+  preparationStatus?: string | null; preparationRetryAt?: number | string | null; preparationUpdatedAt?: Date | null;
   /** When the user pressed Interrupt to deliver this queued message now. */
   queuedInterruptRequestedAt?: string | null };
 type ProjectionState = {
@@ -59,7 +61,35 @@ type ProjectionState = {
   company?: Pick<typeof companies.$inferSelect, "status" | "pauseReason">;
   paused: boolean;
   approval: boolean;
+  /** A board-owned workspace-owner fence on this run that no automatic proof has released. */
+  ownerStopRequired?: boolean;
+  /** The latest wake for a task with no run yet, when admission refused it. */
+  admissionWait?: { id: string; status: string; reason: string | null; agentId: string };
+  retryDependencies?: RetryDependencies;
 };
+
+// A task read reports the change that made a task fail, not every later read of
+// retained history. The delivery cache is process-local, so a restart or another
+// replica would otherwise resend each old failure whenever a list shows it.
+const TASK_INTERRUPTION_REPORT_WINDOW_MS = 60 * 60_000;
+
+/** Latest saved fact that can move a task into the failed state, if known. The
+ * recovery row's update time covers recovery that newly fails on an old run:
+ * each saved recovery transition stamps it, while activity heartbeats do not.
+ * The native resume due time and terminal finalization cover a same-run resume
+ * that lapses or is exhausted on an old run. */
+export function taskInterruptionChangedAt(input: Pick<ProjectionState, "run" | "action" | "wait" | "retryWait">): number | null {
+  const { run, wait, action } = input;
+  const retryWait = input.retryWait ?? wait;
+  const preparationFailedAt = retryWait?.preparationStatus === "failed" || retryWait?.preparationStatus === "cancelled"
+    ? retryWait.preparationUpdatedAt : null;
+  const times: unknown[] = [run?.finishedAt ?? run?.createdAt, run?.scheduledRetryAt, run?.nativeResumeAt, run?.nativeFailedAt,
+    wait?.requestedAt, retryWait?.requestedAt, action?.updatedAt, preparationFailedAt].map(value => value?.getTime());
+  times.push(readSystemRecovery(action?.evidence)?.nextAttemptAt,
+    retryWait?.preparationRetryAt == null ? null : Number(retryWait.preparationRetryAt));
+  const known = times.filter((time): time is number => typeof time === "number" && Number.isFinite(time));
+  return known.length ? Math.max(...known) : null;
+}
 
 function boundedJsonString(value: SQL, limit: number) {
   return sql<string | null>`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
@@ -80,6 +110,10 @@ const retryWaitMessages: Record<string, string> = {
   decision_pending: "Retry is waiting for a pending approval or question to be resolved. Your message is saved.",
   "budget.blocked": "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage.",
   finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
+  // Another click cannot release a copyback owner that stopped without reporting.
+  // Retry starts a new recovery generation; the agent does not repeat its work.
+  saved_work_recovery_failed: "Saving the agent's files failed after automatic retries. Retry to try again; the agent will not repeat its work.",
+  workspace_owner_stop_required: "Retry is waiting until Paperclip confirms that the previous server stopped saving files. The agent's result and your Retry are saved.",
   cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
   // A new click replaces a Retry declined for its requester's access with a
@@ -87,6 +121,21 @@ const retryWaitMessages: Record<string, string> = {
   retry_authority_denied: "Retry could not start with the requesting user's access. Press Retry to start it with yours.",
   // An edited saved message can never be replayed; only new input continues.
   retry_source_changed: "Retry cannot continue because its saved message changed. Send a new message to continue from saved work.",
+};
+
+type RetryDependencies = { count: number; blocked: boolean; cancelled: boolean; savingFilesOnly: boolean };
+
+function dependencyRetryWaitMessage(dependencies: RetryDependencies): string {
+  if (dependencies.cancelled) return "Retry is waiting on a cancelled task this one depends on. Remove or replace that dependency to continue. Your Retry is saved.";
+  if (dependencies.blocked) return "Retry is waiting on a blocked task this one depends on. Retry or unblock it; this task continues when it is done. Your Retry is saved.";
+  if (dependencies.savingFilesOnly) return "Retry is waiting for a finished task this one depends on to save its files. Your Retry is saved.";
+  return "Retry is waiting for the tasks this one depends on to finish. Your Retry is saved.";
+}
+
+// A task that never started can wait for a temporary admission hold. The
+// assigned-task liveness sweep admits it once the hold clears; no Retry needed.
+const admissionWaitMessages: Record<string, string> = {
+  "budget.blocked": "Waiting for the budget to allow new work. The task starts automatically when it does.",
 };
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
@@ -104,7 +153,20 @@ function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | 
 export function projectTaskInterruption(issue: ProjectionIssue, input: ProjectionState, now = Date.now()): TaskInterruptionPresentation | null {
   const { run, wait, action, agent, project, company } = input;
   const retryWait = input.retryWait ?? wait;
-  if (!run) return null;
+  if (!run) {
+    const admission = input.admissionWait;
+    if (!admission || admission.status !== "skipped" || !Object.hasOwn(admissionWaitMessages, admission.reason ?? "")
+        || issue.status !== "todo" || admission.agentId !== issue.assigneeAgentId) return null;
+    const waiting: TaskInterruptionPresentation = { intentId: admission.id, responsibility: "system", state: "working",
+      nextRetryAt: null, canRetry: false, userAction: null, sourceRunIds: [], observedRunId: null };
+    // Budget pauses, ordinary pauses and approvals wait on a person; only an
+    // accounting hold settles by itself. Admission records all of them as budget.blocked.
+    const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval ? "approval"
+      : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
+        ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
+    if (userAction) return { ...waiting, responsibility: "user", state: "waiting_for_user", userAction };
+    return { ...waiting, retryWait: { reason: admission.reason!, message: admissionWaitMessages[admission.reason!] } };
+  }
   const system = readSystemRecovery(action?.evidence);
   const base: TaskInterruptionPresentation = { intentId: wait?.id ?? null, responsibility: "system",
     state: "resolved", nextRetryAt: null, canRetry: false, userAction: null,
@@ -121,6 +183,9 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
       : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
   if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
+  // The previous controller cannot confirm its own stop. Name the one board
+  // action instead of showing the fenced run as working (RC-47).
+  if (input.ownerStopRequired) return { ...base, responsibility: "user", state: "waiting_for_user", userAction: "confirm_owner_stop" };
   // The task's existing dependency UI owns this wait. Keep actual recovery and
   // Retry preparation failures authoritative; this does not change admission.
   if (!action && !retryWait?.preparationStatus && isQueuedDependencyWait(run)) return base;
@@ -183,11 +248,15 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   if (nativeResumeAt && !system && now - nativeResumeAt < NATIVE_RESUME_DISPATCH_GRACE_MS)
     return { ...base, state: "working" };
   if (recoveryRunning) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
+  const dependencies = input.retryDependencies;
+  if (retryWait?.sourceRunId === run.id && !retryWait.executionWaitReason && !retryWait.preparationStatus && dependencies?.count)
+    return { ...base, intentId: retryWait.id, state: "working",
+      retryWait: { reason: "dependency_blocked", message: dependencyRetryWaitMessage(dependencies) } };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
     return { ...base, state: "failed",
-      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed"].includes(reason), retryWait: { reason,
+      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed", "workspace_owner_stop_required"].includes(reason), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
@@ -223,9 +292,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const isRetryWait = sql<boolean>`coalesce(jsonb_typeof(${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}') = 'string', false)`;
   const agentIds = selected.flatMap(issue => issue.assigneeAgentId ? [issue.assigneeAgentId] : []);
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
-  const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
+  const startingIssueIds = selected.filter(issue => issue.status === "todo" && issue.assigneeAgentId).map(issue => issue.id);
+  const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows, admissionWaits] = await Promise.all([
     db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
-      agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId,
+      createdAt: heartbeatRuns.createdAt, finishedAt: heartbeatRuns.finishedAt, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId,
       nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode, startedAt: heartbeatRuns.startedAt,
       agentAdapter: agents.adapterType,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
@@ -242,6 +312,9 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
           and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'retryable_failure'
           and ${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null
           and ${heartbeatRuns.runnerProfileJson}->'legacyWorkspaceRecoveryMigration' is null)`.mapWith(value => value == null ? null : new Date(value)),
+      nativeFailedAt: sql<Date | null>`(select ${nativeRunFinalizations.updatedAt} from ${nativeRunFinalizations}
+        where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId} and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+          and ${nativeRunFinalizations.phase} = 'terminal_failure')`.mapWith(value => value == null ? null : new Date(value)),
       // The run whose resultJson supplied providerFailure. A scheduled retry
       // shows its predecessor's reason, so redaction must use that run's registry.
       providerFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'providerFailure' is null
@@ -277,7 +350,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
       executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80),
-      preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry") })
+      preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry"),
+      preparationUpdatedAt: chatActions.updatedAt })
       .from(agentWakeupRequests).leftJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId),
         eq(chatActions.id, canonicalExecutionUuid(sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}'`)),
         eq(chatActions.kind, "failed_run_retry"), sql`${chatActions.payload}->>'taskRetryIntentId' = ${agentWakeupRequests.id}::text`,
@@ -301,6 +375,11 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       .where(and(eq(issueApprovals.companyId, companyId), inArray(issueApprovals.issueId, ids),
         inArray(approvals.status, ["pending", "revision_requested"]))),
     db.select({ status: companies.status, pauseReason: companies.pauseReason }).from(companies).where(eq(companies.id, companyId)),
+    // Only consulted for tasks without a run: the latest wake says whether admission refused it.
+    startingIssueIds.length ? db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id,
+      status: agentWakeupRequests.status, reason: agentWakeupRequests.reason, agentId: agentWakeupRequests.agentId })
+      .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, startingIssueIds)))
+      .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)) : [],
   ]);
   // Advertise a pending resume only when the scheduler would admit it, using
   // its own check, so the task never hides Retry behind a deferred candidate
@@ -353,9 +432,38 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
     sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
   )).orderBy(issueRecoveryActions.sourceIssueId, desc(issueRecoveryActions.createdAt)) : [];
+  const ownerStops = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,
+    runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'` }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+    eq(issueRecoveryActions.cause, "native_workspace_finalization_owner_unverified"), eq(issueRecoveryActions.ownerType, "board"),
+    inArray(issueRecoveryActions.status, ["active", "escalated"]),
+    inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
+    sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`,
+    sql`coalesce(${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}', '') <> 'resuming'`,
+  )) : [];
+  const ownerStopRequired = new Set(ownerStops.map(row => `${row.issueId}:${row.runId}`));
   const byIssue = <T extends { issueId: string }>(rows: T[]) => new Map(rows.map(row => [row.issueId, row]));
   const runMap = byIssue(runs), waitMap = new Map<string, typeof waits[number]>();
   const retryWaitMap = byIssue(waits.filter(wait => wait.sourceRunId));
+  const retryIssueIds = [...retryWaitMap.keys()];
+  const retryDependencyMap = new Map<string, RetryDependencies>();
+  if (retryIssueIds.length) {
+    const { issueService } = await import("./issues.js");
+    const readiness = await issueService(db).listDependencyReadiness(companyId, retryIssueIds);
+    const blockerIds = [...new Set([...readiness.values()].flatMap(row => row.unresolvedBlockerIssueIds))];
+    const statusRows = blockerIds.length ? await db.select({ id: issues.id, status: issues.status }).from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, blockerIds))) : [];
+    const statusById = new Map(statusRows.map(row => [row.id, row.status]));
+    for (const [waitingIssueId, row] of readiness) {
+      const ids = [...new Set(row.unresolvedBlockerIssueIds)];
+      if (!ids.length) continue;
+      const statuses = ids.map(id => statusById.get(id));
+      const saving = new Set(row.pendingFinalizeBlockerIssueIds);
+      retryDependencyMap.set(waitingIssueId, { count: ids.length,
+        blocked: statuses.includes("blocked"), cancelled: statuses.includes("cancelled"),
+        savingFilesOnly: ids.every(id => saving.has(id)) });
+    }
+  }
   for (const wait of waits) {
     const current = waitMap.get(wait.issueId);
     if (!current || wait.requestedAt > current.requestedAt ||
@@ -393,24 +501,32 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const agentMap = new Map(agentRows.map(agent => [agent.id, agent]));
   const projectMap = new Map(projectRows.map(project => [project.id, project]));
   const pauses = new Set(pauseRows.map(row => row.issueId)), approvalsSet = new Set(approvalRows.map(row => row.issueId));
+  const admissionWaitMap = byIssue(admissionWaits);
+  const now = Date.now();
   for (const issue of selected) {
     const required = requirements.get(issue.id);
     const denied = required?.projectIds.filter(projectId => currentAccess.get(`${issue.assigneeAgentId}:${projectId}`) !== true);
-    const presentation = projectTaskInterruption(issue, {
-      run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id), retryWait: retryWaitMap.get(issue.id),
+    const facts = { run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id),
+      retryWait: retryWaitMap.get(issue.id) };
+    const presentation = projectTaskInterruption(issue, { ...facts,
       interruptWait: interruptWaitFor(issue.id),
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
       workspaceSelectionAvailable: required?.available ?? false,
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
-    });
+      ownerStopRequired: ownerStopRequired.has(`${issue.id}:${facts.run?.id}`),
+      admissionWait: admissionWaitMap.get(issue.id),
+      retryDependencies: retryDependencyMap.get(issue.id),
+    }, now);
     result.set(issue.id, presentation);
-    const run = runMap.get(issue.id);
+    const run = facts.run;
     const runStatus = HEARTBEAT_RUN_STATUSES.find(status => status === run?.status);
-    if (presentation?.responsibility === "system" && presentation.state === "failed" && run && runStatus) {
+    const changedAt = taskInterruptionChangedAt(facts);
+    if (presentation?.responsibility === "system" && presentation.state === "failed" && run && runStatus
+        && (changedAt === null || changedAt > now - TASK_INTERRUPTION_REPORT_WINDOW_MS)) {
       captureTaskInterruptionFailure({ companyId, taskId: issue.id, agentId: run.agentId,
-        runId: run.id, runStatus, intentId: presentation.intentId,
+        runId: run.id, runStatus, intentId: presentation.intentId, runErrorCode: run.errorCode ?? null,
         agentAdapter: run.agentAdapter ?? "unknown" });
     }
   }

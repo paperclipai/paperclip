@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use paperclip_runner_core::acpx_provider_session::{
     AcpxPermissionMode, AcpxProviderSession, AcpxProviderSessionConfig,
@@ -790,4 +790,227 @@ fn forced_cancellation_retirement_preserves_terminal_polling_but_rejects_live_re
             .contains("runtime was retired"));
         session.shutdown("test complete").unwrap();
     }
+}
+
+fn reusable_config(directory: &std::path::Path) -> AcpxProviderSessionConfig {
+    let mut config = config("source-reconcile");
+    config.transport.args = vec![
+        "--mode".to_owned(),
+        "source-reconcile".to_owned(),
+        "--journal".to_owned(),
+        directory.join("journal.jsonl").display().to_string(),
+        "--source-fault".to_owned(),
+        directory.join("fault").display().to_string(),
+    ];
+    config.runtime_context = json!({
+        "aggregateDigest": "run-1-aggregate",
+        "skills": [{"key": "skill-1", "bundle": {"rootPath": "/skills/one"}}],
+        "mcp": {"bindingId": "binding-run-1"},
+    });
+    config
+}
+
+fn settle_turn(session: &mut AcpxProviderSession, turn_id: &str) -> Vec<AcpxProviderStateEvent> {
+    session
+        .start_turn(turn_id, "Please continue", &std::env::temp_dir())
+        .unwrap();
+    let mut seen = Vec::new();
+    loop {
+        let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        let settled = events.iter().any(|event| {
+            matches!(event, AcpxProviderStateEvent::TurnTerminal { turn_id: settled, .. } if settled == turn_id)
+        });
+        seen.extend(events);
+        if settled {
+            return seen;
+        }
+    }
+}
+
+fn process_starts(directory: &std::path::Path) -> usize {
+    std::fs::read_to_string(directory.join("journal.jsonl"))
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("processStart"))
+        .count()
+}
+
+#[test]
+fn prepared_generation_rebinds_only_an_identical_unused_configuration() {
+    let directory = std::env::temp_dir().join(format!("acpx-generation-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let config = reusable_config(&directory);
+    let mut session = AcpxProviderSession::start(&config).unwrap();
+    assert!(!session.can_prepare_next_generation());
+    assert!(session
+        .prepare_next_generation(Instant::now() + Duration::from_secs(20))
+        .is_err());
+    settle_turn(&mut session, "turn-1");
+    let first_pid = session.process_id();
+    session
+        .prepare_next_generation(Instant::now() + Duration::from_secs(20))
+        .unwrap();
+    let prepared_pid = session.process_id();
+    assert_ne!(prepared_pid, first_pid);
+    assert!(session.awaits_run_rebind() && !session.generation_has_run_turn());
+    let mut next = config.clone();
+    next.run_id = "run-2".to_owned();
+    next.expected_identity = Some(session.identity().clone());
+    next.runtime_context["mcp"]["bindingId"] = json!("binding-run-2");
+    next.runtime_context["aggregateDigest"] = json!("run-2-aggregate");
+    let changes: [fn(&mut AcpxProviderSessionConfig); 7] = [
+        |config| config.system_instructions.push_str(" Changed."),
+        |config| config.tool_set.operations.clear(),
+        |config| config.runtime_context["skills"][0]["bundle"]["rootPath"] = json!("/skills/two"),
+        |config| config.runtime_context["mcp"]["bindingId"] = serde_json::Value::Null,
+        |config| config.permission_mode = AcpxPermissionMode::DenyAll,
+        |config| config.run_id = "run-1".to_owned(),
+        |config| config.expected_identity = None,
+    ];
+    for change in changes {
+        let mut changed = next.clone();
+        change(&mut changed);
+        assert!(!session.rebind_run(&changed).unwrap());
+        assert_eq!(session.process_id(), prepared_pid);
+        assert!(session.awaits_run_rebind());
+    }
+    assert!(session.rebind_run(&next).unwrap());
+    assert_eq!(session.process_id(), prepared_pid);
+    assert_eq!(session.state().run_id(), "run-2");
+    assert!(!session.awaits_run_rebind());
+    let attached_runs = std::fs::read_to_string(directory.join("journal.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|line| line["command"] == "run.attach")
+        .map(|line| line["params"]["runId"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        attached_runs,
+        [json!("run-1"), json!("run-1"), json!("run-2")]
+    );
+    settle_turn(&mut session, "turn-1");
+    assert_eq!(session.process_id(), prepared_pid);
+    assert!(session.generation_has_run_turn());
+    let mut later = next.clone();
+    later.run_id = "run-3".to_owned();
+    assert!(
+        !session.rebind_run(&later).unwrap(),
+        "a used generation is never rebound"
+    );
+    session
+        .prepare_next_generation(Instant::now() + Duration::from_secs(20))
+        .unwrap();
+    settle_turn(&mut session, "turn-2");
+    assert!(
+        !session.rebind_run(&later).unwrap(),
+        "a prepared generation that ran a turn is never rebound"
+    );
+    assert_eq!(process_starts(&directory), 3);
+    session.shutdown("test complete").unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn prepared_generation_never_admits_the_reaped_generation_late_callback() {
+    let directory = std::env::temp_dir().join(format!("acpx-generation-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut session = AcpxProviderSession::start(&reusable_config(&directory)).unwrap();
+    settle_turn(&mut session, "turn-1");
+    std::fs::write(directory.join("fault"), "late-tool-after-suspend").unwrap();
+    session
+        .prepare_next_generation(Instant::now() + Duration::from_secs(20))
+        .unwrap();
+    std::fs::write(directory.join("fault"), "").unwrap();
+    let events = settle_turn(&mut session, "turn-2");
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, AcpxProviderStateEvent::ToolCall { .. })));
+    assert_eq!(
+        process_starts(&directory),
+        2,
+        "the prepared turn does not restart again"
+    );
+    session.shutdown("test complete").unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_turn_end_restart_reaps_the_late_callback_and_releases_receipts_at_the_next_turn() {
+    let mut session = AcpxProviderSession::start(&config("turns-late-tool-after-suspend")).unwrap();
+    session
+        .start_turn("turn-1", "Please continue", &std::env::temp_dir())
+        .unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(!session.can_restart_after_turn());
+    session
+        .deliver_tool_result(&late_result("call-reused"))
+        .unwrap();
+    let first_pid = session.process_id();
+    session.restart_after_turn(None).unwrap();
+    let fresh_pid = session.process_id();
+    assert_ne!(fresh_pid, first_pid);
+    assert_eq!(session.restarted_after_turn_from(), Some(first_pid));
+    assert!(!session.generation_has_run_turn() && !session.can_restart_after_turn());
+    assert!(session
+        .poll_event(Duration::from_millis(200))
+        .unwrap()
+        .is_none());
+
+    session
+        .start_turn("turn-2", "Use the fresh provider", &std::env::temp_dir())
+        .unwrap();
+    assert_eq!(session.process_id(), fresh_pid);
+    assert_eq!(session.restarted_after_turn_from(), None);
+    let fresh = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        &fresh[0],
+        AcpxProviderStateEvent::ToolCall { call_id, operation_id, input }
+            if call_id == "call-reused"
+                && operation_id == "issues.read"
+                && input["id"] == "issue-1"
+    ));
+    let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        terminal.last().unwrap(),
+        AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-2"
+    ));
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn an_interrupted_or_retired_turn_restarts_at_the_next_turn_start() {
+    let mut session = AcpxProviderSession::start(&config("turns")).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(!session.can_restart_after_turn());
+    session
+        .interrupt_turn("turn-1", "Paperclip interruption")
+        .unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    let interrupted_pid = session.process_id();
+    assert!(!session.can_restart_after_turn());
+    assert!(session.restart_after_turn(None).is_err());
+    assert_eq!(session.process_id(), interrupted_pid);
+    session
+        .start_turn("turn-2", "Start again", &std::env::temp_dir())
+        .unwrap();
+    assert_ne!(session.process_id(), interrupted_pid);
+    session.shutdown("test complete").unwrap();
+
+    let mut retired = AcpxProviderSession::start(&config("turns-retired")).unwrap();
+    retired
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+    retired
+        .interrupt_turn("turn-1", "Paperclip cancellation")
+        .unwrap();
+    retired.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(retired.state().active_turn_id().is_none());
+    assert!(retired.runtime_retired());
+    assert!(!retired.can_restart_after_turn());
+    retired.shutdown("test complete").unwrap();
 }

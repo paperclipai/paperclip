@@ -592,7 +592,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       },
       run: async (reportProgress) => {
         const ensureWorkspaceAvailable = async () =>
-          await ensurePersistedExecutionWorkspaceAvailable({
+          await withExecutionWorkspaceLifecycleLock(db, existing.id, () => ensurePersistedExecutionWorkspaceAvailable({
             base: {
               baseCwd: projectWorkspace?.cwd ?? workspaceCwd,
               source: existing.mode === "shared_workspace" ? "project_primary" : "task_session",
@@ -633,7 +633,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               companyId: existing.companyId,
             },
             recorder,
-          });
+          }));
 
         if (action === "run") {
           if (!workspaceCommand || workspaceCommand.kind !== "job") {

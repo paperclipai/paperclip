@@ -1,4 +1,5 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
+import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
@@ -4277,8 +4278,9 @@ export function toolAccessService(
 
     // Repository discovery uses credential audiences, not connection-management
     // visibility. An administrator cannot browse another user's private repos.
-    listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false) =>
-      toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted),
+    listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false,
+      options?: { requiredRepositoryIds: readonly string[] }) =>
+      toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted, options),
 
     // Return identifiers, never credentials, so each attempted read can recheck its grant.
     githubReadConnectionIds: async (companyId: string, userId: string | null, localTrusted = false): Promise<string[]> => {
@@ -4322,6 +4324,7 @@ export function toolAccessService(
       companyId: string,
       userId: string | null,
       localTrusted = false,
+      options?: { requiredRepositoryIds: readonly string[] },
     ) => measureRunPhase("connectors.github.catalog", async () => {
       const [connections, grants, members, memberships] = await Promise.all([
         measureRunPhase("connectors.github.connections", () => db
@@ -4362,6 +4365,7 @@ export function toolAccessService(
       const usableConnections: Array<{ id: string; name: string }> = [];
       let connectionCount = 0;
       let failedConnectionCount = 0;
+      const unavailable: RepositoryCatalogUnavailableError[] = [];
       for (const connection of connections) {
         if (
           connection.status !== "active" ||
@@ -4445,13 +4449,19 @@ export function toolAccessService(
             for (const row of rows) {
               mergeProjectRepository(repositories, row, connection.name, connection.id);
             }
-          } catch {
+          } catch (error) {
+            const catalogFailure = findRepositoryCatalogUnavailableError(error);
+            if (catalogFailure) unavailable.push(catalogFailure);
             // Credential/provider errors may contain secrets. Only expose an
             // aggregate failure; successful connections remain usable.
             failed = true;
           }
         }
         if (failed) failedConnectionCount += 1;
+      }
+      const availableIds = new Set([...repositories.values()].map(repository => repository.id));
+      if (unavailable.length && options?.requiredRepositoryIds.some(id => !availableIds.has(id))) {
+        throw unavailable.reduce((latest, failure) => (failure.retryAt ?? 0) > (latest.retryAt ?? 0) ? failure : latest);
       }
       return {
         repositories: [...repositories.values()].sort((a, b) =>

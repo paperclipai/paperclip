@@ -5132,6 +5132,44 @@ describe("DurablePrpControlPlane", () => {
     },
   );
 
+  it("delivers a fresh suspension after a rejected one on the same connection", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-rejected-suspend-"));
+    const controlPlane = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    try {
+      await controlPlane.start();
+      const rejected = controlPlane.queueCommand("runner.suspend", {}, "command-suspend-rejected");
+      const client = await authenticate(controlPlane, controlPlane.issueBootstrapTicket());
+      const retry = controlPlane.queueCommand("runner.suspend", {}, "command-suspend-retry", true);
+      expect(controlPlane.store.state.commandDeliveryCounts[retry.commandId]).toBeUndefined();
+      sendSecure(client!, {
+        protocol: "paperclip.runner", version: 1, kind: "command_result",
+        payload: {
+          commandId: rejected.commandId, commandType: rejected.type, controllerSeq: rejected.controllerSeq,
+          status: "failed",
+          result: { code: "command_execution_failed", message: "ACPX session is not at a safe suspension point" },
+        },
+      });
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command_result_ack", payload: { commandId: "command-suspend-rejected", status: "failed" },
+      });
+      // The runner keeps serving after a rejected suspension, so the retry is
+      // delivered on the same connection instead of waiting behind the fence.
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command", payload: { commandId: "command-suspend-retry" },
+      });
+      expect(controlPlane.store.state.commandDeliveryCounts[retry.commandId]).toBe(1);
+      client?.socket.destroy();
+    } finally {
+      await controlPlane.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("acknowledges terminal command results after persisting them", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-terminal-ack-"));
     const controlPlane = new DurablePrpControlPlane({

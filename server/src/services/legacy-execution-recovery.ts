@@ -11,6 +11,7 @@ import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAI
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "./reusable-sandbox-resume-error.js";
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "./plugin-worker-unavailable-error.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "./environment-provider-unavailable-error.js";
+import { REPOSITORY_CATALOG_UNAVAILABLE_CODE } from "./repository-catalog-unavailable-error.js";
 import { RUNNER_REVISION_MISMATCH_CODE } from "./runner-revision-mismatch.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
@@ -86,7 +87,8 @@ export function legacyExecutionNeedsReconciliation(
   if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated"
       || run.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE || run.errorCode === REUSABLE_SANDBOX_RESUME_FAILED_CODE
       || run.errorCode === REMOTE_WORKSPACE_RESTORE_FAILED_CODE || run.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
-      || run.errorCode === RUNNER_REVISION_MISMATCH_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE) &&
+      || run.errorCode === RUNNER_REVISION_MISMATCH_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+      || run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE) &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
@@ -326,7 +328,11 @@ export async function terminalizeLegacyExecution(input: {
 }
 
 export async function settleInterruptedNativeBootstrap(
-  db: Db, input: { run: Run; providerDispatchStarted: boolean },
+  db: Db, input: { run: Run; providerDispatchStarted: boolean;
+    /** Owner proof that authorized this settle, recorded in the activity log. */
+    proof?: string;
+    /** Called inside the transaction with the number of holds this call resolved. */
+    onHoldsResolved?: (count: number) => void },
 ): Promise<Run | null> {
   if (input.providerDispatchStarted) return null;
   const issueId = input.run.contextSnapshot?.issueId;
@@ -384,8 +390,10 @@ export async function settleInterruptedNativeBootstrap(
     }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
     if (resolved.length) await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system", actorId: "system",
       action: "issue.recovery_action_resolved", entityType: "issue", entityId: task.id, agentId: run.agentId, runId: run.id,
-      details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id) },
+      details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id),
+        ...(input.proof ? { ownerProof: input.proof } : {}) },
     });
+    input.onHoldsResolved?.(resolved.length);
     return settled;
   });
 }

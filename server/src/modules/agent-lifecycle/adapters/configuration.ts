@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
 import { agentRecordQueries, AGENT_CONFIGURATION_FIELDS, jsonEqual, type AgentConfigurationPatch, type UpdateAgentOptions } from "../../../lib/agent-records.js";
 import type { ActivityPublication } from "../../../types/activity-publication.js";
-import { AgentLifecycleConflict } from "../domain/policy.js";
+import { AgentLifecycleConflict, canConfigureAgentConnection } from "../domain/policy.js";
 import type { LifecycleEffects } from "./effects.js";
 
 export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions, publications: ActivityPublication[] = []) {
@@ -40,6 +40,7 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
       { adapterType: patch.adapterType ?? current.adapterType,
         adapterConfig: Object.prototype.hasOwnProperty.call(patch, "adapterConfig") ? patch.adapterConfig : current.adapterConfig });
   const invalidate = changed && (["preparing", "verifying", "resuming"].includes(current.lifecycleState) || prepareSetup);
+  if(prepareSetup&&!canConfigureAgentConnection(current))await effects.beforeConnectionEligibilityRestore?.(tx,current.companyId,current.id);
   if (invalidate) await effects.notifyWork(tx);
   const [updated] = await tx.update(agents).set({ ...patch, updatedAt: new Date(), ...(invalidate ? {
     lifecycleVersion: current.lifecycleVersion + 1, lifecycleError: null,
@@ -47,8 +48,9 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
     ...(!prepareSetup && current.lifecycleHolds.includes("setup") && ["preparing", "verifying"].includes(current.lifecycleState)
       ? { lifecycleState: "pausing" as const } : {}),
     lifecycleOperation: { ...current.lifecycleOperation!, id: randomUUID(), hostComplete: false,
-      completedPluginIds: [], attempts: 0, leaseOwner: undefined, leaseUntil: undefined,
-      retryAt: undefined, retryRequired: undefined, verificationFailures: undefined },
+      completedPluginIds: [], attempts: 0, leaseOwner: undefined, leaseUntil: undefined, leaseHolder: undefined,
+      retryAt: undefined, retryRequired: undefined, verificationFailures: undefined,
+      waitingForSignal: undefined, recheckRequested: undefined },
   } : {}) }).where(eq(agents.id, id)).returning();
   await effects.completeConfiguration(tx, current, updated, patch, options, publications);
   return agentRecordQueries(tx).getById(id);

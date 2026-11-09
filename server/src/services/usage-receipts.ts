@@ -22,6 +22,7 @@ import { applyCostCorrectionInTransaction } from "./accounting-corrections.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { createCostEventInTransaction } from "./costs.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
@@ -44,7 +45,10 @@ const envelopeSchema = z.object({
   runId: z.string().uuid(), sourceId: z.string().uuid(), sequence: z.number().int().positive(), receivedAt: z.iso.datetime(),
   adapterType: z.string().max(100), receipt: checkpointSchema,
   producerEvent: z.object({ sourceEventId: z.string(), turnId: z.string().optional(), providerTurnId: z.string().optional(),
-    eventType: z.string(), usage: z.record(z.string(), z.unknown()).optional() }).optional(),
+    eventType: z.string(), usage: z.record(z.string(), z.unknown()).optional(),
+    // The restored Runner failed this turn as lost on restore: its usage can
+    // never be reported, so it does not hold the receipt open.
+    lostOnRestore: z.literal(true).optional() }).optional(),
   // Derived by the recorder, not a provider's final charge. Keeping it in the
   // fsynced envelope preserves known partial attempts through database replay.
   liveCostCents: z.string().max(160).refine(value => {
@@ -340,7 +344,14 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
         accountingLateReceiptDebts: debts, accountingLateReceiptId: nextId,
         accountingLateReceiptAttemptedId: nextId && debts[nextId] ? nextId : null,
         ...(reconciled && advanceReceiptIdentity ? { accountingReconciledReceiptId: currentId,
-          accountingReconciledReceiptSourceId: late!.sourceId, accountingReconciledReceiptSequence: late!.sequence } : {}),
+          accountingReconciledReceiptSourceId: late!.sourceId,
+          accountingReconciledReceiptSequence: late!.sequence } : {}),
+        // A complete receipt now accounts for the usage a closure timeout
+        // could not see, so its unknown-spend charge stops blocking.
+        // Only a complete whole-run receipt from the run's own source does;
+        // an increment reported by a later run does not.
+        ...(reconciled && late?.receipt.complete && !late.lateDelta && late.sourceId === previous.accountingReceiptSourceId
+          && previous.accountingClosureTimedOut === true ? { accountingClosureTimedOut: false } : {}),
       },
     }).where(eq(heartbeatRuns.id, run.id));
   }
@@ -684,7 +695,12 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     }
     const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt, liveCostCents };
     const file = await spoolUsageReceipt(envelope, directory);
-    try { await persistUsageReceipt(db, envelope); await fs.rm(file, { force: true }); }
+    crashPoint("accounting.usage_receipt.after_spool_before_db");
+    try {
+      await persistUsageReceipt(db, envelope);
+      crashPoint("accounting.usage_receipt.after_db_before_unlink");
+      await fs.rm(file, { force: true });
+    }
     catch (error) {
       // The fsynced receipt is durable even when the DB transaction failed.
       // Wake the owned spool recovery path; never certify that failed write as free.

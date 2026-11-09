@@ -1,0 +1,188 @@
+import { and, eq, inArray } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import { executionWorkspaces, issues } from "@paperclipai/db";
+import { parseIssueExecutionWorkspaceSettings } from "./execution-workspace-policy.js";
+import { loadParentChain } from "./issue-hierarchy.js";
+
+type LineageReader = Pick<Db, "select" | "execute">;
+
+/**
+ * A subtask never shares a workspace with its parent or any other ancestor.
+ * It may keep the ancestor's workspace *strategy* (mode, environment, runtime,
+ * branch template, base ref), but nothing that names realized files: no
+ * workspace id, no `reuse_existing` preference, and no pinned existing branch.
+ * The first run realizes the subtask's own workspace from the project base,
+ * exactly as it would for a top-level task.
+ */
+export function buildIndependentTaskWorkspaceSettings(
+  raw: unknown,
+): Record<string, unknown> | null {
+  const settings = parseIssueExecutionWorkspaceSettings(raw, {
+    includeEnvironmentId: true,
+  });
+  if (!settings) return null;
+  // `operator_branch` works on a named existing branch, which for a subtask
+  // would be the ancestor's branch; the project default applies instead.
+  const mode =
+    settings.mode &&
+    settings.mode !== "inherit" &&
+    settings.mode !== "reuse_existing" &&
+    settings.mode !== "operator_branch"
+      ? settings.mode
+      : null;
+  const next: Record<string, unknown> = {};
+  if (mode) next.mode = mode;
+  // Policy fields that name no files carry over with the strategy.
+  if (settings.sharedWorkspaceConcurrency)
+    next.sharedWorkspaceConcurrency = settings.sharedWorkspaceConcurrency;
+  if (settings.networkEgress) next.networkEgress = settings.networkEgress;
+  if (settings.environmentId !== undefined)
+    next.environmentId = settings.environmentId;
+  if (settings.workspaceRuntime)
+    next.workspaceRuntime = settings.workspaceRuntime;
+  const strategy = settings.workspaceStrategy;
+  if (strategy) {
+    next.workspaceStrategy = {
+      type: strategy.type,
+      ...(strategy.baseRef ? { baseRef: strategy.baseRef } : {}),
+      ...(strategy.branchTemplate ? { branchTemplate: strategy.branchTemplate } : {}),
+      ...(strategy.worktreeParentDir ? { worktreeParentDir: strategy.worktreeParentDir } : {}),
+      ...(strategy.provisionCommand ? { provisionCommand: strategy.provisionCommand } : {}),
+      ...(strategy.runtimeProvisionCommand
+        ? { runtimeProvisionCommand: strategy.runtimeProvisionCommand }
+        : {}),
+      ...(strategy.teardownCommand ? { teardownCommand: strategy.teardownCommand } : {}),
+    };
+  }
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+/**
+ * Lays a task's explicit workspace settings over the strategy it inherited, so
+ * a caller that names only a mode (the New sub-task dialog does) keeps the
+ * inherited base ref, branch template, commands and runtime. A different
+ * explicit mode is a different strategy, so it replaces the inherited one.
+ */
+export function mergeExplicitWorkspaceSettings(
+  inherited: Record<string, unknown> | null,
+  explicit: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!inherited) return explicit;
+  if (!explicit) return inherited;
+  if (explicit.mode && inherited.mode && explicit.mode !== inherited.mode) return explicit;
+  const inheritedStrategy = inherited.workspaceStrategy as Record<string, unknown> | undefined;
+  const explicitStrategy = explicit.workspaceStrategy as Record<string, unknown> | undefined;
+  return {
+    ...inherited,
+    ...explicit,
+    ...(inheritedStrategy || explicitStrategy
+      ? { workspaceStrategy: { ...(inheritedStrategy ?? {}), ...(explicitStrategy ?? {}) } }
+      : {}),
+  };
+}
+
+/**
+ * The issues a task must never share a workspace with: its parent chain, plus
+ * the requested parent's chain when depth placement put the task beside its
+ * requester (recorded as `privacyParentIssueId`).
+ */
+export async function loadTaskLineageIssueIds(
+  db: Pick<Db, "execute">,
+  companyId: string,
+  task: { id: string; parentId: string | null; privacyParentIssueId?: string | null },
+): Promise<string[]> {
+  const ids = new Set([
+    ...(await loadAncestorIssueIds(db, companyId, task.parentId)),
+    ...(task.privacyParentIssueId && task.privacyParentIssueId !== task.parentId
+      ? await loadAncestorIssueIds(db, companyId, task.privacyParentIssueId)
+      : []),
+  ]);
+  ids.delete(task.id);
+  return [...ids];
+}
+
+/** Ids of `parentId` and every ancestor above it (company-scoped). */
+export async function loadAncestorIssueIds(
+  db: Pick<Db, "execute">,
+  companyId: string,
+  parentId: string | null | undefined,
+): Promise<string[]> {
+  if (!parentId) return [];
+  const chain = await loadParentChain(db, companyId, parentId);
+  return chain.map((row) => row.id);
+}
+
+/**
+ * True when `task` is bound to a workspace that a relative in its task tree
+ * owns: an ancestor (or the requester it was placed beside) created it or is
+ * bound to it, or a descendant created it. The task that created the
+ * workspace keeps it; the relative bound to it is the one that moves, so its
+ * fresh workspace never lands on the owner's branch or folder.
+ */
+export async function bindsRelativesExecutionWorkspace(
+  db: LineageReader,
+  input: {
+    companyId: string;
+    executionWorkspaceId: string;
+    task: { id: string; parentId: string | null; privacyParentIssueId?: string | null };
+  },
+): Promise<boolean> {
+  const [workspace] = await db
+    .select({ sourceIssueId: executionWorkspaces.sourceIssueId })
+    .from(executionWorkspaces)
+    .where(and(
+      eq(executionWorkspaces.companyId, input.companyId),
+      eq(executionWorkspaces.id, input.executionWorkspaceId),
+    ))
+    .limit(1);
+  const ownerIssueId = workspace?.sourceIssueId ?? null;
+  if (ownerIssueId === input.task.id) return false;
+  const ancestorIssueIds = await loadTaskLineageIssueIds(db, input.companyId, input.task);
+  if (await isAncestorExecutionWorkspace(db, {
+    companyId: input.companyId,
+    executionWorkspaceId: input.executionWorkspaceId,
+    ancestorIssueIds,
+  })) return true;
+  if (!ownerIssueId) return false;
+  const [owner] = await db
+    .select({ parentId: issues.parentId, privacyParentIssueId: issues.privacyParentIssueId })
+    .from(issues)
+    .where(and(eq(issues.companyId, input.companyId), eq(issues.id, ownerIssueId)))
+    .limit(1);
+  if (!owner) return false;
+  const ownerLineage = await loadTaskLineageIssueIds(db, input.companyId, { id: ownerIssueId, ...owner });
+  return ownerLineage.includes(input.task.id);
+}
+
+/**
+ * True when the execution workspace belongs to one of `ancestorIssueIds`:
+ * an ancestor created it, or an ancestor is currently bound to it. Either way
+ * a descendant bound to it would write into the ancestor's files.
+ */
+export async function isAncestorExecutionWorkspace(
+  db: LineageReader,
+  input: { companyId: string; executionWorkspaceId: string; ancestorIssueIds: string[] },
+): Promise<boolean> {
+  if (input.ancestorIssueIds.length === 0) return false;
+  const [workspace] = await db
+    .select({ sourceIssueId: executionWorkspaces.sourceIssueId })
+    .from(executionWorkspaces)
+    .where(and(
+      eq(executionWorkspaces.companyId, input.companyId),
+      eq(executionWorkspaces.id, input.executionWorkspaceId),
+    ))
+    .limit(1);
+  if (workspace?.sourceIssueId && input.ancestorIssueIds.includes(workspace.sourceIssueId)) {
+    return true;
+  }
+  const [boundAncestor] = await db
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, input.companyId),
+      inArray(issues.id, input.ancestorIssueIds),
+      eq(issues.executionWorkspaceId, input.executionWorkspaceId),
+    ))
+    .limit(1);
+  return Boolean(boundAncestor);
+}

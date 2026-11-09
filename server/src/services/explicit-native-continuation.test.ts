@@ -1,5 +1,6 @@
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import os from "node:os";
 import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -93,6 +94,32 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       onBlocked: reason => blocked.push(reason) });
     return { result, blocked, reads };
   }
+  it.each([
+    { shape: "refused by the cleanup quarantine before launch", errorCode: "native_session_cleanup_quarantined", launched: false,
+      comment: "local_cleanup", retry: "cleanup_quarantined" },
+    { shape: "quarantined after it requested a launch", errorCode: "native_session_cleanup_quarantined", launched: true,
+      comment: "process_identity_missing", retry: "process_identity_missing" },
+    { shape: "failed for another reason without a process record", errorCode: "adapter_failed", launched: false,
+      comment: "process_identity_missing", retry: "process_identity_missing" },
+  ])("routes input after a run $shape to the gate that can clear it", async ({ errorCode, launched, comment, retry }) => {
+    // s7532/t04: a Retry's run failed at the quarantine fence before it asked
+    // for a runner. Input then waited for a stop record of a process that
+    // never existed ("process_identity_missing", Retry still offered) instead
+    // of the quarantine's own gate, which names the action that clears it.
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ processPid: null, errorCode }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (launched) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
+      seq: 1, eventType: "native.process_start_requested", stream: "system", level: "info", message: "launch requested",
+      payload: { hostname: "another-host" } });
+    const { result, blocked } = await readAdmission(f, false);
+    expect(result).toBeNull();
+    expect(blocked).toEqual([comment]);
+    const retryBlocked: string[] = [];
+    expect(await admitExplicitNativeContinuation({ ...f, db, dryRun: true, reason: "retry_failed_run",
+      failedRunId: f.sourceRunId, onBlocked: reason => retryBlocked.push(reason) })).toBeNull();
+    expect(retryBlocked).toEqual([retry]);
+  });
+
   it("keeps admission and the complete locked session profile while omitting prompt data", async () => {
     const f = await seed();
     const payload = randomBytes(128 * 1024).toString("base64");
@@ -1120,6 +1147,63 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       } finally { verify.mockRestore(); }
     });
 
+  it.each(["absent", "live_runner", "saved_state", "dry_run", "foreign_host", "unbound_launch"] as const)(
+    "admits a Retry after a launch whose runner identity was never recorded only when no runner exists (%s)", async kind => {
+      // RC-42: the server was killed after requesting the runner launch and
+      // before recording its process identity, so there is no PID to verify.
+      const f = await seed();
+      const stateBase = await mkdtemp(join(tmpdir(), "unidentified-runner-"));
+      const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+      let child: ReturnType<typeof spawn> | undefined;
+      try {
+        const nativeSessionId = randomUUID();
+        const execution = {
+          schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+          binding: { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, runId: f.sourceRunId, executionWorkspaceId: "workspace" },
+          task: { identifier: "TEST", title: "Continue", description: null, prompt: "Continue", workMode: "standard" },
+          workspace: { cwd: stateBase, repoUrl: null, repoRef: null, branchName: null },
+          session: { normalizedSessionId: nativeSessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+          completionContract: { id: "contract", sha256: "sha", schemaVersion: "paperclip.completion-contract.v1",
+            contract: { revision: "1", objective: "Continue", criteria: [{ id: "objective", requirement: "Continue" }] } },
+          interactionResponses: [], credentialBindings: [],
+        };
+        await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, nativeSessionId: null, runnerInstanceId: null,
+          errorCode: "adapter_failed", runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+        // Only the launching host can inspect its process table.
+        await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId, eventType: PROCESS_START_REQUESTED,
+          ...(kind === "unbound_launch" ? {} : { payload: { hostname: kind === "foreign_host" ? `other-${os.hostname()}` : os.hostname() } }) });
+        if (kind === "live_runner") {
+          child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--run-id", f.sourceRunId], { stdio: "ignore" });
+          await once(child, "spawn");
+        }
+        if (kind === "saved_state") {
+          const canonical = (value: unknown): string => value && typeof value === "object" && !Array.isArray(value)
+            ? `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`).join(",")}}`
+            : JSON.stringify(value);
+          const root = join(stateBase, createHash("sha256").update(canonical({
+            schema: "paperclip.native-session-scope.v2", companyId: f.companyId, agentId: f.agentId,
+            workspace: { kind: "managed", executionWorkspaceId: "workspace" },
+            provider: { driverKind: "codex_app_server", identity: { kind: "codex" } }, normalizedSessionId: nativeSessionId,
+          })).digest("hex"));
+          await mkdir(join(root, "control-plane"), { recursive: true });
+          await writeFile(join(root, "control-plane/control-plane-state.json"), JSON.stringify({
+            schema: "paperclip.runner.durable.control-plane-state.v1", identity: { runId: f.sourceRunId } }));
+        }
+        const admitted = await admit(f, kind === "dry_run");
+        if (kind === "absent" || kind === "dry_run") expect(admitted).toMatchObject({ previousRunId: f.sourceRunId });
+        else expect(admitted).toBeNull();
+        // Only a real admission records the stop; a later launch invalidates it.
+        expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(kind === "absent");
+      } finally {
+        if (child) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+        if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+        await rm(stateBase, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each(["suspended", "ready", "wrong_run", "wrong_thread", "active_provider", "pending_tool", "pending_output", "missing_state", "new_launch"])(
     "recovers a historical run without process metadata only from exact suspended state (%s)", async kind => {
       const f = await seed();
@@ -1688,7 +1772,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await hasNativeLocalProcessStop(db, f.companyId, source.id)).toBe(true);
     expect(await hasNativeLocalProcessStop(db, randomUUID(), source.id)).toBe(false);
     expect(await admit(f, true)).toMatchObject({ previousRunId: source.id });
-    await persistHeartbeatRunProcessMetadata(db, source.id, { pid: 999999999, processGroupId: null, startedAt: new Date().toISOString() });
+    await persistHeartbeatRunProcessMetadata(db, source.id, { pid: 999999999, processGroupId: null, startedAt: new Date().toISOString(), targetKind: "local" });
     await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, source.id));
     expect(await admit(f, true)).toBeNull();
     expect(await db.transaction(tx => recordNativeLocalProcessStop(tx as unknown as typeof db, source))).toBe(true);

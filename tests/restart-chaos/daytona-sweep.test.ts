@@ -1,8 +1,43 @@
 import { describe, expect, it } from "vitest";
 import {
   assertHarnessMayMutate, DaytonaWaveSweeper, isProtectedSandbox, leaksForTask, readOnlyDaytona, reconcileSandboxes, selectWaveSandboxes,
-  sweepHasLeaks, unattributedLeaks, type DaytonaSandboxRow, type DaytonaSweepResult,
+  PENDING_CLEANUP_RETRY_MS, R6_SETTLE_MS, sweepHasLeaks, unattributedLeaks, type DaytonaSandboxRow, type DaytonaSweepResult,
 } from "./daytona-sweep.js";
+import { ENVIRONMENT_CLEANUP_RETRY_MS } from "../../server/src/services/environment-cleanup-state.js";
+
+describe("R6 settle window", () => {
+  it("covers the product's pending-cleanup retry backoff plus a sweep, capped at 8 minutes", () => {
+    expect(PENDING_CLEANUP_RETRY_MS).toBe(ENVIRONMENT_CLEANUP_RETRY_MS);
+    expect(R6_SETTLE_MS).toBeGreaterThan(ENVIRONMENT_CLEANUP_RETRY_MS);
+    expect(R6_SETTLE_MS).toBeLessThanOrEqual(8 * 60_000);
+  });
+});
+
+describe("cleanup through Paperclip", () => {
+  const COMPANY = "11111111-1111-4111-8111-111111111111";
+  const ENVIRONMENT = "22222222-2222-4222-8222-222222222222";
+  const listing = { list: () => (async function* () {})() };
+
+  it("treats a 409 pending-cleanup environment delete as blocked, not a harness error, and retries it", async () => {
+    let calls = 0;
+    const api = { delete: async () => { calls += 1; throw new Error(`DELETE /api/environments/${ENVIRONMENT} returned 409: {"error":"Cannot delete this environment while a sandbox cleanup is pending."}`); } };
+    const sweeper = new DaytonaWaveSweeper({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, api: api as never });
+    (sweeper as unknown as { client: unknown }).client = readOnlyDaytona(listing);
+    const result = await sweeper.cleanUp(0, 4_000);
+    expect(result).toMatchObject({ environmentDeleted: false, errors: [], remainingSandboxes: [] });
+    expect(result.environmentDeleteBlocked).toMatch(/409/);
+    expect(calls).toBeGreaterThan(1);
+  });
+
+  it("reports other environment delete failures as errors", async () => {
+    const api = { delete: async () => { throw new Error("DELETE returned 500: boom"); } };
+    const sweeper = new DaytonaWaveSweeper({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, api: api as never });
+    (sweeper as unknown as { client: unknown }).client = readOnlyDaytona(listing);
+    const result = await sweeper.cleanUp(0, 1_000);
+    expect(result.environmentDeleteBlocked).toBeNull();
+    expect(result.errors.join(" ")).toMatch(/environment delete: .*500/);
+  });
+});
 
 const COMPANY = "11111111-1111-4111-8111-111111111111";
 const ENVIRONMENT = "22222222-2222-4222-8222-222222222222";
@@ -79,6 +114,38 @@ describe("Daytona R6 reconciliation", () => {
     expect(result.orphanSandboxes.map(leak => leak.sandboxId)).toEqual(["a2", "a3"]);
   });
 
+
+  it("keeps a stopped sandbox behind a released reusable lease for reuse, but not a running one or an ephemeral one", () => {
+    const result = reconcileSandboxes(
+      [{ id: "r1", state: "stopped" }, { id: "r2", state: "started" }, { id: "e1", state: "stopped" }],
+      [{ id: "l1", status: "released", leasePolicy: "reuse_by_environment", providerLeaseId: "r1" },
+        { id: "l2", status: "released", leasePolicy: "reuse_by_environment", providerLeaseId: "r2" },
+        { id: "l3", status: "released", leasePolicy: "ephemeral", providerLeaseId: "e1" }],
+    );
+    expect(result.retainedLeases.map(lease => lease.leaseId)).toEqual(["l1"]);
+    expect(result.orphanSandboxes.map(leak => leak.sandboxId)).toEqual(["r2", "e1"]);
+  });
+
+  it("keeps a stopped restore source (retain_on_failure) as retained, but not a running one or one with no lease", () => {
+    const result = reconcileSandboxes(
+      [{ id: "s1", state: "stopped" }, { id: "s2", state: "started" }, { id: "s3", state: "stopped" }],
+      [{ id: "f1", status: "released", leasePolicy: "retain_on_failure", providerLeaseId: "s1" },
+        { id: "f2", status: "released", leasePolicy: "retain_on_failure", providerLeaseId: "s2" }],
+    );
+    expect(result.retainedLeases.map(lease => lease.leaseId)).toEqual(["f1"]);
+    // Running, or left behind by a deleted environment (no lease): still leaks.
+    expect(result.orphanSandboxes.map(leak => leak.sandboxId)).toEqual(["s2", "s3"]);
+  });
+
+  it("judges a reused sandbox by its current lease row, whatever the listing order", () => {
+    const rows = [{ id: "old", status: "expired", leasePolicy: "reuse_by_environment", providerLeaseId: "r1" },
+      { id: "new", status: "released", leasePolicy: "reuse_by_environment", providerLeaseId: "r1" }];
+    for (const leases of [rows, [...rows].reverse()]) {
+      const result = reconcileSandboxes([{ id: "r1", state: "stopped" }], leases);
+      expect(result.orphanSandboxes).toEqual([]);
+      expect(result.retainedLeases.map(lease => lease.leaseId)).toEqual(["new"]);
+    }
+  });
 
   it("reports sandboxes with no lease and leases still active at rest", () => {
     const result = reconcileSandboxes(

@@ -2,16 +2,53 @@ import { logger } from "../../middleware/logger.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, posix } from "node:path";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeProviderArtifactSource } from "./native-provider-artifacts.js";
 import type { OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 
+const names = ["nodeCommand", "opencodeProxy", "opencodeExecutable"] as const;
+
+// Copies the qualified launch files into a fresh export directory. The launch
+// root sits under the sandbox account's home, outside the workspace remote dir,
+// and sandbox providers confine bulk-export sources to that workspace. The copy
+// refuses symlinks, so the confined export can only carry these regular files;
+// Core still verifies every byte against the manifest digests after download.
+const stageExportScript = [
+  "set -eu",
+  "umask 077",
+  'parent=$1; target=$2; shift 2',
+  'mkdir -p -- "$parent"',
+  '{ [ -d "$parent" ] && [ ! -L "$parent" ]; } || exit 41',
+  'mkdir -- "$target"',
+  "for name in nodeCommand opencodeProxy opencodeExecutable; do",
+  '  source=$1; shift',
+  '  { [ -f "$source" ] && [ ! -L "$source" ]; } || exit 42',
+  '  cp -P -- "$source" "$target/$name"',
+  '  { [ -f "$target/$name" ] && [ ! -L "$target/$name" ]; } || exit 43',
+  "done",
+].join("\n");
+const removeExportScript = 'set -eu\nrm -rf -- "$1"';
+
+async function runExportCommand(runner: CommandManagedRuntimeRunner, script: string, args: string[]) {
+  const result = await runner.execute({
+    command: "sh",
+    args: ["-c", script, "sh", ...args],
+    bypassSession: true,
+    timeoutMs: 120_000,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("native_provider_artifacts_remote_unavailable");
+  }
+}
+
 export async function captureRemoteNativeProviderArtifacts<T>(
   input: {
     runner: CommandManagedRuntimeRunner;
+    /** Workspace remote dir: the only root a sandbox bulk export may read. */
+    remoteCwd: string;
     launch: OpenCodeLaunchArtifacts;
     manifest: NativeProviderArtifactSource["manifest"];
     signal: AbortSignal;
@@ -22,8 +59,15 @@ export async function captureRemoteNativeProviderArtifacts<T>(
   const root = await mkdtemp(join(tmpdir(), "paperclip-provider-launch-"));
   let ownedByOperation = false;
   try {
+    const exportParent = posix.join(
+      input.remoteCwd,
+      ".paperclip-runtime",
+      "paperclip-runner",
+      "provider-artifact-export",
+    );
+    const exportRoot = posix.join(exportParent, randomUUID());
     const files = await Promise.all(
-      (["nodeCommand", "opencodeProxy", "opencodeExecutable"] as const).map(
+      names.map(
         async (name) => {
           const targetPath = join(
             root,
@@ -31,7 +75,7 @@ export async function captureRemoteNativeProviderArtifacts<T>(
           );
           await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
           return {
-            sourcePath: input.launch.paths[name],
+            sourcePath: posix.join(exportRoot, name),
             targetPath,
             kind: "file" as const,
             mode: 0o500,
@@ -46,9 +90,24 @@ export async function captureRemoteNativeProviderArtifacts<T>(
       .then(async () => {
         input.signal.throwIfAborted();
         input.context?.assertOpen();
-        await input.runner.syncOut!([
-          { operationId: `provider-artifacts-${randomUUID()}`, files },
-        ]);
+        try {
+          await runExportCommand(input.runner, stageExportScript, [
+            exportParent,
+            exportRoot,
+            ...names.map((name) => input.launch.paths[name]),
+          ]);
+          input.signal.throwIfAborted();
+          input.context?.assertOpen();
+          await input.runner.syncOut!([
+            { operationId: `provider-artifacts-${randomUUID()}`, files },
+          ]);
+        } finally {
+          // The export copy is scratch under the excluded runtime dir. A failed
+          // removal must not replace the transfer outcome; it is logged instead.
+          await runExportCommand(input.runner, removeExportScript, [exportRoot]).catch((err) => {
+            logger.warn({ err }, "native provider artifact export cleanup failed");
+          });
+        }
         input.signal.throwIfAborted();
         input.context?.assertOpen();
         return publish({

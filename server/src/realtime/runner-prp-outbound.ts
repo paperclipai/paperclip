@@ -305,6 +305,8 @@ export interface RunnerPrpOutboundHandle {
   readonly ready: Promise<void>;
   /** Rejects only when active-run recovery has exhausted its fixed budget. */
   readonly failure: Promise<never>;
+  /** Stop liveness and reconnect work, preserving an established receive/ACK path. */
+  quiesce(): void;
   close(): Promise<void>;
 }
 
@@ -337,6 +339,7 @@ export function connectRunnerPrpIngress(input: {
   let readyResolve!: () => void;
   let readyReject!: (error: unknown) => void;
   let readySettled = false;
+  let stopLiveness = () => {};
   const ready = new Promise<void>((resolve, reject) => {
     readyResolve = resolve;
     readyReject = reject;
@@ -386,22 +389,26 @@ export function connectRunnerPrpIngress(input: {
             "Runner ingress did not complete PRP authentication before the deadline.",
           );
         }
+        if (abort.signal.aborted) return;
         if (!readySettled) {
           readySettled = true;
           readyResolve();
         }
         input.onStateChange?.("authenticated");
+        if (abort.signal.aborted) return;
         attempt = 0;
         leaseFailureCode = null;
-        const stopLiveness = opened.wire.monitorLiveness({
+        stopLiveness = opened.wire.monitorLiveness({
           intervalMs: input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
           timeoutMs: input.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS,
         });
+        if (abort.signal.aborted) { stopLiveness(); return; }
         try {
           await socketClosed(opened.wire);
         } finally {
           stopLiveness();
         }
+        if (abort.signal.aborted) return;
         recoveryDeadline = Date.now() + recoveryGraceMs;
         const leaseFailure = input.authority.connectionLeaseFailure ?? null;
         if (leaseFailure) {
@@ -480,6 +487,11 @@ export function connectRunnerPrpIngress(input: {
   return {
     ready,
     failure,
+    quiesce() {
+      stopLiveness();
+      // Established wires removed their handshake abort listener. Keep their ACK path.
+      abort.abort();
+    },
     async close() {
       abort.abort();
       await Promise.all([...ownedWires].map(closeOwnedWire));

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { readNativeWorkspaceSyncReference, type NativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
 import { readSnapshot } from "./workspace-recovery-snapshot.js";
+import { exhaustedSystemRecoveryAction, readSystemRecovery } from "./system-recovery-state.js";
 
 export const workspaceRecoverySchema = z.object({
   schema: z.literal("paperclip.workspace-recovery.v1"),
@@ -58,8 +59,15 @@ export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runI
     canRetry: state.status === "blocked" && state.retryable === true,
     message: state.status === "queued" || state.status === "recovering" ? "Recovering saved work…"
       : state.status === "recovered" ? "Saved work recovered. Send a message to continue."
-        : state.message ?? "Paperclip couldn’t safely recover this task. This task needs service attention.",
+        : blockedWorkspaceRecoveryMessage(evidence) ?? state.message ?? "Recovery of this task's saved work has not finished.",
   };
+}
+
+/** Text saved by an older release can name a manual step. A spent budget is
+ * described from its current state instead of the stored text. */
+export function blockedWorkspaceRecoveryMessage(evidence: Record<string, unknown> | null | undefined): string | null {
+  const system = readSystemRecovery(evidence ?? undefined);
+  return system?.state === "exhausted" ? exhaustedSystemRecoveryAction(system) : null;
 }
 
 async function verifiedNativeCopybackReceipt(db: Db, input: {

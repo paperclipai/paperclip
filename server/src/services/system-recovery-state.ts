@@ -126,3 +126,16 @@ export function failSystemRecovery(
       evidenceFingerprint: options.evidenceFingerprint ?? createHash("sha256").update(`${state.sourceRunId}:${failure.code}`).digest("hex") },
   };
 }
+
+/** User-facing text for a spent recovery budget. It names what happens next and
+ * never asks a person to inspect a sandbox or environment. The code stays for support. */
+export function exhaustedSystemRecoveryAction(state: SystemRecoveryState): string {
+  // Another Retry cannot release a copyback owner that stopped without reporting.
+  if (state.failure?.code === "copyback_stop_unconfirmed")
+    return "Recovery of saved work is waiting for the previous server's file copy to stop. "
+      + "Recovery resumes once Paperclip can confirm that it stopped. No provider turn is submitted.";
+  const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
+  const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
+  return `Automatic recovery of saved work stopped after ${state.attempts} attempts${reason}. `
+    + "Retry to try again; the agent will not repeat its work.";
+}

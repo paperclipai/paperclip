@@ -48,6 +48,36 @@ describe("queued dependency wait presentation", () => {
   });
 });
 
+describe("never-started task refused by admission", () => {
+  const todo = { ...issue, status: "todo" };
+  const admissionWait = { id: "wake", status: "skipped", reason: "budget.blocked", agentId: "agent" };
+  it("names an accounting hold as an automatic wait without a Retry", () => {
+    expect(projectTaskInterruption(todo, { agent, admissionWait, paused: false, approval: false })).toMatchObject({
+      responsibility: "system", state: "working", canRetry: false,
+      retryWait: { reason: "budget.blocked", message: expect.stringContaining("starts automatically") } });
+  });
+  it("keeps pauses and budget stops as user actions instead of promising an automatic start", () => {
+    for (const [state, action] of [
+      [{ project: { pausedAt: new Date(), pauseReason: null } }, "resume"],
+      [{ company: { status: "paused", pauseReason: "manual" } }, "resume"],
+      [{ paused: true }, "resume"],
+      [{ agent: { status: "paused", pauseReason: "manual" } }, "resume"],
+      [{ company: { status: "paused", pauseReason: "budget" } }, "budget"],
+      [{ approval: true }, "approval"],
+    ] as const) {
+      expect(projectTaskInterruption(todo, { agent, admissionWait, paused: false, approval: false, ...state }))
+        .toMatchObject({ responsibility: "user", state: "waiting_for_user", userAction: action });
+    }
+  });
+  it("shows nothing for other refusals, started tasks or another assignee", () => {
+    for (const changed of [{ reason: "agent.not_invokable" }, { status: "queued" }, { agentId: "other" }]) {
+      expect(projectTaskInterruption(todo, { agent, admissionWait: { ...admissionWait, ...changed }, paused: false, approval: false }))
+        .toBeNull();
+    }
+    expect(projectTaskInterruption({ ...todo, status: "cancelled" }, { agent, admissionWait, paused: false, approval: false })).toBeNull();
+  });
+});
+
 describe("unadmitted chat Retry presentation", () => {
   const now = Date.parse("2026-01-01T12:00:00Z");
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
@@ -311,5 +341,24 @@ describe("scheduled resource wait presentation", () => {
     expect(projectTaskInterruption(issue, { run: waiting, agent, paused: false, approval: false,
       retryWait: { id: "retry", sourceRunId: run.id, requestedAt: new Date(now), preparationStatus: "failed" } }, now))
       .toMatchObject({ state: "failed", canRetry: true });
+  });
+});
+
+describe("saved Retry held by dependencies", () => {
+  const failedRun = { ...run, status: "failed", errorCode: "native_session_interrupted", resultJson: {} };
+  const retryWait = { id: "retry", requestedAt: new Date(0), sourceRunId: "run" };
+  const project = (retryDependencies: { count: number; blocked: boolean; cancelled: boolean; savingFilesOnly: boolean }) =>
+    projectTaskInterruption(issue, { run: failedRun, agent, retryWait, paused: false, approval: false, retryDependencies });
+
+  it.each([
+    [{ count: 1, blocked: true, cancelled: false, savingFilesOnly: false }, "Retry or unblock it"],
+    [{ count: 1, blocked: false, cancelled: true, savingFilesOnly: false }, "Remove or replace that dependency"],
+    [{ count: 1, blocked: false, cancelled: false, savingFilesOnly: true }, "to save its files"],
+    [{ count: 2, blocked: false, cancelled: false, savingFilesOnly: false }, "to finish"],
+  ])("names what the saved Retry waits on (%o)", (dependencies, text) => {
+    const presentation = project(dependencies);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: "retry",
+      retryWait: { reason: "dependency_blocked" } });
+    expect(presentation?.retryWait?.message).toContain(text);
   });
 });

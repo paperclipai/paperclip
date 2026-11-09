@@ -98,7 +98,8 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
         `#include <unistd.h>\n#include <stdlib.h>\n#include <stdio.h>\nint main(int argc, char **argv) { FILE *log = fopen(${JSON.stringify(providerCalls)}, "a"); if (!log) return 126; fputs("process-start\\n", log); fclose(log); char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(providerNode)}; args[1] = ${JSON.stringify(script)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }` });
       await chmod(opencode, 0o755);
     }
-    const proxy = resolve(runnerWorkspace, "../dist/cli/opencode-app-server-proxy.cjs");
+    const proxy = join(filesystem, "opencode-app-server-proxy.cjs");
+    if (provider === "opencode") await copyFile(resolve(runnerWorkspace, "../dist/cli/opencode-app-server-proxy.cjs"), proxy);
     const identity = { runnerInstanceId: native.runnerInstanceId, environmentLeaseId: runId, runId,
       normalizedSessionId: native.normalizedSessionId, turnId: `turn-${runId}`, itemId: `item-${runId}` };
     const assertSealedSkills = async () => {
