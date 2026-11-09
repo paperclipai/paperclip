@@ -1813,6 +1813,11 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         return secretsHandler.resolve({ ...params, companyId });
       },
+      async verifySignature(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return secretsHandler.verifySignature({ ...params, companyId });
+      },
     },
 
     activity: {

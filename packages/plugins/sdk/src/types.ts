@@ -708,6 +708,23 @@ export interface PluginHttpClient {
  *
  * @see PLUGIN_SPEC.md §22 — Secrets
  */
+export interface PluginSecretVerifySignatureParams {
+  /** Shared secret reference object from company-scoped plugin config. */
+  secretRef: string | EnvSecretRefBinding;
+  /** Company ID that owns the secret binding. */
+  companyId?: string;
+  /** Config path that produced this ref. */
+  configPath?: string;
+  /** Data to verify against the signature. */
+  data: string;
+  /** Signature or list of acceptable signatures. */
+  signature: string | string[];
+  /** HMAC algorithm to use (defaults to "sha256"). */
+  algorithm?: "sha256";
+  /** Signature digest encoding (defaults to "hex"). */
+  encoding?: "hex" | "base64";
+}
+
 export interface PluginSecretsClient {
   /**
    * Resolve a secret reference to its current value.
@@ -725,6 +742,10 @@ export interface PluginSecretsClient {
     secretRef: string | EnvSecretRefBinding,
     options?: { companyId?: string; configPath?: string },
   ): Promise<string>;
+  /**
+   * Verify an HMAC signature against a secret reference without exposing the secret to the worker.
+   */
+  verifySignature(params: PluginSecretVerifySignatureParams): Promise<boolean>;
 }
 
 /**

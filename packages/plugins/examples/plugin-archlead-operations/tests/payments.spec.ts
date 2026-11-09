@@ -337,21 +337,34 @@ describe("ArchLead Operations payments", () => {
       },
     };
 
+    await createPaymentOrder("cashfree", "cashfree-local-rotate");
+
     // 1. Missing signature header rejects immediately without resolving secrets
     const noHeaderInput = cashfreeInput(body);
     delete (noHeaderInput.headers as Record<string, unknown>)["x-webhook-signature"];
     await expect(plugin.definition.onWebhook?.(noHeaderInput)).rejects.toThrow("signature is invalid");
     expect(resolveSpy).not.toHaveBeenCalled();
 
-    // 2. Secret rotates to a new value
-    currentSecret = "rotated-secret-value";
-    const rotatedInput = cashfreeInput(body, currentSecret);
+    // 2. Initial secret delivery succeeds
+    const initialInput = cashfreeInput(body, currentSecret);
+    await expect(plugin.definition.onWebhook?.(initialInput)).resolves.toBeUndefined();
 
-    // 3. Newly signed event with rotated secret succeeds immediately (not blocked by stale cache)
+    // 3. Secret rotates to a new value
+    currentSecret = "rotated-secret-value";
+    const body2 = {
+      ...body,
+      data: {
+        ...body.data,
+        payment: { cf_payment_id: "cashfree-payment-rotate-2", payment_status: "SUCCESS" },
+      },
+    };
+    const rotatedInput = cashfreeInput(body2, currentSecret);
+
+    // 4. Newly signed event with rotated secret succeeds immediately (not blocked by stale cache)
     await expect(plugin.definition.onWebhook?.(rotatedInput)).resolves.toBeUndefined();
 
-    // 4. Old secret signature fails on live check
-    const staleSignatureInput = cashfreeInput(body, "first-secret-value");
+    // 5. Old secret signature fails on live check
+    const staleSignatureInput = cashfreeInput(body2, "first-secret-value");
     await expect(plugin.definition.onWebhook?.(staleSignatureInput)).rejects.toThrow("signature is invalid");
   });
 });

@@ -673,6 +673,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             configPath: options.configPath,
           });
         },
+        async verifySignature(params): Promise<boolean> {
+          return callHost("secrets.verifySignature", params);
+        },
       },
 
       activity: {

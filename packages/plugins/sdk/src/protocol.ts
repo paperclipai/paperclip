@@ -1750,6 +1750,18 @@ export interface WorkerToHostMethods {
     params: { secretRef: string | EnvSecretRefBinding; companyId?: string; configPath?: string },
     result: string,
   ];
+  "secrets.verifySignature": [
+    params: {
+      secretRef: string | EnvSecretRefBinding;
+      companyId?: string;
+      configPath?: string;
+      data: string;
+      signature: string | string[];
+      algorithm?: "sha256";
+      encoding?: "hex" | "base64";
+    },
+    result: boolean,
+  ];
 
   // Activity
   "activity.log": [

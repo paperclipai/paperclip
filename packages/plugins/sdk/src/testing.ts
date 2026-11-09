@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { createIssueThreadInteractionSchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import type {
   PaperclipPluginManifestV1,
@@ -955,7 +955,26 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     secrets: {
       async resolve(secretRef) {
         requireCapability(manifest, capabilitySet, "secrets.read-ref");
-        return `resolved:${secretRef}`;
+        return `resolved:${typeof secretRef === "object" ? JSON.stringify(secretRef) : secretRef}`;
+      },
+      async verifySignature(params) {
+        requireCapability(manifest, capabilitySet, "secrets.read-ref");
+        const secret = await this.resolve(params.secretRef, {
+          companyId: params.companyId,
+          configPath: params.configPath,
+        });
+        const algorithm = params.algorithm ?? "sha256";
+        const encoding = params.encoding ?? "hex";
+        const computed = createHmac(algorithm, secret)
+          .update(params.data)
+          .digest(encoding);
+        const signatures = Array.isArray(params.signature) ? params.signature : [params.signature];
+        return signatures.some((sig) => {
+          const computedBuf = Buffer.from(computed);
+          const sigBuf = Buffer.from(sig.trim());
+          if (computedBuf.length !== sigBuf.length) return false;
+          return timingSafeEqual(computedBuf, sigBuf);
+        });
       },
     },
     activity: {

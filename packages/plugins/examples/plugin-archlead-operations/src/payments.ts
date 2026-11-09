@@ -1,4 +1,5 @@
 import type {
+  EnvSecretRefBinding,
   PluginContext,
   PluginWebhookInput,
 } from "@paperclipai/plugin-sdk";
@@ -55,16 +56,25 @@ export type WebhookSecretConfigKey =
   | "cashfreeWebhookSecretRef"
   | "paddleWebhookSecretRef";
 
-export async function resolveWebhookSecret(
+export async function getCompanySecretRef(
   ctx: PluginContext,
   companyId: string,
   configKey: WebhookSecretConfigKey,
-): Promise<string> {
+): Promise<EnvSecretRefBinding> {
   const config = await ctx.config.get(companyId);
   const secretRef = config[configKey];
   if (!isSecretRef(secretRef)) {
     throw new Error(`Company webhook secret reference is not configured: ${configKey}`);
   }
+  return secretRef;
+}
+
+export async function resolveWebhookSecret(
+  ctx: PluginContext,
+  companyId: string,
+  configKey: WebhookSecretConfigKey,
+): Promise<string> {
+  const secretRef = await getCompanySecretRef(ctx, companyId, configKey);
   return ctx.secrets.resolve(secretRef, { companyId, configPath: configKey });
 }
 
@@ -73,23 +83,35 @@ export async function verifyCompanyWebhook(
   input: PluginWebhookInput,
   companyId: string,
   configKey: WebhookSecretConfigKey,
-  verifyFn: (rawBody: string, timestamp: string | null, signature: string | null, secret: string) => boolean,
+  _verifyFn?: unknown,
   timestampHeader = "x-archlead-timestamp",
   signatureHeader = "x-archlead-signature",
+  nowMs = Date.now(),
 ): Promise<void> {
   const timestamp = headerValue(input.headers, timestampHeader);
   const signature = headerValue(input.headers, signatureHeader);
-  if (!timestamp || !signature) {
+  if (!timestamp || !/^\d{10}$/.test(timestamp)) {
+    throw new Error("Webhook signature is invalid or outside the allowed timestamp window");
+  }
+  const timestampSeconds = Number(timestamp);
+  if (Math.abs(Math.floor(nowMs / 1000) - timestampSeconds) > 300) {
+    throw new Error("Webhook signature is invalid or outside the allowed timestamp window");
+  }
+  if (!signature || !/^sha256=[0-9a-f]{64}$/i.test(signature)) {
     throw new Error("Webhook signature is invalid or outside the allowed timestamp window");
   }
 
-  const secret = await resolveWebhookSecret(ctx, companyId, configKey);
-  const valid = verifyFn(
-    input.rawBody,
-    timestamp,
-    signature,
-    secret,
-  );
+  const secretRef = await getCompanySecretRef(ctx, companyId, configKey);
+  const rawSig = signature.slice("sha256=".length);
+  const valid = await ctx.secrets.verifySignature({
+    secretRef,
+    companyId,
+    configPath: configKey,
+    data: `${timestamp}.${input.rawBody}`,
+    signature: rawSig,
+    algorithm: "sha256",
+    encoding: "hex",
+  });
   if (!valid) throw new Error("Webhook signature is invalid or outside the allowed timestamp window");
 }
 
@@ -98,35 +120,60 @@ export async function verifyPaymentProviderWebhook(
   input: PluginWebhookInput,
   companyId: string,
   provider: PaymentProvider,
+  nowMs = Date.now(),
 ): Promise<void> {
   const configKey = provider === "cashfree" ? "cashfreeWebhookSecretRef" : "paddleWebhookSecretRef";
   if (provider === "cashfree") {
     const timestamp = headerValue(input.headers, "x-webhook-timestamp");
     const signature = headerValue(input.headers, "x-webhook-signature");
-    if (!timestamp || !signature) {
+    if (!timestamp || !/^\d{13}$/.test(timestamp) || !signature || !/^[A-Za-z0-9+/]{43}=$/.test(signature)) {
       throw new Error(`${provider} webhook signature is invalid`);
     }
+
+    const secretRef = await getCompanySecretRef(ctx, companyId, configKey);
+    const valid = await ctx.secrets.verifySignature({
+      secretRef,
+      companyId,
+      configPath: configKey,
+      data: `${timestamp}${input.rawBody}`,
+      signature,
+      algorithm: "sha256",
+      encoding: "base64",
+    });
+    if (!valid) throw new Error(`${provider} webhook signature is invalid`);
   } else {
     const signature = headerValue(input.headers, "paddle-signature");
     if (!signature) {
       throw new Error(`${provider} webhook signature is invalid`);
     }
-  }
+    const parts = signature.split(";").map((p) => p.trim());
+    const timestamp = parts.find((p) => p.startsWith("ts="))?.slice(3);
+    if (!timestamp || !/^\d{10}$/.test(timestamp)) {
+      throw new Error(`${provider} webhook signature is invalid`);
+    }
+    if (Math.abs(Math.floor(nowMs / 1000) - Number(timestamp)) > 5) {
+      throw new Error(`${provider} webhook signature is invalid`);
+    }
+    const signatures = parts
+      .filter((p) => p.startsWith("h1="))
+      .map((p) => p.slice(3))
+      .filter((s) => /^[0-9a-f]{64}$/i.test(s));
+    if (signatures.length === 0) {
+      throw new Error(`${provider} webhook signature is invalid`);
+    }
 
-  const secret = await resolveWebhookSecret(ctx, companyId, configKey);
-  const verified = provider === "cashfree"
-    ? verifyCashfreeSignature(
-      input.rawBody,
-      headerValue(input.headers, "x-webhook-timestamp"),
-      headerValue(input.headers, "x-webhook-signature"),
-      secret,
-    )
-    : verifyPaddleSignature(
-      input.rawBody,
-      headerValue(input.headers, "paddle-signature"),
-      secret,
-    );
-  if (!verified) throw new Error(`${provider} webhook signature is invalid`);
+    const secretRef = await getCompanySecretRef(ctx, companyId, configKey);
+    const valid = await ctx.secrets.verifySignature({
+      secretRef,
+      companyId,
+      configPath: configKey,
+      data: `${timestamp}:${input.rawBody}`,
+      signature: signatures,
+      algorithm: "sha256",
+      encoding: "hex",
+    });
+    if (!valid) throw new Error(`${provider} webhook signature is invalid`);
+  }
 }
 
 export function paymentEventCompanyId(value: unknown, provider: PaymentProvider): string | null {
