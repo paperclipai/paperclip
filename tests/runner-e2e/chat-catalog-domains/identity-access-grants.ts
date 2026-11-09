@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { expect } from "@playwright/test";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { createAuthenticatedPerson, enrollAuthenticatedPerson } from "./identity-auth.js";
-import { checks, entity } from "./internal-support.js";
+import { checks, entity, internalResultLink } from "./internal-support.js";
+import { collectRunEvents } from "../run-observations.js";
 import { pollUntil } from "../api.js";
 import { requireSafeInvitationEnrollment } from "./identity-invite-prerequisite.js";
 import { identityDefinition, identityObservation, observeIdentity, readAgentResource } from "./identity-support.js";
@@ -28,6 +29,25 @@ function roleQuestion(o: ReturnType<typeof identityObservation>) {
     && row.companyId === o.companyId && row.createdByAgentId === o.leadId && o.runs.some(run => run.id === row.sourceRunId && run.agentId === o.leadId)
     && row.payload.questionSet?.questions.some(question => inviteeRolePrompt(question.prompt)));
 }
+/** A real permission key Alex holds explicitly; the case asks to remove it. */
+export const MANAGED_PERMISSION = "joins:approve";
+const MEMBERS_READ = "GET /api/companies/{companyId}/members";
+function membersPageLinks(o: NonNullable<ReturnType<typeof identityObservation>>) {
+  const prefix = (o.company as { issuePrefix?: string }).issuePrefix;
+  return o.links.filter(href => {
+    try { const url = new URL(href, o.origin); return !!prefix && url.origin === new URL(o.origin).origin && url.pathname.replace(/\/$/, "") === `/${prefix}/company/settings/members`; }
+    catch { return false; }
+  });
+}
+const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+/** True when one of the run's own tool results is a successful member-list read. */
+export function memberListReadSucceeded(events: readonly Record<string, unknown>[]) {
+  return events.some(row => {
+    if (row.eventType !== "item.completed") return false;
+    const item = record(record(record(record(row.payload).prpEvent).payload).item), result = record(item.result);
+    return item.type === "tool_result" && result.apiOperationId === MEMBERS_READ && result.status === 200 && result.ok !== false;
+  });
+}
 function sameMember(a: Member | undefined, b: Member | undefined) { return !!a && !!b && JSON.stringify(a) === JSON.stringify(b); }
 export function gradeAccessGrant(value: unknown) {
   const c = checks(); const o = identityObservation(value); c.add("complete-explicit-grant-evidence", !!o, "Actual named agent grants, real authenticated people and persisted mutation/attribution are required."); if (!o) return c.result();
@@ -48,27 +68,26 @@ export function gradeAccessGrant(value: unknown) {
       && invitations[0].state === "accepted" && o.state.realAlexJoinedOnce === true && o.state.reusedLinkDifferentIdentityDenied === true,
       "Separate creation and post-acceptance snapshots retain real states; the used link cannot admit another identity.");
   } else if (o.scenarioId === "access.manage-membership") {
+    // Member permission edits are board-only (agents holding users:manage_permissions
+    // may read members, not change them). The agent reads Alex's real access, leaves
+    // every grant alone and sends the person to the Members page. Whether the reply
+    // describes that access accurately is read by a person, not keyword-matched.
     const before = o.state.alexBefore as Member | undefined; const after = o.state.alexAfter as Member | undefined;
-    c.add("exact-company-permission-removed", !!before && !!after && before.id === after.id && before.principalId === after.principalId
-      && before.grants.some(grant => grant.permissionKey === "projects:manage") && !after.grants.some(grant => grant.permissionKey === "projects:manage")
-      && before.status === after.status && before.membershipRole === after.membershipRole
-      && JSON.stringify(before.grants.filter(grant => grant.permissionKey !== "projects:manage")) === JSON.stringify(after.grants)
+    c.add("member-access-unchanged", !!before && !!after && sameMember(before, after)
+      && before.grants.some(grant => grant.permissionKey === MANAGED_PERMISSION)
       && sameMember(o.state.otherCompanyMembershipBefore as Member, o.state.otherCompanyMembershipAfter as Member)
       && !!o.state.instanceMembershipBefore && JSON.stringify(o.state.instanceMembershipBefore) === JSON.stringify(o.state.instanceMembershipAfter),
-      "Only Alex's actual company project-management grant changes; membership and other company/instance authority remain intact.");
-    c.add("actual-agent-decision-attribution", o.activity.some(row => row.action === "company_member.permissions_updated" && row.entityId === before?.id
-      && row.actorType === "agent" && row.actorId === o.leadId), "The saved permission change belongs to the actual permitted agent, not an impersonated board user.");
+      "Alex's role, status and grants, other-company membership and instance access are exactly as before; the agent changed nothing.");
+    c.add("no-agent-membership-write", !o.activity.some(row => typeof row.action === "string" && row.action.startsWith("company_member.") && row.actorType === "agent"),
+      "No company membership write is attributed to an agent.");
+    c.add("agent-read-current-access", o.state.agentMemberReadSucceeded === true,
+      "The agent's own run read the company member list (GET /api/companies/{companyId}/members answered 200) before answering.");
+    c.add("members-page-link", membersPageLinks(o).length > 0, "The reply renders a same-origin link to the company Members page, where the board makes the change.");
   } else c.add("known-grant-case", false, "No permission oracle exists for this case.");
   return c.result();
 }
 const sources = ["chat-catalog-domains/identity-access-grants.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/access.yaml",
-  "../../maps/agent-access-map/access.md", "../../server/src/routes/access.ts", "../../server/src/routes/agent-permission-grants.ts", "../../server/src/routes/agents.ts", "../../packages/shared/src/validators/agent.ts"];
-/** Agent authority is now granted through the supported board route, but the
- * case premise still has no product counterpart: "projects:manage" is not a
- * Paperclip permission key (PATCH .../permissions answers 400), and member
- * permission edits are board-only (getProtectedMemberReason) even for an agent
- * holding users:manage_permissions. Needs a product decision before grading. */
-const MANAGE_MEMBERSHIP_GAP = "No project-management permission key exists, and company member permission edits are board-only even for agents holding users:manage_permissions; the case premise needs a product decision.";
+  "../../maps/agent-access-map/access.md", "../../server/src/routes/access.ts", "../../server/src/routes/agent-permission-grants.ts", "../../server/src/routes/openapi.ts", "../../ui/src/App.tsx", "../../server/src/routes/agents.ts", "../../packages/shared/src/validators/agent.ts"];
 export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.invite-teammate", "access.manage-membership"].map(scenarioId => identityDefinition(scenarioId, async ctx => {
   const permissionKey = scenarioId.endsWith("invite-teammate") ? "users:invite" : "users:manage_permissions";
   const root = `/api/companies/${ctx.input.fixtures.company.id}`;
@@ -95,9 +114,9 @@ export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.inv
     if (scenarioId.endsWith("manage-membership")) {
       const current = (await ctx.input.api.get<{ members: Member[] }>(`${root}/members`)).members.find(row => row.principalId === alex.id);
       if (!current) throw new Error("Real Alex membership missing before permission fixture");
-      await ctx.input.api.patch(`${root}/members/${current.id}/permissions`, { grants: [...current.grants.filter(row => row.permissionKey !== "projects:manage"), { permissionKey: "projects:manage" }] });
+      await ctx.input.api.patch(`${root}/members/${current.id}/permissions`, { grants: [...current.grants.filter(row => row.permissionKey !== MANAGED_PERMISSION), { permissionKey: MANAGED_PERMISSION }] });
       const alexBefore = (await ctx.input.api.get<{ members: Member[] }>(`${root}/members`)).members.find(row => row.id === current.id);
-      if (!alexBefore?.grants.some(row => row.permissionKey === "projects:manage")) throw new Error("Project-management prerequisite was not saved");
+      if (!alexBefore?.grants.some(row => row.permissionKey === MANAGED_PERMISSION)) throw new Error(`${MANAGED_PERMISSION} prerequisite was not saved`);
       const otherCompany = await ctx.input.api.post<{ id: string }>("/api/companies", { name: `Unrelated access ${ctx.input.nonce}` });
       try {
         await enrollAuthenticatedPerson(ctx.input.api, otherCompany.id, alex, ctx.input.privateSecrets, "viewer");
@@ -110,8 +129,8 @@ export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.inv
     return baseline;
   } catch (error) { await alex.dispose(); people.delete(ctx); throw error; }
 }, gradeAccessGrant, {
-  sourceFiles: sources, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.identity.access-grant.v2",
-  ...(scenarioId.endsWith("manage-membership") ? { coverageGaps: [MANAGE_MEMBERSHIP_GAP] } : {}),
+  sourceFiles: sources, authentication: "human-session",
+  oracleVersion: scenarioId.endsWith("manage-membership") ? "paperclip.chat-catalog.identity.manage-membership.v2" : "paperclip.chat-catalog.identity.access-grant.v2",
   async observe(ctx, state) {
     if (scenarioId.endsWith("invite-teammate")) {
       state.invitations = (await ctx.input.api.get<{ invites: Invitation[] }>(`/api/companies/${ctx.input.fixtures.company.id}/invites`)).invites.filter(row => !(state.invitationsBefore as string[]).includes(row.id));
@@ -122,6 +141,11 @@ export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.inv
       const other = state.otherCompany as { id: string };
       state.otherCompanyMembershipAfter = (await ctx.input.api.get<{ members: Member[] }>(`/api/companies/${other.id}/members`)).members.find(row => row.principalId === state.alexId);
       state.instanceMembershipAfter = (await ctx.input.api.get<{ user: { id: string; isInstanceAdmin: boolean } }>(`/api/admin/users/${state.alexId}/company-access`)).user;
+      let read = false;
+      for (const run of (await ctx.allRuns()).filter(row => row.agentId === ctx.input.fixtures.agent.id)) {
+        read ||= memberListReadSucceeded(await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`)));
+      }
+      state.agentMemberReadSucceeded = read;
     }
     return observeIdentity(ctx, state);
   },
@@ -168,6 +192,17 @@ export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.inv
     if (scenarioId.endsWith("invite-teammate") && roleQuestion(o) && !state.invitationCreated) {
       const question = o!.interactions.find(row => row.kind === "ask_user_questions" && row.status === "pending" && row.createdByAgentId === o!.leadId)!;
       await expect(ctx.input.page.locator(`[id="interaction-${question.id}"]`)).toBeVisible();
+    } else if (scenarioId.endsWith("manage-membership") && o) {
+      // Click the Members link the reply rendered; the page must open in this company.
+      const href = membersPageLinks(o)[0];
+      if (!href) throw new Error("No rendered Members page link to open");
+      const source = ctx.input.page.url();
+      await internalResultLink(ctx, o, href).first().click();
+      await ctx.input.page.waitForURL(url => url.pathname.replace(/\/$/, "") === `/${(o.company as { issuePrefix?: string }).issuePrefix}/company/settings/members`);
+      await expect(ctx.input.page.getByRole("heading", { name: "Organization Members" })).toBeVisible();
+      await ctx.input.evidence("chat-catalog-opened-members-page.json", { url: ctx.input.page.url() });
+      await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
+      await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
     } else await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
   },
   async cleanup(ctx, state) {

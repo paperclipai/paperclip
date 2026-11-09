@@ -60,7 +60,7 @@ test('source bounds retain legacy and pilot runs, native zero turn policy and or
 
 test('definition gaps and private prerequisites remain explicit instead of inferred runnable passes', () => {
   assert.deepEqual(fullCatalogCases.filter(value => value.coverageGaps.length).map(value => value.key), [
-    'access.invite-teammate', 'access.manage-membership', 'activity.routine-audit', 'agents.restore-instructions', 'budgets-costs.subscription-fees',
+    'activity.routine-audit', 'agents.restore-instructions', 'budgets-costs.subscription-fees',
   ]);
   assert.equal(fullCatalogCases.filter(value => value.requiredCredentials.length).length, 18);
   assert.equal(fullCatalogCases.filter(value => value.externalInput !== null).length, 37);
@@ -374,6 +374,28 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "agents.restore-instructions",
     "expectedOutcome"
+  ],
+  // Retargeted to read-and-route: member permission edits are board-only.
+  [
+    "access.manage-membership",
+    "originalQuery"
+  ],
+  [
+    "access.manage-membership",
+    "originalContext"
+  ],
+  [
+    "access.manage-membership",
+    "expectedOutcome"
+  ],
+  // The supported board agent-grant route (#20323) builds both access cases' setup.
+  [
+    "access.invite-teammate",
+    "coverageGaps"
+  ],
+  [
+    "access.manage-membership",
+    "coverageGaps"
   ]
 ]);
   for (const change of repair.changedFields) {
