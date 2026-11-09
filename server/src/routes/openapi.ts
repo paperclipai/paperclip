@@ -3922,7 +3922,7 @@ registry.registerPath({
 });
 
 for (const operation of [
-  { suffix: "history", summary: "List immutable instruction revisions", query: z.object({ path: z.string().optional(), cursor: z.string().uuid().optional() }) },
+  { suffix: "history", summary: "List pre-upgrade instruction revisions. Current saves record no revision history; an empty list means no earlier version is retained", query: z.object({ path: z.string().optional(), cursor: z.string().uuid().optional() }) },
   { suffix: "revision/{revisionId}", summary: "Read exact instruction content at a revision", query: z.object({ path: z.string().optional() }) },
   { suffix: "diff", summary: "Compare instruction revisions (exact common prefix, removed, added, suffix)", query: z.object({ path: z.string().optional(), from: z.string().uuid(), to: z.string().uuid() }) },
 ]) {
