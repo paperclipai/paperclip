@@ -6,8 +6,8 @@ function overview() {
   const blocked = { id: "blocked", identifier: "ACN-2", title: "Accessibility review", status: "blocked", description: "Waiting for approved launch colors nonce-1." };
   const done = { id: "done", identifier: "ACN-3", title: "Launch brief delivered", status: "done" };
   return { scenarioId: "activity.company-overview", origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { task: active, blockedTask: blocked, doneTask: done, worker: { id: "morgan" }, blocker: "approved launch colors nonce-1", hiddenMarker: "HIDDEN-SENTINEL" },
-    tasks: [active, blocked, done], projects: [], goals: [], comments: [], activity: [], documents: [], revisions: [], humanQueries: [], runs: [], agents: [{ id: "morgan", status: "idle" }], links: ["/ACN/issues/ACN-1", "/ACN/issues/ACN-2", "/ACN/issues/ACN-3"],
-    reply: "Here's the picture right now:\n\n- **ACN-1 Website draft** — in progress, assigned to the board.\n- **ACN-2 Accessibility review** — blocked, unassigned. Waiting on approved launch colors, but there are zero approvals on record.\n- **ACN-3 Launch brief delivered** — done, unassigned.\n\nMorgan is idle.\n\nNeeds a decision: ACN-2 can't move until the launch color palette is approved, and no approval card exists." };
+    tasks: [active, blocked, done], projects: [], goals: [], comments: [], activity: [], documents: [], revisions: [], humanQueries: [], runs: [{ id: "run", startedAt: "2026-11-09T15:25:52Z", finishedAt: "2026-11-09T15:26:20Z" }], agents: [{ id: "morgan", status: "idle" }], links: ["/ACN/issues/ACN-1", "/ACN/issues/ACN-2", "/ACN/issues/ACN-3"],
+    reply: "Here's the picture as of 15:26 UTC:\n\n- **ACN-1 Website draft** — in progress, assigned to the board.\n- **ACN-2 Accessibility review** — blocked, unassigned. Waiting on approved launch colors, but there are zero approvals on record.\n- **ACN-3 Launch brief delivered** — done, unassigned.\n\nMorgan is idle.\n\nNeeds a decision: ACN-2 can't move until the launch color palette is approved, and no approval card exists." };
 }
 function related() {
   const primary = { id: "primary", identifier: "ACN-1", title: "Investigation", status: "done" };
@@ -38,6 +38,44 @@ describe("recorded overview blocker and per-task state grounding", () => {
     ["hidden work", (v: ReturnType<typeof overview>) => { v.reply += " HIDDEN-SENTINEL"; }],
     ["wrong recorded blocker", (v: ReturnType<typeof overview>) => { v.state.blockedTask = { ...v.state.blockedTask, description: "Waiting for legal review." }; }],
   ])("rejects %s", (_name, mutate) => { const v = overview(); mutate(v); expect(grade_activity(v).passed).toBe(false); });
+});
+describe("overview observation time", () => {
+  const failed = (v: ReturnType<typeof overview>) => grade_activity(v).checks.filter(check => !check.passed).map(check => check.id);
+  it.each([
+    ["24-hour UTC time", "as of 15:26 UTC"],
+    ["12-hour time", "at 3:25 pm UTC"],
+    ["ISO timestamp", "(snapshot 2026-11-09T15:26:05Z)"],
+    ["ISO timestamp at the window's last second", "(snapshot 2026-11-09T15:31:20Z)"],
+    ["ISO timestamp with an offset", "(snapshot 2026-11-09T10:26:05-05:00)"],
+    ["dated time without an offset", "as of 2026-11-09 15:26"],
+    ["dated 12-hour time", "as of 2026-11-09 03:26 PM UTC"],
+    ["dated time with a comma and 'at'", "as of 2026-11-09, at 3:26 pm"],
+  ])("accepts %s inside the answering run", (_name, phrase) => {
+    const v = overview(); v.reply = v.reply.replace("as of 15:26 UTC", phrase); expect(failed(v)).toEqual([]);
+  });
+  it("accepts the browser timezone the setup recorded", () => {
+    const v = overview(); (v.state as Record<string, unknown>).timezone = "America/Chicago";
+    v.reply = v.reply.replace("as of 15:26 UTC", "as of 9:26 AM"); expect(failed(v)).toEqual([]);
+  });
+  it.each([
+    ["relative words only (the retained live reply's form)", "right now"],
+    ["a time outside the run", "as of 11:40 UTC"],
+    ["an a.m. time that is twelve hours off", "as of 3:26 am UTC"],
+    ["a 24-hour time that is twelve hours off", "as of 03:26 UTC"],
+    ["an ISO timestamp on another day", "(snapshot 2026-11-08T15:26:05Z)"],
+    ["an ISO timestamp whose offset puts it outside the run", "(snapshot 2026-11-09T15:26:05-05:00)"],
+    ["a dated time on another day", "as of 2026-11-08 15:26"],
+    ["an ISO timestamp seconds after the window closes", "(snapshot 2026-11-09T15:31:59Z)"],
+    ["a dated 12-hour time on the wrong half of the day", "as of 2026-11-09 03:26 AM UTC"],
+  ])("rejects %s", (_name, phrase) => {
+    const v = overview(); v.reply = v.reply.replace("as of 15:26 UTC", phrase); expect(failed(v)).toEqual(["observation-time"]);
+  });
+  it("rejects a time in a link target rather than in the answer", () => {
+    const v = overview(); v.reply = v.reply.replace("as of 15:26 UTC", "right now ([log](/ACN/runs/15:26))"); expect(failed(v)).toEqual(["observation-time"]);
+  });
+  it("rejects an answer with no recorded run window", () => {
+    const v = overview(); v.runs = []; expect(failed(v)).toEqual(["observation-time"]);
+  });
 });
 describe("actual work/reference roles and explicit negative related-work context", () => {
   it("accepts recorded work/reference table roles and a visibly linked but explicitly unrelated accessible task", () => { expect(gradeIntegratorRelatedWork(related()).passed).toBe(true); });

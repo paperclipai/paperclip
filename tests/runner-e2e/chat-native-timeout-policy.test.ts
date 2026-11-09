@@ -22,7 +22,7 @@ it("uses the production native cap only in the catalog while preserving every fi
   const byId = (id: string) => cells.find(row => row.task.id === id)!;
   expect(byId("projects.create-project").task).toMatchObject({ expectedRunCount: 2, attemptTimeoutMs: { local: 420_000 } });
   expect(byId("projects.project-work").task).toMatchObject({ expectedRunCount: 3, minimumExpectedRunCount: 1, attemptTimeoutMs: { local: 300_000 } });
-  expect(byId("tasks.organize-open-work").task.attemptTimeoutMs.local).toBe(600_000);
+  expect(byId("tasks.organize-open-work").task.attemptTimeoutMs.local).toBe(900_000);
   expect(runnerSuites.find(row => row.id === "chat-features")?.definitionMetadata).toMatchObject({ nativeTimeoutPolicy: CHAT_NATIVE_TIMEOUT_POLICY });
   expect(runnerMatrix.filter(row => row.suite.id !== "chat-features").some(row => (row.task.turnTimeoutMs ?? 0) > 0)).toBe(true);
 });

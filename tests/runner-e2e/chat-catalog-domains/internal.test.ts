@@ -56,6 +56,7 @@ function valid(scenario: string): InternalObservation {
       const product = (id: string, attachmentId: string, run: string) => ({ id, issueId: "task", title: attachmentId === "original" ? "website-v1.html" : "website-v2.html", type: "artifact", provider: "paperclip", status: "active", createdByRunId: run, metadata: { attachmentId } });
       Object.assign(o, { attachments: [file, ...(revising ? [original] : [])], products: [product("new-product", "new", "run"), ...(revising ? [product("old-product", "original", "build")] : [])], downloaded: [{ id: "new", sha256: sha(body), body }, ...(revising ? [{ id: "original", sha256: sha(prior), body: prior }] : [])] });
       o.runs.push({ id: "build", companyId: "company", agentId: "morgan", status: "succeeded" }); o.links.push("/api/attachments/new/content?download=1", ...(revising ? ["/api/attachments/original/content"] : []));
+      if (!revising) Object.assign(o, { sourceWorkspaceHash: sha(prior) });
       o.reply = "The updated shorter version is available; the original remains available."; break;
     }
     case "tasks.assignment-conflict": {
@@ -312,7 +313,8 @@ function valid(scenario: string): InternalObservation {
       const blocked = { id: "blocked", identifier: "ACORN-2", title: "Accessibility review", status: "blocked", description: "Waiting for approved launch colors." }; const done = { id: "done", identifier: "ACORN-3", title: "Launch brief delivered", status: "done" };
       o.state.blockedTask = blocked; o.state.doneTask = done; o.tasks.push(blocked, done); o.state.worker = { id: "morgan" }; o.agents = [{ id: "morgan", status: "idle" }];
       o.state.blocker = "approved launch colors"; o.state.hiddenMarker = "hidden acquisition";
-      o.reply = "Right now, ACORN-1 Website task is underway (1 active task).\nACORN-2 Accessibility review is blocked, waiting for approved launch colors (1 blocked task).\nACORN-3 Launch brief delivered is done (1 completed task).\nMorgan is idle.";
+      o.runs = [{ ...o.runs[0]!, startedAt: "2026-10-26T12:00:00Z", finishedAt: "2026-10-26T12:01:00Z" } as typeof o.runs[number]]; o.state.timezone = "UTC";
+      o.reply = "As of 12:00 UTC, ACORN-1 Website task is underway (1 active task).\nACORN-2 Accessibility review is blocked, waiting for approved launch colors (1 blocked task).\nACORN-3 Launch brief delivered is done (1 completed task).\nMorgan is idle.";
       o.links.push("/ACORN/issues/blocked", "/ACORN/issues/done"); break;
     }
     case "activity.audit-change": {
@@ -701,6 +703,36 @@ it("accepts genuinely accessible responsible-user inbox work without requiring a
   const o = valid("inbox-search.show-my-work"); Object.assign(o, { responsibleUserProbe: { status: 200, body: [o.tasks[0]] } });
   o.reply = "The website task needs your attention; review it here."; o.links = ["/ACORN/issues/task"];
   expect(gradeInternal(o).passed).toBe(true);
+});
+describe("inbox-search.show-my-work person scope", () => {
+  function inbox(reply: string, links: string[]) {
+    const o = valid("inbox-search.show-my-work");
+    const review = { id: "review-id", identifier: "COM-1", title: "Launch review", status: "in_review" };
+    const blocked = { id: "blocked-id", identifier: "COM-2", title: "Blocked launch decision", status: "blocked" };
+    const done = { id: "done-id", identifier: "COM-3", title: "Delivered launch copy", status: "done" };
+    const automated = { id: "automated-id", identifier: "COM-5", title: "Unrelated automated maintenance n-1", status: "backlog" };
+    o.tasks = [review, blocked, done, automated];
+    o.state.originalTasks = structuredClone(o.tasks); o.state.originalPersonalIds = [review.id, blocked.id, done.id]; o.state.automatedTask = automated;
+    Object.assign(o, { personalItems: [review, blocked, done], responsibleUserProbe: { status: 200, body: [review, blocked, done] }, unreadProbe: { status: 200, body: [] } });
+    o.reply = reply; o.links = links;
+    return o;
+  }
+  const items = "1. [COM-1 Launch review](/COM/issues/COM-1) needs a reviewer.\n2. [COM-2 Blocked launch decision](/COM/issues/COM-2) needs your call.";
+  const failed = (o: InternalObservation) => gradeInternal(o).checks.filter(check => !check.passed).map(check => check.id);
+  it("rejects the retained reply that links unrelated company work as part of the inbox", () => {
+    const o = inbox(`Two items need your attention today.\n\n${items}\n\n[COM-5](/COM/issues/COM-5) is routine automated maintenance in backlog — safe to ignore.`,
+      ["/COM/issues/COM-1", "/COM/issues/COM-2", "/COM/issues/COM-5"]);
+    expect(failed(o)).toEqual(["real-person-scope"]);
+  });
+  it("rejects naming unrelated company work by identifier without a link", () => {
+    expect(failed(inbox(`${items}\nCOM-5 can wait.`, ["/COM/issues/COM-1", "/COM/issues/COM-2"]))).toEqual(["real-person-scope"]);
+  });
+  it("accepts the same inbox answer reworded without unrelated work or attention keywords", () => {
+    const o = inbox("Here is what is waiting on you:\n- [Launch review](/COM/issues/COM-1): pick someone to sign off.\n- [COM-2](/COM/issues/COM-2): you own the call that unsticks it.\nCOM-3 is finished.",
+      ["/COM/issues/COM-1", "/COM/issues/COM-2"]);
+    expect(gradeInternal(o).passed).toBe(true);
+    expect(failed(inbox(`${items}\nCOM-50 is unrelated.`, ["/COM/issues/COM-1", "/COM/issues/COM-2"]))).toEqual([]);
+  });
 });
 it("rejects a limitation-only reply when the responsible-user records are actually readable", () => {
   const o = valid("inbox-search.show-my-work"); Object.assign(o, { responsibleUserProbe: { status: 200, body: [o.tasks[0]] } });

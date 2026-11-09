@@ -18,12 +18,22 @@ function valid(revising = false) {
   const original = attachment("original", prior, "build"); const newFile = attachment("new", body, "run");
   return { scenarioId: revising ? "documents-artifacts.revise-delivery" : "documents-artifacts.produce-download", origin: "https://fixture.test", companyId: "company", leadId: "ceo",
     state: { task: structuredClone(task), worker: { id: "morgan" }, priorRunId: "build", producedBody: prior, producedHash: hash(prior), bodyFact: "Research teams stay organized.", signupHref: "https://example.test/signup", marker: "ORCHID", originalAttachment: original, originalProductId: "old-product" },
-    tasks: [task], projects: [], goals: [], comments: [], activity: [], documents: [], revisions: [], humanQueries: [], links: ["/RUN/issues/task", "/api/attachments/new/content?download=1", ...(revising ? ["/api/attachments/original/content"] : [])], chatIssueId: "chat",
+    ...(revising ? {} : { sourceWorkspaceHash: hash(prior) }), tasks: [task], projects: [], goals: [], comments: [], activity: [], documents: [], revisions: [], humanQueries: [], links: ["/RUN/issues/task", "/api/attachments/new/content?download=1", ...(revising ? ["/api/attachments/original/content"] : [])], chatIssueId: "chat",
     reply: "The updated shorter version is downloadable; the original remains available.", runs: [{ id: "run", companyId: "company", agentId: "ceo", status: "succeeded" }, { id: "build", companyId: "company", agentId: "morgan", status: "succeeded" }],
     attachments: [newFile, ...(revising ? [original] : [])], products: [product("new-product", "new", "run"), ...(revising ? [product("old-product", "original", "build")] : [])], downloaded: [{ id: "new", sha256: hash(body), body }, ...(revising ? [{ id: "original", sha256: hash(prior), body: prior }] : [])] };
 }
 describe("registered website delivery calibration", () => {
   it.each([false, true])("accepts actual registered and downloaded website bytes, revision=%s", revising => expect(gradeWebsiteDelivery(valid(revising)).passed).toBe(true));
+  it("grades source retention from saved state, not a reply link the person already attached", () => {
+    // Retained u2 shape (run 42641263597): exact bytes downloaded from a conversation-filed artifact; no link back to the attached source task.
+    const o = valid(); o.links = ["/COM/agents/ceo/overview", "/api/attachments/new/content"]; o.attachments[0]!.issueId = "chat"; o.products[0]!.issueId = "chat";
+    o.reply = "[Download website.html](/api/attachments/new/content?download=1)\n\n347-byte page, matching the selected source exactly.";
+    expect(gradeWebsiteDelivery(o).passed).toBe(true);
+    const overwritten = structuredClone(o); overwritten.sourceWorkspaceHash = hash("<html>replaced</html>"); expect(gradeWebsiteDelivery(overwritten).passed).toBe(false);
+    const unread = structuredClone(o); delete (unread as { sourceWorkspaceHash?: string }).sourceWorkspaceHash; expect(gradeWebsiteDelivery(unread).passed).toBe(false);
+    const cancelled = structuredClone(o); cancelled.tasks[0]!.status = "cancelled"; expect(gradeWebsiteDelivery(cancelled).passed).toBe(false);
+    const moved = structuredClone(o); (moved.tasks[0] as { projectId?: string }).projectId = "elsewhere"; expect(gradeWebsiteDelivery(moved).passed).toBe(false);
+  });
   it("rejects a local path without registered download", () => { const o = valid(); o.links = ["/RUN/issues/task", "/tmp/website.html"]; expect(gradeWebsiteDelivery(o).passed).toBe(false); });
   it("rejects stale or mismatched downloaded bytes", () => { const o = valid(); o.downloaded[0]!.body = "<html>stale</html>"; expect(gradeWebsiteDelivery(o).passed).toBe(false); });
   it("rejects wrong immutable origin or work-product source", () => { const o = valid(); o.attachments[0]!.originatingRunId = "build"; expect(gradeWebsiteDelivery(o).passed).toBe(false); const source = valid(true); source.products[0]!.issueId = "another-task"; expect(gradeWebsiteDelivery(source).passed).toBe(false); });

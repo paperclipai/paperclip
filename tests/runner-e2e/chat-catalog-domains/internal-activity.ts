@@ -29,7 +29,8 @@ export function grade_activity(value: unknown) {
       const asserted = [...o.reply.matchAll(/\b(\d+)\s+(active|blocked|completed|done)\s+(?:tasks?|items?)\b/gi)];
       c.add("scoped-counts", asserted.every(match => Number(match[1]) === 1) && !o.reply.includes(String(o.state.hiddenMarker)),
         "Any explicit state counts match the three visible tasks, and hidden-company work is absent.");
-      c.add("observation-context", /\b(?:as of|right now|currently|at present)\b/i.test(o.reply), "The overview identifies its current observation context.");
+      c.add("observation-time", statesObservationTime(o.reply, o.runs, String(o.state.timezone ?? "UTC")),
+        "The overview states a clock time that falls inside the answering run, in UTC or the browser's timezone; relative words such as \"right now\" are not a time.");
       break;
     }
     case "activity.audit-change": {
@@ -97,6 +98,48 @@ export function mentionsRecordedTime(reply: string, recordedAt: string | undefin
   } catch { return false; }
 }
 
+const OBSERVATION_SLACK_MS = 5 * 60_000;
+/** The answer names a clock time inside the window of the runs that answered it (plus slack for the question's own timestamp). */
+export function statesObservationTime(reply: string, runs: ReadonlyArray<{ startedAt?: string | null; finishedAt?: string | null }>, timezone: string): boolean {
+  const starts = runs.map(run => Date.parse(run.startedAt ?? "")).filter(Number.isFinite);
+  if (!starts.length) return false;
+  const ends = runs.map(run => Date.parse(run.finishedAt ?? run.startedAt ?? "")).filter(Number.isFinite);
+  const from = Math.min(...starts) - OBSERVATION_SLACK_MS; const to = Math.max(...ends) + OBSERVATION_SLACK_MS;
+  const allowedClock = new Set<string>(); const allowedDated = new Set<string>();
+  try {
+    for (const timeZone of new Set(["UTC", timezone])) {
+      const clock = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+      const day = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+      for (let at = from; at <= to; at += 60_000) {
+        const time = clock.format(new Date(at)); allowedClock.add(time); allowedDated.add(`${day.format(new Date(at))} ${time}`);
+      }
+    }
+  } catch { return false; }
+  let prose = reply.replace(/\]\([^)]*\)/g, "]");
+  let stated = false;
+  // A full timestamp is judged as a whole: with an offset it must be an instant inside the window; without one, its date and minute must match a zone.
+  prose = prose.replace(/\b(\d{4}-\d{2}-\d{2})(?:T|,?\s+(?:at\s+)?)(\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?(?:(Z|[+-]\d{2}:?\d{2})|\s*([ap])\.?m\.?(?![a-z]))?(?!\d|:\d)/gi,
+    (_whole, date: string, hour: string, minute: string, seconds?: string, offset?: string, meridiem?: string) => {
+      const clock = clockTime(Number(hour), minute, meridiem);
+      if (!clock) return " ";
+      if (offset) {
+        const zone = offset.toUpperCase() === "Z" ? "Z" : offset.replace(/^([+-]\d{2}):?(\d{2})$/, "$1:$2");
+        const at = Date.parse(`${date}T${clock}:${(seconds ?? "00").padStart(2, "0")}${zone}`);
+        stated ||= Number.isFinite(at) && at >= from && at <= to;
+      } else stated ||= allowedDated.has(`${date} ${clock}`);
+      return " ";
+    });
+  return stated || [...prose.matchAll(/(?<![\d:])(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?!\d)(?:\s*([ap])\.?m\.?(?![a-z]))?/gi)]
+    .some(match => allowedClock.has(clockTime(Number(match[1]), match[2]!, match[3]) ?? ""));
+}
+/** A stated hour is read as written; only an explicit AM/PM converts it. */
+function clockTime(hour: number, minute: string, meridiem?: string): string | undefined {
+  const marker = meridiem?.toLowerCase();
+  if (hour > 23 || Number(minute) > 59 || marker && (hour < 1 || hour > 12)) return;
+  const value = marker ? hour % 12 + (marker === "p" ? 12 : 0) : hour;
+  return `${String(value).padStart(2, "0")}:${minute}`;
+}
+
 function companyOverview(): ChatCatalogCase {
   const base = define("activity.company-overview", async ctx => {
     const p = await project(ctx); const worker = await fixtureWorker(ctx);
@@ -107,9 +150,10 @@ function companyOverview(): ChatCatalogCase {
     const hiddenCompany = await ctx.input.api.post<Entity>("/api/companies", { name: `Hidden company ${ctx.input.nonce}` });
     const hiddenMarker = `Hidden acquisition ${ctx.input.nonce}`;
     await ctx.input.api.post(`/api/companies/${hiddenCompany.id}/issues`, { title: hiddenMarker, status: "blocked" });
-    return { project: p, task: active, blockedTask, doneTask, worker, blocker, hiddenCompany, hiddenMarker };
+    const timezone = await ctx.input.page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+    return { project: p, task: active, blockedTask, doneTask, worker, blocker, hiddenCompany, hiddenMarker, timezone };
   });
-  return { ...base, oracleVersion: "paperclip.chat-catalog.activity-overview.grounded.v2", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/recorded-work-claims.ts"], async verifySetup(ctx, state) {
+  return { ...base, oracleVersion: "paperclip.chat-catalog.activity-overview.grounded.v3", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/recorded-work-claims.ts"], async verifySetup(ctx, state) {
     const active = await ctx.input.api.get<Entity & { assigneeUserId: string | null }>(`/api/issues/${entity(state, "task").id}`);
     const worker = await ctx.input.api.get<Entity>(`/api/agents/${entity(state, "worker").id}`);
     const c = checks();

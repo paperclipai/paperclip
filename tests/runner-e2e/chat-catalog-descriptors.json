@@ -188,7 +188,7 @@
       "chat-scenarios/activity.yaml",
       "chat-catalog-domains/recorded-work-claims.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.activity-overview.grounded.v2",
+    "oracleVersion": "paperclip.chat-catalog.activity-overview.grounded.v3",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -2800,7 +2800,7 @@
       "chat-catalog-domains/internal-website-delivery.ts",
       "registered-artifact.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.website-download.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "minimumRunCount": 2,
@@ -3424,7 +3424,7 @@
       "chat-catalog-domains/internal-inbox-search.ts",
       "chat-scenarios/inbox-search.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.inbox.show-my-work.v2",
+    "oracleVersion": "paperclip.chat-catalog.internal.show-my-work.v3",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -4140,7 +4140,7 @@
       "../fixtures/connection-review-provider.ts",
       "chat-scenarios/questions-and-approvals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.identity.approve-tool-once.v2",
     "expectedRunCount": 4,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 2,

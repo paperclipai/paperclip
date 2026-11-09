@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { synchronizeSdkPublicInputs } from "./source-sdk-public-inputs.mjs";
 
 const registry = "tests/runner-e2e/source-sdk-public-inputs.json";

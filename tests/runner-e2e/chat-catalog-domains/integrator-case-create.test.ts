@@ -42,12 +42,12 @@ it("places the genuine customer brief on the canonical conversation's normal doc
   const source = { id: "standing-chat", title: "Chat with CEO" }; let saved: Record<string, unknown> | undefined;
   const created: string[] = []; const patches: Array<{ path: string; body: unknown }> = [];
   const api = {
-    get: async (path: string) => path.endsWith("/documents/brief") ? saved : path.startsWith("/api/agents/") ? { lifecycleState: "ready" } : { enableCases: false },
+    get: async (path: string) => path.endsWith("/documents/brief") ? saved : path.startsWith("/api/agents/") ? { id: "morgan", companyId: "company", lifecycleState: "ready" } : { enableCases: false },
     patch: async (path: string, body: unknown) => { patches.push({ path, body }); return {}; },
     post: async (path: string, body: Record<string, unknown>) => { created.push(path); return { ...body, id: path.endsWith("/projects") ? "project" : "morgan" }; },
     putSensitive: async (path: string, body: Record<string, unknown>) => { expect(path).toBe("/api/issues/standing-chat/documents/brief"); saved = { ...body, issueId: source.id }; return saved; },
   };
-  const ctx = { input: { nonce: "offline", api, fixtures: { company: { id: "company" }, agent: { id: "ceo" }, environment: { id: "environment" }, secretRefs: {} }, execution: { environment: { id: "local" }, profile: { credential: "ANTHROPIC_API_KEY", buildAgent: () => ({}) } } },
+  const ctx = { input: { nonce: "offline", api, evidence: async () => undefined, fixtures: { company: { id: "company" }, agent: { id: "ceo" }, environment: { id: "environment" }, secretRefs: {} }, execution: { environment: { id: "local" }, profile: { credential: "ANTHROPIC_API_KEY", buildAgent: () => ({}) } } },
     refreshIssue: async () => {}, issue: () => source } as unknown as Parameters<typeof integratorCaseCreationCases[0]["setup"]>[0];
   const state = await integratorCaseCreationCases[0]!.setup(ctx);
   expect((state.task as { id: string }).id).toBe(source.id);
