@@ -9,6 +9,8 @@ import { useSecondTick } from "../hooks/useSecondTick";
 import { TaskProjectAccessNotice } from "./TaskProjectAccessNotice";
 import { ProviderFailureNotice } from "./ProviderFailureNotice";
 import { LockedIssueChip, isLockedIssueStub } from "./LockedIssueChip";
+import { PreviousServerStopConfirmation } from "./WorkspaceExportRecovery";
+import { issuesApi } from "../api/issues";
 
 const recoveryStepText: Record<NonNullable<TaskInterruptionPresentation["recoveryStep"]>, string> = {
   checking_previous_run: "Checking that the previous attempt stopped",
@@ -23,8 +25,9 @@ const blockerAction: Record<string, string> = {
 };
 
 /** One ordinary interruption surface. Technical records remain in diagnostics. */
-export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, agentName, projectName, blockers }: {
+export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, companyId, agentName, projectName, blockers }: {
   presentation: TaskInterruptionPresentation | null | undefined;
+  companyId?: string;
   blockers?: IssueRelationIssueSummary[];
   canRetry: boolean;
   onRetry: () => void;
@@ -76,6 +79,15 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
         </li>)}
       </ul> : null}
     </div>;
+  }
+  if (!optimistic && presentation?.userAction === "confirm_run_stopped" && presentation.observedRunId && issueId && companyId) {
+    const runId = presentation.observedRunId;
+    return <PreviousServerStopConfirmation runId={runId} formId={runId} issueId={issueId} companyId={companyId}
+      className={className} confirmStop={stopEvidence => issuesApi.confirmRunStopped(issueId, { runId, stopEvidence })}
+      copy={{ waiting: presentation.retryWait?.message ?? "Paperclip can't confirm that the previous run stopped. Your message is saved.",
+        question: "How did you confirm that no agent is still working on this task?",
+        placeholder: "For example: no codex or claude process for this task is running on the server host.",
+        resuming: "Starting your Retry…", confirm: "Confirm it stopped" }} />;
   }
   if (optimistic || !presentation || presentation.responsibility !== "system" ||
       !["failed", "retry_scheduled"].includes(presentation.state)) return null;

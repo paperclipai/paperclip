@@ -420,6 +420,9 @@ export const issuesApi = {
       `/issues/${id}/stalled-review-decision`,
       data,
     ),
+  confirmRunStopped: (id: string, data: { runId: string; stopEvidence: string }) =>
+    api.post<{ runId: string; alreadyStopped: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(
+      `/issues/${id}/recovery-actions/confirm-run-stopped`, data),
   confirmControllerStopped: (id: string, data: { actionId: string; runId: string; stopEvidence: string }) =>
     api.post<{ runId: string; status: "queued" }>(`/issues/${id}/recovery-actions/confirm-controller-stopped`, data),
   confirmOwnerGone: (id: string, data: { actionId: string; recordId: string; stopEvidence: string; recordVersion?: string }) =>

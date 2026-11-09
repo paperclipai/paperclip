@@ -599,6 +599,11 @@ export const confirmNativeControllerStoppedSchema = z.object({
   stopEvidence: z.string().trim().min(20).max(12000),
 }).strict();
 
+export const confirmRunStoppedSchema = z.object({
+  runId: z.string().guid(),
+  stopEvidence: z.string().trim().min(20).max(12000),
+}).strict();
+
 /** Board attestation that the owner of a record Paperclip cannot judge (saved
  * before owners were recorded) has stopped, so recovery may settle the record. */
 export const confirmOwnerGoneSchema = z.object({
