@@ -109,19 +109,33 @@ function deliverableLabelNamesFile(objective: string): boolean {
   const inputReference = /\b(?:of|about|from|using|reading|comparing|between|no|without)\s+(?:(?:the|a|an|this|that)\s+)?[`'"*]*(?:[^\s,;]+[`'"*]*(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or|vs\.?|versus)\s+)(?:(?:the|a|an|this|that)\s+)?[`'"*]*)*$/iu;
   const inlineDestination = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block))\b/iu;
   const noFiles = /\b(?:(?:do not|don['’]t|never)\s+(?:create|make|write|save|produce)\s+(?:any\s+)?(?:new\s+)?files?|(?:no|without(?:\s+(?:any|creating(?:\s+any)?))?)\s+(?:new\s+)?files?)\b/iu;
+  const negated = /\b(?:do not|don['’]t|never|no need to)\s+(?:\w+\s+)?$/iu;
+  const forbiddenFile = /\b(?:do not|don['’]t|never|no need to)\s+(?:create|make|write|save|produce|generate|build|export|prepare|attach|upload|publish)\s+(?:(?:a|an|the|any|new|separate|extra|additional)\s+)*[`'"*]*$/iu;
   const editedFile = /\b(?:update|edit|modify|fix|change|refactor|patch)\s+(?:(?:the|existing|current)\s+)*[`'"*]*$/iu;
-  const separator = /[,;]|\s(?:and|plus|then|with|alongside)\s/giu;
+  const publicationVerb = /\b(?:publish|attach|export|upload|send|share|deliver|register)\b/giu;
+  const conjunction = /\b(?:and|plus|then|alongside|as well as)\b/giu;
   const namesFile = (text: string) => {
     const matches = [...text.matchAll(named)];
     if (matches.length === 0 || noFiles.test(text) || repositoryChange.test(text.replace(named, " "))) return false;
+    const publishes = [...text.matchAll(publicationVerb)].some(verb => !negated.test(text.slice(0, verb.index)));
+    const ownsInline = (between: string) => {
+      const last = [...between.matchAll(conjunction)].at(-1);
+      return !last || [...between.slice(last.index! + last[0].length).matchAll(named)].length > 0;
+    };
     return matches.some(match => {
       const start = match.index! + match[0].indexOf(match[1]!);
-      if (inputReference.test(text.slice(0, start)) || editedFile.test(text.slice(0, start))) return false;
+      const before = text.slice(0, start);
+      if (inputReference.test(before) || forbiddenFile.test(before)) return false;
+      if (editedFile.test(before) && !publishes) return false;
       const end = start + match[1]!.length;
-      const separators = [...text.matchAll(separator)];
-      const clauseStart = separators.filter(item => item.index! + item[0].length <= start).at(-1);
-      const clauseEnd = separators.find(item => item.index! >= end);
-      return !inlineDestination.test(text.slice(clauseStart ? clauseStart.index! + clauseStart[0].length : 0, clauseEnd?.index));
+      const clauseStart = Math.max(text.lastIndexOf(",", start), text.lastIndexOf(";", start)) + 1;
+      const next = text.slice(end).search(/[,;]/u);
+      const clauseEnd = next < 0 ? text.length : end + next;
+      const after = inlineDestination.exec(text.slice(end, clauseEnd));
+      if (after && ownsInline(text.slice(end, end + after.index))) return false;
+      const lead = text.slice(clauseStart, start);
+      const leading = [...lead.matchAll(new RegExp(inlineDestination.source, "giu"))].at(-1);
+      return !(leading && ownsInline(lead.slice(leading.index! + leading[0].length)));
     });
   };
   for (let index = 0; index < lines.length; index += 1) {
