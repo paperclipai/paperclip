@@ -84,11 +84,9 @@ describe("EditorAutocompleteProvider", () => {
         </QueryClientProvider>,
       );
     });
-    await flush();
-
+    await vi.waitFor(() => expect(seen.at(-1)).toEqual(["skill:skill-1", "routine:routine-1"]));
     expect(mocks.listSkills).toHaveBeenCalledTimes(1);
     expect(mocks.listSkills).toHaveBeenCalledWith("company-1");
     expect(mocks.listRoutines).toHaveBeenCalledTimes(1);
-    expect(seen.at(-1)).toEqual(["skill:skill-1", "routine:routine-1"]);
   });
 });
