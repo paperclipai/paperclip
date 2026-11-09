@@ -1000,6 +1000,7 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("do not look for others in package registries, repositories or the web");
     expect(AGENT_CHAT_DIRECTIVE).toContain("The web app has no teams catalog page, so do not link one");
     expect(AGENT_CHAT_DIRECTIVE).toContain("paperclipai teams install <team id> --company-id <companyId>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("When you recommend a team, name its roles (agentSlugs), every required skill (requiredSkills, by its ref) and every configuration input (envInputs)");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("GET /api/teams/catalog");
   });
@@ -1055,6 +1056,15 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("read the agent and name it rather than showing a raw ID");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("/<prefix>/agents/<agentId>/runs/<runId>");
+  });
+
+  it("says the task-chat lab exists only under pnpm dev in the person's own checkout", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Some developer labs, including the task-chat interaction lab at /<prefix>/dev/task-chat-lab, are registered only in a development build of the UI");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("Developer labs, such as");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the design guide and the ux-lab pages, are registered in every build");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("running pnpm dev in their own Paperclip checkout and visiting /<prefix>/dev/task-chat-lab");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/dev/task-chat-lab");
   });
 
   it("routes a person's own profile change to their profile settings instead of an agent write", () => {

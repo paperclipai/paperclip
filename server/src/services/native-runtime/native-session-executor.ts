@@ -3441,6 +3441,15 @@ export async function verifyStoppedNativeSessionForReplacement(
   } catch { return null; }
 }
 
+export async function verifyStoppedNativeSessionForAutomaticReplacement(
+  db: Db,
+  run: typeof heartbeatRuns.$inferSelect,
+): Promise<{ evidence: Record<string, unknown>; retire: () => boolean } | null> {
+  const replacement = await verifyStoppedNativeSessionForReplacement(db, run);
+  if (replacement || run.errorCode !== "native_session_cleanup_quarantined") return replacement;
+  return verifyStoppedNativeSessionForContinuation(db, run);
+}
+
 /** Exact local cleanup only: the accepted result and original quarantine are
  * never rewritten. A failed/interrupted maintenance attempt is retained for
  * inspection, not retried from an older snapshot with unknown process owners. */
@@ -8118,6 +8127,12 @@ export function nativeSessionFailureSourceCode(
     // terminal message; it needs a model choice, not a generic provider failure.
     if (!error.recoverable && /^native_provider_model_rejected:/.test(error.message))
       return "native_provider_model_rejected";
+    // The event stream closed because the runner process itself exited. The
+    // runner transport names that cause first in the closed-stream message; it
+    // is runner loss, not a provider verdict on its session.
+    if (error.providerCode === "notification_transport_failed"
+      && /^Notification transport failed closed: native_runner_process_exited: /.test(error.message))
+      return "native_runner_process_exited";
     return "native_provider_terminal_failed";
   }
   if (error instanceof NativeSessionProtocolIntegrityError)

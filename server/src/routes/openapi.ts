@@ -1582,6 +1582,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-identity-links/request-access",
   "POST /api/chat-endpoints/{endpointId}/publications/{publicationId}/resolve",
   "POST /api/chat-endpoints/{endpointId}/actions/{actionId}/resolve",
+  "GET /api/issues/{id}/tree-control/state",
+  "POST /api/issues/{id}/tree-control/preview",
+  "GET /api/issues/{id}/tree-holds",
+  "POST /api/issues/{id}/tree-holds",
+  "GET /api/issues/{id}/tree-holds/{holdId}",
+  "POST /api/issues/{id}/tree-holds/{holdId}/release",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -7590,6 +7596,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/managed-agent-profiles",
   tags: ["agents"],
   summary: "List Claude Managed Agent profiles for a company",
+  description: "Board only: agent credentials get 403. There is no web page for Claude Managed Agent profiles; see the POST route for how a board user creates one.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
@@ -7599,7 +7606,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/managed-agent-profiles",
   tags: ["agents"],
   summary: "Create or operator-attest a Claude Managed Agent profile",
-  description: "Board only: agent credentials get 403. A Claude Managed Agent runs on Anthropic's managed-agents beta. A board operator creates the company profile with an Anthropic API-key secret and a limited environment (no hosts, no packages), attests its qualification and explicitly acknowledges stateful retention before it can be enabled.",
+  description: "Board only: agent credentials get 403. A Claude Managed Agent runs on Anthropic's managed-agents beta. A board operator creates the company profile with an Anthropic API-key secret and a limited environment (no hosts, no packages), attests its qualification and explicitly acknowledges stateful retention before it can be enabled. There is no web page for this: the board user runs the CLI command `paperclipai managed-agent setup --company-id <companyId> --profile-key <key> --display-name <name> --api-key-secret-id <secretId> --acknowledge-retention` with ANTHROPIC_API_KEY set in their shell (add --probe for a read-only qualification check first). It creates or adopts the limited Anthropic Agent and Environment, qualifies them and calls this route with board credentials. The secret itself is added on the company Secrets page, /<prefix>/company/settings/secrets.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(
@@ -8545,6 +8552,7 @@ registry.registerPath({
   path: "/api/issues/{id}/tree-holds",
   tags: ["issues"],
   summary: "Create an issue tree hold",
+  description: "Board-only. An agent cannot pause, cancel or resume a task tree, and this denial is final for agents. A person pauses the parent task and all of its subtasks on the company-prefixed task page /{prefix}/issues/{identifier}: More task actions, then Pause subtree. The person resumes it later on the same page with Resume subtree. Link that task page. Moving tasks to backlog or changing assignees is not a tree pause.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createIssueTreeHoldSchema),
