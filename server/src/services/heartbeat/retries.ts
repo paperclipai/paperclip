@@ -530,7 +530,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // An interrupted preparation never spends failures, but it never revives
     // a chain whose real failures already spent the failure budget either.
     const failureBudgetSpent = interruptedPreparationLane && opts?.maxAttempts == null
-      && executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+      && executionFailureRetryCount(run) >= (hasProviderQuotaRetryBudget(run)
+        ? PROVIDER_QUOTA_RETRY_DELAYS_MS.length : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS);
     const computedBaseSchedule = failureBudgetSpent ? null
       : opts?.delayMs != null
         ? nextAttempt <= maxAttempts
