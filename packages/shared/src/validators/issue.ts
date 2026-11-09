@@ -1006,6 +1006,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     interrupt: z.boolean().optional(),
     /** Assignment-only handoff; the following structured goal action owns the wake. */
     deferWakeForGoal: z.boolean().optional(),
+    confirmLiveRunStop: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
   });
 

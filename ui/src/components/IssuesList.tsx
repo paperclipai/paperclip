@@ -1809,7 +1809,7 @@ function StreamlinedIssuesList({
   }, [setIssueColumns, visibleIssueColumns]);
 
   const assignIssue = useCallback((issueId: string, assigneeAgentId: string | null, assigneeUserId: string | null = null) => {
-    onUpdateIssue(issueId, { assigneeAgentId, assigneeUserId });
+    onUpdateIssue(issueId, { assigneeAgentId, assigneeUserId, confirmLiveRunStop: true });
     setAssigneePickerIssueId(null);
     setAssigneeSearch("");
   }, [onUpdateIssue]);

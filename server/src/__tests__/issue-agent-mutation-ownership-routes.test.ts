@@ -3007,7 +3007,8 @@ describe("agent issue mutation checkout ownership", () => {
         mockHeartbeatService.getRun.mockResolvedValue(run);
         mockHeartbeatService.cancelRun.mockRejectedValue(new Error("Execution is still stopping; termination has not been verified."));
 
-        const res = await request(handoffApp(actor)).patch(`/api/issues/${issueId}`).send(handoff);
+        const res = await request(handoffApp(actor))
+          .patch(`/api/issues/${issueId}`).send({ ...handoff, confirmLiveRunStop: true });
 
         expect(res.status, JSON.stringify(res.body)).toBe(500);
         expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(run.id, "Cancelled before issue reassignment",
@@ -3021,6 +3022,7 @@ describe("agent issue mutation checkout ownership", () => {
         .patch(`/api/issues/${issueId}`).send({
           assigneeAgentId: target === "agent" ? peerAgentId : null,
           assigneeUserId: null,
+          confirmLiveRunStop: true,
         });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockHeartbeatService.cancelRun).toHaveBeenCalledTimes(1);
@@ -3040,6 +3042,7 @@ describe("agent issue mutation checkout ownership", () => {
       resultJson: {},
     };
     const reassign = { assigneeAgentId: peerAgentId };
+    const reassignConfirmed = { ...reassign, confirmLiveRunStop: true };
 
     beforeEach(() => {
       mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
@@ -3054,7 +3057,7 @@ describe("agent issue mutation checkout ownership", () => {
       mockHeartbeatService.getRun.mockResolvedValueOnce(nativeRun).mockResolvedValue(fenced);
       mockHeartbeatService.cancelRun.mockResolvedValue(fenced);
 
-      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassignConfirmed);
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, "Cancelled before issue reassignment",
@@ -3074,7 +3077,7 @@ describe("agent issue mutation checkout ownership", () => {
         "Stop is recorded; the native session is still starting and will stop when it opens.",
         { code: "native_stop_pending", runId: ownerRunId }));
 
-      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassignConfirmed);
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
@@ -3084,7 +3087,7 @@ describe("agent issue mutation checkout ownership", () => {
       mockHeartbeatService.getRun.mockResolvedValueOnce(nativeRun).mockResolvedValue({ ...nativeRun, status: "succeeded" });
       mockHeartbeatService.cancelRun.mockResolvedValue({ ...nativeRun, status: "succeeded" });
 
-      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassignConfirmed);
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
@@ -3094,11 +3097,65 @@ describe("agent issue mutation checkout ownership", () => {
       mockHeartbeatService.getRun.mockResolvedValue(nativeRun);
       mockHeartbeatService.cancelRun.mockResolvedValue(nativeRun);
 
-      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassignConfirmed);
 
       expect(res.status, JSON.stringify(res.body)).toBe(409);
       expect(res.body.details).toMatchObject({ code: "runner_goal_reassignment_stop_unconfirmed", runId: ownerRunId });
       expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("reassignment of an issue with a live run", () => {
+    const liveRun = {
+      id: ownerRunId,
+      companyId,
+      agentId: ownerAgentId,
+      runtimeMode: "native",
+      status: "running",
+      contextSnapshot: { issueId },
+      resultJson: {},
+    };
+    const reassign = { assigneeAgentId: peerAgentId };
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue(liveRun);
+      mockHeartbeatService.cancelRun.mockResolvedValue({ ...liveRun, status: "cancelled" });
+      mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, id: string) => ({
+        ambiguous: false,
+        agent: await mockAgentService.getById(id),
+      }));
+    });
+
+    it("refuses the reassignment without confirmLiveRunStop and leaves the live run untouched", async () => {
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.code).toBe("live_run_active");
+      expect(res.body.details).toMatchObject({ code: "live_run_active", liveRunId: ownerRunId });
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("cancels the live run and reassigns when the request confirms the stop", async () => {
+      const res = await request(createApp(boardActor()))
+        .patch(`/api/issues/${issueId}`).send({ ...reassign, confirmLiveRunStop: true });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, "Cancelled before issue reassignment",
+        expect.objectContaining({ errorCode: "issue_reassigned" }));
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
+    });
+
+    it("accepts the reassignment without the flag when no run is live", async () => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...liveRun, status: "succeeded" });
+      mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
     });
   });
 
@@ -3202,7 +3259,7 @@ describe("agent issue mutation checkout ownership", () => {
       const handoff = { assigneeAgentId: null, assigneeUserId: "board-user", status: "in_review" };
 
       const res = await request(createApp(runActor(), createRunContextDb({}, ownerAgentId, ownerRunId, [], true)))
-        .patch(`/api/issues/${issueId}`).send(handoff);
+        .patch(`/api/issues/${issueId}`).send({ ...handoff, confirmLiveRunStop: true });
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(res.body).toMatchObject(handoff);
