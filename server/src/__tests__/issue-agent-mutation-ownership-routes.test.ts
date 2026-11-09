@@ -3168,6 +3168,19 @@ describe("agent issue mutation checkout ownership", () => {
         expect(db.insert).toHaveBeenCalled();
       });
 
+      it("rechecks the review policy under the issue lock for the deferred approval", async () => {
+        const issue = reviewIssue([finalStage]);
+        mockIssueService.getById.mockResolvedValue(issue);
+        // The policy becomes human-only after the first check, before the locked write.
+        mockIssueService.getByIdForUpdate.mockResolvedValue({ ...issue, reviewPolicy: "human_only" });
+
+        const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved: verified." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(403);
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      });
+
       it("still requires the decision comment", async () => {
         mockIssueService.getById.mockResolvedValue(reviewIssue([finalStage]));
 
@@ -3191,7 +3204,7 @@ describe("agent issue mutation checkout ownership", () => {
       it("keeps refusing the approval when this run is not the active participant", async () => {
         const issue = reviewIssue([finalStage]);
         mockIssueService.getById.mockResolvedValue({ ...issue,
-          executionState: { ...issue.executionState, currentParticipant: { type: "agent", agentId: peerAgentId } } });
+          executionState: { ...(issue.executionState as Record<string, unknown>), currentParticipant: { type: "agent", agentId: peerAgentId } } });
 
         const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
           .send({ status: "done", comment: "Approved." });
