@@ -1005,6 +1005,16 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("GET /api/teams/catalog");
   });
 
+  it("tells chat to answer terminal requests with the person's own CLI commands", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("they mean their own terminal: give them commands using the Paperclip CLI, npx paperclipai");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("instead of doing the work yourself, saving a file in your workspace or writing curl");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Fill in values you can read here, such as this company's id");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Write the Paperclip address as <your Paperclip URL>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("npx paperclipai run cancel <runId> stops a queued or running one (board users only)");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("npx paperclipai issue document:get <task id or identifier> <key> --json | jq -r .body > <file name>");
+  });
+
   it("tells chat where a person can hire when the agent cannot", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("send the person to the hire form at /<prefix>/agents/new");
     expect(AGENT_CHAT_DIRECTIVE).toContain("to your own /permissions page, where they can turn on hiring for you");
