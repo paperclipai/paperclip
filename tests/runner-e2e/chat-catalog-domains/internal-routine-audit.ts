@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { expect } from "@playwright/test";
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
@@ -15,15 +16,15 @@ export function localClock(instant: Date, timezone: string) {
   return { hour: Number(parts.find(part => part.type === "hour")!.value), minute: Number(parts.find(part => part.type === "minute")!.value) };
 }
 /**
- * Real places spanning every whole-hour UTC offset. The person is placed where
- * the evaluation's real clock reads 08:xx, so "this morning" is literally true
- * for their browser and for the routine's own schedule timezone; no history is
- * backdated.
+ * Real places without daylight saving time, one for every whole-hour UTC
+ * offset from -11 to +14, so one of them always reads 08:xx. The person is
+ * placed there, so "this morning" is literally true for their browser and for
+ * the routine's own schedule timezone; no history is backdated.
  */
-export const MORNING_CANDIDATE_TIMEZONES = ["Pacific/Pago_Pago", "Pacific/Honolulu", "America/Anchorage", "America/Los_Angeles", "America/Denver", "America/Chicago",
-  "America/New_York", "America/Halifax", "America/Sao_Paulo", "Atlantic/South_Georgia", "Atlantic/Cape_Verde", "Atlantic/Reykjavik", "Europe/London", "Europe/Paris",
-  "Europe/Athens", "Europe/Moscow", "Asia/Dubai", "Asia/Karachi", "Asia/Dhaka", "Asia/Bangkok", "Asia/Singapore", "Asia/Tokyo", "Australia/Brisbane", "Pacific/Noumea",
-  "Pacific/Fiji", "Pacific/Tongatapu", "Pacific/Kiritimati"] as const;
+export const MORNING_CANDIDATE_TIMEZONES = ["Pacific/Pago_Pago", "Pacific/Honolulu", "Pacific/Gambier", "Pacific/Pitcairn", "America/Phoenix", "America/Guatemala",
+  "America/Panama", "America/Puerto_Rico", "America/Argentina/Buenos_Aires", "Atlantic/South_Georgia", "Atlantic/Cape_Verde", "Africa/Abidjan", "Africa/Lagos",
+  "Africa/Johannesburg", "Africa/Nairobi", "Asia/Dubai", "Asia/Karachi", "Asia/Dhaka", "Asia/Bangkok", "Asia/Singapore", "Asia/Tokyo", "Australia/Brisbane",
+  "Pacific/Noumea", "Pacific/Tarawa", "Pacific/Tongatapu", "Pacific/Kiritimati"] as const;
 export function morningTimezone(now: Date) {
   const zone = MORNING_CANDIDATE_TIMEZONES.find(candidate => localClock(now, candidate).hour === 8);
   if (!zone) throw new Error("No candidate timezone currently reads 08:xx");
@@ -32,25 +33,43 @@ export function morningTimezone(now: Date) {
 function morning(instant: string | undefined, timezone: string, observedAt: string) {
   return !!instant && localDay(instant, timezone) === localDay(observedAt, timezone) && localClock(new Date(instant), timezone).hour < 12;
 }
-/** Product reads whose response carries the routine's run records (status and failure reason). */
-export const ROUTINE_EXECUTION_OPERATIONS = ["GET /api/routines/{id}/runs", "GET /api/routines/{id}", "GET /api/companies/{companyId}/routines"] as const;
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).filter(key => (value as Record<string, unknown>)[key] !== undefined).sort()
+    .map(key => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+/** Same digest the server stores for a redacted call_api input (canonical JSON, sha256). */
+export function callApiInputDigest(input: Record<string, unknown>) { return createHash("sha256").update(canonicalJson(input), "utf8").digest("hex"); }
+/** call_api inputs whose response carries this routine's run records (status and failure reason). */
+export function routineExecutionReads(companyId: string, routineId: string, projectId?: string) {
+  const list = "GET /api/companies/{companyId}/routines";
+  return [
+    { operationId: "GET /api/routines/{id}/runs", pathParams: { id: routineId } },
+    { operationId: "GET /api/routines/{id}", pathParams: { id: routineId } },
+    { operationId: list, pathParams: { companyId } },
+    ...(projectId ? [{ operationId: list, pathParams: { companyId }, query: { projectId } }] : []),
+  ].map(callApiInputDigest);
+}
 function prp(row: RunEvent) {
   const envelope = (row.payload?.prpEvent ?? {}) as Record<string, unknown>;
-  return { envelope, payload: (envelope.payload ?? {}) as Record<string, unknown> };
+  const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+  return { envelope, payload, item: (payload.item ?? {}) as Record<string, unknown> };
 }
 /**
- * The chat run read the failed scheduled invocation through the product: a
- * successful read of the routine's run records (routine runs, routine detail
- * recent runs, or the routine list's last run), recorded by operation id
- * because call_api redacts payloads, or a tool output carrying the failed
+ * The chat run read this routine's run records through the product. call_api
+ * redacts payloads but keeps the input digest, so a call counts only when its
+ * input digest is one of this routine's execution reads and its paired result
+ * succeeded. A dedicated tool's unredacted output must carry the failed
  * routine-run id. The agent's own wording is never matched.
  */
-export function readFailedExecution(events: readonly RunEvent[], failedRunId: string) {
-  return !!failedRunId && events.some(row => {
-    const { envelope, payload } = prp(row);
-    const item = (payload.item ?? {}) as Record<string, unknown>; const result = (item.result ?? {}) as Record<string, unknown>;
-    if (item.type === "tool_result" && result.ok === true && result.status === 200
-      && (ROUTINE_EXECUTION_OPERATIONS as readonly unknown[]).includes(result.apiOperationId)) return true;
+export function readFailedExecution(events: readonly RunEvent[], failedRunId: string, expectedReads: readonly string[]) {
+  if (!failedRunId) return false;
+  const uses = new Set(events.map(prp).filter(({ item }) => item.type === "tool_use" && item.name === "call_api"
+    && expectedReads.includes(String((item.input as Record<string, unknown> | undefined)?.apiPayloadSha256))).map(({ item }) => String(item.id)));
+  return events.some(row => {
+    const { envelope, payload, item } = prp(row); const result = (item.result ?? {}) as Record<string, unknown>;
+    if (item.type === "tool_result" && uses.has(String(item.tool_use_id)) && result.ok === true && result.status === 200) return true;
     return row.eventType === "tool.execution.completed" && envelope.sourceKind === "runner" && payload.status === "completed"
       && typeof payload.output === "string" && payload.output.includes(failedRunId);
   });
@@ -74,7 +93,9 @@ export function gradeRoutineAudit(value: unknown) {
     && o.routineRuns.length === Number(o.state.routineRunCount) && o.executionTask?.status === "blocked"
     && !o.activity.some(row => row.agentId === o.leadId && (row.entityId === original.id || row.entityId === failed?.linkedIssueId)),
   "The audit neither manufactures a run, edits the routine, nor changes the failed execution's task.");
-  c.add("read-actual-execution-record", readFailedExecution(o.leadEvents, o.state.failedRunId),
+  // The reply's claims are read by a person, not matched by wording: the checks above and below prove the
+  // saved outcome, that the chat run read it, and that the person can open the evidence from the answer.
+  c.add("read-actual-execution-record", readFailedExecution(o.leadEvents, o.state.failedRunId, routineExecutionReads(o.companyId, original.id, (o.state.project as Entity | undefined)?.id)),
     "The chat run read the routine's run records (runs, detail recent runs or list last run), not only the definition or edit history.");
   c.add("routine-or-execution-linked", routineLinks(o, original.id).length > 0 || (!!o.executionTask && hasLink(o, "issues", o.executionTask)),
     "The answer links the real routine or the failed run's execution task, so the person can inspect the evidence.");
@@ -103,11 +124,11 @@ function routineAudit(): ChatCatalogCase {
     await api.patch(`/api/routines/${routine.id}`, { description: EDITED_DESCRIPTION });
     const edit = (await api.get<Entity[]>(`${companyPath(ctx)}/activity?limit=1000`)).find(row => row.entityId === routine.id && row.action === "routine.updated" && row.actorType === "user");
     if (!edit) throw new Error("Real routine edit was not recorded");
-    const invocation = await pollUntil({ label: "real scheduled morning routine invocation", deadlineAt: Date.now() + 300_000, intervalMs: 2000,
+    const invocation = await pollUntil({ label: "real scheduled morning routine invocation", deadlineAt: Date.now() + 240_000, intervalMs: 2000,
       load: () => api.get<RoutineRun[]>(`/api/routines/${routine.id}/runs`), accept: rows => rows.some(row => row.source === "schedule" && !!row.linkedIssueId),
       reject: rows => rows.some(row => row.source === "schedule" && row.status === "failed" && !row.linkedIssueId) ? "Scheduled dispatch failed before creating its execution task" : undefined });
     const scheduled = invocation.find(row => row.source === "schedule" && !!row.linkedIssueId)!;
-    const outcome = await pollUntil({ label: "worker blocks the edited routine's execution task and the invocation fails", deadlineAt: Date.now() + 240_000, intervalMs: 2000,
+    const outcome = await pollUntil({ label: "worker blocks the edited routine's execution task and the invocation fails", deadlineAt: Date.now() + 180_000, intervalMs: 2000,
       load: async () => ({ runs: await api.get<RoutineRun[]>(`/api/routines/${routine.id}/runs`), task: await api.get<Entity>(`/api/issues/${scheduled.linkedIssueId}`), native: await ctx.allRuns() }),
       accept: v => v.task.status === "blocked" && v.runs.some(row => row.id === scheduled.id && row.status === "failed")
         && v.native.length === 1 && v.native[0]!.agentId === worker.id && v.native[0]!.status === "succeeded",
@@ -121,7 +142,7 @@ function routineAudit(): ChatCatalogCase {
     await ctx.input.evidence("chat-catalog-routine-audit-setup.json", { companyId: ctx.input.fixtures.company.id, timezone, trigger, edit, runs: outcome.runs, task: outcome.task, now });
     return { project: p, worker: { id: worker.id }, routine: saved, timezone, editEventId: edit.id, failedRunId: failed.id, executionTaskId: failed.linkedIssueId, routineRunCount: outcome.runs.length, now };
   }, gradeRoutineAudit);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.routine-audit.v3", authentication: "human-session", expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 720_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.routine-audit.v4", authentication: "human-session", expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 720_000,
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-routine-audit.ts", "run-observations.ts"],
     async observe(ctx, state): Promise<RoutineAudit> {
       const id = entity(state, "routine").id; const o = await observeInternal(ctx, state); const leadEvents: RunEvent[] = [];

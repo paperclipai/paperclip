@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { gradeProjectDefaults, gradeProjectDefaultsSetup, projectReadCalls } from "./internal-project-defaults.js";
-import { gradeRoutineAudit, localClock, morningTimezone } from "./internal-routine-audit.js";
+import { callApiInputDigest, gradeRoutineAudit, localClock, morningTimezone } from "./internal-routine-audit.js";
 import { gradeWorkTimeline } from "./internal-work-timeline.js";
 import { gradeArchivePartial } from "./internal-archive-partial.js";
 function base(scenarioId: string) { return { scenarioId, origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: {} as Record<string, unknown>, tasks: [] as any[], projects: [] as any[], goals: [] as any[], comments: [] as any[], activity: [] as any[], documents: [], revisions: [], links: [] as string[], reply: "", humanQueries: [], runs: [] as any[] }; }
@@ -93,17 +93,24 @@ function routine() {
   const read = { eventType: "tool.execution.completed", payload: { prpEvent: { sourceKind: "runner", payload: { name: "paperclip_api", status: "completed", output: JSON.stringify({ recentRuns: [failed] }) } } } };
   return { ...o, routine: r, routineRuns: [failed] as any[], executionTask: { id: "task", identifier: "RUN-1", status: "blocked" }, leadEvents: [read] as any[], observedAt: "2026-10-25T23:50:00Z" };
 }
-it("picks a real timezone where the evaluation clock reads 08:xx", () => {
-  for (let hour = 0; hour < 24; hour++) { const now = new Date(Date.UTC(2026, 10, 9, hour, 17)); expect(localClock(now, morningTimezone(now)).hour).toBe(8); }
+it("picks a real timezone where the evaluation clock reads 08:xx in every season", () => {
+  for (const year of [2026, 2027]) for (let month = 0; month < 12; month++) for (const day of [1, 15]) for (let hour = 0; hour < 24; hour++) {
+    const now = new Date(Date.UTC(year, month, day, hour, 17)); expect(localClock(now, morningTimezone(now)).hour).toBe(8);
+  }
 });
 it("accepts a real edit before a failed scheduled morning run that the chat run read", () => expect(gradeRoutineAudit(routine()).passed).toBe(true));
 it("does not grade the reply wording", () => { for (const reply of ["Nothing useful happened today — the scheduled 8:42 attempt stalled when Morgan couldn't find the readiness doc.", "Short answer: no. Details are on the routine page."]) { const o = routine(); o.reply = reply; expect(gradeRoutineAudit(o).passed).toBe(true); } });
 it("accepts a redacted call_api read of the routine runs and a link to the blocked execution task", () => {
   const o = routine(); o.links = ["/RUN/issues/RUN-1"];
-  o.leadEvents = [{ eventType: "item.completed", payload: { prpEvent: { sourceKind: "runner", payload: { item: { type: "tool_result", result: { ok: true, status: 200, data: "***REDACTED***", apiOperationId: "GET /api/companies/{companyId}/routines" } } } } } }] as any[];
+  const call = (input: Record<string, unknown>, status = 200) => [
+    { eventType: "item.started", payload: { prpEvent: { sourceKind: "runner", payload: { item: { id: "7", type: "tool_use", name: "call_api", input: { data: "***REDACTED***", operationId: input.operationId, apiPayloadRedacted: true, apiPayloadSha256: callApiInputDigest(input) } } } } } },
+    { eventType: "item.completed", payload: { prpEvent: { sourceKind: "runner", payload: { item: { type: "tool_result", tool_use_id: "7", result: { ok: status === 200, status, data: "***REDACTED***", apiOperationId: input.operationId } } } } } }] as any[];
+  o.leadEvents = call({ operationId: "GET /api/companies/{companyId}/routines", pathParams: { companyId: "company" } });
   expect(gradeRoutineAudit(o).passed).toBe(true);
-  const definitionOnly = structuredClone(o); definitionOnly.leadEvents[0].payload.prpEvent.payload.item.result.apiOperationId = "GET /api/routines/{id}/revisions"; expect(gradeRoutineAudit(definitionOnly).passed).toBe(false);
-  const failedRead = structuredClone(o); failedRead.leadEvents[0].payload.prpEvent.payload.item.result.status = 403; expect(gradeRoutineAudit(failedRead).passed).toBe(false);
+  for (const input of [{ operationId: "GET /api/routines/{id}/runs", pathParams: { id: "routine" } }, { operationId: "GET /api/routines/{id}", pathParams: { id: "routine" } }]) { const v = structuredClone(o); v.leadEvents = call(input); expect(gradeRoutineAudit(v).passed).toBe(true); }
+  for (const input of [{ operationId: "GET /api/routines/{id}/revisions", pathParams: { id: "routine" } }, { operationId: "GET /api/routines/{id}/runs", pathParams: { id: "other-routine" } },
+    { operationId: "GET /api/companies/{companyId}/routines", pathParams: { companyId: "company" }, query: { projectId: "unrelated" } }]) { const v = structuredClone(o); v.leadEvents = call(input); expect(gradeRoutineAudit(v).passed).toBe(false); }
+  const failedRead = structuredClone(o); failedRead.leadEvents = call({ operationId: "GET /api/companies/{companyId}/routines", pathParams: { companyId: "company" } }, 403); expect(gradeRoutineAudit(failedRead).passed).toBe(false);
   const otherTask = structuredClone(o); otherTask.links = ["/RUN/issues/RUN-2"]; expect(gradeRoutineAudit(otherTask).passed).toBe(false);
 });
 it("rejects an edit after the run, a run outside the morning, or a manual run", () => {
