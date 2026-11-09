@@ -175,6 +175,12 @@ describe("PaperclipRunnerToolAuthority", () => {
       expect(error?.message).toContain(`Chaos claude (${claudeId})`);
       expect(error?.message).toContain("list_agents");
     }
+    const recovered = await authority.recover({ tool: "get_agent", callId: "t06-spliced-recovered", arguments: { actorId: spliced } });
+    expect(recovered).toMatchObject({ isError: true });
+    const text = JSON.stringify(recovered);
+    expect(text).toContain("paperclip_runner_agent_not_found: ");
+    expect(text).toContain(`Chaos claude (${claudeId})`);
+    expect(text).toContain("list_agents");
     const created = await db.select({ id: issues.id }).from(issues).where(eq(issues.originId,
       `paperclip-runner:create-task:${issueId}:t06-spliced`));
     expect(created).toEqual([]);

@@ -528,7 +528,8 @@ export class PaperclipRunnerToolAuthority {
   }
 
   async #agentNotFound(actorId: string): Promise<Error> {
-    const actors = await agentService(this.db).list(this.binding.companyId);
+    const actors = await this.db.select({ id: agents.id, name: agents.name }).from(agents)
+      .where(and(eq(agents.companyId, this.binding.companyId), sql`${agents.status} <> 'terminated'`));
     const closest = actors.map(actor => ({ actor, score: idSimilarity(actorId, actor.id) }))
       .filter(candidate => candidate.score >= 8)
       .sort((left, right) => right.score - left.score).slice(0, 3)
