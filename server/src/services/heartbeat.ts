@@ -1,6 +1,6 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
-import { matchesClaudeProjectTrustGrant, type ClaudeProjectTrustIdentity } from "./claude-project-trust.js";
+import { claudeProjectTrustSessionIdentity, matchesClaudeProjectTrustGrant, type ClaudeProjectTrustIdentity } from "./claude-project-trust.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
@@ -3140,6 +3140,7 @@ export function heartbeatService(
           : []),
       ];
       let claudeProjectSettingsAllowed = false;
+      let claudeProjectTrustIdentity: string | undefined;
       if (managedAiRuntime && agent.adapterType === "claude_local" && trustPreset.kind === "standard" &&
           executionWorkspace.workspaceId && executionWorkspace.projectId && executionTarget?.kind !== "remote") {
         const [source] = await db.select().from(projectWorkspaces).where(and(
@@ -3157,6 +3158,7 @@ export function heartbeatService(
           const grants = Array.isArray(source.claudeProjectTrust?.grants) ? source.claudeProjectTrust.grants : [];
           claudeProjectSettingsAllowed = grants.some((grant) => grant && typeof grant === "object" &&
             matchesClaudeProjectTrustGrant(grant as ClaudeProjectTrustIdentity, identity));
+          if (claudeProjectSettingsAllowed) claudeProjectTrustIdentity = claudeProjectTrustSessionIdentity(identity);
         }
       }
       context.paperclipWorkspace = {
@@ -3171,6 +3173,7 @@ export function heartbeatService(
         branchName: executionWorkspace.branchName,
         worktreePath: executionWorkspace.worktreePath,
         claudeProjectSettingsAllowed,
+        ...(claudeProjectTrustIdentity ? { claudeProjectTrustIdentity } : {}),
         realization: workspaceRealization,
         agentHome: await (async () => {
           const home = resolveDefaultAgentWorkspaceDir(agent.id);

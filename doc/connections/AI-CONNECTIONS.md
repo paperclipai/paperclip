@@ -658,6 +658,12 @@ requires a fresh session. The metadata is removed before passing session params
 to an adapter. Temporary authentication-home paths do not change the configuration
 fingerprint. These checks do not relax current connection authorization.
 
+Trusted local managed Claude sessions also retain the exact approved workspace-source
+identity. CLI and legacy ACP start fresh when that identity changes, even if the
+agent was re-granted trust before its next turn. Existing trusted sessions without
+this identity start fresh once after upgrade; unchanged identified sources remain
+resumable. Untrusted CLI sessions keep their existing resume behavior.
+
 Quota polling has a 20-second response deadline. Once a managed OAuth refresh
 starts, it has its own 60-second request lifetime so the replacement token body
 can still be read and committed after the dashboard stops waiting. A successful

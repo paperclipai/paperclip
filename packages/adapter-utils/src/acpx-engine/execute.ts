@@ -2191,6 +2191,10 @@ async function buildRuntime(input: {
       ));
       env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY = isolateProjectSettings ? "1" : "0";
       resolvedAdapterEnv.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY = env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY;
+      if (!isolateProjectSettings) {
+        resolvedAdapterEnv.PAPERCLIP_LEGACY_CLAUDE_PROJECT_TRUST_IDENTITY =
+          asString(workspaceContext.claudeProjectTrustIdentity, `unverified:${runId}`);
+      }
       if (isolateProjectSettings) {
         env.PAPERCLIP_LEGACY_CLAUDE_SETTINGS = JSON.stringify({ permissions: {
           allow: paperclipClaudeSettings.allow,

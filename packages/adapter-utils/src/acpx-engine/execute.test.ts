@@ -3004,6 +3004,23 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(isolated.sessionInputs[0]?.sessionKey).not.toBe(trusted.sessionInputs[0]?.sessionKey);
   });
 
+  it("changes the trusted ACP session key with the approved source identity", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "workspace");
+    const stateDir = path.join(root, "state");
+    await fs.mkdir(cwd, { recursive: true });
+    const config = { agent: "claude", stateDir, cwd, managedAiConnection: { provider: "anthropic" },
+      paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } };
+    const run = (claudeProjectTrustIdentity: string) => runExecutor(config, { context: {
+      paperclipWorkspace: { cwd, claudeProjectSettingsAllowed: true, claudeProjectTrustIdentity },
+    } });
+    const first = await run("source-a");
+    const changed = await run("source-b");
+    const unchanged = await run("source-a");
+    expect(changed.sessionInputs[0]?.sessionKey).not.toBe(first.sessionInputs[0]?.sessionKey);
+    expect(unchanged.sessionInputs[0]?.sessionKey).toBe(first.sessionInputs[0]?.sessionKey);
+  });
+
   it("merges Paperclip allowlist into an existing .claude/settings.local.json without losing user entries", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

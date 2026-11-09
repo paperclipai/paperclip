@@ -218,6 +218,26 @@ describe("claude_local ACP startup fallback", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it.each([["source-a", "source-b", false], [undefined, "source-a", false], ["source-a", "source-a", true]] as const)("resumes trusted sessions only for the same approved source (%s -> %s)", async (before, after, resume) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-test-grant-"));
+    try {
+      const configDir = path.join(root, "provider");
+      await mkdir(configDir);
+      const ctx = buildContext({ engine: "cli", cwd: root, managedAiConnection: true, env: { CLAUDE_CONFIG_DIR: configDir },
+        paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } });
+      Object.assign(ctx.runtime, { sessionId: "00000000-0000-4000-8000-000000000001", sessionParams: {
+        sessionId: "00000000-0000-4000-8000-000000000001", cwd: root, claudeProjectSettingsAllowed: true, claudeProjectTrustIdentity: before,
+        repoUrl: "https://example.invalid/original", repoRef: "main",
+      } });
+      ctx.context = { paperclipWorkspace: { claudeProjectSettingsAllowed: true, claudeProjectTrustIdentity: after,
+        repoUrl: before === after ? "https://example.invalid/original" : "https://example.invalid/replacement", repoRef: before === after ? "main" : "changed" } };
+      const result = await execute(ctx as never);
+      const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[string, unknown, string, string[]]>;
+      expect(calls[0]![3].includes("--resume")).toBe(resume);
+      expect(sessionCodec.deserialize(sessionCodec.serialize(result.sessionParams ?? null))).toMatchObject({ claudeProjectTrustIdentity: after });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("preserves project trust in saved Claude session parameters", () => {
     const params = { sessionId: "00000000-0000-4000-8000-000000000001", claudeProjectSettingsAllowed: true };
     expect(sessionCodec.deserialize(sessionCodec.serialize(params))).toMatchObject(params);

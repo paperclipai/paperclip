@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchesClaudeProjectTrustGrant, type ClaudeProjectTrustIdentity } from "./claude-project-trust.js";
+import { claudeProjectTrustSessionIdentity, matchesClaudeProjectTrustGrant, type ClaudeProjectTrustIdentity } from "./claude-project-trust.js";
 
 describe("Claude project trust identity", () => {
   const grant: ClaudeProjectTrustIdentity = {
@@ -12,6 +12,14 @@ describe("Claude project trust identity", () => {
     expect(matchesClaudeProjectTrustGrant(grant, { ...grant })).toBe(true);
     for (const key of Object.keys(grant) as Array<keyof ClaudeProjectTrustIdentity>) {
       expect(matchesClaudeProjectTrustGrant(grant, { ...grant, [key]: "changed" }), key).toBe(false);
+    }
+  });
+
+  it("binds resumable sessions to every approved identity field", () => {
+    const key = claudeProjectTrustSessionIdentity(grant);
+    expect(claudeProjectTrustSessionIdentity({ ...grant })).toBe(key);
+    for (const field of Object.keys(grant) as Array<keyof ClaudeProjectTrustIdentity>) {
+      expect(claudeProjectTrustSessionIdentity({ ...grant, [field]: "changed" }), field).not.toBe(key);
     }
   });
 
