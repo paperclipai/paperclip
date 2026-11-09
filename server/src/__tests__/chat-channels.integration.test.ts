@@ -38082,6 +38082,43 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
+  it.each([
+    { name: "publishes after one deadlock", errcode: "40P01", conflicts: 1, commits: 2, state: "published" },
+    { name: "falls back to delivery_unknown while a serialization failure persists", errcode: "40001", conflicts: 100, commits: 4, state: "delivery_unknown" },
+    { name: "does not retry another database error", errcode: "P0001", conflicts: 100, commits: 1, state: "delivery_unknown" },
+  ] as const)("retries the post-send commit of a provider-accepted publication: $name", async ({ errcode, conflicts, commits, state }) => {
+    const fixture = await publicationLaneFixture(1);
+    const { service, lanes, enqueue } = fixture;
+    const publication = await enqueue(0, "Accepted during a commit conflict");
+    const suffix = publication.id.replaceAll("-", "");
+    await db.execute(sql.raw(`create sequence post_send_conflicts_${suffix}`));
+    await db.execute(sql.raw(`create function fail_post_send_${suffix}() returns trigger language plpgsql as $fn$ begin if nextval('post_send_conflicts_${suffix}') <= ${conflicts} then raise exception 'post-send commit conflict' using errcode = '${errcode}'; end if; return new; end $fn$`));
+    await db.execute(sql.raw(`create trigger fail_post_send_${suffix} before insert on chat_message_links for each row when (new.publication_id = '${publication.id}') execute function fail_post_send_${suffix}()`));
+    try {
+      await service.processPendingPublications();
+      expect(lanes[0]!.providerRuntime.posts).toHaveLength(1);
+      expect(
+        await db
+          .select({ state: chatPublications.state, attempts: chatPublications.attempts })
+          .from(chatPublications)
+          .where(eq(chatPublications.id, publication.id)),
+      ).toEqual([{ state, attempts: 1 }]);
+      expect(
+        await db
+          .select()
+          .from(chatMessageLinks)
+          .where(eq(chatMessageLinks.publicationId, publication.id)),
+      ).toHaveLength(state === "published" ? 1 : 0);
+      const [counter] = (await db.execute(sql.raw(`select last_value from post_send_conflicts_${suffix}`))) as unknown as Array<{ last_value: string }>;
+      expect(Number(counter!.last_value)).toBe(commits);
+    } finally {
+      await db.execute(sql.raw(`drop trigger fail_post_send_${suffix} on chat_message_links`));
+      await db.execute(sql.raw(`drop function fail_post_send_${suffix}()`));
+      await db.execute(sql.raw(`drop sequence post_send_conflicts_${suffix}`));
+      await fixture.cleanup();
+    }
+  });
+
   it("does not resurrect publication ownership after waiting beyond expiry on a real lease row lock", async () => {
     const fixture = await publicationLaneFixture(1);
     const { service, lanes, enqueue } = fixture;

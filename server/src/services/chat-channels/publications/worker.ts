@@ -112,6 +112,27 @@ type PublicationWorkerOptions = Pick<ReturnType<typeof createChatPublicationRepl
   tryProcessTeamsFilePublication: ReturnType<typeof createTeamsFileDelivery>["tryProcessTeamsFilePublication"];
   withCredentialMutationLease: ReturnType<typeof chatCredentialMutationLease>;
 };
+const POST_SEND_COMMIT_ATTEMPTS = 4;
+const POST_SEND_COMMIT_RETRY_DELAY_MS = 25;
+function isTransientCommitConflict(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; current && typeof current === "object" && depth < 4; depth++) {
+    const { code, cause } = current as { code?: unknown; cause?: unknown };
+    if (typeof code === "string") return code === "40P01" || code === "40001";
+    current = cause;
+  }
+  return false;
+}
+async function retryTransientCommitConflict<T>(commit: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await commit();
+    } catch (error) {
+      if (attempt >= POST_SEND_COMMIT_ATTEMPTS || !isTransientCommitConflict(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, POST_SEND_COMMIT_RETRY_DELAY_MS * attempt));
+    }
+  }
+}
 export function createChatPublicationWorker(db: Db, options: PublicationWorkerOptions) {
   const { CAPABILITIES, authorizeRetainedChatSourcePublication, claimPublicationTransportAuthorization, closeProgressToReplace, commitTaskControlCompletion, currentTaskControlPayload, endpointRecord, ensureDurablePublicationTransport, finalizePublicationFailure, hasCommittedTaskControlCompletion, hasTelegramStopSubscription, inboundWakePublicationToReplace, interactionPromptPublicationToReplace, interactionResolutionPublicationToReplace, nonDirectDestinationAllowed, postSafePublication, processReceiptReaction, progressSupersededByFastResponse, recordSlackFileUploadReceipt, redactError, reserveTelegramPublicationDraft, runOwnershipMilestoneSupersessionReason, runProgressSupersededByPublishedInteraction, runPublicationToReplace, runtimeContextForRecord, scheduleMessageProcessing, settleGitHubAutomaticPublication, stageSlackFilePublicationSuccess, taskStatusPublicationToReplace, tryProcessTeamsFilePublication, withCredentialMutationLease, receiptReactionCompletionRunId } = options;
 
@@ -858,7 +879,8 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
               }
               const { authorizationActionId } = authorizationClaim;
               const receiptRemovalActionIds: string[] = [];
-              await db.transaction(async (tx) => {
+              await retryTransientCommitConflict(() => db.transaction(async (tx) => {
+                receiptRemovalActionIds.length = 0;
                 await credentialLease.assertOwned(tx);
                 const committedAt = new Date();
                 await notifyChatPublicationWork(tx, publication);
@@ -1052,7 +1074,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                   )),
                 );
                 await credentialLease.assertOwned(tx);
-              });
+              }));
               // Receipt cleanup is non-critical provider I/O. Dispatch it
               // after the terminal reply and durable action commit so a
               // slow reaction endpoint cannot hold the publication lane.
