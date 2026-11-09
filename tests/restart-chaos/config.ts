@@ -173,7 +173,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (values["fault-after-seconds"] !== undefined && (stormMinutes || crashPoint)) {
     throw new Error("--fault-after-seconds sets planned fault times; a storm or crash-point wave has none");
   }
-  if (values["fault-after-seconds"] !== undefined && options.triggers.some(trigger => trigger !== "time")) {
+  if (values["fault-after-seconds"] !== undefined && (options.triggers ?? []).some(trigger => trigger !== "time")) {
     throw new Error("--fault-after-seconds fires faults by time; use it with --triggers time");
   }
   if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
