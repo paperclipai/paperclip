@@ -16424,8 +16424,7 @@ describe("runnerd provider runtime wiring", () => {
     const nativeIdentity = { ...current.binding, sessionId: current.session.normalizedSessionId! };
     const openSession = vi.fn(async () => ({ close: async () => undefined, identity: () => nativeIdentity }));
     const freshOpenSession = vi.fn(async () => ({ close: async () => undefined, identity: () => nativeIdentity }));
-    state.createBackend.mockReturnValueOnce({ kind: "test", openSession, descriptor: () => ({ name: "reattached" }) } as never)
-      .mockReturnValueOnce({ kind: "test", openSession: freshOpenSession, descriptor: () => ({ name: "replacement" }) } as never);
+    state.createBackend.mockReturnValueOnce({ kind: "test", openSession, descriptor: () => ({ name: "reattached" }) } as never);
     const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
       runnerIngressAuthorized: true,
       controllerPersistence: { bootId: "successor", runnerArtifact: { version: "admitted-version", digest: `sha256:${"a".repeat(64)}` } },
