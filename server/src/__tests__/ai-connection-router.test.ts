@@ -367,9 +367,14 @@ describe("durable, authorized connection routing", () => {
     await expect(resolve(pool.id, "scope-blocked", { environmentId: "environment-a" })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
     const otherEnvironment = await resolve(pool.id, "scope-other", { agentId: secondAgentId, environmentId: "environment-b" });
     expect(otherEnvironment.memberId).toBe(first.memberId);
+    const moved = await resolve(pool.id, "scope-first", { environmentId: "environment-b" });
+    expect(moved.runnerScope).toEqual({ environmentId: "environment-b" });
+    await expect(service().recheckPinnedPoolAccount({ companyId, agentId, userId: "alice", taskKey: "scope-first", selection: moved })).resolves.toBeUndefined();
+    await service().recordQuotaCooldown(companyId, account.connectionId, poolRunnerCooldownIdentity(identity, moved.runtimeConfig, "environment-b"), deadline, identity);
+    await expect(service().recheckPinnedPoolAccount({ companyId, agentId, userId: "alice", taskKey: "scope-first", selection: moved })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
     expect(await service().accountCooldown(companyId, account.connectionId, identity)).toBeNull();
     await service().recordQuotaCooldown(companyId, account.connectionId, identity, deadline);
-    for (const candidate of [agentId, secondAgentId]) await expect(resolve(pool.id, randomUUID(), { agentId: candidate, environmentId: "environment-b" })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
+    for (const candidate of [agentId, secondAgentId]) await expect(resolve(pool.id, randomUUID(), { agentId: candidate, environmentId: "environment-c" })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
   });
   it("refuses cross-provider execution when source CLI policy cannot be preserved", () => {
     const target = { poolId: randomUUID(), memberId: members[1]!.id, binding: members[1]!.binding,

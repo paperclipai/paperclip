@@ -648,7 +648,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     const identity = await quotaIdentity(selected, input.companyId);
     if (!identity) throw unprocessable("The task account identity changed before provider start");
     const retryAt = await accountCooldown(input.companyId, pin.member.binding.connectionId, identity,
-      pin.selection.runnerScope ? { config: pin.selection.runtimeConfig, scope: pin.selection.runnerScope } : undefined);
+      input.selection.runnerScope ? { config: input.selection.runtimeConfig, scope: input.selection.runnerScope } : undefined);
     if (retryAt) throw new AiConnectionPoolExhausted(retryAt.toISOString(), row.id);
   }
   return { catalog, list, selectable, inspect, save, remove, resolve, recordQuotaCooldown, accountCooldown, currentMemberCooldown, transitionQuotaPin, recheckPinnedPoolAccount };
