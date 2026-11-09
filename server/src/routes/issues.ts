@@ -17016,10 +17016,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/admin/force-release", async (req, res) => {
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board access required" });
-      return;
-    }
+    assertBoard(req);
     if (!req.actor.userId) {
       throw forbidden("Board user context required");
     }
