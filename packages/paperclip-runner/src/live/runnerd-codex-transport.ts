@@ -3906,6 +3906,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #resolveHandlerReady!: () => void;
   #core: DurablePrpControlPlane | null = null;
   #handle: RunnerProcessHandle | null = null;
+  /** The runnerd handle that exited on its own while the session was open. */
+  #lostRunnerHandle: RunnerProcessHandle | null = null;
   #adoptedRunnerMonitor: NodeJS.Timeout | null = null;
   #adoptedRunnerAuthenticated = false;
   #pump: NodeJS.Timeout | null = null;
@@ -5405,8 +5407,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let providerDrained = false;
     let cleanupProviderStopConfirmed = false;
     let suspensionRequired = false;
-    // runnerd had exited, unsuspended, before close sent it any signal: it
-    // was lost (killed or crashed), not stopped by this close.
+    // runnerd exited on its own, unsuspended, while the session was open: it
+    // was lost (killed or crashed), not stopped or broken by this close.
     let runnerLost = false;
     let lastSuspensionState: Record<string, unknown> | null = null;
     let suspensionState: {
@@ -5471,8 +5473,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         pump: () => this.#pumpEventsSafely(),
         deadline: closeDeadline,
       });
-      // Sampled before the shutdown wait below, which may kill a live runner.
-      runnerLost = !runnerSuspended && await this.#runnerHasExited();
+      runnerLost = !runnerSuspended && this.#handle !== null && this.#lostRunnerHandle === this.#handle;
       if (!runnerSuspended) {
         const command = [...this.#core.store.state.commands].reverse().find(
           (candidate) => candidate.type === "runner.suspend",
@@ -8368,6 +8369,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         const detail = result.stderr.trim() || result.stdout.trim();
         if (detail) this.#diagnostic(detail.slice(-4_096));
         this.#publish();
+        // runnerd exited on its own while the session was still open, without
+        // a clean suspend: it was lost (killed or crashed). Close may reap its
+        // journalled lineage. An exit during close is never treated as loss.
+        if (!this.#closed && exitConfirmed && !(result.code === 0 &&
+          this.#core?.store.state.committedEvents.some((event) => event.eventType === "runner.suspending")))
+          this.#lostRunnerHandle = handle;
         if (this.#closed || this.#failure !== null || this.#handle !== handle || (this.#releaseEpisode && !this.#releaseEpisode.claimed))
           return;
         // A per-turn runner exits after its terminal suffix is durably ACKed.
