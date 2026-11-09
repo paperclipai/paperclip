@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childrenPending, listWorkspaceFiles } from "./observer.js";
+import { isBoardStall, CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childrenPending, listWorkspaceFiles } from "./observer.js";
 import { gradeTask } from "./grader.js";
 import { createFixtureRepository, type ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
@@ -111,7 +111,7 @@ describe("TaskObserver", () => {
   it("clicks the board Retry on a blocked subtask, as a user would, and keeps watching the parent", async () => {
     let childStatus = "blocked";
     const base = fakeApi({ "parentIds=": () => [{ id: "c1", parentId: "i1", status: "done" }, { id: "c2", parentId: "i1", status: childStatus }],
-      "/documents/": () => null, "/recovery-actions": () => ({ active: { id: "a1" }, actions: [] }), "/api/issues/c2": () => ({ id: "c2", status: childStatus,
+      "/documents/": () => null, "/recovery-actions": () => ({ active: { id: "a1", status: "active", ownerType: "board" }, actions: [] }), "/api/issues/c2": () => ({ id: "c2", status: childStatus,
         interruption: { canRetry: childStatus === "blocked", observedRunId: "child-run" } }) }, "blocked");
     const childRetries: string[] = [];
     const api = { ...base.api, get: base.api.get.bind(base.api),
@@ -259,6 +259,19 @@ describe("fixture repository", () => {
     const record = parseBenchRecord(await readFile(path.join(root, ".bench", "run-abcd1234.txt"), "utf8"));
     expect(record?.result).toBe(BENCH_EXPECTED);
   }, 60_000);
+});
+
+describe("isBoardStall", () => {
+  it("counts only recovery actions that need the board, as the stall wake does", () => {
+    expect(isBoardStall({ status: "active", ownerType: "board" })).toBe(true);
+    expect(isBoardStall({ status: "escalated", ownerType: "agent" })).toBe(true);
+    expect(isBoardStall({ status: "resolved", ownerType: "board", outcome: "blocked" })).toBe(true);
+    expect(isBoardStall({ status: "active", ownerType: "agent" })).toBe(false);
+    expect(isBoardStall({ status: "cancelled", ownerType: "agent" })).toBe(false);
+    expect(isBoardStall({ status: "resolved", ownerType: "system", outcome: "cancelled" })).toBe(false);
+    expect(isBoardStall({ status: "resolved", ownerType: "board", outcome: "cancelled" })).toBe(false);
+    expect(isBoardStall(null)).toBe(false);
+  });
 });
 
 describe("childrenPending", () => {

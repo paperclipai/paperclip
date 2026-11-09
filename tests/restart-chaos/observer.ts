@@ -52,6 +52,13 @@ export const CHILD_WAKE_GRACE_MS = 60_000;
 export const CHILD_STALL_CHECK_MS = 10_000;
 export const STOP_CONTINUE_AFTER_MS = 20_000;
 
+export function isBoardStall(action: Record<string, unknown> | null | undefined): boolean {
+  if (!action) return false;
+  const open = action.status === "active" || action.status === "escalated";
+  if (open) return action.ownerType === "board" || action.status === "escalated";
+  return action.ownerType === "board" && action.status === "resolved" && action.outcome === "blocked";
+}
+
 export function childrenPending(children: ReadonlyArray<{ status: string | null }> | null): boolean {
   return !children || children.some(child => !["done", "cancelled", "blocked"].includes(child.status ?? ""));
 }
@@ -591,6 +598,7 @@ export class TaskObserver {
       const recovery = await this.api.get<Json>(`/api/issues/${childIssueId}/recovery-actions`).catch(() => null);
       const actions = Array.isArray(recovery?.actions) ? recovery.actions as Json[] : [];
       const latest = (recovery?.active as Json | null | undefined) ?? actions[0] ?? null;
+      if (!isBoardStall(latest)) continue;
       const recoveryActionId = typeof latest?.id === "string" ? latest.id : null;
       const stalls = this.record.childStalls ??= [];
       if (!stalls.some(stall => stall.childIssueId === childIssueId && stall.recoveryActionId === recoveryActionId)) {
