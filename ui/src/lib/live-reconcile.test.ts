@@ -10,10 +10,12 @@ import { queryKeys } from "./queryKeys";
 describe("live reconcile scope", () => {
   it("skips instance and personal preference reads", () => {
     for (const queryKey of [
+      queryKeys.instance.settings,
       queryKeys.instance.experimentalSettings,
       queryKeys.instance.generalSettings,
       queryKeys.plugins.uiContributions,
       queryKeys.workspacePreferences.mine("user-1"),
+      queryKeys.sidebarPreferences.companyOrder("user-1"),
       queryKeys.sidebarPreferences.projectOrder("company-1", "user-1"),
     ]) {
       expect(isLiveReconciledQuery({ queryKey }), JSON.stringify(queryKey)).toBe(false);
@@ -37,8 +39,15 @@ describe("live reconcile scope", () => {
   it("gives event-free reads a longer stale time and leaves others on the app default", () => {
     const client = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000 } } });
     applyLiveEventFreeQueryDefaults(client);
-    expect(client.defaultQueryOptions({ queryKey: queryKeys.instance.experimentalSettings }).staleTime)
-      .toBe(LIVE_EVENT_FREE_STALE_TIME_MS);
+    for (const queryKey of [
+      queryKeys.instance.settings,
+      queryKeys.instance.generalSettings,
+      queryKeys.instance.experimentalSettings,
+      queryKeys.plugins.uiContributions,
+      queryKeys.sidebarPreferences.companyOrder("user-1"),
+    ]) {
+      expect(client.defaultQueryOptions({ queryKey }).staleTime, JSON.stringify(queryKey)).toBe(LIVE_EVENT_FREE_STALE_TIME_MS);
+    }
     expect(client.defaultQueryOptions({ queryKey: queryKeys.workspacePreferences.mine("user-1") }).staleTime)
       .toBe(LIVE_EVENT_FREE_STALE_TIME_MS);
     expect(client.defaultQueryOptions({ queryKey: queryKeys.agents.list("company-1") }).staleTime).toBe(30_000);

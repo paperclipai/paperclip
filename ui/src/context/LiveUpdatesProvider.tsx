@@ -2364,7 +2364,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       socket = nextSocket;
       let recoveryActive = true;
       const recoverQueries = createLiveQueryRecovery(queryClient,
-        () => !closed && recoveryActive && socket === nextSocket && getPageVisibility().visible);
+        () => !closed && recoveryActive && socket === nextSocket && getPageVisibility().visible,
+        { predicate: isLiveReconciledQuery });
 
       nextSocket.onopen = () => {
         if (closed || socket !== nextSocket) {
