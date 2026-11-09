@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeInfrastructureRecovery, readSourceRecoveryRecord } from "./runtime-infrastructure.js";
+import { exhaustedSourceRecovery, gradeInfrastructureRecovery, readSourceRecoveryRecord, sameRecoveryAction } from "./runtime-infrastructure.js";
 function valid(id = "recovery.explain-stall") {
   const recovery = { id: "recovery", companyId: "company", sourceIssueId: "website", kind: "active_run_watchdog", cause: "native_session_retry_exhausted", ownerType: "board", ownerAgentId: null,
     returnOwnerAgentId: "morgan", recoveryIssueId: null, evidence: { runId: "run", coordinatorAttempt: 3, recoveryDisposition: "native_session_retry_exhausted" }, maxAttempts: 3, wakePolicy: null, nextAction: "Inspect the provider trace and explicitly choose a replacement run or provider configuration; automatic provider work is stopped." };
@@ -34,3 +34,42 @@ it("reads the recovery record only from exact product tool output", () => {
 it("rejects duplicate repair chains", () => { const o = valid(); o.tasks.push({ id: "repair" }); expect(gradeInfrastructureRecovery(o).passed).toBe(false); });
 it("rejects concealing resumed work as still failed", () => { const o = valid(); o.runs[0]!.status = "running"; expect(gradeInfrastructureRecovery(o).passed).toBe(false); });
 it("rejects missing actual source recovery evidence", () => expect(gradeInfrastructureRecovery(undefined).passed).toBe(false));
+
+// The product settles an exhausted native action as resolved/blocked under
+// preserve_without_replay_v1 and blocks the task, where the human Retry lives.
+function settled(overrides: Record<string, unknown> = {}, automatic: Record<string, unknown> = {}) {
+  const { recoveryBefore } = valid().state;
+  return { ...recoveryBefore, status: "resolved", outcome: "blocked", createdAt: "2026-11-09T15:13:11.000Z", wakePolicy: null,
+    nextAction: "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated.",
+    evidence: { ...recoveryBefore.evidence, automaticRecovery: { policy: "preserve_without_replay_v1", runId: "run", replay: "blocked", ...automatic } }, ...overrides };
+}
+const run = { id: "run", status: "failed", nativePhase: "terminal_failure" } as never;
+const select = (actions: unknown[], status = "blocked", active?: unknown) =>
+  exhaustedSourceRecovery({ active: active as never, actions: actions as never }, { status } as never, run, "company", "website", "morgan");
+it("accepts the exhausted action settled as blocked without replay on a blocked task", () => {
+  const action = settled();
+  expect(select([action])?.id).toBe("recovery");
+  const o = valid(); o.state.recoveryBefore = action as never; o.state.recoveryAfter = { ...action } as never;
+  expect(gradeInfrastructureRecovery(o).passed).toBe(true);
+});
+it("still accepts the exhausted action while it is active", () => expect(select([], "blocked", { ...valid().state.recoveryBefore, status: "active" })?.id).toBe("recovery"));
+it.each([
+  ["a cancelled settlement", settled({ outcome: "cancelled" })],
+  ["a settlement without the preserve-without-replay marker", settled({ evidence: { ...valid().state.recoveryBefore.evidence } })],
+  ["a settlement for another run", settled({}, { runId: "other" })],
+  ["a settlement under another policy", settled({}, { policy: "replay_v1" })],
+  ["a settled action that kept a wake policy", settled({ wakePolicy: { kind: "resume_native_run", runId: "run" } })],
+  ["a settled action for another attempt count", settled({ evidence: { ...settled().evidence, coordinatorAttempt: 2 } })],
+])("rejects %s", (_label, action) => expect(select([action])).toBeUndefined());
+it("rejects a settled exhaustion while the task is not blocked", () => expect(select([settled()], "todo")).toBeUndefined());
+it("judges only the newest source action", () => {
+  const older = settled({ id: "older", createdAt: "2026-11-09T15:00:00.000Z" }), newer = settled({ id: "newer", outcome: "cancelled" });
+  expect(select([older, newer])).toBeUndefined();
+});
+it("reads before and after as the same action by ID, so a replacement is detected", () => {
+  const before = settled(), replacement = settled({ id: "replacement", createdAt: "2026-11-09T15:20:00.000Z" });
+  expect(sameRecoveryAction({ actions: [before as never] }, "recovery")?.id).toBe("recovery");
+  expect(sameRecoveryAction({ actions: [replacement as never] }, "recovery")).toBeUndefined();
+  const o = valid(); o.state.recoveryBefore = before as never; o.state.recoveryAfter = replacement as never;
+  expect(gradeInfrastructureRecovery(o).passed).toBe(false);
+});
