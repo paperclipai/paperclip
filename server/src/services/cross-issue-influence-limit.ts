@@ -1,4 +1,4 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, gte, isNull, min, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
@@ -7,6 +7,16 @@ import { logger } from "../middleware/logger.js";
 
 export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
 export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.000Z");
+
+/**
+ * A service key never owns a run, so it cannot be given a per-run budget. It is
+ * a long-lived identity serving many independent inbound events rather than one
+ * agent turn, so each key gets a rolling window instead: the same shape of
+ * backstop, sized to an hour of inbound traffic rather than to a single
+ * heartbeat.
+ */
+export const CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT = 60;
+export const CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS = 60 * 60 * 1000;
 
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";
 const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap_rejected";
@@ -25,6 +35,14 @@ export type CrossIssueInfluenceDecision = {
   count: number;
   cap: number;
   enforceAt: string;
+  /**
+   * Set only by the service-key path, which budgets by rolling window instead
+   * of per run. Their presence is what tells the denial copy to describe the
+   * window and a retry time rather than "continue on the next heartbeat".
+   */
+  windowMs?: number;
+  /** When the oldest counted write ages out, i.e. the earliest retry that can succeed. */
+  retryAfter?: string | null;
 };
 
 export function crossIssueInfluenceRunContextError() {
@@ -32,6 +50,21 @@ export function crossIssueInfluenceRunContextError() {
   // so the agent reading this 403 is told the fix, not just the refusal.
   const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required");
   return forbidden(body.error, body.details);
+}
+
+/**
+ * Drizzle's `min()` is typed loosely and the driver may hand a timestamp back as
+ * a `Date` or as a string, so normalize before doing arithmetic on it. An
+ * unparseable value yields `null`, which drops the retry hint rather than
+ * putting `Invalid Date` in front of an operator.
+ */
+function coerceDate(value: unknown): Date | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
 }
 
 function readRunSourceIssueId(contextSnapshot: unknown) {
@@ -46,15 +79,17 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
 export function evaluateCrossIssueInfluenceLimit(input: {
   priorCount: number;
   now?: Date;
+  cap?: number;
 }): CrossIssueInfluenceDecision {
   const now = input.now ?? new Date();
   const mode = now >= CROSS_ISSUE_INFLUENCE_ENFORCE_AT ? "enforce" : "log_only";
   const nextCount = input.priorCount + 1;
+  const cap = input.cap ?? CROSS_ISSUE_INFLUENCE_LIMIT;
   return {
-    allowed: mode === "log_only" || nextCount <= CROSS_ISSUE_INFLUENCE_LIMIT,
+    allowed: mode === "log_only" || nextCount <= cap,
     mode,
     count: nextCount,
-    cap: CROSS_ISSUE_INFLUENCE_LIMIT,
+    cap,
     enforceAt: CROSS_ISSUE_INFLUENCE_ENFORCE_AT.toISOString(),
   };
 }
@@ -183,6 +218,134 @@ export async function observeCrossIssueInfluence(
   });
 }
 
+/**
+ * Observes one cross-issue influence attempt by a service key — an integration
+ * that speaks for an agent but never owns a heartbeat run.
+ *
+ * There is no run row whose lock would serialize concurrent attempts, so the
+ * transaction takes a per-window advisory lock instead: count-then-insert is
+ * atomic per (company, agent, key) and a burst arriving at the cap cannot
+ * read the same prior count and all land.
+ *
+ * The window is scoped to the service key that carried the write. An agent
+ * can be spoken for by several integrations, and one of them filling its
+ * budget must not 429 another's otherwise-authorized replies. A caller with
+ * no key identity falls back to the agent-wide window — the stricter shared
+ * bucket, never a fresh one.
+ *
+ * Unlike the run path there is no source issue to compare against, so every
+ * attempt is charged; a service key has no "own" issue to write to for free.
+ */
+export async function observeServiceKeyCrossIssueInfluence(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    serviceKeyId: string | null;
+    responsibleUserId?: string | null;
+    targetIssueId: string;
+    targetIssueIdentifier?: string | null;
+    kind: CrossIssueInfluenceKind;
+    now?: Date;
+  },
+): Promise<CrossIssueInfluenceDecision> {
+  const now = input.now ?? new Date();
+  const windowStart = new Date(now.getTime() - CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS);
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${
+      `cross-issue-influence:service-key:${input.companyId}:${input.agentId}:${input.serviceKeyId ?? "unkeyed"}`
+    }, 0))`);
+    // `min(createdAt)` rides along with the count because a rolling window frees
+    // its next slot when its *oldest* counted write ages out. Without that
+    // timestamp the 429 can say the budget is spent but not when to come back,
+    // and a run-less caller has no heartbeat boundary to wait for instead.
+    const prior = await tx
+      .select({ count: count(), oldest: min(activityLog.createdAt) })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.agentId, input.agentId),
+        isNull(activityLog.runId),
+        eq(activityLog.action, CROSS_ISSUE_INFLUENCE_ACTIVITY),
+        gte(activityLog.createdAt, windowStart),
+        input.serviceKeyId === null
+          ? undefined
+          : sql`${activityLog.details} ->> 'serviceKeyId' = ${input.serviceKeyId}`,
+      ))
+      .then((rows) => rows[0] ?? null);
+    const priorCount = Number(prior?.count ?? 0);
+    const oldestCounted = coerceDate(prior?.oldest ?? null);
+    const decision: CrossIssueInfluenceDecision = {
+      ...evaluateCrossIssueInfluenceLimit({
+        priorCount,
+        now,
+        cap: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+      }),
+      windowMs: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+      retryAfter: oldestCounted
+        ? new Date(
+            oldestCounted.getTime() + CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+          ).toISOString()
+        : null,
+    };
+
+    await tx.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "agent",
+      actorId: input.agentId,
+      agentId: input.agentId,
+      runId: null,
+      responsibleUserId: input.responsibleUserId ?? null,
+      action: decision.allowed
+        ? CROSS_ISSUE_INFLUENCE_ACTIVITY
+        : CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY,
+      entityType: "issue",
+      entityId: input.targetIssueId,
+      details: {
+        kind: input.kind,
+        actorScope: "service_key",
+        serviceKeyId: input.serviceKeyId,
+        sourceIssueId: null,
+        targetIssueId: input.targetIssueId,
+        targetIssueIdentifier: input.targetIssueIdentifier ?? null,
+        count: decision.count,
+        cap: decision.cap,
+        mode: decision.mode,
+        enforceAt: decision.enforceAt,
+        windowMs: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+        windowStart: windowStart.toISOString(),
+        allowed: decision.allowed,
+      },
+    });
+
+    const logContext = {
+      event: "cross_issue_influence_cap",
+      companyId: input.companyId,
+      runId: null,
+      agentId: input.agentId,
+      actorScope: "service_key",
+      serviceKeyId: input.serviceKeyId,
+      retryAfter: decision.retryAfter,
+      targetIssueId: input.targetIssueId,
+      kind: input.kind,
+      count: decision.count,
+      cap: decision.cap,
+      mode: decision.mode,
+      windowMs: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+      enforceAt: decision.enforceAt,
+      allowed: decision.allowed,
+    };
+    if (decision.allowed) {
+      logger.info(logContext, "service-key cross-issue influence observed");
+    } else {
+      logger.warn(logContext, "service-key cross-issue influence cap exceeded");
+    }
+
+    return decision;
+  });
+}
+
 export function crossIssueInfluenceLimitError(
   decision: CrossIssueInfluenceDecision,
   context: { actorLabel?: string | null; assigneeLabel?: string | null; issueIdentifier?: string | null } = {},
@@ -194,6 +357,10 @@ export function crossIssueInfluenceLimitError(
     cap: decision.cap,
     count: decision.count,
     enforceAt: decision.enforceAt,
+    // Only the service-key path sets these, and their presence is what selects
+    // the rolling-window copy over the per-run copy.
+    windowMs: decision.windowMs ?? null,
+    retryAfter: decision.retryAfter ?? null,
   });
   return {
     error: body.error,
@@ -203,6 +370,9 @@ export function crossIssueInfluenceLimitError(
       count: decision.count,
       mode: decision.mode,
       enforceAt: decision.enforceAt,
+      ...(decision.windowMs === undefined
+        ? {}
+        : { windowMs: decision.windowMs, retryAfter: decision.retryAfter ?? null }),
     },
   };
 }
