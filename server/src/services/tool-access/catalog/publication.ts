@@ -98,7 +98,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         code: failure.code,
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
-        ...unreachableServerRemediation(error, connection.id, actor),
+        ...unreachableServerRemediation(error, actor),
       }));
     }
 
