@@ -1,6 +1,6 @@
 import { safeErrorCauseCode } from "./safe-error-cause.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS } from "../drivers/agent-observability.js";
-import { configuredEnvironment } from "../configured-environment.js";
+import { CERTIFICATE_ENVIRONMENT_KEYS, configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
 import {
   createCipheriv,
@@ -4784,8 +4784,7 @@ const runnerPlatformEnvironmentKeys = [
   "HTTPS_PROXY",
   "NO_PROXY",
   "ALL_PROXY",
-  "SSL_CERT_FILE",
-  "SSL_CERT_DIR",
+  ...CERTIFICATE_ENVIRONMENT_KEYS,
   "RUST_BACKTRACE",
 ] as const;
 
