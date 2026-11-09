@@ -11,10 +11,31 @@
 import Ajv, { type ErrorObject } from "ajv";
 import addFormats from "ajv-formats";
 import type { JsonSchema } from "@paperclipai/shared";
+import {
+  collectSecretRefPaths,
+  parseSecretRefBindingObject,
+  readConfigValueAtPath,
+  writeConfigValueAtPath,
+} from "./json-schema-secret-refs.js";
 
 export interface ConfigValidationResult {
   valid: boolean;
   errors?: { field: string; message: string }[];
+}
+
+/**
+ * Secret-ref fields are declared `type: "string"`, but the settings form and the
+ * plugin secrets API store the `{ type: "secret_ref", secretId, version }` binding
+ * object there. Validate the binding's secret id in its place so the schema
+ * checks the field without rejecting the only shape the secrets handler accepts.
+ */
+function secretRefsAsIds(configJson: Record<string, unknown>, schema: JsonSchema) {
+  let candidate = configJson;
+  for (const path of collectSecretRefPaths(schema as Record<string, unknown>)) {
+    const binding = parseSecretRefBindingObject(readConfigValueAtPath(candidate, path));
+    if (binding) candidate = writeConfigValueAtPath(candidate, path, binding.secretId);
+  }
+  return candidate;
 }
 
 /**
@@ -39,7 +60,7 @@ export function validateInstanceConfig(
   // hint only — UUID validation happens in the secrets handler at resolve time.
   ajv.addFormat("secret-ref", { validate: () => true });
   const validate = ajv.compile(schema);
-  const valid = validate(configJson);
+  const valid = validate(secretRefsAsIds(configJson, schema));
 
   if (valid) {
     return { valid: true };
