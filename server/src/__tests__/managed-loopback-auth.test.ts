@@ -60,7 +60,7 @@ describeEmbeddedPostgres("managed runtime loopback auth cookies", () => {
       deploymentExposure: "private",
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: publicOrigin,
-      authDisableSignUp: false,
+      authSignUpMode: "open",
     } as Config;
     const auth = createBetterAuthInstance(db, config, [publicOrigin, loopbackOrigin]);
     const credentials = {
