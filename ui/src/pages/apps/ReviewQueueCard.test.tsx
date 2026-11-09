@@ -5,8 +5,12 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReviewQueueCard } from "./ReviewQueueCard";
+import { pendingToolActionLongProposalInteraction } from "@/fixtures/issueThreadInteractionFixtures";
+import { ThemeProvider } from "@/context/ThemeContext";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
+const listInteractionsMock = vi.hoisted(() => vi.fn());
 const approveActionRequestMock = vi.hoisted(() => vi.fn());
 const createTrustRuleFromActionRequestMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
@@ -14,14 +18,19 @@ const pushToastMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listActionRequests: (companyId: string, status: string) => listActionRequestsMock(companyId, status),
-    approveActionRequest: (companyId: string, actionRequestId: string) =>
-      approveActionRequestMock(companyId, actionRequestId),
+    approveActionRequest: (companyId: string, actionRequestId: string, rememberAction?: boolean) =>
+      approveActionRequestMock(companyId, actionRequestId, rememberAction),
     createTrustRuleFromActionRequest: (companyId: string, actionRequestId: string, input: unknown) =>
       createTrustRuleFromActionRequestMock(companyId, actionRequestId, input),
   },
 }));
 
-vi.mock("@/context/CompanyContext", () => ({
+vi.mock("@/api/issues", () => ({
+  issuesApi: { listInteractions: (...args: unknown[]) => listInteractionsMock(...args) },
+}));
+
+vi.mock("@/context/CompanyContext", async importOriginal => ({
+  ...await importOriginal<typeof import("@/context/CompanyContext")>(),
   useCompany: () => ({
     selectedCompanyId: "company-1",
     selectedCompany: { id: "company-1", name: "Paperclip" },
@@ -123,7 +132,35 @@ describe("ReviewQueueCard", () => {
     await flushReact();
   }
 
-  it("promotes Always allow only after the action request is approved", async () => {
+  it("shows the linked interaction's redacted proposal tail in Apps before a decision", async () => {
+    const interaction = structuredClone(pendingToolActionLongProposalInteraction);
+    const item = pendingRequest();
+    const linked = { ...item, request: { ...item.request, interactionId: interaction.id } };
+    listActionRequestsMock.mockResolvedValue({ actionRequests: [linked] });
+    listInteractionsMock.mockResolvedValue([interaction]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<QueryClientProvider client={client}><TooltipProvider><ThemeProvider>
+      <ReviewQueueCard emptyState="reassure" />
+    </ThemeProvider></TooltipProvider></QueryClientProvider>));
+    await flushReact();
+    await vi.waitFor(() => expect(container.querySelector("details")).not.toBeNull());
+    const details = container.querySelector("details")!;
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+    expect(details.textContent).toContain("November 8, 2030");
+    expect(details.querySelector("pre")?.textContent).toBe(interaction.payload.toolAction!.argumentsSummaryJson);
+    await act(async () => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(approveActionRequestMock).not.toHaveBeenCalled();
+    expect(createTrustRuleFromActionRequestMock).not.toHaveBeenCalled();
+    expect(listInteractionsMock).toHaveBeenCalledWith("issue-1");
+    await act(async () => { buttonContaining("Approve & run")!.click(); });
+    await vi.waitFor(() => expect(approveActionRequestMock).toHaveBeenCalledExactlyOnceWith("company-1", "request-1", false));
+    expect(createTrustRuleFromActionRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("submits approval and remembered permission as one atomic decision", async () => {
     const calls: string[] = [];
     approveActionRequestMock.mockImplementation(async () => {
       calls.push("approve");
@@ -141,13 +178,9 @@ describe("ReviewQueueCard", () => {
     });
     await flushReact();
 
-    expect(calls).toEqual(["approve", "trust-rule"]);
-    expect(approveActionRequestMock).toHaveBeenCalledWith("company-1", "request-1");
-    expect(createTrustRuleFromActionRequestMock).toHaveBeenCalledWith(
-      "company-1",
-      "request-1",
-      { approvalThreshold: 1 },
-    );
+    expect(calls).toEqual(["approve"]);
+    expect(approveActionRequestMock).toHaveBeenCalledWith("company-1", "request-1", true);
+    expect(createTrustRuleFromActionRequestMock).not.toHaveBeenCalled();
     expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "Always allowed" }));
   });
 });

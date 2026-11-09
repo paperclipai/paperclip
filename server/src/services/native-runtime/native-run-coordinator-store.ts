@@ -1,3 +1,10 @@
+import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
+import { isNativeResponseEvidence, notifyNativeResponsePresentation } from "../native-response-presentation-notifications.js";
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
+import { isSafeNativeChatProgressEventType } from "../safe-native-chat-progress.js";
+import { notifyChatNativeProgress } from "../chat-native-progress-notifications.js";
 import { createHash } from "node:crypto";
 
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
@@ -6,10 +13,12 @@ import type { Db } from "@paperclipai/db";
 import {
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
   nativeRunFinalizations,
   nativeRunResults,
 } from "@paperclipai/db";
 import {
+  NativeSessionProtocolIntegrityError,
   type PrpEvent,
   type PrpStructuredRunResult,
   type PrpTerminalState,
@@ -250,7 +259,9 @@ export class NativeRunCoordinatorStore {
           existing.sourceInstanceId !== event.sourceInstanceId ||
           existing.sourceSeq !== event.sourceSeq
         ) {
-          throw new Error("native_event_replay_conflict");
+          throw new NativeSessionProtocolIntegrityError(
+            "source_event_replay_conflict",
+          );
         }
         const [latest] = await tx
           .select({ sourceSeq: heartbeatRunEvents.sourceSeq })
@@ -286,6 +297,12 @@ export class NativeRunCoordinatorStore {
         throw new Error("native_event_source_gap");
       }
 
+      if (isSafeNativeChatProgressEventType(event.eventType)) {
+        await notifyChatNativeProgress(tx, { companyId: this.#binding.companyId, issueId: this.#binding.issueId });
+      }
+      if (isNativeResponseEvidence(event.eventType, canonicalPayload)) {
+        await notifyNativeResponsePresentation(tx, this.#binding);
+      }
       const cursor = run.nextEventSeq;
       const [inserted] = await tx
         .insert(heartbeatRunEvents)
@@ -336,6 +353,11 @@ export class NativeRunCoordinatorStore {
     });
 
     return this.#db.transaction(async (tx) => {
+      // Match task -> run lock ordering before the result's task foreign-key
+      // check; a concurrent task mutation may also need this run row.
+      await tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId)))
+        .for("key share");
       const [run] = await tx
         .select()
         .from(heartbeatRuns)
@@ -371,6 +393,8 @@ export class NativeRunCoordinatorStore {
         return { disposition: "duplicate" as const, resultId: existing.id };
       }
 
+      await notifyNativeResultCommit(tx, this.#binding);
+      await notifyNativeWorkspaceFinalization(tx, this.#binding);
       const [inserted] = await tx
         .insert(nativeRunResults)
         .values({
@@ -402,6 +426,8 @@ export class NativeRunCoordinatorStore {
           set: {
             phase: "workspace_finalizing",
             resultId: inserted.id,
+            recoveryState: null,
+            recoveryRequestId: null,
             failureCode: null,
             failureDetail: null,
             nextAttemptAt: null,
@@ -505,6 +531,8 @@ export class NativeRunCoordinatorStore {
       ) {
         throw new Error("native_finalization_lease_conflict");
       }
+      if (row.decisionId) await notifyNativeFinalizationWork(tx, this.#binding);
+      else await notifyNativeResultCommit(tx, this.#binding);
       if (
         row.leaseOwner === input.leaseOwner &&
         row.leaseExpiresAt &&
@@ -546,7 +574,12 @@ export class NativeRunCoordinatorStore {
     ) {
       throw new Error("native_finalization_retry_invalid");
     }
-    const [updated] = await this.#db
+    const [updated] = await this.#db.transaction(async tx => {
+      await notifyNativeFinalizationWork(tx, this.#binding);
+      if (input.failureCode === "native_workspace_sync_out_unsafe_archive") {
+        await notifyUnsafeWorkspaceExportRecovery(tx, this.#binding);
+      }
+      return tx
       .update(nativeRunFinalizations)
       .set({
         leaseOwner: null,
@@ -564,6 +597,7 @@ export class NativeRunCoordinatorStore {
         ),
       )
       .returning({ runId: nativeRunFinalizations.runId });
+    });
     if (!updated) throw new Error("native_finalization_lease_lost");
   }
 }

@@ -84,9 +84,9 @@ export function resolveGitInstallWorkspacePackages(checkoutPath: string): Releas
   return ordered;
 }
 
-function assertSupportedNodeVersion(): void {
+export function assertSupportedNodeVersion(): void {
   if (!isSupportedNodeVersion(process.versions.node)) {
-    throw new Error(`Managed installs require Node.js ${MINIMUM_NODE_VERSION} or newer (found ${process.version}).`);
+    throw new Error(`Installing or updating Paperclip requires Node.js ${MINIMUM_NODE_VERSION} or newer (found ${process.version} at ${process.execPath}). Put a supported Node bin directory first on PATH and run 'npx paperclipai@latest install --yes' to re-pin an existing managed install.`);
   }
 }
 
@@ -111,6 +111,8 @@ function parseResolvedVersion(stdout: string): string {
   try {
     const parsed = JSON.parse(trimmed) as unknown;
     if (typeof parsed === "string") return parsed;
+    // npm 12 wraps single-value `npm view --json` output in an array.
+    if (Array.isArray(parsed) && parsed.length === 1 && typeof parsed[0] === "string") return parsed[0];
   } catch {
     if (EXACT_VERSION_PATTERN.test(trimmed)) return trimmed;
   }

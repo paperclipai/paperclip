@@ -37,7 +37,7 @@ export interface EnvironmentDriverCapabilitySupport {
 
 const NO_CAPABILITY_SUPPORT: ReadonlySet<SandboxCapabilityKey> = new Set<SandboxCapabilityKey>();
 
-// The eight capability keys, written out here as literal strings. This module
+// The nine capability keys, written out here as literal strings. This module
 // does not import `environment-runtime.ts` as a value (see the module comment
 // above), so it cannot read `SANDBOX_CAPABILITY_KEYS` from there. Keep this
 // list equal to that list.
@@ -50,6 +50,7 @@ const ALL_CAPABILITY_SUPPORT: ReadonlySet<SandboxCapabilityKey> = new Set<Sandbo
   "incrementalSessionOutput",
   "concurrentSyncOperations",
   "duplexCommandStream",
+  "runnerWebSocketIngress",
 ]);
 
 /**

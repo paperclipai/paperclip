@@ -53,10 +53,11 @@ const mockEnvironmentRuntime = vi.hoisted(() => ({
 
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn(async () => null));
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
   getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
 }));
-const mockRunClaudeLogin = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+const mockRunClaudeLogin = vi.hoisted(() => vi.fn(async (_input: { config: { env: Record<string, string> } }) => ({ ok: true })));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -415,3 +416,9 @@ describeEmbeddedPostgres("agents adapter-config user-secret resolution routes", 
 function beforeEachActor(actor: TestActor) {
   currentActor = actor;
 }
+
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+  }) };
+});

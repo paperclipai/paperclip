@@ -1,3 +1,6 @@
+import { pluginIdleManifestGeneration, type IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
+import { createHash, randomUUID } from "node:crypto";
+import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 /**
  * PluginWorkerManager — spawns and manages out-of-process plugin worker child
  * processes, routes JSON-RPC 2.0 calls over stdio, and handles lifecycle
@@ -19,7 +22,7 @@
  */
 
 import { fork, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { beginIdleTrackedWork, readTaskDrain, trackIdleWork } from "./task-admission.js";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
@@ -60,33 +63,14 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import {
-  DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED,
-  type DuplexAggregateByteLedger,
-  type DuplexAggregateTokenOwner,
-  type ReservationToken,
-} from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
-import {
   isLoginCommandKey,
   validateLoginSessionHome,
   type LoginCommandKey,
 } from "./login-command.js";
 import { logger } from "../middleware/logger.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
+import { context as otelContext } from "@opentelemetry/api";
 import { traceparentFromContextToken } from "../instrumentation.js";
-
-/**
- * The host raises this error when the child-stdin transport reservation for a
- * duplex write fails against the aggregate byte ledger. The host does not write
- * the frame. The write path throws it, `callInternal` rejects the RPC with it
- * unwrapped, and the duplex write caller ends the route fail-closed with the
- * {@link DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED} marker. Only a duplex write
- * meters the transport, so this error never reaches a non-duplex control message.
- */
-class DuplexAggregateBytesExceededError extends Error {
-  constructor() {
-    super(DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED);
-    this.name = "DuplexAggregateBytesExceededError";
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -136,6 +120,14 @@ const MAX_CONSECUTIVE_CRASHES = 10;
 /** Time window in which crashes are considered consecutive (10 minutes). */
 const CRASH_WINDOW_MS = 10 * 60 * 1_000;
 
+/**
+ * Maximum fail-closed retirements within {@link CRASH_WINDOW_MS} before the host
+ * stops replacing the worker. Unlike the crash counter, a successful restart does
+ * not reset this count, so a worker that initializes cleanly and is then retired
+ * again cannot restart in an unbounded loop.
+ */
+const MAX_CONSECUTIVE_RETIREMENTS = 5;
+
 /** Maximum number of stderr characters retained for worker failure context. */
 const MAX_STDERR_EXCERPT_CHARS = 8_000;
 
@@ -184,23 +176,38 @@ const LOGIN_PTY_CLOSE_TIMEOUT_MS = 10_000;
  * select an arbitrary command in the sandbox.
  */
 const LOGIN_PTY_COMMAND_NOT_ALLOWED = "LOGIN_PTY_COMMAND_NOT_ALLOWED";
-/** The fixed non-secret error a rejected second credential open returns. */
-const LOGIN_PTY_ROUTE_BUSY = "LOGIN_PTY_ROUTE_BUSY";
 /** The fixed non-secret error a failed open returns. */
 const LOGIN_PTY_OPEN_FAILED = "LOGIN_PTY_OPEN_FAILED";
+/**
+ * The fixed non-secret error a login pseudo-terminal open returns when the
+ * process-wide aggregate route-slot ceiling is full. This is a distinct
+ * condition from the removed per-worker single-route gate: it means the whole
+ * process is at capacity, across every worker, not that one worker already
+ * holds a terminal. It is also distinct from {@link DUPLEX_CHANNEL_ROUTE_BUSY}:
+ * `packages/adapter-utils/src/execution-target.ts` matches that exact text as
+ * a marker for the duplex path, and a login failure must never enter it.
+ */
+const LOGIN_PTY_ROUTES_AT_CAPACITY = "LOGIN_PTY_ROUTES_AT_CAPACITY";
 
 // Bounds and timeouts for the generic duplex channel route. The route mirrors the
 // login pseudo-terminal route, but it carries no command allowlist and adds seven
 // explicit bounds the pseudo-terminal route lacks. Each bound ends the route when
 // it passes the limit, so a faulty or hostile worker cannot flood the host.
-/** The default maximum characters for one duplex channel data notification. */
-const MAX_DUPLEX_CHANNEL_CHUNK_CHARS = 1_000_000;
+/** The default maximum characters for one duplex channel data notification. This
+ * matches the host duplex frame bound ({@link DEFAULT_MAX_DUPLEX_FRAME_BYTES} in
+ * `duplex-frame-codec.ts`), so one chunk always fits inside one frame. */
+const MAX_DUPLEX_CHANNEL_CHUNK_CHARS = 262_144;
 /**
- * The default maximum cumulative characters the host buffers for one duplex
- * channel route before a data listener attaches. A worker that streams data
- * before the consumer binds cannot grow the host buffer without limit.
+ * The default maximum cumulative bytes the host retains, on one duplex channel
+ * route, for input the worker has not yet delivered: the pre-bind hold (before
+ * the worker session id binds), the post-bind buffered queue (bound, before a
+ * data listener attaches), and the terminal buffer (a route that ended before
+ * a listener attached). All three representations share this one route-local
+ * bound, so a worker cannot grow any of them past it. This bound is a fixed
+ * share of the fixed per-route byte budget the host now bounds every duplex
+ * retention site against; it holds no measurement of real traffic.
  */
-const MAX_DUPLEX_CHANNEL_PRE_BIND_CHARS = 8 * 1024 * 1024;
+export const DUPLEX_ROUTE_INPUT_MAX_BYTES = 393_216;
 /**
  * The default maximum number of data frames the host buffers for one duplex
  * channel route before a data listener attaches.
@@ -229,8 +236,21 @@ const DUPLEX_CHANNEL_PRE_BIND_HOLD_MARGIN_FRAMES = 1;
  * unbounded number of pending requests.
  */
 const MAX_DUPLEX_CHANNEL_PENDING_REQUESTS = 256;
-/** The default maximum characters for one host→worker duplex channel write. */
-const MAX_DUPLEX_CHANNEL_WRITE_CHARS = 1_000_000;
+/** The default maximum characters for one host→worker duplex channel write. This
+ * matches the host duplex frame bound, so one write always fits inside one
+ * frame. */
+const MAX_DUPLEX_CHANNEL_WRITE_CHARS = 262_144;
+/**
+ * The default maximum cumulative bytes the host retains, on one duplex channel
+ * route, for a host→worker write the worker has not yet acknowledged: the raw
+ * write payload and the serialized child-stdin frame the host built from it.
+ * This bound is route-local and independent of the pending-request count
+ * bound above; a worker that never replies still cannot make one route hold
+ * an unbounded number of write bytes, even under a raised pending-request
+ * count. This bound is a fixed share of the fixed per-route byte budget; it
+ * holds no measurement of real traffic.
+ */
+export const DUPLEX_ROUTE_PENDING_WRITE_MAX_BYTES = 393_216;
 /**
  * The default maximum number of protocol errors for one duplex channel route.
  * A protocol error is one malformed or mismatched data frame. The route ends
@@ -417,6 +437,16 @@ export interface WorkerStartOptions {
   rpcTimeoutMs?: number;
   /** Whether to auto-restart on crash. Defaults to true. */
   autoRestart?: boolean;
+  /**
+   * Crash-recovery tuning. A test shortens the backoff and the retirement bound
+   * to exercise replacement without long waits.
+   */
+  crashRecovery?: {
+    /** The first restart delay, in milliseconds. Later attempts double it. */
+    minBackoffMs?: number;
+    /** Max fail-closed retirements in the crash window before restarts stop. */
+    maxConsecutiveRetirements?: number;
+  };
   /** Node.js execArgv passed to the child process. */
   execArgv?: string[];
   /** Environment variables passed to the child process. */
@@ -428,14 +458,6 @@ export interface WorkerStartOptions {
    * constructs a handle this way).
    */
   duplexRouteSlots?: DuplexRouteSlotController | null;
-  /**
-   * The process-owned aggregate byte ledger for the duplex channel. The manager
-   * injects one shared instance into every worker handle, so one gauge bounds the
-   * aggregate retained bytes across every route in the process. When it is absent,
-   * the worker retains duplex bytes unbounded (a unit test constructs a handle
-   * this way). The manager never makes a fresh per-handle default.
-   */
-  duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
   /**
    * Companies this worker may act on from proactive (no-invocation) worker→host
    * calls — the plugin's configured companies. Seeded onto the handle at
@@ -504,6 +526,9 @@ export interface WorkerStartOptions {
     maxPendingRequests?: number;
     /** Max characters for one host→worker duplex channel write. */
     maxWriteChars?: number;
+    /** Max cumulative bytes the host retains, for one route, for a
+     * host→worker write pending the worker's acknowledgement. */
+    maxPendingWriteBytes?: number;
     /** Max number of protocol errors for one route before the route ends. */
     maxProtocolErrors?: number;
     /** Max cumulative bytes the host forwards for one route over its whole life. */
@@ -536,6 +561,8 @@ interface PendingRequest {
 }
 
 interface ActiveInvocation {
+  startupContextId?: string;
+  providerSpanBudget: {remaining:number};
   scope: PluginInvocationScope;
   timer?: ReturnType<typeof setTimeout>;
   // The host-minted W3C `traceparent` for the active startup span, or undefined
@@ -674,6 +701,12 @@ interface ExecuteLogRoute {
  * with exponential backoff automatically when `autoRestart` is enabled.
  */
 export interface PluginWorkerHandle {
+  hasStartupWork?(): boolean;
+  drainStartup?(contextId: string): Promise<void>;
+  recoverStartupAcquisition?(contextId: string, creationOperationId: string): void;
+  retireStartup?(contextId: string): Promise<void>;
+  prepareIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<"none" | "present" | "unknown">;
+  releaseIdleSleep?(): void;
   /** The plugin ID this worker serves. */
   readonly pluginId: string;
 
@@ -711,6 +744,9 @@ export interface PluginWorkerHandle {
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
+    onWorkerSettled?: () => void,
+    startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
@@ -791,6 +827,23 @@ export interface WorkerDiagnostics {
  * for starting/stopping all workers and routing RPC calls.
  */
 export interface PluginWorkerManager {
+  drainStartup?(contextId: string): Promise<void>;
+  recoverStartupAcquisition?(contextId: string, creationOperationId: string): void;
+  retireStartup?(contextId: string): Promise<void>;
+  /** Subscribe after a worker successfully applies live company configuration. */
+  onConfigApplied(listener: () => void): () => void;
+  /**
+   * Subscribe to every worker `ready`: first start, crash respawn, and a
+   * replacement handle from a restart. Unlike `getWorker(id).on("ready")`, it
+   * survives the handle being replaced. Returns the unsubscribe function.
+   */
+  onWorkerReady?(listener: (pluginId: string) => void): () => void;
+  inspectIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<{
+    backgroundWork: "none" | "present" | "unknown"; pluginIds: string[];
+    catalogGeneration?: string;
+    catalog?: IdlePluginCatalogEntry[];
+  }>;
+  releaseIdleSleep?(): void;
   /**
    * Register and start a worker for a plugin.
    *
@@ -841,6 +894,9 @@ export interface PluginWorkerManager {
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
+    onWorkerSettled?: () => void,
+    startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
@@ -867,6 +923,7 @@ export interface PluginWorkerManager {
 export function createPluginWorkerHandle(
   pluginId: string,
   options: WorkerStartOptions,
+  onStartupWorkChanged?: () => void,
 ): PluginWorkerHandle {
   const log = logger.child({ service: "plugin-worker", pluginId });
   const emitter = new EventEmitter();
@@ -886,6 +943,56 @@ export function createPluginWorkerHandle(
 
   // Pending RPC requests awaiting a response
   const pendingRequests = new Map<string | number, PendingRequest>();
+  // Unlike RPC promises, these survive timeouts. A late response is the
+  // completion receipt. A worker crash cannot manufacture one.
+  const unsettledCalls = new Map<string | number, () => void>();
+  const observedResults = new Map<string | number, {
+    contextId: string; response?: JsonRpcResponse; running?: Promise<void>;
+    creationOperationId?: string; track: () => void;
+    observe: (result: unknown) => Promise<void>; finish: () => void;
+  }>();
+  const startupCalls = new Map<string, Set<() => void>>();
+  const startupRetirements = new Map<string, Promise<void>>();
+  const startupHostHandlers = new Map<string, Set<Promise<void>>>();
+  const revokeStartupInvocations = (contextId: string) => {
+    for (const [id, invocation] of activeInvocations) {
+      if (invocation.startupContextId !== contextId) continue;
+      if (invocation.timer) clearTimeout(invocation.timer);
+      activeInvocations.delete(id);
+    }
+  };
+  const waitForStartupHandlers = async (contextId: string) => {
+    if (!startupHostHandlers.get(contextId)?.size) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        (async () => { while (startupHostHandlers.get(contextId)?.size) await Promise.all([...startupHostHandlers.get(contextId)!]); })(),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Task cleanup is still pending")), 15_000); timer.unref?.(); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  };
+  const unsettledInspections = new Set<() => void>();
+  let activeHostHandlers = 0;
+  let idleHold: { ownerId: string; expiresAt: number; ready: boolean } | null = null;
+
+  function releaseIdleSleep(): void {
+    const prior = idleHold;
+    idleHold = null;
+    if (prior && childProcess?.stdin?.writable) {
+      try {
+        sendMessage({ jsonrpc: JSONRPC_VERSION, method: "releaseIdleSleep", params: { ownerId: prior.ownerId } });
+      } catch { /* Worker-side expiry still bounds a lost release. */ }
+    }
+  }
+
+  function idleSleepHeld(): boolean {
+    if (!idleHold) return false;
+    const drain = readTaskDrain(new Date());
+    if (drain?.ownerId !== idleHold.ownerId || drain.expiresAt?.getTime() !== idleHold.expiresAt) {
+      releaseIdleSleep();
+    }
+    return idleHold !== null;
+  }
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
   // Host-owned execute routes, keyed by the host-issued invocation id. Only an
@@ -935,7 +1042,7 @@ export function createPluginWorkerHandle(
     options.duplexChannelLimits?.maxChunkChars ?? MAX_DUPLEX_CHANNEL_CHUNK_CHARS;
   const maxDuplexChannelPreBindChars =
     options.duplexChannelLimits?.maxPreBindBufferedChars ??
-    MAX_DUPLEX_CHANNEL_PRE_BIND_CHARS;
+    DUPLEX_ROUTE_INPUT_MAX_BYTES;
   const maxDuplexChannelPreBindFrames =
     options.duplexChannelLimits?.maxPreBindBufferedFrames ??
     MAX_DUPLEX_CHANNEL_PRE_BIND_FRAMES;
@@ -949,6 +1056,8 @@ export function createPluginWorkerHandle(
     MAX_DUPLEX_CHANNEL_PENDING_REQUESTS;
   const maxDuplexChannelWriteChars =
     options.duplexChannelLimits?.maxWriteChars ?? MAX_DUPLEX_CHANNEL_WRITE_CHARS;
+  const maxDuplexRoutePendingWriteBytes =
+    options.duplexChannelLimits?.maxPendingWriteBytes ?? DUPLEX_ROUTE_PENDING_WRITE_MAX_BYTES;
   const maxDuplexChannelProtocolErrors =
     options.duplexChannelLimits?.maxProtocolErrors ??
     MAX_DUPLEX_CHANNEL_PROTOCOL_ERRORS;
@@ -999,6 +1108,14 @@ export function createPluginWorkerHandle(
   let backoffTimer: ReturnType<typeof setTimeout> | null = null;
   let nextRestartAt: number | null = null;
 
+  // Fail-closed retirement tracking. A retirement kills the current process
+  // because the host cannot prove one of its routes is gone. The exit that
+  // follows replaces the process with a fresh one, bounded by
+  // `maxConsecutiveRetirements` within the crash window.
+  let retirementPending = false;
+  let consecutiveRetirements = 0;
+  let lastRetirementAt: number | null = null;
+
   // Track open stream channels so we can emit synthetic close on crash.
   // Maps channel → companyId.
   const openStreamChannels = new Map<string, string>();
@@ -1008,6 +1125,9 @@ export function createPluginWorkerHandle(
 
   const rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
   const autoRestart = options.autoRestart ?? true;
+  const minBackoffMs = options.crashRecovery?.minBackoffMs ?? MIN_BACKOFF_MS;
+  const maxConsecutiveRetirements =
+    options.crashRecovery?.maxConsecutiveRetirements ?? MAX_CONSECUTIVE_RETIREMENTS;
 
   // -----------------------------------------------------------------------
   // Status management
@@ -1016,6 +1136,8 @@ export function createPluginWorkerHandle(
   function setStatus(newStatus: WorkerStatus): void {
     const prev = status;
     if (prev === newStatus) return;
+    const done = beginIdleTrackedWork();
+    done();
     status = newStatus;
     log.debug({ from: prev, to: newStatus }, "worker status change");
     emitter.emit("status", { pluginId, status: newStatus, previousStatus: prev });
@@ -1025,42 +1147,11 @@ export function createPluginWorkerHandle(
   // JSON-RPC message sending
   // -----------------------------------------------------------------------
 
-  function sendMessage(message: unknown, meterDuplexWrite = false): void {
+  function sendMessage(message: unknown): void {
     if (!childProcess?.stdin?.writable) {
       throw new Error(`Worker process for plugin "${pluginId}" is not writable`);
     }
     const serialized = serializeMessage(message as any);
-    const ledger = duplexAggregateByteLedger;
-    if (meterDuplexWrite && ledger) {
-      // Charge the child-stdin transport buffer for a duplex write. The host writes
-      // the serialized frame to the child stdin without backpressure. When the child
-      // stops reading its stdin, the frame stays in the host stdin write buffer.
-      // Reserve the exact serialized-frame byte count. That count includes the JSON
-      // escaping and the newline framing, so the ledger covers the retained transport
-      // bytes, not only the raw payload. The RPC separately holds the raw payload
-      // under a `pending_write` token, so the two tokens cover the peak of both
-      // retentions at the same time.
-      const bytes = Buffer.byteLength(serialized);
-      const token = ledger.reserve("stdin_write", bytes);
-      if (!token) {
-        // The reservation would pass the aggregate ceiling. Fail closed before the
-        // enqueue: do not write the frame. The duplex write caller ends the route.
-        throw new DuplexAggregateBytesExceededError();
-      }
-      // Hold the token until the stream flushes the chunk. The write callback fires
-      // when the stream hands the chunk to the operating system, so the bytes then
-      // leave the host stream buffer. The RPC settle and the RPC timeout never
-      // release this token. Only the flush, the stream error, the stream close, or
-      // the worker exit releases it. Release through the outstanding-token set, so a
-      // later stream-error or worker-exit sweep never double-releases the same token.
-      pendingStdinWriteTokens.add(token);
-      childProcess.stdin.write(serialized, () => {
-        if (pendingStdinWriteTokens.delete(token)) {
-          ledger.release(token);
-        }
-      });
-      return;
-    }
     childProcess.stdin.write(serialized);
   }
 
@@ -1113,22 +1204,51 @@ export function createPluginWorkerHandle(
   /**
    * Handle a JSON-RPC response from the worker (matching a pending request).
    */
+  function settleResponse(response: JsonRpcResponse): void {
+    const id = response.id!;
+    unsettledCalls.get(id)?.();
+    unsettledCalls.delete(id);
+    const pending = pendingRequests.get(id);
+    if (!pending) { log.warn({ id }, "received response for unknown request id"); return; }
+    clearTimeout(pending.timer);
+    pendingRequests.delete(id);
+    pending.resolve(response);
+  }
+
+  function processObservedResult(id: string | number): Promise<void> {
+    const observer = observedResults.get(id);
+    if (!observer?.response) return Promise.resolve();
+    if (observer.running) return observer.running;
+    const response = observer.response;
+    const processing = (async () => {
+      if (isJsonRpcSuccessResponse(response)) await observer.observe(response.result);
+      observedResults.delete(id);
+      observer.finish();
+      settleResponse(response);
+    })();
+    observer.running = processing;
+    void processing.catch(() => {
+      const pending = pendingRequests.get(id);
+      pending?.resolve(createErrorResponse(id, JSONRPC_ERROR_CODES.INTERNAL_ERROR, "Plugin result could not be recorded"));
+    }).finally(() => { if (observer.running === processing) observer.running = undefined; });
+    return processing;
+  }
+
   function handleResponse(response: JsonRpcResponse): void {
     const id = response.id;
     if (id === null || id === undefined) {
       log.warn("received response with null/undefined id");
       return;
     }
-
-    const pending = pendingRequests.get(id);
-    if (!pending) {
-      log.warn({ id }, "received response for unknown request id");
+    const observer = observedResults.get(id);
+    if (observer) {
+      if (observer.response) return;
+      observer.track();
+      observer.response = response;
+      void processObservedResult(id).catch(() => log.warn({ id }, "plugin result recording will retry during cleanup"));
       return;
     }
-
-    clearTimeout(pending.timer);
-    pendingRequests.delete(id);
-    pending.resolve(response);
+    settleResponse(response);
   }
 
   function readNonEmptyString(value: unknown): string | null {
@@ -1146,7 +1266,26 @@ export function createPluginWorkerHandle(
     if (!isRecord(params)) return null;
 
     const directCompanyId = readNonEmptyString(params.companyId);
-    if (directCompanyId) return { companyId: directCompanyId };
+    if (directCompanyId) {
+      if (method === "resourceLifecycle" && params.resourceType === "project" && readNonEmptyString(params.resourceId)) {
+        return { companyId: directCompanyId, projectGit: { projectId: params.resourceId as string } };
+      }
+      if (method === "workspaceOperation" && isRecord(params.operation)) {
+        const operation = params.operation;
+        const source = operation.kind === "prepare" ? operation.source : operation.binding;
+        const workspaceId = isRecord(source) ? readNonEmptyString(operation.kind === "prepare" ? source.id : source.projectWorkspaceId) : null;
+        const projectId = readNonEmptyString(params.projectId);
+        if (projectId && workspaceId && (operation.kind === "prepare" || operation.kind === "inspect" || operation.kind === "remove")) {
+          // Only foreground preparation may use a run. Maintenance uses project consent.
+          const runId = operation.kind === "prepare" ? readNonEmptyString(params.runId) : null;
+          const agentId = operation.kind === "prepare" ? readNonEmptyString(params.agentId) : null;
+          if (Boolean(runId) !== Boolean(agentId)) return { companyId: directCompanyId };
+          return { companyId: directCompanyId, projectGit: { projectId, workspaceId, operation: operation.kind,
+            ...(runId && agentId ? { runId, agentId } : {}) } };
+        }
+      }
+      return { companyId: directCompanyId };
+    }
 
     if (method === "performAction" && isRecord(params.actorContext)) {
       const companyId = readNonEmptyString(params.actorContext.companyId);
@@ -1167,20 +1306,18 @@ export function createPluginWorkerHandle(
   }
 
   function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): PluginInvocationContext {
-    // Mint a W3C `traceparent` from the active startup span, so the worker's
-    // provider span can parent to it. The host keeps the value on its own record
-    // (below) and never trusts the worker to supply the parent. Outside a
-    // measured startup step there is no active span, so this is undefined.
+    // Keep the owning operation's parent host-side; workspace/runtime operations
+    // use the same per-invocation contract as measured provider startup.
     const activeStep = getActiveStepContext();
     const traceparent = activeStep
       ? traceparentFromContextToken(activeStep.parentContext)
-      : undefined;
+      : process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? traceparentFromContextToken(otelContext.active()) : undefined;
     const invocation: PluginInvocationContext = {
       id: randomUUID(),
       scope,
       ...(traceparent ? { traceparent } : {}),
     };
-    const entry: ActiveInvocation = { scope, traceparent };
+    const entry: ActiveInvocation = { scope, traceparent, providerSpanBudget:{remaining:256} };
     if (ttlMs !== undefined) {
       entry.timer = setTimeout(() => {
         activeInvocations.delete(invocation.id);
@@ -1352,18 +1489,26 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
   // Host-owned login pseudo-terminal route gate
   // -----------------------------------------------------------------------
-  // The manager owns one live login pseudo-terminal route per worker. It mints a
-  // host-owned opaque route identifier, carries it in the open call, and keys the
-  // close on it, so it closes a worker-created terminal even when the open reply
-  // was lost and no worker session identifier arrived. It binds the worker
-  // session identifier one time while the route is `opening`, for output only. It
-  // never trusts a worker-supplied identifier as proof of origin: it delivers
-  // output only while the route is `open` and the notification carries the exact
-  // bound identifier and valid bounded bytes, and it never logs the raw bytes. It
-  // terminalizes the route exactly once on every open failure path, closes the
-  // terminal by the host route identifier, and admits a new open only after it
-  // verifies a close acknowledgement bound to that identifier; it retires the
-  // worker on an unconfirmed close.
+  // The manager owns every live login pseudo-terminal route on a worker. One
+  // worker admits more than one concurrent route, so more than one owner can
+  // hold an active credential login on the same shared worker at once. The
+  // manager mints a host-owned opaque route identifier for each open, carries
+  // it in the open call, and keys the close on it, so it closes a
+  // worker-created terminal even when the open reply was lost and no worker
+  // session identifier arrived. It binds the worker session identifier one
+  // time while a route is `opening`, for output only. It never trusts a
+  // worker-supplied identifier as proof of origin: for each output or exit
+  // notification, it resolves the route by the host route identifier first,
+  // then delivers only while that route is `open` and the notification
+  // carries the exact bound worker session identifier and valid bounded
+  // bytes; it drops an unknown, a stale, a duplicate, a malformed, or a
+  // mismatched notification, and it never logs the raw bytes. It terminalizes
+  // one route exactly once on every open failure path, closes the terminal by
+  // its host route identifier, and admits a new open on that same identifier
+  // only after it verifies a close acknowledgement bound to it. On an
+  // unconfirmed close it retires the whole worker, which settles and clears
+  // every route the worker still holds — a possibly live terminal must never
+  // reach reuse or a wrong delivery.
 
   // A single-consumer route state. The login pseudo-terminal route and the
   // generic duplex channel route share it.
@@ -1434,9 +1579,47 @@ export function createPluginWorkerHandle(
     // record.
     preBindChars: number;
   }
-  // At most one active credential pseudo-terminal per worker. A non-null route
-  // blocks a second open until the manager confirms the first route's close.
-  let loginPtyRoute: LoginPtyRoute | null = null;
+  // The live login pseudo-terminal routes on this worker, keyed by the host
+  // route id. A route lives here from reservation — before the open call —
+  // until it terminalizes. An output or an exit notification resolves its
+  // route through this map first, so more than one route can be `reserved`,
+  // `opening`, or `open` on one worker at once.
+  const loginPtyRoutesByHostRouteId = new Map<string, LoginPtyRoute>();
+  // True once this worker has logged the missing-`hostRouteId` warning below.
+  // A plugin build old enough to omit the field would otherwise log one line
+  // for every dropped message, and a login pseudo-terminal can carry a high
+  // volume of output notifications. One warning per worker is enough for an
+  // operator to see the cause.
+  let loggedMissingLoginPtyHostRouteId = false;
+  // The bound routes on this worker, keyed by the worker session id. A route
+  // enters this map once its worker session id binds and leaves it when the
+  // route terminalizes. The host checks this map at bind time, so one worker
+  // session id can never bind to two live routes at once.
+  const loginPtyRoutesByWorkerSessionId = new Map<string, LoginPtyRoute>();
+
+  // The routes that currently hold one process-wide aggregate route slot. The
+  // host releases a slot one time per route, so a double terminalize, or a
+  // terminal exit followed by a later close, never releases two slots.
+  const loginPtyRouteSlotHolders = new Set<LoginPtyRoute>();
+
+  // Try to reserve one aggregate route slot for a route. Return true when the
+  // route holds a slot after the call. When no controller is present, the
+  // route always holds a slot. This calls the SAME shared controller instance
+  // the duplex channel route uses (`duplexRouteSlots`), so the two route types
+  // share one process-wide ceiling.
+  function acquireLoginPtyRouteSlot(route: LoginPtyRoute): boolean {
+    if (!duplexRouteSlots) return true;
+    if (!duplexRouteSlots.tryAcquire()) return false;
+    loginPtyRouteSlotHolders.add(route);
+    return true;
+  }
+
+  // Release the aggregate route slot a route holds, one time. A route that
+  // never held a slot, or already released it, releases nothing.
+  function releaseLoginPtyRouteSlot(route: LoginPtyRoute): void {
+    if (!loginPtyRouteSlotHolders.delete(route)) return;
+    duplexRouteSlots?.release();
+  }
 
   // Close the worker terminal by the host route identifier and verify the bound
   // acknowledgement. Return true only when the worker returns an acknowledgement
@@ -1456,9 +1639,13 @@ export function createPluginWorkerHandle(
     }
   }
 
-  // Terminalize the route exactly once. Resolve the login wait, close the worker
-  // terminal by the host route identifier, and free the per-worker slot only
-  // after the close resolves. Retire the worker when the close is unconfirmed.
+  // Terminalize one route exactly once. Remove it from both maps at once,
+  // before the worker close call, so no later notification for its host route
+  // identifier or its worker session identifier can still resolve to it.
+  // Resolve the login wait, close the worker terminal by the host route
+  // identifier, and retire the whole worker when the close is unconfirmed —
+  // every other route this worker still holds settles through the worker-exit
+  // path that follows.
   async function terminalizeLoginPtyRoute(route: LoginPtyRoute): Promise<void> {
     if (route.terminalized) return;
     route.terminalized = true;
@@ -1468,36 +1655,82 @@ export function createPluginWorkerHandle(
     // A terminalized route never replays a queued pre-bind record.
     route.preBind = [];
     route.preBindChars = 0;
+    loginPtyRoutesByHostRouteId.delete(route.hostRouteId);
+    if (route.workerSessionId !== null) {
+      loginPtyRoutesByWorkerSessionId.delete(route.workerSessionId);
+    }
+    releaseLoginPtyRouteSlot(route);
     // A terminalized route reports a null exit code, which the runner treats as a
     // failure.
     settleRouteWait(route, { exitCode: null });
     const confirmed = await closeLoginPtyTerminal(route.hostRouteId);
-    if (loginPtyRoute === route) loginPtyRoute = null;
     if (!confirmed) {
       // The worker did not acknowledge the close, so the host cannot prove the
-      // terminal is gone. Fail closed: retire the worker before any reuse.
+      // terminal is gone. Fail closed: retire the worker before any reuse. This
+      // also settles and clears every other route the worker still holds.
       log.error(
         { pluginId },
         "login pseudo-terminal close not acknowledged; retiring worker",
       );
-      void killProcess();
+      retireWorkerProcess();
     }
   }
 
+  // Resolve one login pseudo-terminal notification to its route. Return null
+  // for an unknown or a stale (already terminalized) identifier, so the caller
+  // drops the notification.
+  //
+  // The current protocol tags every notification with the host route
+  // identifier, so a current build resolves through
+  // `loginPtyRoutesByHostRouteId` directly, even while more than one route is
+  // open on this worker.
+  //
+  // A plugin build old enough to predate the host route identifier tags the
+  // notification with only the worker session identifier, the sole routing
+  // key the previous protocol used. The worker itself controls that
+  // identifier, so it alone cannot prove which route a message belongs to
+  // once this worker holds two or more concurrent routes: a message that
+  // omits `hostRouteId` and names a different, live route's session
+  // identifier would otherwise deliver into, or end, that other route. A
+  // build old enough to omit `hostRouteId` never ran a concurrent route, so
+  // the fallback only trusts the worker session identifier while this worker
+  // holds exactly one route. The host warns once for this worker — never
+  // once for each dropped message, since a live pseudo-terminal can send
+  // many — so an operator can see the build is too old, then still delivers
+  // the route's output and exit notifications instead of losing them.
+  function resolveLoginPtyRoute(params: Record<string, unknown>): LoginPtyRoute | null {
+    const hostRouteId = readNonEmptyString(params.hostRouteId);
+    if (hostRouteId) {
+      return loginPtyRoutesByHostRouteId.get(hostRouteId) ?? null;
+    }
+    if (!loggedMissingLoginPtyHostRouteId) {
+      loggedMissingLoginPtyHostRouteId = true;
+      log.warn(
+        "login pseudo-terminal message has no hostRouteId; the plugin build is too old",
+      );
+    }
+    if (loginPtyRoutesByHostRouteId.size !== 1) return null;
+    const workerSessionId = readNonEmptyString(params.workerSessionId);
+    if (!workerSessionId) return null;
+    return loginPtyRoutesByWorkerSessionId.get(workerSessionId) ?? null;
+  }
+
   // Route one login pseudo-terminal output notification to the per-session
-  // listener. Deliver only while the route is `open` and the notification carries
-  // the exact bound worker session identifier and valid bounded bytes. Queue the
-  // notification while the route is still `opening`. Drop an unknown, late,
-  // malformed, or mismatched notification. Never log the raw bytes.
+  // listener. Resolve the route by the host route identifier first. Deliver
+  // only while that route is `open` and the notification carries the exact
+  // bound worker session identifier and valid bounded bytes. Queue the
+  // notification while the route is still `opening`. Drop an unknown, a stale,
+  // a duplicate, a malformed, or a mismatched notification. Never log the raw
+  // bytes.
   function routeLoginPtyOutput(notification: JsonRpcNotification): void {
-    const route = loginPtyRoute;
+    const params = isRecord(notification.params) ? notification.params : {};
+    const route = resolveLoginPtyRoute(params);
     if (!route) return;
     if (route.state === "opening") {
       queuePreBindLoginPtyOutput(route, notification);
       return;
     }
     if (route.state !== "open") return;
-    const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
     const chunk = params.chunk;
@@ -1518,24 +1751,28 @@ export function createPluginWorkerHandle(
     else route.buffered.push(chunk);
   }
 
-  // Route one login pseudo-terminal exit notification to the login wait. Resolve
-  // only while the route is `open` and the notification carries the exact bound
-  // worker session identifier. Queue the notification while the route is still
-  // `opening`. A resolved exit moves the state off `open`, so a later record —
-  // live or replayed — finds a closed route and drops there.
+  // Route one login pseudo-terminal exit notification to the login wait.
+  // Resolve the route by the host route identifier first. Settle the wait
+  // only while that route is `open` and the notification carries the exact
+  // bound worker session identifier. Queue the notification while the route
+  // is still `opening`. A resolved exit moves the state off `open`, so a
+  // later record — live or replayed — finds a closed route and drops there.
   function routeLoginPtyExit(notification: JsonRpcNotification): void {
-    const route = loginPtyRoute;
+    const params = isRecord(notification.params) ? notification.params : {};
+    const route = resolveLoginPtyRoute(params);
     if (!route) return;
     if (route.state === "opening") {
       queuePreBindLoginPtyExit(route, notification);
       return;
     }
     if (route.state !== "open") return;
-    const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
     route.state = "closed";
+    // A terminal exit is its own slot-release path, distinct from the later
+    // explicit close, so a route that already exited returns its slot at once.
+    releaseLoginPtyRouteSlot(route);
     settleRouteWait(route, { exitCode });
   }
 
@@ -1618,38 +1855,51 @@ export function createPluginWorkerHandle(
         routeLoginPtyOutput({
           jsonrpc: "2.0",
           method: LOGIN_PTY_OUTPUT_NOTIFICATION,
-          params: { workerSessionId: record.workerSessionId, chunk: record.chunk },
+          params: {
+            hostRouteId: route.hostRouteId,
+            workerSessionId: record.workerSessionId,
+            chunk: record.chunk,
+          },
         });
       } else {
         routeLoginPtyExit({
           jsonrpc: "2.0",
           method: LOGIN_PTY_EXIT_NOTIFICATION,
-          params: { workerSessionId: record.workerSessionId, exitCode: record.exitCode },
+          params: {
+            hostRouteId: route.hostRouteId,
+            workerSessionId: record.workerSessionId,
+            exitCode: record.exitCode,
+          },
         });
       }
     }
   }
 
-  // Close the one route on a worker exit. The worker is gone, so the manager
-  // resolves the login wait with the fixed non-secret exit and clears the route
-  // one time. The pending pseudo-terminal calls reject through `rejectAllPending`.
+  // Close every route on a worker exit. The worker is gone, so the manager
+  // resolves each login wait with the fixed non-secret exit and clears both
+  // maps one time. The pending pseudo-terminal calls reject through
+  // `rejectAllPending`.
   function closeLoginPtyRouteOnWorkerExit(): void {
-    const route = loginPtyRoute;
-    if (!route) return;
-    loginPtyRoute = null;
-    route.terminalized = true;
-    route.state = "closed";
-    route.listener = null;
-    route.buffered = [];
-    route.preBind = [];
-    route.preBindChars = 0;
-    settleRouteWait(route, { exitCode: null });
+    const routes = [...loginPtyRoutesByHostRouteId.values()];
+    loginPtyRoutesByHostRouteId.clear();
+    loginPtyRoutesByWorkerSessionId.clear();
+    for (const route of routes) {
+      route.terminalized = true;
+      route.state = "closed";
+      route.listener = null;
+      route.buffered = [];
+      route.preBind = [];
+      route.preBindChars = 0;
+      releaseLoginPtyRouteSlot(route);
+      settleRouteWait(route, { exitCode: null });
+    }
   }
 
-  // Open one live login pseudo-terminal route. Reserve the route
-  // before the open call, bind the worker session identifier one time on the
-  // first successful open reply, and return a session the login transport drives.
-  // Terminalize the route on every open failure path.
+  // Open one live login pseudo-terminal route. Reserve one process-wide
+  // aggregate route slot before the open call, bind the worker session
+  // identifier one time on the first successful open reply, and return a
+  // session the login transport drives. Terminalize the route on every open
+  // failure path. One worker can hold more than one concurrent route.
   async function openLoginPtySession(
     input: LoginPtyOpenInput,
   ): Promise<LoginPtyHostSession> {
@@ -1664,11 +1914,6 @@ export function createPluginWorkerHandle(
     // The binding validated it at the service boundary; this is the last host gate
     // before the worker call, so a malformed home fails closed here too.
     validateLoginSessionHome(input.sessionHome);
-    if (loginPtyRoute) {
-      // A route for this worker is not yet closed and confirmed. Reject the
-      // second open with one fixed non-secret error before it reaches the worker.
-      throw new Error(LOGIN_PTY_ROUTE_BUSY);
-    }
     const hostRouteId = randomUUID();
     let settleWait: (value: { exitCode: number | null }) => void = () => {};
     const waitPromise = new Promise<{ exitCode: number | null }>((resolve) => {
@@ -1686,7 +1931,18 @@ export function createPluginWorkerHandle(
       preBind: [],
       preBindChars: 0,
     };
-    loginPtyRoute = route;
+    // Reserve one process-wide aggregate route slot before any work. When the
+    // ceiling is full, reject with the fixed capacity error and open nothing,
+    // so an active login route never downgrades and the ceiling never
+    // overcommits. This never reveals the live count, the ceiling, or any
+    // other tenant.
+    if (!acquireLoginPtyRouteSlot(route)) {
+      throw new Error(LOGIN_PTY_ROUTES_AT_CAPACITY);
+    }
+    // Reserve the route by its host route identifier before the open call, so
+    // a notification that echoes this identifier can queue against it even
+    // before the worker replies.
+    loginPtyRoutesByHostRouteId.set(hostRouteId, route);
 
     route.state = "opening";
     let openResult: HostToWorkerMethods["loginPtyOpen"][1];
@@ -1718,9 +1974,16 @@ export function createPluginWorkerHandle(
       await terminalizeLoginPtyRoute(route);
       throw new Error(LOGIN_PTY_OPEN_FAILED);
     }
+    if (loginPtyRoutesByWorkerSessionId.has(workerSessionId)) {
+      // A live route already owns this worker session identifier. Fail closed
+      // instead of binding a second route to it.
+      await terminalizeLoginPtyRoute(route);
+      throw new Error(LOGIN_PTY_OPEN_FAILED);
+    }
     // Bind the worker session identifier one time and move the route to `open`.
     route.workerSessionId = workerSessionId;
     route.state = "open";
+    loginPtyRoutesByWorkerSessionId.set(workerSessionId, route);
     // Replay every record the route queued before the bind, in arrival order.
     replayPreBindLoginPtyRecords(route);
 
@@ -1784,27 +2047,23 @@ export function createPluginWorkerHandle(
   //   7. route lifetime — the milliseconds from the open to the terminal end.
 
   // One buffered data chunk retained for a late listener drain. It carries the raw
-  // chunk bytes and the aggregate byte token that reserved its raw bytes. The
-  // token is `null` when no ledger is injected.
+  // chunk bytes.
   interface BufferedDuplexChunk {
     chunk: Uint8Array;
-    token: ReservationToken | null;
   }
   // One pre-bind data event, normalized to the narrow duplex-event schema. The host
-  // retains only these bounded scalar fields plus the reservation token, never the
-  // original arbitrary notification graph. The bind re-resolves the pair from
-  // `workerSessionId`, so a frame whose pair does not match the bound pair still
-  // fails closed.
+  // retains only these bounded scalar fields, never the original arbitrary
+  // notification graph. The bind re-resolves the pair from `workerSessionId`, so a
+  // frame whose pair does not match the bound pair still fails closed.
   interface HeldDuplexEvent {
     workerSessionId: string;
     chunk: Uint8Array;
-    token: ReservationToken | null;
   }
   // One pre-bind exit event, normalized to the narrow duplex-event schema.
   interface HeldDuplexExitEvent {
     workerSessionId: string;
     exitCode: number | null;
-    token: ReservationToken | null;
+    transportClosed?: boolean;
   }
 
   interface DuplexChannelRoute {
@@ -1825,18 +2084,32 @@ export function createPluginWorkerHandle(
     // lost and a frame whose pair does not match the bound pair still fails closed.
     // The hold ceiling is `maxDuplexChannelPreBindHoldFrames`, one frame above the
     // buffered bound, so the replay's buffered-bound check ends the route, not the
-    // hold. Each held event carries the aggregate byte token that reserved its raw
-    // bytes; the host never retains the original arbitrary notification graph.
+    // hold. The host never retains the original arbitrary notification graph.
     preBind: HeldDuplexEvent[];
+    // The cumulative raw bytes `preBind` holds. `DUPLEX_ROUTE_INPUT_MAX_BYTES`
+    // bounds this route-local counter, so a worker cannot flood the pre-bind
+    // hold with bytes the frame-count ceiling alone does not catch (a handful
+    // of large frames, each well under the frame-count limit). This counter
+    // covers only the hold; the post-bind buffered queue counts its own bytes
+    // in `bufferedChars`, against the same named bound.
+    preBindBytes: number;
     // The single bounded exit event that arrived before the bind. An exit never
     // consumes a data hold slot, so a worker that batches an exit among enough data
     // frames to fill the hold cannot crowd out a data frame. The bind replays the
     // held data events first, then this exit last.
     preBindExit: HeldDuplexExitEvent | null;
-    // The authoritative registry of every aggregate byte token this route still
-    // holds, across the pre-bind, buffered, and terminal-buffered representations.
-    // The byte cleanup releases every token here exactly once.
-    retainedTokens: Set<ReservationToken>;
+    // The cumulative raw payload bytes of every host→worker write this route
+    // has sent but the worker has not yet acknowledged. The window this
+    // counter tracks spans both retained representations of a pending write:
+    // the raw payload the pending request object holds, and the serialized
+    // child-stdin frame the host builds from it and writes before the request
+    // settles. `DUPLEX_ROUTE_PENDING_WRITE_MAX_BYTES` bounds this route-local
+    // counter, independent of `pendingRequests`: a worker that never replies
+    // cannot make one route hold an unbounded number of write bytes, even
+    // under a raised pending-request count. `sendBoundedRequest` increments it
+    // before the send and decrements it once the request settles, on every
+    // path: a reply, a rejection, a timeout, a worker exit, or a shutdown.
+    pendingWriteBytes: number;
   }
   // The live duplex routes on this worker, keyed by the exact
   // `{ hostRouteId, workerSessionId }` pair. The host binds one pair once, at
@@ -1862,88 +2135,10 @@ export function createPluginWorkerHandle(
   // time per route, so a double terminalize never releases two slots.
   const duplexRouteSlotHolders = new Set<DuplexChannelRoute>();
 
-  // The process-owned aggregate byte ledger. The manager injects it, so one gauge
-  // bounds the aggregate retained bytes across every route in the process. When it
-  // is absent, the worker retains duplex bytes unbounded (a unit test constructs it
-  // this way).
-  const duplexAggregateByteLedger = options.duplexAggregateByteLedger ?? null;
-  // The outstanding child-stdin transport tokens for duplex writes. Each token
-  // covers one serialized frame the host stdin write buffer still retains. The
-  // write callback releases a token on the flush; a stream error, a stream close,
-  // or a worker exit releases every remaining token, because each of those
-  // discards the stdin write buffer. The set is the release guard, so a token
-  // releases one time across the two paths.
-  const pendingStdinWriteTokens = new Set<ReservationToken>();
-  // Release every outstanding child-stdin transport token. A stream error, a
-  // stream close, or a worker exit calls this, because each discards the stdin
-  // write buffer. The `delete` guard drops each token one time, so a later flush
-  // callback or a second sweep releases nothing again.
-  function releaseAllPendingStdinWriteTokens(): void {
-    if (!duplexAggregateByteLedger) return;
-    for (const token of pendingStdinWriteTokens) {
-      duplexAggregateByteLedger.release(token);
-    }
-    pendingStdinWriteTokens.clear();
-  }
   // The terminalized routes that still hold buffered bytes for a late listener
   // drain. A terminalized route leaves the opening and live maps, so this registry
-  // keeps the worker-exit sweep able to release its still-charged buffered tokens.
+  // keeps the worker-exit sweep able to clear its still-buffered representations.
   const terminalDuplexRoutes = new Set<DuplexChannelRoute>();
-
-  // Reserve `bytes` for one route retention against the aggregate ledger. Return
-  // the held token, or `null` when the reservation would pass the ceiling. When no
-  // ledger is present, return `"no-ledger"`, so the caller admits the retention
-  // with no token. The helper adds a real token to `route.retainedTokens`.
-  function reserveRouteBytes(
-    route: DuplexChannelRoute,
-    owner: DuplexAggregateTokenOwner,
-    bytes: number,
-  ): ReservationToken | "no-ledger" | null {
-    if (!duplexAggregateByteLedger) return "no-ledger";
-    const token = duplexAggregateByteLedger.reserve(owner, bytes);
-    if (!token) return null;
-    route.retainedTokens.add(token);
-    return token;
-  }
-
-  // Transfer a held route token to a new owner label. The token identity and the
-  // reserved bytes stay the same, so no admission gap opens between two
-  // representations of the same retained bytes.
-  function transferRouteToken(
-    token: ReservationToken | null,
-    owner: DuplexAggregateTokenOwner,
-  ): void {
-    if (!token) return;
-    duplexAggregateByteLedger?.transfer(token, owner);
-  }
-
-  // Release one held route token and drop it from the route registry, in one
-  // synchronous step. A `null` token (no ledger) releases nothing.
-  function releaseRouteToken(route: DuplexChannelRoute, token: ReservationToken | null): void {
-    if (!token) return;
-    route.retainedTokens.delete(token);
-    duplexAggregateByteLedger?.release(token);
-  }
-
-  // Release every token a route still holds and clear its retained representations,
-  // exactly once. A later call finds an empty registry and releases nothing, so the
-  // helper is idempotent. Every terminal-discard, open-failure, bind-replay
-  // failure, close-acknowledgement failure, worker-exit, and shutdown path calls
-  // it. Terminal map deletion is never treated as proof that retained bytes are
-  // gone; this registry is authoritative for byte cleanup.
-  function discardRouteRetained(route: DuplexChannelRoute): void {
-    if (duplexAggregateByteLedger) {
-      for (const token of route.retainedTokens) {
-        duplexAggregateByteLedger.release(token);
-      }
-    }
-    route.retainedTokens.clear();
-    route.preBind = [];
-    route.preBindExit = null;
-    route.buffered = [];
-    route.bufferedChars = 0;
-    terminalDuplexRoutes.delete(route);
-  }
 
   // Try to reserve one aggregate route slot for a route. Return true when the
   // route holds a slot after the call. When no controller is present, the route
@@ -1968,7 +2163,7 @@ export function createPluginWorkerHandle(
   // overflow. The host never logs the raw frame content on a violation.
   function retireDuplexWorkerOnViolation(reason: string): void {
     log.error({ pluginId }, `duplex channel ownership violation (${reason}); retiring worker`);
-    void killProcess();
+    retireWorkerProcess();
   }
 
   // Install a tombstone for a bound pair atomically with the removal of its live
@@ -2042,34 +2237,16 @@ export function createPluginWorkerHandle(
     route.terminalized = true;
     route.state = "closed";
     route.listener = null;
-    // Stop admission first. Then move the byte cleanup. Keep the buffered chunks the
-    // host accepted before the route ended, so a listener that attaches after the
-    // end still drains them. A frame can end the route during the pre-bind replay,
-    // before a listener attaches, and the chunks the host accepted before that frame
-    // are valid data the listener must still receive. The buffered bytes stay
-    // bounded by the pre-bind buffered bound, and `onData` clears and releases them
-    // once it drains them.
-    //
-    // The buffered records keep their tokens; move each token to the terminal owner
-    // label and register the route in the terminal registry, so the worker-exit
-    // sweep can release the still-charged bytes later. Do not release a buffered
-    // token at map deletion; terminal map deletion is never proof the bytes are
-    // gone. Release every other token the route still holds (the pre-bind events,
-    // the held exit, and any stranded token), because they never reach a listener.
-    const bufferedTokens = new Set<ReservationToken>();
-    for (const record of route.buffered) {
-      if (record.token) {
-        bufferedTokens.add(record.token);
-        transferRouteToken(record.token, "terminal_buffered");
-      }
-    }
-    for (const token of [...route.retainedTokens]) {
-      if (!bufferedTokens.has(token)) {
-        route.retainedTokens.delete(token);
-        duplexAggregateByteLedger?.release(token);
-      }
-    }
+    // Stop admission first. Keep the buffered chunks the host accepted before the
+    // route ended, so a listener that attaches after the end still drains them. A
+    // frame can end the route during the pre-bind replay, before a listener
+    // attaches, and the chunks the host accepted before that frame are valid data
+    // the listener must still receive. The buffered bytes stay bounded by the
+    // pre-bind buffered bound, and `onData` clears them once it drains them.
+    // Register the route in the terminal registry, so the worker-exit sweep can
+    // clear the still-buffered chunks later.
     route.preBind = [];
+    route.preBindBytes = 0;
     route.preBindExit = null;
     if (route.buffered.length > 0) {
       terminalDuplexRoutes.add(route);
@@ -2093,7 +2270,7 @@ export function createPluginWorkerHandle(
         { pluginId },
         "duplex channel close not acknowledged; retiring worker",
       );
-      void killProcess();
+      retireWorkerProcess();
     }
   }
 
@@ -2156,16 +2333,8 @@ export function createPluginWorkerHandle(
   }
 
   // Route one duplex channel data frame. On a live route with a listener, deliver
-  // the chunk transiently. On a live route with no listener, buffer the chunk and
-  // charge its raw bytes against the aggregate ledger. The `carried` argument marks
-  // a bind-replay frame: it carries the pre-bind token the buffered record must
-  // reuse, so the replay transfers the token to the buffered representation with no
-  // decrement and no re-reserve. A live frame passes no `carried`, so it reserves a
-  // fresh buffered token. A `carried.token` of `null` means no ledger is present.
-  function routeDuplexChannelData(
-    notification: JsonRpcNotification,
-    carried?: { token: ReservationToken | null },
-  ): void {
+  // the chunk transiently. On a live route with no listener, buffer the chunk.
+  function routeDuplexChannelData(notification: JsonRpcNotification): void {
     const params = isRecord(notification.params) ? notification.params : {};
     const hostRouteId = readNonEmptyString(params.hostRouteId);
     const workerSessionId = readNonEmptyString(params.workerSessionId);
@@ -2200,15 +2369,13 @@ export function createPluginWorkerHandle(
     const chunk = rawChunk instanceof Uint8Array ? rawChunk : decodeChannelBytes(rawChunk);
     if (chunk === null || chunk.byteLength === 0) {
       // The exact pair matches, but the chunk is malformed or empty. Count one
-      // per-route protocol error. Release a carried replay token first.
-      releaseRouteToken(route, carried?.token ?? null);
+      // per-route protocol error.
       recordDuplexChannelProtocolError(route);
       return;
     }
     if (chunk.byteLength > maxDuplexChannelChunkChars) {
       // One inbound chunk is larger than the per-chunk limit. End the route at
       // once. Do not count the chunk as a protocol error.
-      releaseRouteToken(route, carried?.token ?? null);
       void terminalizeDuplexChannelRoute(route);
       return;
     }
@@ -2217,16 +2384,13 @@ export function createPluginWorkerHandle(
     // data past the cap.
     const chunkBytes = chunk.byteLength;
     if (route.totalDataBytes + chunkBytes > maxDuplexChannelTotalDataBytes) {
-      releaseRouteToken(route, carried?.token ?? null);
       void terminalizeDuplexChannelRoute(route);
       return;
     }
     route.totalDataBytes += chunkBytes;
     if (route.listener) {
-      // A listener is attached. Deliver the chunk transiently and release a carried
-      // replay token after the synchronous delivery boundary.
+      // A listener is attached. Deliver the chunk transiently.
       deliverDuplexChannelChunk(route.listener, chunk);
-      releaseRouteToken(route, carried?.token ?? null);
       return;
     }
     // No listener attached yet. Buffer the frame under the pre-bind bounds. End
@@ -2235,28 +2399,10 @@ export function createPluginWorkerHandle(
       route.buffered.length + 1 > maxDuplexChannelPreBindFrames ||
       route.bufferedChars + chunk.length > maxDuplexChannelPreBindChars
     ) {
-      releaseRouteToken(route, carried?.token ?? null);
       void terminalizeDuplexChannelRoute(route);
       return;
     }
-    let token: ReservationToken | null;
-    if (carried) {
-      // The bind replay transfers the pre-bind token to the buffered
-      // representation. No decrement and no re-reserve, so no admission gap opens.
-      token = carried.token;
-      transferRouteToken(token, "buffered_chunk");
-    } else {
-      // A live frame reserves a fresh buffered token for its exact raw bytes.
-      const reserved = reserveRouteBytes(route, "buffered_chunk", chunkBytes);
-      if (reserved === null) {
-        // The aggregate ceiling rejected the reservation. Retain nothing and fail
-        // closed with the fixed marker.
-        void terminalizeDuplexChannelRoute(route);
-        return;
-      }
-      token = reserved === "no-ledger" ? null : reserved;
-    }
-    route.buffered.push({ chunk, token });
+    route.buffered.push({ chunk });
     route.bufferedChars += chunk.length;
   }
 
@@ -2319,22 +2465,13 @@ export function createPluginWorkerHandle(
       return;
     }
     if (notification.method === DUPLEX_CHANNEL_EXIT_NOTIFICATION) {
-      // Normalize the exit to the narrow duplex-event schema. An exit retains only
-      // a bounded scalar, so reserve a zero-byte token that carries the record
-      // through the one cleanup path. Release any earlier held exit token first, so
-      // a replaced exit never leaks its reservation.
+      // Normalize the exit to the narrow duplex-event schema. A replaced exit
+      // simply overwrites the earlier held exit.
       const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
-      if (route.preBindExit) releaseRouteToken(route, route.preBindExit.token);
-      const reserved = reserveRouteBytes(route, "pre_bind_event", 0);
-      if (reserved === null) {
-        // The aggregate ceiling rejected the reservation. Fail closed.
-        void terminalizeDuplexChannelRoute(route);
-        return;
-      }
       route.preBindExit = {
         workerSessionId,
         exitCode,
-        token: reserved === "no-ledger" ? null : reserved,
+        ...(params.transportClosed === true ? { transportClosed: true } : {}),
       };
       return;
     }
@@ -2350,20 +2487,16 @@ export function createPluginWorkerHandle(
       recordDuplexChannelProtocolError(route);
       return;
     }
-    // Reserve the exact retained raw byte count before the host holds the event.
-    const reserved = reserveRouteBytes(route, "pre_bind_event", chunk.byteLength);
-    if (reserved === null) {
-      // The aggregate ceiling rejected the reservation. The caller retains nothing
-      // and the route fails closed with the fixed marker.
-      log.warn({ pluginId, reason: DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED }, "duplex pre-bind hold rejected");
+    // The route-local input bound covers the pre-bind hold directly. A handful
+    // of large frames can pass the frame-count ceiling above while still
+    // flooding the host with bytes, so this route ends at once on the byte
+    // bound, the same way the post-bind buffered queue already does.
+    if (route.preBindBytes + chunk.byteLength > maxDuplexChannelPreBindChars) {
       void terminalizeDuplexChannelRoute(route);
       return;
     }
-    route.preBind.push({
-      workerSessionId,
-      chunk,
-      token: reserved === "no-ledger" ? null : reserved,
-    });
+    route.preBind.push({ workerSessionId, chunk });
+    route.preBindBytes += chunk.byteLength;
   }
 
   // Replay the frames a route held before it bound. The route is live now, so the
@@ -2376,36 +2509,29 @@ export function createPluginWorkerHandle(
   function replayPreBindDuplexFrames(route: DuplexChannelRoute): void {
     const held = route.preBind;
     route.preBind = [];
+    route.preBindBytes = 0;
     for (const event of held) {
       if (route.terminalized) {
-        // The route ended mid-replay. Release the remaining held tokens, so the
-        // unreplayed events retain nothing.
-        releaseRouteToken(route, event.token);
+        // The route ended mid-replay. The remaining held events are dropped.
         continue;
       }
       // Reconstruct a transient data notification for the exact-pair routing. The
       // host holds only the bounded event, so it builds this notification for the
-      // routing step and discards it at once. The carried token moves to the
-      // buffered representation without a decrement or a re-reserve.
-      routeDuplexChannelData(
-        {
-          jsonrpc: "2.0",
-          method: DUPLEX_CHANNEL_DATA_NOTIFICATION,
-          params: {
-            hostRouteId: route.hostRouteId,
-            workerSessionId: event.workerSessionId,
-            chunk: event.chunk,
-          },
+      // routing step and discards it at once.
+      routeDuplexChannelData({
+        jsonrpc: "2.0",
+        method: DUPLEX_CHANNEL_DATA_NOTIFICATION,
+        params: {
+          hostRouteId: route.hostRouteId,
+          workerSessionId: event.workerSessionId,
+          chunk: event.chunk,
         },
-        { token: event.token },
-      );
+      });
     }
     const heldExit = route.preBindExit;
     route.preBindExit = null;
     if (heldExit) {
-      // The exit retains only a bounded scalar. Release its placeholder token, then
-      // resolve the wait through the exact-pair routing when the route still lives.
-      releaseRouteToken(route, heldExit.token);
+      // Resolve the wait through the exact-pair routing when the route still lives.
       if (!route.terminalized) {
         routeDuplexChannelExit({
           jsonrpc: "2.0",
@@ -2414,6 +2540,7 @@ export function createPluginWorkerHandle(
             hostRouteId: route.hostRouteId,
             workerSessionId: heldExit.workerSessionId,
             exitCode: heldExit.exitCode,
+            ...(heldExit.transportClosed === true ? { transportClosed: true } : {}),
           },
         });
       }
@@ -2448,10 +2575,14 @@ export function createPluginWorkerHandle(
         releaseDuplexRouteSlot(route);
         settleRouteWait(route, { exitCode: null });
       }
-      // Release every token the route still holds and clear its retained
-      // representations, exactly once. A route already drained by a late listener
-      // holds no token, so this is harmless and leaves the ledger at zero.
-      discardRouteRetained(route);
+      // Clear the route's retained buffers, exactly once. A route already drained
+      // by a late listener holds nothing, so this is harmless.
+      route.preBind = [];
+      route.preBindBytes = 0;
+      route.preBindExit = null;
+      route.buffered = [];
+      route.bufferedChars = 0;
+      terminalDuplexRoutes.delete(route);
     }
     // Clear the terminal registry. Every route in it was just discarded above.
     terminalDuplexRoutes.clear();
@@ -2486,8 +2617,9 @@ export function createPluginWorkerHandle(
       terminalized: false,
       settleWait,
       preBind: [],
+      preBindBytes: 0,
       preBindExit: null,
-      retainedTokens: new Set<ReservationToken>(),
+      pendingWriteBytes: 0,
     };
     // Reserve one aggregate route slot before any work. When the process-scoped
     // ceiling is full, reject with the fixed route-busy error and open nothing, so
@@ -2579,58 +2711,30 @@ export function createPluginWorkerHandle(
         void terminalizeDuplexChannelRoute(route);
         return;
       }
-      // Reserve the exact raw byte count of a host→worker write against the
-      // aggregate ledger before `callInternal` retains the payload. A pending write
-      // RPC holds `params.data` until it settles, so this reservation bounds the
-      // aggregate host→worker pending-write bytes across every route. A stop
-      // request carries no payload, so it reserves nothing. When no ledger is
-      // present, admit the write with no token (a unit test constructs the handle
-      // this way).
-      let pendingWriteToken: ReservationToken | null = null;
-      if (method === "duplexChannelWrite" && duplexAggregateByteLedger) {
-        pendingWriteToken = duplexAggregateByteLedger.reserve("pending_write", writeByteCount ?? 0);
-        if (!pendingWriteToken) {
-          // The reservation would pass the aggregate ceiling. Retain nothing, do
-          // not enqueue the RPC, and end the route fail-closed with the aggregate
-          // marker, not the route-busy marker.
-          log.warn(
-            { pluginId, reason: DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED },
-            "duplex pending write reservation rejected",
-          );
-          void terminalizeDuplexChannelRoute(route);
-          return;
-        }
+      // The route-local pending-write byte bound: a worker that never replies
+      // cannot make one route hold an unbounded number of write bytes, even
+      // under a raised pending-request count. A stop request carries no
+      // payload, so it never counts against this bound.
+      const pendingWriteBytesToCharge = method === "duplexChannelWrite" ? writeByteCount ?? 0 : 0;
+      if (route.pendingWriteBytes + pendingWriteBytesToCharge > maxDuplexRoutePendingWriteBytes) {
+        void terminalizeDuplexChannelRoute(route);
+        return;
       }
       route.pendingRequests += 1;
-      // Meter the child-stdin transport buffer only for a duplex write. A stop
-      // request carries a tiny fixed frame that the host never lets grow, so it
-      // does not meter or reject. The write path reserves the serialized frame in
-      // `sendMessage` right before the stdin write.
-      const meterDuplexWrite = method === "duplexChannelWrite";
-      void callInternal(method, params, duplexChannelOpenTimeoutMs, undefined, meterDuplexWrite)
-        .catch((err: unknown) => {
-          if (err instanceof DuplexAggregateBytesExceededError) {
-            // The transport reservation failed. The host did not write the frame.
-            // End the route fail-closed with the aggregate marker, not the
-            // route-busy marker.
-            log.warn(
-              { pluginId, reason: DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED },
-              "duplex stdin write reservation rejected",
-            );
-            void terminalizeDuplexChannelRoute(route);
-          }
-        })
+      route.pendingWriteBytes += pendingWriteBytesToCharge;
+      void callInternal(method, params, duplexChannelOpenTimeoutMs, undefined)
+        // A send failure, an RPC rejection, a timeout, or a worker exit ends up
+        // here. The route already handles a lost write through its own state
+        // (a worker exit or a stop rejects every pending request through the
+        // normal call machinery), so this fire-and-forget call swallows the
+        // rejection instead of leaving it unhandled.
+        .catch(() => {})
         .finally(() => {
           route.pendingRequests -= 1;
-          // Release the pending-write token one time, after the RPC settles on any
-          // path: success, error, timeout, worker exit, or shutdown. The token is
-          // not in `route.retainedTokens`, so route terminalization never releases
-          // it; only this settlement releases it. The separate `stdin_write` token
-          // covers the serialized frame and releases on the stream flush, the
-          // stream error, the stream close, or the worker exit, never here.
-          if (pendingWriteToken) {
-            duplexAggregateByteLedger?.release(pendingWriteToken);
-          }
+          // Release the route-local pending-write bytes one time, after the RPC
+          // settles on any path: success, error, timeout, worker exit, or
+          // shutdown.
+          route.pendingWriteBytes -= pendingWriteBytesToCharge;
         });
     };
 
@@ -2642,11 +2746,9 @@ export function createPluginWorkerHandle(
           route.buffered = [];
           route.bufferedChars = 0;
           for (const record of pending) {
-            // Deliver each buffered record, drop its retained buffer, and release
-            // its exact token before the drain proceeds to the next record. A
-            // terminal route drains through this same code.
+            // Deliver each buffered record before the drain proceeds to the next
+            // record. A terminal route drains through this same code.
             deliverDuplexChannelChunk(listener, record.chunk);
-            releaseRouteToken(route, record.token);
           }
           // The buffered records are gone, so the route no longer holds terminal
           // bytes for a late listener.
@@ -2664,8 +2766,8 @@ export function createPluginWorkerHandle(
         }
         // Encode the raw bytes to the wire-safe base64 form (JSON carries no
         // binary type) and pass the exact raw byte count separately, so the
-        // pending-write ledger reservation charges the real payload bytes, not
-        // the inflated base64 string length.
+        // pending-write byte bound charges the real payload bytes, not the
+        // inflated base64 string length.
         sendBoundedRequest(
           "duplexChannelWrite",
           {
@@ -2750,13 +2852,44 @@ export function createPluginWorkerHandle(
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
-    return { invocationScope: entry.scope, traceparent: entry.traceparent };
+    return { invocationScope: entry.scope, traceparent: entry.traceparent, providerSpanBudget:entry.providerSpanBudget };
   }
 
   /**
    * Handle a JSON-RPC request from the worker (worker→host call).
    */
   async function handleWorkerRequest(request: JsonRpcRequest): Promise<void> {
+    const done = beginIdleTrackedWork();
+    activeHostHandlers++;
+    const invocationId = readNonEmptyString((request as { paperclipInvocationId?: unknown }).paperclipInvocationId);
+    const startupId = invocationId ? activeInvocations.get(invocationId)?.startupContextId : undefined;
+    let complete = () => {}, pending: Promise<void> | undefined;
+    if (startupId) {
+      pending = new Promise<void>(resolve => { complete = resolve; });
+      let handlers = startupHostHandlers.get(startupId);
+      if (!handlers) { handlers = new Set(); startupHostHandlers.set(startupId, handlers); }
+      handlers.add(pending);
+    }
+    try {
+      // A queued notification may already be running in the worker while its
+      // prepare request is in flight. Let its writes finish until that worker
+      // has positively acknowledged that all accepted handlers have drained.
+      if (idleSleepHeld() && idleHold?.ready) {
+        try {
+          sendMessage(createErrorResponse(request.id, PLUGIN_RPC_ERROR_CODES.WORKER_UNAVAILABLE, "Plugin is held for idle sleep"));
+        } catch { /* Worker may have exited after sending its request. */ }
+        return;
+      }
+      await dispatchWorkerRequest(request);
+    } finally {
+      if (pending) startupHostHandlers.get(startupId ?? "")?.delete(pending);
+      if (startupId && startupHostHandlers.get(startupId)?.size === 0) startupHostHandlers.delete(startupId);
+      complete(); activeHostHandlers--; done();
+      if (startupId) onStartupWorkChanged?.();
+    }
+  }
+
+  async function dispatchWorkerRequest(request: JsonRpcRequest): Promise<void> {
     const method = request.method as WorkerToHostMethodName;
     const handler = options.hostHandlers[method] as
       | ((params: unknown, context?: WorkerHostCallContext) => Promise<unknown>)
@@ -2961,16 +3094,11 @@ export function createPluginWorkerHandle(
       readline.on("line", handleLine);
     }
 
-    // Release the outstanding child-stdin transport tokens when the stdin stream
-    // errors or closes, because each discards the stdin write buffer. The `error`
-    // listener also stops an unhandled EPIPE from a child that closed its stdin.
+    // The `error` listener stops an unhandled EPIPE from a child that closed its
+    // stdin.
     if (child.stdin) {
-      child.stdin.on("error", () => {
-        releaseAllPendingStdinWriteTokens();
-      });
-      child.stdin.on("close", () => {
-        releaseAllPendingStdinWriteTokens();
-      });
+      child.stdin.on("error", () => {});
+      child.stdin.on("close", () => {});
     }
 
     // Capture stderr for logging
@@ -3010,6 +3138,8 @@ export function createPluginWorkerHandle(
     signal: NodeJS.Signals | null,
   ): void {
     const wasIntentional = intentionalStop;
+    const wasRetired = retirementPending;
+    retirementPending = false;
 
     // Clean up readline interfaces
     if (readline) {
@@ -3023,12 +3153,6 @@ export function createPluginWorkerHandle(
     childProcess = null;
     startedAt = null;
 
-    // The worker exit discards the child-stdin write buffer, so release every
-    // outstanding transport token. The RPC rejections below never release these
-    // tokens; only this sweep, a stream flush, a stream error, or a stream close
-    // releases them.
-    releaseAllPendingStdinWriteTokens();
-
     // Reject all pending requests
     rejectAllPending(
       new Error(formatWorkerFailureMessage(
@@ -3036,6 +3160,15 @@ export function createPluginWorkerHandle(
         stderrExcerpt,
       )),
     );
+
+    // Read-only requests cannot continue in an exited worker. Do not infer
+    // completion for execute/cleanup calls, whose provider work may outlive it.
+    for (const finish of [...unsettledInspections]) finish();
+    for (const [id, observer] of observedResults) {
+      if (observer.response) continue;
+      observedResults.delete(id);
+      observer.finish();
+    }
 
     // Close the one login pseudo-terminal route with a fixed non-secret exit and
     // clear the route one time. The pending pseudo-terminal calls
@@ -3062,9 +3195,15 @@ export function createPluginWorkerHandle(
     emitter.emit("exit", { pluginId, code, signal });
 
     if (wasIntentional) {
-      // Graceful stop — status is already "stopping" or will be set to "stopped"
+      // Graceful stop — status is already "stopping" or will be set to "stopped".
+      // A deliberate stop that races a retirement stays stopped.
       setStatus("stopped");
       log.info({ code, signal }, "worker process stopped");
+      return;
+    }
+
+    if (wasRetired) {
+      handleRetiredProcessExit(code, signal);
       return;
     }
 
@@ -3091,11 +3230,49 @@ export function createPluginWorkerHandle(
     emitter.emit("crash", { pluginId, code, signal, willRestart });
 
     if (willRestart) {
-      scheduleRestart();
+      scheduleRestart(consecutiveCrashes);
     } else {
       log.error(
         { consecutiveCrashes, maxCrashes: MAX_CONSECUTIVE_CRASHES },
         "max consecutive crashes reached, not restarting",
+      );
+    }
+  }
+
+  // The retired process is gone, together with every route, reservation, and
+  // tombstone it held (the exit path above already settled them as failed).
+  // Replace it with a fresh process through the same backoff timer a crash uses.
+  // The fresh process starts with empty route state, and host route ids are
+  // monotonic, so no retired route can resolve against it. The retirement count
+  // survives a successful restart, so repeated retirements stop restarting after
+  // `maxConsecutiveRetirements` within the crash window.
+  function handleRetiredProcessExit(
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): void {
+    totalCrashes++;
+    const now = Date.now();
+    if (lastRetirementAt !== null && now - lastRetirementAt > CRASH_WINDOW_MS) {
+      consecutiveRetirements = 0;
+    }
+    consecutiveRetirements++;
+    lastRetirementAt = now;
+
+    const willRestart = autoRestart && consecutiveRetirements <= maxConsecutiveRetirements;
+    log.error(
+      { code, signal, consecutiveRetirements, totalCrashes, willRestart },
+      "retired worker process exited",
+    );
+
+    setStatus("crashed");
+    emitter.emit("crash", { pluginId, code, signal, willRestart });
+
+    if (willRestart) {
+      scheduleRestart(consecutiveRetirements);
+    } else {
+      log.error(
+        { consecutiveRetirements, maxRetirements: maxConsecutiveRetirements },
+        "max consecutive worker retirements reached, not restarting",
       );
     }
   }
@@ -3122,29 +3299,35 @@ export function createPluginWorkerHandle(
   // Crash recovery with exponential backoff
   // -----------------------------------------------------------------------
 
-  function computeBackoffMs(): number {
-    // Exponential backoff: MIN_BACKOFF * MULTIPLIER^(consecutiveCrashes - 1)
+  function computeBackoffMs(attempt: number): number {
+    // Exponential backoff: MIN_BACKOFF * MULTIPLIER^(attempt - 1)
     const delay =
-      MIN_BACKOFF_MS * Math.pow(BACKOFF_MULTIPLIER, consecutiveCrashes - 1);
+      minBackoffMs * Math.pow(BACKOFF_MULTIPLIER, Math.max(attempt, 1) - 1);
     // Add jitter: ±25%
     const jitter = delay * 0.25 * (Math.random() * 2 - 1);
     return Math.min(Math.round(delay + jitter), MAX_BACKOFF_MS);
   }
 
-  function scheduleRestart(): void {
-    const delay = computeBackoffMs();
+  function scheduleRestart(attempt: number): void {
+    const delay = computeBackoffMs(attempt);
     nextRestartAt = Date.now() + delay;
 
     setStatus("backoff");
 
     log.info(
-      { delayMs: delay, consecutiveCrashes },
+      { delayMs: delay, attempt },
       "scheduling restart with backoff",
     );
 
     backoffTimer = setTimeout(async () => {
       backoffTimer = null;
       nextRestartAt = null;
+      // A temporary idle hold must not consume the crash-recovery attempt.
+      // Keep the bounded backoff until admission reopens.
+      if (readTaskDrain(new Date())?.ownerId) {
+        scheduleRestart(attempt);
+        return;
+      }
       try {
         await startInternal();
       } catch (err) {
@@ -3174,6 +3357,7 @@ export function createPluginWorkerHandle(
     }
 
     intentionalStop = false;
+    retirementPending = false;
     setStatus("starting");
     stderrExcerpt = "";
 
@@ -3331,6 +3515,20 @@ export function createPluginWorkerHandle(
     });
   }
 
+  // Retire the current process on a fail-closed route violation. Unlike
+  // `killProcess`, this is not a deliberate stop: the exit replaces the process
+  // with a fresh one. A deliberate stop already in progress wins, so a plugin
+  // disable, upgrade, or shutdown still ends stopped.
+  function retireWorkerProcess(): void {
+    if (!childProcess) return;
+    if (!intentionalStop) retirementPending = true;
+    try {
+      childProcess.kill("SIGKILL");
+    } catch {
+      // Process may already be dead; its exit event still runs the exit path.
+    }
+  }
+
   async function killProcess(): Promise<void> {
     if (!childProcess) return;
     intentionalStop = true;
@@ -3364,22 +3562,97 @@ export function createPluginWorkerHandle(
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
-    meterDuplexWrite = false,
+    onWorkerSettled?: () => void,
+    startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
+  ): Promise<HostToWorkerMethods[M][1]> {
+    const dispatched = measureRunPhase("execution.plugin_dispatch", () => callInternalRaw(method, params, timeoutMs, executeLogSink, onWorkerSettled, startupContextId, observeResult));
+    // Tracing wraps the RPC in a new promise. Guard the promise handed to the
+    // caller as well, without swallowing its eventual rejection for that caller.
+    void dispatched.catch(() => undefined);
+    return dispatched;
+  }
+
+  function callInternalRaw<M extends HostToWorkerMethodName>(
+    method: M,
+    params: HostToWorkerMethods[M][0],
+    timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
+    onWorkerSettled?: () => void,
+    startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
+      if (startupContextId && startupRetirements.has(startupContextId)) {
+        onWorkerSettled?.();
+        reject(new Error("Plugin startup group is retiring"));
+        return;
+      }
+      const idleControl = method === "prepareIdleSleep" || method === "releaseIdleSleep";
+      if (!idleControl && method !== "shutdown" && idleSleepHeld()) {
+        onWorkerSettled?.();
+        reject(new Error("Plugin is held for idle sleep"));
+        return;
+      }
       if (!childProcess?.stdin?.writable) {
+        onWorkerSettled?.();
         reject(
-          new Error(
-            `Cannot call "${method}" — worker for "${pluginId}" is not running`,
-          ),
+          // The status can still read "running" while the child's stdin is
+          // closed, so no status is reported for this refusal.
+          new PluginWorkerUnavailableError({ pluginId, workerStatus: null,
+            message: `Cannot call "${method}" — worker for "${pluginId}" is not running` }),
         );
         return;
       }
 
       const id = nextRequestId++;
+      if (!idleControl) {
+        const finishIdle = beginIdleTrackedWork();
+        let completed = false;
+        const finish = () => {
+          if (completed) return;
+          completed = true;
+          finishIdle();
+          unsettledInspections.delete(finish);
+          unsettledCalls.delete(id);
+          startupCalls.get(startupContextId ?? "")?.delete(finish);
+          if (startupContextId && startupCalls.get(startupContextId)?.size === 0) startupCalls.delete(startupContextId);
+          onWorkerSettled?.();
+          if (startupContextId) onStartupWorkChanged?.();
+        };
+        unsettledCalls.set(id, finish);
+        if (startupContextId) {
+          let calls = startupCalls.get(startupContextId);
+          if (!calls) { calls = new Set(); startupCalls.set(startupContextId, calls); }
+          calls.add(finish);
+        }
+        if (method === "environmentInspectLease") unsettledInspections.add(finish);
+      }
+      if (observeResult && startupContextId) {
+        let processing: Promise<void> | undefined, finish!: () => void;
+        const track = () => {
+          if (processing) return;
+          processing = new Promise<void>(resolve => { finish = resolve; });
+          let handlers = startupHostHandlers.get(startupContextId);
+          if (!handlers) { handlers = new Set(); startupHostHandlers.set(startupContextId, handlers); }
+          handlers.add(processing);
+        };
+        track();
+        observedResults.set(id, { contextId: startupContextId,
+          creationOperationId: method === "environmentAcquireLease" && isRecord(params) ? readNonEmptyString((params as Record<string, unknown>).creationOperationId) ?? undefined : undefined,
+          track, observe: observeResult as (result: unknown) => Promise<void>, finish: () => {
+            if (!processing) return;
+            startupHostHandlers.get(startupContextId)?.delete(processing);
+            if (startupHostHandlers.get(startupContextId)?.size === 0) startupHostHandlers.delete(startupContextId);
+            processing = undefined;
+            finish();
+            onStartupWorkChanged?.();
+          } });
+      }
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
+      if (invocation && startupContextId) activeInvocations.get(invocation.id)!.startupContextId = startupContextId;
       // Register the host-owned execute route only for an execute call that
       // carries a log sink. The company id comes from the host-derived
       // invocation scope, never from the worker. This binds the sink to the
@@ -3438,26 +3711,23 @@ export function createPluginWorkerHandle(
           ...createRequest(method, params, id),
           ...(invocation ? { paperclipInvocation: invocation } : {}),
         };
-        sendMessage(request, meterDuplexWrite);
+        sendMessage(request);
       } catch (err) {
         clearTimeout(timer);
         pendingRequests.delete(id);
+        observedResults.get(id)?.finish();
+        observedResults.delete(id);
+        unsettledCalls.get(id)?.();
+        unsettledCalls.delete(id);
         clearInvocation(invocation);
         clearExecuteRoute(invocation?.id);
-        if (err instanceof DuplexAggregateBytesExceededError) {
-          // The transport reservation failed before the write. Reject with the
-          // typed error unwrapped, so the duplex write caller ends the route
-          // fail-closed with the aggregate marker.
-          reject(err);
-        } else {
-          reject(
-            new Error(
-              `Failed to send "${method}" to worker: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            ),
-          );
-        }
+        reject(
+          new Error(
+            `Failed to send "${method}" to worker: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+        );
       }
     });
 
@@ -3475,6 +3745,38 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
 
   const handle: PluginWorkerHandle = {
+    releaseIdleSleep,
+    async prepareIdleSleep(hold) {
+      const drain = readTaskDrain(new Date());
+      if (drain?.ownerId !== hold.ownerId || drain.expiresAt?.getTime() !== hold.expiresAt ||
+          hold.expiresAt <= Date.now()) return "unknown";
+      // Clear a previous hold even when this idle worker received no ordinary
+      // call between two controller attempts.
+      idleSleepHeld();
+      if (status !== "running" || totalCrashes > 0) return "unknown";
+      if (!supportedMethods.includes("prepareIdleSleep")) return "present";
+      if (unsettledCalls.size || activeHostHandlers || loginPtyRoutesByHostRouteId.size ||
+          liveDuplexRoutes.size || openingDuplexRoutes.size || terminalDuplexRoutes.size) return "present";
+      if (idleHold && (idleHold.ownerId !== hold.ownerId || idleHold.expiresAt !== hold.expiresAt)) return "unknown";
+      const candidate = idleHold ??= { ...hold, ready: false };
+      try {
+        const result = await callInternal("prepareIdleSleep", hold, Math.min(5_000, hold.expiresAt - Date.now()));
+        if (!idleSleepHeld() || idleHold !== candidate || status !== "running" || unsettledCalls.size || activeHostHandlers ||
+            result.ownerId !== hold.ownerId || result.expiresAt !== hold.expiresAt) {
+          if (idleHold === candidate) releaseIdleSleep();
+          return "unknown";
+        }
+        if (result.backgroundWork === "none") {
+          candidate.ready = true;
+          return "none";
+        }
+        releaseIdleSleep();
+        return result.backgroundWork === "present" ? "present" : "unknown";
+      } catch {
+        if (idleHold === candidate) releaseIdleSleep();
+        return "unknown";
+      }
+    },
     get pluginId() {
       return pluginId;
     },
@@ -3499,21 +3801,51 @@ export function createPluginWorkerHandle(
       await stopInternal();
       await startInternal();
     },
+    hasStartupWork() { return startupCalls.size > 0 || startupHostHandlers.size > 0 || startupRetirements.size > 0; },
+    recoverStartupAcquisition(contextId: string, creationOperationId: string) {
+      for (const observer of observedResults.values()) {
+        if (observer.contextId === contextId && observer.creationOperationId === creationOperationId && !observer.response) observer.finish();
+      }
+    },
+    async drainStartup(contextId: string) {
+      revokeStartupInvocations(contextId);
+      for (const [id, observer] of observedResults) if (observer.contextId === contextId) void processObservedResult(id).catch(() => undefined);
+      await waitForStartupHandlers(contextId);
+    },
+    async retireStartup(contextId: string) {
+      const current = startupRetirements.get(contextId);
+      if (current) return current;
+      const retiring = (async () => {
+        revokeStartupInvocations(contextId);
+        for (const [id, observer] of observedResults) if (observer.contextId === contextId) void processObservedResult(id).catch(() => undefined);
+        await waitForStartupHandlers(contextId);
+        for (const finish of [...startupCalls.get(contextId) ?? []]) finish();
+      })();
+      startupRetirements.set(contextId, retiring);
+      try { await retiring; }
+      finally {
+        if (startupRetirements.get(contextId) === retiring) startupRetirements.delete(contextId);
+        onStartupWorkChanged?.();
+      }
+    },
 
     call<M extends HostToWorkerMethodName>(
       method: M,
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
       executeLogSink?: ExecuteLogSink,
+      onWorkerSettled?: () => void,
+      startupContextId?: string,
+      observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
     ): Promise<HostToWorkerMethods[M][1]> {
       if (status !== "running" && status !== "starting") {
+        onWorkerSettled?.();
         return Promise.reject(
-          new Error(
-            `Cannot call "${method}" — worker for "${pluginId}" is ${status}`,
-          ),
+          new PluginWorkerUnavailableError({ pluginId, workerStatus: status,
+            message: `Cannot call "${method}" — worker for "${pluginId}" is ${status}` }),
         );
       }
-      return callInternal(method, params, timeoutMs, executeLogSink);
+      return callInternal(method, params, timeoutMs, executeLogSink, onWorkerSettled, startupContextId, observeResult);
     },
 
     openLoginPtySession(input: LoginPtyOpenInput) {
@@ -3540,6 +3872,7 @@ export function createPluginWorkerHandle(
 
     notify(method: string, params: unknown) {
       if (status !== "running") return;
+      if (idleSleepHeld()) throw new Error("Plugin is held for idle sleep");
       const invocationScope = deriveInvocationScope(method, params);
       // Notifications have no response to settle on, so the invocation scope
       // is GC'd by TTL. Call-path invocations are registered without a TTL and
@@ -3630,20 +3963,27 @@ export interface PluginWorkerManagerOptions {
    * stays upstream admission only.
    */
   maxConcurrentDuplexRoutes?: number | null;
-  /**
-   * The process-owned aggregate byte ledger. The process root creates one ledger
-   * from validated configuration and passes it here. The manager injects the same
-   * object into every worker handle, so one gauge bounds the aggregate retained
-   * bytes across every route in the process. When it is absent, the worker retains
-   * duplex bytes unbounded. The manager never makes a fresh default ledger.
-   */
-  duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
 }
 
 /**
  * The default process-scoped aggregate ceiling for concurrent duplex channel
  * routes. It caps the manager-wide resource, not one agent's run budget. The host
  * reports an explicit route-busy outcome when the ceiling is full.
+ *
+ * Known aggregate behavior: this ceiling bounds route count only, not
+ * retained bytes. Each HTTP/2 bridge route bounds its own retained body
+ * bytes to 168,820,736 bytes (see `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in
+ * `http2-bridge-server.ts`), so this route ceiling alone would let the
+ * process's aggregate retained body bytes reach 128 * 168,820,736 =
+ * 21,609,054,208 bytes (about 20.1 GiB) if nothing else bounded it. It does
+ * not reach that figure: every stream's `BridgeBodyReservation` owner
+ * (`http2-bridge-server.ts`) reserves against the shared
+ * `HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES` total (1,073,741,824 bytes, 1 GiB)
+ * across every route, so that reservation — not this route ceiling — is the
+ * process's real aggregate-byte bound. `HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES`
+ * (`http2-bridge-server.ts`) adds a second bound scoped to one route at a
+ * time, so one busy route cannot spend that whole process-wide total by
+ * itself and deny every sibling route admission.
  */
 export const DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES = 128;
 
@@ -3701,6 +4041,17 @@ export function createPluginWorkerManager(
 ): PluginWorkerManager {
   const log = logger.child({ service: "plugin-worker-manager" });
   const workers = new Map<string, PluginWorkerHandle>();
+  const retiredStartupWorkers = new Set<PluginWorkerHandle>();
+  const retainStartupWorker = (handle: PluginWorkerHandle) => {
+    if (handle.hasStartupWork?.()) retiredStartupWorkers.add(handle);
+  };
+  const pruneStartupWorker = (handle: PluginWorkerHandle) => {
+    if (!handle.hasStartupWork?.()) retiredStartupWorkers.delete(handle);
+  };
+  const startupWorkers = () => new Set([...workers.values(), ...retiredStartupWorkers]);
+  const configApplied = new Set<() => void>();
+  const workerReady = new Set<(pluginId: string) => void>();
+  let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
   // The one shared, process-scoped aggregate route-slot controller. The manager
@@ -3709,13 +4060,43 @@ export function createPluginWorkerManager(
   const duplexRouteSlots = createDuplexRouteSlotController(
     managerOptions?.maxConcurrentDuplexRoutes,
   );
-  // The one shared, process-owned aggregate byte ledger. The manager injects the
-  // same object into every worker handle, so one gauge bounds the aggregate
-  // retained bytes across every route in the process. It is `null` when the
-  // process root injected no ledger.
-  const duplexAggregateByteLedger = managerOptions?.duplexAggregateByteLedger ?? null;
 
+  const idleWorkerIdentities = new WeakMap<PluginWorkerHandle, string>();
+  const idleWorkerManifests = new WeakMap<PluginWorkerHandle, string>();
+  const idleManagerGeneration = randomUUID();
+  let nextIdleWorkerIdentity = 0;
   return {
+    onConfigApplied(listener) {
+      configApplied.add(listener);
+      return () => { configApplied.delete(listener); };
+    },
+    onWorkerReady(listener) {
+      workerReady.add(listener);
+      return () => { workerReady.delete(listener); };
+    },
+    async inspectIdleSleep(hold) {
+      if (startupLocks.size) return { backgroundWork: "unknown", pluginIds: [] };
+      const snapshot = [...workers.entries()];
+      const results = await Promise.all(snapshot.map(async ([, worker]) =>
+        worker.prepareIdleSleep ? worker.prepareIdleSleep(hold) : "unknown"));
+      if (startupLocks.size || snapshot.length !== workers.size || snapshot.some(([id, worker]) => workers.get(id) !== worker || worker.status !== "running")) {
+        return { backgroundWork: "unknown", pluginIds: [] };
+      }
+      const backgroundWork = results.includes("present") ? "present" : results.includes("unknown") ? "unknown" : "none";
+      const catalogGeneration = createHash("sha256").update(JSON.stringify([idleManagerGeneration, snapshot.map(([id, worker]) => {
+        let identity = idleWorkerIdentities.get(worker);
+        if (!identity) { identity = String(++nextIdleWorkerIdentity); idleWorkerIdentities.set(worker, identity); }
+        return [id, identity, idleWorkerManifests.get(worker)];
+      })])).digest("hex");
+      const catalog = snapshot.flatMap(([pluginId, worker]) => {
+        const manifestGeneration = idleWorkerManifests.get(worker);
+        return manifestGeneration ? [{ pluginId, manifestGeneration }] : [];
+      });
+      return { backgroundWork, pluginIds: backgroundWork === "none" ? snapshot.map(([id]) => id) : [], catalogGeneration, catalog };
+    },
+    releaseIdleSleep() {
+      for (const worker of workers.values()) worker.releaseIdleSleep?.();
+    },
     async startWorker(
       pluginId: string,
       options: WorkerStartOptions,
@@ -3735,14 +4116,20 @@ export function createPluginWorkerManager(
       }
 
       const handle = createPluginWorkerHandle(pluginId, {
-        // Inject the shared process-scoped route-slot controller and the shared
-        // process-owned aggregate byte ledger, unless the caller already supplied
-        // its own (a test may inject its own).
+        // Inject the shared process-scoped route-slot controller, unless the
+        // caller already supplied its own (a test may inject its own).
         duplexRouteSlots,
-        duplexAggregateByteLedger,
         ...options,
-      });
+      }, () => pruneStartupWorker(handle));
+      idleWorkerManifests.set(handle, pluginIdleManifestGeneration(options.manifest));
+      if (existing) retainStartupWorker(existing);
       workers.set(pluginId, handle);
+      handle.on("ready", (payload) => {
+        for (const listener of [...workerReady]) {
+          try { listener(payload.pluginId); }
+          catch (err) { log.warn({ err, pluginId: payload.pluginId }, "worker ready listener failed"); }
+        }
+      });
 
       // Subscribe to crash/ready events for live event forwarding
       if (managerOptions?.onWorkerEvent) {
@@ -3771,7 +4158,7 @@ export function createPluginWorkerManager(
       log.info({ pluginId }, "starting plugin worker");
 
       // Set the lock before awaiting start() to prevent concurrent spawns
-      const startPromise = handle.start().then(() => handle).finally(() => {
+      const startPromise = trackIdleWork(handle.start()).then(() => handle).finally(() => {
         startupLocks.delete(pluginId);
       });
       startupLocks.set(pluginId, startPromise);
@@ -3787,12 +4174,22 @@ export function createPluginWorkerManager(
       }
 
       log.info({ pluginId }, "stopping plugin worker");
-      await handle.stop();
-      workers.delete(pluginId);
+      await trackIdleWork(handle.stop());
+      retainStartupWorker(handle);
+      if (workers.get(pluginId) === handle) workers.delete(pluginId);
     },
 
     getWorker(pluginId: string): PluginWorkerHandle | undefined {
       return workers.get(pluginId);
+    },
+    async retireStartup(contextId: string) {
+      await Promise.all([...startupWorkers()].map(worker => worker.retireStartup?.(contextId)));
+    },
+    recoverStartupAcquisition(contextId: string, creationOperationId: string) {
+      for (const worker of startupWorkers()) worker.recoverStartupAcquisition?.(contextId, creationOperationId);
+    },
+    async drainStartup(contextId: string) {
+      await Promise.all([...startupWorkers()].map(worker => worker.drainStartup?.(contextId)));
     },
 
     isRunning(pluginId: string): boolean {
@@ -3817,10 +4214,12 @@ export function createPluginWorkerManager(
             },
             "error stopping worker during shutdown",
           );
+        } finally {
+          retainStartupWorker(handle);
+          if (workers.get(handle.pluginId) === handle) workers.delete(handle.pluginId);
         }
       });
       await Promise.all(promises);
-      workers.clear();
     },
 
     diagnostics(): WorkerDiagnostics[] {
@@ -3833,21 +4232,51 @@ export function createPluginWorkerManager(
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
       executeLogSink?: ExecuteLogSink,
+      onWorkerSettled?: () => void,
+      startupContextId?: string,
+      observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
     ): Promise<HostToWorkerMethods[M][1]> {
       const handle = workers.get(pluginId);
+      if (!startupContextId && ["environmentReleaseLease", "environmentDestroyLease"].includes(method)) {
+        const cleanup = (params as { leaseMetadata?: { runnerTaskStartupCleanup?: { contextId?: unknown; requiresPreparationStop?: unknown } } }).leaseMetadata?.runnerTaskStartupCleanup;
+        if (typeof cleanup?.requiresPreparationStop === "boolean" && typeof cleanup.contextId === "string" && cleanup.contextId.trim()) startupContextId = cleanup.contextId.trim();
+      }
       if (!handle) {
+        onWorkerSettled?.();
         return Promise.reject(
-          new Error(`No worker registered for plugin "${pluginId}"`),
+          new PluginWorkerUnavailableError({ pluginId, workerStatus: null,
+            message: `No worker registered for plugin "${pluginId}"` }),
         );
       }
-      return handle.call(method, params, timeoutMs, executeLogSink);
+      let finishInspection: (() => void) | undefined;
+      if (method === "environmentInspectLease") {
+        if (activeInspections >= 2) {
+          onWorkerSettled?.();
+          return Promise.reject(new Error("Provider inspection concurrency limit reached"));
+        }
+        activeInspections += 1;
+        let finished = false;
+        finishInspection = () => { if (!finished) { finished = true; activeInspections -= 1; } };
+      }
+      // A caller timeout is not worker completion. Inspection capacity is
+      // released only by its actual reply, send failure, or worker exit.
+      const finish = onWorkerSettled ? () => { finishInspection?.(); onWorkerSettled(); } : finishInspection;
+      const result = handle.call(method, params, timeoutMs, executeLogSink, finish, startupContextId, observeResult);
+      if (method === "configChanged") void result.then(() => {
+        for (const listener of configApplied) {
+          try { listener(); }
+          catch { log.warn({ pluginId }, "Plugin configuration listener failed"); }
+        }
+      }, () => {});
+      return result;
     },
 
     openLoginPtySession(pluginId: string, input: LoginPtyOpenInput) {
       const handle = workers.get(pluginId);
       if (!handle) {
         return Promise.reject(
-          new Error(`No worker registered for plugin "${pluginId}"`),
+          new PluginWorkerUnavailableError({ pluginId, workerStatus: null,
+            message: `No worker registered for plugin "${pluginId}"` }),
         );
       }
       return handle.openLoginPtySession(input);

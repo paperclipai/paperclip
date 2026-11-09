@@ -97,7 +97,7 @@ else
     | tar -xz --strip-components=1 -C "$BOOT" || { fail_ "1a bootstrap tarball"; exit 1; }
   ( cd "$BOOT" \
       && corepack pnpm install --frozen-lockfile > "$HOME/e2e-upd-bootstrap-install.log" 2>&1 \
-      && bash scripts/build-npm.sh --skip-checks --skip-typecheck > "$HOME/e2e-upd-bootstrap-build.log" 2>&1 ) \
+      && PAPERCLIP_README_ASSET_REF="$BASE_REF" bash scripts/build-npm.sh --skip-checks --skip-typecheck > "$HOME/e2e-upd-bootstrap-build.log" 2>&1 ) \
     || { tail -40 "$HOME"/e2e-upd-bootstrap-*.log; fail_ "1b bootstrap build"; exit 1; }
   TARBALL="$(cd "$BOOT/cli" && npm pack --silent 2>/dev/null | tail -1)"
   mkdir -p "$HOME/e2e-upd-bootstrap-cli"

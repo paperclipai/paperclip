@@ -1,0 +1,186 @@
+{
+  "schema": "paperclip.prp.fixture.v1",
+  "fixtureVersion": 1,
+  "protocolVersion": 1,
+  "name": "Semantic tool artifact happy path",
+  "description": "A provider-neutral register_deliverable call emits safe input and result receipts linked to the terminal artifact result.",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_semantic_happy",
+    "issueId": "issue_semantic_happy",
+    "runId": "run_semantic_happy",
+    "environmentLeaseId": "lease_semantic_happy",
+    "runnerInstanceId": "runner_semantic_happy",
+    "normalizedSessionId": "session_semantic_happy",
+    "driverSessionId": "driver_semantic_happy"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": { "kind": "provider-neutral", "version": "1.0.0" },
+    "steer": true,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": true,
+    "structuredResult": true,
+    "typedEvents": true,
+    "semanticTools": {
+      "schema": "paperclip.prp.semantic_tools.v1",
+      "schemaVersion": 1,
+      "operations": [{
+        "operationId": "register_deliverable",
+        "version": 1,
+        "availability": "available",
+        "redactionDisposition": "digest_only",
+        "requiredClaims": []
+      }]
+    },
+    "unsupported": []
+  },
+  "commands": [],
+  "events": [
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "semantic_happy_01",
+      "sourceSeq": 1,
+      "sourceInstanceId": "runner_semantic_happy",
+      "sourceKind": "runner",
+      "runId": "run_semantic_happy",
+      "normalizedSessionId": "session_semantic_happy",
+      "turnId": "turn_semantic_happy",
+      "itemId": "item_semantic_happy",
+      "eventType": "mcp_app.tool_input",
+      "schemaVersion": 1,
+      "priority": 1,
+      "emittedAt": "2026-08-11T10:00:00.000Z",
+      "payload": {
+        "semantic_tool": {
+          "schema": "paperclip.prp.semantic_tool.v1",
+          "schemaVersion": 1,
+          "phase": "input",
+          "operationId": "register_deliverable",
+          "callId": "call_semantic_happy",
+          "correlation": {
+            "runId": "run_semantic_happy",
+            "normalizedSessionId": "session_semantic_happy",
+            "turnId": "turn_semantic_happy",
+            "itemId": "item_semantic_happy"
+          },
+          "idempotencyKey": "artifact_once",
+          "content": {
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "redactionDisposition": "digest_only",
+            "references": [{ "kind": "task", "id": "issue_semantic_happy" }]
+          }
+        }
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "semantic_happy_02",
+      "sourceSeq": 2,
+      "sourceInstanceId": "runner_semantic_happy",
+      "sourceKind": "runner",
+      "runId": "run_semantic_happy",
+      "normalizedSessionId": "session_semantic_happy",
+      "turnId": "turn_semantic_happy",
+      "itemId": "item_semantic_happy",
+      "eventType": "mcp_app.tool_result",
+      "schemaVersion": 1,
+      "priority": 1,
+      "emittedAt": "2026-08-11T10:00:00.010Z",
+      "payload": {
+        "semantic_tool": {
+          "schema": "paperclip.prp.semantic_tool.v1",
+          "schemaVersion": 1,
+          "phase": "result",
+          "operationId": "register_deliverable",
+          "callId": "call_semantic_happy",
+          "correlation": {
+            "runId": "run_semantic_happy",
+            "normalizedSessionId": "session_semantic_happy",
+            "turnId": "turn_semantic_happy",
+            "itemId": "item_semantic_happy"
+          },
+          "idempotencyKey": "artifact_once",
+          "content": {
+            "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "redactionDisposition": "allowlisted_references",
+            "references": [
+              { "kind": "artifact", "id": "artifact_semantic_happy" },
+              { "kind": "work_product", "id": "work_product_semantic_happy" }
+            ]
+          },
+          "outcome": "succeeded",
+          "code": "ok",
+          "retryable": false,
+          "authorizationBoundary": "active_task",
+          "operationReceiptId": "receipt_semantic_happy",
+          "auditReceiptId": "audit_semantic_happy",
+          "currentRevision": 2,
+          "artifactRefs": [
+            { "kind": "artifact", "id": "artifact_semantic_happy" },
+            { "kind": "work_product", "id": "work_product_semantic_happy" }
+          ]
+        }
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "semantic_happy_03",
+      "sourceSeq": 3,
+      "sourceInstanceId": "runner_semantic_happy",
+      "sourceKind": "runner",
+      "runId": "run_semantic_happy",
+      "normalizedSessionId": "session_semantic_happy",
+      "turnId": "turn_semantic_happy",
+      "eventType": "run.result.proposed",
+      "schemaVersion": 1,
+      "priority": 0,
+      "emittedAt": "2026-08-11T10:00:00.020Z",
+      "payload": {
+        "schema": "paperclip.run_result.v1",
+        "reportedWorkDisposition": "done",
+        "summary": "The artifact was registered through the semantic tool receipt.",
+        "completionClaim": { "contractRevision": "semantic-receipts-v1", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] },
+        "evidence": [{ "receiptId": "receipt_semantic_happy" }],
+        "verification": [{ "commandOrCheck": "semantic artifact receipt", "status": "passed", "artifactRef": "artifact_semantic_happy" }],
+        "attentionRequests": [],
+        "artifacts": [{ "kind": "artifact", "ref": "artifact_semantic_happy", "title": "Semantic receipt report" }]
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "semantic_happy_04",
+      "sourceSeq": 4,
+      "sourceInstanceId": "runner_semantic_happy",
+      "sourceKind": "runner",
+      "runId": "run_semantic_happy",
+      "normalizedSessionId": "session_semantic_happy",
+      "turnId": "turn_semantic_happy",
+      "eventType": "run.terminal",
+      "schemaVersion": 1,
+      "priority": 0,
+      "emittedAt": "2026-08-11T10:00:00.030Z",
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": "completed",
+        "runTerminalState": "succeeded",
+        "reportedWorkDisposition": "done",
+        "workAssessmentId": "assessment_semantic_happy",
+        "statusDecisionId": "decision_semantic_happy"
+      }
+    }
+  ],
+  "requests": [],
+  "result": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "done",
+    "summary": "The artifact was registered through the semantic tool receipt.",
+    "completionClaim": { "contractRevision": "semantic-receipts-v1", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] },
+    "evidence": [{ "receiptId": "receipt_semantic_happy" }],
+    "verification": [{ "commandOrCheck": "semantic artifact receipt", "status": "passed", "artifactRef": "artifact_semantic_happy" }],
+    "attentionRequests": [],
+    "artifacts": [{ "kind": "artifact", "ref": "artifact_semantic_happy", "title": "Semantic receipt report" }]
+  }
+}

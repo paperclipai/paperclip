@@ -21,11 +21,6 @@ vi.mock("../services/plugin-environment-driver.js", async (importActual) => ({
 }));
 
 import type { EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
-import { adapterExecutionTargetDuplexAggregateByteLedger } from "@paperclipai/adapter-utils/execution-target";
-import {
-  DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES,
-  DuplexAggregateByteLedger,
-} from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
@@ -51,7 +46,9 @@ const DUPLEX_GRANT: EffectiveExecutionCapabilities = {
   persistentProcessSessions: true,
   independentControlCommands: true,
   incrementalSessionOutput: true,
+  concurrentSyncOperations: true,
   duplexCommandStream: true,
+  runnerWebSocketIngress: true,
 };
 
 const DUPLEX_ABSENT: EffectiveExecutionCapabilities = {
@@ -134,7 +131,7 @@ describe("sandbox driver duplex channel wiring", () => {
     const channel = await service.openDuplexChannel({
       environment: SANDBOX_ENVIRONMENT,
       lease: PLUGIN_LEASE,
-      command: "bridge-callback",
+      command: ["bridge-callback"],
     });
 
     // The driver resolves the worker by the pinned plugin id and passes the same
@@ -145,7 +142,7 @@ describe("sandbox driver duplex channel wiring", () => {
       companyId: "company-1",
       environmentId: "env-1",
       providerLeaseId: "provider-lease-1",
-      command: "bridge-callback",
+      command: ["bridge-callback"],
     });
 
     // write / stop / close map to write / kill / close on the host session.
@@ -188,7 +185,7 @@ describe("sandbox driver duplex channel wiring", () => {
       service.openDuplexChannel({
         environment: SANDBOX_ENVIRONMENT,
         lease: nonPluginLease,
-        command: "bridge-callback",
+        command: ["bridge-callback"],
       }),
     ).rejects.toThrow(DUPLEX_DENIED);
     expect(worker.openDuplexChannel).not.toHaveBeenCalled();
@@ -213,7 +210,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       service.openDuplexChannel({
         environment: SANDBOX_ENVIRONMENT,
         lease: PLUGIN_LEASE,
-        command: "bridge-callback",
+        command: ["bridge-callback"],
       }),
     ).rejects.toThrow(DUPLEX_DENIED);
     expect(worker.openDuplexChannel).not.toHaveBeenCalled();
@@ -231,7 +228,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       service.openDuplexChannel({
         environment: SANDBOX_ENVIRONMENT,
         lease: PLUGIN_LEASE,
-        command: "bridge-callback",
+        command: ["bridge-callback"],
       }),
     ).rejects.toThrow(DUPLEX_DENIED);
     expect(worker.openDuplexChannel).not.toHaveBeenCalled();
@@ -256,7 +253,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       service.openDuplexChannel({
         environment: SANDBOX_ENVIRONMENT,
         lease: { ...PLUGIN_LEASE, metadata: { ...PLUGIN_LEASE.metadata, driver: "sandbox" } },
-        command: "bridge-callback",
+        command: ["bridge-callback"],
       }),
     ).rejects.toThrow(DUPLEX_DENIED);
     expect(openDuplexChannel).not.toHaveBeenCalled();
@@ -274,7 +271,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       service.openDuplexChannel({
         environment: SANDBOX_ENVIRONMENT,
         lease: PLUGIN_LEASE,
-        command: "bridge-callback",
+        command: ["bridge-callback"],
       }),
     ).rejects.toThrow(DUPLEX_DENIED);
     expect(worker.openDuplexChannel).not.toHaveBeenCalled();
@@ -296,50 +293,6 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       configResolutionFailed: false,
     });
     expect(granted.duplexCommandStream).toBeUndefined();
-  });
-});
-
-describe("sandbox execution target aggregate byte ledger stamp", () => {
-  it("stamps the injected ledger on the target with object identity", async () => {
-    const ledger = new DuplexAggregateByteLedger({
-      ceilingBytes: DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES,
-    });
-    const target = await resolveEnvironmentExecutionTarget({
-      db: {} as never,
-      companyId: "company-1",
-      adapterType: "codex_local",
-      environment: { id: "env-1", driver: "sandbox", config: { provider: "daytona" } },
-      leaseId: "lease-1",
-      leaseMetadata: { remoteCwd: "/work" },
-      lease: { id: "lease-1", leasePolicy: "reuse_by_environment" } as never,
-      duplexAggregateByteLedger: ledger,
-    });
-    if (!target || target.kind !== "remote" || target.transport !== "sandbox") {
-      throw new Error("expected a sandbox execution target");
-    }
-    // The stamped field and the accessor both return the one injected object, so
-    // one process-owned ledger reaches the host bridge seam.
-    expect(target.duplexAggregateByteLedger).toBe(ledger);
-    expect(adapterExecutionTargetDuplexAggregateByteLedger(target)).toBe(ledger);
-  });
-
-  it("leaves the ledger absent when the host injects none", async () => {
-    const target = await resolveEnvironmentExecutionTarget({
-      db: {} as never,
-      companyId: "company-1",
-      adapterType: "codex_local",
-      environment: { id: "env-1", driver: "sandbox", config: { provider: "daytona" } },
-      leaseId: "lease-1",
-      leaseMetadata: { remoteCwd: "/work" },
-      lease: { id: "lease-1", leasePolicy: "reuse_by_environment" } as never,
-    });
-    if (!target || target.kind !== "remote" || target.transport !== "sandbox") {
-      throw new Error("expected a sandbox execution target");
-    }
-    // A run with no injected ledger keeps the seam null; the accessor never makes
-    // a fresh ledger.
-    expect(target.duplexAggregateByteLedger).toBeNull();
-    expect(adapterExecutionTargetDuplexAggregateByteLedger(target)).toBeNull();
   });
 });
 
@@ -400,11 +353,11 @@ describe("inline sandbox runner duplex capability gate", () => {
     const { runner, openDuplexChannel } = await buildSandboxRunner({ snapshot: DUPLEX_GRANT });
     expect(runner?.openDuplexChannel).toBeDefined();
 
-    await runner!.openDuplexChannel!({ command: "bridge-callback" });
+    await runner!.openDuplexChannel!({ command: ["bridge-callback"] });
     expect(openDuplexChannel).toHaveBeenCalledWith({
       environment: expect.objectContaining({ id: "env-1" }),
       lease: expect.objectContaining({ id: "lease-1" }),
-      command: "bridge-callback",
+      command: ["bridge-callback"],
     });
   });
 

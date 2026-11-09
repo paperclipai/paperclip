@@ -1,0 +1,692 @@
+{
+  "base": "e868e6645ce0d598d756d3458f0b3d71afd6db4a",
+  "scope": [
+    "ui/src/pages/InviteLanding.test.tsx",
+    "ui/src/pages/Agents.test.tsx",
+    "ui/src/components/Layout.test.tsx"
+  ],
+  "testLinesRemoved": 364,
+  "productionLinesChanged": 0,
+  "registeredInvocationsRemoved": 1,
+  "sourceHelperCallsExpanded": 60,
+  "speedClaim": null,
+  "expansionNormalization": [
+    "AST locations",
+    "comments",
+    "raw literal formatting",
+    "whitespace-only JSX text"
+  ],
+  "expansionVerifierSha256": "c97239d6b978cc11bb2f8ed11e0521ac107c37c6af5183dbd934d58b94418b3c",
+  "expansions": [
+    {
+      "file": "ui/src/pages/InviteLanding.test.tsx",
+      "originalSha": "2283067e52a3409f4c1a21e017e273649989559e7013a0d1442ebea268989bdd",
+      "candidateSha": "84ab29d3d382710df5d39d8e6d84fb2cf916d10e2470e6432d54ac2875a55153",
+      "expansions": 18,
+      "wholeProgramAstEqualOutsideMigration": true,
+      "migration": null,
+      "helperSync": true,
+      "parameterBindingArguments": [
+        "root",
+        "queryClient"
+      ],
+      "freshJsxPerCall": true,
+      "expandedAstSha": "a95408adf3b302b35d13a5a40d1b0cddacff4232bff02629a275f63698b3f489"
+    },
+    {
+      "file": "ui/src/pages/Agents.test.tsx",
+      "originalSha": "f7a84d1d31119880d6b11dc956d3121930ba4e92a2df7832d32676fc48cb2313",
+      "candidateSha": "e2ab9c0de428585bee37b40df1ee6c4a3c823882582d006abadbfedbdd3e50ff",
+      "expansions": 16,
+      "wholeProgramAstEqualOutsideMigration": true,
+      "migration": {
+        "retired": "uses the built-in agents route segment as the built-in filter",
+        "keeper": "shows and filters built-in agents when the experimental flag is enabled",
+        "copiedExactRetiredSetup": true,
+        "migratedCountGuard": "1 agent",
+        "originalKeeperOtherAssertionsUnchanged": true
+      },
+      "helperSync": true,
+      "parameterBindingArguments": [
+        "root",
+        "queryClient"
+      ],
+      "freshJsxPerCall": true,
+      "expandedAstSha": "2b0ff05182aa4cee5f94040fcff0321cb4ba7bce0e6a4d08bbaccf65e38873bb"
+    },
+    {
+      "file": "ui/src/components/Layout.test.tsx",
+      "originalSha": "d522929332ccbd413d56d5c9b7d7cd820344b58d6baa17b70002ecd387039093",
+      "candidateSha": "89b6c599f2cecd570831e1a5d3d673bc1188052ca8eeedb6013892d25491f791",
+      "expansions": 26,
+      "wholeProgramAstEqualOutsideMigration": true,
+      "migration": null,
+      "helperSync": true,
+      "parameterBindingArguments": [
+        "root",
+        "queryClient"
+      ],
+      "freshJsxPerCall": true,
+      "expandedAstSha": "150995d2bb95bb3c7afa57ce23f38b664f518c2fe7ed1ca039475f24fb6f6f9f"
+    }
+  ],
+  "runs": [
+    {
+      "label": "owners baseline",
+      "jsonSha256": "8995c66ecc3951722950526f9c3d1b6de551b8ac6cc153576d1315c43e0c7a5c",
+      "cases": 71,
+      "passed": 71,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        {
+          "path": "ui/src/pages/Agents.test.tsx",
+          "status": "passed",
+          "cases": 21
+        },
+        {
+          "path": "ui/src/pages/InviteLanding.test.tsx",
+          "status": "passed",
+          "cases": 18
+        },
+        {
+          "path": "ui/src/components/Layout.test.tsx",
+          "status": "passed",
+          "cases": 32
+        }
+      ]
+    },
+    {
+      "label": "siblings baseline",
+      "jsonSha256": "e4326b65ac0c85207df2c0a055a5ca7c34138fead744cf9ebd7c9ea060f27291",
+      "cases": 79,
+      "passed": 79,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        {
+          "path": "ui/src/hooks/useCompanyInviteAccess.test.ts",
+          "status": "passed",
+          "cases": 10
+        },
+        {
+          "path": "ui/src/lib/company-selection.test.ts",
+          "status": "passed",
+          "cases": 11
+        },
+        {
+          "path": "ui/src/lib/shell-navigation.test.ts",
+          "status": "passed",
+          "cases": 6
+        },
+        {
+          "path": "ui/src/components/ActiveAgentsPanel.test.tsx",
+          "status": "passed",
+          "cases": 8
+        },
+        {
+          "path": "ui/src/components/PluginAppShellOverlays.test.tsx",
+          "status": "passed",
+          "cases": 6
+        },
+        {
+          "path": "ui/src/components/SidebarAgents.test.tsx",
+          "status": "passed",
+          "cases": 26
+        },
+        {
+          "path": "ui/src/components/SidebarShell.test.tsx",
+          "status": "passed",
+          "cases": 9
+        },
+        {
+          "path": "ui/src/components/access/InvitesSection.test.tsx",
+          "status": "passed",
+          "cases": 3
+        }
+      ]
+    },
+    {
+      "label": "owners candidate",
+      "jsonSha256": "3bf91a48289f6db06c9ca0fdaf552866c39cebc20dec89602fb2ad8faaceb498",
+      "cases": 70,
+      "passed": 70,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        {
+          "path": "ui/src/pages/Agents.test.tsx",
+          "status": "passed",
+          "cases": 20
+        },
+        {
+          "path": "ui/src/pages/InviteLanding.test.tsx",
+          "status": "passed",
+          "cases": 18
+        },
+        {
+          "path": "ui/src/components/Layout.test.tsx",
+          "status": "passed",
+          "cases": 32
+        }
+      ]
+    },
+    {
+      "label": "all complete candidate",
+      "jsonSha256": "d17ff01fc3d46e1679832f3d589a4907cbed8be3f5012ae7e7079a93bfb5a118",
+      "cases": 149,
+      "passed": 149,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        {
+          "path": "ui/src/hooks/useCompanyInviteAccess.test.ts",
+          "status": "passed",
+          "cases": 10
+        },
+        {
+          "path": "ui/src/pages/Agents.test.tsx",
+          "status": "passed",
+          "cases": 20
+        },
+        {
+          "path": "ui/src/pages/InviteLanding.test.tsx",
+          "status": "passed",
+          "cases": 18
+        },
+        {
+          "path": "ui/src/components/ActiveAgentsPanel.test.tsx",
+          "status": "passed",
+          "cases": 8
+        },
+        {
+          "path": "ui/src/components/Layout.test.tsx",
+          "status": "passed",
+          "cases": 32
+        },
+        {
+          "path": "ui/src/components/PluginAppShellOverlays.test.tsx",
+          "status": "passed",
+          "cases": 6
+        },
+        {
+          "path": "ui/src/components/SidebarAgents.test.tsx",
+          "status": "passed",
+          "cases": 26
+        },
+        {
+          "path": "ui/src/components/SidebarShell.test.tsx",
+          "status": "passed",
+          "cases": 9
+        },
+        {
+          "path": "ui/src/lib/company-selection.test.ts",
+          "status": "passed",
+          "cases": 11
+        },
+        {
+          "path": "ui/src/lib/shell-navigation.test.ts",
+          "status": "passed",
+          "cases": 6
+        },
+        {
+          "path": "ui/src/components/access/InvitesSection.test.tsx",
+          "status": "passed",
+          "cases": 3
+        }
+      ]
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "builtin-filter",
+      "owner": "ui/src/pages/Agents.tsx",
+      "title": "shows and filters built-in agents when the experimental flag is enabled",
+      "sourceSha": "a734799d3b015ddc04424754ff30eb2eb872db66e8847c4603132093fbb5e9b2",
+      "replacements": 1,
+      "mutation": {
+        "before": "if (tab === \"builtin\") return builtInAgentIds.has(a.id);",
+        "after": "if (tab === \"builtin\") return true;"
+      },
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "status": "passed",
+        "jsonSha256": "9189086e19c4ca525e7c8692bfc3778bdb273647ee2eae0d1c9258c3904f68e6",
+        "logSha256": "91eb9ad0112c20347e1229c9d40002be1a6fc7f3c6c2b15ff82ba9fb8a84621c"
+      },
+      "negative": {
+        "exit": 1,
+        "status": "failed",
+        "jsonSha256": "c3710d64d3205aff35c8645d4c5675c49d2d1e28ac6f6bd3c2cfb49231386842",
+        "logSha256": "3c0ec61eae54edafcce43bfed5d791aa0d65ff8e6c99969a3e378e537942c8bf",
+        "intendedFailure": "AssertionError: expected 'AllActivePausedErrorBuilt-inNew Agent\u2026' to contain '1 agent'"
+      }
+    },
+    {
+      "slug": "invite-aria-invalid",
+      "owner": "ui/src/pages/InviteLanding.tsx",
+      "title": "renders invite auth errors in an alert region referenced by the inputs",
+      "sourceSha": "626dc7c372a74ff436f1f96f675ecf55bd0b2ae60107ec61bc88cec8c6fefe18",
+      "replacements": 3,
+      "mutation": {
+        "before": "aria-invalid={authFeedback?.tone === \"error\" ? true : undefined}",
+        "after": "aria-invalid={undefined}"
+      },
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "status": "passed",
+        "jsonSha256": "f5401b7b6c33dea587d00dedb8fe64c3baaa04f45fcb54ebd3225b0339de4291",
+        "logSha256": "802bc10c23fbeb70cae9effbef913145a90a28dd893550be3c6941ffbd1d4396"
+      },
+      "negative": {
+        "exit": 1,
+        "status": "failed",
+        "jsonSha256": "58d01e3723ff05867f87f82e2fa857d4d1d3d5f81dd50d04603d7da3b148c060",
+        "logSha256": "c90dcb374262c2caf2ca5a27069a2cbe5a2a1b4615df05d82a4e82e129e58080",
+        "intendedFailure": "AssertionError: expected null to be 'true' // Object.is equality"
+      }
+    },
+    {
+      "slug": "settings-sidebar",
+      "owner": "ui/src/components/Layout.tsx",
+      "title": "replaces the app sidebar with settings navigation on Streamlined settings routes",
+      "sourceSha": "4c236e0330ed4946572af9528f27d24c305bc3e73473814e921017199d4afa8a",
+      "replacements": 1,
+      "mutation": {
+        "before": "const sharedSecondarySidebar = isCompanySettingsRoute ? (",
+        "after": "const sharedSecondarySidebar = false ? ("
+      },
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "status": "passed",
+        "jsonSha256": "c4cba1779379171ad2d0fc234e699944118ab453f3f87c4547d92e688d3f64ef",
+        "logSha256": "5e6de08a8cda51850e9e237a76d993ceff3e32677ef38faaf2bffd0d40c6cf10"
+      },
+      "negative": {
+        "exit": 1,
+        "status": "failed",
+        "jsonSha256": "a0cdaa7f1233d4f88d6abd92f61984343f41b27e2723b8ce28b16a8c97624366",
+        "logSha256": "83b0ab380a65c7f9ec69f8ec36132dbafb6ef9cc2c4df220b20415144244eab3",
+        "intendedFailure": "AssertionError: expected 'Skip to Main ContentPaperclipCompany \u2026' to contain 'Company settings sidebar'"
+      }
+    }
+  ],
+  "caseLedger": [
+    {
+      "file": "ui/src/pages/Agents.test.tsx",
+      "cases": [
+        {
+          "title": "omits the action bar from streamlined agent list rows",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "omits the action bar from production agent list rows",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "shows the configured model beside the adapter on the all agents page",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "switches between the preserved list and the interactive org chart with icon buttons",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "gives mobile agent names the full row width after the leading status indicator",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "uses the built-in agents route segment as the built-in filter",
+          "decision": "C",
+          "evidence": "Exact keeper retains fixture/count plus all stronger assertions"
+        },
+        {
+          "title": "shows effective environment and sandbox provider beside agents",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "uses configured names for local-driver environments",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "reserves the environment column while environment metadata is loading",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "hides the environment column when there is only one configured environment",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "hides the environment column when environments are experimentally disabled",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "uses the instance default environment unless the agent overrides it",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "falls back to the raw sandbox provider config when capabilities omit a display name",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "does not show environment filter or grouping controls yet",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "hides built-in agent surfaces while the experimental flag is disabled",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "shows and filters built-in agents when the experimental flag is enabled",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "gives list-view rows a fixed-width title so meta columns align (PAP-86)",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "omits star and leave/join actions from streamlined agent index list and org views",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "omits star and leave/join actions from production agent index list and org views",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "does not dim left-membership agent names on mobile",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps invalid-org-chain agents visible with a warning marker",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        }
+      ]
+    },
+    {
+      "file": "ui/src/pages/InviteLanding.test.tsx",
+      "cases": [
+        {
+          "title": "keeps agent-invite onboarding on legacy adapters",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "defaults invite auth to account creation and guides existing users back to sign in",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "carries password-manager metadata and a11y attributes on the invite auth form",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "renders invite auth errors in an alert region referenced by the inputs",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "turns invalid sign-in responses into a clear invite-specific message",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "auto-accepts the invite after account creation and redirects into the company",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "shows the pending approval page with the company icon and non-clickable access instructions",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "auto-completes a previously accepted human invite after sign-in",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "asks unauthenticated users to sign in before completing an accepted human invite",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "redirects straight to the company after sign-in when the user already has access",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "re-reads membership for the account that just signed in",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "re-reads membership on mount for an already signed-in account",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the pending invite token when the session has lapsed",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "still reads the shared list as membership on a local_trusted instance",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "shows invite details instead of auto-redirecting for signed-in existing members",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "falls back to the generated company icon when the invite logo fails to load",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "normalizes the shared company cache envelope before checking membership",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "waits for the membership check before showing invite acceptance to signed-in users",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        }
+      ]
+    },
+    {
+      "file": "ui/src/components/Layout.test.tsx",
+      "cases": [
+        {
+          "title": "does not render the deployment explainer in the shared layout",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "scopes the Streamlined task-detail surface while preserving balanced horizontal gutters",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "collapses atomically when the pointer is still over the sidebar (no re-peek) \u2014 PAP-10676",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "opens the peek when hovering a collapsed rail (positive control for the hover sim)",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "replaces the app sidebar with settings navigation on Streamlined settings routes",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the global sidebar beside legacy settings navigation when Streamlined UI is off",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "renders a mobile company settings selector on company settings routes",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "replaces the company nav on instance settings routes",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "replaces the company nav with the shared settings sidebar on /PAP/company/export",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "replaces the company nav with the shared settings sidebar on /PAP/company/import",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the company nav beside Apps navigation on legacy tools routes",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "mounts the Apps secondary sidebar regardless of the retired experimental flag",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the Apps sidebar on the M8 advanced-setup tabs",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the Apps sidebar on legacy developer tabs behind the Advanced door",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the Apps sidebar on the browse surface",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the Apps sidebar on the connections surface",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the Apps sidebar on the vercel-connect surface",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the Apps sidebar on the review surface",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the Apps sidebar on the chat surface",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the Apps sidebar on the gateways list and detail routes",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "uses the app connection sidebar on app detail routes",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "uses the app detail sidebar on not-connected app routes",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps global navigation beside Skills, Agent, and Routine details",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps global navigation with agent configuration navigation in the legacy shell",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the global rail beside Skills navigation in the legacy shell",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps Agent and Routine collection routes in global navigation",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "renders a route-scoped plugin sidebar for a matching plugin page route",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the route-scoped plugin sidebar on nested plugin page routes",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "uses the route company context for plugin route sidebars on the first render",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "keeps the normal company sidebar when a plugin page route is ambiguous",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "clips horizontal overflow on the mobile layout root so the viewport can't scroll sideways",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        },
+        {
+          "title": "clips overflow on the desktop layout root",
+          "decision": "R",
+          "evidence": "Whole-program expansion retains original assertions and action order outside the one recorded keeper migration"
+        }
+      ]
+    }
+  ],
+  "rawEvidenceAvailability": "Raw verifiers and run logs are temporary local audit packets; the committed report/JSON retain accepted decisions and digests, not complete raw payloads.",
+  "helperCleanupNetLinesRemoved": 320,
+  "duplicateRetirementNetLinesRemoved": 44
+}

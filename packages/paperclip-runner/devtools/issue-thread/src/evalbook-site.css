@@ -1,0 +1,87 @@
+/* Static Evalbook pages share the Runner Lab token/font layer and built asset.
+   Keep every selector scoped so report navigation cannot restyle live chat. */
+.evalbook-site { color-scheme: dark; }
+.evalbook-site main { width: 100%; max-width: 112rem; margin: auto; padding: var(--pit-space-6); }
+.evalbook-site a { color: var(--pit-live); text-underline-offset: var(--pit-space-1); }
+.evalbook-site a:hover { color: var(--pit-foreground); }
+.evalbook-site :is(a, summary, [tabindex]):focus-visible { outline: 2px solid var(--pit-ring); outline-offset: 3px; }
+.evalbook-site .top { display: flex; justify-content: space-between; align-items: center; gap: var(--pit-space-4); padding-bottom: var(--pit-space-4); border-bottom: 1px solid var(--pit-border); }
+.evalbook-site .top > a { color: var(--pit-foreground); font-weight: 700; text-decoration: none; }
+.evalbook-site h1 { margin: var(--pit-space-6) 0 var(--pit-space-3); font-size: var(--pit-text-xl); line-height: var(--pit-leading-tight); overflow-wrap: anywhere; }
+.evalbook-site h2 { margin: var(--pit-space-6) 0 var(--pit-space-3); font-size: var(--pit-text-base); line-height: var(--pit-leading-tight); }
+.evalbook-site p { margin: var(--pit-space-3) 0; }
+.evalbook-site .badge { padding: var(--pit-space-1) var(--pit-space-2); color: var(--pit-live); background: var(--pit-live-surface); border: 1px solid var(--pit-live); border-radius: var(--pit-radius-sm); font-size: var(--pit-text-xs); white-space: nowrap; }
+.evalbook-site :is(.tabs, .pointers, .breadcrumbs) { display: flex; align-items: center; gap: var(--pit-space-4); margin: var(--pit-space-4) 0; overflow-x: auto; }
+.evalbook-site .tabs { border-bottom: 1px solid var(--pit-border); gap: 0; }
+.evalbook-site .tabs a { flex: 0 0 auto; padding: var(--pit-space-3) var(--pit-space-4); color: var(--pit-muted-foreground); text-decoration: none; border-bottom: 2px solid transparent; }
+.evalbook-site .tabs a:hover { background: var(--pit-surface); color: var(--pit-foreground); }
+.evalbook-site .tabs a.active { background: var(--pit-accent-surface); border-color: var(--pit-accent); color: var(--pit-foreground); }
+.evalbook-site .breadcrumbs span { color: var(--pit-muted-foreground); }
+.evalbook-site .spend-summary { display: flex; flex-wrap: wrap; gap: var(--pit-space-6); margin: var(--pit-space-5) 0; }
+.evalbook-site .spend-summary > div { display: flex; flex-direction: column; gap: var(--pit-space-1); }
+.evalbook-site .spend-summary span { color: var(--pit-muted-foreground); font-size: var(--pit-text-xs); }
+.evalbook-site .spend-summary strong { font-size: var(--pit-text-base); font-variant-numeric: tabular-nums; }
+.evalbook-site .lede { color: var(--pit-muted-foreground); margin-bottom: var(--pit-space-5); }
+.evalbook-site :is(.card, .message, .tool, .check) { margin: var(--pit-space-3) 0; padding: var(--pit-space-4); background: var(--pit-surface); border: 1px solid var(--pit-border); border-radius: var(--pit-radius-sm); overflow-wrap: anywhere; }
+.evalbook-site .pass { border-left: 3px solid var(--pit-success); }
+.evalbook-site .fail { border-left: 3px solid var(--pit-danger); }
+.evalbook-site .infra { border-left: 3px solid var(--pit-warning); }
+.evalbook-site .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: var(--pit-space-6); }
+.evalbook-site .grid > section { min-width: 0; }
+.evalbook-site :is(.table-shell, .table) { width: 100%; overflow: auto; border: 1px solid var(--pit-border); border-radius: var(--pit-radius-sm); background: var(--pit-surface-sunken); overscroll-behavior-inline: contain; scrollbar-color: var(--pit-border-strong) transparent; }
+.evalbook-site table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--pit-text-xs); }
+.evalbook-site :is(th, td) { padding: var(--pit-space-3); border-bottom: 1px solid var(--pit-border); text-align: left; vertical-align: top; }
+.evalbook-site thead th { background: var(--pit-surface); color: var(--pit-muted-foreground); font-weight: 600; }
+.evalbook-site tbody tr:last-child > :is(th, td) { border-bottom: 0; }
+.evalbook-site tbody tr:hover > :is(th, td) { background: var(--pit-surface-raised); }
+.evalbook-site .matrix { min-width: max(100%, var(--matrix-min-width, 1500px)); }
+.evalbook-site .matrix :is(th, td):not(:first-child) { width: 10rem; text-align: center; }
+.evalbook-site .matrix thead th { position: sticky; top: 0; z-index: 2; }
+.evalbook-site .matrix thead th > div { color: var(--pit-foreground); font-size: var(--pit-text-sm); overflow-wrap: anywhere; }
+.evalbook-site .matrix thead small { display: block; max-width: 11rem; margin: var(--pit-space-1) auto 0; font-size: var(--pit-text-xs); font-weight: 400; overflow-wrap: anywhere; }
+.evalbook-site .matrix th:first-child { position: sticky; left: 0; z-index: 1; width: 18rem; min-width: 14rem; background: var(--pit-surface-sunken); }
+.evalbook-site .matrix thead th:first-child { z-index: 3; background: var(--pit-surface); }
+.evalbook-site .matrix tbody th:first-child a { display: block; color: var(--pit-foreground); font-weight: 500; overflow-wrap: anywhere; text-decoration: none; }
+.evalbook-site .matrix tbody th:first-child a:hover { color: var(--pit-live); text-decoration: underline; }
+.evalbook-site .result { display: flex; align-items: center; justify-content: center; width: 100%; max-width: 10rem; min-height: 2rem; margin-inline: auto; padding: var(--pit-space-1) var(--pit-space-2); border: 1px solid currentColor; border-radius: var(--pit-radius-sm); font-size: var(--pit-text-xs); font-weight: 700; text-decoration: none; }
+.evalbook-site :is(.result-pass, .passed) { background: var(--pit-success-surface); color: var(--pit-success); }
+.evalbook-site :is(.result-fail, .failed) { background: var(--pit-danger-surface); color: var(--pit-danger); }
+.evalbook-site .result-infra { background: var(--pit-warning-surface); color: var(--pit-warning); }
+.evalbook-site :is(.muted, .empty, small, footer) { color: var(--pit-muted-foreground); }
+.evalbook-site .empty { text-align: center; }
+.evalbook-site code { font-family: var(--pit-font-mono); font-size: var(--pit-text-xs); overflow-wrap: anywhere; }
+.evalbook-site pre { max-height: 32rem; padding: var(--pit-space-3); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--pit-surface-sunken); color: var(--pit-foreground); border: 1px solid var(--pit-border); border-radius: var(--pit-radius-sm); font-family: var(--pit-font-mono); font-size: var(--pit-text-xs); }
+.evalbook-site details { margin: var(--pit-space-4) 0; }
+.evalbook-site summary { cursor: pointer; color: var(--pit-muted-foreground); }
+.evalbook-site .status { display: inline-block; padding: var(--pit-space-1) var(--pit-space-2); border-radius: var(--pit-radius-sm); font-weight: 600; text-transform: uppercase; }
+.evalbook-site small { display: block; margin-top: var(--pit-space-1); }
+.evalbook-site footer { margin-top: var(--pit-space-5); font-size: var(--pit-text-xs); }
+.evalbook-site .trend-group { padding: var(--pit-space-4); border: 1px solid var(--pit-border); border-radius: var(--pit-radius-sm); background: var(--pit-surface-sunken); }
+.evalbook-site .trend-group > summary { color: var(--pit-foreground); font-weight: 600; }
+.evalbook-site .trend-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--pit-space-5); }
+.evalbook-site figure { min-width: 0; margin: var(--pit-space-4) 0; }
+.evalbook-site figcaption { color: var(--pit-muted-foreground); font-size: var(--pit-text-xs); }
+.evalbook-site .trend-chart { width: 100%; overflow: visible; }
+.evalbook-site .trend-chart text { fill: var(--pit-muted-foreground); font: var(--pit-text-xs) var(--pit-font-mono); }
+.evalbook-site .trend-axis { fill: none; stroke: var(--pit-border); }
+.evalbook-site .trend-line { fill: none; stroke-width: 2; }
+.evalbook-site :is(.trend-line, .trend-point).pass { stroke: var(--pit-success); }
+.evalbook-site :is(.trend-line, .trend-point).all_attempts { stroke: var(--pit-live); }
+.evalbook-site :is(.trend-line, .trend-point).final_attempts { stroke: var(--pit-accent); stroke-dasharray: 4 3; }
+.evalbook-site .trend-point { fill: var(--pit-surface); stroke-width: 2; }
+.evalbook-site .trend-point:hover { fill: var(--pit-foreground); }
+.evalbook-site .pass-rate { display: block; margin-top: var(--pit-space-2); white-space: nowrap; }
+.evalbook-site .history-table table { min-width: 68rem; }
+.evalbook-site .history-table td:first-child { max-width: 22rem; }
+.evalbook-site .history-table details { margin: var(--pit-space-2) 0; }
+.evalbook-site .history-table li { margin: var(--pit-space-2) 0; }
+.evalbook-site .incomplete { background: var(--pit-warning-surface); color: var(--pit-warning); }
+@media (max-width: 760px) {
+  .evalbook-site main { padding: var(--pit-space-4); }
+  .evalbook-site .grid { grid-template-columns: 1fr; }
+  .evalbook-site .trend-grid { grid-template-columns: 1fr; }
+  .evalbook-site .trend-grid figure { overflow-x: auto; }
+  .evalbook-site .trend-chart { min-width: 30rem; }
+  .evalbook-site .matrix th:first-child { width: 12rem; min-width: 10rem; }
+  .evalbook-site .badge { white-space: normal; text-align: center; }
+}

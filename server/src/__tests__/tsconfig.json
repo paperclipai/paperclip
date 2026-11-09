@@ -1,0 +1,28 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": "../../..",
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "lib": [
+      "ES2023",
+      "ES2024.Promise",
+      "DOM",
+      "DOM.Iterable",
+      "DOM.AsyncIterable"
+    ],
+    "paths": {
+      "@daytonaio/sdk": [
+        "../../scripts/typecheck-stubs/daytona-sdk.d.ts"
+      ]
+    }
+  },
+  "include": [
+    ".",
+    "../types/*.d.ts"
+  ]
+}

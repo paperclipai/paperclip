@@ -34,15 +34,65 @@ The server resolves and persists the runtime once, before provider launch.
 | Persisted runtime | Adapter | Flag | Result |
 | --- | --- | --- | --- |
 | none | Any direct adapter | off or on | Use the existing direct path. |
-| none | `paperclip_runner` with Codex | off | Reject the fresh start with a stable rollout-disabled error. |
-| none | `paperclip_runner` with Codex | on | Use PRP v1 and runnerd. |
-| none | `paperclip_runner` with another provider | on | Reject the unsupported provider before runnerd starts. |
+| none | `paperclip_runner` with any qualified provider | off | Reject the fresh start with a stable rollout-disabled error. |
+| none | `paperclip_runner` with a qualified provider | on | Use PRP v1 and the provider's persisted runnerd backend. |
+| none | `paperclip_runner` with an incomplete or unqualified profile | on | Reject the profile before runnerd starts. |
 | direct | Any | changed later | Keep the persisted direct path. |
 | native | Any | changed later | Keep the persisted native path for read, cancel, recovery, and finalization. |
 
 The server must not fall back from a selected `paperclip_runner` start to
 `codex_local`. A configuration or rollout error must be visible. Silent fallback
 would hide the runtime that executed the task.
+
+## Remote Codex version window
+
+Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.161.0`**.
+The install pin is `0.160.0`. A sandbox image can therefore use an older
+compatible Codex without failing startup or installing another copy.
+
+The minimum is fixed at **`0.149.0`** until maintainers deliberately change it.
+It is not a rolling one-month support window. The official
+[`@openai/codex` publication history](https://registry.npmjs.org/@openai/codex)
+records `0.149.0` on 2026-08-20, `0.153.4` on 2026-09-04, `0.156.0` on
+2026-09-22, and `0.160.0` on 2026-10-01. See also the [Codex changelog](https://learn.chatgpt.com/docs/changelog).
+This is an explicit compatibility window, not a claim that every Codex minor
+release follows a backward-compatible protocol.
+
+- Stable patch releases within the window are accepted. Alpha, dev, custom
+  builds, malformed output, older releases, and the next minor release are rejected.
+- A compatible difference from the install pin produces one diagnostic per
+  version during backend preparation, rather than stopping the task.
+- The same check applies to discovered, explicitly staged, and npm-installed
+  remote Codex executables, including the final executable after linking.
+- For an incompatible image, the existing
+  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.160.0` configuration
+  allows installation of the pinned runtime. Without that configuration,
+  startup reports the supported range and the remediation.
+- Runner binary contracts, required runner capabilities, artifact digests,
+  provider-pack manifests, and runtime permission checks are unchanged.
+  This window does not relax the separate ACP provider-pack qualification.
+
+When qualifying newer Codex releases, review the upper bound in
+`server/src/services/native-runtime/codex-runtime-compatibility.ts`. Updating
+the install pin or upper bound does not raise the minimum. Raising `0.149.0`
+requires a separate, explicit maintainer decision and compatibility evidence.
+Do not derive eligibility from the current date or fetch release metadata
+during startup: an idle installation must not become incompatible merely
+because time passed.
+
+Qualification on 2026-09-22 used the actual macOS ARM64 `0.149.0` and `0.156.0`
+app-server binaries with a local deterministic Responses API fixture. Both
+passed initialization, thread creation with a dynamic tool, a tool-call/result
+round trip, turn completion, and thread resume. This verifies the tested
+protocol path; it is not a live model, Linux sandbox, or exhaustive feature test.
+The 2026-10-02 refresh moved the install pin and the upper bound to `0.160.0`
+after verifying the integrity-checked Linux x64 `0.160.0` executable digest and
+the installed ACP package contract. Codex `0.157.0` through `0.160.0` add the
+GPT-6.1 Sol catalog entry and app-server pagination without a documented
+app-server protocol break; the Linux CI qualification workflow covers the real
+startup and session-resume probes for the new pin.
+Version-boundary and remote artifact-preparation regressions are covered by
+`codex-runtime-compatibility.test.ts` and `native-session-executor.test.ts`.
 
 ## Direct adapter boundary
 
@@ -84,8 +134,8 @@ When the rollout flag is off:
 
 When the rollout flag is on:
 
-- creation, import, and edit accept `paperclip_runner` only with provider
-  `codex` and valid Codex configuration;
+- creation, import, and edit accept `paperclip_runner` only with a qualified
+  Codex, OpenCode, Claude Managed, AWS AgentCore, or Claude/Codex ACPX profile;
 - switching from a direct adapter affects only future unresolved runs; and
 - switching away from the runner affects only future unresolved runs.
 

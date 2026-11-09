@@ -1,3 +1,4 @@
+import type { AgentAppearance } from "../agent-appearance.js";
 /**
  * Work Timeline (Gantt) types — shared between the aggregation service
  * (`server/src/services/work-timeline.ts`) and the UI page
@@ -6,7 +7,8 @@
  */
 
 export type TimelineActorType = "agent" | "user" | "system" | "plugin";
-export type TimelineEventKind = "created" | "commented" | "approved" | "delegated" | "assigned";
+/** `unassigned` records an explicit ownership clear and has no target edge. */
+export type TimelineEventKind = "created" | "commented" | "approved" | "delegated" | "assigned" | "unassigned";
 export type TimelineEdgeKind = "delegation" | "assignment" | "mention";
 
 export interface WorkTimelineActor {
@@ -15,6 +17,8 @@ export interface WorkTimelineActor {
   type: TimelineActorType;
   name: string;
   avatar?: string | null;
+  appearance?: AgentAppearance | null;
+  avatarUrl?: string;
 }
 
 export interface WorkTimelineSpan {

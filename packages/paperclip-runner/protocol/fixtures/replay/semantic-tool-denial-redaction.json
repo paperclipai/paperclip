@@ -1,0 +1,102 @@
+{
+  "schema": "paperclip.prp.fixture.v1",
+  "fixtureVersion": 1,
+  "protocolVersion": 1,
+  "name": "Semantic tool denial and redaction",
+  "description": "A governed action is denied with digest-only content, a typed authorization boundary, and no fallback semantic call.",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_semantic_denied",
+    "issueId": "issue_semantic_denied",
+    "runId": "run_semantic_denied",
+    "environmentLeaseId": "lease_semantic_denied",
+    "runnerInstanceId": "runner_semantic_denied",
+    "normalizedSessionId": "session_semantic_denied",
+    "driverSessionId": "driver_semantic_denied"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": { "kind": "provider-neutral", "version": "1.0.0" },
+    "steer": false,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": true,
+    "structuredResult": true,
+    "typedEvents": true,
+    "semanticTools": {
+      "schema": "paperclip.prp.semantic_tools.v1",
+      "schemaVersion": 1,
+      "operations": [{
+        "operationId": "decide_approval",
+        "version": 1,
+        "availability": "denied",
+        "redactionDisposition": "digest_only",
+        "requiredClaims": ["governance:approvals:decide"],
+        "reasonCode": "required_claim_missing"
+      }]
+    },
+    "unsupported": []
+  },
+  "commands": [],
+  "events": [
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_denied_01", "sourceSeq": 1,
+      "sourceInstanceId": "runner_semantic_denied", "sourceKind": "runner", "runId": "run_semantic_denied",
+      "normalizedSessionId": "session_semantic_denied", "turnId": "turn_semantic_denied", "itemId": "item_semantic_denied",
+      "eventType": "mcp_app.tool_input", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T10:10:00.000Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "input",
+        "operationId": "decide_approval", "callId": "call_semantic_denied",
+        "correlation": { "runId": "run_semantic_denied", "normalizedSessionId": "session_semantic_denied", "turnId": "turn_semantic_denied", "itemId": "item_semantic_denied" },
+        "idempotencyKey": "denied_once",
+        "content": { "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "redactionDisposition": "redacted", "references": [] }
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_denied_02", "sourceSeq": 2,
+      "sourceInstanceId": "runner_semantic_denied", "sourceKind": "runner", "runId": "run_semantic_denied",
+      "normalizedSessionId": "session_semantic_denied", "turnId": "turn_semantic_denied", "itemId": "item_semantic_denied",
+      "eventType": "mcp_app.tool_result", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T10:10:00.010Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "result",
+        "operationId": "decide_approval", "callId": "call_semantic_denied",
+        "correlation": { "runId": "run_semantic_denied", "normalizedSessionId": "session_semantic_denied", "turnId": "turn_semantic_denied", "itemId": "item_semantic_denied" },
+        "idempotencyKey": "denied_once",
+        "content": { "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "redactionDisposition": "redacted", "references": [] },
+        "outcome": "denied", "code": "required_claim_missing", "retryable": false,
+        "authorizationBoundary": "grant", "operationReceiptId": "receipt_semantic_denied", "auditReceiptId": "audit_semantic_denied", "currentRevision": 4
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_denied_03", "sourceSeq": 3,
+      "sourceInstanceId": "runner_semantic_denied", "sourceKind": "runner", "runId": "run_semantic_denied",
+      "normalizedSessionId": "session_semantic_denied", "turnId": "turn_semantic_denied",
+      "eventType": "run.result.proposed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-11T10:10:00.020Z",
+      "payload": {
+        "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "needs_review",
+        "summary": "The governed action was denied without fallback.",
+        "completionClaim": { "contractRevision": "semantic-receipts-v1", "objectiveSatisfied": false, "criteria": [], "remainingWork": [{ "description": "An authorized approver must decide.", "blocksCompletion": true }] },
+        "evidence": [{ "receiptId": "receipt_semantic_denied" }],
+        "verification": [{ "commandOrCheck": "no fallback semantic call", "status": "passed" }],
+        "attentionRequests": [], "artifacts": []
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_denied_04", "sourceSeq": 4,
+      "sourceInstanceId": "runner_semantic_denied", "sourceKind": "runner", "runId": "run_semantic_denied",
+      "normalizedSessionId": "session_semantic_denied", "turnId": "turn_semantic_denied",
+      "eventType": "run.terminal", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-11T10:10:00.030Z",
+      "payload": { "schema": "paperclip.prp.terminal.v1", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "needs_review", "workAssessmentId": "assessment_semantic_denied", "statusDecisionId": "decision_semantic_denied" }
+    }
+  ],
+  "requests": [],
+  "result": {
+    "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "needs_review",
+    "summary": "The governed action was denied without fallback.",
+    "completionClaim": { "contractRevision": "semantic-receipts-v1", "objectiveSatisfied": false, "criteria": [], "remainingWork": [{ "description": "An authorized approver must decide.", "blocksCompletion": true }] },
+    "evidence": [{ "receiptId": "receipt_semantic_denied" }],
+    "verification": [{ "commandOrCheck": "no fallback semantic call", "status": "passed" }],
+    "attentionRequests": [], "artifacts": []
+  }
+}

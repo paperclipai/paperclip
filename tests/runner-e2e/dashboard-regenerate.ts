@@ -1,0 +1,304 @@
+import path from "node:path";
+import { mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { isSeq, parseDocument } from "yaml";
+import { parseCatalogOverview, type CatalogScenarioDescription } from "./catalog-overview.js";
+import { stageDashboardBrandAssets } from "./report-assets.js";
+import { renderRunnerE2EDashboard, type RunnerDashboardInput } from "./dashboard.js";
+import { campaignFeedbackReviewText } from "./feedback-dispositions.js";
+import type {
+  RunnerE2ECampaign,
+  RunnerE2EHistoryIndex,
+  RunnerE2EResult,
+} from "./types.js";
+
+interface PublishedResult extends RunnerE2EResult {
+  evidenceValid?: boolean;
+  evidenceErrors?: string[];
+}
+
+interface PublishedCampaign {
+  schema?: string;
+  campaignId?: string;
+  source?: RunnerE2ECampaign["source"];
+  generatedAt: string;
+  expected: string[];
+  results: PublishedResult[];
+  accounting?: RunnerE2ECampaign["accounting"];
+  operations?: RunnerE2ECampaign["operations"];
+  feedbackReview?: RunnerE2ECampaign["feedbackReview"];
+  braintrustExperiment?: RunnerE2ECampaign["braintrustExperiment"];
+  presentation?: RunnerDashboardInput["presentation"];
+}
+
+function validatePresentation(value: unknown) {
+  if (value === undefined) return;
+  const invalid = () => {
+    throw new Error("Published bundle has invalid presentation metadata in normalized-results.json");
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  const presentation = value as Record<string, unknown>;
+  for (const field of ["title", "description"]) {
+    if (presentation[field] !== undefined && typeof presentation[field] !== "string") invalid();
+  }
+  if (presentation.notes !== undefined &&
+      (!Array.isArray(presentation.notes) || presentation.notes.some(note => typeof note !== "string"))) invalid();
+  if (presentation.links !== undefined &&
+      (!Array.isArray(presentation.links) || presentation.links.some(link =>
+        !link || typeof link !== "object" || Array.isArray(link) ||
+        typeof link.label !== "string" || typeof link.href !== "string"))) invalid();
+}
+
+async function relativeFiles(root: string, current = root): Promise<string[]> {
+  const entries = await readdir(current, { withFileTypes: true }).catch(
+    () => [],
+  );
+  const files: string[] = [];
+  for (const entry of entries) {
+    const absolute = path.join(current, entry.name);
+    if (entry.isDirectory())
+      files.push(...(await relativeFiles(root, absolute)));
+    if (entry.isFile()) {
+      files.push(path.relative(root, absolute).split(path.sep).join("/"));
+    }
+  }
+  return files;
+}
+
+async function readOptionalHistory(file: string) {
+  return readFile(file, "utf8")
+    .then((value) => JSON.parse(value) as RunnerE2EHistoryIndex)
+    .then((value) =>
+      value.schema === "paperclip.runner-e2e.history/v1" ? value : undefined,
+    )
+    .catch(() => undefined);
+}
+
+export async function regenerateCatalogOverview(input: { metadataFile: string; outputDirectory: string }) {
+  const file = await open(input.metadataFile, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let metadata: unknown;
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > 256 * 1024) throw new Error("Catalog overview input must be a bounded regular JSON file");
+    metadata = JSON.parse(await file.readFile("utf8"));
+  } finally {
+    await file.close();
+  }
+  const overview = parseCatalogOverview(metadata);
+  const catalogDirectory = new URL("./chat-scenarios/", import.meta.url);
+  const catalogIds = new Set<string>();
+  const descriptions = new Map<string, CatalogScenarioDescription>();
+  for (const name of (await readdir(catalogDirectory)).filter(name => name.endsWith(".yaml") && name !== "defaults.yaml")) {
+    const document = parseDocument(await readFile(new URL(name, catalogDirectory), "utf8"), { uniqueKeys: true });
+    if (document.errors.length) throw new Error("Invalid static chat catalog");
+    const sequence = document.get("scenarios", true);
+    if (!isSeq(sequence)) throw new Error("Invalid static chat catalog");
+    const scenarios: unknown = sequence.toJSON();
+    if (!Array.isArray(scenarios)) throw new Error("Invalid static chat catalog");
+    for (const row of scenarios) {
+      if (!row || typeof row.id !== "string" || catalogIds.has(row.id)) throw new Error("Invalid static chat catalog identity");
+      catalogIds.add(row.id);
+      if (typeof row.query !== "string" || typeof row.expected_outcome !== "string") throw new Error("Missing public catalog description");
+      descriptions.set(row.id, { query: row.query, expectedOutcome: row.expected_outcome });
+    }
+  }
+  if (catalogIds.size !== 244 || overview.rows.some(row => !catalogIds.has(row.scenarioId))) throw new Error("Catalog overview must match the frozen scenario IDs");
+  const dashboard = renderRunnerE2EDashboard({ title: "Chat feature catalog", generatedAt: overview.asOf, expected: [], catalog: [], entries: [], catalogOverview: overview, catalogOverviewDescriptions: descriptions });
+  await mkdir(input.outputDirectory, { mode: 0o700 });
+  await writeFile(path.join(input.outputDirectory, "index.html"), dashboard, { mode: 0o600, flag: "wx" });
+  await stageDashboardBrandAssets(input.outputDirectory);
+}
+
+export async function regenerateRunnerDashboard(input: {
+  bundle: string;
+  historyFile?: string | null;
+  outputDirectory?: string;
+  evidenceHrefPrefix?: string;
+  feedbackReviewFile?: string;
+}) {
+  const { runnerMatrix } = await import("./catalog.js");
+  const { buildRunnerCampaign, canonicalExecutionId, upgradeRunnerResult } = await import("./history.js");
+  const bundle = path.resolve(input.bundle);
+  const outputDirectory = path.resolve(input.outputDirectory ?? bundle);
+  const evidenceHrefPrefix = input.evidenceHrefPrefix?.replace(
+    /^\/+|\/+$/g,
+    "",
+  );
+  if (
+    evidenceHrefPrefix &&
+    (evidenceHrefPrefix.includes("\\") ||
+      evidenceHrefPrefix
+        .split("/")
+        .some((segment) => !segment || segment === "." || segment === ".."))
+  ) {
+    throw new Error("evidenceHrefPrefix must be a safe relative URL path");
+  }
+  const normalized = JSON.parse(
+    await readFile(path.join(bundle, "normalized-results.json"), "utf8"),
+  ) as PublishedCampaign;
+  if (
+    !Array.isArray(normalized.expected) ||
+    !Array.isArray(normalized.results) ||
+    typeof normalized.generatedAt !== "string"
+  ) {
+    throw new Error("Published bundle has an invalid normalized-results.json");
+  }
+  validatePresentation(normalized.presentation);
+
+  const results = normalized.results.map(upgradeRunnerResult);
+  const expected = normalized.expected.map(canonicalExecutionId);
+  const campaign: RunnerE2ECampaign = buildRunnerCampaign({
+    campaignId:
+      normalized.campaignId ??
+      `legacy-${normalized.generatedAt.replace(/[:.]/g, "-")}`,
+    generatedAt: normalized.generatedAt,
+    expected,
+    results,
+    accounting: normalized.accounting,
+    operations: normalized.operations,
+    braintrustExperiment: normalized.braintrustExperiment,
+    feedbackReview: input.feedbackReviewFile
+      ? JSON.parse(await readFile(input.feedbackReviewFile, "utf8"))
+      : normalized.feedbackReview,
+  });
+  // A rendering refresh must not inherit the renderer's checkout or CI event.
+  const retainedSource = results.find((result) =>
+    result.source?.sha || result.source?.ref || result.source?.workflowRunUrl,
+  )?.source;
+  campaign.source = normalized.source ?? {
+    sha: retainedSource?.sha ?? null,
+    ref: retainedSource?.ref ?? null,
+    workflowRunUrl: retainedSource?.workflowRunUrl ?? null,
+    eventName: null,
+  };
+  const history =
+    input.historyFile === null
+      ? undefined
+      : await readOptionalHistory(
+          input.historyFile ?? path.join(bundle, "history.json"),
+        );
+  const entries = await Promise.all(
+    normalized.results.map(async (publishedResult, index) => {
+      const result = results[index]!;
+      const originalExecutionId = publishedResult.executionId;
+      const evidenceIds = [
+        originalExecutionId,
+        ...(originalExecutionId.startsWith("core-compatibility.")
+          ? [originalExecutionId.slice("core-compatibility.".length)]
+          : []),
+      ];
+      let evidenceBaseHref = "";
+      let evidenceFiles: string[] = [];
+      for (const evidenceId of evidenceIds) {
+        const candidate = [
+          "evidence",
+          evidenceId,
+          `attempt-${result.attempt}`,
+        ].join("/");
+        const files = await relativeFiles(
+          path.join(bundle, ...candidate.split("/")),
+        );
+        if (files.length === 0) continue;
+        evidenceBaseHref = [evidenceHrefPrefix, candidate]
+          .filter(Boolean)
+          .join("/");
+        evidenceFiles = files;
+        break;
+      }
+      return {
+        result,
+        valid:
+          result.status === "passed" && result.cleanup === "passed" &&
+          publishedResult.evidenceValid !== false,
+        errors: publishedResult.evidenceErrors ?? [],
+        evidenceBaseHref,
+        evidenceFiles,
+      };
+    }),
+  );
+  const dashboard = renderRunnerE2EDashboard({
+    title: normalized.presentation?.title ?? "E2E tests",
+    generatedAt: normalized.generatedAt,
+    expected,
+    catalog: runnerMatrix,
+    entries,
+    campaign,
+    history,
+    presentation: normalized.presentation,
+  });
+  const upgraded = {
+    ...campaign,
+    ...(normalized.presentation ? { presentation: normalized.presentation } : {}),
+    results: campaign.results.map((result, index) => ({
+      ...result,
+      evidenceValid:
+        normalized.results[index]?.evidenceValid ??
+        (result.status === "passed" && result.cleanup === "passed"),
+      evidenceErrors: normalized.results[index]?.evidenceErrors ?? [],
+    })),
+  };
+  const summary = await readFile(path.join(bundle, "summary.md"), "utf8").then(text => text.replace(
+    /^(Feedback across retained attempts:.*?); [0-9]+ distinct items awaiting review;/m, "$1;",
+  )).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  const reviewStatus = /^(?:[0-9]+ distinct feedback items await review\.|Feedback reviewed by (?:human|agent) at ).*$/m;
+  const refreshedSummary = summary === undefined ? undefined : reviewStatus.test(summary)
+    ? summary.replace(reviewStatus, () => campaignFeedbackReviewText(campaign))
+    : `${summary.trimEnd()}\n\n## Campaign feedback review\n\n${campaignFeedbackReviewText(campaign)}\n`;
+  await mkdir(outputDirectory, { recursive: true });
+  await Promise.all([
+    writeFile(path.join(outputDirectory, "index.html"), dashboard, "utf8"),
+    writeFile(path.join(outputDirectory, "dashboard.html"), dashboard, "utf8"),
+    ...(refreshedSummary === undefined ? [] : [writeFile(path.join(outputDirectory, "summary.md"), refreshedSummary, "utf8")]),
+    writeFile(
+      path.join(outputDirectory, "normalized-results.json"),
+      `${JSON.stringify(upgraded, null, 2)}\n`,
+      "utf8",
+    ),
+  ]);
+  console.log(
+    `Regenerated dashboard from ${normalized.results.length} retained result(s) in ${outputDirectory}`,
+  );
+}
+
+async function main() {
+  const arguments_ = process.argv
+    .slice(2)
+    .filter((argument) => argument !== "--");
+  if (arguments_.includes("--catalog-overview")) {
+    const index = arguments_.indexOf("--catalog-overview");
+    const output = arguments_.indexOf("--output");
+    if (index !== 0 || output !== 2 || arguments_.length !== 4 || !arguments_[1] || !arguments_[3]) throw new Error("Usage: dashboard --catalog-overview <display-metadata.json> --output <new-private-directory>");
+    await regenerateCatalogOverview({ metadataFile: arguments_[1], outputDirectory: arguments_[3] });
+    return;
+  }
+  const bundleArgument = arguments_.find(
+    (argument) => !argument.startsWith("--"),
+  );
+  if (!bundleArgument) {
+    throw new Error(
+      "Usage: pnpm test:e2e:runner:dashboard -- <published-bundle-directory> [--history <history.json>] [--feedback-review <review.json>]",
+    );
+  }
+  const historyIndex = arguments_.indexOf("--history");
+  const historyFile =
+    historyIndex >= 0 ? arguments_[historyIndex + 1] : undefined;
+  if (historyIndex >= 0 && !historyFile)
+    throw new Error("--history requires a path");
+  const reviewIndex = arguments_.indexOf("--feedback-review");
+  const feedbackReviewFile = reviewIndex >= 0 ? arguments_[reviewIndex + 1] : undefined;
+  if (reviewIndex >= 0 && !feedbackReviewFile) throw new Error("--feedback-review requires a path");
+  await regenerateRunnerDashboard({ bundle: bundleArgument, historyFile, feedbackReviewFile });
+}
+
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === path.resolve(import.meta.filename)
+) {
+  await main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

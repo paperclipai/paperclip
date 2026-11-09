@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   foreignKey,
+  index,
   pgTable,
   uuid,
   text,
@@ -34,6 +36,9 @@ export const statusDecisionEffects = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    pendingDeliveryIdx: index("status_decision_effects_pending_delivery_idx")
+      .on(table.companyId, table.issueId, table.decisionId)
+      .where(sql`${table.deliveryState} in ('pending', 'failed')`),
     issueCompanyFk: foreignKey({
       columns: [table.companyId, table.issueId],
       foreignColumns: [issues.companyId, issues.id],

@@ -15,6 +15,7 @@ import type {
   ResourceMembershipUpdateResult,
 } from "@paperclipai/shared";
 import { forbidden, notFound } from "../errors.js";
+import { clearPrimaryAgent } from "./primary-agent.js";
 import { logger } from "../middleware/logger.js";
 
 type BoardActor = {
@@ -47,6 +48,7 @@ export type ResourceMembershipPolicyHook = (input: {
 }) => Promise<PolicyDecision> | PolicyDecision;
 
 type ResourceMembershipServiceOptions = {
+  inTransaction?: boolean;
   policyHook?: ResourceMembershipPolicyHook | null;
 };
 
@@ -351,6 +353,11 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
       starred?: boolean;
       actor: BoardActor;
     }): Promise<MembershipUpdateResult> {
+      if (!options.inTransaction) {
+        return db.transaction(async tx => resourceMembershipService(tx as unknown as Db, { ...options, inTransaction: true }).updateAgent(input));
+      }
+      await db.select({ id: agents.id }).from(agents)
+        .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId))).for("update");
       const agent = await db.query.agents.findFirst({
         where: and(
           eq(agents.id, input.agentId),
@@ -421,6 +428,8 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
           },
         })
         .returning();
+
+      if (nextState === "left") await clearPrimaryAgent(db, input.companyId, input.agentId, input.userId);
 
       return {
         resourceType: "agent",

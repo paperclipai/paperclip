@@ -15,12 +15,54 @@ adapter_type: ("process" | "http" | "acpx_local" | "claude_local" | "codex_local
 agent_id: string
 agent_role: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
 model?: string
+task_id?: string
+}
+
+export interface PaperclipAgentTaskRunDimensions {
+adapter_type?: ("process" | "http" | "acpx_local" | "claude_local" | "codex_local" | "cursor_cloud" | "gemini_local" | "hermes_gateway" | "hermes_local" | "opencode_local" | "pi_local" | "cursor" | "openclaw_gateway" | "grok_local" | "kimi_local" | "other")
+agent_id: string
+agent_role?: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
+model?: string
+state: ("succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out")
+duration_seconds?: number
+input_tokens?: number
+output_tokens?: number
+cached_tokens?: number
+task_id?: string
 }
 
 export interface PaperclipCompanyImportedDimensions {
 source_type: ("local_path" | "github" | "url" | "catalog" | "skills_sh" | "unknown")
 source_ref?: string
 source_ref_hashed?: boolean
+}
+
+export interface PaperclipConnectionCreatedDimensions {
+auth_kind: ("oauth" | "api_key" | "none")
+connector_key: string
+enabled: boolean
+setup_flow: ("gallery" | "api" | "example")
+status: ("draft" | "active" | "disabled" | "archived")
+transport: ("mcp_remote" | "rest_api" | "local_stdio")
+}
+
+export interface PaperclipConnectionInvokedDimensions {
+connector_key: string
+duration_seconds?: number
+origin: ("setup_test" | "agent" | "user" | "system" | "plugin")
+status: ("succeeded" | "failed" | "denied" | "cancelled" | "timed_out" | "rate_limited")
+transport: ("mcp_remote" | "rest_api" | "local_stdio")
+}
+
+export interface PaperclipConnectionUpdatedDimensions {
+auth_kind: ("oauth" | "api_key" | "none")
+change_source: ("api" | "gallery" | "oauth_callback" | "credential_refresh" | "archive" | "example")
+connector_key: string
+enabled: boolean
+previous_enabled: boolean
+previous_status: ("draft" | "active" | "disabled" | "archived")
+status: ("draft" | "active" | "disabled" | "archived")
+transport: ("mcp_remote" | "rest_api" | "local_stdio")
 }
 
 export interface PaperclipErrorHandlerCrashDimensions {
@@ -47,7 +89,7 @@ used_deprecated_resolver_policy_alias: boolean
 export interface PaperclipInteractionResolvedDimensions {
 interaction_kind: ("suggest_tasks" | "ask_user_questions" | "request_confirmation" | "request_checkbox_confirmation" | "request_item_verdicts" | "other")
 status: ("accepted" | "rejected" | "answered" | "cancelled" | "expired" | "failed" | "other")
-resolution_reason?: ("accepted" | "rejected" | "stale_target" | "superseded_by_comment" | "superseded_by_newer_request" | "expired" | "cancelled" | "other")
+resolution_reason?: ("accepted" | "rejected" | "stale_target" | "superseded_by_comment" | "superseded_by_newer_request" | "expired" | "cancelled" | "skipped" | "other")
 resolved_by_kind: ("user" | "agent" | "system" | "other")
 created_by_kind?: ("agent" | "user" | "other")
 creator_agent_role?: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
@@ -80,6 +122,10 @@ source: ("schedule" | "manual" | "api" | "webhook" | "other")
 status: ("received" | "coalesced" | "skipped" | "issue_created" | "completed" | "failed" | "other")
 }
 
+export interface PaperclipServerStartedDimensions {
+os_platform: ("aix" | "android" | "darwin" | "freebsd" | "haiku" | "linux" | "openbsd" | "sunos" | "win32" | "cygwin" | "netbsd" | "other")
+}
+
 export interface PaperclipSkillImportedDimensions {
 source_type: ("local_path" | "github" | "url" | "catalog" | "skills_sh" | "unknown")
 skill_ref?: string
@@ -89,7 +135,11 @@ export type PaperclipEventName =
   | "agent.created"
   | "agent.first_heartbeat"
   | "agent.task_completed"
+  | "agent.task_run"
   | "company.imported"
+  | "connection.created"
+  | "connection.invoked"
+  | "connection.updated"
   | "error.handler_crash"
   | "goal.created"
   | "install.completed"
@@ -99,13 +149,18 @@ export type PaperclipEventName =
   | "project.created"
   | "routine.created"
   | "routine.run"
+  | "server.started"
   | "skill.imported";
 
 export interface EventDimensionsMap {
   "agent.created": PaperclipAgentCreatedDimensions;
   "agent.first_heartbeat": PaperclipAgentFirstHeartbeatDimensions;
   "agent.task_completed": PaperclipAgentTaskCompletedDimensions;
+  "agent.task_run": PaperclipAgentTaskRunDimensions;
   "company.imported": PaperclipCompanyImportedDimensions;
+  "connection.created": PaperclipConnectionCreatedDimensions;
+  "connection.invoked": PaperclipConnectionInvokedDimensions;
+  "connection.updated": PaperclipConnectionUpdatedDimensions;
   "error.handler_crash": PaperclipErrorHandlerCrashDimensions;
   "goal.created": PaperclipGoalCreatedDimensions;
   "install.completed": PaperclipInstallCompletedDimensions;
@@ -115,6 +170,7 @@ export interface EventDimensionsMap {
   "project.created": PaperclipProjectCreatedDimensions;
   "routine.created": PaperclipRoutineCreatedDimensions;
   "routine.run": PaperclipRoutineRunDimensions;
+  "server.started": PaperclipServerStartedDimensions;
   "skill.imported": PaperclipSkillImportedDimensions;
 }
 
@@ -122,7 +178,11 @@ export const PAPERCLIP_EVENTS = {
   "agent.created": "agent.created",
   "agent.first_heartbeat": "agent.first_heartbeat",
   "agent.task_completed": "agent.task_completed",
+  "agent.task_run": "agent.task_run",
   "company.imported": "company.imported",
+  "connection.created": "connection.created",
+  "connection.invoked": "connection.invoked",
+  "connection.updated": "connection.updated",
   "error.handler_crash": "error.handler_crash",
   "goal.created": "goal.created",
   "install.completed": "install.completed",
@@ -132,6 +192,7 @@ export const PAPERCLIP_EVENTS = {
   "project.created": "project.created",
   "routine.created": "routine.created",
   "routine.run": "routine.run",
+  "server.started": "server.started",
   "skill.imported": "skill.imported",
 } as const;
 
@@ -174,7 +235,7 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
     "adapter_type": {
       "process": "Agent runtime uses a local process adapter.",
       "http": "Agent runtime uses a generic HTTP adapter.",
-      "acpx_local": "Agent runtime used the retired local ACPX adapter.",
+      "acpx_local": "Agent runtime uses the local ACPX adapter.",
       "claude_local": "Agent runtime uses the local Claude adapter.",
       "codex_local": "Agent runtime uses the local Codex adapter.",
       "cursor_cloud": "Agent runtime uses the Cursor cloud adapter.",
@@ -205,6 +266,48 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "other": "Fallback when the agent role is unknown or not represented by the tracked enum."
     }
   },
+  "agent.task_run": {
+    "adapter_type": {
+      "process": "Agent runtime uses a local process adapter.",
+      "http": "Agent runtime uses a generic HTTP adapter.",
+      "acpx_local": "Agent runtime uses the local ACPX adapter.",
+      "claude_local": "Agent runtime uses the local Claude adapter.",
+      "codex_local": "Agent runtime uses the local Codex adapter.",
+      "cursor_cloud": "Agent runtime uses the Cursor cloud adapter.",
+      "gemini_local": "Agent runtime uses the local Gemini adapter.",
+      "hermes_gateway": "Agent runtime uses the Hermes gateway adapter.",
+      "hermes_local": "Agent runtime uses the local Hermes adapter.",
+      "opencode_local": "Agent runtime uses the local OpenCode adapter.",
+      "pi_local": "Agent runtime uses the local Pi adapter.",
+      "cursor": "Agent runtime uses the Cursor adapter.",
+      "openclaw_gateway": "Agent runtime uses the OpenClaw gateway adapter.",
+      "grok_local": "Agent runtime uses the local Grok adapter.",
+      "kimi_local": "Agent runtime uses the local Kimi adapter.",
+      "other": "Fallback when the adapter type is unknown or not represented by the tracked enum."
+    },
+    "agent_role": {
+      "ceo": "Agent configured for company leadership and board coordination work.",
+      "cto": "Agent configured for technical leadership, architecture, and engineering coordination.",
+      "cmo": "Agent configured for marketing leadership work.",
+      "cfo": "Agent configured for finance leadership work.",
+      "security": "Agent configured for security review, risk, or policy work.",
+      "engineer": "Agent configured for general software engineering work.",
+      "designer": "Agent configured for product, visual, or experience design work.",
+      "pm": "Agent configured for product management or planning work.",
+      "qa": "Agent configured for quality assurance, testing, or validation work.",
+      "devops": "Agent configured for infrastructure, deployment, or operations work.",
+      "researcher": "Agent configured for research and information-gathering work.",
+      "general": "Agent configured as a general-purpose worker without a more specific role.",
+      "other": "Fallback when the agent role is unknown or not represented by the tracked enum."
+    },
+    "state": {
+      "succeeded": "The agent run finished its task and reached a successful terminal state.",
+      "interrupted": "A user or the board interrupted the agent run before it finished.",
+      "failed": "The agent run reached a terminal state because of an unrecoverable error.",
+      "cancelled": "The agent run was cancelled before it reached a successful terminal state.",
+      "timed_out": "The agent run reached its time limit before it finished."
+    }
+  },
   "company.imported": {
     "source_type": {
       "local_path": "Import source came from a filesystem path on the operator's machine.",
@@ -213,6 +316,83 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "catalog": "Import source came from a Paperclip catalog entry.",
       "skills_sh": "Import source came from a Skills.sh-compatible source.",
       "unknown": "Source type could not be classified."
+    }
+  },
+  "connection.created": {
+    "auth_kind": {
+      "oauth": "Connection authenticates with an OAuth flow.",
+      "api_key": "Connection authenticates with a stored API key.",
+      "none": "Connection requires no authentication."
+    },
+    "setup_flow": {
+      "gallery": "Connection was created through the app-gallery setup flow.",
+      "api": "Connection was created through the connections API.",
+      "example": "Connection was created or upserted as a bundled example connection."
+    },
+    "status": {
+      "draft": "Connection row exists but setup has not produced a usable configuration yet.",
+      "active": "Connection is fully configured and available for use.",
+      "disabled": "Connection is disabled and excluded from tool use.",
+      "archived": "Connection is archived and excluded from tool use."
+    },
+    "transport": {
+      "mcp_remote": "Connection talks to a remote MCP server over HTTP.",
+      "rest_api": "Connection calls the provider's REST API directly.",
+      "local_stdio": "Connection runs a local MCP server over stdio."
+    }
+  },
+  "connection.invoked": {
+    "origin": {
+      "setup_test": "A human ran the connection's setup test, identified by durable invocation columns: user actor with no run, issue, or gateway reference and a connection id.",
+      "agent": "An agent run invoked the tool.",
+      "user": "A human invoked the tool outside the setup-test shape.",
+      "system": "A system-initiated process invoked the tool.",
+      "plugin": "A plugin invoked the tool."
+    },
+    "status": {
+      "succeeded": "The tool invocation completed successfully.",
+      "failed": "The tool invocation reached a terminal failure.",
+      "denied": "The tool invocation was denied by policy or by a human approval decision.",
+      "cancelled": "The tool invocation was cancelled before completion. Declared in the application status enum; no current application code path writes this value.",
+      "timed_out": "The tool invocation exceeded its time limit.",
+      "rate_limited": "The tool invocation was rejected by rate limiting."
+    },
+    "transport": {
+      "mcp_remote": "Connection talks to a remote MCP server over HTTP.",
+      "rest_api": "Connection calls the provider's REST API directly.",
+      "local_stdio": "Connection runs a local MCP server over stdio."
+    }
+  },
+  "connection.updated": {
+    "auth_kind": {
+      "oauth": "Connection authenticates with an OAuth flow.",
+      "api_key": "Connection authenticates with a stored API key.",
+      "none": "Connection requires no authentication."
+    },
+    "change_source": {
+      "api": "A connections API update changed the persisted lifecycle state.",
+      "gallery": "An app-gallery setup step (finish, OAuth access finalization, or reconnect; Apps gallery and inline task cards) changed the persisted lifecycle state.",
+      "oauth_callback": "An OAuth callback completion (provider OAuth, Paperclip Cloud connector, or Vercel Connect) changed the persisted lifecycle state.",
+      "credential_refresh": "A credential refresh changed the persisted lifecycle state.",
+      "archive": "An archive operation changed the persisted lifecycle state.",
+      "example": "An example-connection upsert changed the persisted lifecycle state."
+    },
+    "previous_status": {
+      "draft": "Connection row exists but setup has not produced a usable configuration yet.",
+      "active": "Connection is fully configured and available for use.",
+      "disabled": "Connection is disabled and excluded from tool use.",
+      "archived": "Connection is archived and excluded from tool use."
+    },
+    "status": {
+      "draft": "Connection row exists but setup has not produced a usable configuration yet.",
+      "active": "Connection is fully configured and available for use.",
+      "disabled": "Connection is disabled and excluded from tool use.",
+      "archived": "Connection is archived and excluded from tool use."
+    },
+    "transport": {
+      "mcp_remote": "Connection talks to a remote MCP server over HTTP.",
+      "rest_api": "Connection calls the provider's REST API directly.",
+      "local_stdio": "Connection runs a local MCP server over stdio."
     }
   },
   "goal.created": {
@@ -228,7 +408,7 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
     "adapter_type": {
       "process": "Agent runtime uses a local process adapter.",
       "http": "Agent runtime uses a generic HTTP adapter.",
-      "acpx_local": "Agent runtime used the retired local ACPX adapter.",
+      "acpx_local": "Agent runtime uses the local ACPX adapter.",
       "claude_local": "Agent runtime uses the local Claude adapter.",
       "codex_local": "Agent runtime uses the local Codex adapter.",
       "cursor_cloud": "Agent runtime uses the Cursor cloud adapter.",
@@ -280,6 +460,7 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "superseded_by_newer_request": "A newer confirmation from the same agent superseded the pending confirmation.",
       "expired": "Interaction expired for a generic expiration reason.",
       "cancelled": "Interaction was explicitly cancelled.",
+      "skipped": "The board skipped the interaction and returned to ordinary task input.",
       "other": "Fallback when the resolution reason is unknown or not represented by the tracked enum."
     },
     "resolved_by_kind": {
@@ -339,6 +520,22 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "other": "Fallback when the status is unknown or not represented by the tracked enum."
     }
   },
+  "server.started": {
+    "os_platform": {
+      "aix": "Server host runs IBM AIX.",
+      "android": "Server host runs Android.",
+      "darwin": "Server host runs macOS.",
+      "freebsd": "Server host runs FreeBSD.",
+      "haiku": "Server host runs Haiku.",
+      "linux": "Server host runs Linux, including WSL and container hosts.",
+      "openbsd": "Server host runs OpenBSD.",
+      "sunos": "Server host runs SunOS, Solaris, or illumos.",
+      "win32": "Server host runs Windows, both 32-bit and 64-bit.",
+      "cygwin": "Server host runs under Cygwin on Windows.",
+      "netbsd": "Server host runs NetBSD.",
+      "other": "Fallback when the platform is unknown or not represented by the tracked enum."
+    }
+  },
   "skill.imported": {
     "source_type": {
       "local_path": "Import source came from a filesystem path on the operator's machine.",
@@ -367,6 +564,12 @@ export interface PaperclipTelemetryBatch {
 app: "paperclip"
 schemaVersion: typeof SCHEMA_VERSION
 installId: string
+/**
+ * Optional client application build version. Paperclip clients report PEP 440
+ * local versions such as <nearest-tag>+<commits-since-tag>.git.<abbrev-sha>;
+ * nearest tags are usually CalVer, but legacy SemVer tags such as 0.3.1 can
+ * appear. Ingest documents this shape but does not strictly enforce PEP 440.
+ */
 version?: string
 events: AnyPaperclipTelemetryEvent[]
 }
@@ -382,6 +585,12 @@ export function makeEvent<K extends PaperclipEventName>(
 export function makeBatch(
   installId: string,
   events: readonly AnyPaperclipTelemetryEvent[],
+  /**
+   * Optional client application build version. Paperclip clients report PEP 440
+   * local versions such as <nearest-tag>+<commits-since-tag>.git.<abbrev-sha>;
+   * nearest tags are usually CalVer, but legacy SemVer tags such as 0.3.1 can
+   * appear. Ingest documents this shape but does not strictly enforce PEP 440.
+   */
   version?: string
 ): PaperclipTelemetryBatch {
   return {

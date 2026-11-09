@@ -5,16 +5,13 @@ import { describe, expect, it } from "vitest";
 import { BUNDLED_PLUGIN_CATALOG } from "../services/bundled-plugins.js";
 
 /**
- * Drift guard for the cloud image variant (Dockerfile `cloud` target).
+ * Drift guard for the explicit preview image (Dockerfile `cloud` target).
  *
- * The cloud image builds the sandbox-provider plugins named in the
+ * The preview image builds the sandbox-provider plugins named in the
  * CLOUD_BUNDLED_PLUGINS build arg so managed instances can auto-install
- * them from the bundled catalog at boot. That contract spans three places
- * that nothing else ties together: the Dockerfile ARG default, the docker
- * workflow's build-arg, and BUNDLED_PLUGIN_CATALOG. A rename or removal in
- * any one of them would otherwise surface only when the image build fails
- * on master — or worse, as a silent "bundle not present" skip at instance
- * boot.
+ * them from the bundled catalog at boot. The Dockerfile default and
+ * BUNDLED_PLUGIN_CATALOG must agree even after the recurring public cloud
+ * publisher is retired. Explicit previews still use this build target.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -34,18 +31,9 @@ const dockerfileDefault = parseList(
   /^ARG CLOUD_BUNDLED_PLUGINS="([^"]*)"/m,
   "Dockerfile",
 );
-const workflowArg = parseList(
-  workflow,
-  /^\s*CLOUD_BUNDLED_PLUGINS=(.*)$/m,
-  "docker workflow",
-);
 
 describe("cloud image bundled plugins", () => {
-  it("keeps the Dockerfile default and the workflow build-arg in sync", () => {
-    expect(workflowArg).toEqual(dockerfileDefault);
-  });
-
-  it.each([...new Set([...dockerfileDefault, ...workflowArg])])(
+  it.each(dockerfileDefault)(
     "plugin %s is buildable and resolvable by the auto-installer",
     (name) => {
       const dir = path.join(repoRoot, "packages", "plugins", "sandbox-providers", name);
@@ -74,36 +62,6 @@ describe("cloud image bundled plugins", () => {
     // the workflow's main build would silently publish the cloud variant
     // to the self-hosted tags.
     expect(workflow).toMatch(/^\s*target: production$/m);
-  });
-
-  it("publishes the cloud image in its own job with no needs coupling", () => {
-    // The cloud publish runs as its own top-level job so the stock/production
-    // publish can never gate, delay, or skip it. Both jobs share only the
-    // single top-level concurrency slot; there is deliberately no `needs:`
-    // between them, so a failure in one is never coupled to the other.
-    const jobsSection = workflow.slice(workflow.indexOf("\njobs:\n"));
-    const headers = [...jobsSection.matchAll(/^ {2}([\w-]+):[^\n]*$/gm)];
-    expect(
-      headers.length,
-      "docker.yml must declare at least two jobs under jobs:",
-    ).toBeGreaterThanOrEqual(2);
-
-    // Locate the job block that carries the cloud build (target: cloud) and
-    // assert it declares no `needs:` — coupling it to another job would
-    // reintroduce the shared failure the split job exists to remove.
-    const cloudHeaderIdx = headers.findIndex((header, i) => {
-      const start = header.index ?? 0;
-      const end = headers[i + 1]?.index ?? jobsSection.length;
-      return jobsSection.slice(start, end).includes("target: cloud");
-    });
-    expect(cloudHeaderIdx, "one job must build the cloud target").toBeGreaterThanOrEqual(0);
-    const start = headers[cloudHeaderIdx].index ?? 0;
-    const end = headers[cloudHeaderIdx + 1]?.index ?? jobsSection.length;
-    const cloudJobBlock = jobsSection.slice(start, end);
-    expect(
-      cloudJobBlock,
-      "the cloud job must not couple to another job via needs:",
-    ).not.toMatch(/^\s*needs:/m);
   });
 
   it("throttles the docker workflow with cancel-in-progress: false", () => {

@@ -25,11 +25,14 @@ declare global {
           status?: string;
         }>;
         isInstanceAdmin?: boolean;
+        canManageExperimentalSettings?: boolean;
         keyId?: string;
         keyScope?: AgentApiKeyScope;
         runId?: string;
         onBehalfOfUserId?: string | null;
-        source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "none";
+        authorizingUserId?: string;
+        identityContextId?: string | null;
+        source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant" | "cloud_control" | "none";
       };
     }
   }

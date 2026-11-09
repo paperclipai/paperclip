@@ -16,7 +16,15 @@ export interface TranscriptParserSource {
   createStdoutParser?: StdoutParserFactory;
 }
 
+export type AdapterConfigSection = "adapter" | "configuration" | "advanced" | "runPolicy" | "environment";
+
 export interface AdapterConfigFieldsProps {
+  /** Render only fields belonging to this shared form section. Omit for all fields. */
+  section?: AdapterConfigSection;
+  /** The shared local-adapter model picker is already rendered by the form. */
+  hideModel?: boolean;
+  companyId?: string;
+  agentId?: string;
   mode: "create" | "edit";
   isCreate: boolean;
   adapterType: string;
@@ -43,13 +51,21 @@ export interface AdapterConfigFieldsProps {
    * so a stored path never flashes before the policy resolves.
    */
   managedSandboxOnly?: boolean;
+  /** Show Dot for new selections only when its experimental prerequisites are enabled. */
+  openAiDotEnabled?: boolean;
+  /** Personal Muse is offered only with its own flag and the native Runner enabled. */
+  museEnabled?: boolean;
+  /** The parent Harness control determines the profile; hide runner and ACP agent selectors. */
+  hideRunnerHarness?: boolean;
 }
 
 export interface UIAdapterModule extends TranscriptParserSource {
   type: string;
   label: string;
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
-  buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
+  buildAdapterConfig: (values: CreateConfigValues, context?: {
+    candidateHarnesses?: readonly { agent: "antigravity"; model: string }[];
+  }) => Record<string, unknown>;
   /**
    * Optional issue-chat transcript presentation hints. Shared rendering code
    * resolves these through the registry and never branches on adapter

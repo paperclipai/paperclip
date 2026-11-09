@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AdapterLoginCapability, ServerAdapterModule } from "@paperclipai/adapter-utils";
+import { requireServerAdapter } from "../adapters/registry.js";
 import { buildAdapterCapabilities } from "./adapters.js";
 
 // The adapter listing projects the safe scalar login fields to the client. The
@@ -62,5 +63,15 @@ describe("buildAdapterCapabilities login projection", () => {
     expect(caps.login).not.toHaveProperty("parsePrompt");
     expect(caps.login).not.toHaveProperty("captureCredential");
     expect(caps.login).not.toHaveProperty("completionClaim");
+  });
+
+  it("projects panelMode and timeoutPolicy for the registered grok_local adapter, with no function member", () => {
+    const caps = buildAdapterCapabilities(requireServerAdapter("grok_local"));
+    expect(caps.login).toEqual({
+      panelMode: "displayed_code",
+      timeoutPolicy: "caller_bounded",
+    });
+    expect(caps.login).not.toHaveProperty("getCommand");
+    expect(caps.login).not.toHaveProperty("parsePrompt");
   });
 });

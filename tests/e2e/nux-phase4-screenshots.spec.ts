@@ -10,12 +10,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  * Boots a throwaway local_trusted instance (see playwright.config.ts webServer)
  * and captures screenshots of every surface integrated by NUX Phases 1–3:
- *   - "Build a new company" step 1 (company name) + step 2 (mission)
+ *   - "Build a new company" step 1 (company name)
  *   - Team-lead hire step (capsule wizard, PAP-125)
- *   - Onboarding front door (path picker)
- *   - "Add agents to your org" growth intake
  *   - Conference Room (BoardChat) shell + composer + activity feed
  *   - Artifacts page
+ *
+ * The onboarding front door and the "Add agents to your org" growth intake
+ * were removed with the four-step wizard, so the shots that captured them
+ * are gone too.
  *
  * These are structural/rendering checks — LLM-dependent streaming (CEO chat
  * responses, hiring-plan generation) is verified separately on an LLM-backed
@@ -57,14 +59,8 @@ test.describe("NUX Phase 4 visual QA", () => {
     const baseUrl =
       "http://127.0.0.1:" + (process.env.PAPERCLIP_E2E_PORT ?? "3199");
 
-    // ── Section A: create-company path (name → mission → hire) ────────────
+    // ── Section A: create-company path (name → hire) ──────────────────────
     await openWizard(page);
-    // Front door shows when the wizard doesn't open directly on the create
-    // path (e.g. another spec already created a company on this instance).
-    const createCard = page.getByRole("button", { name: /Build a new organization/ });
-    if (await createCard.count()) {
-      await createCard.first().click();
-    }
     await expect(
       page.getByRole("heading", { name: "What is the name of your organization?" }),
     ).toBeVisible({ timeout: 15_000 });
@@ -89,38 +85,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     expect(qaCompany, "wizard should have created QA Robotics").toBeTruthy();
     const prefix: string = qaCompany.issuePrefix;
 
-    // ── Section B: front door + growth intake ─────────────────────────────
-    await page.evaluate(() => window.localStorage.clear());
-    await openWizard(page);
-    // Reach the full-screen front door (step 0): either it shows directly or
-    // "← Back to start" returns to it from the create step.
-    if (!(await page.getByRole("heading", { name: "Welcome to Paperclip" }).count())) {
-      await page.getByRole("button", { name: /Back to start/ }).click();
-    }
-    await expect(
-      page.getByRole("heading", { name: "Welcome to Paperclip" }),
-    ).toBeVisible({ timeout: 10_000 });
-    await expect(
-      page.getByRole("heading", { name: "Build a new organization" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: "Add agents to your org" }),
-    ).toBeVisible();
-    await page.screenshot({ path: shot("01-front-door.png") });
-
-    await page.getByRole("button", { name: /Add agents to your org/ }).click();
-    // The grow path shares step 1 (company name) before its step-2 intake.
-    await expect(
-      page.getByRole("heading", { name: "What is the name of your organization?" }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.getByPlaceholder("e.g. Northwind Labs").fill("QA Robotics Grow");
-    await page.getByRole("button", { name: /^Continue/ }).click();
-    await expect(
-      page.getByRole("heading", { name: /Tell us about your team/ }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.screenshot({ path: shot("05-growth-intake.png") });
-
-    // ── Section C: Conference Room (BoardChat) ────────────────────────────
+    // ── Section B: Conference Room (BoardChat) ────────────────────────────
     // Visit the company dashboard first so CompanyContext selects the company
     // from the route before we land on the board-chat surface.
     await page.evaluate(() => window.localStorage.clear());
@@ -136,7 +101,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     await page.waitForTimeout(2_000); // let welcome bubble + suggestion chips stage in
     await page.screenshot({ path: shot("06-board-chat.png") });
 
-    // ── Section D: Artifacts ──────────────────────────────────────────────
+    // ── Section C: Artifacts ──────────────────────────────────────────────
     await page.goto(`/${prefix}/artifacts`);
     await expect(page).toHaveURL(new RegExp(`/${prefix}/artifacts`));
     await page.waitForLoadState("networkidle");
@@ -144,10 +109,8 @@ test.describe("NUX Phase 4 visual QA", () => {
     await page.screenshot({ path: shot("07-artifacts.png") });
 
     for (const f of [
-      "01-front-door.png",
       "02-create-name.png",
       "04-hire-team-lead.png",
-      "05-growth-intake.png",
       "06-board-chat.png",
       "07-artifacts.png",
     ]) {
