@@ -1111,6 +1111,7 @@ async function consumeTurn(
   initialGovernedWait?: PersistedNativeSession["governedWait"],
   /** Settles a compaction-only turn, which reports no semantic result. */
   compactionResult?: PrpStructuredRunResult,
+  supersededTerminal?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const appendAbort = new AbortController();
@@ -1504,6 +1505,7 @@ async function consumeTurn(
         }
       }
       if (isTurnTerminal(event)) {
+        if (await supersededTerminal?.(event, appendAbort.signal)) continue;
         if (providerFailure) throw providerFailure;
         if (compactionResult && event.eventType === "turn.completed") {
           return {
@@ -2765,7 +2767,6 @@ export async function executeNativeSession(
     };
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (await requestContinuationDisposition(event, signal)) return true;
-      if (await supersededByRestartContinuation(event, signal)) return true;
       if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
           // A compaction-only run never continues task work after a restart.
           // Runnerd records a restart-lost turn only for these providers, after
@@ -2949,6 +2950,7 @@ export async function executeNativeSession(
               options.sessionCompaction
                 ? sessionCompactionResult(input, options.sessionCompaction.requestId)
                 : undefined,
+              supersededByRestartContinuation,
             )
           : Promise.resolve({
               event: recoveryTerminal,

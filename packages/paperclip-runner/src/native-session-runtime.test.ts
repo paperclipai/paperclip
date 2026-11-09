@@ -690,7 +690,10 @@ describe("executeNativeSession recovery", () => {
       .toBe(false);
   });
 
-  it("keeps the restart continuation when the lost turn's terminal is delivered again after it starts", async () => {
+  it.each([
+    { label: "after it starts", proposedFirst: false },
+    { label: "after the continuation proposed its result", proposedFirst: true },
+  ])("keeps the restart continuation when the lost turn's terminal is delivered again $label", async ({ proposedFirst }) => {
     const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
     const checkpoint: PersistedNativeSession = {
       backendKind: "runner", driverKind: "acpx_runtime", sessionId: "record-recovery", identity,
@@ -708,8 +711,9 @@ describe("executeNativeSession recovery", () => {
       async *events() {
         yield runnerEvent(1, "turn.failed", { status: "failed", error: failure });
         if (!startTurn.mock.calls.length) return;
-        yield runnerEvent(2, "turn.failed", { status: "failed", error: failure });
-        yield { ...runnerEvent(3, "turn.completed", { status: "completed" }), turnId: "turn-continuation" };
+        if (proposedFirst) yield { ...runnerEvent(2, "run.result.proposed", result), turnId: "turn-continuation" };
+        yield runnerEvent(3, "turn.failed", { status: "failed", error: failure });
+        yield { ...runnerEvent(4, "turn.completed", { status: "completed" }), turnId: "turn-continuation" };
       },
       startTurn,
       async result() { return startTurn.mock.calls.length ? { result, terminal, turnId: "turn-continuation" } : null; },
