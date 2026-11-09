@@ -1,12 +1,17 @@
 import type { RunnerApi } from "../api.js";
 
 export const invitationIncident = Object.freeze({
-  corePr: "https://github.com/paperclipai/paperclip/pull/17848",
+  // #20343 carries #17848 (invitation bearer path redaction in HTTP logs) onto
+  // master after #13742 changed the redactor. Pin the bytes that redact
+  // /invites/<token> paths and referrers; any other redactor stays blocked.
+  corePr: "https://github.com/paperclipai/paperclip/pull/20343",
   priorProof: "tests/runner-e2e/results/chat-catalog-campaign/operations/agent-feedback-privacy-cause-68e.json",
   priorProofSha256: "9f0fa4432438411567e51987c0c239f0e0ef9513c0dce80623707486978bfe16",
   affectedBaseline: "8373d7867963674ff960d2345d0d28086f799bc7",
   affectedRedactorSha256: "f1fde1590128fe2fc95a6752e1daf4fe8e0a1478328a50944945597a6aa21315",
-  fixedRedactorSha256: "dcc6274253d8954d190c3c43f40a2d1ce6c8c3817a85176f8bd264b677f7ae73",
+  // Master after #13742, before #20343: still logs invitation bearer paths.
+  affectedRedactorSha256s: Object.freeze(["f1fde1590128fe2fc95a6752e1daf4fe8e0a1478328a50944945597a6aa21315", "741003f00a55a164074df3e22fca4d060e1177fbdf71e758bb2697f941703c05"]),
+  fixedRedactorSha256: "87f49fbaaf0e0659d09830532d79509179ade230553a8335d2b16cd4d9bd4762",
 });
 export interface InvitationRuntimeProof {
   apiOrigin: string;
@@ -54,7 +59,7 @@ export function invitationRuntimeDisposition(proof: InvitationRuntimeProof | und
     || health.commit !== proof.healthCommit || !(proof.healthCommit === null || /^[a-f0-9]{40}$/.test(proof.healthCommit))
     || !hash(proof.serverEntrySha256) || !hash(proof.supervisorReceiptSha256)
     || proof.priorProofSha256 !== invitationIncident.priorProofSha256) return "unknown";
-  if (proof.redactorSha256 === invitationIncident.affectedRedactorSha256) return "affected";
+  if (invitationIncident.affectedRedactorSha256s.includes(proof.redactorSha256)) return "affected";
   if (proof.redactorSha256 === invitationIncident.fixedRedactorSha256) return "qualified-fixed";
   return "unknown";
 }

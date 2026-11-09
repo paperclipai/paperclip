@@ -18,7 +18,7 @@ function intended(id: string): IdentityObservation {
 }
 describe("explicit unavailable agent grant setup is never refusal credit", () => {
   for (const d of accessGrantIdentityCases) {
-    it(`${d.scenarioId}: retains an explicit nonpassing implementation gap`, () => expect(d.coverageGaps?.length).toBeGreaterThan(0));
+    it(`${d.scenarioId}: declares no coverage gap once the supported agent grant path exists`, () => expect(d.coverageGaps ?? []).toEqual([]));
     it(`${d.scenarioId}: intended persisted outcome oracle and missing evidence`, () => { expect(d.grade(intended(d.scenarioId)).passed).toBe(true); expect(d.grade(undefined).passed).toBe(false); });
     it(`${d.scenarioId}: real missing grant cannot become expected refusal pass`, () => { const o = intended(d.scenarioId); o.state.publicGrantStatus = 403; o.state.agentPermissionStatus = 403; o.reply = "I cannot perform this action."; expect(d.grade(o).passed).toBe(false); });
     it(`${d.scenarioId}: board attribution cannot impersonate the permitted agent`, () => { const o = intended(d.scenarioId); o.activity[0]!.actorType = "user"; expect(d.grade(o).passed).toBe(false); });
@@ -28,6 +28,11 @@ describe("explicit unavailable agent grant setup is never refusal credit", () =>
 const invitation = accessGrantIdentityCases.find(row => row.scenarioId === "access.invite-teammate")!;
 const membership = accessGrantIdentityCases.find(row => row.scenarioId === "access.manage-membership")!;
 describe("separate real invitation checkpoints", () => {
+  it("does not require the reply to repeat the invitee email; the bound join link and saved invitation prove it", () => {
+    const o = intended(invitation.scenarioId); o.reply = "Done. Here is Alex's join link: [Join Acorn](/invite/real-link). They become a member after accepting.";
+    delete o.state.creationReplyNamesAlex; expect(invitation.grade(o).passed).toBe(true);
+    o.state.actualJoinLinkBound = false; expect(invitation.grade(o).passed).toBe(false);
+  });
   it("accepts active creation followed by accepted state, not invented pending state", () => {
     const o = intended(invitation.scenarioId); expect(invitation.grade(o).passed).toBe(true);
     (o.state.invitationCreated as any).state = "pending"; expect(invitation.grade(o).passed).toBe(false);

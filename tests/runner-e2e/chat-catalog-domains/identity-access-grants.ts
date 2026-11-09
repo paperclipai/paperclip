@@ -41,7 +41,7 @@ export function gradeAccessGrant(value: unknown) {
       && !/\b(?:I(?: have|\x27ve)?|we)\s+(?:invited|added|created)|\bAlex\s+(?:has joined|is (?:now )?a member)/i.test(o.reply);
     c.add("scoped-invitation-or-consequential-role-question", clarified || !!created && created.companyId === o.companyId && created.state === "active"
       && typeof created.humanRole === "string" && !!created.humanRole && o.state.notMemberBeforeAcceptance === true
-      && o.state.creationReplyNamesAlex === true && o.state.actualJoinLinkBound === true
+      && o.state.actualJoinLinkBound === true
       && o.activity.some(row => row.action === "invite.created" && row.entityId === created.id && row.actorType === "agent" && row.actorId === o.leadId),
       "A real active invitation and join link precede acceptance, or the actual agent asks the consequential missing role without creating an invitation.");
     c.add("invitation-human-boundary-verified", clarified || !!created && invitations?.length === 1 && invitations[0]?.id === created.id
@@ -62,7 +62,7 @@ export function gradeAccessGrant(value: unknown) {
   return c.result();
 }
 const sources = ["chat-catalog-domains/identity-access-grants.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/access.yaml",
-  "../../maps/agent-access-map/access.md", "../../server/src/routes/access.ts", "../../server/src/routes/agents.ts", "../../packages/shared/src/validators/agent.ts"];
+  "../../maps/agent-access-map/access.md", "../../server/src/routes/access.ts", "../../server/src/routes/agent-permission-grants.ts", "../../server/src/routes/agents.ts", "../../packages/shared/src/validators/agent.ts"];
 export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.invite-teammate", "access.manage-membership"].map(scenarioId => identityDefinition(scenarioId, async ctx => {
   const permissionKey = scenarioId.endsWith("invite-teammate") ? "users:invite" : "users:manage_permissions";
   const root = `/api/companies/${ctx.input.fixtures.company.id}`;
@@ -73,17 +73,16 @@ export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.inv
     const detail = await ctx.input.api.get<AgentAccess>(`/api/agents/${ctx.input.fixtures.agent.id}`);
     const membership = detail.access?.membership;
     if (!membership || membership.principalType !== "agent" || membership.principalId !== ctx.input.fixtures.agent.id) throw new Error("Setup blocker: public agent detail exposes no real company agent membership");
-    const grants = detail.access?.grants ?? [];
-    // This is the typed, documented public permission route with the real
-    // publicly discoverable membership ID. No arbitrary agent config field,
-    // private route, role inference or direct grant-table write substitutes.
-    const attempt = await ctx.input.page.context().request.patch(`${ctx.input.api.baseURL}${root}/members/${membership.id}/permissions`, {
-      data: { grants: [...grants.filter(grant => grant.permissionKey !== permissionKey), { permissionKey }] }, headers: { Origin: ctx.input.api.baseURL } });
+    // The supported board path for agent grants (PATCH /api/agents/:id/permission-grants,
+    // also `paperclipai agent permission:grant`). It runs as the real board
+    // session; no member-route workaround, role inference or direct grant-table write.
+    const attempt = await ctx.input.page.context().request.patch(`${ctx.input.api.baseURL}/api/agents/${ctx.input.fixtures.agent.id}/permission-grants`, {
+      data: { permissionKey, enabled: true }, headers: { Origin: ctx.input.api.baseURL } });
     const after = await ctx.input.api.get<AgentAccess>(`/api/agents/${ctx.input.fixtures.agent.id}`);
     const probe = await readAgentResource(ctx, `${root}/${scenarioId.endsWith("invite-teammate") ? "invites" : "members"}`);
     const state = { permissionKey, publicGrantStatus: attempt.status(), grantPrincipalId: membership.principalId, effectiveGrants: after.access?.grants ?? [], agentPermissionStatus: probe.status };
     await ctx.input.evidence("identity-explicit-agent-grant-prerequisite.json", { ...state, originalQuery: ctx.scenario.query, originalQuerySent: false,
-      setupBlocked: attempt.status() !== 200 || probe.status !== 200, unsupportedSurface: "Public member mutations reject non-human principals before writing; agent permissions schema only synchronizes tasks:assign." });
+      setupBlocked: attempt.status() !== 200 || probe.status !== 200, grantSurface: "PATCH /api/agents/:id/permission-grants (board)" });
     if (attempt.status() !== 200 || probe.status !== 200) throw new Error(`Setup blocker: supported public grant path did not establish ${permissionKey} on the actual agent principal (grant HTTP ${attempt.status()}, agent read HTTP ${probe.status}); this is not an expected refusal pass`);
     const notMemberBeforeAcceptance = !(await ctx.input.api.get<{ members: Member[] }>(`${root}/members`)).members.some(row => row.principalId === alex.id);
     const baseline = { ...state, alexId: alex.id, notMemberBeforeAcceptance, invitationsBefore: (await ctx.input.api.get<{ invites: Invitation[] }>(`${root}/invites`)).invites.map(row => row.id) };
@@ -105,8 +104,7 @@ export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.inv
     return baseline;
   } catch (error) { await alex.dispose(); people.delete(ctx); throw error; }
 }, gradeAccessGrant, {
-  sourceFiles: sources, authentication: "human-session",
-  coverageGaps: ["The current public grant-management route rejects agent membership principals. Required users:* agent authority cannot be established through the supported API; the actual intended mutation and human acceptance/reuse callbacks are authored but remain unqualified until this setup capability is available."],
+  sourceFiles: sources, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.identity.access-grant.v2",
   async observe(ctx, state) {
     if (scenarioId.endsWith("invite-teammate")) {
       state.invitations = (await ctx.input.api.get<{ invites: Invitation[] }>(`/api/companies/${ctx.input.fixtures.company.id}/invites`)).invites.filter(row => !(state.invitationsBefore as string[]).includes(row.id));
@@ -135,7 +133,7 @@ export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.inv
     const token = decodeURIComponent(hrefs[0]!.pathname.split("/").at(-1)!); ctx.input.privateSecrets.push(token);
     if (invite.tokenHash !== createHash("sha256").update(token).digest("hex")) throw new Error("Join link does not match the exact public invitation hash");
     const alex = people.get(ctx)![0]!;
-    state.invitationCreated = structuredClone(invite); state.creationReplyNamesAlex = o.reply.includes("alex@example.test");
+    state.invitationCreated = structuredClone(invite);
     state.actualJoinLinkBound = false;
     const before = (await ctx.input.api.get<{ members: Member[] }>(`${root}/members`)).members;
     state.notMemberBeforeAcceptance = !before.some(row => row.principalId === alex.id);
