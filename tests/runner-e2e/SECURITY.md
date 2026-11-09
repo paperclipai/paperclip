@@ -331,7 +331,8 @@ file modes cannot separate them. OpenCode's `external_directory` policy guards
 its own read and grep tools, but not arbitrary shell commands.
 
 `agent-filesystem-sandbox.ts` closes that gap for local native cells on Linux.
-The launcher selects the hidden paths: `tests/`, the trusted
+The launcher selects the hidden paths: `tests/`, the checkout's `.git/` (which
+holds the committed scenarios and graders), the trusted
 `.manual-private-trusted/` copy, the private evidence directory, `RUNNER_TEMP`,
 and the attempt root's `artifacts-private/`, `control/`,
 `selected-private-inputs/` and `playwright-transform-cache/` children.
@@ -343,7 +344,9 @@ directory.
 Landlock hides a path by leaving its ancestors ungranted, and an ungranted
 directory accepts no new entries. Agents must keep creating files in `/tmp`, so
 a sandboxed attempt creates its root in `/var/tmp` instead of `/tmp`. The
-agent's workspace, home and Paperclip home stay readable inside that root. The E2E server entry starts each `paperclip-runnerd` through
+agent's workspace, home and Paperclip home stay readable inside that root. If
+harness material would stay under the shared temporary directory or contain the
+agent's state, the launcher fails the attempt in CI and warns elsewhere. The E2E server entry starts each `paperclip-runnerd` through
 `agent-filesystem-sandbox.py`, which applies a Landlock domain and then execs
 runnerd with its original PID, argv, cwd and environment. Runnerd, the provider,
 its tools and every shell command inherit the domain. The domain also sets
@@ -362,12 +365,15 @@ inside Landlock. Legacy adapters, installed-release launches and macOS run
 without this sandbox. A process that can reach the Docker daemon can still
 mount the checkout into a container, and `ps` shows the launcher's command
 line. Case fixtures that create their own private directories directly in the
-shared temporary directory stay readable. Daytona cells run the agent in a remote sandbox that holds only the
+shared temporary directory stay readable. The boundary is filesystem only: the
+scenarios and graders are public on GitHub, and agents have network access for
+their model provider. Daytona cells run the agent in a remote sandbox that holds only the
 staged runnerd and provider pack, not the checkout.
 
 Fixture names that an agent can read (company, agent, environment, secret,
 connection and project) use a neutral word and a digest suffix. They do not
-contain case ids, suite names, "E2E" or "test".
+contain case ids, suite names, "E2E" or "test". The digest is salted per
+process, so public catalog ids cannot be hashed back to a case.
 
 ## AWS OIDC and S3
 

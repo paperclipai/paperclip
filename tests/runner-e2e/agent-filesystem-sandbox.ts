@@ -91,26 +91,39 @@ export function agentFilesystemSandboxConfig(input: {
 }): AgentFilesystemSandboxConfig | null {
   if (!agentFilesystemSandboxApplies(input)) return null;
   const sharedTemporary = path.resolve(input.sharedTemporary ?? (input.env.TMPDIR?.trim() || os.tmpdir()));
-  const candidates = [
+  const required = input.env.GITHUB_ACTIONS === "true";
+  // Harness material that must be hidden. Git holds the committed scenarios
+  // and graders, so `git show HEAD:tests/...` would otherwise bypass `tests/`.
+  const essential = [
     path.join(input.repositoryRoot, "tests"),
+    path.join(input.repositoryRoot, ".git"),
     path.join(input.repositoryRoot, ".manual-private-trusted"),
     ...HARNESS_PRIVATE_TEMPORARY_CHILDREN.map((child) => path.join(input.temporaryRoot, child)),
     input.privateDir,
-    input.evidenceRoot,
-    input.env.RUNNER_TEMP,
   ];
+  const optional = [input.evidenceRoot, input.env.RUNNER_TEMP];
   const hidden: string[] = [];
-  for (const candidate of candidates) {
+  const exposed: string[] = [];
+  for (const [candidate, mustHide] of [...essential.map((value) => [value, true] as const), ...optional.map((value) => [value, false] as const)]) {
     const value = candidate?.trim();
     if (!value || !path.isAbsolute(value)) continue;
     const resolved = path.resolve(value);
     // Never hide a path that holds the agent's own state, or one beneath the
     // shared temporary directory: its ancestors would lose new entries.
-    if (within(input.temporaryRoot, resolved) || within(input.repositoryRoot, resolved)) continue;
-    if (within(resolved, sharedTemporary) || within(sharedTemporary, resolved)) continue;
+    if (within(input.temporaryRoot, resolved) || within(input.repositoryRoot, resolved)
+      || within(resolved, sharedTemporary) || within(sharedTemporary, resolved)) {
+      if (mustHide) exposed.push(resolved);
+      continue;
+    }
     if (!hidden.includes(resolved)) hidden.push(resolved);
   }
-  return hidden.length ? { hidden, required: input.env.GITHUB_ACTIONS === "true" } : null;
+  if (exposed.length) {
+    const message = `agent_filesystem_sandbox_incomplete: cannot hide ${exposed.join(", ")}; keep the checkout and attempt root outside ${sharedTemporary}`;
+    // A required sandbox fails closed rather than run an eval agents can read.
+    if (required) throw new Error(message);
+    console.warn(`[agent-filesystem-sandbox] ${message}`);
+  }
+  return hidden.length ? { hidden, required } : null;
 }
 
 export function parseAgentFilesystemSandboxConfig(value: string | undefined): AgentFilesystemSandboxConfig | null {
@@ -227,8 +240,14 @@ export function installAgentFilesystemSandbox(repositoryRoot: string, env: NodeJ
     console.warn(`[agent-filesystem-sandbox] disabled: ${probe.failures.join("; ")}`);
     return null;
   }
-  const original = childProcess.spawn;
-  const spawn = function (this: unknown, command: string, ...rest: unknown[]) {
+  childProcess.spawn = wrapRunnerdSpawn(childProcess.spawn, config, python);
+  syncBuiltinESMExports();
+  return config;
+}
+
+/** Returns a `spawn` that starts runnerd inside the sandbox and passes other launches through. */
+export function wrapRunnerdSpawn(original: typeof childProcess.spawn, config: AgentFilesystemSandboxConfig, python: string) {
+  return function (this: unknown, command: string, ...rest: unknown[]) {
     const args = Array.isArray(rest[0]) ? rest[0] as string[] : [];
     const options = (Array.isArray(rest[0]) ? rest[1] : rest[0]) as SpawnOptions | undefined;
     if (isRunnerdLaunch(command, options)) {
@@ -239,7 +258,4 @@ export function installAgentFilesystemSandbox(repositoryRoot: string, env: NodeJ
     }
     return Reflect.apply(original, this, [command, ...rest]);
   } as typeof childProcess.spawn;
-  childProcess.spawn = spawn;
-  syncBuiltinESMExports();
-  return config;
 }
