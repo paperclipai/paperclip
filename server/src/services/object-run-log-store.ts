@@ -254,10 +254,8 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
   return {
     async begin(input) {
       const logRef = `${input.companyId}/${input.agentId}/${input.runId}`;
-      const store = journal(logRef),
-        current = await store.head(input.signal);
+      const store = journal(logRef);
       const writer = await store.claim({
-        expectedOwner: current?.head.owner ?? null,
         assertAuthority: () => options.assertWriterAuthority(input),
         signal: input.signal,
       });
