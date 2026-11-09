@@ -4,7 +4,8 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activityLog, agents, authUsers, companyMemberships, companySkillRepositorySnapshots, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companyMemberships, companySkillRepositorySnapshots, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, costEvents, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
+import { accountRunCost } from "../run-cost-accounting.js";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -356,6 +357,21 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     if (priorIdentity) {
       expect(saved).toMatchObject({ processPid: 11_356, processGroupId: 11_356 });
       expect(saved.runnerProfileJson?.inheritedProcessIdentityRunId).toBe(run.id);
+      // Settled-process cleanup clears the predecessor before the follow-up's
+      // accounting runs; the follow-up was refused before it launched.
+      await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null })
+        .where(eq(heartbeatRuns.id, run.id));
+      const sourceId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), costAccountingPending: true,
+        errorCode: "native_session_cleanup_quarantined",
+        usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false,
+          accountingReceiptUnavailable: true, accountingReceiptSourceFences: {},
+          ledgerScope: { issueId: issue.id, projectId: null, billingCode: null } } })
+        .where(eq(heartbeatRuns.id, nextRun!.id));
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: "native_session_cleanup_quarantined" })
+        .where(eq(nativeRunFinalizations.runId, nextRun!.id));
+      expect(await accountRunCost(db, nextRun!.id)).toBe(true);
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, nextRun!.id))).toEqual([]);
     } else {
       expect(saved.processPid).toBeNull();
       expect(saved.runnerProfileJson?.inheritedProcessIdentityRunId).toBeUndefined();
