@@ -228,13 +228,23 @@ describeEmbeddedPostgres("createPluginSecretsHandler shared vault integration", 
     const payload = '{"hello":"world"}';
     const validSignature = createHmac("sha256", "super-secret-key").update(payload).digest("hex");
 
-    // Valid signature verification succeeds
+    // Valid signature verification succeeds (both lowercase and uppercase hex)
     await expect(
       handler.verifySignature({
         companyId,
         secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
         data: payload,
         signature: validSignature,
+      }),
+    ).resolves.toBe(true);
+
+    await expect(
+      handler.verifySignature({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        data: payload,
+        signature: validSignature.toUpperCase(),
+        encoding: "hex",
       }),
     ).resolves.toBe(true);
 

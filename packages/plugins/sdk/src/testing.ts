@@ -955,7 +955,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     secrets: {
       async resolve(secretRef) {
         requireCapability(manifest, capabilitySet, "secrets.read-ref");
-        return `resolved:${typeof secretRef === "object" ? JSON.stringify(secretRef) : secretRef}`;
+        return `resolved:${secretRef}`;
       },
       async verifySignature(params) {
         requireCapability(manifest, capabilitySet, "secrets.read-ref");
@@ -967,13 +967,18 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const encoding = params.encoding ?? "hex";
         const computed = createHmac(algorithm, secret)
           .update(params.data)
-          .digest(encoding);
+          .digest();
         const signatures = Array.isArray(params.signature) ? params.signature : [params.signature];
         return signatures.some((sig) => {
-          const computedBuf = Buffer.from(computed);
-          const sigBuf = Buffer.from(sig.trim());
-          if (computedBuf.length !== sigBuf.length) return false;
-          return timingSafeEqual(computedBuf, sigBuf);
+          try {
+            const trimmed = sig.trim();
+            if (encoding === "hex" && !/^[0-9a-fA-F]+$/.test(trimmed)) return false;
+            const sigBuf = Buffer.from(trimmed, encoding);
+            if (computed.length !== sigBuf.length) return false;
+            return timingSafeEqual(computed, sigBuf);
+          } catch {
+            return false;
+          }
         });
       },
     },
