@@ -78,6 +78,19 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   return { input, operation };
 }
 
+/**
+ * Rules for a new dispatch only. Recovery and saved receipts still validate an
+ * older accepted call with validateRunnerApiCall, so these rules stay out of it.
+ * Callers that reserve a mutation receipt must run this before the reservation.
+ */
+export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
+  if (operation.method === "PATCH" && input.body === undefined && !input.files?.length && operation.requestBody?.required) {
+    // A PATCH without a body changes nothing but still returns success, which
+    // reads as a completed update. Name the missing argument instead.
+    throw badRequest(`This request was not sent: this PATCH requires body, a JSON object with the fields to change${patchFieldHint(operation)}. Received arguments: ${[...receivedKeys].sort().join(", ")}.`);
+  }
+}
+
 function patchFieldHint(operation: RunnerApiOperation): string {
   const schema = operation.requestBody?.content?.["application/json"]?.schema as { properties?: Record<string, unknown> } | undefined;
   const fields = Object.keys(schema?.properties ?? {});
@@ -166,13 +179,7 @@ export function runnerApiPagination(headers: Headers) {
 export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiContext, io: RunnerApiIo) {
   const inlineBytes = RUNNER_API_INLINE_BYTES;
   const { operation, input: validated } = validateRunnerApiCall(input, context);
-  // New dispatches only. Recovery and saved receipts still validate an older
-  // accepted body-less PATCH, so this rule stays out of validateRunnerApiCall.
-  if (operation.method === "PATCH" && validated.body === undefined && !validated.files?.length && operation.requestBody?.required) {
-    // A PATCH without a body changes nothing but still returns success, which
-    // reads as a completed update. Name the missing argument instead.
-    throw badRequest(`This request was not sent: this PATCH requires body, a JSON object with the fields to change${patchFieldHint(operation)}. Received arguments: ${Object.keys(input).sort().join(", ")}.`);
-  }
+  assertRunnerApiDispatchable(operation, validated, Object.keys(input));
   input = validated;
   const sensitiveResponse = runnerApiSensitiveResponse(operation.method, operation.path);
   const url = runnerApiUrl(operation, input, context, io.apiUrl);
