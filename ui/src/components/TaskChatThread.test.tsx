@@ -636,6 +636,40 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
 });
 
 it.each((["task", "legacy"] as const).flatMap(surface =>
+  ["done", "cancelled", "old-intent"].map(previous => ({ surface, previous })),
+))("keeps $surface follow-up identity while $previous state catches up", async ({ surface, previous }) => {
+  const Component = surface === "task" ? TaskChatThread : IssueChatThread;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>().mockResolvedValue(undefined);
+  const interruption = { intentId: "old-intent", responsibility: "system" as const, state: "working" as const,
+    nextRetryAt: null, canRetry: false, userAction: null, sourceRunIds: ["old-run"], observedRunId: "old-run" };
+  const props = { issueId: "issue", issueStatus: previous === "old-intent" ? "blocked" : previous,
+    issueAssigneeAgentId: "agent", currentAssigneeValue: "agent:agent", onAdd, comments: [],
+    interruption: previous === "old-intent" ? interruption : null,
+    agentMap: new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]]) };
+  render(<Component {...props} />);
+  await act(async () => { editorCallbacks.change("Please check again."); });
+  const send = surface === "task" ? container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')
+    : [...container.querySelectorAll<HTMLButtonElement>('[data-testid="issue-chat-composer"] button')].find(button => button.textContent === "Send");
+  await act(async () => { send!.click(); });
+  expect(onAdd).toHaveBeenCalledTimes(1);
+  const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+  expect(identity?.textContent).toBe("Worker");
+  const saved = { id: "saved-message", companyId: "company", issueId: "issue", authorType: "user" as const,
+    authorUserId: "board", authorAgentId: null, body: "Please check again.", presentation: null, metadata: null,
+    clientRequestId: onAdd.mock.calls[0]?.[4], createdAt: new Date(), updatedAt: new Date() };
+  render(<Component {...props} comments={[saved]}
+    interruption={previous === "old-intent" ? { ...interruption, state: "resolved" } : null} />);
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  render(<Component {...props} comments={[saved]} issueStatus="in_progress" interruption={null} />);
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  if (surface === "task") {
+    const run = { ...nativeRunningRun(), agentId: "agent", agentName: "Worker" };
+    render(<Component {...props} comments={[saved]} issueStatus="in_progress" interruption={null} activeRun={run} />);
+    expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  }
+});
+
+it.each((["task", "legacy"] as const).flatMap(surface =>
   [-300_000, 0, 300_000].map(clockOffset => ({ surface, clockOffset })),
 ))("keeps an existing $surface thread's responder mounted with clock offset $clockOffset", async ({ surface, clockOffset }) => {
   const serverTime = new Date("2026-01-02T00:00:00Z").getTime();
