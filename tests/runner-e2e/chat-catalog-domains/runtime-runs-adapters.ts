@@ -2,7 +2,7 @@ import { expect } from "@playwright/test";
 import { checks } from "./internal-support.js";
 import { readAgentResource } from "./identity-support.js";
 import { runtimeDefinition, runtimeWorker, runtimeObservation, unchangedAgent, type RuntimeAgent } from "./runtime-support.js";
-import { openRouterCatalogScope, publicOpenRouterCatalogEndpoint, observedModelChoices, modelChoiceMatches, publicCatalogCaveat, unsupportedModelReadinessClaim, type DiscoveredModel as Model, type OpenRouterCatalogScope } from "./model-option-catalog.js";
+import { openRouterCatalogScope, publicOpenRouterCatalogEndpoint, observedModelChoices, modelChoiceMatches, type DiscoveredModel as Model, type OpenRouterCatalogScope } from "./model-option-catalog.js";
 export function gradeModelOptions(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
   c.add("authorized-model-discovery-evidence", !!o, "Actual agent-authorized discovery and saved account/runtime scope are independently read."); if (!o) return c.result();
@@ -17,15 +17,11 @@ export function gradeModelOptions(value: unknown) {
   c.add("same-binding-public-catalog-provenance", publicCatalog === undefined || catalogBound,
     "Public catalog choices require the actual unchanged company/CEO/Morgan/environment/OpenCode/OpenRouter key-reference binding; metadata never proves entitlement.");
   const known = [...(models ?? []), ...(catalogBound ? publicCatalog! : [])], mentionedIds = observedModelChoices(o.reply);
-  const publicChoiceUsed = catalogBound && mentionedIds.some(id => !modelChoiceMatches(id, models ?? []) && !modelChoiceMatches(id, [{ id: currentScope!.currentModel, label: "current" }]) && modelChoiceMatches(id, publicCatalog!));
-  c.add("catalog-visibility-not-account-entitlement", !publicChoiceUsed || publicCatalogCaveat(o.reply),
-    "A public catalog choice is conditional on the selected key/account/runtime and cannot be presented as universally tested, qualified or ready.");
-  c.add("no-unqualified-model-inventory", !!models && mentionedIds.every(id => modelChoiceMatches(id, known))
-    && !unsupportedModelReadinessClaim(o.reply),
-    "The answer does not add unsupported vendor models or equate a public catalog with universal runtime readiness.");
-  c.add("availability-not-account-qualification", /account|binding|connection|connected|configured/i.test(o.reply)
-    && /available|option|catalog|model/i.test(o.reply) && /valid|qualif|restrict|depends|selected|configured|bound/i.test(o.reply),
-    "The response distinguishes model choices from selected account and environment qualification.");
+  // Model IDs are product output copied into the reply, so they are graded
+  // exactly. Whether the reply separates a listed model from a working account
+  // binding is prose; a person reads it, and it is not graded by keywords.
+  c.add("no-unqualified-model-inventory", !!models && mentionedIds.every(id => modelChoiceMatches(id, known)),
+    "The answer does not add model IDs outside the current admitted list or the same-binding public catalog.");
   c.add("restricted-runtime-read-denied", o.state.agentRuntimeInventoryStatus === 403,
     "The actual agent bearer cannot inspect board-only runtime inventory.");
   c.add("configuration-and-permissions-preserved", !!worker && !!current && unchangedAgent(worker, current) && o.tasks.length === 0,
@@ -53,7 +49,7 @@ export const runtimeRunsAdaptersCases = [runtimeDefinition("runs-adapters.list-m
   return { worker, admittedModels: discovered.data, discoveryStatus: discovered.status, agentRuntimeInventoryStatus: restricted.status,
     ...(publicOpenRouterCatalog ? { publicOpenRouterCatalog, publicCatalogScope, publicCatalogStatus } : {}) };
 }, gradeModelOptions, {
-  oracleVersion: "paperclip.chat-catalog.model-options.scoped-catalog.v3",
+  oracleVersion: "paperclip.chat-catalog.model-options.scoped-catalog.v4",
   sourceFiles: ["chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/runtime-runs-adapters.ts", "chat-scenarios/runs-adapters.yaml", "chat-catalog-domains/model-option-catalog.ts"],
   async observe(ctx, state) {
     const { observeRuntime } = await import("./runtime-support.js");

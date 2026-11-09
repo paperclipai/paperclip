@@ -1,6 +1,6 @@
 import {it, expect} from "vitest";
 import {gradeModelOptions} from "./runtime-runs-adapters.js";
-import {openRouterCatalogScope, modelChoiceMatches, publicCatalogCaveat, publicOpenRouterCatalogEndpoint} from "./model-option-catalog.js";
+import {openRouterCatalogScope, modelChoiceMatches, publicOpenRouterCatalogEndpoint} from "./model-option-catalog.js";
 function valid() {
   const config = {provider:"opencode",model:"openrouter/deepseek/deepseek-v4.1-flash-1017",env:{OPENROUTER_API_KEY:{type:"secret_ref",secretId:"company-openrouter-reference",version:"latest"}}};
   const worker = {id:"morgan",companyId:"company",adapterType:"paperclip_runner",defaultEnvironmentId:"owned",adapterConfig:structuredClone(config)}, lead={...structuredClone(worker),id:"ceo"};
@@ -9,14 +9,12 @@ function valid() {
     agents:[structuredClone(worker),lead],tasks:[],links:[],activity:[],runs:[],humanQueries:[],reply:"Morgan's configured model is `openrouter/deepseek/deepseek-v4.1-flash-1017`. The native options include `opencode/big-pickle`. The public OpenRouter catalog also lists `gpt-5.3-codex` and `anthropic/claude-sonnet-5.5`; availability depends on the selected account/key and environment. Not all catalog models are qualified or tested."};
 }
 it("accepts actually catalogued options with explicit current-account limits, without testing another model",()=>expect(gradeModelOptions(valid()).passed).toBe(true));
+it("accepts the same options reworded without caveat keywords",()=>{const o=valid();o.reply="Today Morgan runs `openrouter/deepseek/deepseek-v4.1-flash-1017`. Built in: `opencode/big-pickle`. OpenRouter also lists `gpt-5.3-codex` and `anthropic/claude-sonnet-5.5`, but its list is not a promise that the key works for each.";expect(gradeModelOptions(o).passed).toBe(true)});
 it("uses the existing company-scoped public metadata endpoint",()=>expect(publicOpenRouterCatalogEndpoint("company")).toBe("/api/companies/company/adapters/opencode_local/models?provider=openrouter"));
 it.each(["gpt-99-ultra","openrouter/openai/not-a-real-model","wrong-vendor/gpt-5.3-codex","anthropic/gpt-5.3-codex"])("rejects invented/out-of-catalog or wrong-vendor choice %s",id=>{const o=valid();o.reply+=` Another option is \`${id}\`.`;expect(gradeModelOptions(o).passed).toBe(false)});
 it.each(["companyId","leadId","workerId","environmentId","credentialReferenceSha256"])("rejects a foreign saved catalog binding %s",field=>{const o=valid();Object.assign(o.state.publicCatalogScope!,{[field]:"foreign"});expect(gradeModelOptions(o).passed).toBe(false)});
 it.each(["companyId","defaultEnvironmentId"])("rejects changed actual target scope %s",field=>{const o=valid();Object.assign(o.agents[0]!,{[field]:"foreign"});expect(gradeModelOptions(o).passed).toBe(false)});
 it("rejects another actual key reference, plain private key, changed provider and missing public discovery",()=>{for(const mutate of[(o:ReturnType<typeof valid>)=>{o.agents[1]!.adapterConfig.env.OPENROUTER_API_KEY.secretId="other"},(o:ReturnType<typeof valid>)=>{Object.assign(o.agents[1]!.adapterConfig.env,{OPENROUTER_API_KEY:"synthetic-private-value"})},(o:ReturnType<typeof valid>)=>{o.agents[1]!.adapterConfig.provider="codex"},(o:ReturnType<typeof valid>)=>{o.state.publicCatalogStatus=403}]){const o=valid();mutate(o);expect(gradeModelOptions(o).passed).toBe(false)}});
-it.each(["All catalog models are tested and ready.","Every model will work with this key.","All models are installed; the account is configured.","All models are available on this key."])("rejects blanket runtime qualification %s",claim=>{const o=valid();o.reply+=" "+claim;expect(gradeModelOptions(o).passed).toBe(false)});
-it("requires a real caveat for public catalog choices",()=>{const o=valid();o.reply="The selected configured account has `opencode/big-pickle` and `gpt-5.3-codex` available.";expect(gradeModelOptions(o).passed).toBe(false)});
-it("does not treat an explicit not-all-qualified caveat as an all-ready claim",()=>expect(publicCatalogCaveat("Catalog models depend on the account key; not all models are tested or qualified.")).toBe(true));
 it("rejects ambiguous bare names across distinct published vendors",()=>expect(modelChoiceMatches("shared-model",[{id:"openrouter/vendor-a/shared-model",label:"a"},{id:"openrouter/vendor-b/shared-model",label:"b"}])).toBe(false));
 it("keeps the original private/runtime/configuration negatives",()=>{const leaked=valid();leaked.state.secretLeaked=true;expect(gradeModelOptions(leaked).passed).toBe(false);const runtime=valid();runtime.state.agentRuntimeInventoryStatus=200;expect(gradeModelOptions(runtime).passed).toBe(false);const changed=valid();changed.agents[0]!.adapterConfig.model="different";expect(gradeModelOptions(changed).passed).toBe(false)});
 

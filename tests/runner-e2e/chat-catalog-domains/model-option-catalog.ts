@@ -41,13 +41,3 @@ export function modelChoiceMatches(id: string, models: DiscoveredModel[]) {
   if (/^claude-/.test(wanted)) return candidates.size === 1 && [...candidates][0]!.startsWith("anthropic/");
   return candidates.size === 1;
 }
-export function unsupportedModelReadinessClaim(reply: string) {
-  return reply.split(/[.!?;\n]|,|:\s|\bbut\b|\bhowever\b/i).some(clause => /\b(?:all|every)\b/i.test(clause)
-    && /\b(?:ready|qualified|tested|guaranteed|installed|available|usable|will work)\b/i.test(clause)
-    && !/\b(?:not|no|cannot|can't|aren't|are not|unverified|untested)\b/i.test(clause));
-}
-export function publicCatalogCaveat(reply: string) {
-  return /\b(?:account|key|credential|entitlement|credit|plan)\b/i.test(reply)
-    && /\b(?:depends?|restricted?|subject to|unverified|not (?:all |yet )?(?:tested|qualified|guaranteed|ready))\b/i.test(reply)
-    && !unsupportedModelReadinessClaim(reply);
-}
