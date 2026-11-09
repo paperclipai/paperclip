@@ -1,5 +1,8 @@
 import { effectiveAiConnectionInput } from "@paperclipai/shared";
+
+import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
@@ -319,6 +322,7 @@ import {
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { StaleExecutionContinuationError } from "./execution-continuation.js";
+import { deferUndeliveredCommentsOfStaleRun } from "./heartbeat/stale-comment-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -1002,6 +1006,8 @@ export function heartbeatService(
   const recovery = recoveryService(db, {
     enqueueWakeup,
     liveRunExecutions,
+    // Bound at call time: the heartbeat recovery module is created below.
+    settleLostRunProcess: scope => recoverActiveExecutions(scope),
     settleExplicitContinuationRetry: releaseIssueExecutionAndPromote,
     scheduleRecoveryRetry: async (runId) => {
       const [run] = await db
@@ -1058,6 +1064,7 @@ export function heartbeatService(
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
     recoverNativeRunsAfterRestart,
+    recoverActiveExecutions,
     reapOrphanedRuns,
     sweepOrphanedActiveLeases,
     drainRunningRunsForShutdown,
@@ -1317,6 +1324,7 @@ export function heartbeatService(
     isHeartbeatRunTerminalStatus,
     liveRunExecutions,
     getSchedulingSuppression,
+    isRunAdmissionClosed: () => shutdownInProgress || isProcessRunAdmissionClosed(),
     resumeExecutionWaitComments,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
@@ -1527,6 +1535,12 @@ export function heartbeatService(
   function resumeRemoteStopComments(...args: Parameters<typeof runControl.resumeRemoteStopComments>) {
     return runControl.resumeRemoteStopComments(...args);
   }
+  // The interrupted-preparation ownership kind settles a hold, then replays the
+  // preparation through this same resume path (bounded, uncharged retry).
+  registerHeldPreparationResumer(async ({ companyId, runId }) => {
+    const run = await getRun(runId);
+    if (run && run.companyId === companyId) await resumeRemoteStopComments(run);
+  });
 
   function cancelRunInternal(...args: Parameters<typeof runControl.cancelRunInternal>) {
     return runControl.cancelRunInternal(...args);
@@ -3821,6 +3835,12 @@ export function heartbeatService(
         // The queued continuation became obsolete before adapter dispatch.
         // Use cancellation settlement so wakeup, issue ownership, agent state,
         // and notifications agree; do not retry work for the previous owner.
+        // A user's message it carried that no run read is saved first, so the
+        // release reopens the finished task for it (work-intent outbox). If
+        // this fast path fails or the closing run has not settled yet, the
+        // ownership reconciler saves it once that run settles.
+        await deferUndeliveredCommentsOfStaleRun(db, run).catch(err =>
+          logger.warn({ err, runId: run.id }, "could not save the messages of a stale continuation"));
         await cancelRunInternal(run.id, outerErr.code, {
           errorCode: outerErr.code,
           eventMessage: "stale execution continuation cancelled before dispatch",

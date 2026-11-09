@@ -14,15 +14,16 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi, isSocketTypeOfServiceRace } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
-import { assertControllerMatchesImage, prepareDaytonaImageArtifacts } from "./daytona-image.js";
+import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { checkPlanInvariants, summarizeViolations, type InvariantCheck } from "./invariants.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
+import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
 import { TaskObserver } from "./observer.js";
-import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
+import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
@@ -44,14 +45,23 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     const source = JSON.parse(await readFile(path.join(sourceDir, "plan.json"), "utf8")) as WavePlan;
     // Replay the faults that actually crossed the task, including other tasks' faults.
     const graded = await readFile(path.join(sourceDir, `${command.ref.taskId}.grade.json`), "utf8")
-      .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[] } }).catch(() => null);
+      .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[]; serverBuildAtLaunch?: "upgrade_from" | "current" } })
+      .catch(() => null);
     // An interrupted or wedged wave has no grade files; its fault log was written after every fault.
     const logged = await readFile(path.join(sourceDir, TASK_FAULT_LOG), "utf8").then(text => JSON.parse(text) as TaskFaultLog).catch(() => null);
     const crossed = replayRecordFor(command.ref.taskId, graded?.record ?? null, logged);
     const faults = await readFile(path.join(sourceDir, "faults.json"), "utf8").then(text => JSON.parse(text) as FaultReceipt[]).catch(() => []);
     const observed = crossed ? observedFaultSchedule(crossed.createdAt, crossed.faultIds, faults, command.ref.taskId) : [];
     if (!observed.length) console.warn("Replay: no recorded fault sequence for this task; using its planned fault only.");
-    return { plan: replayWave(source, command.ref, Date.now(), command.overrides, observed), keep: command.keep };
+    let plan = replayWave(source, command.ref, Date.now(), command.overrides, observed);
+    // K14: a task that launched after the upgrade replays on the current build.
+    const launchBuild = graded?.record.serverBuildAtLaunch ?? logged?.[command.ref.taskId]?.serverBuildAtLaunch;
+    if (plan.options.upgradeFrom && launchBuild === "current") plan = replayOnCurrentBuild(plan);
+    // H1 needs the hard stop that the RC-06 mask turns off.
+    if (plan.tasks.some(task => task.workload === "H1") && plan.options.masks?.includes("rc06")) {
+      throw new Error("An H1 replay needs the budget hard stop; do not combine it with --rc06-masked");
+    }
+    return { plan, keep: command.keep };
   }
   return { plan: planWave(waveIdFor(command.options.seed), command.options), keep: command.keep };
 }
@@ -91,7 +101,7 @@ function ensureDaytonaPlugin(timeline: Timeline) {
  */
 async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Record<string, string>> {
   const image = plan.options.daytonaImage!;
-  const artifacts = await prepareDaytonaImageArtifacts({ image, cacheRoot: path.join(resultsRoot, "daytona-images"),
+  const artifacts = await prepareDaytonaImageArtifacts({ image, cacheRoot: defaultDaytonaImageCacheRoot(),
     log: line => console.info(`[daytona-image] ${line}`) });
   const { localContentId } = await assertControllerMatchesImage(artifacts, repositoryRoot);
   timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
@@ -109,6 +119,24 @@ function preflight(plan: WavePlan) {
   const runner = process.env.PAPERCLIP_RUNNER_BINARY
     ?? path.join(repositoryRoot, "packages/paperclip-runner/runner/target/debug/paperclip-runnerd");
   if (!existsSync(runner)) throw new Error(`Runner binary missing at ${runner}. Run: pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries`);
+  // K14: the older checkout must be prepared (installed and built) before the wave, like this one.
+  const upgradeFrom = plan.options.upgradeFrom;
+  // One runner binary for both builds would not test the older runner's saved state.
+  if (upgradeFrom && process.env.PAPERCLIP_RUNNER_BINARY) {
+    throw new Error("--upgrade-from runs each build's own runner; unset PAPERCLIP_RUNNER_BINARY");
+  }
+  if (upgradeFrom) {
+    for (const required of ["tests/runner-e2e/server-entry.ts", "node_modules", "packages/paperclip-runner/runner/target/debug/paperclip-runnerd"]) {
+      if (!existsSync(path.join(upgradeFrom, required))) {
+        throw new Error(`--upgrade-from ${upgradeFrom} is not a prepared checkout (missing ${required}). `
+          + "Create it with `git worktree add <dir> <commit>`, then run `node scripts/agent-preflight.mjs` in it.");
+      }
+    }
+    if (path.resolve(upgradeFrom) === repositoryRoot) throw new Error("--upgrade-from must be a different checkout than the one running the harness");
+    const oldBuild = spawnSync(process.execPath, [path.join(upgradeFrom, "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs")],
+      { cwd: upgradeFrom, stdio: "inherit" });
+    if (oldBuild.status !== 0) throw new Error("Verified provider entrypoint build failed in the --upgrade-from checkout");
+  }
   // Same provider bundle preparation as tests/runner-e2e/verified-provider-bundles.setup.mjs.
   const build = spawnSync(process.execPath, [path.join(repositoryRoot, "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs")],
     { cwd: repositoryRoot, stdio: "inherit" });
@@ -142,7 +170,8 @@ async function main(): Promise<number> {
   // Baseline only after the harness's own build steps (preflight rewrites the runner's dist).
   startFingerprint = worktreeFingerprint(repositoryRoot, guardedOutputs);
 
-  const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
+  const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline,
+    ...(plan.options.upgradeFrom ? { upgradeFrom: plan.options.upgradeFrom } : {}) });
   // Crash-point suite: one booted server, one point at a time. Each point gets
   // its own batch of tasks; the point is armed once the batch launched and the
   // server kills itself at its nth hit (restarted like K1). Invariants are
@@ -160,6 +189,7 @@ async function main(): Promise<number> {
   const violationKey = (violation: { rule: string; kind: string; recordId: string }) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
   if (crashPoint) {
     if (plan.tasks.length !== batchSize * crashPoints.length) throw new Error(`--tasks must be a multiple of the ${crashPoints.length} crash point(s)`);
+    supervisor.crashPointHoldMs = plan.options.crashPointHoldMs ?? 0;
     supervisor.useCrashPointControl({ controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"),
       receiptPath: path.join(waveDir, "crash-point-receipts.jsonl") });
   }
@@ -178,6 +208,7 @@ async function main(): Promise<number> {
   const faultWork: Promise<void>[] = [];
   const lines: LedgerLine[] = [];
   let anyFailure = false;
+  let speedSection: string | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
@@ -205,10 +236,13 @@ async function main(): Promise<number> {
   try {
     await supervisor.start(serverEnvironment);
     const api = new ChaosApi(supervisor.baseUrl);
-    const lab = await seedChaosLab({ api, env: plan.options.env, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
-      adapters: [...new Set(plan.tasks.map(task => task.adapter))],
+    const lab = await seedChaosLab({ api, env: plan.options.env, waitForReadyAgents: true, cancelled: () => interrupted, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
+      daytonaReuseLease: plan.options.daytonaReuseLease,
+      adapters: [...new Set([...plan.tasks.map(task => task.adapter),
+        ...(plan.tasks.some(task => task.workload === "M1") ? plan.options.adapters : [])])],
       concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents, masks: plan.options.masks,
-      fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), waveId: plan.waveId, timeline,
+      fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), workspaceRepo: plan.options.workspaceRepo,
+      workspaceCommit: plan.options.workspaceCommit, waveId: plan.waveId, timeline,
       adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle),
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
@@ -235,7 +269,8 @@ async function main(): Promise<number> {
         for (const candidate of exposed) {
           candidate.noteFault(receipt.faultId, receipt.startedAt);
           candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt);
-          taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+          taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds],
+            ...(candidate.record.serverBuildAtLaunch ? { serverBuildAtLaunch: candidate.record.serverBuildAtLaunch } : {}) };
         }
         void persistFaultLog();
       }, (error: Error & { receipt?: FaultReceipt }) => {
@@ -245,7 +280,8 @@ async function main(): Promise<number> {
           faults.push(receipt);
           for (const candidate of exposed) {
             candidate.noteFault(receipt.faultId, receipt.startedAt);
-            taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+            taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds],
+            ...(candidate.record.serverBuildAtLaunch ? { serverBuildAtLaunch: candidate.record.serverBuildAtLaunch } : {}) };
           }
           void persistFaultLog();
         }
@@ -262,7 +298,8 @@ async function main(): Promise<number> {
       for (const candidate of active.filter(observer => !observer.done)) {
         candidate.noteFault(receipt.faultId, receipt.startedAt);
         candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt);
-        taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+        taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds],
+            ...(candidate.record.serverBuildAtLaunch ? { serverBuildAtLaunch: candidate.record.serverBuildAtLaunch } : {}) };
       }
       checkWorktree(receipt.faultId);
       void persistFaultLog();
@@ -389,7 +426,10 @@ async function main(): Promise<number> {
     // An injected fault that did not complete invalidates the wave, even when
     // bounded recovery brought the server back and the tasks passed.
     if (faultFailures) harnessError ??= new Error(`${faultFailures} injected fault(s) failed; see fault_error in the timeline`);
-    if (interrupted) throw new Error("Harness interrupted before the wave finished");
+    if (interrupted) {
+      harnessError ??= new Error("Harness interrupted before the wave finished");
+      for (const observer of launched) observer.markUnfinished();
+    }
 
     // R6: let finalizers settle, then sweep for anything still pending.
     const quietFor = Date.now() - lastDoneAt;
@@ -412,7 +452,7 @@ async function main(): Promise<number> {
       }
       let artifacts: OracleArtifacts | null = null;
       if (observer.record.issueId) artifacts = await observer.collectArtifacts().catch(() => null);
-      const oracle = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts)
+      const oracle = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts, observer.workloadAgents())
         : { verdict: "fail" as const, checks: [{ name: "artifacts_collected", ok: false, detail: observer.record.launchError ?? "collection failed" }] };
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, oracle);
       let evidence: string | null = null;
@@ -428,6 +468,20 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict });
     }
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
+    const speed = await (async () => {
+      const childTasks: Awaited<ReturnType<TaskObserver["childSpeedTasks"]>> = [];
+      for (const observer of launched) childTasks.push(...await observer.childSpeedTasks());
+      return collectWaveSpeed(api, plan.options.env, [...launched.flatMap(observer => observer.record.issueId
+        ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), ...childTasks], faults);
+    })().catch(error => { timeline.add("wave_speed_failed", { error: String(error) }); anyFailure = true; return null; });
+    if (speed) {
+      speedSection = speedMarkdown(speed);
+      await writeFile(path.join(waveDir, "speed.json"), `${JSON.stringify(speed, null, 2)}\n`, { mode: 0o600 });
+      timeline.add("wave_speed", { breaches: speed.breaches, runBudgetExceeded: speed.runBudgetExceeded, singleRunBreaches: speed.singleRunBreaches,
+        rows: speed.rows.map(row => ({ adapter: row.adapter, metric: row.metric, start: row.start, n: row.measured.n,
+          p50: row.measured.p50, p95: row.measured.p95, breaches: row.breaches })) });
+      if (speed.breaches > 0 || speed.errors.length > 0) anyFailure = true;
+    }
     if (crashPoint) {
       if (currentPoint) { await finishCrashPoint(currentPoint); currentPoint = null; }
       const byTask = new Map(lines.map(line => [line.taskId, line]));
@@ -498,7 +552,7 @@ async function main(): Promise<number> {
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), summary, { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), speedSection ? `${summary}\n${speedSection}` : summary, { mode: 0o600 });
       console.info(`\n${summary}`);
     }
     if (keep || anyFailure || harnessError) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot });

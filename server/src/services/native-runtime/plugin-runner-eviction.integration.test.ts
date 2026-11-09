@@ -296,7 +296,9 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
           expect((await state()).lifecycle).toBe("suspended");
         } else {
           const providerPids: number[] = harness === "codex" ? [Number(await readFile(providerPidFile, "utf8"))]
-            : (await readFile(calls, "utf8")).trim().split(/\r?\n/).flatMap(line => { const entry = JSON.parse(line); return [entry.processStart, entry.childPid].filter(Number.isInteger); });
+            : (await readFile(calls, "utf8")).trim().split(/\r?\n/).flatMap(line => { const entry = JSON.parse(line); return [entry.processStart, entry.childPid].filter(Number.isInteger); })
+              .filter(pid => { try { process.kill(pid, 0); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; } });
+          expect(providerPids.length).toBeGreaterThan(0);
           const nativePid = handles.get(taskA)!.child.pid!;
           for (const pid of providerPids) {
             const [parent, group] = execFileSync("ps", ["-p", String(pid), "-o", "ppid=", "-o", "pgid="], { encoding: "utf8" }).trim().split(/\s+/).map(Number);

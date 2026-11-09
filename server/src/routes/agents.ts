@@ -7,6 +7,7 @@ import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
+import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial, normalizeAgentPermissions } from "../lib/agent-permissions.js";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
@@ -142,7 +143,7 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { agentBudgetPage, assertAuthenticated, assertBoard, assertCompanyAccess, COMPANY_BUDGETS_PAGE, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
@@ -1420,7 +1421,7 @@ export function agentRoutes(
     );
   }
 
-  async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
+  async function assertCanCreateAgentsForCompany(req: Request, companyId: string, options?: { hiring?: true }) {
     assertCompanyAccess(req, companyId);
     const decision = await access.decide({
       actor: req.actor,
@@ -1428,7 +1429,12 @@ export function agentRoutes(
       resource: { type: "company", companyId },
     });
     if (!decision.allowed) {
-      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      // An agent denied hiring otherwise searches other routes for an override.
+      // Say the denial is final and where a person can act instead.
+      const explanation = options?.hiring && req.actor.type === "agent" && decision.reason === "deny_missing_grant"
+        ? `${decision.explanation} This agent cannot hire or create agents, and no other route overrides this denial. A board user can hire the agent directly, or turn on hiring for this agent on its permissions page.`
+        : decision.explanation;
+      throw forbidden(explanation, authorizationDeniedDetails(decision));
     }
     if (req.actor.type !== "agent") return null;
     const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
@@ -2994,11 +3000,13 @@ export function agentRoutes(
     agent: T,
   ): T {
     if (!agent || typeof agent !== "object") return agent;
-    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return agent;
+    // A raw row must not carry the server-only harness verification digest.
+    const { harnessVerifiedDigest: _digest, harnessVerifiedAt: _verifiedAt, ...publicAgent } = agent as Record<string, unknown>;
+    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return publicAgent as T;
     return {
-      ...agent,
+      ...publicAgent,
       adapterConfig: redactAgentAdapterConfig(agent.adapterConfig as Record<string, unknown>),
-    };
+    } as T;
   }
 
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
@@ -4339,6 +4347,9 @@ export function agentRoutes(
     if (!rollbackConfig) {
       throw unprocessable("Invalid revision snapshot");
     }
+    if (typeof rollbackConfig.budgetMonthlyCents === "number" && rollbackConfig.budgetMonthlyCents !== existing.budgetMonthlyCents) {
+      assertBoard(req, agentBudgetPage(existing.id));
+    }
     assertProviderTraceSettingTransition(
       req,
       rollbackConfig.runtimeConfig,
@@ -4470,7 +4481,20 @@ export function agentRoutes(
 
   const handleAgentHire = async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
-    await assertCanCreateAgentsForCompany(req, companyId);
+    await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
+    const company = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    // Budgets are board-only. An agent may propose one in a hire that waits for
+    // board approval; the approving operator then activates it.
+    if (!company.requireBoardApprovalForNewAgents && req.body.budgetMonthlyCents > 0) assertBoard(req, COMPANY_BUDGETS_PAGE);
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const {
       desiredSkills: requestedDesiredSkills,
@@ -4634,16 +4658,6 @@ export function agentRoutes(
       allowedSandboxProviders: allowedSandboxProvidersForAgent(hireInput.adapterType),
     });
 
-    const company = await db
-      .select()
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows) => rows[0] ?? null);
-    if (!company) {
-      res.status(404).json({ error: "Company not found" });
-      return;
-    }
-
     // Idempotency within a run: if this run already created a hire from this
     // exact request, return that hire instead of creating a duplicate. The
     // creating agent cannot pause or delete its own hire (board-only), so a
@@ -4695,6 +4709,7 @@ export function agentRoutes(
         {
           ...(setupAgentId ? { setupAgentId } : {}),
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+          ...(req.actor.type === "board" && req.body.budgetMonthlyCents > 0 ? { initialBudgetPolicyUserId: getActorInfo(req).actorId } : {}),
           runnerResolved: true,
           responsibleUserId: responsibleUserForAiRequest(req),
           aiConnectionInstall: managedHireConnection ? { ...managedHireConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
@@ -4854,7 +4869,8 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertCanCreateAgentsForCompany(req, companyId);
+    await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
+    if (req.body.budgetMonthlyCents > 0) assertBoard(req, COMPANY_BUDGETS_PAGE);
 
     const company = await db
       .select()
@@ -4976,6 +4992,7 @@ export function agentRoutes(
       {
         ...(setupId ? { setupOnly: true } : {}),
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+        ...(req.actor.type === "board" && req.body.budgetMonthlyCents > 0 ? { initialBudgetPolicyUserId: getActorInfo(req).actorId } : {}),
         runnerResolved: true,
         responsibleUserId: responsibleUserForAiRequest(req),
         aiConnectionInstall: managedConnection ? { ...managedConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
@@ -5038,19 +5055,6 @@ export function agentRoutes(
     );
     await builtInAgentService(db).ensureCompanyDefaultAgentGrants(companyId);
 
-    if (agent.budgetMonthlyCents > 0) {
-      await budgets.upsertPolicy(
-        companyId,
-        {
-          scopeType: "agent",
-          scopeId: agent.id,
-          amount: agent.budgetMonthlyCents,
-          windowKind: "calendar_month_utc",
-        },
-        actor.actorType === "user" ? actor.actorId : null,
-      );
-    }
-
     res.status(201).json({ ...redactAgentRowForResponse(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
@@ -5071,11 +5075,28 @@ export function agentRoutes(
         res.status(403).json({ error: "Only CEO can manage permissions" });
         return;
       }
+      // Hiring authority is granted only by an actor that holds it. A CEO the
+      // board denied hiring must not restore it for itself or pass it to
+      // another agent to hire through.
+      const savedCanCreateAgents = normalizeAgentPermissions(existing.permissions, { role: existing.role }).canCreateAgents;
+      if (typeof req.body.canCreateAgents === "boolean" && req.body.canCreateAgents !== savedCanCreateAgents) {
+        await assertCanCreateAgentsForCompany(req, existing.companyId, { hiring: true });
+      }
     } else {
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
-    const agent = await svc.updatePermissions(id, req.body);
+    // Saving a CEO's hiring as off here is the board's restriction, since this
+    // control shows the effective value; record who and when, so it is told
+    // apart from a false saved by other writes. Keep an earlier record.
+    const permissionsPatch = existing.role === "ceo" && req.body.canCreateAgents === false
+      ? { ...req.body, [CEO_HIRING_DENIAL_KEY]: ceoHiringDenial(existing.permissions) ?? {
+          actorType: req.actor.type === "agent" ? "agent" : "user",
+          actorId: (req.actor.type === "agent" ? req.actor.agentId : req.actor.userId) ?? null,
+          at: new Date().toISOString(),
+        } }
+      : req.body;
+    const agent = await svc.updatePermissions(id, permissionsPatch);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5084,6 +5105,11 @@ export function agentRoutes(
     const effectiveCanAssignTasks =
       agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
+    // The toggle is the visible hiring control: turning it off also removes an
+    // explicit agents:create grant that would otherwise still allow hiring.
+    if (req.body.canCreateAgents === false) {
+      await access.setPrincipalPermission(agent.companyId, "agent", agent.id, "agents:create", false, null);
+    }
     await access.setPrincipalPermission(
       agent.companyId,
       "agent",
@@ -5525,6 +5551,11 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
+    // A budget change is the board-only budget control (PATCH /agents/:id/budgets),
+    // so PATCH is never a way around it.
+    if (hasOwn(req.body as object, "budgetMonthlyCents") && req.body.budgetMonthlyCents !== existing.budgetMonthlyCents) {
+      assertBoard(req, agentBudgetPage(existing.id));
+    }
 
     if (hasOwn(req.body as object, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
@@ -5555,8 +5586,16 @@ export function agentRoutes(
     const requestedStatus = patchData.status;
     delete patchData.status;
     if (requestedStatus !== undefined && !["paused", "idle", "terminated"].includes(String(requestedStatus))) throw badRequest("Use an agent lifecycle command to change status");
-    // Termination is board-only and irreversible on every route, not just POST /terminate.
+    // Status changes are lifecycle commands. Apply the authority of the dedicated
+    // routes (POST /terminate, /pause, /resume) so PATCH is never a way around them.
     if (requestedStatus === "terminated") await assertBoardCanTerminateAgent(req, existing);
+    if (requestedStatus === "paused") assertBoard(req);
+    if (requestedStatus === "idle") {
+      await assertCanResumeAgent(req, existing);
+      if (existing.orgChainHealth?.status === "invalid_org_chain") {
+        throw conflict(existing.orgChainHealth.repairGuidance ?? "Repair this agent's reporting chain before resuming it");
+      }
+    }
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     // The apply-existing flag is not an agent column. The server binds the fixed

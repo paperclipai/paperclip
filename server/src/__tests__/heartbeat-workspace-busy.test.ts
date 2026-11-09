@@ -1303,6 +1303,18 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(retryRuns).toBe(0);
   });
 
+  it("still defers behind a silent holder whose controller renews its lease", async () => {
+    const fixture = await seedWorkspaceFixture({
+      holderActivityAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 60_000),
+    });
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 10 * 60_000) })
+      .where(eq(heartbeatRuns.id, fixture.holderRunId));
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId, wakeReason: "issue_assigned" }, "system");
+    const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
+    expect(finishedRun?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).not.toContain(run!.id);
+  });
+
   it("does not defer when the only holder has been silent past the staleness threshold", async () => {
     const fixture = await seedWorkspaceFixture({
       holderActivityAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 60_000),

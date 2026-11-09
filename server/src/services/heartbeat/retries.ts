@@ -1,3 +1,4 @@
+import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
 import { isInterruptedNativePreparation } from "../cancelled-native-startup.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
@@ -431,6 +432,28 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
   };
 }
 
+/**
+ * The interrupted-preparation lane: a preparation that a restart interrupted
+ * spent no provider work and hit no transient fault, so its first retry starts
+ * at once. If it is interrupted again it backs off like a transient failure
+ * (the longest delay from then on), so a preparation that itself keeps taking
+ * the server down is slowed and still capped by the lane's attempt limit.
+ */
+export function computeInterruptedPreparationRetrySchedule(
+  attempt: number,
+  now = new Date(),
+  random: () => number = Math.random,
+) {
+  if (!Number.isInteger(attempt) || attempt <= 0) return null;
+  if (attempt === 1) {
+    return { attempt, baseDelayMs: 0, delayMs: 0, dueAt: new Date(now.getTime()),
+      maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS };
+  }
+  const schedule = computeBoundedTransientHeartbeatRetrySchedule(
+    Math.min(attempt - 1, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS), now, random);
+  return schedule ? { ...schedule, attempt } : null;
+}
+
 export { normalizeAgentNameKey };
 
 function readNonEmptyString(value: unknown): string | null {
@@ -556,12 +579,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             })()
         : nextAttempt <= maxAttempts
           ? interruptedPreparationLane
-            ? (() => {
-              // Later lane attempts keep the longest transient delay.
-              const schedule = computeBoundedTransientHeartbeatRetrySchedule(
-                Math.min(nextAttempt, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS), now, opts?.random);
-              return schedule ? { ...schedule, attempt: nextAttempt } : null;
-            })()
+            ? computeInterruptedPreparationRetrySchedule(nextAttempt, now, opts?.random)
             : computeBoundedTransientHeartbeatRetrySchedule(
               nextAttempt,
               now,
@@ -1520,7 +1538,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           ne(heartbeatRuns.id, input.excludeRunId),
           // Last observed activity: output beats start beats creation. A run
           // that started recently but has not written output yet is live.
-          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${staleCutoff.toISOString()}::timestamptz`,
+          or(sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${staleCutoff.toISOString()}::timestamptz`,
+            runOwnerFenceHeldSql()),
           eq(issues.projectWorkspaceId, input.projectWorkspaceId),
           ne(sql`${issues.id}::text`, input.excludeIssueId),
           ...(input.honorIsolatedWorkspaceModes
@@ -1560,7 +1579,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       (input.now ?? new Date()).getTime() -
         WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
     );
-    const lastActivityBefore = sql<boolean>`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) < ${staleCutoff.toISOString()}::timestamptz`;
+    const lastActivityBefore = sql<boolean>`(coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) < ${staleCutoff.toISOString()}::timestamptz and not ${runOwnerFenceHeldSql()})`;
     return await db
       .select({
         runId: heartbeatRuns.id,

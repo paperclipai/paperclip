@@ -2,10 +2,12 @@ import { and, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { currentControllerBootId } from "./controller-process-identity.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { pendingCleanupMetadataObjectSql } from "./environment-cleanup-state.js";
 import { readEnvironmentLeaseController } from "./environment-lease-controller.js";
 import { allowLegacyShutdownWorkspaceCleanup } from "./legacy-shutdown-workspace-settlement.js";
 import { nativeWorkspaceExportPendingForLease } from "./native-runtime/native-workspace-finalization-state.js";
-import type { OwnerProof } from "./owner-proof.js";
+import { OPERATOR_ATTESTED_PROCESS_SPACE, type OwnerProof } from "./owner-proof.js";
+import { OWNER_GONE_ATTESTATION_KEY } from "./recovery/owner-gone-attestation.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 import { isBuiltinSandboxProvider } from "./sandbox-provider-runtime.js";
 import { prepareSandboxStopAndRetain } from "./sandbox-stop-and-retain.js";
@@ -75,7 +77,11 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
     // Keep the row's updatedAt, so the pending_cleanup sweep accepts it in the
     // same tick instead of waiting out its own retry backoff.
     const flipped = await writeEnvironmentCleanup(tx, write => write.update(environmentLeases)
-      .set({ status: "pending_cleanup", failureReason: ORPHANED_RUN_LEASE_FAILURE_REASON })
+      .set({ status: "pending_cleanup", failureReason: ORPHANED_RUN_LEASE_FAILURE_REASON,
+        // When the first cleanup attempt became due (the row keeps updatedAt).
+        // A scalar or array root reads as an empty object, so the key is top level.
+        metadata: sql`${pendingCleanupMetadataObjectSql()} || ${JSON.stringify({
+          pendingCleanupRecoveredAtMs: context.now.getTime() })}::jsonb` })
       .where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "active"),
         eq(environmentLeases.heartbeatRunId, runId),
         sql`${environmentLeases.metadata} is not distinct from ${lease.metadata === null ? null : JSON.stringify(lease.metadata)}::jsonb`))
@@ -86,11 +92,13 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
 
 /** The proof judged a holder stamp (or its absence, for a legacy row); a lease
  * re-stamped since then belongs to someone else. */
-function holderUnchanged(lease: LeaseRow, record: InProgressRecord): boolean {
+export function holderUnchanged(lease: LeaseRow, record: InProgressRecord): boolean {
   const holder = readEnvironmentLeaseController(lease.metadata);
   if (record.owner.kind === "run") return holder === null;
   if (record.owner.kind !== "process") return false;
   const stamp = record.owner.stamp;
+  // The board attested that the unrecorded holder stopped; still no holder stamped since.
+  if (stamp.processSpace === OPERATOR_ATTESTED_PROCESS_SPACE) return holder === null && Boolean(lease.metadata?.[OWNER_GONE_ATTESTATION_KEY]);
   return holder !== null && holder.bootId === stamp.bootId && holder.pid === stamp.pid
     && holder.hostHash === stamp.processSpace && holder.processStartedAt === (stamp.processStartedAt ?? null);
 }

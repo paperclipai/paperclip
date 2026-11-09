@@ -1404,6 +1404,50 @@ describe("qualified ACPX runtime sidecar", () => {
     expect(attachedRunId).toBe("run-1");
   });
 
+  it("rebinds a prepared sidecar to another run only before its first turn", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acpx-run-rebind-"));
+    const loader = join(root, "provider-loader.mjs"), host = join(root, "rebind-host.mjs");
+    const baseHost = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
+    writeFileSync(host, `import { AcpxRuntimeHost as BaseHost } from ${JSON.stringify(baseHost)};
+      export class AcpxRuntimeHost extends BaseHost {
+        static async open(options) { const host = await BaseHost.open(options); Object.setPrototypeOf(host, this.prototype); return host; }
+        startTurn({ requestId }) { return { requestId, promptStarted: Promise.resolve(),
+          result: Promise.resolve({ status: "completed" }), events: (async function* () {})() }; }
+      }`);
+    writeFileSync(loader, `import { registerHooks } from "node:module";
+      import { pathToFileURL } from "node:url";
+      registerHooks({ resolve(specifier, context, next) {
+        if (context.parentURL?.includes("/acpx-runtime-sidecar.") && specifier.endsWith("/runtime-host.js"))
+          return { url: pathToFileURL(${JSON.stringify(host)}).href, shortCircuit: true };
+        return next(specifier, context);
+      } });`);
+    const sidecar = new SidecarProcess({loader, environment:{PAPERCLIP_TEST_OUTPUT_ROOT:root}});
+    children.add(sidecar);
+    const send = (id:number, command:string, params:Record<string,unknown>) => sidecar.write({protocolVersion:ACPX_SIDECAR_PROTOCOL_VERSION,id,command,params});
+    try {
+      sidecar.write(initializeRequest(1,"codex"));
+      expect(await sidecar.next(frame=>frame.id === 1)).toMatchObject({ok:true});
+      send(2,"session.open",{agent:"codex",model:"gpt-5.6-sol",runtimeDirectory:root,workingDirectory:root,
+        normalizedSessionId:"rebind-session",permissionMode:"deny-all",systemInstructions:"Complete the local fixture turn.",tools:[]});
+      expect(await sidecar.next(frame=>frame.id === 2)).toMatchObject({ok:true});
+      send(3,"run.attach",{runId:"parked-run",catalogRevision:1,tools:[]});
+      expect(await sidecar.next(frame=>frame.id === 3)).toMatchObject({ok:true,result:{runId:"parked-run"}});
+      send(4,"run.attach",{runId:"next-run",catalogRevision:1,tools:[]});
+      expect(await sidecar.next(frame=>frame.id === 4)).toMatchObject({ok:true,result:{runId:"next-run"}});
+      send(5,"session.snapshot",{});
+      expect(await sidecar.next(frame=>frame.id === 5)).toMatchObject({ok:true,result:{runId:"next-run",turnId:null}});
+      send(6,"turn.start",{turnId:"next-turn",message:"Complete the fixture turn."});
+      expect(await sidecar.next(frame=>frame.id === 6)).toMatchObject({ok:true});
+      expect(await sidecar.next(frame=>frame.eventType === "runtime.turn_terminal"))
+        .toMatchObject({runId:"next-run",turnId:"next-turn",payload:{status:"completed"}});
+      send(7,"run.attach",{runId:"later-run",catalogRevision:1,tools:[]});
+      expect(await sidecar.next(frame=>frame.id === 7)).toMatchObject({ok:false,
+        error:{message:"cannot attach another run after this sidecar started a turn"}});
+      send(8,"session.snapshot",{});
+      expect(await sidecar.next(frame=>frame.id === 8)).toMatchObject({ok:true,result:{runId:"next-run",turnId:null}});
+    } finally {await sidecar.close();children.delete(sidecar);rmSync(root,{recursive:true,force:true});}
+  }, 15_000);
+
   it("recovers after malformed input and reports its qualified Codex profile", async () => {
     const sidecar = startSidecar();
     sidecar.write({

@@ -176,6 +176,7 @@ let openParams: AcpxSidecarOpenParams | null = null;
 let claudeCompactionCount = 0;
 let runId: string | null = null;
 let turnId: string | null = null;
+let turnStartedInProcess = false;
 /**
  * A restored session runs in a new provider process whose MCP request ids
  * restart. The controller keys semantic calls by run and call id, so prefix
@@ -421,6 +422,7 @@ async function dispatch(
   if (request.command === "run.attach") {
     requireHost();
     if (turnId) throw new Error("cannot attach a run during an active turn");
+    if (turnStartedInProcess) throw new Error("cannot attach another run after this sidecar started a turn");
     const attachedTools = parseTools(request.params.tools);
     if (
       canonicalJson(attachedTools) !== canonicalJson(openParams?.tools ?? [])
@@ -443,6 +445,7 @@ async function dispatch(
     const currentTurnId = boundedIdentity(request.params.turnId, "turnId");
     const activeAgent = openParams!.agent;
     turnId = currentTurnId;
+    turnStartedInProcess = true;
     turnControls.begin(currentTurnId);
     let runtimeTurn: AcpxRuntimeTurn;
     const extensions = bindAcpxExtensionTurn({

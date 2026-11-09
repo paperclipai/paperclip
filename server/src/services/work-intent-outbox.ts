@@ -1,8 +1,11 @@
-import { and, eq, sql } from "drizzle-orm";
-import { agentWakeupRequests, type Db } from "@paperclipai/db";
-import { notifyDeferredExecutionEligibility, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { agentWakeupRequests, issueComments, issues, type Db } from "@paperclipai/db";
+import { notifyDeferredExecutionEligibility, notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
+import { withQueuedCommentIdsInWakePayload } from "./issue-queued-comment-queue.js";
+import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
 /**
  * Work-intent outbox (durable ownership plan, section E; invariant 4).
@@ -37,6 +40,8 @@ export const TEMPORARY_REFUSAL_TRIGGERS: Readonly<Record<string, WorkIntentHoldT
   "agent.not_invokable": "pause_lifted",
   "issue_tree_hold_active": "tree_hold_released",
   "heartbeat.scheduling_suppressed": "scheduling_resumed",
+  /** A user message whose wake was lost (the reconciler saved it). */
+  wake_lost: "reconciler_backstop",
 };
 
 export function temporaryRefusalTrigger(reason: string): WorkIntentHoldTrigger | null {
@@ -77,4 +82,86 @@ export async function promoteDeferredWorkIntents(tx: object, input: {
     sql`${agentWakeupRequests.updatedAt} > now() - ${DEFERRED_RETRY_BACKOFF}`,
     input.issueId ? sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}` : undefined,
   ));
+}
+
+const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+
+/** SQL: the latest recorded `done` transition of the task was not made by a
+ * person. A task a person closed (or with no recorded close) is never
+ * reopened for an earlier message. */
+export function taskClosedByAgentSql(companyId: unknown, issueId: unknown) {
+  return sql`coalesce((select closed.actor_type from activity_log closed
+    where closed.company_id = ${companyId} and closed.entity_type = 'issue' and closed.entity_id = ${issueId}::text
+      and closed.action = 'issue.updated'
+      and (closed.details->>'toStatus' = 'done' or closed.details->>'status' = 'done')
+    order by closed.created_at desc limit 1), 'user') <> 'user'`;
+}
+
+/**
+ * Record the missing outbox entry for user messages whose wake was lost or
+ * ended without delivering them: one deferred receipt of the user that
+ * carries the undelivered comments. Only the task's assigned agent, and only
+ * live user comments that no completed run received, are saved. Statuses the
+ * caller allows (for example `done`, which the release drain reopens for a
+ * user's message) gate it. Normal admission and the release drain deliver
+ * the receipt once. Returns the receipt id, or null when nothing is owed.
+ */
+export async function saveUndeliveredUserComments(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; commentIds: string[];
+  allowedStatuses: readonly string[]; requestedByActorId?: string | null;
+  source?: string | null; triggerDetail?: string | null;
+  /** Names why the receipt waits and what promotes it. */
+  executionWait?: Record<string, unknown>;
+  reopenAgentClosedDone?: boolean;
+}): Promise<string | null> {
+  if (input.commentIds.length === 0) return null;
+  let publication: ActivityPublication | undefined;
+  const savedId = await db.transaction(async tx => {
+    const [issue] = await tx.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId,
+      conversationAgentId: issues.conversationAgentId }).from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
+    // A reassigned or cancelled task ends the intent; a conversation keeps
+    // its own inbound authorization path.
+    if (!issue || issue.assigneeAgentId !== input.agentId || issue.conversationAgentId ||
+        !input.allowedStatuses.includes(issue.status)) return null;
+    if (issue.status === "done") {
+      const [closed] = await tx.execute<{ byAgent: boolean }>(sql`select ${taskClosedByAgentSql(input.companyId, input.issueId)} as "byAgent"`);
+      if (closed?.byAgent !== true) return null;
+    }
+    const live = await tx.select({ id: issueComments.id, authorUserId: issueComments.authorUserId }).from(issueComments).where(and(
+      eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
+      inArray(issueComments.id, input.commentIds), isNotNull(issueComments.authorUserId), isNull(issueComments.deletedAt),
+      // A direct human comment: no agent author and no creating run.
+      isNull(issueComments.authorAgentId), isNull(issueComments.createdByRunId)));
+    const delivered = await deliveredQueuedCommentIds(tx as unknown as Db, { companyId: input.companyId,
+      issueId: input.issueId, agentId: input.agentId, commentIds: live.map(row => row.id) });
+    const remaining = input.commentIds.filter(id => live.some(row => row.id === id) && !delivered.has(id));
+    if (remaining.length === 0) return null;
+    const latest = remaining.at(-1)!;
+    await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
+    await notifyDeferredWakesForIssue(tx, { companyId: input.companyId, issueId: input.issueId });
+    const [saved] = await tx.insert(agentWakeupRequests).values({
+      companyId: input.companyId, agentId: input.agentId, source: input.source ?? "automation",
+      triggerDetail: input.triggerDetail ?? "system", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: input.requestedByActorId ?? live.find(row => row.id === latest)?.authorUserId ?? null,
+      payload: withQueuedCommentIdsInWakePayload({ issueId: input.issueId, mutation: "comment", commentId: latest,
+        ...(input.executionWait ? { executionWait: input.executionWait } : {}),
+        [DEFERRED_WAKE_CONTEXT_KEY]: { issueId: input.issueId, taskId: input.issueId, wakeReason: "issue_commented",
+          source: "issue.comment", wakeCommentIds: remaining, wakeCommentId: latest } }, remaining),
+    }).returning({ id: agentWakeupRequests.id });
+    if (saved && issue.status === "done" && input.reopenAgentClosedDone) {
+      const { issueService } = await import("./issues.js");
+      const updated = await issueService(tx as unknown as Db).updateForCompany(input.issueId, input.companyId,
+        { status: "todo", executionState: null }, tx);
+      if (!updated) throw new Error("undelivered_comment_task_changed");
+      publication = (await persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system",
+        actorId: "ownership-reconciler", agentId: input.agentId, action: "issue.updated", entityType: "issue",
+        entityId: input.issueId,
+        details: { status: "todo", reopened: true, reopenedFrom: "done", source: "undelivered_comment_backstop" } })).publication;
+    }
+    return saved?.id ?? null;
+  });
+  if (publication) publishActivity(publication);
+  return savedId;
 }

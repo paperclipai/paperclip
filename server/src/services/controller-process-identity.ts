@@ -2,13 +2,42 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, readlinkSync } from "node:fs";
 import { hostname, uptime } from "node:os";
 import { readProcessStartedAt } from "./hot-restart.js";
+import { currentWorkspaceWorker, type WorkspaceWorker } from "./native-runtime/native-workspace-platform-proof.js";
 
 /**
  * Identity of the server process that started a provider side effect, saved
  * with its durable record. After a restart, recovery uses it to prove that the
  * starter has exited, so the side effect cannot still be in flight there.
  */
-export type ControllerProcess = { bootId: string; pid: number; hostHash: string; processStartedAt: string | null };
+export type ControllerDeployment = { worker: WorkspaceWorker; exclusiveVolume: boolean; volumeId: string | null };
+export type ControllerProcess = {
+  bootId: string; pid: number; hostHash: string; processStartedAt: string | null; deployment?: ControllerDeployment;
+};
+
+export function currentControllerDeployment(env: NodeJS.ProcessEnv = process.env): ControllerDeployment | null {
+  const worker = currentWorkspaceWorker(env);
+  if (!worker) return null;
+  const volumeId = env.RAILWAY_VOLUME_ID?.trim() || null;
+  return { worker, exclusiveVolume: Boolean(volumeId && env.RAILWAY_VOLUME_MOUNT_PATH?.trim()), volumeId };
+}
+
+function deploymentField(): { deployment?: ControllerDeployment } {
+  const deployment = currentControllerDeployment();
+  return deployment ? { deployment } : {};
+}
+
+function readDeployment(value: unknown): ControllerDeployment | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const worker = record.worker as Record<string, unknown> | null | undefined;
+  if (!worker || typeof worker !== "object" || worker.provider !== "railway") return null;
+  const ids = [worker.projectId, worker.environmentId, worker.serviceId, worker.deploymentId];
+  if (ids.some(id => typeof id !== "string" || id.length === 0)) return null;
+  return { worker: { provider: "railway", projectId: ids[0] as string, environmentId: ids[1] as string,
+    serviceId: ids[2] as string, deploymentId: ids[3] as string },
+  exclusiveVolume: record.exclusiveVolume === true,
+  volumeId: typeof record.volumeId === "string" ? record.volumeId : null };
+}
 
 /**
  * The one boot id of this server process. Native coordinator claims
@@ -90,11 +119,24 @@ export function currentControllerBootId(): string {
   return bootId;
 }
 
+const stampListeners = new Set<() => void>();
+/** Called (synchronously, without I/O) whenever this process stamps ownership of a record. */
+export function onControllerStamp(listener: () => void): () => void {
+  stampListeners.add(listener);
+  return () => { stampListeners.delete(listener); };
+}
+function notifyStamp() {
+  for (const listener of stampListeners) {
+    try { listener(); } catch { /* a listener never blocks a stamp */ }
+  }
+}
+
 export async function currentControllerProcess(): Promise<ControllerProcess> {
   const startedAt = await currentProcessStartedAtMs();
   const iso = startedAt === null ? null : new Date(startedAt).toISOString();
   resolvedProcessStartedAt = iso;
-  return { bootId, pid: process.pid, hostHash, processStartedAt: iso };
+  notifyStamp();
+  return { bootId, pid: process.pid, hostHash, processStartedAt: iso, ...deploymentField() };
 }
 
 /**
@@ -104,7 +146,8 @@ export async function currentControllerProcess(): Promise<ControllerProcess> {
  * a live PID then stays ambiguous, which fails closed.
  */
 export function currentControllerProcessStamp(): ControllerProcess {
-  return { bootId, pid: process.pid, hostHash, processStartedAt: resolvedProcessStartedAt };
+  notifyStamp();
+  return { bootId, pid: process.pid, hostHash, processStartedAt: resolvedProcessStartedAt, ...deploymentField() };
 }
 
 export function readControllerProcess(value: unknown): ControllerProcess | null {
@@ -112,8 +155,10 @@ export function readControllerProcess(value: unknown): ControllerProcess | null 
   const record = value as Record<string, unknown>;
   if (typeof record.bootId !== "string" || typeof record.hostHash !== "string" ||
       typeof record.pid !== "number" || !Number.isInteger(record.pid) || record.pid <= 0) return null;
+  const deployment = readDeployment(record.deployment);
   return { bootId: record.bootId, pid: record.pid, hostHash: record.hostHash,
-    processStartedAt: typeof record.processStartedAt === "string" ? record.processStartedAt : null };
+    processStartedAt: typeof record.processStartedAt === "string" ? record.processStartedAt : null,
+    ...(deployment ? { deployment } : {}) };
 }
 
 /**

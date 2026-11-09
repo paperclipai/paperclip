@@ -9,6 +9,7 @@ import { obsoleteExecutionConversationHold, unresolvedExecutionDispositions } fr
 import { hasPendingNativeReplacements, nativeReplacementPending } from "./native-runtime/native-safe-replacement.js";
 import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-failed-run-owner-release.js";
 import { hasPendingPauseResume } from "./issue-tree-resume.js";
+import { hasPendingBudgetResume } from "./budget-resume-continuation.js";
 
 export function registerExecutionControlWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -103,7 +104,7 @@ export function executionControlSchedule(db: Db) {
         eq(issueRecoveryActions.status, "resolved"),
         sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
       )).limit(1);
-      return rows.length || await hasPendingPauseResume(db) ? retry() : null;
+      return rows.length || await hasPendingPauseResume(db) || await hasPendingBudgetResume(db) ? retry() : null;
     },
     async status() {
       const rows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)

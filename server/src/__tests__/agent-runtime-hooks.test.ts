@@ -1,12 +1,12 @@
 import * as databaseModule from "@paperclipai/db";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, connect, type Socket } from "node:net";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog, agents, companies, applyPendingMigrations, closeFileStorageDb, createDb, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, applyPendingMigrations, closeFileStorageDb, createDb, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, secretAccessEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import * as instructionModule from "../services/agent-instructions.js";
@@ -18,6 +18,7 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 import { agentFileStore } from "../services/agent-file-store.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
+import { secretService } from "../services/secrets.js";
 
 const externalUrl = process.env.PAPERCLIP_AGENT_RUNTIME_HOOKS_TEST_DATABASE_URL;
 const expectedDatabase = process.env.PAPERCLIP_AGENT_RUNTIME_HOOKS_EXPECTED_DATABASE;
@@ -219,6 +220,82 @@ describeDatabase("agent runtime synchronization hooks", () => {
     await db.delete(pluginCompanySettings).where(eq(pluginCompanySettings.pluginId, pluginId));
     await db.update(agents).set({ lifecycleRequiredPluginIds: [] }).where(eq(agents.id, agentId));
     await expect(pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("returns the same identity, revision, secrets and failures as the full runtime read", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
+    const scope = { companyId, agentId, pluginId };
+    const outcome = (read: Promise<unknown>) => read.then(value => value, (error: { status?: number }) => ({ status: error.status }));
+    const same = async (company = companyId, agent = agentId, plugin = pluginId) => {
+      const state = await outcome(pluginAgentRuntimeState(db, plugin, company, agent)) as Awaited<ReturnType<typeof pluginAgentRuntimeState>> | { status: number };
+      const identity = await outcome(pluginAgentRuntimeIdentity(db, plugin, company, agent));
+      expect(identity).toEqual(state && "revision" in state ? { revision: state.revision, instanceSecrets: state.instanceSecrets, agent: {
+        id: state.agent.id, companyId: state.agent.companyId, status: state.agent.status, lifecycleState: state.agent.lifecycleState, lifecycleVersion: state.agent.lifecycleVersion } } : state);
+      return identity as Awaited<ReturnType<typeof pluginAgentRuntimeIdentity>>;
+    };
+    await secretService(db).agentInstance.set(scope, "launcher", "first launcher");
+    const first = await same();
+    expect(first).toEqual({ revision: String((await events()).at(-1)!.id), instanceSecrets: { launcher: "first launcher" },
+      agent: { id: agentId, companyId, status: "idle", lifecycleState: "ready", lifecycleVersion: 0 } });
+    await db.insert(resourceLifecycleEvents).values([{ companyId, resourceType: "agent", resourceId: agentId, action: "pause" },
+      { companyId, resourceType: "agent_runtime", resourceId: randomUUID(), action: "update" }]);
+    expect((await same())!.revision).toBe(first!.revision);
+    const [latest] = await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "agent_runtime", resourceId: agentId, action: "update" }).returning();
+    expect((await same())!.revision).toBe(String(latest.id));
+    await db.update(agents).set({ lifecycleState: "preparing", lifecycleVersion: 3 }).where(eq(agents.id, agentId));
+    expect((await same())!.agent).toMatchObject({ lifecycleState: "preparing", lifecycleVersion: 3 });
+    await secretService(db).agentInstance.set(scope, "launcher", "second launcher");
+    expect((await same())!.instanceSecrets).toEqual({ launcher: "second launcher" });
+    await secretService(db).agentInstance.set(scope, "launcher", null);
+    expect((await same())!.instanceSecrets).toEqual({});
+    await secretService(db).agentInstance.set(scope, "launcher", "third launcher");
+    const accessEvents = async () => (await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.companyId, companyId))).length;
+    const audited = await accessEvents();
+    expect(await same(randomUUID())).toBeNull();
+    expect(await same(companyId, randomUUID())).toBeNull();
+    expect(await same(companyId, agentId, randomUUID())).toEqual({ status: 403 });
+    const manifest = { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe", "agents.lifecycle.manage"] };
+    const denials: Array<[() => Promise<unknown>, () => Promise<unknown>]> = [
+      [() => db.update(plugins).set({ status: "error" }).where(eq(plugins.id, pluginId)), () => db.update(plugins).set({ status: "ready" }).where(eq(plugins.id, pluginId))],
+      [() => db.update(plugins).set({ manifestJson: { ...manifest, capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId)),
+        () => db.update(plugins).set({ manifestJson: manifest as never }).where(eq(plugins.id, pluginId))],
+      [() => db.update(plugins).set({ manifestJson: { ...manifest, resourceLifecycle: [] } as never }).where(eq(plugins.id, pluginId)),
+        () => db.update(plugins).set({ manifestJson: manifest as never }).where(eq(plugins.id, pluginId))],
+      [() => db.insert(pluginCompanySettings).values({ companyId, pluginId, enabled: false }), () => db.delete(pluginCompanySettings).where(eq(pluginCompanySettings.pluginId, pluginId))],
+      [() => db.update(agents).set({ lifecycleRequiredPluginIds: [randomUUID()] }).where(eq(agents.id, agentId)),
+        () => db.update(agents).set({ lifecycleRequiredPluginIds: [pluginId] }).where(eq(agents.id, agentId))],
+      [() => db.update(agents).set({ lifecycleRequiredPluginIds: null }).where(eq(agents.id, agentId)),
+        () => db.update(agents).set({ lifecycleRequiredPluginIds: [pluginId] }).where(eq(agents.id, agentId))],
+    ];
+    for (const [deny, restore] of denials) {
+      await deny();
+      expect(await same()).toEqual({ status: 403 });
+      await restore();
+    }
+    expect(await accessEvents()).toBe(audited);
+    await db.insert(pluginCompanySettings).values({ companyId, pluginId, enabled: true });
+    expect((await same())!.instanceSecrets).toEqual({ launcher: "third launcher" });
+  });
+
+  it("reads runtime identity from a snapshot without waiting for an agent row lock", async () => {
+    let locked!: () => void;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { locked = resolve; });
+    const writer = db.transaction(async tx => {
+      await tx.select().from(agents).where(eq(agents.id, agentId)).for("update");
+      await tx.update(agents).set({ lifecycleState: "pausing", lifecycleVersion: 5 }).where(eq(agents.id, agentId));
+      await new Promise<void>(resolve => { release = resolve; locked(); });
+    });
+    await held;
+    try {
+      const read = pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId);
+      const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error("identity read waited for the agent lock")), 5_000));
+      expect((await Promise.race([read, timeout]))!.agent).toMatchObject({ lifecycleState: "ready", lifecycleVersion: 0 });
+    } finally {
+      release();
+      await writer;
+    }
+    expect((await pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId))!.agent).toMatchObject({ lifecycleState: "pausing", lifecycleVersion: 5 });
   });
 
   it("uses the company reporting graph for runtime health data", async () => {

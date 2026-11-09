@@ -21,6 +21,7 @@ import {
 } from "../../../services/issue-queued-comment-queue.js";
 import { logActivity as persistActivityLogRow, type ActivityPublication } from "../../../services/activity-log.js";
 import { decideQueuedCommentWakeLookup } from "../domain/policy.js";
+import { firstTurnClaimedCommentIds } from "../../../services/native-runtime/first-turn-queued-input.js";
 import { parseObject, readNonEmptyString } from "../domain/values.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
 import type {
@@ -56,6 +57,10 @@ export type QueuedCommentQueuePostgresAdapterDeps = {
 };
 
 function buildTransaction(tx: Db, companyId: string, issueId: string, deps: QueuedCommentQueuePostgresAdapterDeps, wakeAgentId: string): QueuedCommentQueueTransaction {
+  // Messages the active run took into its first turn leave the visible queue
+  // but stay on the wake until that turn is accepted, so a run that fails
+  // before then still leaves them queued. Queue edits keep them.
+  let heldByFirstTurn: string[] = [];
   return {
     async updateCommentBody({ issueId, commentId, body, updatedAt }) {
       await notifyStatusCardIssueChange(tx, companyId);
@@ -74,9 +79,10 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
     },
 
     async updateWakeQueuedCommentIds({ wakeId, payload, ids, updatedAt }) {
+      const kept = [...heldByFirstTurn.filter((id) => !ids.includes(id)), ...ids];
       const row = await tx
         .update(agentWakeupRequests)
-        .set({ payload: withQueuedCommentIdsInWakePayload(payload, ids), updatedAt })
+        .set({ payload: withQueuedCommentIdsInWakePayload(payload, kept), updatedAt })
         .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)))
         .returning()
         .then((rows) => rows[0]);
@@ -105,6 +111,16 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
     },
 
     async cancelWake({ wakeId, reason, now }) {
+      if (heldByFirstTurn.length > 0) {
+        const [held] = await tx.select({ payload: agentWakeupRequests.payload }).from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
+        if (held) {
+          await tx.update(agentWakeupRequests)
+            .set({ payload: withQueuedCommentIdsInWakePayload(held.payload, heldByFirstTurn), updatedAt: now })
+            .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
+          return;
+        }
+      }
       await notifyStrandedAgentStatus(tx, { companyId, agentId: wakeAgentId });
       await notifyChatInboundWakeNotices(tx, { companyId, issueId });
       await tx
@@ -139,7 +155,10 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
     },
 
     async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
-      const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
+      const wakeCommentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
+      const claimed = state === "deferred" ? firstTurnClaimedCommentIds(activeRun) : new Set<string>();
+      if (wake) heldByFirstTurn = wakeCommentIds.filter((id) => claimed.has(id));
+      const commentIds = wakeCommentIds.filter((id) => !claimed.has(id));
       const rows =
         commentIds.length > 0
           ? await tx

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, authUsers, budgetPolicies, companies, companyMemberships, costEvents, createDb, heartbeatRuns,
+import { activityLog, agents, agentWakeupRequests, authUsers, budgetPolicies, companies, companyMemberships, costEvents, createDb, heartbeatRuns,
   issueComments, issues } from "@paperclipai/db";
 import { accountRunCost } from "../services/run-cost-accounting.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
@@ -12,6 +12,8 @@ import { requestTaskRetry } from "../services/task-retry.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
+import { applyOwnershipReportBackstops } from "../services/native-runtime/native-finalization-reconciler.js";
 import { promoteDeferredWorkIntents, TEMPORARY_REFUSAL_TRIGGERS, WORK_INTENT_TERMINAL_OUTCOMES } from "../services/work-intent-outbox.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
@@ -115,6 +117,12 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.pendingRunId)))[0].costAccountingPending).toBe(false);
     return woken;
   }
+
+  /** The agent's run closed the task, as a native status decision records it. */
+  const closeByAgent = (f: { companyId: string; issueId: string; agentId: string }, actorType = "agent") =>
+    db.insert(activityLog).values({ companyId: f.companyId, actorType, actorId: actorType === "agent" ? f.agentId : "person",
+      action: "issue.updated", entityType: "issue", entityId: f.issueId,
+      details: { source: "native_status_decision", fromStatus: "in_progress", toStatus: "done" } });
 
   async function settle(f: { companyId: string }) {
     await heartbeat.resumeQueuedRuns();
@@ -394,10 +402,136 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(started).toHaveLength(1);
   }, 180_000);
 
+  // Chaos s9401/t69: a restart landed between the comment commit (which
+  // reopened the finished task to todo) and its wake write. Reconciler rule:
+  // an undelivered user comment newer than the task's last run gets a wake.
+  it("delivers once a user comment whose wake a restart lost after a succeeded run", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    // The run that finished the task was native, as in the wave, and the
+    // comment came after it; the comment's wake was never written.
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", startedAt: new Date(Date.now() - 120_000),
+      createdAt: new Date(Date.now() - 120_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(issueComments).set({ createdAt: new Date(Date.now() - 60_000), updatedAt: new Date(Date.now() - 60_000) })
+      .where(eq(issueComments.id, f.commentId));
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId))
+      .toEqual([f.commentId]);
+    await applyOwnershipReportBackstops(db, report);
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(eq(agentWakeupRequests.companyId, f.companyId));
+    await settle(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+    // Delivered: the rule no longer fires, and nothing delivers it again.
+    const again = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(again.violations.filter(row => row.reason === "user_comment_without_wake")).toEqual([]);
+    await applyOwnershipReportBackstops(db, again);
+    await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+  }, 180_000);
+
+  it("delivers once a comment whose wake a restart lost mid-run on a task the run then closed", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", startedAt: new Date(Date.now() - 180_000),
+      createdAt: new Date(Date.now() - 180_000), finishedAt: new Date(Date.now() - 30_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(issueComments).set({ createdAt: new Date(Date.now() - 120_000), updatedAt: new Date(Date.now() - 120_000) })
+      .where(eq(issueComments.id, f.commentId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await closeByAgent(f);
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId))
+      .toEqual([f.commentId]);
+    await applyOwnershipReportBackstops(db, report);
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(eq(agentWakeupRequests.companyId, f.companyId));
+    await settle(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+    const again = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(again.violations.filter(row => row.reason === "user_comment_without_wake")).toEqual([]);
+    await applyOwnershipReportBackstops(db, again);
+    await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+  }, 180_000);
+
+  // Chaos s9401/t72: a message queued its own run while the first run was
+  // finishing. The first run completed the task, so the queued run was
+  // cancelled as a stale continuation and the unread message was dropped.
+  it("reopens a finished task for a message whose queued run turned stale, and delivers it once", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    // The message's own queued run; the first run then completed the task.
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_commented", status: "queued", requestedByActorType: "user", requestedByActorId: f.userId,
+      payload: { issueId: f.issueId, commentId: f.commentId, mutation: "comment" } }).returning();
+    const [stale] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "queued", wakeupRequestId: wake.id,
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: f.commentId, wakeCommentId: f.commentId,
+        wakeCommentIds: [f.commentId], wakeReason: "issue_commented", source: "issue.comment" } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: stale.id }).where(eq(agentWakeupRequests.id, wake.id));
+    // The first run, which started before the message, completed the task after it.
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 1_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await closeByAgent(f);
+    await settle(f); await settle(f);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stale.id)))[0]).toMatchObject({
+      status: "cancelled", errorCode: "continuation_task_ownership_changed" });
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    await settle(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+    await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+  }, 180_000);
+
+  // The durable half: the stale check ran before the closing run settled (or
+  // its save failed), so only the cancelled stale wake carries the message.
+  // Once the closing run settles, the reconciler saves it and the drain
+  // reopens the task and delivers it once.
+  it("recovers a message a stale continuation dropped once the closing run settles", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date(),
+      error: "continuation_task_ownership_changed" }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 1_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    // A person closed it: that decision stands.
+    await closeByAgent(f, "user");
+    const byPerson = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(byPerson.violations.filter(row => row.reason === "user_comment_dropped_by_stale_continuation")).toEqual([]);
+    // The agent's run closed it later without reading the message.
+    await closeByAgent(f);
+    // Another message's own turn succeeded later; it did not receive this one.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "succeeded", startedAt: new Date(Date.now() + 2_000), finishedAt: new Date(Date.now() + 3_000),
+      contextSnapshot: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentIds: [randomUUID()],
+        executionContinuation: { messages: [{ id: f.commentId }] } } });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(row => row.reason === "user_comment_dropped_by_stale_continuation")
+      .map(row => row.recordId)).toEqual([f.commentId]);
+    expect(await applyOwnershipReportBackstops(db, report)).toEqual({ retryNeeded: false });
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    await settle(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+    const again = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(again.violations.filter(row => row.recordId === f.commentId)).toEqual([]);
+  }, 180_000);
+
+  it("keeps a reconciler pass due when the backstop cannot save a message", async () => {
+    const report = { violations: [{ rule: "I4_exactly_once_intent", kind: "issue_comment", recordId: randomUUID(),
+      companyId: "not-a-company-id", runId: null, issueId: "not-an-issue-id", reason: "user_comment_without_wake" }] };
+    expect(await applyOwnershipReportBackstops(db, report as never)).toEqual({ retryNeeded: true });
+  });
+
   it("keeps the terminal outcomes closed and every temporary refusal mapped to a release trigger", () => {
     expect([...WORK_INTENT_TERMINAL_OUTCOMES]).toEqual(["delivered", "consumed", "task_cancelled", "hard_stop"]);
     for (const refusal of ["budget.blocked", "company.inactive", "agent.not_invokable", "issue_tree_hold_active",
-      "heartbeat.scheduling_suppressed"]) expect(TEMPORARY_REFUSAL_TRIGGERS[refusal]).toBeTruthy();
+      "heartbeat.scheduling_suppressed", "wake_lost"]) expect(TEMPORARY_REFUSAL_TRIGGERS[refusal]).toBeTruthy();
   });
 
   it.each([

@@ -105,6 +105,7 @@ import {
 import { resolvePackagedRunnerBinary } from "./runner-binary.js";
 import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
 import { crashPoint } from "../crash-point.js";
+import { isTerminalOperation, settleEarlierToolCalls, staleTerminalCallResult } from "./terminal-call-freshness.js";
 
 // URL directory conversion preserves a trailing separator while path-derived
 // build artifacts do not. Normalize once so a source build cannot be
@@ -609,22 +610,44 @@ function retargetRunAttachPayload(
 
 /**
  * The provider turn accepted by this run's latest durable `turn.start`
- * command. Only a completed command whose authenticated result accepted the
- * same controller-assigned turn id counts, and it must follow the latest run
- * attachment so a prior run's turn on a reused Runner is never claimed.
+ * command, which must follow the latest run attachment so a prior run's turn
+ * on a reused Runner is never claimed. Either:
+ * - the command completed and its authenticated result accepted a provider
+ *   turn. ACPX echoes the requested id, so it must match; Codex and OpenCode
+ *   assign their own, so the turn must instead be the runner's live active
+ *   turn (`runnerActiveTurnId`): a turn the restored runner reports lost is
+ *   left to the restart continuation; or
+ * - the runner crashed after journaling the command, so it settled as
+ *   `execution_indeterminate`, and its restored session reconciled that
+ *   ambiguous start to the live active turn `runnerActiveTurnId`.
+ * `runnerActiveTurnId` comes from the runner's authenticated `session.snapshot`.
  */
-export function controllerAcceptedTurnStartId(commands: readonly unknown[]): string | null {
+export function controllerAcceptedTurnStartId(commands: readonly unknown[], options: {
+  requireRequestedIdentity?: boolean;
+  runnerActiveTurnId?: string | null;
+} = {}): string | null {
   const ordered = commands.map(record).filter(command => typeof command.controllerSeq === "number")
     .sort((left, right) => (left.controllerSeq as number) - (right.controllerSeq as number));
   const latestStart = ordered.findLast(command => command.type === "turn.start");
-  if (!latestStart || latestStart.status !== "completed") return null;
+  if (!latestStart) return null;
   const latestAttachment = ordered.findLast(command => command.type === "run.attach" || command.type === "run.prepare");
   if (latestAttachment && (latestAttachment.controllerSeq as number) > (latestStart.controllerSeq as number)) return null;
+  const requestedTurnId = record(latestStart.payload).turnId;
+  const requireRequested = options.requireRequestedIdentity ?? true;
+  const active = typeof options.runnerActiveTurnId === "string" && options.runnerActiveTurnId.length > 0
+    ? options.runnerActiveTurnId : null;
+  const bound = (providerTurnId: string) => requireRequested
+    ? requestedTurnId === undefined || requestedTurnId === providerTurnId
+    : providerTurnId === active;
+  if (latestStart.status === "failed") {
+    const indeterminate = record(record(latestStart.result).result).code === "execution_indeterminate";
+    return indeterminate && active !== null && bound(active) ? active : null;
+  }
+  if (latestStart.status !== "completed") return null;
   const accepted = record(record(latestStart.result).result);
   const providerTurnId = accepted.providerTurnId;
   if (accepted.status !== "accepted" || typeof providerTurnId !== "string" || providerTurnId.length === 0) return null;
-  const requestedTurnId = record(latestStart.payload).turnId;
-  return requestedTurnId === undefined || requestedTurnId === providerTurnId ? providerTurnId : null;
+  return bound(providerTurnId) ? providerTurnId : null;
 }
 
 function recoveredRunAttachment(state: {
@@ -777,6 +800,14 @@ async function awaitProviderDrainBarrier(input: {
     }
   }
   return false;
+}
+
+export function committedEventWindowComplete(state: { committedEvents: readonly { sourceSeq: number }[]; ackedSourceSeq: number } | undefined): boolean {
+  if (!state || state.committedEvents.length !== state.ackedSourceSeq) return false;
+  const seen = new Set(state.committedEvents.map(event => event.sourceSeq));
+  if (seen.size !== state.ackedSourceSeq) return false;
+  for (let seq = 1; seq <= state.ackedSourceSeq; seq += 1) if (!seen.has(seq)) return false;
+  return true;
 }
 
 function providerTurnIsActiveFromCommittedEvents(
@@ -3917,8 +3948,24 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   controllerAcceptedTurnId(): string | null {
-    return controllerAcceptedTurnStartId(this.#core?.store.state.commands ?? []);
+    return controllerAcceptedTurnStartId(this.#core?.store.state.commands ?? [], {
+      requireRequestedIdentity: this.options.provider === "acpx",
+      runnerActiveTurnId: this.#snapshotActiveProviderTurnId,
+    });
   }
+
+  controllerAcceptedCompletedTurnId(): string | null {
+    if (this.options.provider === "acpx") return null;
+    const commands = this.#core?.store.state.commands ?? [];
+    const latest = [...commands].map(command => command as unknown as Record<string, unknown>)
+      .filter(command => command.type === "turn.start" && command.status === "completed").at(-1);
+    const accepted = latest ? record(record(latest.result).result).providerTurnId : null;
+    return typeof accepted === "string" && accepted.length > 0
+      ? controllerAcceptedTurnStartId(commands, { requireRequestedIdentity: false, runnerActiveTurnId: accepted }) : null;
+  }
+
+  /** The active provider turn in the runner's latest authenticated session.snapshot. */
+  #snapshotActiveProviderTurnId: string | null = null;
 
   turnControlCapabilities(): NativeTurnControlCapabilities | null {
     if (this.options.provider !== "acpx") return null;
@@ -3956,6 +4003,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #detachPromise: Promise<void> | null = null;
   #startupOperation: Promise<unknown> | null = null;
   #attachmentOperation: Promise<void> | null = null;
+  #earlyClaim: { runId: string; operation: Promise<void> } | null = null;
   #releaseEpisode: {
     source: DurableRecoveryIdentity; confirmed: boolean; claimed?: boolean;
     claimantRunId?: string; ticket?: string; ticketFlushed?: boolean; deadline?: number;
@@ -4283,7 +4331,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           const item = record(rehydrateRunnerdItemNotification(payload, this.#threadId, observedTurn).item);
           if (typeof item.id === "string") items.set(item.id, { turnId: observedTurn, item });
         }
-        if (!observedStart) throw new Error("codex_history_incomplete: requested turn start is outside the retained runner event window");
+        if (!observedStart && !committedEventWindowComplete(this.#core?.store.state)) {
+          throw new Error("codex_history_incomplete: requested turn start is outside the retained runner event window");
+        }
         data = [...items.values()];
         // Runner authority wins over schema-shaped prose in an assistant item.
         if (semanticResultItem) data.push(semanticResultItem);
@@ -4318,6 +4368,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         snapshot.activeProviderTurnId.length > 0
           ? snapshot.activeProviderTurnId
           : null;
+      this.#snapshotActiveProviderTurnId = activeProviderTurnId;
       if (activeProviderTurnId !== null) this.#turnId = activeProviderTurnId;
       const recoveredTurns: Array<Record<string, unknown>> =
         activeProviderTurnId === null
@@ -4674,6 +4725,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.options.adoptExistingRunner && this.#adoptedRunnerMonitor === null) this.#watchAdoptedRunner(this.options.adoptExistingRunner);
   }
 
+  beginRunAttachment(input: { runId: string }): boolean {
+    if (this.#attachmentOperation !== null || !this.#releaseEpisode?.confirmed || this.#releaseEpisode.claimed || !input.runId) return false;
+    try {
+      this.#assertStartupOpen();
+      this.#assertRunAttachmentAdmission();
+    } catch {
+      return false;
+    }
+    const operation = this.#claimReleasedRunner(input.runId);
+    void operation.catch(() => undefined);
+    this.#attachmentOperation = operation;
+    this.#earlyClaim = { runId: input.runId, operation };
+    return true;
+  }
+
   attachRun(input: {
     runId: string;
     turnId: string;
@@ -4681,12 +4747,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     currentRunGrant?: NativeRunRuntimeGrant;
     completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void> {
-    if (this.#attachmentOperation !== null) {
+    const earlyClaim = this.#earlyClaim?.runId === input.runId ? this.#earlyClaim.operation : undefined;
+    if (this.#attachmentOperation !== null && earlyClaim === undefined) {
       return Promise.reject(new Error("native_runner_run_attachment_in_progress"));
     }
+    this.#earlyClaim = null;
     const operation = Promise.resolve().then(() => {
       this.#assertStartupOpen();
-      return this.#attachRun(input);
+      return this.#attachRun(input, earlyClaim);
     }).finally(() => { this.#attachmentOperation = null; });
     this.#attachmentOperation = operation;
     return operation;
@@ -4698,20 +4766,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     itemId: string;
     currentRunGrant?: NativeRunRuntimeGrant;
     completionContract?: { revision: string; criterionIds: readonly string[] };
-  }): Promise<void> {
+  }, earlyClaim?: Promise<void>): Promise<void> {
     const previous = record(this.#runAttachTemplate?.provider).runtimeContext;
     const current = input.currentRunGrant?.runtimeContext;
-    return this.options.measureOperation ? this.options.measureOperation("runner.transport.attach", () => this.#attachRunWork(input),
-      previous === undefined ? undefined : {contextReused:current === undefined || commandDigest(current) === commandDigest(previous)}) : this.#attachRunWork(input);
+    return this.options.measureOperation ? this.options.measureOperation("runner.transport.attach", () => this.#attachRunWork(input, earlyClaim),
+      previous === undefined ? undefined : {contextReused:current === undefined || commandDigest(current) === commandDigest(previous)}) : this.#attachRunWork(input, earlyClaim);
   }
 
-  async #attachRunWork(input: {
-    runId: string;
-    turnId: string;
-    itemId: string;
-    currentRunGrant?: NativeRunRuntimeGrant;
-    completionContract?: { revision: string; criterionIds: readonly string[] };
-  }): Promise<void> {
+  #assertRunAttachmentAdmission(): { core: DurablePrpControlPlane; retainingSource: boolean } {
     if (this.#pendingWarmRecoveryCompletion !== null) {
       throw new Error("native_runner_warm_transition_completion_pending");
     }
@@ -4722,6 +4784,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (retainingSource && this.#bridgedRuntimeInputs.size > 0) {
       throw new NativeRunnerSourceReconciliationRequiredError("runtime");
+    }
+    return { core, retainingSource };
+  }
+
+  async #attachRunWork(input: {
+    runId: string;
+    turnId: string;
+    itemId: string;
+    currentRunGrant?: NativeRunRuntimeGrant;
+    completionContract?: { revision: string; criterionIds: readonly string[] };
+  }, earlyClaim?: Promise<void>): Promise<void> {
+    const { core, retainingSource } = this.#assertRunAttachmentAdmission();
+    if (earlyClaim) {
+      await earlyClaim;
+      if (this.#releaseEpisode && Date.now() >= this.#releaseEpisode.deadline!) {
+        throw new Error("native_runner_resume_reconciliation_expired");
+      }
     }
     if (this.#releaseEpisode) await this.#resumeReleasedRunner(input.runId);
     await this.#awaitWarmRunAttachmentReady();
@@ -7075,6 +7154,25 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     ) {
       throw new SemanticToolNotDispatchedError();
     }
+    if (isTerminalOperation(call.operationId)) {
+      // A finish or block decided while earlier Paperclip calls of this turn
+      // had returned but not yet reached the agent (it was held across a
+      // controller restart) is stale: refuse it so the agent continues with
+      // those results instead of ending the task on a wait that is over.
+      // After a reattach the held calls are recovered while this call is
+      // delivered, so wait for earlier calls that have not returned yet
+      // (restart chaos t05) before judging what the agent had seen.
+      const settled = await settleEarlierToolCalls(
+        () => this.#closed || core !== this.#core ? null : { events: core.store.state.committedEvents, commands: core.store.state.commands },
+        { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId },
+      );
+      if (!settled || this.#closed || core !== this.#core || epoch !== this.#turnStartResponseEpoch || threadId !== this.#threadId) {
+        throw new SemanticToolNotDispatchedError();
+      }
+      if (settled.unseen.length || settled.pending.length) {
+        return staleTerminalCallResult(call.operationId, settled.unseen, settled.pending);
+      }
+    }
     const outcome = unwrapToolResponse(
       await this.#handler({
         id: call.callId,
@@ -7169,7 +7267,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (!Number.isSafeInteger(turnStartTimeoutMs) || turnStartTimeoutMs <= 0) {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
-    const commandDeadline = Date.now() + turnStartTimeoutMs;
+    let commandDeadline = Date.now() + turnStartTimeoutMs;
+    const heldCalls = this.#core;
+    if (typeof heldCalls?.semanticToolResultsSettled === "function" && !heldCalls.semanticToolResultsSettled()) {
+      let recovering = true;
+      void Promise.resolve(heldCalls.recoverPendingSemanticInputs())
+        .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))))
+        .finally(() => { recovering = false; });
+      while (recovering && Date.now() < commandDeadline) {
+        this.#assertStartupOpen();
+        this.#throwIfFailed();
+        await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      this.#assertStartupOpen();
+      this.#throwIfFailed();
+      if (recovering) throw new Error("native_turn_start_held_tool_calls_unresolved: recovering an earlier turn's held Paperclip tool calls did not finish before the turn-start deadline");
+      commandDeadline = Date.now() + turnStartTimeoutMs;
+    }
     const compactionTurn = params[COMPACTION_TURN] === true;
     const compactionPayload = compactionTurn ? runnerdCompactionTurnPayload(this.options.provider ?? "codex") : null;
     const input = Array.isArray(params.input) ? params.input.map(record) : [];

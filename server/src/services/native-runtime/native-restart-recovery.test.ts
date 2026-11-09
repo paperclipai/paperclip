@@ -1,4 +1,4 @@
-import { currentProcessSpaceHash } from "../controller-process-identity.js";
+import { currentControllerBootId, currentProcessSpaceHash } from "../controller-process-identity.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -68,6 +68,26 @@ describe("native restart recovery classification", () => {
       owner: { leaseOwner: "old-controller", leaseExpiresAt: new Date(now.getTime() + (live ? 1000 : -1000)),
         controllerPid: process.pid, controllerProcessStartedAt: now }, isProcessAlive: probe });
     expect(result.allowed).toBe(!live);
+    expect(probe).not.toHaveBeenCalled();
+  });
+  it("takes over a live remote lease at once when its controller is proven gone in this process space", async () => {
+    const now = new Date();
+    const startedAt = new Date(now.getTime() - 60_000);
+    const owner = { leaseOwner: "old-controller", leaseExpiresAt: new Date(now.getTime() + 50_000),
+      controllerPid: 424242, controllerProcessStartedAt: startedAt,
+      controllerHostHash: currentProcessSpaceHash(), controllerBootId: currentControllerBootId() };
+    // A hard restart: the previous controller's PID is gone.
+    await expect(evaluateNativeControllerTakeover({ now, remoteLeaseFenced: true, owner, isProcessAlive: () => false }))
+      .resolves.toMatchObject({ allowed: true, reason: "remote_lease_controller_process_dead" });
+    // The previous controller is still running: keep waiting for its lease.
+    await expect(evaluateNativeControllerTakeover({ now, remoteLeaseFenced: true, owner,
+      isProcessAlive: () => true, readProcessStartedAt: async () => startedAt }))
+      .resolves.toEqual({ allowed: false, reason: "remote_controller_lease_live" });
+    // Another process space (a different container or host): never probed, keep waiting.
+    const probe = vi.fn(() => false);
+    await expect(evaluateNativeControllerTakeover({ now, remoteLeaseFenced: true,
+      owner: { ...owner, controllerHostHash: "sha256:another-process-space" }, isProcessAlive: probe }))
+      .resolves.toEqual({ allowed: false, reason: "remote_controller_lease_live" });
     expect(probe).not.toHaveBeenCalled();
   });
   it("does not reopen a failed checkpoint or reset an exhausted provider budget", () => {
@@ -268,6 +288,41 @@ describe("native controller takeover fencing", () => {
       allowed: true,
       reason: "controller_process_dead",
     });
+  });
+
+  // Phase 2: the local branch is the shared prover (proveOwnerGone).
+  it("accepts a reused PID only when the live process started definitely later", async () => {
+    const live = { isProcessAlive: () => true };
+    await expect(evaluateNativeControllerTakeover({ owner: owner(), now, ...live,
+      readProcessStartedAt: async () => new Date(recordedStart.getTime() + 5_000) }))
+      .resolves.toEqual({ allowed: true, reason: "controller_pid_recycled" });
+    // An observed start before the recorded one is an inconsistent stamp,
+    // which the previous private proof accepted as recycled.
+    await expect(evaluateNativeControllerTakeover({ owner: owner(), now, ...live,
+      readProcessStartedAt: async () => new Date(recordedStart.getTime() - 5_000) }))
+      .resolves.toEqual({ allowed: false, reason: "controller_pid_start_inconsistent" });
+    // Within the 1 s precision window it is the same live controller.
+    await expect(evaluateNativeControllerTakeover({ owner: owner(), now, ...live,
+      readProcessStartedAt: async () => new Date(recordedStart.getTime() + 500) }))
+      .resolves.toEqual({ allowed: false, reason: "controller_still_alive" });
+    await expect(evaluateNativeControllerTakeover({ owner: owner(), now, ...live,
+      readProcessStartedAt: async () => null }))
+      .resolves.toEqual({ allowed: false, reason: "controller_still_alive" });
+  });
+
+  it("judges a controller recorded in this PID space, and keeps the operator attestation", async () => {
+    await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: currentProcessSpaceHash() },
+      now, isProcessAlive: () => false })).resolves.toEqual({ allowed: true, reason: "controller_process_dead" });
+    await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: "operator_attested" },
+      now, isProcessAlive: () => true })).resolves.toEqual({ allowed: true, reason: "operator_attested_controller_stopped" });
+  });
+
+  it("preserves same-space process proof when boot metadata is present", async () => {
+    const local = { ...owner(), controllerBootId: currentControllerBootId(), controllerHostHash: currentProcessSpaceHash() };
+    expect(await evaluateNativeControllerTakeover({ owner: local, now, isProcessAlive: () => false }))
+      .toEqual({ allowed: true, reason: "controller_process_dead" });
+    expect(await evaluateNativeControllerTakeover({ owner: local, now, isProcessAlive: () => true,
+      readProcessStartedAt: async () => recordedStart })).toEqual({ allowed: false, reason: "controller_still_alive" });
   });
 
   it.each([
