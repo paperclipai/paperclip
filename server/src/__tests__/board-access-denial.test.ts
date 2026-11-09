@@ -57,6 +57,11 @@ describe("board-only denial", () => {
     expect(res.body.remediation).not.toContain("](/");
   });
 
+  it("does not link connection settings for fast responses, whose controls an experiment can hide", async () => {
+    const res = await request(createApp(agentActor)).put(`/api/companies/${COMPANY_ID}/fast-response`).expect(403);
+    expect(res.body.remediation).not.toContain("/company/settings/connections");
+  });
+
   it("applies through the org-access guard", async () => {
     const res = await request(createApp(agentActor, assertBoardOrgAccess)).delete(`/api/companies/${COMPANY_ID}`).expect(403);
     expect(res.body.code).toBe(BOARD_ACCESS_REQUIRED_CODE);
