@@ -1,5 +1,5 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
-import { waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { endStorageOutageWaitOn, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
@@ -2013,6 +2013,7 @@ export function heartbeatService(
     activeRunExecutions.add(run.id);
     const timePreparation = createHeartbeatPreparationTiming(run.id);
     const executionControl = createAdapterExecutionControl();
+    endStorageOutageWaitOn(executionControl.controller.signal);
     // This coarse scope also covers host finalization after the adapter returns.
     // Nested scopes refine the label without making any termination claim.
     executionControl.phases.enter("host_execution");

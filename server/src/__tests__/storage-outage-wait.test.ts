@@ -130,6 +130,13 @@ describe("the shared storage outage wait", () => {
     });
   });
 
+  it("counts time spent in failed requests against the budget", async () => {
+    let calls = 0;
+    const slow = async () => { calls++; await new Promise(resolve => setTimeout(resolve, 120)); return outage(); };
+    await expect(retryThroughStorageOutage(slow, undefined, policy)).rejects.toMatchObject({ name: "ServiceUnavailable" });
+    expect(calls).toBeLessThanOrEqual(2);
+  });
+
   it("never retries a failure that is not an outage", async () => {
     let calls = 0;
     await expect(retryThroughStorageOutage(async () => { calls++; throw new Error("object_journal_conflict"); }, undefined, policy))
