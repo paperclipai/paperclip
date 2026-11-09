@@ -446,7 +446,7 @@ describe("Muse native visibility intersection", () => {
       invocationSource: "assignment", contextSnapshot: { issueId: f.issue.id, nativeReviewInteractionId: randomUUID(), nativeReviewDecisionId: randomUUID() } }).returning();
     await db.insert(externalAgentHolds).values({ companyId: f.companyId, agentId: f.agentId, provider: "muse", assignmentId: randomUUID(), bindingId: randomUUID(),
       bindingGeneration: 1, runId: randomUUID(), workerUnknown: false, nativeEffectsUnknown: true });
-    await expect(claimQueuedNativeReviewRun(db, { run, claimedAt: new Date(), agentNameKey: "muse", claimValues: { status: "running" } }))
+    await expect(claimQueuedNativeReviewRun(db, { run, claimedAt: new Date(), agentNameKey: "muse", claimValues: {} }))
       .rejects.toMatchObject({ status: 409, details: { code: "external_agent_overlap" } });
     expect(await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).toEqual([{ status: "queued" }]);
     expect(await db.select({ owner: issues.executionRunId }).from(issues).where(eq(issues.id, f.issue.id))).toEqual([{ owner: null }]);

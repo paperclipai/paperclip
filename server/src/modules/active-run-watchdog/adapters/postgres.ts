@@ -28,6 +28,7 @@ import {
   issueService,
   type IssuePostCommitAction,
 } from "../../../services/issues.js";
+import { transitionHeartbeatRunStatus } from "../../../services/heartbeat-run-lifecycle.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { RECOVERY_ORIGIN_KINDS } from "../../../services/recovery/origins.js";
 import { isTerminalIssueStatus } from "../domain/policy.js";
@@ -357,23 +358,21 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId: input.sourceIssue.id });
       await notifyNativeStatusReassessment(tx, { companyId, issueId: input.sourceIssue.id });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
-      const [updatedRun] = await tx
-        .update(heartbeatRuns)
-        .set({
-          status: finalRunStatus,
+      const updatedRun = (await transitionHeartbeatRunStatus(tx, input.run.id, {
+        toStatus: finalRunStatus,
+        patch: {
           finishedAt: input.now,
           error: null,
           errorCode: null,
           resultJson,
           updatedAt: input.now,
-        })
-        .where(and(
-          eq(heartbeatRuns.id, input.run.id),
+        },
+        where: and(
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.status, "running"),
           sql`not ${runtimeSettlementPending(companyId, input.run.id)}`,
-        ))
-        .returning();
+        ),
+      }))?.run ?? null;
       if (!updatedRun) return null;
 
       if (input.run.wakeupRequestId) {
