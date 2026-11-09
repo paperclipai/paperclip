@@ -10124,7 +10124,8 @@ export function issueRoutes(
       presentation: await taskInterruptionPresentation(db, issue) });
     // The receipt commits before dispatch. Maintenance redelivers it after a
     // crash or a lost response; this nudge only reduces perceived latency.
-    if (receipt.chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(receipt.chatActionId).catch(err =>
+    const chatActionId = "chatActionId" in receipt ? receipt.chatActionId : undefined;
+    if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Connected task Retry remains queued"));
     else if (receipt.accepted && receipt.requestId) void heartbeat.resumeTaskRetry(issue.companyId, receipt.requestId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Task Retry remains queued"));

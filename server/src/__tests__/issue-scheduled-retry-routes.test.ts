@@ -795,6 +795,25 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.sourceRunId))).toHaveLength(1);
   });
 
+  it("starts the scheduled retry when a saved task Retry is replayed after its promotion was lost", async () => {
+    const f = await seedIssueWithRetry();
+    await db.update(heartbeatRuns).set({ createdAt: new Date("2026-05-06T18:00:01.000Z") })
+      .where(eq(heartbeatRuns.id, f.retryRunId));
+    const app = createApp(boardActor(f.companyId));
+    const body = { idempotencyKey: randomUUID(), observedRunId: f.retryRunId };
+    const first = await request(app).post(`/api/issues/${f.issueId}/retry`).send(body);
+    expect(first.status, JSON.stringify(first.body)).toBe(202);
+    await db.update(heartbeatRuns).set({ status: "scheduled_retry", scheduledRetryAt: new Date(Date.now() + 60 * 60_000) })
+      .where(eq(heartbeatRuns.id, f.retryRunId));
+
+    const replay = await request(app).post(`/api/issues/${f.issueId}/retry`).send(body);
+
+    expect(replay.status, JSON.stringify(replay.body)).toBe(202);
+    expect(replay.body).toMatchObject({ accepted: true, requestId: first.body.requestId, scheduledRetry: { outcome: "promoted" } });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+    expect(run!.status).toBe("queued");
+  });
+
   it("refuses Retry now on a private task the member cannot see, like the task Retry", async () => {
     const f = await seedIssueWithRetry();
     await db.update(issues).set({ visibility: "private", createdByUserId: "task-owner", responsibleUserId: "task-owner" })

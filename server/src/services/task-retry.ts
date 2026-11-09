@@ -268,8 +268,13 @@ function admitTaskRetry(input: TaskRetryRequest) {
       if (sameRequest.payload?.issueId !== issue.id || sameRequest.requestedByActorId !== input.actorId)
         throw conflict("This retry request belongs to a different task or user.");
       const intent = readTaskRetryIntent(sameRequest.payload);
+      const [coalescedRun] = sameRequest.status === "coalesced" && sameRequest.runId
+        ? await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, sameRequest.runId)))
+        : [];
       return { requestId: intent?.canonicalIntentId ?? sameRequest.id, accepted: true, stale: false,
-        observedRunId: intent?.sourceRunId ?? null, chatActionId: intent?.chatActionId };
+        observedRunId: intent?.sourceRunId ?? null, chatActionId: intent?.chatActionId,
+        ...(coalescedRun?.status === "scheduled_retry" ? { scheduledRetryRunId: coalescedRun.id } : {}) };
     }
     const [latest] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, issue.companyId),
       or(eq(heartbeatRuns.issueId, issue.id), eq(heartbeatRuns.nativeIssueId, issue.id),
