@@ -55,47 +55,43 @@ export function isStorageUnavailableError(error: unknown): boolean {
 
 export const STORAGE_OUTAGE_WAIT = { budgetMs: 5 * 60_000, firstDelayMs: 2_000, maxDelayMs: 30_000 } as const;
 
-type OutageClock = { startedAt: number | null; lastFailureAt: number };
-const newClock = (): OutageClock => ({ startedAt: null, lastFailureAt: 0 });
-
-function outageStartedAt(clock: OutageClock, now: number, policy: { maxDelayMs: number }) {
-  if (clock.startedAt === null || now - clock.lastFailureAt > 2 * policy.maxDelayMs) clock.startedAt = now;
-  clock.lastFailureAt = now;
-  return clock.startedAt;
-}
-
-type OutageWaitScope = { clock: OutageClock; stop?: AbortSignal };
+type OutageWaitScope = { stop?: AbortSignal };
 const outageWaitScope = new AsyncLocalStorage<OutageWaitScope>();
+type OutageWaitOperation = { firstFailureAt: number | null };
+const outageWaitOperation = new AsyncLocalStorage<OutageWaitOperation | null>();
 
 export function waitOutStorageOutages<T>(work: () => Promise<T>): Promise<T> {
-  return outageWaitScope.getStore() ? work() : outageWaitScope.run({ clock: newClock() }, work);
+  return outageWaitScope.getStore() ? work() : outageWaitScope.run({}, work);
 }
 
 export function runSharedStorageWork<T>(work: () => Promise<T>): Promise<T> {
-  return outageWaitScope.getStore() ? outageWaitScope.run({ clock: newClock() }, work) : work();
+  return outageWaitScope.getStore() ? outageWaitScope.run({}, () => outageWaitOperation.run(null, work)) : outageWaitOperation.run(null, work);
 }
 
 export function endStorageOutageWaitOn(stop: AbortSignal): void {
   const current = outageWaitScope.getStore();
-  if (current) outageWaitScope.enterWith({ clock: current.clock, stop: current.stop ? AbortSignal.any([current.stop, stop]) : stop });
+  if (current) outageWaitScope.enterWith({ stop: current.stop ? AbortSignal.any([current.stop, stop]) : stop });
 }
 
-export async function retryThroughStorageOutage<T>(send: () => Promise<T>, signal?: AbortSignal,
+export function retryThroughStorageOutage<T>(send: () => Promise<T>, signal?: AbortSignal,
   policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number } = STORAGE_OUTAGE_WAIT): Promise<T> {
-  const scope = outageWaitScope.getStore();
-  const clock = scope?.clock ?? newClock();
-  const stop = signal && scope?.stop ? AbortSignal.any([signal, scope.stop]) : signal ?? scope?.stop;
-  let waited = false;
+  const operation = outageWaitOperation.getStore();
+  return operation ? retryWithin(operation, send, signal, policy)
+    : outageWaitOperation.run({ firstFailureAt: null }, () => retryWithin(outageWaitOperation.getStore()!, send, signal, policy));
+}
+
+async function retryWithin<T>(operation: OutageWaitOperation, send: () => Promise<T>, signal: AbortSignal | undefined,
+  policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number }): Promise<T> {
+  const scopeStop = outageWaitScope.getStore()?.stop;
+  const stop = signal && scopeStop ? AbortSignal.any([signal, scopeStop]) : signal ?? scopeStop;
   for (let wait = policy.firstDelayMs; ; wait = Math.min(wait * 2, policy.maxDelayMs)) {
     try {
-      const result = await send();
-      if (waited) clock.startedAt = null;
-      return result;
+      return await send();
     } catch (error) {
       if (!isStorageUnavailableError(error)) throw error;
       const now = Date.now();
-      if (stop?.aborted || now - outageStartedAt(clock, now, policy) + wait > policy.budgetMs) throw error;
-      waited = true;
+      operation.firstFailureAt ??= now;
+      if (stop?.aborted || now - operation.firstFailureAt + wait > policy.budgetMs) throw error;
       recordStorageBackoff(wait);
       await delay(wait, undefined, { signal: stop }).catch((interrupted: unknown) => {
         throw signal?.aborted && signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? error : interrupted;

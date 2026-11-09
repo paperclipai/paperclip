@@ -150,6 +150,24 @@ describe("the shared storage outage wait", () => {
     expect(Date.now() - startedAt).toBeLessThan(policy.budgetMs * 3);
   });
 
+  it("keeps one operation's limit when another operation in the same run recovers from its own outage", async () => {
+    const startedAt = Date.now();
+    const result = await waitOutStorageOutages(async () => {
+      let recovering = true;
+      void (async () => {
+        while (recovering) {
+          let failed = false;
+          await retryThroughStorageOutage(async () => (failed ? "recovered" : (failed = true, outage())), undefined, policy).catch(() => undefined);
+        }
+      })();
+      try {
+        return await retryThroughStorageOutage(outage, undefined, policy).catch((error: unknown) => error);
+      } finally { recovering = false; }
+    });
+    expect(result).toMatchObject({ name: "ServiceUnavailable" });
+    expect(Date.now() - startedAt).toBeLessThan(policy.budgetMs * 3);
+  });
+
   it("gives a later outage its own limit once the waiting work recovered", async () => {
     await waitOutStorageOutages(async () => {
       const recoversAt = Date.now() + policy.budgetMs - 60;
