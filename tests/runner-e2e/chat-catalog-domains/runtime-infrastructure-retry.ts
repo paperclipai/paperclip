@@ -72,7 +72,11 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     state.budgetHeldBeforeRetry = held.lifecycleHolds?.includes("budget") === true;
     const rejected = ctx.input.page.waitForResponse(r => isHumanRetryRequest(r.request(), task.id, worker.id));
     await retry.click(); state.heldRetryStatus = (await rejected).status();
-    await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(humanRetryControl(ctx.input.page)).toBeVisible(); state.failedRunVisibleWhileHeld = true;
+    // An accepted Retry shows as starting for a few seconds; once admission
+    // records the budget refusal, the task shows the failure and its Retry
+    // again. Reload until it does rather than reading the starting state.
+    await expect(async () => { await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(humanRetryControl(ctx.input.page)).toBeVisible({ timeout: 5_000 }); })
+      .toPass({ timeout: 60_000, intervals: [2_000, 5_000] }); state.failedRunVisibleWhileHeld = true;
     state.noAdmissionUnderBudget = (await ctx.allRuns()).length === 2;
     await ctx.input.capture("actual-retry-gate-held", "Original native failure remains visible when current budget prevents Retry admission", "runtime-retry-budget-held.png");
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
