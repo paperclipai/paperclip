@@ -192,15 +192,21 @@ describe("New agent setup", () => {
     expect(api.create).not.toHaveBeenCalled();
   });
 
-  it("retries early creation with the same identity before offering authentication", async () => {
-    api.create.mockRejectedValueOnce(new Error("Creation unavailable"));
-    await render("codex_local");
-    expect(container.textContent).toContain("Creation unavailable");
-    expect(container.textContent).not.toContain("Complete subscription login");
-    await click("Retry");
-    expect(api.create).toHaveBeenCalledTimes(2);
-    expect(api.create.mock.calls[1][1].setupId).toBe(api.create.mock.calls[0][1].setupId);
-    expect(container.textContent).toContain("Connect a model");
+  it.each(["secure context", "plain HTTP"])("retries early creation with the same identity before offering authentication on %s", async (context) => {
+    if (context === "plain HTTP") vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
+    try {
+      api.create.mockRejectedValueOnce(new Error("Creation unavailable"));
+      await render("codex_local");
+      expect(container.textContent).toContain("Creation unavailable");
+      expect(container.textContent).not.toContain("Complete subscription login");
+      await click("Retry");
+      expect(api.create).toHaveBeenCalledTimes(2);
+      expect(api.create.mock.calls[0][1].setupId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(api.create.mock.calls[1][1].setupId).toBe(api.create.mock.calls[0][1].setupId);
+      expect(container.textContent).toContain("Connect a model");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("resumes a saved setup record and its configuration after navigation", async () => {

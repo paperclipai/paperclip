@@ -134,6 +134,26 @@ it("saves identity on name submission before an adapter is selected", async () =
   expect(query.get("setupAgentId")).toBe(input.setupId);
   expect(query.get("runner")).toBe("auto");
 });
+it("opens and saves a setup identity on a plain HTTP origin without randomUUID", async () => {
+  const getRandomValues = vi.fn(crypto.getRandomValues.bind(crypto));
+  vi.stubGlobal("crypto", { getRandomValues });
+  try {
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={cache}>
+          <NewAgentDialog key="plain-http" />
+        </QueryClientProvider>,
+      ),
+    );
+    await name();
+    expect(agents.create).toHaveBeenCalledTimes(1);
+    expect(agents.create.mock.calls[0][1].setupId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(getRandomValues).toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Choose an adapter");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 it("retries a failed name save with the same identity", async () => {
   agents.create.mockRejectedValueOnce(new Error("Creation unavailable"));
   await name();
