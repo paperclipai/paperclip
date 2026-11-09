@@ -18,6 +18,7 @@ import { dashboardApi } from "../api/dashboard";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { useSecondTick } from "../hooks/useSecondTick";
+import { taskRetryNotStartedReason } from "../hooks/useTaskRetry";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -196,6 +197,7 @@ import {
   taskDateGroupSeparator,
   type TaskDateGroup,
 } from "../lib/task-date-groups";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 100;
@@ -402,6 +404,8 @@ export function FailedRunInboxRow({
           approval: "Approval required", reconnect: "Reconnect account", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
           resume: "Work is paused", budget: "Budget limit reached",
           project_access: "Agent needs project access",
+          confirm_owner_stop: "Confirm the previous server stopped",
+          confirm_run_stopped: "Confirm the previous run stopped",
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
   const retryAvailable = !interruption || interruption.canRetry;
   const showUnreadSlot = unreadState !== null;
@@ -1950,6 +1954,13 @@ function StreamlinedInbox({
         });
         queryClient.setQueryData<Issue>(queryKeys.issues.detail(issueId), current =>
           current ? { ...current, interruption: result.presentation } : current);
+        const notStarted = taskRetryNotStartedReason(result);
+        if (notStarted) {
+          retryRequestKeys.current.delete(run.id);
+          await Promise.all([queryKeys.issues.listMineByMe(run.companyId), queryKeys.heartbeats(run.companyId),
+            queryKeys.heartbeats(run.companyId, run.agentId)].map(queryKey => queryClient.invalidateQueries({ queryKey })));
+          throw new Error(notStarted);
+        }
         return { newRun: { runId: null, issueId }, originalRun: run };
       }
       const result = await agentsApi.retryFailedRun(
@@ -2456,7 +2467,7 @@ function StreamlinedInbox({
             const pathId = issue.identifier ?? issue.id;
             const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue));
             rememberIssueDetailLocationState(pathId, detailState);
-            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
+            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue, history: true });
             act.navigate(createIssueDetailPath(pathId), { state: detailState });
           } else if (item) {
             if (item.kind === "issue") {
@@ -2465,7 +2476,7 @@ function StreamlinedInbox({
                 withIssueDetailHeaderSeed(issueLinkState, item.issue),
               );
               rememberIssueDetailLocationState(pathId, detailState);
-              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue });
+              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue, history: true });
               act.navigate(createIssueDetailPath(pathId), { state: detailState });
             } else if (item.kind === "approval") {
               act.navigate(`/approvals/${item.approval.id}`);
@@ -2995,7 +3006,7 @@ function StreamlinedInbox({
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
@@ -3095,10 +3106,11 @@ function StreamlinedInbox({
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                         )
                       ) : undefined}
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
+                      showUnreadIndicator={false}
                       onMarkRead={() => markReadMutation.mutate(issue.id)}
                       onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
                       archiveDisabled={isArchiving}

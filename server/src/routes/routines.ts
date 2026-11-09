@@ -96,6 +96,17 @@ export function routineRoutes(
     }
   }
 
+  async function canChangeResponsibleUser(req: Request, companyId: string) {
+    if (req.actor.type !== "board") return false;
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+    // Match assertCompanyAccess's write restrictions even on this GET route.
+    if (Array.isArray(req.actor.memberships)) {
+      const membership = req.actor.memberships.find((item) => item.companyId === companyId);
+      if (!membership || membership.status !== "active" || membership.membershipRole === "viewer") return false;
+    }
+    return access.canUser(companyId, req.actor.userId, "tasks:assign");
+  }
+
   function assertCanManageCompanyRoutine(req: Request, companyId: string, assigneeAgentId?: string | null) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") return;
@@ -161,6 +172,7 @@ export function routineRoutes(
     const created = await svc.create(companyId, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+      ...(req.actor.type === "agent" ? { actorResponsibleUserId: req.actor.onBehalfOfUserId ?? null } : {}),
       runId: req.actor.runId ?? null,
     });
     const actor = getActorInfo(req);
@@ -194,7 +206,7 @@ export function routineRoutes(
   router.get("/routines/:id", async (req, res) => {
     const detail = await getAccessibleResource(req, res, svc.getDetail(req.params.id as string), "Routine not found");
     if (!detail) return;
-    res.json(detail);
+    res.json({ ...detail, canChangeResponsibleUser: await canChangeResponsibleUser(req, detail.companyId) });
   });
 
   router.get("/routines/:id/revisions", async (req, res) => {
@@ -369,6 +381,12 @@ export function routineRoutes(
     const assigneeWillChange =
       req.body.assigneeAgentId !== undefined &&
       req.body.assigneeAgentId !== routine.assigneeAgentId;
+    if (req.body.responsibleUserId !== undefined) {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only people can change routine responsibility");
+      }
+      await assertBoardCanAssignTasks(req, routine.companyId);
+    }
     if (assigneeWillChange) {
       await assertBoardCanAssignTasks(req, routine.companyId);
     }
@@ -402,7 +420,13 @@ export function routineRoutes(
       action: "routine.updated",
       entityType: "routine",
       entityId: routine.id,
-      details: { title: updated?.title ?? routine.title },
+      details: {
+        title: updated?.title ?? routine.title,
+        ...(req.body.responsibleUserId !== undefined ? {
+          previousResponsibleUserId: updated?.previousResponsibleUserId,
+          responsibleUserId: updated?.responsibleUserId,
+        } : {}),
+      },
     });
     if (updated && updated.latestRevisionId !== routine.latestRevisionId) {
       await remapRoutineDescriptionAnnotations(req, routine.id);
@@ -415,7 +439,12 @@ export function routineRoutes(
         triggerCount: null,
       });
     }
-    res.json(updated);
+    if (updated) {
+      const { previousResponsibleUserId: _previousResponsibleUserId, ...response } = updated;
+      res.json(response);
+    } else {
+      res.json(null);
+    }
   });
 
   router.post("/routines/:id/revisions/:revisionId/restore", async (req, res) => {

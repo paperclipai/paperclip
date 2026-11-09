@@ -79,7 +79,7 @@ describe("resolveInitialTaskView", () => {
   it("falls back to the last-used view on a bare /issues", () => {
     expect(resolveInitialTaskView(null, false, "backlog")).toBe("backlog");
     expect(resolveInitialTaskView("nonsense", false, "backlog")).toBe("backlog");
-    expect(resolveInitialTaskView(null, false, DEFAULT_TASK_VIEW)).toBe("mine");
+    expect(resolveInitialTaskView(null, false, DEFAULT_TASK_VIEW)).toBe("all");
   });
 
   it("opens All tasks when an explicit inbox view carries an organization filter", () => {

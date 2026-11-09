@@ -1,5 +1,6 @@
 import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
 import type { Environment } from "@paperclipai/shared";
+import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runtime/native-runner-recovery-contract.js";
 
 function resolveRunnerLifecycleModeForRun(
   config: Record<string, unknown>,
@@ -57,4 +58,20 @@ export function resolveWarmRunnerIdleTimeoutMsForRun(
   const config = environment.config ?? {};
   if (resolveRunnerLifecycleModeForRun(config, adapterConfig, admittedLifecycleMode) !== "warm") return undefined;
   return resolvePaperclipRunnerIdleTimeoutMs(config.runnerIdleTimeoutMs ?? adapterConfig.idleTimeoutMs);
+}
+
+/**
+ * The remote runner reconnect grace (ms) a sandbox-provider lease must outlive
+ * for this run, or undefined when the run places no remote runner on a sandbox.
+ * A remote runner keeps working while the controller is offline, and the host
+ * reattaches it within this grace. The host forwards it to the provider so a
+ * provider idle auto-stop (for example Daytona's `autoStopInterval`) cannot stop
+ * the sandbox, and kill the runner, during an outage the host still recovers.
+ */
+export function resolveRunnerReconnectGraceMsForRun(
+  environment: Pick<Environment, "driver">,
+  adapterType: string,
+): number | undefined {
+  if (adapterType !== "paperclip_runner" || environment.driver !== "sandbox") return undefined;
+  return REMOTE_RUNNER_RECONNECT_GRACE_MS;
 }

@@ -1,4 +1,4 @@
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 
 import { providerDescriptorSchema } from "./generated/schema-bundle.js";
@@ -19,7 +19,7 @@ describe("provider runtime descriptor", () => {
     }
     const event: PrpEvent = {
       schema: "paperclip.prp.event.v2", schemaVersion: 2, sourceEventId: "controls", sourceSeq: 1,
-      sourceInstanceId: "runner", sourceKind: "runner", runId: "run", eventType: "session.capabilities.updated",
+      sourceInstanceId: "runner", sourceKind: "runner", runId: "run", normalizedSessionId: "session", eventType: "session.capabilities.updated",
       priority: 0, emittedAt: "2026-09-28T12:00:00.000Z", payload: {
         sessionGoals: { availability: "unsupported", reason: "provider has no native goals", actions: [],
           autonomousUpdates: false, persistentAcrossResume: false, maxObjectiveChars: 4000,

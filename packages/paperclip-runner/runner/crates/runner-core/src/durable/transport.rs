@@ -1747,6 +1747,9 @@ fn hex_nibble(byte: u8) -> Result<u8, DurableRunnerError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    include!("tests/hosted_retention.rs");
+
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1780,6 +1783,7 @@ mod tests {
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
+            turn_scoped: false,
         }
     }
 

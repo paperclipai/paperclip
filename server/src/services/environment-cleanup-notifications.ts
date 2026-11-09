@@ -30,6 +30,11 @@ export async function notifyEnvironmentCleanup(transaction: object, scope?: Envi
   }
   await notifyNativeEnvironmentSettlement(transaction, scope);
   await notifyQueuedRunDispatch(transaction, scope);
+  // A settled run lease can make that run's abandoned native owner releasable.
+  if (scope?.runId) {
+    await notifyDeliveryWork(transaction, DELIVERY_QUEUES.executionFinalization);
+    await notifyDeliveryWork(transaction, DELIVERY_QUEUES.executionReplacement);
+  }
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.environmentCleanup);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.historicalCleanup);
 }

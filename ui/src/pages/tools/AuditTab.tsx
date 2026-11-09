@@ -403,7 +403,7 @@ export function AuditTab({ companyId }: { companyId: string }) {
         description="What your agents actually did with your apps, newest first. Each line is one decision — allowed, blocked, asked first, waiting, or failed."
       />
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-canonical-toolbar="tool-audit" role="toolbar" aria-label="Tool audit filters" className="flex flex-wrap items-center gap-2">
         <Select value={app} onValueChange={setApp}>
           <SelectTrigger className="w-40">
             <SelectValue placeholder="App" />

@@ -83,7 +83,7 @@
     "@paperclipai/plugin-sdk": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "@paperclipai/skills-catalog": "workspace:*",
-    "@photon-ai/advanced-imessage": "2.1.0",
+    "@photon-ai/advanced-imessage": "2.2.0",
     "@vercel/connect": "2.3.3",
     "acorn": "8.18.0",
     "acpx": "0.13.1",
@@ -117,7 +117,7 @@
     "svix": "1.76.1",
     "tar-stream": "3.2.0",
     "ws": "^8.22.0",
-    "zod": "^4.4.3",
+    "zod": "^4.6.6",
     "@opentelemetry/resources": "2.10.0"
   },
   "bundleDependencies": [

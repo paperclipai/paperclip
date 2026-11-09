@@ -1,10 +1,10 @@
+import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
 import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
 import { useConversationHistoryPages, type ConversationHistoryPage } from "@/hooks/useConversationHistoryPages";
 import { taskChatHashAnchor } from "@/components/task-chat/scroll-navigation";
 import { AgentChatReadProvider } from "@/hooks/useAgentChatRead";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
-import { CoordinatorAgentSwitcher } from "@/components/CoordinatorAgentSwitcher";
 import { TaskDecisionRecord } from "@/components/TaskDecisionRecord";
 import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import { bindAccount } from "@/lib/account-scope";
@@ -21,7 +21,7 @@ import { canManageIssuePrivacy } from "../lib/issuePrivacy";
 import { TextAttachmentContext } from "../context/TextAttachmentContext";
 import { useTaskPluginPanels, taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import { useTaskBrowsers, useBrowserArrivals } from "@/hooks/useTaskBrowsers";
-import { WorkspaceExportRecovery } from "../components/WorkspaceExportRecovery";
+import { isPreviousServerStopCause, WorkspaceExportRecovery } from "../components/WorkspaceExportRecovery";
 import { DispositionRecoveryProvider } from "../components/DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { mergeComposerRunSettings, type ComposerRunSettings } from "@/components/task-chat/composer-run-settings";
@@ -29,8 +29,6 @@ import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
 import { trackRecentProject } from "@/lib/recent-projects";
-import { Settings as ChatSettings } from "lucide-react";
-import { agentDetailHref } from "./agent-detail-navigation";
 import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
@@ -77,9 +75,18 @@ import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { classifySendFailure } from "../lib/pending-send";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
-import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
+import { describeInteractionResolutionFailure, interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
+import {
+  fetchRecentIssueActivity,
+  fetchRecentIssueRunWindow,
+  issueCommentInputFactsQueryKey,
+  issueInputCommentIds,
+  recentIssueActivityQueryKey,
+  recentIssueRunWindowQueryKey,
+  type RecentIssueRunWindow,
+} from "../lib/issue-chat-history-queries";
 import {
   heartbeatsApi,
   type ActiveRunForIssue,
@@ -89,6 +96,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { accessApi } from "../api/access";
 import {
   canBoardManageRuntime,
+  canBoardConfirmOwnerStop,
   canBoardResolveRecoveryAction,
   isRetainedWorkspaceExportCause,
   readRecoveryReconcileWorkspaceId,
@@ -143,7 +151,7 @@ import {
   shouldTrackIssueActiveRun,
 } from "../lib/issueActiveRun";
 import { prefetchIssueThread } from "../lib/issue-thread-queries";
-import { getIssueDetailQueryOptions, seedIssueDetailProjections } from "../lib/issueDetailCache";
+import { getIssueCoreQueryOptions, getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   beginIssueDetailNavigation,
   recordIssueDetailReadiness,
@@ -261,6 +269,7 @@ import { waitForStoppedRuns } from "../lib/wait-for-stopped-runs";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
 import { IssueGalleryContext } from "../context/IssueGalleryContext";
 import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
+import { isOutdatedPlanConfirmation } from "../components/task-chat/interaction-thread-order";
 import { useTaskArtifactArrival } from "../hooks/useTaskArtifactArrival";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -402,6 +411,7 @@ import {
   workspaceFileRefSchema,
   isUuidLike,
 } from "@paperclipai/shared";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
 // creates a new array reference on every render while `data` is undefined
@@ -997,8 +1007,7 @@ export function IssueDetailLoadingState({
           {headerSeed ? (
             <>
               <StatusIcon
-                status={headerSeed.status} displayStatus={headerSeed.displayStatus}
-                blockerAttention={headerSeed.blockerAttention}
+                {...taskStatusIconProps(headerSeed)}
               />
               {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
               {SHOW_TASK_PRIORITY_UI && (
@@ -1184,11 +1193,6 @@ function InboxMobileToolbar({
   );
 }
 
-interface RecentIssueRunWindow {
-  runs: RunForIssue[];
-  hasEarlierRuns: boolean;
-}
-
 type IssueDetailChatTabProps = {
   executionBlocked?: boolean;
   interruption?: Issue["interruption"];
@@ -1209,6 +1213,7 @@ type IssueDetailChatTabProps = {
   blockedBy: Issue["blockedBy"];
   liveIssueIds: ReadonlySet<string>;
   blockerAttention: Issue["blockerAttention"] | null;
+  stalledDependencies?: Issue["stalledDependencies"];
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
   scheduledRetry: Issue["scheduledRetry"] | null;
   recoveryAction: Issue["activeRecoveryAction"];
@@ -1375,6 +1380,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   blockedBy,
   liveIssueIds,
   blockerAttention,
+  stalledDependencies,
   successfulRunHandoff,
   scheduledRetry,
   recoveryAction,
@@ -1486,21 +1492,18 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     isError: activityError,
     refetch: refetchActivity,
   } = useQuery({
-    queryKey: historyExpanded ? queryKeys.issues.activity(issueQueryRef) : [...queryKeys.issues.activity(issueQueryRef), "recent"],
-    queryFn: async () => {
-      if (historyExpanded) return activityApi.forIssue(issueQueryRef);
-      const recent = await activityApi.recentForIssue(issueQueryRef);
-      const previous = queryClient.getQueryData<ActivityEvent[]>([...queryKeys.issues.activity(issueQueryRef), "recent"]) ?? [];
-      return [...new Map([...previous, ...recent].map((event) => [event.id, event])).values()];
-    },
+    queryKey: historyExpanded ? queryKeys.issues.activity(issueQueryRef) : recentIssueActivityQueryKey(issueQueryRef),
+    queryFn: () => historyExpanded
+      ? activityApi.forIssue(issueQueryRef)
+      : fetchRecentIssueActivity(queryClient, issueQueryRef),
     enabled: !!issueId,
     placeholderData: historyExpanded
       ? queryClient.getQueryData<ActivityEvent[]>([...queryKeys.issues.activity(issueQueryRef), "recent"])
       : undefined,
   });
-  const inputCommentIds = comments.filter((comment) => !("clientStatus" in comment) || !comment.clientStatus).map((comment) => comment.id).sort();
+  const inputCommentIds = issueInputCommentIds(comments);
   const inputFacts = useIssueIdBatches(
-    [...queryKeys.issues.activity(issueQueryRef), "comment-inputs"], inputCommentIds,
+    issueCommentInputFactsQueryKey(issueQueryRef), inputCommentIds,
     ids => activityApi.inputFactsForIssue(issueQueryRef, ids), !!issueId && !historyExpanded,
   );
   const {
@@ -1607,7 +1610,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const hasLiveRuns = liveRunCount > 0 || !!resolvedActiveRun;
   const linkedRunsKey = historyExpanded
     ? queryKeys.issues.runs(issueQueryRef)
-    : [...queryKeys.issues.runs(issueQueryRef), "recent-window"];
+    : recentIssueRunWindowQueryKey(issueQueryRef);
   const {
     data: linkedRunHistory,
     isPending: linkedRunsPending,
@@ -1615,35 +1618,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     refetch: refetchLinkedRuns,
   } = useQuery<RunForIssue[] | RecentIssueRunWindow>({
     queryKey: linkedRunsKey,
-    queryFn: async () => {
-      if (historyExpanded) return activityApi.runsForIssue(issueQueryRef);
-      let recent = await activityApi.recentRunsForIssue(issueQueryRef);
-      const previousWindow = queryClient.getQueryData<RecentIssueRunWindow>(linkedRunsKey);
-      let previous = previousWindow?.runs ?? [];
-      let reconciledFullHistory = false;
-      if (previous.some((run) =>
-        (run.status === "running" || run.status === "queued") && !recent.some((next) => next.runId === run.runId),
-      )) {
-        // After a reconnect, several turns may have completed beyond the small
-        // window. Reconcile watched runs once against authoritative summaries.
-        recent = conversationMode
-          ? await activityApi.runsByIdsForIssue(issueQueryRef, [...new Set([...previous.map(run => run.runId), ...recent.map(run => run.runId)])])
-          : await activityApi.runsForIssue(issueQueryRef);
-        reconciledFullHistory = true;
-        const existingRunIds = new Set(recent.map((run) => run.runId));
-        previous = previous.filter((run) => existingRunIds.has(run.runId));
-      }
-      // The second row refreshes a just-finished predecessor. Start with only
-      // the latest run, then keep every run observed while this task is open.
-      const visible = new Set([...previous.map((run) => run.runId), ...recent.slice(0, 1).map((run) => run.runId)]);
-      return {
-        runs: [...new Map([...previous, ...recent].filter((run) => visible.has(run.runId)).map((run) => [run.runId, run])).values()],
-        // A first run is already visible. The disclosure needs evidence of an
-        // omitted run, and must retain that evidence as later turns arrive.
-        hasEarlierRuns: recent.some((run) => !visible.has(run.runId))
-          || (!reconciledFullHistory && recent.length >= 2 && previousWindow?.hasEarlierRuns === true),
-      };
-    },
+    queryFn: () => historyExpanded
+      ? activityApi.runsForIssue(issueQueryRef)
+      : fetchRecentIssueRunWindow(queryClient, issueQueryRef, { conversationMode }),
     enabled: !!issueId,
     refetchInterval:
       hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
@@ -2690,9 +2667,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             blockedBy={blockedBy ?? []}
             liveIssueIds={liveIssueIds}
             blockerAttention={blockerAttention}
+            stalledDependencies={stalledDependencies}
             successfulRunHandoff={successfulRunHandoff}
             scheduledRetry={scheduledRetry}
-            recoveryAction={recoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : recoveryAction ?? null}
+            recoveryAction={isPreviousServerStopCause(recoveryAction?.cause) ? null : recoveryAction ?? null}
             onResolveRecoveryAction={onResolveRecoveryAction}
             onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
             reissueIsolatedRecoveryActionPending={
@@ -3336,12 +3314,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   const coreIssueQuery = useQuery({
-    queryKey: [...queryKeys.issues.detail(issueId!), "core"],
-    queryFn: async ({ signal }) => {
-      const core = await issuesApi.getCore(issueId!, { signal });
-      seedIssueDetailProjections(queryClient, core, issueId);
-      return core;
-    },
+    ...getIssueCoreQueryOptions(queryClient, issueId!),
     enabled: !!issueId,
   });
   const { historyExpanded, expandHistory, recent: recentComments, retainComment, acknowledgedComments } = useIssueHistoryWindow(
@@ -3764,6 +3737,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     selectedCompanyId,
     boardAccess,
   );
+  const canConfirmOwnerStop = canBoardConfirmOwnerStop(selectedCompanyId, boardAccess);
+  // Retained-file recovery reports whether it offers its own control. The task's
+  // Retry stays visible whenever it does not, so a retryable hold never dead-ends.
+  const [retainedRecoveryOwnsRetry, setRetainedRecoveryOwnsRetry] = useState(true);
   // The break-glass override reconcile is `runtime:manage`-gated server-side, not gated on the
   // recovery-resolution permission — so hide its affordance behind the matching client check.
   const canManageBoardRuntime = canBoardManageRuntime(
@@ -4018,9 +3995,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const shouldDeferPanelUntilPlan =
     taskChatShellEnabled &&
     (isOnboardingFirstTask || issue?.workMode === "planning");
+  const hasPendingPlanConfirmation = interactions.some(interaction =>
+    interaction.status === "pending" && interaction.kind === "request_confirmation"
+    && interaction.payload.target?.type === "issue_document" && interaction.payload.target.key === "plan");
   const { data: deferredPanelPlanDoc } = useIssuePlanDocument(
-    shouldDeferPanelUntilPlan ? issue?.id : null,
+    shouldDeferPanelUntilPlan || hasPendingPlanConfirmation ? issue?.id : null,
   );
+  const hasPendingInteraction = interactions.some(interaction =>
+    interaction.status === "pending" && !isDeferredConversationInteraction(interaction)
+    && !isOutdatedPlanConfirmation(interaction, deferredPanelPlanDoc));
   const [panelBeforePlanOverrideIssueId, setPanelBeforePlanOverrideIssueId] =
     useState<string | null>(null);
   const panelBeforePlanOverride =
@@ -5273,6 +5256,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err) => {
+      if (describeInteractionResolutionFailure(err).kind === "settled") invalidateIssueDetail();
       pushToast({
         title: "Accept failed",
         body: interactionResolutionErrorMessage(err),
@@ -5302,6 +5286,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err) => {
+      if (describeInteractionResolutionFailure(err).kind === "settled") invalidateIssueDetail();
       pushToast({
         title: "Reject failed",
         body: interactionResolutionErrorMessage(err),
@@ -5969,15 +5954,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const conversationAgent = conversation?.agent ?? agents?.find(agent => agent.id === issue?.conversationAgentId);
   useEffect(() => {
     if (conversationAgent) {
-      setBreadcrumbs([{
-        label: conversationAgent.name,
-        control: coordinatorWorkspaceEnabled ? <CoordinatorAgentSwitcher agent={conversationAgent} /> : undefined,
-        controlKey: coordinatorWorkspaceEnabled ? `switch:${conversationAgent.id}:${JSON.stringify(conversationAgent.appearance)}` : undefined,
-        leading: coordinatorWorkspaceEnabled ? undefined : <AgentAvatar agent={conversationAgent} size={24} />,
-        leadingKey: `agent:${conversationAgent.id}:${JSON.stringify(conversationAgent.appearance)}`,
-        trailing: coordinatorWorkspaceEnabled ? undefined : <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
-        trailingKey: `${coordinatorWorkspaceEnabled ? "switch" : "configure"}:${conversationAgent.id}`,
-      }]);
+      setBreadcrumbs([{ label: "Chat" }]);
       return;
     }
     setBreadcrumbs([
@@ -7586,7 +7563,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const issueStatusControl = (
     <StatusIcon
-      status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState}
+      {...taskStatusIconProps(issue)}
       size={proposedTaskHeader ? "md" : "lg"}
       blockerAttention={issue.blockerAttention}
       onChange={(status) => updateIssue.mutate({ status })}
@@ -8053,6 +8030,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
       <IssueMonitorBanner
         key={issue.id}
+        hasActiveRun={hasLiveRuns}
         onCancelMonitor={() => cancelIssueMonitor.mutateAsync()}
         issue={issue}
         workProducts={workProducts}
@@ -8187,13 +8165,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               className={shellSectionClass}
               issueId={issue.id} companyId={issue.companyId}
               showStatus={!issue.interruption && !issue.executionBlocker?.workspaceRecovery}
+              onRecoveryControlChange={setRetainedRecoveryOwnsRetry}
               action={issue.activeRecoveryAction ?? null} />
           )}
           {resolvedDetailTab === "chat" && (
-            <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption}
-              issueId={issue.id} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
+            <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption} blockers={issue.blockedBy}
+              issueId={issue.id} companyId={issue.companyId} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
               canRetry={canResolveBoardRecoveryAction && !(issue.executionBlocker?.workspaceRepairRequired
-                && isRetainedWorkspaceExportCause(issue.executionBlocker.cause))} onRetry={taskRetry.retry}
+                && isRetainedWorkspaceExportCause(issue.executionBlocker.cause) && retainedRecoveryOwnsRetry)} onRetry={taskRetry.retry}
               optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
           )}
 
@@ -8482,11 +8461,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again."
                     : activePauseHold ? "Resume the task before retrying."
                     : issue.project?.pausedAt ? "Resume the project before retrying."
-                    : interactions.some(i => i.status === "pending" && !isDeferredConversationInteraction(i)) ? "Respond to the pending question or confirmation before retrying." : null}>
+                    : hasPendingInteraction ? "Respond to the pending question or confirmation before retrying." : null}>
                 <DispositionRecoveryProvider value={{
                   issue,
                   agentMap,
-                  hasPendingInteraction: interactions.some((interaction) => interaction.status === "pending" && !isDeferredConversationInteraction(interaction)),
+                  hasPendingInteraction,
                   unavailableReason: boardAccess && !canResolveBoardRecoveryAction
                     ? "You don’t have permission to retry this recovery action."
                     : treeControlStateError
@@ -8498,6 +8477,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                         : null,
                   onRetry: (actionId) => retryDispositionRecovery.mutateAsync(actionId).then(() => undefined),
                 }}>
+                <NativeControllerContainmentRecovery key={`${issue.activeRecoveryAction?.id}:${JSON.stringify(issue.activeRecoveryAction?.evidence?.controllerAuthority)}`} issue={issue}
+                  canManage={canConfirmOwnerStop} onRecorded={() => {
+                    invalidateIssueCollections();
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });
+                  }} />
                 <IssueDetailChatTab
                   executionBlocked={Boolean(issue.executionBlocker)}
                   interruption={issue.interruption}
@@ -8564,9 +8549,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   blockedBy={issue.blockedBy ?? []}
                   liveIssueIds={liveIssueIds}
                   blockerAttention={issue.blockerAttention ?? null}
+                  stalledDependencies={issue.stalledDependencies}
                   successfulRunHandoff={issue.successfulRunHandoff ?? null}
                   scheduledRetry={issue.scheduledRetry ?? null}
-                  recoveryAction={issue.interruption?.responsibility === "system" || issue.activeRecoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : issue.activeRecoveryAction ?? null}
+                  recoveryAction={issue.interruption?.responsibility === "system" || isPreviousServerStopCause(issue.activeRecoveryAction?.cause) ? null : issue.activeRecoveryAction ?? null}
                   onResolveRecoveryAction={handleResolveRecoveryAction}
                   onReissueIsolatedRecoveryAction={
                     handleReissueIsolatedRecoveryAction
@@ -8634,6 +8620,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     hasVisibleMonitorSurface(issue) ? (
                       <IssueMonitorComposerStrip
                         issue={issue}
+                        hasActiveRun={hasLiveRuns}
                         workProducts={workProducts}
                         checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
                         onCheckNow={() => checkIssueMonitorNow.mutate()}

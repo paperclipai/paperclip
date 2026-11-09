@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createPluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -71,11 +71,19 @@ it.each(["release", "cancel", "stop", "destroy", "resume", "stalled-close"] as c
     const execution = manager.call(pluginId, "environmentExecute", {
       ...base, lease: next, command: "printf", args: ["monitor-after-release"], bypassSession: true,
     });
-    if (mode === "stalled-close") await expect(execution).rejects.toThrow("is stopped");
-    else await expect(execution).resolves.toMatchObject({ exitCode: 0, stdout: "saved work remains intact" });
-    expect(worker.status).toBe(mode === "stalled-close" ? "stopped" : "running");
+    if (mode === "stalled-close") {
+      // The unconfirmed close retires the process. The plugin is unavailable only
+      // while the bounded restart backoff runs, then a fresh process replaces it.
+      await expect(execution).rejects.toThrow("is backoff");
+      await vi.waitFor(() => expect(worker.status).toBe("running"), { timeout: 5_000 });
+      expect(worker.diagnostics().pid).not.toBe(pid);
+      expect(worker.diagnostics().pid).not.toBeNull();
+    } else {
+      await expect(execution).resolves.toMatchObject({ exitCode: 0, stdout: "saved work remains intact" });
+      expect(worker.diagnostics().pid).toBe(pid);
+    }
+    expect(worker.status).toBe("running");
     expect(manager.getWorker(pluginId)).toBe(worker);
-    expect(worker.diagnostics().pid).toBe(mode === "stalled-close" ? null : pid);
     channel.write(new TextEncoder().encode("closed channel must remain closed"));
     channel.kill();
     if (mode !== "resume") await expect(manager.call(pluginId, "environmentExecute", {

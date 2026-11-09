@@ -1,4 +1,14 @@
 import { z } from "zod";
+export const listTaskWorkspacesSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(50),
+  cursor: z.string().uuid().optional(),
+}).strict();
+
+export const executionWorkspaceSummaryPageQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(101).default(51),
+  cursor: z.string().uuid().optional(),
+}).strict();
+
 export const taskWorkspaceSelectionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("task_directory") }).strict(),
   z.object({ kind: z.literal("existing"), workspaceId: z.string().uuid() }).strict(),

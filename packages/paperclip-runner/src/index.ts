@@ -34,6 +34,7 @@ export {
   summarizeCodexTurnDiff,
 } from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
+export * from "./steering-delivery.js";
 export {
   DurablePrpControlPlane,
   RUNNER_PRP_PROTOCOL_MIN,
@@ -45,6 +46,7 @@ export {
   type StagedRunAttachment,
   type DurablePrpControlPlaneOptions,
   type DurablePrpCheckpoint,
+  type DurablePrpConnectionLeaseFailure,
   decodeDurablePrpCheckpoint,
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
@@ -96,6 +98,7 @@ export {
   type RetainedRunnerdMaintenanceEpochReceipt,
   type RunnerdCodexTransport,
   type RunnerdCodexTransportOptions,
+  type RunnerdStartupStep,
 } from "./live/runnerd-codex-transport.js";
 export * from "./live/workspace-file-reference.js";
 export { readLinuxProcessStartedAt, type LinuxProcessStartOptions } from "./live/linux-process-start.js";

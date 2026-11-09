@@ -50,7 +50,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it.each(["process_gone", "issue_cancelled"] as const)("publishes the recovered terminal state after %s and becomes quiet", async reason => {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
-      status: "running", runtimeMode: "legacy", responsibleUserId: f.userId,
+      // The sweep's own process-gone backstop is native; a legacy run goes to
+      // the one lost-process reaper.
+      status: "running", runtimeMode: reason === "process_gone" ? "native" : "legacy", responsibleUserId: f.userId,
       processPid: reason === "process_gone" ? 2_000_000_000 : process.pid,
       contextSnapshot: { issueId: f.issueId, source: "chat:slack", endpointId: f.endpointId, wakeCommentId: f.commentId },
     });

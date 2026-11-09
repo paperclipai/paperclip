@@ -76,7 +76,7 @@ test("two cached tasks keep separate title saves while the browser is offline", 
     await header.locator("textarea").press("Enter");
     await secondLink.focus();
     await secondLink.press("Enter", { timeout: 5_000 });
-    await expect(page).toHaveURL(new RegExp(`${second.id}$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/(?:${second.id}|${second.identifier})$`));
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expect(header.getByRole("heading", { name: second.title, exact: true })).toBeVisible();
     await header.getByRole("heading", { name: second.title, exact: true }).click();

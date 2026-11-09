@@ -335,7 +335,7 @@ describe("Codex structured question adapter", () => {
       questions: [{ id: "form", question: "Choose one" }],
     });
     expect(safeForm?.description).toContain("Bearer [REDACTED]");
-    expect(safeForm?.description.endsWith(preservedTail)).toBe(true);
+    expect(safeForm?.description?.endsWith(preservedTail)).toBe(true);
 
     expect(() => normalizeCodexQuestionSet("mcpServer/elicitation/request", {
       requestedSchema: {

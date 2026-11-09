@@ -34,7 +34,7 @@ test('a completion tool does not cut off a delayed final answer', async ({ page 
   let child: ChildProcess | undefined;
   let logs = '';
   try {
-    const env = { ...process.env, STREAM_FIXTURE_KEY: 'not-a-real-model-key', NODE_ENV: 'test',
+    const env: NodeJS.ProcessEnv = { ...process.env, STREAM_FIXTURE_KEY: 'not-a-real-model-key', NODE_ENV: 'test',
       PATH: `${root}/tests/e2e/fixtures/completion-stream-bin:${process.env.PATH}` };
     delete env.DATABASE_URL;
     delete env.DATABASE_MIGRATION_URL;

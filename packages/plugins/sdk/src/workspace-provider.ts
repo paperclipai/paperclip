@@ -65,7 +65,7 @@ export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("remove"),
-      binding: workspaceProviderBindingSchema,
+      binding: workspaceProviderBindingSchema.nullable(),
       expectedHeadSha: sha.nullable(),
       recoveryPullRequest: workspaceRecoveryPullRequestSchema.optional(),
     })

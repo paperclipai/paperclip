@@ -1382,6 +1382,7 @@ async function loadCompanyUserDirectory(db: Db, companyId: string) {
     .select({
       principalId: companyMemberships.principalId,
       status: companyMemberships.status,
+      membershipRole: companyMemberships.membershipRole,
     })
     .from(companyMemberships)
     .where(
@@ -1399,6 +1400,7 @@ async function loadCompanyUserDirectory(db: Db, companyId: string) {
   return members.map((member) => ({
     principalId: member.principalId,
     status: "active" as const,
+    membershipRole: member.membershipRole,
     user: userMap.get(member.principalId) ?? null,
   }));
 }
@@ -2793,7 +2795,7 @@ export function accessRoutes(
         created.challenge.id,
         created.challengeSecret,
       );
-      const baseUrl = requestBaseUrl(req);
+      const baseUrl = resolveBaseUrl(req, opts.authPublicBaseUrl);
       res.status(201).json({
         id: created.challenge.id,
         token: created.challengeSecret,

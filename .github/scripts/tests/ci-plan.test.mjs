@@ -33,7 +33,9 @@ test("a UI component retains browser and build coverage without unrelated server
   assert.equal(selected(result, "build"), true);
   assert.equal(selected(result, "e2e_shards"), true);
   assert.equal(selected(result, "verify_serialized_server"), false);
-  assert.deepEqual([...selectedTasks(result)].filter((task) => /server|chat|runner/.test(task)), []);
+  // The Runner support suite imports UI modules and checks that catalog-listed
+  // UI files stay tracked, so UI source changes are its inputs too.
+  assert.deepEqual([...selectedTasks(result)].filter((task) => /server|chat|runner/.test(task)), ["ci:runner-e2e-support"]);
   assert.equal(result.jobs.general_tests.selected, 2);
 });
 
@@ -74,6 +76,31 @@ test("shared contracts, runtime prompts, protocol inputs and fixtures reach cons
   for (const file of ["tests/runner-e2e/fixtures/prompt.md", "scripts/run-vitest-stable.mjs", "pnpm-lock.yaml"]) {
     assert.ok(Object.values(plan([file]).jobs).every((job) => job.selected === job.total), file);
   }
+});
+
+test("sandbox provider tests run only for the providers, the plugin SDK, and what the SDK imports", () => {
+  for (const file of ["packages/plugins/sandbox-providers/daytona/src/plugin.ts",
+    "packages/plugins/sandbox-providers/cloudflare/bridge-template/src/index.ts",
+    "packages/plugins/sdk/src/index.ts", "packages/shared/src/types/issue.ts"]) {
+    assert.equal(selected(plan([file]), "sandbox_provider_tests"), true, file);
+  }
+  for (const file of ["server/src/index.ts", "ui/src/components/Sidebar.tsx", "cli/src/index.ts",
+    "packages/paperclip-runner/src/index.ts", "packages/plugins/plugin-workspace-diff/src/worker.ts"]) {
+    assert.equal(selected(plan([file]), "sandbox_provider_tests"), false, file);
+  }
+  // The provider lockfiles, the shared install workspace and the runner script are global inputs.
+  for (const file of ["scripts/typecheck-sandbox-providers/pnpm-lock.yaml", "scripts/test-sandbox-providers.mjs",
+    "packages/plugins/sandbox-providers/daytona/package.json"]) {
+    assert.equal(selected(plan([file]), "sandbox_provider_tests"), true, file);
+  }
+  // The SDK depends on shared and nothing else in the workspace. A new dependency must join the inputs.
+  const sdk = JSON.parse(readFileSync(new URL("packages/plugins/sdk/package.json", root), "utf8"));
+  const workspace = Object.entries({ ...sdk.dependencies, ...sdk.peerDependencies })
+    .filter(([, version]) => String(version).startsWith("workspace:")).map(([name]) => name);
+  assert.deepEqual(workspace, ["@paperclipai/shared"]);
+  const shared = JSON.parse(readFileSync(new URL("packages/shared/package.json", root), "utf8"));
+  assert.deepEqual(Object.values({ ...shared.dependencies, ...shared.peerDependencies })
+    .filter((version) => String(version).startsWith("workspace:")), []);
 });
 
 test("renames out of source and deletions cannot masquerade as release notes", () => {

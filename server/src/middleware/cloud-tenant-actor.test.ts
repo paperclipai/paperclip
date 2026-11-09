@@ -75,6 +75,8 @@ function createFakeDb(options: {
     select: () => {
       return {
         from: (table: unknown) => ({
+          // Pending Muse bindings use a joined read; this fixture has none.
+          innerJoin() { return this; },
           where: (condition: unknown) => {
             // Only settings lookup is degradable. Membership locking and
             // permission seeding must still work in the fail-closed flag test.
@@ -91,6 +93,7 @@ function createFakeDb(options: {
                   : [];
             let locked = false;
             const result = {
+              orderBy: () => ({ limit: () => result }),
               for: () => { locked = true; selected.locked = true; return result; },
               then: (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) => {
                 // The optional cross-company read can fail independently of

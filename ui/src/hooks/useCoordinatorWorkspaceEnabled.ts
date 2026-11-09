@@ -9,8 +9,6 @@ import { queryKeys } from "@/lib/queryKeys";
 let detachedClient: QueryClient | null = null;
 const getDetachedClient = () => detachedClient ??= new QueryClient();
 
-/** Per-person, initially-off presentation choice. The existing local-board
- * principal is used only when the server explicitly reports local_trusted. */
 export function useCoordinatorWorkspaceEnabled() {
   const contextClient = useContext(QueryClientContext);
   const client = contextClient ?? getDetachedClient();
@@ -44,10 +42,11 @@ export function useCoordinatorWorkspaceEnabled() {
       client.setQueryData(queryKeys.workspacePreferences.mine(result.userId), result);
     },
   }, client);
+  const classicWorkspaceEnabled = !!userId && preference.isSuccess
+    && preference.data.userId === userId && preference.data.coordinatorWorkspaceEnabled === false;
   const identityLoaded = session.isFetched && (!!sessionUserId || session.isError || health.isFetched);
   return {
-    enabled: !!contextClient && !!userId && preference.isSuccess
-      && preference.data.userId === userId && preference.data.coordinatorWorkspaceEnabled === true,
+    enabled: !!contextClient && !classicWorkspaceEnabled,
     loaded: !contextClient || (identityLoaded && (!userId || preference.isFetched)),
     userId,
     error: session.error ?? (!sessionUserId ? health.error : null) ?? preference.error

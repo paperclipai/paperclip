@@ -203,6 +203,7 @@ export async function buildExecutionContinuation(input: {
   runId?: string;
   summary: string | null;
   exposeLowTrustRaw: boolean;
+  prospectiveTaskStatus?: "todo";
 }): Promise<ExecutionContinuationEnvelope> {
   const { db, companyId, issueId } = input;
   const [issue] = await db
@@ -213,7 +214,7 @@ export async function buildExecutionContinuation(input: {
     !issue ||
     issue.assigneeAgentId !== input.agentId ||
     issue.status === "cancelled" ||
-    (issue.status === "done" && !await isCompletedOnboardingHandoffWake(db, {
+    (issue.status === "done" && input.prospectiveTaskStatus !== "todo" && !await isCompletedOnboardingHandoffWake(db, {
       companyId, issueId, agentId: input.agentId,
       reason: string(input.context.wakeReason), contextSnapshot: input.context,
     }))
@@ -458,7 +459,6 @@ export async function buildExecutionContinuation(input: {
         eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.reason, "task_retry"),
         eq(agentWakeupRequests.requestedByActorType, "user"), eq(agentWakeupRequests.status, "coalesced"),
         sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
-        input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
       )) : [];
     const taskRetry = readTaskRetryIntent(taskRetryWake?.payload);
     const retryAuthorization = taskRetry && taskRetry.generationId === taskRetryWake?.id
@@ -485,9 +485,15 @@ export async function buildExecutionContinuation(input: {
         input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
       )) : [];
     const authorization = continuationAuthorizations.find(value => taskRetryId
-          ? value.taskRetryRequestId === taskRetryId && taskRetryWake?.runId === value.runId &&
-            taskRetryWake.requestedByActorId === value.actorId &&
-            object(taskRetryWake.payload?.taskRetry).sourceRunId === value.previousRunId
+          ? value.taskRetryRequestId === taskRetryId && taskRetryWake?.requestedByActorId === value.actorId && (
+              // The Retry receipt stays bound to the run it admitted. A bounded
+              // automatic retry of that run carries its own admission receipt.
+              value.automaticRetry
+                ? taskRetry?.generationId === taskRetryWake.id && taskRetry.actorId === value.actorId &&
+                  object(value.automaticRetry).sourceRunId === explicitUserSource && issue.executionRunId === input.runId &&
+                  priorRuns.some(run => run.id === value.runId && run.retryOfRunId === explicitUserSource)
+                : taskRetryWake.runId === value.runId &&
+                  object(taskRetryWake.payload?.taskRetry).sourceRunId === value.previousRunId)
           : failedRunId
           ? value.failedRunId === failedRunId && retryWakes.some(wake =>
               wake.runId === value.runId && wake.requestedByActorId === value.actorId &&

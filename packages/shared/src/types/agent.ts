@@ -38,6 +38,9 @@ export type AgentInstructionsBundleMode = "managed" | "external";
 
 export interface AgentInstructionsFileSummary {
   path: string;
+  /** Creation is exposed only when recorded; historical files may only have a modification date. */
+  createdAt?: string;
+  updatedAt?: string;
   contentHash?: string;
   binary?: boolean;
   size: number;

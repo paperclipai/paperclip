@@ -361,6 +361,20 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
 
 // --- App builder with a capturing request logger -----------------------------
 
+function loadRouteModules() {
+  return Promise.all([
+    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("pino")>("pino"),
+    vi.importActual<typeof import("pino-http")>("pino-http"),
+    vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
+      "../middleware/redact-sensitive.js",
+    ),
+  ]);
+}
+
+let routeModules: Awaited<ReturnType<typeof loadRouteModules>>;
+
 interface AppHandle {
   app: express.Express;
   logLines: string[];
@@ -372,16 +386,7 @@ async function createApp(opts: {
   confidentialEdgeTlsTerminated?: boolean;
   transport?: TransportHandle;
 } = {}): Promise<AppHandle> {
-  const [{ agentRoutes }, { errorHandler }, pinoModule, pinoHttpModule, redactModule] =
-    await Promise.all([
-      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-      vi.importActual<typeof import("pino")>("pino"),
-      vi.importActual<typeof import("pino-http")>("pino-http"),
-      vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
-        "../middleware/redact-sensitive.js",
-      ),
-    ]);
+  const [{ agentRoutes }, { errorHandler }, pinoModule, pinoHttpModule, redactModule] = routeModules;
   const { pino } = pinoModule;
   const { pinoHttp } = pinoHttpModule;
   const { redactSensitive } = redactModule;
@@ -465,9 +470,10 @@ async function settle(): Promise<void> {
   }
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   vi.resetModules();
   registerModuleMocks();
+  routeModules = await loadRouteModules();
 });
 
 beforeEach(() => {

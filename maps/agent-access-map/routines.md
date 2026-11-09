@@ -39,8 +39,8 @@ Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
 Gaps: No dedicated production manage_routine binding; generic `call_api` provides
-the permitted REST path. Creation needs a responsible user resolved from the parent
-issue or company default.
+the permitted REST path. Creation resolves responsibility from the authenticated
+agent's on-behalf-of user, then the parent issue or company default.
 
 ## `triggers`
 
