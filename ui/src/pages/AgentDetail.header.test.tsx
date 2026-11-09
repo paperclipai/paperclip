@@ -28,12 +28,7 @@ describe("AgentDetailHeader", () => {
           avatarLabel="Test agent avatar"
           portrait={<div data-testid="portrait" />}
           identity={<div data-testid="identity" />}
-          actions={
-            <div
-              data-testid="actions"
-              className="flex items-center gap-1 sm:gap-2 shrink-0 max-sm:w-full max-sm:justify-end"
-            />
-          }
+          actions={<div data-testid="actions" />}
         />,
       ),
     );
@@ -46,7 +41,7 @@ describe("AgentDetailHeader", () => {
     expect(portrait?.parentElement?.getAttribute("aria-label")).toBe("Test agent avatar");
 
     const actions = container.querySelector('[data-testid="actions"]');
-    expect(actions?.className).toContain("max-sm:w-full");
-    expect(actions?.className).toContain("max-sm:justify-end");
+    expect(actions?.parentElement?.className).toContain("max-sm:w-full");
+    expect(actions?.parentElement?.className).toContain("max-sm:justify-end");
   });
 });

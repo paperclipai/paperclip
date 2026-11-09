@@ -373,7 +373,9 @@ export function AgentDetailHeader({
         {portrait}
       </div>
       <div className="min-w-0 flex-1">{identity}</div>
-      {actions}
+      <div className="flex shrink-0 max-sm:w-full max-sm:justify-end">
+        {actions}
+      </div>
     </header>
   );
 }
@@ -959,7 +961,7 @@ export function AgentDetail() {
             companyId={resolvedCompanyId}
             assignLabel="New task"
             size="default"
-            className="flex items-center gap-1 sm:gap-2 shrink-0 max-sm:w-full max-sm:justify-end"
+            className="flex items-center gap-1 sm:gap-2 shrink-0"
             showAssignIcon={false}
             showChat
             showStatus={false}
