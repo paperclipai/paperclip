@@ -1,0 +1,30 @@
+{
+  "source": {
+    "type": "github",
+    "hostname": "github.com",
+    "owner": "virling",
+    "repo": "virling",
+    "ref": "v0.3.0",
+    "commit": "e7e42d2ea5647eb00be6ffea100158d252d5e8f2",
+    "path": "plugins/virling/skills/virling"
+  },
+  "files": [
+    "SKILL.md",
+    "setup.md",
+    "examples.md"
+  ],
+  "defaultInstall": false,
+  "recommendedForRoles": [
+    "ceo",
+    "marketer",
+    "analyst"
+  ],
+  "tags": [
+    "revenue",
+    "attribution",
+    "analytics",
+    "marketing",
+    "channels",
+    "mcp"
+  ]
+}
