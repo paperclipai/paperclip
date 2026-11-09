@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeIndependentReview } from "./runtime-independent-review.js";
+import { gradeIndependentReview, replyLinksTask } from "./runtime-independent-review.js";
 function valid() {
   const policy = { stages: [{ id: "review-stage", type: "review", participants: [{ type: "agent", agentId: "riley" }] }] };
   return { scenarioId: "task-coordination.independent-review", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "", tasks: [{ id: "website" }], activity: [],
@@ -10,12 +10,25 @@ function valid() {
         executionState: { status: "pending", currentStageType: "review", currentParticipant: { agentId: "riley" }, returnAssignee: { agentId: "morgan" } } },
       reviewAfter: { id: "website", status: "done", executionPolicy: policy, executionState: { status: "completed", lastDecisionOutcome: "approved", lastDecisionId: "riley-decision" } },
       setupReviewRunCount: 0, actualImplementation: true, reviewerEligibleBeforeQuery: true, reviewRequestSourceBound: true, reviewerWasReallyWaiting: true, reviewerActualBriefAccess: true, acceptanceContextDelivered: true,
-      selfApproveStatus: 422, selfApprovalPreservedPending: true, pendingReviewVisible: true, pendingReplyAttributed: true,
+      selfApproveStatus: 422, selfApprovalPreservedPending: true, pendingReviewVisible: true, pendingReplyAttributed: true, pendingReplyLinksTask: true, finalReplyLinksTask: true,
       pendingReply: "Riley has the review request; Morgan's implementation is saved, but final completion awaits that independent review.",
       rileyApprovalBound: true, implementationRetained: true, finalReplyAttributed: true, finalReply: "Riley approved the independent review of Morgan's actual website, and the governed task is complete." } };
 }
 it("accepts real implementation, requested independent review, self-approval denial and final resolution", () => expect(gradeIndependentReview(valid()).passed).toBe(true));
 it("accepts natural substantive pending and completed review paraphrases", () => { const o = valid(); o.state.pendingReply = "The page is implemented. Riley is reviewing it before we consider the work finished."; o.state.finalReply = "Riley's sign-off is recorded: the checks passed and the website is ready."; expect(gradeIndependentReview(o).passed).toBe(true); });
+// Retained run 42612964001: the canonical reply said "Done — [COM-1 Launch Website](/COM/issues/COM-1) is now in review, assigned to [Riley](...)".
+// Its meaning (requested, not completed) is graded from saved state; the wording is free.
+it("accepts reworded replies whose wording shares no keywords with the checks", () => { const o = valid(); o.state.pendingReply = "Handed off: [COM-1](/COM/issues/COM-1) now sits with Riley's queue."; o.state.finalReply = "Signed off — see [COM-1](/COM/issues/COM-1)."; expect(gradeIndependentReview(o).passed).toBe(true); });
+it("rejects a pending reply that does not link the governed task", () => { const o = valid(); o.state.pendingReplyLinksTask = false; expect(gradeIndependentReview(o).passed).toBe(false); });
+it("rejects a final reply that does not link the governed task", () => { const o = valid(); o.state.finalReplyLinksTask = false; expect(gradeIndependentReview(o).passed).toBe(false); });
+it("rejects a final reply still claiming the review is pending", () => { const o = valid(); o.state.finalReply = "Riley's review is still pending on [COM-1](/COM/issues/COM-1)."; expect(gradeIndependentReview(o).passed).toBe(false); });
+it("finds only links to the exact task page", () => {
+  const task = { id: "43be6f63-30de-47c4-bee0-786abda11f5c", identifier: "COM-1" };
+  expect(replyLinksTask("Done — [COM-1 Launch Website](/COM/issues/COM-1) is now in review.", task)).toBe(true);
+  expect(replyLinksTask("[task](http://127.0.0.1:3100/COM/issues/43be6f63-30de-47c4-bee0-786abda11f5c)", task)).toBe(true);
+  expect(replyLinksTask("COM-1 is now in review.", task)).toBe(false);
+  expect(replyLinksTask("[other](/COM/issues/COM-12) [doc](/COM/issues/COM-1/documents/website-review)", task)).toBe(false);
+});
 it("rejects setup already executing the requested review", () => { const o = valid(); o.state.setupReviewRunCount = 1; expect(gradeIndependentReview(o).passed).toBe(false); });
 it("rejects an ineligible reviewer", () => { const o = valid(); o.state.reviewerEligibleBeforeQuery = false; expect(gradeIndependentReview(o).passed).toBe(false); });
 it("rejects Morgan self-review", () => { const o = valid(); o.state.reviewer.id = "morgan"; expect(gradeIndependentReview(o).passed).toBe(false); });
