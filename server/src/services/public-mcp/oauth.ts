@@ -448,7 +448,13 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
         if(mintAuthority){
           assertCurrentMcpDeviceMint(mintAuthority,config.resource);
-          if(dotAgentConnection)await assertDotDeviceProfileAck(tx,config.resource,mintAuthority.instanceId);
+          if(dotAgentConnection){
+            try{await assertDotDeviceProfileAck(tx,config.resource,mintAuthority.instanceId);}
+            catch(error){
+              if(error instanceof HttpError&&error.status===503)throw new McpOAuthError("temporarily_unavailable","The hosted Dot connection is being reconciled.",503);
+              throw error;
+            }
+          }
         }
         if(await requiresMcpDeviceBroker(tx as unknown as Db,config.resource)&&!mintAuthority)throw new McpOAuthError("invalid_request","Use the canonical Paperclip device authorization endpoint.");
         await prepareMcpClientMutation(tx as unknown as Db);
