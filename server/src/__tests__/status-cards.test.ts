@@ -500,6 +500,11 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(res.body.enqueued).toBe(true);
     // The queued refresh carries the card's page, so the requester can link it instead of waiting for the summary.
     expect(res.body.card.href).toBe(`/${company.issuePrefix}/status/${card.id}`);
+    // Any assigned summarizer, not only the built-in one, gets the full write-back and failure contract inline.
+    const [generation] = await db.select().from(issues).where(eq(issues.id, res.body.generatingIssue.id));
+    expect(generation?.description).toContain("put the final Markdown between a `<<<SUMMARY-DRAFT>>>` line and a `<<<END-SUMMARY-DRAFT>>>` line");
+    expect(generation?.description).toContain("there is no other format to look up");
+    expect(generation?.description).toContain("comment the reason on this task and set it to blocked");
   });
 
   it("requires tasks:assign for mutations", async () => {
