@@ -1,7 +1,7 @@
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely } from "../chat-catalog-contract.js";
 import { expect } from "@playwright/test";
 import type { IssueTreeHold } from "../../../packages/shared/src/types/issue-tree-control.js";
-import { pollUntil } from "../api.js";
+import { ObservedStateTimeout, pollUntil } from "../api.js";
 import { checks, hasLink, type Entity } from "./internal-support.js";
 import { probeAgentPermission, cleanupIdentityProbes } from "./identity-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
@@ -126,8 +126,11 @@ export const runtimeTreeCases = ["task-coordination.pause-tree", "steering.stop-
     // "Wake affected agents" unchecked. Prove it re-admits exactly the two interrupted active
     // branches and never the independently held child, then stop those fixture runs.
     const branchTasks = [String((state.task as Entity).id), String(((state.second as State).task as Entity).id)];
+    // When no interrupted work exists (for example the lead backlogged the tasks itself), the
+    // grader reports that outcome instead of this wait timing out as a setup failure.
     const resumed = await pollUntil({ label: "Release re-admits only the interrupted active branches", deadlineAt: Date.now() + 60_000,
-      load: () => ctx.allRuns(), accept: runs => branchTasks.every(id => runs.some(run => !beforeResume.has(run.id) && run.contextSnapshot?.issueId === id)) });
+      load: () => ctx.allRuns(), accept: runs => branchTasks.every(id => runs.some(run => !beforeResume.has(run.id) && run.contextSnapshot?.issueId === id)) })
+      .catch(async error => { if (!(error instanceof ObservedStateTimeout)) throw error; return ctx.allRuns(); });
     const resumedRuns = resumed.filter(run => !beforeResume.has(run.id));
     state.resumedRunIds = resumedRuns.map(run => run.id);
     state.resumedOnlyInterruptedBranches = resumedRuns.length === 2 && branchTasks.every(id => resumedRuns.filter(run => run.contextSnapshot?.issueId === id).length === 1)

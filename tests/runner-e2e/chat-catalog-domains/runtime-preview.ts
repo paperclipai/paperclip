@@ -108,6 +108,8 @@ export const runtimePreviewCases = [runtimeDefinition("workspaces.preview-servic
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/execution-workspaces/${ws.id}`, { waitUntil: "domcontentloaded" });
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
     await expect(ctx.input.page.getByRole("heading", { name: ws.name!, exact: true }).first()).toBeVisible();
+    // The workspace page opens on Tasks; failed runtime operations are listed on its Runtime logs tab.
+    await ctx.input.page.getByRole("tab", { name: "Runtime logs", exact: true }).click();
     await expect(ctx.input.page.getByText(/failed|exit 17|startup/i).first()).toBeVisible();
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   },
