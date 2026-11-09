@@ -58,7 +58,11 @@ export const runtimeLifecycleCases = [runtimeDefinition("agents.pause-agent", ct
     state.beforeHumanStatus = beforeHuman.status; state.beforeHumanLifecycleState = beforeHuman.lifecycleState;
     state.workerRunStatusBeforeHuman = (await ctx.allRuns()).find(run => run.id === state.workerRunId)?.status;
     state.agentPauseStatus = await probeAgentPermission(ctx, `/api/agents/${worker.id}/pause`, "POST", {});
-    const o = await observeRuntime(ctx, state);
+    // The persisted reply can render a moment after the run settles; wait for its link, bounded.
+    let o = await observeRuntime(ctx, state);
+    for (const until = Date.now() + 30_000; !agentLink(o, worker) && Date.now() < until;) {
+      await ctx.input.page.waitForTimeout(2_000); o = await observeRuntime(ctx, state);
+    }
     const source = ctx.input.page.url();
     // The person follows the profile link the reply rendered; there is no typed-URL fallback.
     const href = agentLink(o, worker);
