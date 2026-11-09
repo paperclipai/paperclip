@@ -63,6 +63,12 @@ export function gradeAccessGrant(value: unknown) {
 }
 const sources = ["chat-catalog-domains/identity-access-grants.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/access.yaml",
   "../../maps/agent-access-map/access.md", "../../server/src/routes/access.ts", "../../server/src/routes/agent-permission-grants.ts", "../../server/src/routes/agents.ts", "../../packages/shared/src/validators/agent.ts"];
+/** Agent authority is now granted through the supported board route, but the
+ * case premise still has no product counterpart: "projects:manage" is not a
+ * Paperclip permission key (PATCH .../permissions answers 400), and member
+ * permission edits are board-only (getProtectedMemberReason) even for an agent
+ * holding users:manage_permissions. Needs a product decision before grading. */
+const MANAGE_MEMBERSHIP_GAP = "No project-management permission key exists, and company member permission edits are board-only even for agents holding users:manage_permissions; the case premise needs a product decision.";
 export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.invite-teammate", "access.manage-membership"].map(scenarioId => identityDefinition(scenarioId, async ctx => {
   const permissionKey = scenarioId.endsWith("invite-teammate") ? "users:invite" : "users:manage_permissions";
   const root = `/api/companies/${ctx.input.fixtures.company.id}`;
@@ -105,6 +111,7 @@ export const accessGrantIdentityCases: readonly ChatCatalogCase[] = ["access.inv
   } catch (error) { await alex.dispose(); people.delete(ctx); throw error; }
 }, gradeAccessGrant, {
   sourceFiles: sources, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.identity.access-grant.v2",
+  ...(scenarioId.endsWith("manage-membership") ? { coverageGaps: [MANAGE_MEMBERSHIP_GAP] } : {}),
   async observe(ctx, state) {
     if (scenarioId.endsWith("invite-teammate")) {
       state.invitations = (await ctx.input.api.get<{ invites: Invitation[] }>(`/api/companies/${ctx.input.fixtures.company.id}/invites`)).invites.filter(row => !(state.invitationsBefore as string[]).includes(row.id));

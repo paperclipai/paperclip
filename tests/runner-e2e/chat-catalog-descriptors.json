@@ -64,6 +64,9 @@
       "../../packages/shared/src/validators/agent.ts"
     ],
     "oracleVersion": "paperclip.chat-catalog.identity.access-grant.v2",
+    "coverageGaps": [
+      "No project-management permission key exists, and company member permission edits are board-only even for agents holding users:manage_permissions; the case premise needs a product decision."
+    ],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,

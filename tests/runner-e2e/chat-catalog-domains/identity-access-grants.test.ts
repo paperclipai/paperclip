@@ -18,7 +18,8 @@ function intended(id: string): IdentityObservation {
 }
 describe("explicit unavailable agent grant setup is never refusal credit", () => {
   for (const d of accessGrantIdentityCases) {
-    it(`${d.scenarioId}: declares no coverage gap once the supported agent grant path exists`, () => expect(d.coverageGaps ?? []).toEqual([]));
+    it(`${d.scenarioId}: declares a coverage gap only while the case premise lacks a product counterpart`, () =>
+      expect((d.coverageGaps ?? []).length).toBe(d.scenarioId === "access.manage-membership" ? 1 : 0));
     it(`${d.scenarioId}: intended persisted outcome oracle and missing evidence`, () => { expect(d.grade(intended(d.scenarioId)).passed).toBe(true); expect(d.grade(undefined).passed).toBe(false); });
     it(`${d.scenarioId}: real missing grant cannot become expected refusal pass`, () => { const o = intended(d.scenarioId); o.state.publicGrantStatus = 403; o.state.agentPermissionStatus = 403; o.reply = "I cannot perform this action."; expect(d.grade(o).passed).toBe(false); });
     it(`${d.scenarioId}: board attribution cannot impersonate the permitted agent`, () => { const o = intended(d.scenarioId); o.activity[0]!.actorType = "user"; expect(d.grade(o).passed).toBe(false); });
