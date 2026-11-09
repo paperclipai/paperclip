@@ -2,12 +2,6 @@
 
 Product map: [Hiring, agent configuration, and organization](../feature-map/agents.md).
 
-Saving an authorized agent environment change that needs a new lifecycle plugin
-automatically pauses, resumes, and verifies that agent. Configuration permissions
-still govern the write; this adds no separate lifecycle or credential authority.
-Existing manual, company, and budget holds remain in force. The environment-plugin
-regressions use a fixture plugin and do not establish live agent execution.
-
 Feature ID: `agents`.
 
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
