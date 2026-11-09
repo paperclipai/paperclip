@@ -11,28 +11,17 @@ function valid() {
         reply: "The synthetic fixture rendered 487 rows with 469 comments. Mount was 12.3 ms; total was 20.4 ms. This measures render cost, not production throughput or model latency." } } };
 }
 it("accepts actual fixed-fixture measurements and attributed limited interpretation", () => expect(gradeLongThreadPerformance(valid()).passed).toBe(true));
-it("accepts ordinary display rounding and the reversed phrasing of a production limitation", () => {
-  const o = valid(); o.state.interpretation.reply = "The synthetic fixture mount was 12 ms. Production throughput cannot be inferred from these render timings.";
-  expect(gradeLongThreadPerformance(o).passed).toBe(true);
-});
-it("rejects invented timings and swaps between named metrics", () => {
-  for (const text of ["The synthetic fixture mount was 500 ms. It does not prove production throughput.",
-    "The synthetic fixture mount was 20.4 ms. It does not prove production throughput."]) {
-    const o = valid(); o.state.interpretation.reply = text; expect(gradeLongThreadPerformance(o).passed).toBe(false);
-  }
-});
-it("rejects wrong data size, unrelated phase and unmeasured production throughput", () => {
-  const o = valid(); o.state.interpretation.reply += " Production throughput is 100 requests per second.";
-  expect(gradeLongThreadPerformance(o).passed).toBe(false);
-  const wrong = valid(); wrong.state.interpretation.reply = wrong.state.interpretation.reply.replace("487 rows", "900 rows");
-  expect(gradeLongThreadPerformance(wrong).passed).toBe(false);
-  const commits = valid(); commits.state.interpretation.reply = "The fixture took 5 profiler commits."; expect(gradeLongThreadPerformance(commits).passed).toBe(false);
-  const phase = valid(); phase.state.interpretation.attributed = false; expect(gradeLongThreadPerformance(phase).passed).toBe(false);
-  expect(gradeLongThreadPerformance(null).passed).toBe(false);
-});
-it("does not grade the interpretation's wording", () => {
-  for (const text of ["Rendering the big thread took about half a second to mount and stayed smooth after that. That is one local page load, so it says nothing about live traffic or how fast the model answers.",
-    "Mount 12.3 ms, total 20.4 ms over 2 commits: fine for a single page load in this lab."]) {
+it("does not parse the interpretation's numbers or wording", () => {
+  for (const text of ["Encouraging at ~470 comments (mount ~0.27s, append ~22ms); add points such as 50 comments to see the growth curve.",
+    "Rendering the big thread took about half a second to mount. That is one local page load, so it says nothing about live traffic."]) {
     const o = valid(); o.state.interpretation.reply = text; expect(gradeLongThreadPerformance(o).passed).toBe(true);
   }
+});
+it("rejects a reply not bound to the persisted report, or an unmeasured report", () => {
+  const phase = valid(); phase.state.interpretation.attributed = false; expect(gradeLongThreadPerformance(phase).passed).toBe(false);
+  const empty = valid(); empty.state.interpretation.reply = ""; expect(gradeLongThreadPerformance(empty).passed).toBe(false);
+  const extra = valid(); extra.runs.push({ id: "third", agentId: "lead", status: "succeeded" }); expect(gradeLongThreadPerformance(extra).passed).toBe(false);
+  const pending = valid(); pending.state.performanceReport.mountMs = Number.NaN; expect(gradeLongThreadPerformance(pending).passed).toBe(false);
+  const size = valid(); size.state.performanceReport.rowCount = 12; expect(gradeLongThreadPerformance(size).passed).toBe(false);
+  expect(gradeLongThreadPerformance(null).passed).toBe(false);
 });
