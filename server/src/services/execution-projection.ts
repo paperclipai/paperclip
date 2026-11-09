@@ -280,6 +280,11 @@ export function projectExecution(
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
+  const currentErrorFamily = text(run.resultJson?.errorFamily) ?? run.errorCode;
+  const errorFamily = currentErrorFamily ?? (
+    run.status === "scheduled_retry" || !run.resultJson
+      ? text(run.contextSnapshot?.errorFamily) : null
+  );
   const projection: ExecutionProjection = {
     // A live run is always stoppable by the board (POST /heartbeat-runs/:id/cancel);
     // a failed native run is stoppable only while its retry is still pending.
@@ -300,7 +305,7 @@ export function projectExecution(
       (coordinator?.nextAttemptAt ?? run.scheduledRetryAt)?.toISOString() ??
       null,
     attempt: coordinator?.attempt ?? executionFailureRetryCount(run) + 1,
-    maxAttempts: run.runtimeMode === "legacy" && (run.errorCode === "provider_quota" || run.resultJson?.errorFamily === "provider_quota" || run.contextSnapshot?.errorFamily === "provider_quota")
+    maxAttempts: run.runtimeMode === "legacy" && errorFamily === "provider_quota"
       ? PROVIDER_QUOTA_RETRY_DELAYS_MS.length + 1 : 3,
     recoveryOwner: null,
     nextAction: text(detail.nextAction) ?? run.nextAction,

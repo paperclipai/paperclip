@@ -238,6 +238,18 @@ describe("execution truth projection", () => {
     expect(projectExecution(run({ runtimeMode: "legacy", status: "failed", errorCode: "provider_quota", scheduledRetryAttempt: 3 }), undefined, [], undefined, now)).toMatchObject({ attempt: 4, maxAttempts: 5 });
     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", errorCode: null, scheduledRetryAttempt: 4, contextSnapshot: { errorFamily: "provider_quota" } }), undefined, [], undefined, now)).toMatchObject({ attempt: 5, maxAttempts: 5 });
   });
+  it.each([
+    { errorCode: "adapter_failed", resultJson: { errorFamily: "transient_upstream" } },
+    { errorCode: "adapter_failed", resultJson: null },
+    { errorCode: null, resultJson: { errorFamily: "transient_upstream" } },
+    { errorCode: null, resultJson: {} },
+  ])("uses the current failure budget over inherited quota context: %j", (failure) => {
+    expect(projectExecution(run({
+      runtimeMode: "legacy", status: "failed", scheduledRetryAttempt: 2,
+      contextSnapshot: { errorFamily: "provider_quota" }, ...failure,
+    }), undefined, [], undefined, now)).toMatchObject({ attempt: 3, maxAttempts: 3 });
+  });
+
   it("shows pending interaction only after productive work has stopped", () => {
     expect(
       project(run(), coordinator(), [{ kind: "connection_intent" }]).phase,

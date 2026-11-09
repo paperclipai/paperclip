@@ -468,6 +468,8 @@ function dateFromTimeZoneWallClock(input: {
   return candidate;
 }
 
+const CLAUDE_RESET_CLOCK_GRACE_MS = 5 * 60_000;
+
 function nextClockTimeInTimeZone(input: {
   now: Date;
   hour: number;
@@ -488,7 +490,10 @@ function nextClockTimeInTimeZone(input: {
   });
   if (!retryAt) return null;
 
-  if (retryAt.getTime() <= input.now.getTime()) {
+  if (
+    retryAt.getTime() <= input.now.getTime() &&
+    input.now.getTime() - retryAt.getTime() > CLAUDE_RESET_CLOCK_GRACE_MS
+  ) {
     const nextDay = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + 1, 0, 0, 0, 0));
     retryAt = dateFromTimeZoneWallClock({
       year: nextDay.getUTCFullYear(),
@@ -528,7 +533,10 @@ function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: 
 
   const retryAt = new Date(now);
   retryAt.setHours(hour24, minute, 0, 0);
-  if (retryAt.getTime() <= now.getTime()) {
+  if (
+    retryAt.getTime() <= now.getTime() &&
+    now.getTime() - retryAt.getTime() > CLAUDE_RESET_CLOCK_GRACE_MS
+  ) {
     retryAt.setDate(retryAt.getDate() + 1);
   }
   return retryAt;
@@ -546,7 +554,8 @@ export function extractClaudeRetryNotBefore(
   const haystack = buildClaudeTransientHaystack(input);
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
   if (!match) return null;
-  return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+  const retryAt = parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+  return retryAt && retryAt.getTime() > now.getTime() ? retryAt : null;
 }
 
 export function isClaudeTransientUpstreamError(input: {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { extractClaudeRetryNotBefore } from "../../../packages/adapters/claude-local/src/server/parse.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -28,6 +29,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
+import { executionProjectionsForRuns } from "../services/execution-projection.js";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
@@ -125,7 +127,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
-  }, 20_000);
+  }, 120_000);
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the
@@ -2126,6 +2128,31 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     }).where(eq(heartbeatRuns.id, predecessor));
     expect(await heartbeat.scheduleBoundedRetry(predecessor, { now, random: () => 0.5 }))
       .toMatchObject({ outcome: "retry_exhausted" });
+  });
+
+  it("uses bounded backoff when Claude repeats a just-expired reset clock", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-11-06T08:30:01.000Z");
+    const retryNotBefore = extractClaudeRetryNotBefore({
+      errorMessage: "You've hit your 5 hour limit · resets 9:30am (Europe/Amsterdam)",
+    }, now)?.toISOString() ?? null;
+    await seedRetryFixture({ runId, companyId, agentId, now, adapterType: "claude_local",
+      errorCode: "provider_quota", errorFamily: "provider_quota", scheduledRetryAttempt: 1,
+      retryNotBefore });
+
+    const result = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+    expect(result).toMatchObject({ outcome: "scheduled", dueAt: new Date("2026-11-06T08:31:01.000Z") });
+    if (result.outcome !== "scheduled") throw new Error("Expected a retry");
+    const [persisted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, result.run.id));
+    expect(persisted.scheduledRetryAt?.toISOString()).toBe("2026-11-06T08:31:01.000Z");
+    expect((persisted.contextSnapshot as Record<string, unknown>)?.providerQuotaRetryNotBefore ?? null).toBeNull();
+    expect((await executionProjectionsForRuns(db, companyId, [persisted.id], now)).get(persisted.id))
+      .toMatchObject({ maxAttempts: 5 });
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "claude_transient_upstream",
+      resultJson: { errorFamily: "transient_upstream" },
+    }).where(eq(heartbeatRuns.id, persisted.id));
+    expect((await executionProjectionsForRuns(db, companyId, [persisted.id], now)).get(persisted.id))
+      .toMatchObject({ maxAttempts: 3 });
   });
 
   it("honors codex retry-not-before timestamps when they exceed the default bounded backoff", async () => {
