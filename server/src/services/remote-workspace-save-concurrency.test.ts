@@ -516,6 +516,35 @@ describe.skipIf(!support.supported)("remote workspace save parent lock order", (
     expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(false);
   }, 30_000);
 
+  it("keeps a save invocation live and retries its settlement when the settlement write fails", async () => {
+    const f = await preparedFailure();
+    let failNextTransaction = false;
+    const flaky = new Proxy(db, { get(target, property, receiver) {
+      if (property === "transaction") return (...args: Parameters<typeof db.transaction>) => {
+        if (failNextTransaction) { failNextTransaction = false; return Promise.reject(new Error("connection terminated")); }
+        return target.transaction(...args);
+      };
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    } }) as typeof db;
+    const refused: AdapterSandboxExecutionTarget = { ...f.target, runner: { ...f.target.runner!,
+      execute: async () => { failNextTransaction = true; throw new Error("Daytona sandbox lease SYNTHETIC-private-id is no longer active."); } } };
+    await expect(saveRemoteWorkspace({ db: flaky, storage: f.storage, workspace: f.workspace, runId: f.runId, lease: f.lease,
+      target: refused, assertOwned: async () => undefined })).rejects.toThrow("no longer active");
+    const snapshotOperation = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
+      sql`${workspaceOperations.metadata}->>'boundary' = 'final'`)))[0]!;
+    const pending = await snapshotOperation();
+    const [invocation] = (pending.metadata!.saveWork as { activeIds: string[] }).activeIds;
+    expect(pending.status).toBe("running");
+    expect(invocation).toBeDefined();
+    expect(isRemoteWorkspaceSaveInvocationLive(invocation!)).toBe(true);
+    await vi.waitFor(async () => {
+      expect(await snapshotOperation()).toMatchObject({ status: "failed", metadata: { saveWork: { activeIds: [], owners: {} } } });
+      expect(isRemoteWorkspaceSaveInvocationLive(invocation!)).toBe(false);
+    }, { timeout: 10_000, interval: 200 });
+  }, 30_000);
+
   it("ends a failed save operation with its redacted cause and reopens it for the retry", async () => {
     const f = await preparedFailure();
     const refused: AdapterSandboxExecutionTarget = { ...f.target, runner: { ...f.target.runner!,
