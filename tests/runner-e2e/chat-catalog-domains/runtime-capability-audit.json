@@ -37,7 +37,7 @@
     {
       "scenarioId": "agents.restore-instructions",
       "readinessClass": "implemented",
-      "needs": "Two real saved instruction revisions; restore exact predecessor; history, side file, source-run/agent attribution and profile UI."
+      "needs": "Real unwanted edit through the supported save path with no recorded history (#14420); instructions unchanged, no agent write or fabricated revision, side file and config retained; reply read by a human for an honest no-history answer."
     },
     {
       "scenarioId": "agents.change-manager",
@@ -112,7 +112,7 @@
     {
       "scenarioId": "agent-chat.chat-disabled",
       "readinessClass": "implemented",
-      "needs": "Actual allowlisted authenticated-harness boundary; disable Agent Chat itself; real Morgan route unavailable/no composer, agent settings denial, create-chat 404, usable Morgan profile and zero tasks/chats/native admissions."
+      "needs": "Actual allowlisted authenticated-harness boundary; Conference Room experiment off (Agent Chat is always on); old board-chat link lands on the working dashboard with no Conference Room nav, ordinary Chat with Morgan opens, board-chat API FEATURE_DISABLED, agent settings denial and no disguised tasks/native admissions."
     },
     {
       "scenarioId": "runs-adapters.list-model-options",

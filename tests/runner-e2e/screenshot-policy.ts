@@ -33,19 +33,20 @@ export function isPublicRunnerScreenshotRoute(
   }
 }
 
-/** The one zero-task chat boundary has no source issue. Its resource identity
- * must be independently read through the actual signed-in page before capture.
+/** The one zero-task Conference Room boundary has no source issue. Its resource identity
+ * must be independently read through the actual signed-in page before capture. With the
+ * experiment off, the old Conference Room link lands on this company's dashboard.
  */
-export function isDisabledChatBoundaryScreenshotRoute(url: string, target: {
+export function isConferenceRoomOffBoundaryScreenshotRoute(url: string, target: {
   scenarioId: string; origin: string; companyId: string; agentCompanyId: string;
-  issuePrefix: string; agentId: string; authenticatedPersonId: string; agentChatEnabled: boolean;
+  issuePrefix: string; agentId: string; authenticatedPersonId: string; conferenceRoomEnabled: boolean;
 }) {
   try {
     const candidate = new URL(url), origin = new URL(target.origin);
-    return target.scenarioId === "agent-chat.chat-disabled" && target.agentChatEnabled === false && !!target.companyId && target.agentCompanyId === target.companyId
+    return target.scenarioId === "agent-chat.chat-disabled" && target.conferenceRoomEnabled === false && !!target.companyId && target.agentCompanyId === target.companyId
       && !!target.authenticatedPersonId && target.authenticatedPersonId !== "local-board" && !!target.agentId && !!target.issuePrefix
       && origin.protocol === "http:" && origin.hostname === "127.0.0.1" && candidate.origin === origin.origin
       && !candidate.username && !candidate.password && !candidate.search && !candidate.hash
-      && candidate.pathname === `/${encodeURIComponent(target.issuePrefix)}/chats/${encodeURIComponent(target.agentId)}`;
+      && candidate.pathname === `/${encodeURIComponent(target.issuePrefix)}/dashboard`;
   } catch { return false; }
 }

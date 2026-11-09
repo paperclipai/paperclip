@@ -72,6 +72,7 @@ export const wizardIdentityBoundaryCases: readonly IdentityBoundaryCase[] = ["on
       await mkdir(ctx.privateDir, { recursive: true, mode: 0o700 }); let wizard: WizardReceipt | undefined;
       const installation = await runEmptyInstallationBoundary({ browser, installedCli: cli, expectedCliSha256: digest, expectedCliVersion: installedReleaseLaunch(cli).version,
         privateLogPath: path.join(ctx.privateDir, `operator-${ctx.nonce}.private.log`), deadlineAt: ctx.deadlineAt, evidence: ctx.evidence,
+        captureFinalState: page => ctx.captureFinalState(page),
         async finishWizard(target) {
           wizard = await finishIdentityWizard({ ...target, credential, harness: "codex_local", companyName: `Acorn installation ${ctx.nonce}`, agentName: "Morgan", evidence: ctx.evidence,
             onCompany(company) { ctx.observeResources({ companyId: company.id, runIds: [] }); } });
@@ -87,6 +88,7 @@ export const wizardIdentityBoundaryCases: readonly IdentityBoundaryCase[] = ["on
       resume: scenarioId === "onboarding.resume-wizard", companyName: `Acorn wizard ${ctx.nonce}`, agentName: "Morgan", evidence: ctx.evidence,
       onCompany(company) { resource.companyId = company.id; ctx.observeResources({ companyId: company.id, runIds: [] }); } });
     ctx.observeResources({ companyId: wizard.companyId, agentId: wizard.firstAgentId, runIds: wizard.heartbeatRunIds });
+    await ctx.captureFinalState(page);
     const session = await api.get<{ user: { id: string } }>("/api/auth/get-session");
     return { wizard, personId: person.id, returnedPersonId: session.user.id } satisfies BoundaryReceipt;
   },

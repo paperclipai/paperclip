@@ -28,6 +28,8 @@ export async function runEmptyInstallationBoundary(input: {
   privateLogPath: string;
   deadlineAt: number; evidence(name: string, value: unknown): Promise<void>;
   finishWizard(target: { origin: string; page: Page; deadlineAt: number }): Promise<{ companyId: string; firstAgentId: string; conversationPath: string }>;
+  /** Captures the operator's own page before this helper closes its browser. */
+  captureFinalState?(page: Page): Promise<void>;
 }): Promise<EmptyInstallationReceipt> {
   const launch = installedReleaseLaunch(input.installedCli);
   const cliSha256 = createHash("sha256").update(await readFile(launch.cli)).digest("hex");
@@ -90,6 +92,7 @@ export async function runEmptyInstallationBoundary(input: {
     await expect(page.getByTestId("task-chat-composer-input").or(page.getByTestId("task-chat-composer-takeover")).first()).toBeVisible();
     const runs = await get<unknown[]>(`/api/companies/${company.id}/heartbeat-runs?limit=100`);
     expect(runs).toHaveLength(0);
+    await input.captureFinalState?.(page);
     receipt = { journeyKind: "operator-before-chat", query: "Help me set up Paperclip on this machine.", querySent: false,
       cliVersion: launch.version, cliSha256, initialHomeEntries, companiesBeforeWizard: companies.length,
       deploymentMode: health.deploymentMode, configCreatedByOperatorCLI: true, selectedBind: "loopback",

@@ -283,7 +283,7 @@
       "live-fixtures.ts",
       "chat-scenarios/agent-chat.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime-conference-off.v3",
     "expectedRunCount": 0,
     "expectedHumanMessageCount": 0,
     "turnTimeoutMs": 120000,
@@ -743,10 +743,8 @@
       "chat-catalog-domains/runtime-agents.ts",
       "chat-scenarios/agents.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
-    "coverageGaps": [
-      "supported-two-visible-instruction-history-versions"
-    ],
+    "oracleVersion": "paperclip.chat-catalog.runtime-agents-restore.v3",
+    "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
