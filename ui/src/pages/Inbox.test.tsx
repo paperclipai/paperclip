@@ -141,7 +141,7 @@ vi.mock("../lib/inbox", async () => {
   const actual = await vi.importActual<typeof import("../lib/inbox")>("../lib/inbox");
   return {
     ...actual,
-    collectReferencedExecutionWorkspaceIds: (...lists: Parameters<typeof actual.collectReferencedExecutionWorkspaceIds>) => {
+    collectReferencedExecutionWorkspaceIds: (...lists: Array<ReadonlyArray<Pick<Issue, "executionWorkspaceId">>>) => {
       workspaceIdScan.calls += 1;
       if (workspaceIdScan.calls > workspaceIdScan.limit) throw new Error("Workspace id scan ran on an unchanged render");
       return actual.collectReferencedExecutionWorkspaceIds(...lists);
