@@ -1,3 +1,4 @@
+import { carriesInheritedRunnerIdentity } from "./native-inherited-runner-retry.js";
 import { readPendingNativeRunStop } from "./native-cancellation-request.js";
 import { CONTROLLER_LEASE_RENEW_MS } from "../controller-instance-lease.js";
 import { currentControllerProcessStamp, UNKNOWN_PROCESS_SPACE } from "../controller-process-identity.js";
@@ -1329,6 +1330,8 @@ export async function claimNativeRestartRecoveries(input: {
         && checkpointRecord.activeTurnId == null && checkpointRecord.semanticResult == null && checkpointRecord.terminal == null);
       const inheritedCheckpointOnly = hasCheckpoint && admissionCheckpointOnly && remoteSandbox && !pluginTask
         && !durableAuthority && stagedAttachment === null && providerEvents.length === 0;
+      const inheritedRunnerIdentity = inheritedCheckpointOnly && Boolean(row.run.processPid || row.run.processGroupId)
+        && await carriesInheritedRunnerIdentity(tx, row.run);
       let unclaimedBootstrap =
         remoteWorkspace?.state === "prepared" &&
         row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION &&
@@ -1343,9 +1346,7 @@ export async function claimNativeRestartRecoveries(input: {
         // suspends. Without an owner, an elapsed expiry grants no authority.
         (!row.coordinator.leaseExpiresAt || row.coordinator.leaseExpiresAt <= now) &&
         !row.coordinator.failureDetail?.successorRunId &&
-        !row.run.processPid &&
-        !row.run.processGroupId &&
-        !row.run.processStartedAt &&
+        (inheritedRunnerIdentity || (!row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt)) &&
         !row.run.sessionIdBefore &&
         !row.run.sessionIdAfter &&
         Boolean(row.run.nativeSessionId && row.run.runnerInstanceId) &&

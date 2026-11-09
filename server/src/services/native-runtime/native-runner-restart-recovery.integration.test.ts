@@ -2758,10 +2758,25 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
   });
 
   it.each([
-    { label: "restarts", inherited: true, providerEvent: false },
-    { label: "keeps a projected provider event held instead of restarting", inherited: true, providerEvent: true },
-  ])("$label an unclaimed remote follow-up that carries only its inherited checkpoint", async ({ providerEvent }) => {
-    const fixture = await seedUnlaunchedRemoteClaim(`UNCLAIMED-INHERITED-${providerEvent}`);
+    { label: "restarts", providerEvent: false, process: "none" },
+    { label: "restarts with its predecessor's runner identity", providerEvent: false, process: "inherited" },
+    { label: "keeps its own runner identity held instead of restarting", providerEvent: false, process: "own" },
+    { label: "keeps a projected provider event held instead of restarting", providerEvent: true, process: "none" },
+  ])("$label an unclaimed remote follow-up that carries only its inherited checkpoint", async ({ providerEvent, process }) => {
+    const fixture = await seedUnlaunchedRemoteClaim(`UNCLAIMED-INHERITED-${providerEvent}-${process}`);
+    if (process !== "none") {
+      const processStartedAt = new Date(Date.now() - 120_000);
+      await fixture.db.update(heartbeatRuns).set({ processPid: 596, processGroupId: null, processStartedAt, processHostHash: "remote" })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      if (process === "inherited") {
+        const [current] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        await fixture.db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", runtimeMode: "native",
+          nativeIssueId: fixture.issueId, nativeSessionId: current.nativeSessionId, runnerInstanceId: current.runnerInstanceId,
+          createdAt: new Date(current.createdAt.getTime() - 60_000), finishedAt: new Date(current.createdAt.getTime() - 5_000),
+          processPid: 596, processGroupId: null, processStartedAt, processHostHash: "remote",
+          contextSnapshot: { issueId: fixture.issueId } });
+      }
+    }
     await fixture.db.update(nativeRunFinalizations).set({ attempt: 0, controllerGeneration: 0, controllerBootId: null,
       controllerPid: null, controllerProcessStartedAt: null, leaseOwner: null, leaseExpiresAt: null })
       .where(eq(nativeRunFinalizations.runId, fixture.runId));
@@ -2776,7 +2791,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       stream: "system", level: "info", eventType: "session.started" });
     const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
       restartKind: "hard", runIds: [fixture.runId] });
-    if (providerEvent) {
+    if (providerEvent || process === "own") {
       expect(claim).not.toMatchObject({ kind: "bootstrap_incomplete" });
       return;
     }
