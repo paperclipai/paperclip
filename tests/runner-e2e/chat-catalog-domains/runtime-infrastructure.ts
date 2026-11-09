@@ -32,11 +32,31 @@ export async function controllerReadRecovery(ctx: ChatCatalogContext, runId: str
 }
 /** The reply links the original task, where its recovery and Retry controls live. */
 export function linksSourceTask(o: RuntimeObservation, task: Entity) { return hasLink(o, "issues", task); }
+/** The product either keeps the exhausted action active, or settles it for
+ * this run as `blocked` under its preserve-without-replay policy, leaving the
+ * human Retry on the blocked source task. Any other settlement is not it. */
+function exhaustedActionLive(action: IssueRecoveryAction, run: NativeFaultRun) {
+  if (action.status !== "resolved") return action.status === undefined || action.status === "active" || action.status === "escalated";
+  const automatic = objectRecord(action.evidence.automaticRecovery);
+  return action.outcome === "blocked" && automatic.policy === "preserve_without_replay_v1" && automatic.runId === run.id;
+}
 export function isExhaustedNativeRecovery(action: IssueRecoveryAction | undefined, run: NativeFaultRun, companyId: string, issueId: string, agentId: string) {
-  return !!action && action.companyId === companyId && action.sourceIssueId === issueId && action.kind === "active_run_watchdog" && action.cause === "native_session_retry_exhausted"
+  return !!action && exhaustedActionLive(action, run) && action.companyId === companyId && action.sourceIssueId === issueId && action.kind === "active_run_watchdog" && action.cause === "native_session_retry_exhausted"
     && action.ownerType === "board" && action.ownerAgentId == null && action.returnOwnerAgentId === agentId && action.recoveryIssueId == null
     && action.evidence.runId === run.id && action.evidence.coordinatorAttempt === 3 && action.evidence.recoveryDisposition === "native_session_retry_exhausted"
     && action.maxAttempts === 3 && action.wakePolicy == null && action.nextAction.trim().length > 0 && run.status === "failed" && run.nativePhase === "terminal_failure";
+}
+export type SourceRecoveryActions = { active?: IssueRecoveryAction | null; actions?: IssueRecoveryAction[] };
+const newest = (actions: readonly IssueRecoveryAction[]) => [...actions].sort((a, b) => Date.parse(String(b.createdAt)) - Date.parse(String(a.createdAt)))[0];
+/** The source task's exhausted action: the active one, or else its newest
+ * action. The task itself must be blocked, where the human Retry lives. */
+export function exhaustedSourceRecovery(recovery: SourceRecoveryActions, task: Pick<Issue, "status">, run: NativeFaultRun, companyId: string, issueId: string, agentId: string) {
+  const action = recovery.active ?? newest(recovery.actions ?? []);
+  return task.status === "blocked" && isExhaustedNativeRecovery(action, run, companyId, issueId, agentId) ? action : undefined;
+}
+/** The same action, read again by ID, so a replaced or duplicated action is detected. */
+export function sameRecoveryAction(recovery: SourceRecoveryActions, id: string) {
+  return [recovery.active, ...(recovery.actions ?? [])].find(action => action?.id === id) ?? undefined;
 }
 /** Three actual coordinator attempts on the SAME native heartbeat; never status patches or fake event rows. */
 export async function exhaustedNativeInfrastructure(ctx: ChatCatalogContext) {
@@ -55,9 +75,10 @@ export async function exhaustedNativeInfrastructure(ctx: ChatCatalogContext) {
   }
   const result = await pollUntil({ label: "Actual exhausted source recovery action with no automatic wake", deadlineAt: Date.now() + 30_000,
     load: async () => ({ task: await ctx.input.api.get<Issue>(`/api/issues/${task.id}`), run: await ctx.input.api.get<NativeFaultRun>(`/api/heartbeat-runs/${state.workerRunId}`),
-      recovery: await ctx.input.api.get<{ active?: IssueRecoveryAction; actions: IssueRecoveryAction[] }>(`/api/issues/${task.id}/recovery-actions`) }),
-    accept: v => v.task.status === "blocked" && isExhaustedNativeRecovery(v.recovery.active, v.run, ctx.input.fixtures.company.id, task.id, state.worker.id) });
-  return { ...state, task: result.task, failure: result.run, recoveryBefore: result.recovery.active!, setupFaults: faults };
+      recovery: await ctx.input.api.get<SourceRecoveryActions>(`/api/issues/${task.id}/recovery-actions`) }),
+    accept: v => !!exhaustedSourceRecovery(v.recovery, v.task, v.run, ctx.input.fixtures.company.id, task.id, state.worker.id) });
+  const recoveryBefore = exhaustedSourceRecovery(result.recovery, result.task, result.run, ctx.input.fixtures.company.id, task.id, state.worker.id)!;
+  return { ...state, task: result.task, failure: result.run, recoveryBefore, setupFaults: faults };
 }
 export function gradeInfrastructureRecovery(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -88,10 +109,12 @@ function infrastructureCase(id: "recovery.explain-stall" | "recovery.source-acti
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "real-native-infrastructure-exhaustion", "original-source-action-owner"] },
     async verifySetup(ctx, state) { const c = checks(), lead = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`);
       const run = await ctx.input.api.get<NativeFaultRun>(`/api/heartbeat-runs/${state.workerRunId}`), task = state.task as Issue;
-      const recovery = await ctx.input.api.get<{ active?: IssueRecoveryAction }>(`/api/issues/${task.id}/recovery-actions`);
+      const recovery = await ctx.input.api.get<SourceRecoveryActions>(`/api/issues/${task.id}/recovery-actions`);
+      const current = await ctx.input.api.get<Issue>(`/api/issues/${task.id}`);
+      const action = exhaustedSourceRecovery(recovery, current, run, ctx.input.fixtures.company.id, task.id, (state.worker as Entity).id);
       c.add("lead-ready", lead.lifecycleState === "ready" && ["active", "idle"].includes(lead.status ?? ""), "The actual controller remains independently admitted.");
-      c.add("real-native-infrastructure-exhaustion", isExhaustedNativeRecovery(recovery.active, run, ctx.input.fixtures.company.id, task.id, (state.worker as Entity).id), "The saved native run really exhausted its own three attempts.");
-      c.add("original-source-action-owner", recovery.active?.sourceIssueId === task.id && recovery.active.ownerType === "board" && recovery.active.recoveryIssueId == null, "The original task exposes the real operator-owned recovery without a separate repair task."); return c.result(); },
+      c.add("real-native-infrastructure-exhaustion", !!action && action.id === (state.recoveryBefore as IssueRecoveryAction).id, "The saved native run really exhausted its own three attempts.");
+      c.add("original-source-action-owner", action?.sourceIssueId === task.id && action.ownerType === "board" && action.recoveryIssueId == null, "The original task exposes the real operator-owned recovery without a separate repair task."); return c.result(); },
     sourceFiles: ["chat-catalog-domains/runtime-infrastructure.ts", "chat-catalog-domains/runtime-native-fault.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "../../server/src/services/hot-restart.ts", "../../server/src/vendor/paperclip-runner/index.ts", "chat-scenarios/recovery.yaml"],
     async act(ctx, state) {
       await pollUntil({ label: "Canonical source explanation while native infrastructure remains failed", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
@@ -106,7 +129,10 @@ function infrastructureCase(id: "recovery.explain-stall" | "recovery.source-acti
       await ctx.input.capture("actual-exhausted-source-recovery", "Original Website retains actual exhausted native infrastructure and operator recovery", "runtime-infrastructure-recovery.png");
       await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
     },
-    async observe(ctx, state) { const recovery = await ctx.input.api.get<{ active?: IssueRecoveryAction }>(`/api/issues/${(state.task as Entity).id}/recovery-actions`); state.recoveryAfter = recovery.active; return observeRuntime(ctx, state); },
+    async observe(ctx, state) { const recovery = await ctx.input.api.get<SourceRecoveryActions>(`/api/issues/${(state.task as Entity).id}/recovery-actions`);
+      // A newer action on the source task would be a second repair chain.
+      const before = (state.recoveryBefore as IssueRecoveryAction).id, latest = recovery.active ?? newest(recovery.actions ?? []);
+      state.recoveryAfter = latest?.id === before ? sameRecoveryAction(recovery, before) : latest; return observeRuntime(ctx, state); },
     async verifyResult(ctx, state) { const source = ctx.input.page.url(), task = state.task as Issue;
       await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" }); await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
       await expect(ctx.input.page.getByRole("heading", { name: task.title, exact: true }).first()).toBeVisible(); await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" }); },
