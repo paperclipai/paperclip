@@ -30,6 +30,7 @@ import {
 import {
   WorkspaceValidationFailure,
   isWorkspaceValidationFailure,
+  findWorkspaceValidationFailure,
   fingerprintFinalizeWorkspaceBranchValidation,
   attachPaperclipSessionMetadataToSessionParams,
 } from "./workspaces.js";
@@ -384,7 +385,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                 }
               } catch (repairErr) {
                 const workspaceValidationFailure =
-                  isWorkspaceValidationFailure(repairErr) ? repairErr : null;
+                  findWorkspaceValidationFailure(repairErr);
                 finalizeBranchMetadata = {
                   executionWorkspaceId: branchInspection.workspaceRecord.id,
                   ...initialManagedGitWorktreeBranch,
