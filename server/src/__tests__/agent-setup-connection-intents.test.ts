@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
-import { agents, companies, companyMemberships, heartbeatRuns, issues, issueThreadInteractions,
+import { eq, sql } from "drizzle-orm";
+import { activityLog, agents, companies, companyMemberships, heartbeatRuns, issues, issueThreadInteractions,
   connectionIntentDeliveries, toolApplications, toolConnections, connectionGrants, aiProviderDefaults, createDb } from "@paperclipai/db";
+import { aiConnectionService } from "../services/ai-connections.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService, wakeConnectionIntentAfterResolution } from "../services/connection-intent-delivery.js";
 import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
@@ -14,25 +15,27 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("agent-setup-card-"); db = createDb(database.connectionString); }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
-  async function fixture() {
+  async function fixture(separateSetupUser = false) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID(), userId = randomUUID();
+    const setupUserId = separateSetupUser ? randomUUID() : userId;
     await db.insert(companies).values({ id: companyId, name: "Setup card", issuePrefix: `S${companyId.slice(0, 7)}` });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    if (setupUserId !== userId) await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: setupUserId, status: "active", membershipRole: "member" });
     const binding = { mode: "responsible_user", provider: "openrouter", method: "api_key" } as const;
     await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", status: "paused", lifecycleState: "verifying", lifecycleHolds: [],
-      lifecycleRequiredPluginIds: [], lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 1, retryRequired: true },
+      lifecycleRequiredPluginIds: [], lifecycleOperation: { responsibleUserId: setupUserId, id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 1, retryRequired: true },
       adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017" }, runtimeConfig: { aiConnection: binding } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Review after setup", status: "todo", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued", responsibleUserId: userId, contextSnapshot: { issueId } });
     const service = connectionIntentService(db);
     const claims = { sub: agentId, company_id: companyId, run_id: runId, responsible_user_id: userId };
-    return { companyId, agentId, issueId, runId, userId, binding, service, claims };
+    return { companyId, agentId, issueId, runId, userId, setupUserId, binding, service, claims };
   }
-  async function repair(f: Awaited<ReturnType<typeof fixture>>) {
-    const [app] = await db.insert(toolApplications).values({ companyId: f.companyId, applicationKey: "setup-openrouter", name: "OpenRouter", type: "mcp_http", metadata: { sourceTemplateKey: "openrouter" } }).returning();
+  async function repair(f: Awaited<ReturnType<typeof fixture>>, userId = f.setupUserId) {
+    const [app] = await db.insert(toolApplications).values({ companyId: f.companyId, applicationKey: `setup-openrouter-${userId}`, name: `OpenRouter ${userId}`, type: "mcp_http", metadata: { sourceTemplateKey: "openrouter" } }).returning();
     const [account] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: app!.id, name: "Review account", uid: randomUUID(), connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "openrouter", ai: { provider: "openrouter", method: "api_key" } } }).returning();
-    const [grant] = await db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: account!.id, kind: "user", subjectUserId: f.userId, createdByUserId: f.userId }).returning();
-    await db.insert(aiProviderDefaults).values({ companyId: f.companyId, userId: f.userId, provider: "openrouter", grantId: grant!.id });
+    const [grant] = await db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: account!.id, kind: "user", subjectUserId: userId, createdByUserId: userId }).returning();
+    await db.insert(aiProviderDefaults).values({ companyId: f.companyId, userId: userId, provider: "openrouter", grantId: grant!.id });
     return account!;
   }
   const cards = (issueId: string) => db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
@@ -44,6 +47,8 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
     await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
     const pending = await cards(f.issueId);
     expect(pending).toHaveLength(1);
+    expect((await db.select().from(activityLog).where(eq(activityLog.entityId, f.issueId)))
+      .filter(row => row.action === "issue.thread_interaction_created")).toHaveLength(1);
     expect(pending[0]).toMatchObject({ kind: "connection_intent", status: "pending", sourceRunId: f.runId, addresseeUserId: f.userId,
       payload: { purpose: "ai", serviceSlug: "openrouter", agentSetup: true } });
     expect((await f.service.setupOptions(pending[0]!.id)).aiConnection).toEqual(f.binding);
@@ -68,7 +73,41 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
     expect((await db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, pending[0]!.id)))[0]!.deliveredAt).not.toBeNull();
   });
 
-  it.each(["decline", "stop", "reassign"] as const)("does not dispatch or lift verification after %s", async action => {
+  it.each([{ taskAccountReady: false, companyDefault: false }, { taskAccountReady: true, companyDefault: false },
+    { taskAccountReady: false, companyDefault: true }])("repairs the verifier's user without changing task authority: %j", async ({ taskAccountReady, companyDefault }) => {
+    const f = await fixture(true);
+    if (companyDefault) {
+      await db.update(companies).set({ defaultResponsibleUserId: f.setupUserId }).where(eq(companies.id, f.companyId));
+      await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} - 'responsibleUserId'` }).where(eq(agents.id, f.agentId));
+    }
+    if (taskAccountReady) await repair(f, f.userId);
+    await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
+    const [card] = await cards(f.issueId);
+    expect(card).toMatchObject({ addresseeUserId: f.setupUserId, sourceRunId: f.runId, payload: { agentSetup: true } });
+    const account = await repair(f);
+    await f.service.complete(card!.id, account.id, f.setupUserId);
+    const wakeup = vi.fn();
+    await connectionIntentDeliveryService(db, { wakeup } as never).deliver(card!.id);
+    const onReady = vi.fn();
+    const worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete" as const,
+      runHost: async agent => {
+        const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+        const verificationUserId = agent.lifecycleOperation?.responsibleUserId ?? company!.defaultResponsibleUserId;
+        expect(verificationUserId).toBe(f.setupUserId);
+        await aiConnectionService(db).select({ companyId: f.companyId, agentId: f.agentId,
+          userId: verificationUserId, adapterType: "paperclip_runner", runnerProvider: "opencode",
+          model: "openrouter/deepseek/deepseek-v4.1-flash-1017", binding: f.binding });
+        return "complete";
+      }, onReady });
+    try { await worker.process(f.agentId); } finally { await worker.stop(); }
+    expect(onReady).toHaveBeenCalledOnce();
+    expect(wakeup).not.toHaveBeenCalled();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(source).toMatchObject({ status: "queued", startedAt: null, responsibleUserId: f.userId });
+    expect(source!.contextSnapshot).toEqual({ issueId: f.issueId });
+  });
+
+  it.each(["decline", "stop", "reassign", "setup_owner_changed"] as const)("does not dispatch or lift verification after %s", async action => {
     const f = await fixture();
     await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
     const [card] = await cards(f.issueId);
@@ -77,7 +116,8 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
       const account = await repair(f);
       await f.service.complete(card!.id, account.id, f.userId);
       if (action === "stop") await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
-      else await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issueId));
+      else if (action === "reassign") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issueId));
+      else await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} || ${JSON.stringify({ responsibleUserId: randomUUID() })}::jsonb` }).where(eq(agents.id, f.agentId));
     }
     const wakeup = vi.fn();
     await connectionIntentDeliveryService(db, { wakeup } as never).deliver(card!.id);
@@ -90,6 +130,13 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
     if (state === "manual_pause") await db.update(agents).set({ lifecycleState: "paused", lifecycleHolds: ["manual"] }).where(eq(agents.id, f.agentId));
     if (state === "started") await db.update(heartbeatRuns).set({ startedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
     await f.service.requestForQueuedAgentSetup(state === "foreign_company" ? randomUUID() : f.companyId, f.agentId);
+    expect(await cards(f.issueId)).toHaveLength(0);
+  });
+
+  it("does not disclose a private task to a different setup account owner", async () => {
+    const f = await fixture(true);
+    await db.update(issues).set({ visibility: "private", responsibleUserId: f.userId }).where(eq(issues.id, f.issueId));
+    await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
     expect(await cards(f.issueId)).toHaveLength(0);
   });
 

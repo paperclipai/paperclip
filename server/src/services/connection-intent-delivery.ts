@@ -1,5 +1,5 @@
 import { isAgentAwaitingSetup, requestAgentLifecycleRecheckInTransaction } from "../modules/agent-lifecycle/index.js";
-import { agents } from "@paperclipai/db";
+import { agents, companies } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "./satisfied-connection-intents.js";
@@ -171,9 +171,13 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
           eq(heartbeatRuns.agentId, payload.requestingAgentId!),
         )).for("no key update");
         const [agent] = await tx.select().from(agents).where(and(eq(agents.id, payload.requestingAgentId!), eq(agents.companyId, claimed.companyId)));
+        const [company] = await tx.select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
+          .from(companies).where(eq(companies.id, claimed.companyId));
+        const verificationUserId = agent?.lifecycleOperation?.responsibleUserId ?? company?.defaultResponsibleUserId;
         if (interaction!.status === "accepted" && task && !["done", "cancelled"].includes(task.status)
           && task.assigneeAgentId === payload.requestingAgentId && source?.status === "queued" && !source.startedAt
-          && source.runtimeMode === "legacy" && agent && isAgentAwaitingSetup(agent)) {
+          && source.runtimeMode === "legacy" && agent && isAgentAwaitingSetup(agent)
+          && verificationUserId === interaction!.addresseeUserId) {
           await requestAgentLifecycleRecheckInTransaction(tx, { companyId: claimed.companyId, agentId: agent.id,
             configurationRepaired: true }, () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle));
         }

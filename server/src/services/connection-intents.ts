@@ -1,3 +1,4 @@
+import { canActorReadIssuePrivacy } from "./authorization.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { readAiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
 import { assertAgentConnectionInstallAccess, connectionManagementService } from "./connection-management.js";
@@ -1369,9 +1370,16 @@ export function connectionIntentService(db: Db) {
   async function requestForQueuedAgentSetup(companyId: string, agentId: string) {
     const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
     if (!agent || !isAgentAwaitingSetup(agent)) return;
+    const [company] = await db.select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
+      .from(companies).where(eq(companies.id, companyId));
+    // Match host verification's account owner. The queued task can have a
+    // different responsible user; its execution identity must stay unchanged.
+    const verificationUserId = agent.lifecycleOperation?.responsibleUserId ?? company?.defaultResponsibleUserId;
+    if (!verificationUserId) return;
+    await assertCurrentUserWriteAccess(companyId, verificationUserId);
     const binding = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
     if (!binding) return;
-    const candidates = await db.select({ run: heartbeatRuns }).from(heartbeatRuns).innerJoin(issues, and(
+    const candidates = await db.select({ run: heartbeatRuns, issue: issues }).from(heartbeatRuns).innerJoin(issues, and(
       eq(issues.companyId, heartbeatRuns.companyId),
       sql`${issues.id}::text = coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
     )).where(and(
@@ -1381,20 +1389,32 @@ export function connectionIntentService(db: Db) {
       notInArray(issues.status, ["done", "cancelled"]),
     )).orderBy(desc(heartbeatRuns.createdAt)).limit(100);
     const seen = new Set<string>();
-    for (const { run } of candidates) {
+    for (const { run, issue } of candidates) {
       const issueId = text(run.contextSnapshot?.issueId) ?? text(run.contextSnapshot?.taskId);
       if (!issueId || !run.responsibleUserId || seen.has(issueId)) continue;
       seen.add(issueId);
+      const [pending] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
+        eq(issueThreadInteractions.createdByAgentId, agentId), eq(issueThreadInteractions.addresseeUserId, verificationUserId),
+        eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"),
+        sql`${issueThreadInteractions.payload}->>'agentSetup' = 'true'`,
+        sql`${issueThreadInteractions.payload}->>'serviceSlug' = ${binding.provider}`,
+      )).limit(1);
+      if (pending) continue;
+      if (!await canActorReadIssuePrivacy(db, { type: "board", userId: verificationUserId, ignoreInstanceAdmin: true }, issue)) continue;
       try {
         const context = await loadRunContext({ sub: agentId, company_id: companyId, run_id: run.id,
           responsible_user_id: run.responsibleUserId }, "queued_setup");
         try {
-          await aiConnectionService(db).select({ companyId, agentId, userId: run.responsibleUserId,
+          await aiConnectionService(db).select({ companyId, agentId, userId: verificationUserId,
             adapterType: agent.adapterType, runnerProvider: agent.adapterConfig.provider,
             acpxAgent: agent.adapterConfig.acpxAgent, model: agent.adapterConfig.model, binding });
         } catch (error) {
           if (!readAiConnectionConfigurationFailure(error)) throw error;
-          await requestWithContext(context, binding.provider, { purpose: "ai", agentSetup: true });
+          // This context selects the card recipient only. Do not rewrite the
+          // queued run, its task principal, or its saved execution input.
+          const cardContext = { ...context, run: { ...context.run, responsibleUserId: verificationUserId } };
+          await requestWithContext(cardContext, binding.provider, { purpose: "ai", agentSetup: true });
         }
       } catch (error) {
         // A task may stop or change owners during this bounded active-work pass.
