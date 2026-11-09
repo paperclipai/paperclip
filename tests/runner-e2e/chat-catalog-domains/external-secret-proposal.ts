@@ -80,14 +80,14 @@ export function secretProposalDecisionClickOptions(ctx:ChatCatalogContext){
  const remaining=chatCatalogNativePhaseRemainingBudget(ctx);
  return remaining?{timeout:Math.min(30_000,remaining())}:undefined;
 }
-async function review(ctx:ChatCatalogContext,row:SecretProposalView,approve:boolean){
- const source=ctx.input.page.url();await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/secrets`,{waitUntil:"domcontentloaded"});await ctx.input.page.getByRole("tab",{name:/^Proposals/}).click();
- await expect(ctx.input.page.getByText("PUBLISHING_API_KEY",{exact:true})).toBeVisible();await expect(ctx.input.page.getByText("Deployment publishing key",{exact:true}).first()).toBeVisible();
+// The person reviews the proposal where the agent left it: the human-only confirmation card in
+// this chat. Its buttons resolve the linked proposal through the same governed approve/reject path.
+async function review(ctx:ChatCatalogContext,row:SecretProposalView,cardId:string,approve:boolean){
  const pending=(await proposals(ctx)).filter(item=>item.status==="pending");if(pending.length!==1||pending[0]!.id!==row.id||!pending[0]!.viewerCanApprove)throw new Error("Actual human cannot review the sole intended pending binding proposal");
- await ctx.input.page.getByRole("button",{name:approve?"Approve":"Reject",exact:true}).click();const dialog=ctx.input.page.getByRole("dialog");
- if(approve){await expect(dialog.getByRole("heading",{name:"Approve binding",exact:true})).toBeVisible();await expect(dialog).toContainText("PUBLISHING_API_KEY");await dialog.getByRole("button",{name:"Approve binding",exact:true}).click(secretProposalDecisionClickOptions(ctx));}
- else{await expect(dialog.getByRole("heading",{name:"Reject proposal",exact:true})).toBeVisible();await dialog.getByRole("textbox",{name:"Reason",exact:true}).fill("Do not grant this publishing binding yet.");await dialog.getByRole("button",{name:"Reject",exact:true}).click(secretProposalDecisionClickOptions(ctx));}
- await expect(dialog).not.toBeVisible();await ctx.input.page.goto(source,{waitUntil:"domcontentloaded"});
+ const card=ctx.input.page.locator(secretProposalCardSelector(cardId));await expect(card).toBeVisible();await expect(card).toContainText("PUBLISHING_API_KEY");await expect(card).toContainText("Deployment publishing key");
+ if(approve)await card.getByRole("button",{name:"Create binding",exact:true}).click(secretProposalDecisionClickOptions(ctx));
+ else{await card.getByRole("button",{name:"Reject",exact:true}).click();await expect(card.getByText("Why should this binding not be created?",{exact:true})).toBeVisible();await card.getByRole("textbox").fill("Do not grant this publishing binding yet.");await card.getByRole("button",{name:"Reject",exact:true}).click(secretProposalDecisionClickOptions(ctx));}
+ await pollUntil({label:"human secret proposal decision",deadlineAt:chatCatalogNativePhaseDeadline(ctx,Date.now()+30000),intervalMs:500,load:()=>proposals(ctx),accept:rows=>rows.find(item=>item.id===row.id)?.status===(approve?"approved":"rejected")});
 }
 export const secretProposalExternalCases=[definition("secrets.secret-proposal",async ctx=>{
  if(!ctx.input.privateSecrets)throw new Error("Secret proposal requires private synthetic-value ownership");const value=`synthetic-publishing-${randomBytes(32).toString("hex")}`;ctx.input.privateSecrets.push(value);privateValues.set(ctx,value);
@@ -101,11 +101,11 @@ export const secretProposalExternalCases=[definition("secrets.secret-proposal",a
   const first=pending[0]!,card=await recordPendingProposalDisplay(ctx,state,first);
   state.proposalApproveStatus=await probeAgentPermission(ctx,`${root(ctx)}/secret-proposals/${first.id}/approve`,"POST",{});state.interactionApproveStatus=await probeAgentPermission(ctx,`/api/issues/${ctx.issue()!.id}/interactions/${card.id}/accept`,"POST",{});
   const beforeAgent=await ctx.input.api.get<AgentConfig>(`/api/agents/${state.morganId}`),beforeEnv=beforeAgent.adapterConfig.env as Record<string,unknown>|undefined;state.unchangedBeforeHuman=(await bindings(ctx,String(state.secretId))).length===0&&!beforeEnv?.PUBLISHING_API_KEY;
-  await review(ctx,first,false);state.firstReviewVisible=true;const denial=await settled(ctx,2);state.denialReplyRunId=denial.find(run=>run.id!==first.originRunId)!.id;
+  await review(ctx,first,card.id,false);state.firstReviewVisible=true;const denial=await settled(ctx,2);state.denialReplyRunId=denial.find(run=>run.id!==first.originRunId)!.id;
   state.first=(await proposals(ctx)).find(row=>row.id===first.id);state.denialBindingCount=(await bindings(ctx,String(state.secretId))).length;const deniedAgent=await ctx.input.api.get<AgentConfig>(`/api/agents/${state.morganId}`);state.denialConfigAbsent=!(deniedAgent.adapterConfig.env as Record<string,unknown>|undefined)?.PUBLISHING_API_KEY;
   if((await proposals(ctx)).length!==1||state.denialBindingCount!==0||state.denialConfigAbsent!==true)throw new Error("Denial spawned another proposal or changed the consumer binding");
   await sendChatMessage(ctx.input.page,ctx.scenario.query,chatCatalogNativePhaseRemainingBudget(ctx));const repeated=await settled(ctx,3),secondPending=(await proposals(ctx)).filter(row=>row.status==="pending");if(secondPending.length!==1||!requested(secondPending[0]!,state,ctx.issue()!.id)||secondPending[0]!.id===first.id||denial.some(run=>run.id===secondPending[0]!.originRunId))throw new Error("Explicit repeated human request did not produce one new intended proposal");
-  const second=secondPending[0]!;await recordPendingProposalDisplay(ctx,state,second);await review(ctx,second,true);state.correctHumanReviewed=true;const approved=await settled(ctx,4);state.approvalReplyRunId=approved.find(run=>!repeated.some(prior=>prior.id===run.id))!.id;state.second=(await proposals(ctx)).find(row=>row.id===second.id);
+  const second=secondPending[0]!,secondCard=await recordPendingProposalDisplay(ctx,state,second);await review(ctx,second,secondCard.id,true);state.correctHumanReviewed=true;const approved=await settled(ctx,4);state.approvalReplyRunId=approved.find(run=>!repeated.some(prior=>prior.id===run.id))!.id;state.second=(await proposals(ctx)).find(row=>row.id===second.id);
  },
  async observe(ctx,state){
   const o=await observeExternal(ctx,state);state.proposalsAfter=await proposals(ctx);state.bindingsAfter=await bindings(ctx,String(state.secretId));state.secretAfter=(await ctx.input.api.get<CompanySecret[]>(`${root(ctx)}/secrets`)).find(secret=>secret.id===state.secretId);
