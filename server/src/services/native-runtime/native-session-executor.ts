@@ -5809,9 +5809,8 @@ async function migrateRunnerdStateRootForExecution(input: {
     }
     const identity = readRunnerdDurableIdentity(scoped);
     if (!identity && input.restartRecovery?.kind === "bootstrap_incomplete" &&
-        (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") &&
         !existsSync(resolve(scoped, "control-plane", "control-plane-state.json")) &&
-        await noLocalRunnerProcessForRun(input.execution.binding.runId)) {
+        (input.runnerExecutionTarget?.kind === "remote" || await noLocalRunnerProcessForRun(input.execution.binding.runId))) {
       // The server was killed between creating the root and the local runner's
       // first state write. No runner for the run is alive on this host and none
       // connected, so no provider started and no command was acknowledged.
