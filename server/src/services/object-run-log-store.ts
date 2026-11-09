@@ -259,7 +259,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         assertAuthority: () => options.assertWriterAuthority(input),
         signal: input.signal,
       });
-      const sourcePrefixVerified = await store.hasVerifiedSourcePrefix(writer.head, input.signal);
+      const sourcePrefixVerified = writer.head.generation > 1 && await store.hasVerifiedSourcePrefix(writer.head, input.signal);
       const handle: RunLogHandle = {
         store: "s3_segments",
         logRef,
