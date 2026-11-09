@@ -124,15 +124,22 @@ poll. Missing or invalid byte evidence remains an enrollment blocker.
 
 The original-volume owner can refresh a WEB receipt whose database facts digest
 has become stale only when fresh source inspection, current-key checkpoint
-validation and ciphertext hash/size readback prove every other binding unchanged.
+validation and ciphertext hash/size readback prove the preserved bindings unchanged.
 It reuses the same archive and takes the existing finalizer, task and run fences before
 comparing the prior receipt digest and replacing it. The company activity log
-retains the prior facts digest, source witness fingerprint, observation time and
-receipt digest. Those three changed fields must reconstruct the exact prior
-proof from the unchanged current bindings before publication. No source paths
+retains the prior database and local facts digests, source witness fingerprint,
+observation time and receipt digest. Those four changed fields must reconstruct
+the exact prior proof from the unchanged current bindings before publication. No source paths
 enter the audit delta; normal activity redaction remains enabled. Changed
 evidence, concurrent invalid receipts and active sources remain blocked; remote
 recovery obligations are unchanged.
+
+Local inode and timestamp observations may change between preservation attempts
+without changing byte coverage. Valid receipts remain idempotent after those
+changes; stale database facts can refresh with the same archive and fresh local
+observations. During one attempt, the local metadata digest must remain stable
+from capture through the locked publication check. Changed bytes, paths or modes
+still invalidate preservation evidence.
 
 Receipt validation adds bounded per-scope database reads to startup eligibility.
 It does not add a recurring scan or network work. Qualification must measure the

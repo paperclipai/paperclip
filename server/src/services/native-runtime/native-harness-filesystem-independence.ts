@@ -730,8 +730,7 @@ async function preserveWebEvidence(db: Db, input: Scope & {
   const controller = await preserveControllerEvidence(db, facts, input, history, web, previous?.controller), bindings = { packages: [], versions: [] };
   if (previous != null) {
     if (!/^[a-f0-9]{64}$/.test(previous.factsDigest)
-      || !matchingReceipt(previous, facts, input, bindings, controller, web.binding, previous.factsDigest)
-      || previous.localFactsDigest !== web.localDigest) fail();
+      || !matchingReceipt(previous, facts, input, bindings, controller, web.binding, previous.factsDigest)) fail();
     if (matchingReceipt(previous, facts, input, bindings, controller, web.binding)) {
       if (!await hasValidNativeHarnessFilesystemIndependence(db, input)) fail();
       await assertOriginalHarnessVolumeSource(input.source); input.signal.throwIfAborted();
@@ -742,7 +741,7 @@ async function preserveWebEvidence(db: Db, input: Scope & {
     lastRunId: facts.anchor.id, sourceRunId: facts.source.id, factsDigest: facts.factsDigest,
     sourceCapabilityFingerprint: input.source.fingerprint, localFactsDigest: web.localDigest,
     assetsDigest: digest(bindings), ...bindings, controller, web: web.binding, observedAt: new Date().toISOString() };
-  const previousReceiptState = previous ? { factsDigest: previous.factsDigest,
+  const previousReceiptState = previous ? { factsDigest: previous.factsDigest, localFactsDigest: previous.localFactsDigest,
     sourceCapabilityFingerprint: previous.sourceCapabilityFingerprint, observedAt: previous.observedAt } : null;
   if (previousReceiptState && digest({ ...receipt, ...previousReceiptState }) !== previousDigest) fail();
   let published = receipt;

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -399,8 +399,9 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     return { ...f, first, previous };
   }
 
-  it("refreshes stale WEB facts with the same verified source and archive while auditing the prior receipt", async () => {
+  it.each([false, true])("refreshes stale WEB facts with the same verified source and archive while auditing the prior receipt (touched: %s)", async touched => {
     const f = await staleWebFixture();
+    if (touched) { const stat = await lstat(f.supervisorPath); await utimes(f.supervisorPath, stat.atime, new Date(stat.mtimeMs + 5_000)); }
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.input.companyId));
     const leases = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId));
     const finalizers = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, f.input.companyId));
@@ -414,7 +415,8 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const receipt = run!.runnerProfileJson!.nativeHarnessFilesystemIndependence as Record<string, unknown>;
     expect(receipt).toEqual({ ...f.previous, sourceCapabilityFingerprint: source.fingerprint,
-      factsDigest: expect.any(String), observedAt: expect.any(String) });
+      factsDigest: expect.any(String), localFactsDigest: expect.any(String), observedAt: expect.any(String) });
+    if (touched) expect(receipt.localFactsDigest).not.toBe(f.previous.localFactsDigest);
     expect(receipt.factsDigest).not.toBe(f.previous.factsDigest);
     expect(result.receiptDigest).not.toBe(f.first.receiptDigest);
     expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
@@ -429,11 +431,32 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     expect(audits).toHaveLength(2);
     expect(audits.find(row => row.details?.previousReceiptDigest === f.first.receiptDigest)?.details)
       .toMatchObject({ previousReceiptDigest: f.first.receiptDigest, previousReceiptState: { factsDigest: f.previous.factsDigest,
-        sourceCapabilityFingerprint: f.previous.sourceCapabilityFingerprint, observedAt: f.previous.observedAt }, factsDigest: receipt.factsDigest });
+        localFactsDigest: f.previous.localFactsDigest, sourceCapabilityFingerprint: f.previous.sourceCapabilityFingerprint,
+        observedAt: f.previous.observedAt }, factsDigest: receipt.factsDigest });
+    const audit = audits.find(row => row.details?.previousReceiptDigest === f.first.receiptDigest)!.details!;
+    expect(nativeSha256({ ...receipt, ...audit.previousReceiptState as Record<string, unknown> })).toBe(f.first.receiptDigest);
     expect((await preserveNativeHarnessFilesystemIndependence(db, f.input)).receiptDigest).toBe(result.receiptDigest);
     expect(put).not.toHaveBeenCalled();
     expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
       eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(2);
+  });
+
+  it.each(["touch", "new-inode"])("preserves a valid WEB receipt after metadata-only %s", async control => {
+    const f = await webFixture(), first = await preserveNativeHarnessFilesystemIndependence(db, f.input);
+    const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const backups = await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.companyId, f.input.companyId));
+    const stat = await lstat(f.supervisorPath);
+    if (control === "touch") await utimes(f.supervisorPath, stat.atime, new Date(stat.mtimeMs + 5_000));
+    else { await copyFile(f.supervisorPath, `${f.supervisorPath}.copy`); await rename(`${f.supervisorPath}.copy`, f.supervisorPath);
+      expect((await lstat(f.supervisorPath)).ino).not.toBe(stat.ino); }
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+    const put = vi.spyOn(f.storage, "putFile"), get = vi.spyOn(f.storage, "getObject");
+    expect((await preserveNativeHarnessFilesystemIndependence(db, f.input)).receiptDigest).toBe(first.receiptDigest);
+    expect(get).toHaveBeenCalled(); expect(put).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId))).toEqual(before);
+    expect(await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.companyId, f.input.companyId))).toEqual(backups);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+      eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(1);
   });
 
   it("keeps prior WEB proof reconstructable when activity redaction masks a source path", async () => {
@@ -463,7 +486,7 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
       expect(reconstructed).toEqual(previous);
       expect(audit).not.toHaveProperty("previousReceipt");
       expect(audit.previousReceiptState).toEqual({ factsDigest: previous.factsDigest,
-        sourceCapabilityFingerprint: previous.sourceCapabilityFingerprint, observedAt: previous.observedAt });
+        localFactsDigest: previous.localFactsDigest, sourceCapabilityFingerprint: previous.sourceCapabilityFingerprint, observedAt: previous.observedAt });
       expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
       await db.update(heartbeatRuns).set({ runnerProfileJson: { ...current!.runnerProfileJson, retainedWarning: "another metadata update" } })
         .where(eq(heartbeatRuns.id, f.runId));
@@ -511,12 +534,15 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
       eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(1);
   });
 
-  it.each(["active-source", "changed-source", "wrong-key", "unreadable-archive", "aborted", "replaced-volume"])(
+  it.each(["active-source", "changed-source", "changed-mode", "added-file", "wrong-key", "unreadable-archive", "aborted", "replaced-volume"])(
     "retains a stale WEB receipt when fresh proof fails: %s", async control => {
       const f = await staleWebFixture();
       if (control === "active-source") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
         .where(eq(heartbeatRuns.id, f.runId));
       if (control === "changed-source") await writeFile(f.supervisorPath, `${f.supervisor} `);
+      if (control === "changed-mode") { const mode = (await lstat(f.supervisorPath)).mode & 0o777;
+        await chmod(f.supervisorPath, mode === 0o400 ? 0o600 : 0o400); }
+      if (control === "added-file") await writeFile(join(f.sourceRoot, "codex-home/uncovered.txt"), "new bytes");
       if (control === "wrong-key") vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "62".repeat(32));
       if (control === "unreadable-archive") vi.spyOn(f.storage, "getObject").mockRejectedValue(new Error("archive unavailable"));
       if (control === "replaced-volume") vi.stubEnv("RAILWAY_VOLUME_ID", randomUUID());
@@ -532,7 +558,7 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
         eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(1);
     });
 
-  it.each(["matching-winner", "changed-receipt", "active-source", "changed-byte"])(
+  it.each(["matching-winner", "changed-receipt", "active-source", "changed-byte", "touched-source"])(
     "guards stale WEB refresh publication after concurrent %s", async control => {
       const f = await staleWebFixture();
       let release!: () => void, entered!: () => void, delay = true;
@@ -553,6 +579,8 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
         if (control === "active-source") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
           .where(eq(heartbeatRuns.id, f.runId));
         if (control === "changed-byte") await writeFile(f.supervisorPath, `${f.supervisor} `);
+        if (control === "touched-source") { const stat = await lstat(f.supervisorPath);
+          await utimes(f.supervisorPath, stat.atime, new Date(stat.mtimeMs + 5_000)); }
         const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
         release();
         if (winner) expect((await late).receiptDigest).toBe(winner.receiptDigest);
