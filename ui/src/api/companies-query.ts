@@ -1,9 +1,11 @@
 import { useQuery, type QueryClient } from "@tanstack/react-query";
-import type { Company } from "@paperclipai/shared";
+import type { BoardBootstrap, Company } from "@paperclipai/shared";
 import { authApi } from "./auth";
 import { companiesApi } from "./companies";
 import { ApiError } from "./client";
 import { queryKeys } from "../lib/queryKeys";
+import { useBootstrapQuery } from "./bootstrap-query";
+import { hasUnverifiedSession } from "../lib/cached-session";
 
 export type CompanyListResult = { companies: Company[]; unauthorized: boolean };
 
@@ -36,15 +38,29 @@ export function companyListQueryOptions(userId: string | null) {
         throw err;
       }
     },
-    retry: false,
+  } as const;
+}
+
+/** The administration directory has its own account-scoped cache and request. */
+export function companyDirectoryQueryOptions(userId: string | null) {
+  return {
+    queryKey: queryKeys.companies.directory(userId),
+    queryFn: async () => {
+      companiesApi.detachInflightDirectory();
+      return companiesApi.directory();
+    },
   } as const;
 }
 
 const sessionQueryOptions = {
   queryKey: queryKeys.auth.session,
   queryFn: () => authApi.getSession(),
-  retry: false,
 } as const;
+
+/** Observe the shared session read when a surface needs error and retry state. */
+export function useAccountSessionQuery() {
+  return useQuery(sessionQueryOptions);
+}
 
 /**
  * The signed-in account, as the cache currently understands it.
@@ -61,9 +77,19 @@ const sessionQueryOptions = {
  * So: settled on success only. A failed session lookup leaves the list unfetched
  * until the query recovers, which it does on the next refetch.
  */
-export function useAccountIdentity(): { userId: string | null; settled: boolean } {
-  const { data: session, isSuccess } = useQuery(sessionQueryOptions);
-  return { userId: session?.user.id ?? null, settled: isSuccess };
+export function useAccountIdentity(): {
+  userId: string | null;
+  settled: boolean;
+  failed: boolean;
+  bootstrap: BoardBootstrap | undefined;
+  updatedAt: number;
+} {
+  const { data: session, isSuccess, isError, dataUpdatedAt } = useAccountSessionQuery();
+  const userId = session?.user.id ?? null;
+  return {
+    userId, settled: isSuccess, failed: isError, updatedAt: dataUpdatedAt,
+    bootstrap: isSuccess && session?.boardBootstrap?.userId === userId ? session.boardBootstrap : undefined,
+  };
 }
 
 /**
@@ -75,12 +101,12 @@ export function useAccountIdentity(): { userId: string | null; settled: boolean 
 export function useCompanyListQuery(
   options: { enabled?: boolean; staleTime?: number; retry?: number | boolean } = {},
 ) {
-  const { userId, settled } = useAccountIdentity();
-  const query = useQuery<CompanyListResult>({
+  const { userId, settled, bootstrap, updatedAt } = useAccountIdentity();
+  const query = useBootstrapQuery<CompanyListResult>({
     ...companyListQueryOptions(userId),
     ...options,
     enabled: settled && (options.enabled ?? true),
-  });
+  }, bootstrap ? { identity: bootstrap, data: { companies: bootstrap.companies, unauthorized: false }, updatedAt } : undefined);
 
   // While the account is unknown this query is disabled, and a disabled query
   // reports `isLoading: false` with `data: undefined` — which consumers default
@@ -120,7 +146,7 @@ export async function resolveAccountUserId(queryClient: QueryClient): Promise<st
   // breath. The entry is still `success`, still holding the *old* user, until a
   // refetch lands; trusting it would key the new account's list to the old
   // account's id, which is the misattribution this whole file exists to prevent.
-  if (state?.status === "success" && !state.isInvalidated) {
+  if (state?.status === "success" && !state.isInvalidated && !hasUnverifiedSession(queryClient)) {
     return state.data?.user.id ?? null;
   }
   const session = await queryClient.fetchQuery({ ...sessionQueryOptions, staleTime: 0 });

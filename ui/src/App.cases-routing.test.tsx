@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 // Regression guard for PAP-13002: the experimental Cases UI emits *unprefixed*
-// links (`/cases`, `/cases/:id`) — the same global-unprefixed pattern Pipelines
+// links (`/cases`, `/cases/:id`) — the same global-unprefixed pattern Routines
 // uses. Those only resolve if `cases` and `cases/:caseIdentifier` are registered
 // as reserved unprefixed redirect routes in <App>; otherwise the first path
 // segment is parsed as a company prefix ("CASES") and the page 404s with
@@ -132,14 +132,14 @@ describe("App Cases routing (PAP-13002)", () => {
   it("redirects unprefixed /cases to the company-prefixed list page", async () => {
     const root = await renderAppAt(container, "/cases");
     await waitForRoute(container, "CASES_LIST_PAGE");
-    expect(container.textContent).not.toContain("No company matches prefix");
+    expect(container.textContent).not.toContain("No organization matches prefix");
     flushSync(() => root.unmount());
   });
 
   it("redirects unprefixed /cases/:id to the company-prefixed detail page", async () => {
     const root = await renderAppAt(container, "/cases/PAP-C5");
     await waitForRoute(container, "CASE_DETAIL_PAGE");
-    expect(container.textContent).not.toContain("No company matches prefix");
+    expect(container.textContent).not.toContain("No organization matches prefix");
     flushSync(() => root.unmount());
   });
 });

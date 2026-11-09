@@ -41,6 +41,7 @@ import type {
   SitePlan,
 } from "./run-contracts.js";
 import { createSessionReuseStore } from "./session-reuse-store.js";
+import type { WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
 
 /**
  * One staged in-sandbox runtime the store keeps for the next compatible resume.
@@ -50,9 +51,10 @@ import { createSessionReuseStore } from "./session-reuse-store.js";
  * none — the run-start sweep is the only eviction path.
  */
 export interface StagedRuntimeStoreEntry {
+  observabilityCompatibilityKey?: string;
   stagedRuntime: PreparedAdapterExecutionTargetRuntime;
   envDelta: Record<string, string>;
-  teardown: (() => Promise<void>) | null;
+  teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
   dispose: (() => Promise<void>) | null;
   lastUsedAt: number;
 }
@@ -63,7 +65,7 @@ export interface StagedRuntimeStoreEntry {
  */
 export interface StagedWorkspace {
   readonly stagedRuntime: PreparedAdapterExecutionTargetRuntime;
-  readonly teardown: (() => Promise<void>) | null;
+  readonly teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
   readonly dispose: (() => Promise<void>) | null;
   readonly envDelta: Record<string, string>;
   /** True when the run reused an already-staged runtime rather than staging fresh. */
@@ -79,7 +81,7 @@ export type StageWorkspace = (assets: AdapterManagedRuntimeAsset[]) => Promise<P
  */
 export interface ManagedHomeSeamResult {
   readonly stagedRuntime: PreparedAdapterExecutionTargetRuntime;
-  readonly teardown: (() => Promise<void>) | null;
+  readonly teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
   readonly dispose: (() => Promise<void>) | null;
 }
 
@@ -110,6 +112,8 @@ export interface SandboxRunSiteOptions {
    * compatible resume may reuse the already-staged runtime.
    */
   readonly isCompatibleResume: boolean;
+  /** Process configuration compatibility; deliberately separate from conversation identity. */
+  readonly observabilityCompatibilityKey?: string;
   /** Ship the workspace (and, via the seam, the managed home) into the sandbox. */
   readonly stage: StageWorkspace;
   /**
@@ -232,7 +236,7 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
       const sessionKey = context.sessionKey;
       const lease = await withStagingLease(options.stagingLocks, sessionKey, async (): Promise<StagedWorkspace> => {
         const cached = options.isCompatibleResume ? store.borrow(sessionKey) : undefined;
-        if (cached) {
+        if (cached && cached.observabilityCompatibilityKey === options.observabilityCompatibilityKey) {
           // Reuse the already-staged in-sandbox workspace and managed home.
           // Re-apply the env keys the seam repointed and reuse the per-run
           // copy-back so the copy-back cadence stays exactly per run.

@@ -2,6 +2,7 @@ import * as React from "react"
 import { Avatar as AvatarPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { useAvatarInitials } from "./avatar-initials"
 
 function Avatar({
   className,
@@ -42,8 +43,10 @@ function AvatarImage({
 
 function AvatarFallback({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof AvatarPrimitive.Fallback>) {
+  const initials = useAvatarInitials(typeof children === "string" ? children : "")
   return (
     <AvatarPrimitive.Fallback
       data-slot="avatar-fallback"
@@ -52,7 +55,9 @@ function AvatarFallback({
         className
       )}
       {...props}
-    />
+    >
+      {typeof children === "string" ? initials : children}
+    </AvatarPrimitive.Fallback>
   )
 }
 

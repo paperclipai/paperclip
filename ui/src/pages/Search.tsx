@@ -15,12 +15,13 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useDialogActions } from "../context/DialogContext";
 import { searchApi } from "../api/search";
+import { describeError } from "../api/errors";
+import { useQueryView } from "../components/QueryView";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
@@ -39,7 +40,6 @@ import {
   type ParsedSearchQuery,
   type SearchQueryParserContext,
 } from "../lib/search-query-parser";
-import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { SearchResultRow } from "../components/search/SearchResultRow";
 import { SearchFilterBar, type SearchFilterDataProps } from "../components/search/SearchFilterBar";
 import { SearchFilterChips } from "../components/search/SearchFilterChips";
@@ -68,44 +68,6 @@ const SCOPE_LABELS: Record<CompanySearchScope, string> = {
   agents: "Agents",
   projects: "Projects",
 };
-
-type SubGroupKey = "issues" | "comments" | "documents" | "artifacts" | "agents" | "projects";
-
-const SUBGROUP_ORDER: SubGroupKey[] = ["issues", "comments", "documents", "artifacts", "agents", "projects"];
-
-const SUBGROUP_LABELS: Record<SubGroupKey, string> = {
-  issues: "Tasks",
-  comments: "Comments",
-  documents: "Documents",
-  artifacts: "Artifacts",
-  agents: "Agents",
-  projects: "Projects",
-};
-
-function classifyResult(result: CompanySearchResult): SubGroupKey {
-  if (result.type === "artifact") return "artifacts";
-  if (result.type === "agent") return "agents";
-  if (result.type === "project") return "projects";
-  const matched = new Set(result.matchedFields);
-  if (matched.has("title") || matched.has("identifier") || matched.has("description")) return "issues";
-  if (matched.has("comment")) return "comments";
-  if (matched.has("document")) return "documents";
-  return "issues";
-}
-
-function buildSubgroups(results: CompanySearchResult[]): Array<{ key: SubGroupKey; results: CompanySearchResult[] }> {
-  const buckets = new Map<SubGroupKey, CompanySearchResult[]>();
-  for (const result of results) {
-    const key = classifyResult(result);
-    const list = buckets.get(key) ?? [];
-    list.push(result);
-    buckets.set(key, list);
-  }
-  return SUBGROUP_ORDER.filter((key) => (buckets.get(key)?.length ?? 0) > 0).map((key) => ({
-    key,
-    results: buckets.get(key) ?? [],
-  }));
-}
 
 function isCompanySearchScope(value: string | null): value is CompanySearchScope {
   return Boolean(value) && (COMPANY_SEARCH_SCOPES as readonly string[]).includes(value as string);
@@ -163,11 +125,11 @@ export function buildSearchUrl(
 
 function shapeError(error: unknown): { message: string; status?: number } {
   if (!error) return { message: "Unknown error" };
-  if (error instanceof Error) {
-    const status = (error as Error & { status?: number }).status;
-    return { message: error.message, status: typeof status === "number" ? status : undefined };
-  }
-  return { message: String(error) };
+  const status = (error as { status?: number } | null)?.status;
+  return {
+    message: describeError(error, { action: "run that search" }).body,
+    status: typeof status === "number" ? status : undefined,
+  };
 }
 
 export function Search() {
@@ -344,7 +306,7 @@ export function Search() {
   const displayQuery = committedQuery.trim();
   const queryEnabled = !!selectedCompanyId && (trimmedQuery.length > 0 || hasSearchFilters(activeFilters));
 
-  const { data, isFetching, error, refetch } = useQuery<CompanySearchResponse>({
+  const searchQuery = useQuery<CompanySearchResponse>({
     queryKey: [
       ...queryKeys.companySearch.search(
         selectedCompanyId ?? "__no-company__",
@@ -367,9 +329,10 @@ export function Search() {
     enabled: queryEnabled,
     placeholderData: (previousData) => previousData,
   });
+  const { data, isFetching } = searchQuery;
 
-  const agentsById = useMemo<ReadonlyMap<string, Pick<Agent, "id" | "name">>>(() => {
-    const map = new Map<string, Pick<Agent, "id" | "name">>();
+  const agentsById = useMemo<ReadonlyMap<string, Pick<Agent, "id" | "name" | "appearance">>>(() => {
+    const map = new Map<string, Pick<Agent, "id" | "name" | "appearance">>();
     for (const agent of agents) map.set(agent.id, agent);
     return map;
   }, [agents]);
@@ -533,19 +496,20 @@ export function Search() {
     });
   }, [counts, data, filtersActive]);
 
-  const subgroups = useMemo(() => buildSubgroups(data?.results ?? []), [data?.results]);
-
   const operatorPills = useMemo(() => searchFilterPills(draftFilters, parserContext), [draftFilters, parserContext]);
   const operatorSuggestions = useMemo(
     () => (inputFocused ? searchOperatorSuggestions(draftQuery, 4) : []),
     [draftQuery, inputFocused],
   );
   const showInitialState = !displayQuery && !hasSearchFilters(activeFilters);
-  const isLoading = queryEnabled && isFetching && !data;
+  const searchView = useQueryView(searchQuery);
+  // Loaded results stay on screen through a failed refetch (`stale`); an
+  // outage before the first result shows the search skeleton (`reconnecting`).
+  const isLoading = queryEnabled && (searchView.kind === "loading" || searchView.kind === "reconnecting");
   const hasResults = !!data && totalResults > 0;
   const isEmpty = !!data && !isFetching && totalResults === 0;
-  const hasError = !!error && !isLoading;
-  const apiError = hasError ? shapeError(error) : null;
+  const hasError = queryEnabled && searchView.kind === "error";
+  const apiError = hasError ? shapeError(searchView.error) : null;
   const apiMessage = data?.results === undefined && data ? null : null;
   void apiMessage;
 
@@ -718,10 +682,10 @@ export function Search() {
                 showAllScope={showAllScope}
                 navigateIssuesFallback={navigateIssuesFallback}
                 openNewIssue={() => openNewIssue({ title: searchDisplayLabel })}
-                refetch={() => void refetch()}
+                refetch={searchView.retry}
                 recentSearches={recentSearches}
                 onRecentClick={handleRecentClick}
-                subgroups={subgroups}
+                results={data?.results ?? []}
                 totalResults={totalResults}
                 allMatchTotal={allMatchTotal}
                 activeFilterCount={activeFilterCount}
@@ -767,14 +731,14 @@ interface SearchTabContentProps {
   refetch: () => void;
   recentSearches: string[];
   onRecentClick: (query: string) => void;
-  subgroups: Array<{ key: SubGroupKey; results: CompanySearchResult[] }>;
+  results: CompanySearchResult[];
   totalResults: number;
   allMatchTotal: number;
   activeFilterCount: number;
   sortLabel: string;
   zeroResultsSlot: ReactNode;
   isFetching: boolean;
-  agentsById: ReadonlyMap<string, Pick<Agent, "id" | "name">>;
+  agentsById: ReadonlyMap<string, Pick<Agent, "id" | "name" | "appearance">>;
 }
 
 function SearchTabContent({
@@ -792,7 +756,7 @@ function SearchTabContent({
   refetch,
   recentSearches,
   onRecentClick,
-  subgroups,
+  results,
   totalResults,
   allMatchTotal,
   activeFilterCount,
@@ -805,7 +769,7 @@ function SearchTabContent({
     return (
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 py-10 sm:px-6">
         <div>
-          <h2 className="text-lg font-semibold">Type to search company memory.</h2>
+          <h2 className="text-lg font-semibold">Type to search organization memory.</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Tasks, comments, plan documents, artifacts, agents, projects — same surface, ranked by relevance.
           </p>
@@ -950,47 +914,14 @@ function SearchTabContent({
         </span>
         {isFetching ? <span aria-live="polite" className="normal-case tracking-normal">Updating…</span> : null}
       </div>
-      <div className="flex flex-col pb-10">
-        {scope === "all" ? (
-          subgroups.map((group, groupIndex) => (
-            <section
-              key={group.key}
-              aria-label={SUBGROUP_LABELS[group.key]}
-              className={cn("flex flex-col", groupIndex > 0 && "mt-6")}
-            >
-              <IssueGroupHeader
-                label={SUBGROUP_LABELS[group.key]}
-                trailing={
-                  <span className="text-xs font-normal tabular-nums text-muted-foreground">
-                    {group.results.length}
-                  </span>
-                }
-                className="pt-2 pb-1 text-(length:--text-micro) tracking-wider text-muted-foreground"
-              />
-              <div className="flex flex-col gap-y-1">
-                {group.results.map((result) => (
-                  <SearchResultRow
-                    key={`${result.type}:${result.id}:${result.href}`}
-                    result={result}
-                    agentsById={agentsById}
-                  />
-                ))}
-              </div>
-            </section>
-          ))
-        ) : (
-          <div className="flex flex-col gap-y-1">
-            {subgroups
-              .flatMap((group) => group.results)
-              .map((result) => (
-                <SearchResultRow
-                  key={`${result.type}:${result.id}:${result.href}`}
-                  result={result}
-                  agentsById={agentsById}
-                />
-              ))}
-          </div>
-        )}
+      <div className="flex flex-col gap-y-1 pb-10">
+        {results.map((result) => (
+          <SearchResultRow
+            key={`${result.type}:${result.id}:${result.href}`}
+            result={result}
+            agentsById={agentsById}
+          />
+        ))}
       </div>
     </div>
   );

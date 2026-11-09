@@ -109,12 +109,12 @@
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
-    "typescript": "^5.7.3"
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "react": ">=18"

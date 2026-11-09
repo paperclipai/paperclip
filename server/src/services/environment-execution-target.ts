@@ -1,12 +1,13 @@
+import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
 import type { Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
 import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
+  type SandboxLeaseAcquisition,
 } from "@paperclipai/adapter-utils/execution-target";
-import type { DuplexTelemetryRecorder } from "@paperclipai/adapter-utils/duplex-telemetry";
-import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
+import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
 import {
   clampSpanLabel,
   getActiveStepContext,
@@ -72,6 +73,40 @@ function toBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+function sandboxLeaseAcquisitionFromMetadata(
+  value: unknown,
+  providerLeaseId: string | null | undefined,
+): SandboxLeaseAcquisition | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.outcome !== "created" &&
+    candidate.outcome !== "resumed" &&
+    candidate.outcome !== "replacement"
+  ) return null;
+  const resolvedProviderLeaseId =
+    typeof candidate.providerLeaseId === "string" && candidate.providerLeaseId
+      ? candidate.providerLeaseId
+      : providerLeaseId;
+  if (!resolvedProviderLeaseId) return null;
+  const reason = candidate.reason;
+  if (
+    reason !== undefined &&
+    reason !== "not_found" &&
+    reason !== "expired" &&
+    reason !== "identity_mismatch" &&
+    reason !== "resume_failed"
+  ) return null;
+  return {
+    outcome: candidate.outcome,
+    providerLeaseId: resolvedProviderLeaseId,
+    ...(typeof candidate.previousProviderLeaseId === "string"
+      ? { previousProviderLeaseId: candidate.previousProviderLeaseId }
+      : {}),
+    ...(reason ? { reason } : {}),
+  };
+}
+
 /**
  * Compute the tail of `final` that the provider did NOT already stream.
  *
@@ -91,6 +126,9 @@ function undeliveredSuffix(delivered: string, final: string): string {
   if (!final) return "";
   if (delivered.length === 0) return final;
   if (final.startsWith(delivered)) return final.slice(delivered.length);
+  // Some providers retain only the last 4 MiB while streaming the full output.
+  // Replaying that captured tail would count its usage receipts a second time.
+  if (delivered.endsWith(final)) return "";
   return final;
 }
 
@@ -203,15 +241,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
   // gated server tracer, which is a no-op when tracing is off. Tests inject a
   // recording tracer.
   tracer?: ExecTracer;
-  // The host duplex telemetry recorder. The seam stamps it onto the sandbox
+  // The host duplex observability recorder. The seam stamps it onto the sandbox
   // target next to the runner, so the live object stays on the host and never
   // enters the sandbox environment. Absent keeps the safe no-op default in the
   // bridge, so the surface stays inert until the host injects a real recorder.
-  duplexTelemetryRecorder?: DuplexTelemetryRecorder | null;
-  // The process-owned aggregate byte ledger. The seam stamps it onto the sandbox
-  // target next to the runner, so the live object stays on the host and never
-  // enters the sandbox environment. Absent keeps the bridge inert for this seam.
-  duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
+  duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
 }): Promise<AdapterExecutionTarget | null> {
   if (input.environment.driver === "local") {
     return {
@@ -219,6 +253,40 @@ export async function resolveEnvironmentExecutionTarget(input: {
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
     };
+  }
+
+  if (input.environment.driver === "plugin" && input.adapterType === "paperclip_runner") {
+    const lease = input.lease;
+    const runtime = input.environmentRuntime;
+    if (!lease || !runtime || lease.companyId !== input.companyId ||
+        lease.environmentId !== input.environment.id || !await runtime.supportsTasks({ lease })) {
+      throw new Error("Plugin environment does not provide native Runner task execution");
+    }
+    // The Runner resolves its workspace locally; this is only a relative scope marker.
+    const acquisition:SandboxLeaseAcquisition = {outcome:lease.metadata?.runnerTaskReused === true ? "resumed" : "created",providerLeaseId:lease.providerLeaseId!};
+    const target: Extract<AdapterExecutionTarget,{kind:"remote";transport:"sandbox"}> = {
+      kind: "remote", transport: "sandbox", providerKey: lease.provider ?? "plugin",
+      environmentId: input.environment.id, leaseId: lease.id, remoteCwd: ".",
+      runnerLifecyclePolicy: lease.metadata?.runnerTaskLifecyclePolicy as { mode: "warm"; idleTimeoutMs: number } | undefined ?? { mode: "per_turn", idleTimeoutMs: null },
+      reusableLeaseConfigured: lease.leasePolicy === "reuse_by_environment",
+      effectiveCapabilities: { reusableLeases: lease.leasePolicy === "reuse_by_environment", nativeSyncIn: false, nativeSyncOut: false,
+        persistentProcessSessions: false, independentControlCommands: false, incrementalSessionOutput: false,
+        concurrentSyncOperations: false, duplexCommandStream: false, runnerWebSocketIngress: true },
+      sandboxLeaseAcquisition:acquisition,
+      ...(lease.metadata?.runnerTaskProbe ? { runnerTaskProbe: lease.metadata.runnerTaskProbe as { runId: string; sessionId: string } } : {}),
+      runnerTask: async (operation, context) => {
+        const result = await runtime.task({ companyId: input.companyId, leaseId: lease.id,
+          operation: environmentTaskOperationSchema.parse(operation),
+          ...(context?.executionContext ? { executionContext: context.executionContext } : {}),
+          ...(context?.expectedTaskId !== undefined ? { expectedTaskId: context.expectedTaskId } : {}) });
+        if (result.kind === "description" && result.taskId !== acquisition.providerLeaseId) {
+          acquisition.outcome = "replacement";
+          acquisition.providerLeaseId = result.taskId;
+        }
+        return result;
+      },
+    };
+    return target;
   }
 
   if (input.environment.driver === "sandbox") {
@@ -336,15 +404,39 @@ export async function resolveEnvironmentExecutionTarget(input: {
       shellCommand,
       remoteCwd,
       enableSandboxDuplexBridge,
-      // Attach the host duplex telemetry recorder next to the runner. The bridge
+      runnerLifecyclePolicy:
+        parsed.config.runnerLifecycleMode === "warm"
+          ? {
+              mode: "warm",
+              idleTimeoutMs:
+                typeof parsed.config.runnerIdleTimeoutMs === "number"
+                  ? parsed.config.runnerIdleTimeoutMs
+                  : 300_000,
+            }
+          : parsed.config.runnerLifecycleMode === "per_turn"
+            ? { mode: "per_turn", idleTimeoutMs: null }
+            : null,
+      reusableLeaseConfigured: parsed.config.reuseLease === true,
+      sandboxLeaseAcquisition: sandboxLeaseAcquisitionFromMetadata(
+        input.lease?.metadata?.sandboxLeaseAcquisition,
+        input.lease?.providerLeaseId,
+      ),
+      // Attach the host duplex observability recorder next to the runner. The bridge
       // binds it to the fixed observability surface. Absent keeps the no-op
       // default, so the surface stays inert on a run with no injected recorder.
-      duplexTelemetryRecorder: input.duplexTelemetryRecorder ?? null,
-      // Attach the process-owned aggregate byte ledger next to the runner. The
-      // bridge passes it to the broker, the decoder, and the response-body reader.
-      // Absent keeps the bridge inert for this seam.
-      duplexAggregateByteLedger: input.duplexAggregateByteLedger ?? null,
+      duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
       ...(effectiveCapabilities ? { effectiveCapabilities: Object.freeze({ ...effectiveCapabilities }) } : {}),
+      ...(input.environmentRuntime?.getRunnerIngressEndpoint && input.lease
+        ? {
+            getRunnerIngressEndpoint: ({ port, path }) =>
+              input.environmentRuntime!.getRunnerIngressEndpoint({
+                environment: input.environment as Environment,
+                lease: input.lease!,
+                port,
+                path,
+              }),
+          }
+        : {}),
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       timeoutMs,
@@ -427,6 +519,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     env: commandInput.env,
                     stdin: commandInput.stdin,
                     timeoutMs: commandInput.timeoutMs,
+                    commandTimeoutMs: commandInput.commandTimeoutMs,
                     onLog: commandInput.onLog ? onIncrementalLog : undefined,
                     // The ACP process session bridge sets `useSession` so its
                     // long-lived agent command opens the persistent session and
@@ -538,17 +631,19 @@ export async function resolveEnvironmentExecutionTarget(input: {
               lease: input.lease,
             })
               ? {
-                  syncIn: (operations) =>
+                  syncIn: (operations, options) =>
                     input.environmentRuntime!.syncIn({
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                      ...(options?.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: options.minimumTimeoutMs }),
                     }),
-                  syncOut: (operations) =>
+                  syncOut: (operations, options) =>
                     input.environmentRuntime!.syncOut({
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                      ...(options?.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: options.minimumTimeoutMs }),
                     }),
                 }
               : {}),
@@ -557,6 +652,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
             // (resolution failed or the snapshot is not resolvable) leaves the
             // member undefined, so the caller keeps the file bridge. This mirrors
             // the syncIn/syncOut gate above and fails closed.
+            // HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
             ...(effectiveCapabilities?.duplexCommandStream
               ? {
                   openDuplexChannel: (channelInput) =>

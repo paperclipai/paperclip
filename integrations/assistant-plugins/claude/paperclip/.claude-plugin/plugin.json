@@ -1,0 +1,14 @@
+{
+  "name": "paperclip",
+  "version": "0.1.0",
+  "description": "Review your team, delegate work and retrieve durable results in Paperclip.",
+  "author": {
+    "name": "Paperclip",
+    "url": "https://paperclip.ing"
+  },
+  "homepage": "https://paperclip.ing",
+  "repository": "https://github.com/paperclipai/paperclip",
+  "license": "MIT",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

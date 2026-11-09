@@ -37,12 +37,12 @@ const mockIssueReferenceService = vi.hoisted(() => ({
   syncIssue: vi.fn(async () => undefined),
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
+  wakeup: vi.fn(async (): Promise<{ id: string } | undefined> => undefined),
   reportRunActivity: vi.fn(async () => undefined),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
-  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async (): Promise<Array<{ id: string; kind: string; status: string }>> => []),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -128,7 +128,7 @@ function registerModuleMocks() {
     companySkillService: () => ({
       completeTestRunForIssue: vi.fn(async () => null),
     }),
-    companyService: () => ({ getById: vi.fn(async () => ({ id: companyId, attachmentMaxBytes: 10_000_000 })) }),
+    companyService: () => ({ getById: vi.fn(async () => ({ id: companyId })) }),
     documentAnnotationService: () => mockAnnotationService,
     documentService: () => mockDocumentService,
     environmentService: () => ({}),
@@ -187,7 +187,7 @@ async function createApp(actor: "board" | "agent" = "board", actorCompanyId = co
 }
 
 describe("document annotation routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../middleware/index.js");
@@ -226,6 +226,11 @@ describe("document annotation routes", () => {
     mockAnnotationService.addComment.mockResolvedValue(annotationComment);
     mockAnnotationService.updateThread.mockResolvedValue({ ...annotationThread, status: "resolved" });
     mockAnnotationService.remapOpenThreadsForDocument.mockResolvedValue([]);
+    // Cold route transforms belong to fixture setup, not the request timeout.
+    await Promise.all([
+      vi.importActual("../routes/issues.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
   });
 
   it("includes compact open annotations without comment bodies by default for agent document reads", async () => {

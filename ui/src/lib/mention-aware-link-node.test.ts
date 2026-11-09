@@ -47,4 +47,29 @@ describe("getMentionAwareLinkNodeInit", () => {
 
     expect(created).toBeInstanceOf(MentionAwareLinkNode);
   });
+
+  it.each([
+    "agent://agent-123?i=code",
+    "project://project-123?c=0f766e",
+    "user://user-123",
+    "skill://skill-123?s=test-it-for-real",
+    "routine://routine-123",
+    "/issues/PAP-123",
+  ])("preserves the rich-chip destination %s", (href) => {
+    const editor = createTestEditor();
+    let renderedUrl: string | undefined;
+    editor.update(() => {
+      renderedUrl = $createLinkNode(href).sanitizeUrl(href);
+    });
+    expect(renderedUrl).toBe(href);
+  });
+
+  it("still blocks executable link destinations", () => {
+    const editor = createTestEditor();
+    let renderedUrl: string | undefined;
+    editor.update(() => {
+      renderedUrl = $createLinkNode("javascript:alert(1)").sanitizeUrl("javascript:alert(1)");
+    });
+    expect(renderedUrl).toBe("about:blank");
+  });
 });

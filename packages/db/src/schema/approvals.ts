@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -19,6 +20,7 @@ export const approvals = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    pendingRetentionIdx: index("approvals_pending_retention_idx").on(table.updatedAt, table.id).where(sql`${table.status} = 'pending'`),
     companyStatusTypeIdx: index("approvals_company_status_type_idx").on(
       table.companyId,
       table.status,

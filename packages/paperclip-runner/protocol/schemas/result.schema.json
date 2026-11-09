@@ -92,7 +92,15 @@
       "required": ["reasonCode", "owner", "unblockAction", "scope"],
       "properties": {
         "reasonCode": { "type": "string", "minLength": 1 },
-        "owner": { "type": "object", "additionalProperties": true },
+        "owner": {
+          "type": "object",
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": { "enum": ["agent", "user", "system", "external"] },
+            "name": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        },
         "unblockAction": { "type": "string", "minLength": 1 },
         "scope": { "enum": ["current_track", "task_wide"] }
       },
@@ -129,11 +137,16 @@
       "required": ["kind", "summary", "idempotencyKey"],
       "properties": {
         "kind": {
-          "enum": ["same_agent", "retry", "delegated_issue", "response_wake", "monitor"]
+          "enum": ["same_agent", "retry", "delegated_issue", "response_wake", "monitor", "case_handoff"]
         },
         "summary": { "type": "string", "minLength": 1 },
-        "idempotencyKey": { "type": "string", "minLength": 1 }
+        "idempotencyKey": { "type": "string", "minLength": 1 },
+        "handoffId": { "type": "string", "minLength": 1 }
       },
+      "allOf": [{
+        "if": { "properties": { "kind": { "const": "case_handoff" } }, "required": ["kind"] },
+        "then": { "required": ["handoffId"] }
+      }],
       "additionalProperties": true
     }
   },

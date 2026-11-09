@@ -324,7 +324,7 @@ function PluginSdkIssuesList({
   });
 
   if (!companyId) {
-    return createElement("div", { className: "text-sm text-muted-foreground" }, "Select a company to view tasks.");
+    return createElement("div", { className: "text-sm text-muted-foreground" }, "Select an organization to view tasks.");
   }
 
   return createElement(HostIssuesList, {

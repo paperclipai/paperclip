@@ -8,7 +8,6 @@ type InviteSummary = {
   companyId: string | null;
   companyName?: string | null;
   companyLogoUrl?: string | null;
-  companyBrandColor?: string | null;
   inviteType: "company_join" | "bootstrap_ceo";
   allowedJoinTypes: "human" | "agent" | "both";
   humanRole?: HumanCompanyRole | null;
@@ -150,6 +149,7 @@ export type CompanyMembersResponse = {
 export type CompanyUserDirectoryEntry = {
   principalId: string;
   status: "active";
+  membershipRole: string | null;
   user: { id: string; email: string | null; name: string | null; image: string | null } | null;
 };
 

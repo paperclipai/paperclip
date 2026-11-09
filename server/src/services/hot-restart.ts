@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readLinuxProcessStartedAt, type LinuxProcessStartOptions } from "../vendor/paperclip-runner/index.js";
 import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
@@ -14,7 +15,6 @@ const HOT_RESTART_LOCK_STALE_MS = 30_000;
 const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
 
 type ProcessCommandRunner = (command: string, args: string[]) => Promise<string>;
-type ProcessStatReader = (target: string) => Promise<{ ctimeMs: number }>;
 
 export type HotRestartIntentRun = {
   runId: string;
@@ -25,11 +25,16 @@ export type HotRestartIntentRun = {
   processPid: number | null;
   processGroupId: number | null;
   issueId: string | null;
+  runtimeMode?: string | null;
+  nativeSessionId?: string | null;
+  runnerInstanceId?: string | null;
+  processStartedAt?: string | null;
 };
 
 export type HotRestartIntent = {
   version: 1;
   requestedAt: string;
+  recoveryRequestId?: string | null;
   previousServerPid: number;
   previousServerIdentity?: string | null;
   previousServerStartedAt?: string | null;
@@ -173,17 +178,15 @@ export async function readProcessStartedAt(
   pid: number,
   options: {
     platform?: NodeJS.Platform;
-    stat?: ProcessStatReader;
+    linuxProcessStart?: LinuxProcessStartOptions;
     runCommand?: ProcessCommandRunner;
   } = {},
 ) {
   const platform = options.platform ?? process.platform;
-  const stat = options.stat ?? fs.stat;
   const runCommand = options.runCommand ?? runProcessCommand;
 
   if (platform === "linux") {
-    const processStat = await stat(`/proc/${pid}`);
-    return new Date(processStat.ctimeMs).toISOString();
+    return readLinuxProcessStartedAt(pid, options.linuxProcessStart);
   }
 
   if (["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(platform)) {
@@ -382,7 +385,8 @@ function isSameHotRestartRequest(left: HotRestartIntent, right: HotRestartIntent
   return left.requestedAt === right.requestedAt
     && left.previousServerPid === right.previousServerPid
     && left.drainRequired === right.drainRequired
-    && left.requestedByRunId === right.requestedByRunId;
+    && left.requestedByRunId === right.requestedByRunId
+    && (left.recoveryRequestId ?? null) === (right.recoveryRequestId ?? null);
 }
 
 function parseRun(value: unknown): HotRestartIntentRun | null {
@@ -402,6 +406,10 @@ function parseRun(value: unknown): HotRestartIntentRun | null {
     processPid: asNumber(value.processPid),
     processGroupId: asNumber(value.processGroupId),
     issueId: asString(value.issueId),
+    runtimeMode: asString(value.runtimeMode),
+    nativeSessionId: asString(value.nativeSessionId),
+    runnerInstanceId: asString(value.runnerInstanceId),
+    processStartedAt: asDateString(value.processStartedAt),
   };
 }
 
@@ -414,6 +422,7 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
   const intent: HotRestartIntent = {
     version: 1,
     requestedAt,
+    recoveryRequestId: asString(value.recoveryRequestId),
     previousServerPid,
     previousServerIdentity: asString(value.previousServerIdentity),
     previousServerStartedAt: asDateString(value.previousServerStartedAt),
@@ -492,6 +501,7 @@ export async function writeHotRestartIntent(input: {
   requestedByRunId?: string | null;
   preflightActiveRunIds?: string[];
   requestedAt?: Date;
+  recoveryRequestId?: string | null;
   homeDir?: string;
 }) {
   const previousServerStartedAt = input.previousServerStartedAt === undefined
@@ -507,6 +517,7 @@ export async function writeHotRestartIntent(input: {
   const intent: HotRestartIntent = {
     version: 1,
     requestedAt: (input.requestedAt ?? new Date()).toISOString(),
+    recoveryRequestId: input.recoveryRequestId ?? null,
     previousServerPid: input.previousServerPid,
     previousServerIdentity,
     previousServerStartedAt,

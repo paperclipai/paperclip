@@ -106,6 +106,7 @@ describe("authSessionSchema", () => {
     const result = authSessionSchema.safeParse({
       session: { id: "s1", userId: "u1" },
       user: { id: "u1", email: "a@b.com", name: "", image: null },
+      sentryDsn: null,
     });
     expect(result.success).toBe(true);
     expect(result.success && result.data.user.name).toBe(null);
@@ -115,15 +116,18 @@ describe("authSessionSchema", () => {
     const result = authSessionSchema.safeParse({
       session: { id: "s1", userId: "u1" },
       user: { id: "u1", email: "a@b.com", name: "Jane", image: null },
+      sentryDsn: null,
     });
     expect(result.success).toBe(true);
     expect(result.success && result.data.user.name).toBe("Jane");
+    expect(result.success && result.data.sentryDsn).toBe(null);
   });
 
   it("parses a session where user name is null", () => {
     const result = authSessionSchema.safeParse({
       session: { id: "s1", userId: "u1" },
       user: { id: "u1", email: "a@b.com", name: null, image: null },
+      sentryDsn: null,
     });
     expect(result.success).toBe(true);
     expect(result.success && result.data.user.name).toBe(null);
@@ -133,8 +137,40 @@ describe("authSessionSchema", () => {
     const result = authSessionSchema.safeParse({
       session: { id: "s1", userId: "u1" },
       user: { id: "u1", email: "", name: "Jane", image: null },
+      sentryDsn: null,
     });
     expect(result.success).toBe(true);
     expect(result.success && result.data.user.email).toBe(null);
+  });
+
+  it("rejects a payload with no sentryDsn field", () => {
+    const result = authSessionSchema.safeParse({
+      session: { id: "s1", userId: "u1" },
+      user: { id: "u1", email: "a@b.com", name: "Jane", image: null },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it.each([undefined, null, "staging", "production"])(
+    "preserves the optional Sentry environment (%s)",
+    (environment) => {
+      const result = authSessionSchema.parse({
+        session: { id: "s1", userId: "u1" },
+        user: { id: "u1", email: "a@b.com", name: "Jane", image: null },
+        sentryDsn: null,
+        ...(environment === undefined ? {} : { sentryEnvironment: environment }),
+      });
+      expect(result.sentryEnvironment).toBe(environment);
+    },
+  );
+
+  it("accepts a real sentryDsn value", () => {
+    const result = authSessionSchema.safeParse({
+      session: { id: "s1", userId: "u1" },
+      user: { id: "u1", email: "a@b.com", name: "Jane", image: null },
+      sentryDsn: "https://public@o0.ingest.sentry.io/1",
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.sentryDsn).toBe("https://public@o0.ingest.sentry.io/1");
   });
 });

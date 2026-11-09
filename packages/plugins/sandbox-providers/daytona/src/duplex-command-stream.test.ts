@@ -270,10 +270,10 @@ describe("openDaytonaDuplexChannelSession", () => {
     const received: string[] = [];
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
-    session.onData((chunk) => received.push(chunk));
+    session.onData((chunk) => received.push(new TextDecoder().decode(chunk)));
 
     // The launch wrapper is the first input; the host frame write is the second.
-    session.write('{"version":1,"type":"heartbeat"}\n');
+    session.write(new TextEncoder().encode('{"version":1,"type":"heartbeat"}\n'));
     // The chunker awaits each send, so let the write settle before the assertion.
     await new Promise((resolve) => setImmediate(resolve));
     expect(process.handle?.inputs[1]).toBe('{"version":1,"type":"heartbeat"}\n');
@@ -287,7 +287,7 @@ describe("openDaytonaDuplexChannelSession", () => {
     const received: string[] = [];
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
-    session.onData((chunk) => received.push(chunk));
+    session.onData((chunk) => received.push(new TextDecoder().decode(chunk)));
 
     process.handle?.emitText('{"version":1,"type":"ready","address":"127.0.0.1:8080"}\n');
     process.handle?.emitText('{"version":1,"type":"heartbeat"}\n');
@@ -305,7 +305,7 @@ describe("openDaytonaDuplexChannelSession", () => {
     const received: string[] = [];
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
-    session.onData((chunk) => received.push(chunk));
+    session.onData((chunk) => received.push(new TextDecoder().decode(chunk)));
 
     const frame = '{"version":1,"type":"response","id":"r1","status":200,"headers":{},"body":"","outcome":"completed"}\n';
     process.handle?.emitText(frame.slice(0, 20));
@@ -319,7 +319,7 @@ describe("openDaytonaDuplexChannelSession", () => {
     const received: string[] = [];
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
-    session.onData((chunk) => received.push(chunk));
+    session.onData((chunk) => received.push(new TextDecoder().decode(chunk)));
 
     const body = "x".repeat(500_000);
     const frame = `{"version":1,"type":"response","id":"big","status":200,"headers":{},"body":"${body}","outcome":"completed"}\n`;
@@ -329,20 +329,41 @@ describe("openDaytonaDuplexChannelSession", () => {
     expect(received.join("").length).toBe(frame.length);
   });
 
-  it("keeps a multibyte character whole across two output chunks", async () => {
+  it("test_stream_forwards_bytes_without_utf8_conversion", async () => {
     const process = createFakeProcess();
-    const received: string[] = [];
+    const received: Uint8Array[] = [];
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
     session.onData((chunk) => received.push(chunk));
 
-    // The euro sign is three UTF-8 bytes. Split it across two chunks, so the
-    // stream decoder must join the bytes.
+    // The euro sign is three UTF-8 bytes. Split it across two chunks. The
+    // session no longer runs a UTF-8 stream decoder (see `duplex-command-stream.ts`),
+    // so it forwards each raw byte chunk unchanged; it does not wait for a whole
+    // character. The two chunks concatenate back to the exact original bytes —
+    // proof that no layer here converts the data to a string.
     const euro = new TextEncoder().encode("€");
     process.handle?.emitBytes(euro.subarray(0, 2));
     process.handle?.emitBytes(euro.subarray(2));
 
-    expect(received.join("")).toBe("€");
+    expect(received).toHaveLength(2);
+    expect(received[0]).toEqual(euro.subarray(0, 2));
+    expect(received[1]).toEqual(euro.subarray(2));
+    const joined = Buffer.concat(received);
+    expect(joined).toEqual(Buffer.from(euro));
+    expect(new TextDecoder().decode(joined)).toBe("€");
+  });
+
+  it("sends the full 256-value byte corpus through the channel unchanged", async () => {
+    const process = createFakeProcess();
+    const received: Uint8Array[] = [];
+
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
+    session.onData((chunk) => received.push(chunk));
+
+    const allByteValues = Uint8Array.from({ length: 256 }, (_, value) => value);
+    process.handle?.emitBytes(allByteValues);
+
+    expect(Buffer.concat(received)).toEqual(Buffer.from(allByteValues));
   });
 
   it("buffers early output until the listener registers", async () => {
@@ -355,7 +376,7 @@ describe("openDaytonaDuplexChannelSession", () => {
     process.handle?.emitText('"type":"heartbeat"}\n');
     expect(received).toEqual([]);
 
-    session.onData((chunk) => received.push(chunk));
+    session.onData((chunk) => received.push(new TextDecoder().decode(chunk)));
     // The session flushes the buffered output in order on registration.
     expect(received).toEqual(['{"version":1,"type":"heartbeat"}\n']);
   });
@@ -393,7 +414,7 @@ describe("openDaytonaDuplexChannelSession", () => {
     // raised chunk size above this size makes the write one send and fails this
     // test. The payload is ASCII, so the fake's per-send decode keeps each byte.
     const payload = "x".repeat(150_416);
-    session.write(payload);
+    session.write(new TextEncoder().encode(payload));
     // The chunker awaits each send, so let the write settle before the assertion.
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -414,7 +435,7 @@ describe("openDaytonaDuplexChannelSession", () => {
     if (!handle) throw new Error("The fake process opened no handle.");
     const before = handle.inputs.length;
 
-    session.write('{"version":1,"type":"heartbeat"}\n');
+    session.write(new TextEncoder().encode('{"version":1,"type":"heartbeat"}\n'));
     // The chunker awaits each send, so let the write settle before the assertion.
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -449,8 +470,8 @@ describe("openDaytonaDuplexChannelSession", () => {
     const first = "a".repeat(150_416);
     const second = "b".repeat(150_416);
 
-    session.write(first);
-    session.write(second);
+    session.write(new TextEncoder().encode(first));
+    session.write(new TextEncoder().encode(second));
     // Let both writes settle.
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -514,7 +535,7 @@ describe("openDaytonaDuplexChannelSession", () => {
       onWriteError: (reason) => writeErrors.push(reason),
     });
 
-    session.write("frame\n");
+    session.write(new TextEncoder().encode("frame\n"));
     // Let the rejected write settle.
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -553,8 +574,8 @@ describe("openDaytonaDuplexChannelSession", () => {
       onWriteError: (reason) => writeErrors.push(reason),
     });
 
-    session.write("a");
-    session.write("b");
+    session.write(new TextEncoder().encode("a"));
+    session.write(new TextEncoder().encode("b"));
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(writeErrors).toEqual(["write_error"]);
@@ -595,8 +616,8 @@ describe("openDaytonaDuplexChannelSession", () => {
       onWriteError: (reason) => writeErrors.push(reason),
     });
 
-    session.write("first\n");
-    session.write("second\n");
+    session.write(new TextEncoder().encode("first\n"));
+    session.write(new TextEncoder().encode("second\n"));
     // Let the write chain settle both queued writes.
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));

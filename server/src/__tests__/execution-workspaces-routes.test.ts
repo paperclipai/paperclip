@@ -1,8 +1,15 @@
+import { sql } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
+
+vi.mock("../services/authorization.js", async (importActual) => ({
+  ...await importActual<typeof import("../services/authorization.js")>(),
+  executionWorkspaceReadSqlCondition: async () => sql<boolean>`true`,
+  canActorReadExecutionWorkspace: async () => true,
+}));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -88,7 +95,7 @@ function createApp(actor: Record<string, unknown> = {
   return app;
 }
 
-describe.sequential("execution workspace routes", () => {
+describe("execution workspace routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({
@@ -133,11 +140,13 @@ describe.sequential("execution workspace routes", () => {
       },
     ]);
     expect(mockExecutionWorkspaceService.listSummaries).toHaveBeenCalledWith("company-1", {
+      readCondition: expect.anything(),
       projectId: undefined,
       projectWorkspaceId: undefined,
       issueId: undefined,
       status: undefined,
       reuseEligible: true,
+      selectableForTask: false,
     });
     expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
   });
@@ -159,7 +168,24 @@ describe.sequential("execution workspace routes", () => {
       status: ["active", "idle"],
       limit: 25,
       offset: 10,
-    });
+    }, expect.anything());
+  });
+
+  it("bounds summary discovery after company and visibility checks", async () => {
+    const cursor = "00000000-0000-4000-8000-000000000001";
+    const res = await request(createApp())
+      .get(`/api/companies/company-1/execution-workspaces?summary=true&selectableForTask=true&limit=51&cursor=${cursor}`);
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.listSummaries).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      readCondition: expect.anything(), selectableForTask: true,
+    }), { limit: 51, cursor });
+    expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
+  });
+
+  it.each(["limit=1000", "limit=0", "limit=1.5", "cursor=invalid"])("rejects invalid summary pagination (%s)", async query => {
+    const res = await request(createApp()).get(`/api/companies/company-1/execution-workspaces?summary=true&${query}`);
+    expect(res.status).toBe(422);
+    expect(mockExecutionWorkspaceService.listSummaries).not.toHaveBeenCalled();
   });
 
   it("rejects invalid workspace overview pagination", async () => {

@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "types": ["node"],
+    "typeRoots": ["../../cli/node_modules/@types", "../../server/node_modules/@types"]
+  },
+  "include": ["./**/*.ts", "../../server/src/types/express.d.ts"]
+}

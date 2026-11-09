@@ -311,7 +311,7 @@ export function SkillFolderRail({
           ) : null}
 
           {/* Company — plain top-level company folders */}
-          <RailHeading label="Company" onCreate={() => onCreateFolder(null)} />
+          <RailHeading label="Organization" onCreate={() => onCreateFolder(null)} />
           {model.company.length > 0 ? (
             model.company.map((node) => (
               <TreeBranch
@@ -335,7 +335,7 @@ export function SkillFolderRail({
               />
             ))
           ) : (
-            <div className="px-2 py-1 text-xs text-muted-foreground">No company folders yet.</div>
+            <div className="px-2 py-1 text-xs text-muted-foreground">No organization folders yet.</div>
           )}
 
           {/* Projects — auto-managed, read-only structure */}
@@ -649,7 +649,7 @@ function TreeBranch({
                   <DropdownMenuItem onSelect={() => onEditFolder(folder)}>Edit color</DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => onMoveFolder(folder, isInMySkills ? "company" : "my")}>
                     <MoveRight className="h-3.5 w-3.5" />
-                    Move to {isInMySkills ? "Company" : "My Skills"}
+                    Move to {isInMySkills ? "Organization" : "My Skills"}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem variant="destructive" onSelect={() => onDeleteFolder(folder)}>

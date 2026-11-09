@@ -77,6 +77,30 @@ describe("TaskChatStatusPill whimsy", () => {
     expect(container.textContent).toContain("Terminal · ls -la");
   });
 
+  it("centers the reconnecting caret and status dot in equal lead slots", () => {
+    act(() => {
+      root.render(
+        <TaskChatStatusPill
+          item={liveStatus({ label: "Reconnecting" })}
+          chevronOpen={false}
+          onToggle={() => undefined}
+        />,
+      );
+    });
+    const caret = container.querySelector(
+      '[data-testid="task-chat-status-caret-slot"]',
+    );
+    const dot = container.querySelector(
+      '[data-testid="task-chat-status-dot-slot"]',
+    );
+    for (const slot of [caret, dot]) {
+      expect(slot?.classList.contains("h-3.5")).toBe(true);
+      expect(slot?.classList.contains("w-3.5")).toBe(true);
+      expect(slot?.classList.contains("items-center")).toBe(true);
+      expect(slot?.classList.contains("justify-center")).toBe(true);
+    }
+  });
+
   it("keeps Queued copy untouched", () => {
     render(liveStatus({ label: "Queued", detail: "Waiting to start" }));
     expect(container.textContent).toContain("Queued…");

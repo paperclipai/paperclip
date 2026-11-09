@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "slug": "telem",
+  "name": "Telem.AI",
+  "description": "Search the web and read pages across many search providers with one API key.",
+  "categories": [
+    "ai"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/telem.svg",
+    "darkLogoUrl": "/brands/apps/telem-dark.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.telem.ai/*"
+  ],
+  "docsUrl": "https://docs.telem.ai",
+  "methods": [
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Connect with a Telem API key.",
+      "defaults": {
+        "serverUrl": "https://mcp.telem.ai/mcp"
+      },
+      "guidanceMd": "Create an API key in the Telem console at app.telem.ai. Paste the key below. Open Advanced to set auto routing, the tier, or the providers to include or exclude.",
+      "riskTier": "S2",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Telem.AI API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "tlm_...",
+          "secret": true,
+          "helperMd": "None: web search and page fetch tools (usage is billed to the Telem account). Any Telem API key works."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://app.telem.ai",
+        "docs": "https://docs.telem.ai"
+      },
+      "warnings": [
+        "A Telem API key. Create one in the Telem console at app.telem.ai."
+      ],
+      "tenantFields": [
+        {
+          "key": "autoRouting",
+          "label": "Auto routing",
+          "type": "select",
+          "advanced": true,
+          "options": [
+            {
+              "value": "off",
+              "label": "Off"
+            },
+            {
+              "value": "accuracy",
+              "label": "Accuracy"
+            }
+          ],
+          "helperMd": "Optional. Accuracy lets Telem choose the search providers for each query. Off, or no selection, keeps auto routing off.",
+          "transport": {
+            "location": "header",
+            "name": "X-Telem-Auto-Routing"
+          }
+        },
+        {
+          "key": "tier",
+          "label": "Tier",
+          "type": "select",
+          "advanced": true,
+          "options": [
+            {
+              "value": "minimalist",
+              "label": "Minimalist"
+            },
+            {
+              "value": "default",
+              "label": "Default"
+            },
+            {
+              "value": "extended",
+              "label": "Extended"
+            },
+            {
+              "value": "max",
+              "label": "Max"
+            }
+          ],
+          "helperMd": "Optional. Sets how much search work Telem does for each query. No selection uses the Default tier.",
+          "transport": {
+            "location": "header",
+            "name": "X-Telem-Tier"
+          }
+        },
+        {
+          "key": "providersInclude",
+          "label": "Providers to include",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "Optional comma-separated provider names",
+          "helperMd": "Optional. Telem searches only these providers. Leave it empty to allow all providers.",
+          "validation": {
+            "pattern": "^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$",
+            "maxLength": 500
+          },
+          "transport": {
+            "location": "header",
+            "name": "X-Telem-Providers-Include",
+            "format": "csv"
+          }
+        },
+        {
+          "key": "providersExclude",
+          "label": "Providers to exclude",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "Optional comma-separated provider names",
+          "helperMd": "Optional. Telem does not search these providers.",
+          "validation": {
+            "pattern": "^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$",
+            "maxLength": 500
+          },
+          "transport": {
+            "location": "header",
+            "name": "X-Telem-Providers-Exclude",
+            "format": "csv"
+          }
+        }
+      ]
+    }
+  ]
+}

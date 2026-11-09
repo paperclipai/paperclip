@@ -97,6 +97,8 @@ export interface SandboxProvider {
   probe(config: SandboxEnvironmentConfig): Promise<EnvironmentProbeResult>;
   acquireLease(input: AcquireSandboxLeaseInput): Promise<SandboxLeaseHandle>;
   resumeLease(input: ResumeSandboxLeaseInput): Promise<SandboxLeaseHandle | null>;
+  /** Explicit stop-only support. Absence must never fall back to release/destroy. */
+  stopLease?(input: DestroySandboxLeaseInput): Promise<{ providerLeaseId: string; state: "stopped" }>;
   releaseLease(input: ReleaseSandboxLeaseInput): Promise<void>;
   destroyLease(input: DestroySandboxLeaseInput): Promise<void>;
   matchesReusableLease(input: {
@@ -179,6 +181,14 @@ class FakeSandboxProvider implements SandboxProvider {
         resumedLease: true,
       },
     };
+  }
+
+  async stopLease(input: DestroySandboxLeaseInput): Promise<{ providerLeaseId: string; state: "stopped" }> {
+    assertProviderConfig<FakeSandboxEnvironmentConfig>(this.provider, input.config);
+    if (!input.providerLeaseId?.startsWith("sandbox://fake/")) throw new Error("Fake sandbox stop needs its exact allocation.");
+    // The fake provider owns no process or filesystem; its explicit stop receipt
+    // models the lifecycle without invoking its ordinary release or destroy.
+    return { providerLeaseId: input.providerLeaseId, state: "stopped" };
   }
 
   async releaseLease(): Promise<void> {
@@ -328,7 +338,11 @@ function metadataMatchesPluginSandboxConfig(
   if (metadata.reuseLease !== true) return false;
   for (const [key, value] of Object.entries(config)) {
     if (key === "provider" || key === "reuseLease") continue;
-    if (value === undefined) continue;
+    // Null is the normalized form of an unspecified optional provider setting.
+    // The provider may report the concrete default it realized (for example,
+    // Daytona resolves a null target to "us"), which remains compatible with
+    // the caller's lack of a preference.
+    if (value === undefined || value === null) continue;
     if (JSON.stringify(metadata[key]) !== JSON.stringify(value)) {
       return false;
     }

@@ -1,0 +1,115 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: recovery
+status: planned
+scenarios:
+  - id: recovery.explain-stall
+    capabilities:
+      - recovery/diagnosis
+      - runs-adapters/runs
+    context: >-
+      The linked task shows a retained recovery cause, attempt count and next action.
+    query: >-
+      Why did work on the website stop?
+    expected_outcome: >-
+      The agent reads the actual task and run evidence, explains the recorded interruption and
+      identifies who or what can proceed. It distinguishes infrastructure recovery, user input,
+      budget holds and deliberate stops. The person gets a concrete next step rather than a
+      raw-log dump or an invented diagnosis.
+  - id: recovery.controller-restart
+    capabilities:
+      - recovery/bounded-continuation
+      - agent-chat/history
+    context: >-
+      The owned eval controller restarts after a saved file and persisted user instruction, at a
+      supported recovery boundary.
+    query: >-
+      Continue the website and keep the work you already saved.
+    expected_outcome: >-
+      The normal recovery path preserves conversation and file context and resumes only within
+      its supported attempt and ownership rules. The final work includes the saved instruction
+      and actual prior files. Chat does not duplicate delegated tasks or replay completed
+      external actions to reconstruct progress.
+  - id: recovery.source-action
+    capabilities:
+      - recovery/source-action
+    context: >-
+      A failed task has a source-scoped recovery action; a separate repair issue exists only if
+      independent work is genuinely required.
+    query: >-
+      Help me get this website task unstuck.
+    expected_outcome: >-
+      The agent identifies the recovery action attached to the original task and its responsible
+      owner. Ordinary repair stays with the harness; any independent repair work links back to
+      the source. Chat does not spawn a chain of duplicate repair tasks or claim the original
+      task succeeded when only a repair was filed.
+  - id: recovery.retry-exhausted
+    capabilities:
+      - recovery/exhaustion
+    context: >-
+      Automatic infrastructure attempts are exhausted and the source task exposes ordinary Retry
+      to its authorized human.
+    query: >-
+      Try the website task again.
+    expected_outcome: >-
+      The response directs or presents the supported human Retry action and explains the current
+      state. One accepted retry rechecks execution gates and preserves earlier attempt evidence.
+      The person is not asked to certify internal infrastructure facts, and failure remains
+      visible if the new attempt cannot start.
+  - id: recovery.workspace-repair
+    capabilities:
+      - recovery/workspace
+      - workspaces/files-git
+    context: >-
+      Workspace export failed with newer destination edits present; the board owns
+      reconciliation.
+    query: >-
+      Recover the website files without losing my newer edits.
+    expected_outcome: >-
+      The supported repair path compares retained sources and current destination under the
+      authorized human decision where required. Newer files are preserved and uncertain sources
+      remain held until resolved. Chat distinguishes recovered files from still-lost work and
+      never asks the agent to attest a board-only reconciliation.
+  - id: recovery.unknown-email-outcome
+    capabilities:
+      - recovery/unknown-outcome
+      - chat-channels/outbound-email
+    context: >-
+      An authorized email send lost its response after possible provider acceptance; no reliable
+      receipt yet proves delivery or failure.
+    query: >-
+      It timed out; send that same email again.
+    expected_outcome: >-
+      The agent first inspects available task and provider receipts and reports the uncertain
+      external effect. It does not automatically resend a possibly delivered email. Any explicit
+      reconciliation or retry decision follows the supported authorized path, with the original
+      uncertainty retained and duplicates checked independently.
+  - id: recovery.post-stop-message
+    capabilities:
+      - recovery/user-continuation
+      - steering/interrupt
+    context: >-
+      The person stopped a run and sent new direction while the old process was still cleaning
+      up.
+    query: >-
+      Now make the website a single page instead.
+    expected_outcome: >-
+      The instruction is saved during cleanup and reconsidered once the old execution is proven
+      stopped. One eligible continuation receives it under current assignment and execution
+      gates. The original stopped run remains stopped and the message is neither lost nor
+      dispatched twice.
+  - id: recovery.browser-reconnect
+    capabilities:
+      - recovery/reconnect
+      - agent-chat/history
+    context: >-
+      The browser stream disconnects while the task continues on the server; persisted messages
+      and task status advance.
+    query: >-
+      Did you finish while I was disconnected?
+    expected_outcome: >-
+      Reconnecting refreshes persisted conversation and work state, and the answer reflects
+      actual completion or remaining work. Lost stream events are recovered without duplicating
+      user sends. The system does not claim the worker restarted merely because the browser
+      reconnected or label a failed run successful because its final event was missed.

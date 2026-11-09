@@ -168,6 +168,23 @@ describe("WorkspaceAccessCard", () => {
     act(() => root.unmount());
   });
 
+  it("does not show a provisioning badge or spinner when the workspace can be started", () => {
+    const { root } = renderCard({
+      access: accessState({
+        state: "stopped",
+        title: "Workspace is not running",
+        description: "Start the workspace runtime to publish its board.",
+        action: { kind: "start", label: "Start workspace" },
+      }),
+    });
+
+    const badge = container.querySelector("[data-testid='workspace-access-badge']");
+    expect(badge).toBeNull();
+    expect(container.querySelector(".animate-spin")).toBeNull();
+    expect(findButton("Start workspace")).toBeDefined();
+    act(() => root.unmount());
+  });
+
   it("always names the state and the cause instead of a bare failure", () => {
     const { root } = renderCard({
       access: accessState({

@@ -1,0 +1,2 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_run_events_usage_item_run_idx" ON "heartbeat_run_events" USING btree ("run_id","created_at") WHERE "heartbeat_run_events"."event_type" = 'item.completed' and ("heartbeat_run_events"."payload" -> 'prpEvent' -> 'payload' ->> 'kind') = 'usage';--> statement-breakpoint
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_run_events_compaction_session_idx" ON "heartbeat_run_events" USING btree ("company_id",("payload" -> 'prpEvent' ->> 'normalizedSessionId')) WHERE "heartbeat_run_events"."event_type" = 'context.compacted';

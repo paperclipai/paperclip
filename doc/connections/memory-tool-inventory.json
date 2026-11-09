@@ -1,0 +1,950 @@
+{
+  "observedOn": "2026-09-24",
+  "note": "Live discovery, not proof that every action executes. Active tools require a granted agent. Allowed is the existing default; provider consent and operator policies can narrow it. Cognee exposes only three reviewed tools. All five providers have authenticated discovery; this does not imply every action was executed.",
+  "providers": [
+    {
+      "provider": "mem0",
+      "tools": [
+        {
+          "name": "delete_memory",
+          "schemaHash": "0178804f2233039b7cec699e90097f601025b76789d0b6823fda1fa639183761",
+          "risk": "destructive",
+          "status": "active",
+          "parameters": [
+            "memory_id"
+          ]
+        },
+        {
+          "name": "delete_entities",
+          "schemaHash": "0ca77774e6aa257a79504a8395eb4c230b65deeb365efcfb87023e2904d44c23",
+          "risk": "destructive",
+          "status": "active",
+          "parameters": [
+            "app_id",
+            "run_id",
+            "user_id",
+            "agent_id"
+          ]
+        },
+        {
+          "name": "get_event_status",
+          "schemaHash": "8bf86b31015e189cd66dc590b9034f40114c88bdbd888da3b205946e8387fafd",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "event_id"
+          ]
+        },
+        {
+          "name": "list_entities",
+          "schemaHash": "173f6a9b0b2d4f0bcb0e09b32cb1ab071367ea441e91cd21b80e521068e3dbe6",
+          "risk": "read",
+          "status": "active",
+          "parameters": []
+        },
+        {
+          "name": "search_memories",
+          "schemaHash": "e21f843ff32d984b5f81e3759d1a47d6d9b66d6ba445f217727e347912cdee06",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "query",
+            "top_k",
+            "rerank",
+            "filters",
+            "threshold"
+          ]
+        },
+        {
+          "name": "get_memories",
+          "schemaHash": "b7658cfe2f8e28467b34515c1b58be591be43d5fabfe78cead511cd0a694ece9",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "filters",
+            "page_size"
+          ]
+        },
+        {
+          "name": "list_events",
+          "schemaHash": "a0c4607c27b1793c15ef27403240535e4c85de9bac379ec36dbd584bcf0789d7",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "page_size",
+            "event_type"
+          ]
+        },
+        {
+          "name": "get_memory",
+          "schemaHash": "172789759d2c09fc4c121dfd2879ebc4e4017b86fb24c44fece86710f05177b2",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "memory_id"
+          ]
+        },
+        {
+          "name": "update_memory",
+          "schemaHash": "9a7a48567fbeee73814213f652b4b5be948713b3fb83daefe384319bc6b2f917",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "text",
+            "metadata",
+            "memory_id"
+          ]
+        },
+        {
+          "name": "add_memory",
+          "schemaHash": "6fe7a7d12c98939797ba039e2f29168364d89679e3beac3979d90c611205017f",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "text",
+            "infer",
+            "app_id",
+            "run_id",
+            "user_id",
+            "agent_id",
+            "messages",
+            "metadata"
+          ]
+        },
+        {
+          "name": "delete_all_memories",
+          "schemaHash": "771a1a9741504ed1d620bfd8b8ae623006885bb3188ac24987c38bc406be4852",
+          "risk": "destructive",
+          "status": "active",
+          "parameters": [
+            "app_id",
+            "run_id",
+            "user_id",
+            "agent_id"
+          ]
+        }
+      ]
+    },
+    {
+      "provider": "supermemory",
+      "tools": [
+        {
+          "name": "add_memory",
+          "schemaHash": "86e7c1f8f5ac6bbc0681f2d1c9013b388c80ce92866482820af98b1b252394f4",
+          "risk": "destructive",
+          "status": "active",
+          "parameters": [
+            "action",
+            "content",
+            "containerTag"
+          ]
+        },
+        {
+          "name": "guided-save",
+          "schemaHash": "34a6ba1bc76eea4b4ea114dbd2d165e635ac59d1e9a2db95f9b0f978b2738c2c",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "prefill"
+          ]
+        },
+        {
+          "name": "get_profile",
+          "schemaHash": "d6d7d9fcee64a3c65a805dee5cc1aa9d3e743dc1d2c2d986967b02e92b602699",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "containerTag"
+          ]
+        },
+        {
+          "name": "get_document",
+          "schemaHash": "40b366e576f748c471a0a88b2f5543d0fb3f61529686d14b2980cfa53827969a",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "documentId"
+          ]
+        },
+        {
+          "name": "fetch-graph-data",
+          "schemaHash": "3de9177b646fbc038c1c53065071c725b8738830e4e5710e439ef504de133ebd",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "page",
+            "limit",
+            "containerTag"
+          ]
+        },
+        {
+          "name": "list_spaces",
+          "schemaHash": "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
+          "risk": "read",
+          "status": "active",
+          "parameters": []
+        },
+        {
+          "name": "who_am_i",
+          "schemaHash": "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
+          "risk": "read",
+          "status": "active",
+          "parameters": []
+        },
+        {
+          "name": "select-space",
+          "schemaHash": "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
+          "risk": "write",
+          "status": "active",
+          "parameters": []
+        },
+        {
+          "name": "set-active-tag",
+          "schemaHash": "ec6d6baa715482bb4993a5e4b6dea8ce0257d44ae0508147b97f7c33745844f5",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "viewId",
+            "containerTag"
+          ]
+        },
+        {
+          "name": "memory-graph",
+          "schemaHash": "d6d7d9fcee64a3c65a805dee5cc1aa9d3e743dc1d2c2d986967b02e92b602699",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "containerTag"
+          ]
+        },
+        {
+          "name": "upload-file",
+          "schemaHash": "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
+          "risk": "write",
+          "status": "active",
+          "parameters": []
+        },
+        {
+          "name": "prepare-file-upload",
+          "schemaHash": "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
+          "risk": "write",
+          "status": "active",
+          "parameters": []
+        },
+        {
+          "name": "search_memory",
+          "schemaHash": "849932adedb079d4dd9e14f7a118dd98dea02be9127c9949075cd05c44d3769f",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "query",
+            "containerTag"
+          ]
+        },
+        {
+          "name": "list_documents",
+          "schemaHash": "e8fbd86a7359a3445acd2808cfb4a3cd56e577e8316e084f855664bad4836130",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "limit",
+            "containerTag"
+          ]
+        },
+        {
+          "name": "list_memories",
+          "schemaHash": "69980f2255bdbc5ada542b92d6d65181b65e54187a7365f7f220fdd439720d48",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "limit",
+            "containerTag"
+          ]
+        },
+        {
+          "name": "save-memory",
+          "schemaHash": "ee3ce3f24cb3fd86b64427bc3a6aac9dd62950a5673d4e4d28473a96c3c8ca84",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "viewId",
+            "content",
+            "containerTag"
+          ]
+        }
+      ]
+    },
+    {
+      "provider": "cognee",
+      "tools": [
+        {
+          "name": "forget",
+          "schemaHash": "a2cd38085419a8adb22cb7adc0724ad6cc83b65910a8eaccd553eaccf1be3d29",
+          "risk": "destructive",
+          "status": "active",
+          "parameters": [
+            "dataset",
+            "everything"
+          ]
+        },
+        {
+          "name": "remember",
+          "schemaHash": "0b7303340d89c018050f49fbcd4af0cb041a1b2878693e6494eadc9cd4c75f94",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "data",
+            "session_id",
+            "dataset_name",
+            "custom_prompt"
+          ]
+        },
+        {
+          "name": "recall",
+          "schemaHash": "b6288c8c7996f3026f8b89ab06eb4339c1f5eb220c62294462ec569f1b6580f4",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "query",
+            "top_k",
+            "datasets",
+            "session_id",
+            "search_type",
+            "system_prompt"
+          ]
+        }
+      ]
+    },
+    {
+      "provider": "zep",
+      "tools": [
+        {
+          "name": "add_memory",
+          "schemaHash": "cc1fa3da352e2b606468e6f912113b1d0bdd94002ecffe871b7d1b9d040b4c85",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "data",
+            "type",
+            "source_description"
+          ]
+        },
+        {
+          "name": "get_user_summary",
+          "schemaHash": "cd1a463c46d6264134447db17a8c3c7abe5b9a2488c6d759fea66da1f96b133e",
+          "risk": "read",
+          "status": "active",
+          "parameters": []
+        },
+        {
+          "name": "add_memory_to_graph",
+          "schemaHash": "3034a29652a844463cde62d50c1f43beb4b383b7d8c98cec1972b73ec704a14c",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "data",
+            "type",
+            "graph_id",
+            "source_description"
+          ]
+        },
+        {
+          "name": "list_graphs",
+          "schemaHash": "dd49ca9de985df8ca3e629309bcfe46ebb4aefbba4ee2ba0f69573421ef03929",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "limit",
+            "search"
+          ]
+        },
+        {
+          "name": "search_graph",
+          "schemaHash": "17d12f0311566c62c0940877bc9444c53191fa14a2e5476aa6f9d805a0d5f04f",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "limit",
+            "query",
+            "scope"
+          ]
+        },
+        {
+          "name": "search_graph_in",
+          "schemaHash": "ecdbfa6293af4f379c6b1647cb808f0fc66a569dae5604d34b3f5afdab6f4042",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "limit",
+            "query",
+            "scope",
+            "graph_id"
+          ]
+        },
+        {
+          "name": "get_node_neighbors",
+          "schemaHash": "417b8cccb39ce55e0ce09f02557eb3d23a26ae60eb44bf7df13c12b305d4d9a9",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "limit",
+            "cursor",
+            "filters",
+            "order_by",
+            "direction",
+            "node_uuid",
+            "direction_sort"
+          ]
+        },
+        {
+          "name": "get_subgraph",
+          "schemaHash": "82192cbcacaca654063ada7851d5ada9f6a99dfc0f4c23e3302892f8c5825a68",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "depth",
+            "filters",
+            "direction",
+            "max_edges",
+            "max_nodes",
+            "seed_node_uuids"
+          ]
+        },
+        {
+          "name": "get_subgraph_in",
+          "schemaHash": "0949758fa1b4c97205e4d2a1ae34bb55f48eb1b327c2e042ccf9d3ea5786c381",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "depth",
+            "filters",
+            "graph_id",
+            "direction",
+            "max_edges",
+            "max_nodes",
+            "seed_node_uuids"
+          ]
+        },
+        {
+          "name": "list_episodes_in",
+          "schemaHash": "e654928fccef680ab7a0460a0ce504d12818e3f3d29e9666045601d42f1cc637",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "limit",
+            "cursor",
+            "graph_id",
+            "order_by",
+            "direction",
+            "mentioned_node_uuids"
+          ]
+        },
+        {
+          "name": "get_node_neighbors_in",
+          "schemaHash": "192a1df67d45bae70390c948ca2202a52b67797996d42c9c02e0332ca2d20bd2",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "limit",
+            "cursor",
+            "filters",
+            "graph_id",
+            "order_by",
+            "direction",
+            "node_uuid",
+            "direction_sort"
+          ]
+        },
+        {
+          "name": "list_episodes",
+          "schemaHash": "f0d7e9aefbac757fbe08815baad7d57ce6aa6cc00408677a16a4e09d8012aa67",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "limit",
+            "cursor",
+            "order_by",
+            "direction",
+            "mentioned_node_uuids"
+          ]
+        }
+      ]
+    },
+    {
+      "provider": "honcho",
+      "tools": [
+        {
+          "name": "inspect_workspace",
+          "schemaHash": "7006ccbca84d1b922813b151e71e912a94036b941971232947f526180c2fb1fc",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "get_peer_card",
+          "schemaHash": "6e85032dadc141436cb9b80c3714aeadd34750a21939d3acb56a256fc3e91b68",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "peer_id",
+            "workspace_id",
+            "target_peer_id"
+          ]
+        },
+        {
+          "name": "get_session_peers",
+          "schemaHash": "7d164405c67cd4aac902d49700466ac6c288c03362791568c2840994451a4c2b",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "get_scope_status",
+          "schemaHash": "709c463cbb121fd2c80a047e158ed9f3f695765926120a069e020af460a81d4e",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "scope_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "create_session",
+          "schemaHash": "ccc7166acc005bd83e1bd85d0a321ada90edfd7db6a642f8a16b6f851ac78790",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "get_metadata",
+          "schemaHash": "27323be21281dccad06980f266b3e7bbc90435bc92a5d13193be8bdad8998cde",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "peer_id",
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "search",
+          "schemaHash": "ebcbcc99a6cb02a09ee87c288f85075d2b21edfea2d70800515c72edc2417be1",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "query",
+            "peer_id",
+            "session_id",
+            "workspace_id",
+            "message_limit",
+            "message_filters",
+            "conclusion_top_k",
+            "conclusion_filters"
+          ]
+        },
+        {
+          "name": "get_representation",
+          "schemaHash": "8f6462cfe1017af82843980ffcf65e04033a68b7a5b555b1aa3712dff8fc8c53",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "peer_id",
+            "session_id",
+            "search_query",
+            "workspace_id",
+            "target_peer_id",
+            "max_conclusions"
+          ]
+        },
+        {
+          "name": "get_session_messages",
+          "schemaHash": "6b18662606a05abf1b530b883ea93ade58db1716f61480919f1710d965f07c7f",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "size",
+            "filters",
+            "reverse",
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "list_workspaces",
+          "schemaHash": "a658aeee9ff944ad6557420adc9b6541c13f0324f76db9f0cbc809fd575aa73f",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "size"
+          ]
+        },
+        {
+          "name": "set_peer_card",
+          "schemaHash": "bb8488395f63f6d190bb86f2978a20191e4d9f2c7ed41d39c55cc1a996cd175a",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "peer_id",
+            "peer_card",
+            "workspace_id",
+            "target_peer_id"
+          ]
+        },
+        {
+          "name": "inspect_session",
+          "schemaHash": "e4323044b0e83f4165fbe0a81ac3286a33f87147e185a5fc3610b7c77b4e32ca",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "get_scope_sessions",
+          "schemaHash": "999d703182f18d1319f0caaeb290fb59fea3a52431da5a4b20347882dd0610ac",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "size",
+            "scope_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "create_workspace",
+          "schemaHash": "62d6d24f2eadc6e22c3930e2413105077b102f30bb5741c63513cddf41a52aff",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "metadata",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "get_peer_context",
+          "schemaHash": "141debc8537d949ab4243dfd1aad84c8101eb50fff8f445bd0019294aa5ddfa0",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "peer_id",
+            "search_query",
+            "workspace_id",
+            "target_peer_id",
+            "max_conclusions"
+          ]
+        },
+        {
+          "name": "add_messages_to_session",
+          "schemaHash": "fed41788407fcfc7b5c0374885303d1c33186fee73ce471bdd37ca6e1810274e",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "messages",
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "list_conclusions",
+          "schemaHash": "19f0672eaed5b4d6563bb7457bf8eb6600640aa6b99578b0ab9283e1a3496193",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "size",
+            "filters",
+            "peer_id",
+            "reverse",
+            "session_id",
+            "workspace_id",
+            "target_peer_id"
+          ]
+        },
+        {
+          "name": "query_conclusions",
+          "schemaHash": "65e4123ca83fee2a8264fe65f79a8c78fa408f7ca11597a8b1add9fb9dd5d300",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "query",
+            "top_k",
+            "filters",
+            "peer_id",
+            "workspace_id",
+            "target_peer_id"
+          ]
+        },
+        {
+          "name": "workspace_chat",
+          "schemaHash": "a3fc62bdce51ab51a3d9557e7ca7c28bddfc7f65981e0fb2ed8161e1e262ce1d",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "query",
+            "scope",
+            "session_id",
+            "workspace_id",
+            "reasoning_level",
+            "include_evidence"
+          ]
+        },
+        {
+          "name": "get_session_message",
+          "schemaHash": "b0d31acd81c0b082ade1c3ce5b3734ef2b708d08544b75152933ef36a01002b0",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "message_id",
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "get_conclusions",
+          "schemaHash": "372ee91843c4d49041f1f815fc08dd87718241094d1a33aa5ac50a501fe08626",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "workspace_id",
+            "conclusion_ids"
+          ]
+        },
+        {
+          "name": "list_sessions",
+          "schemaHash": "c7719d0d1f268594d2db4543a3771d206c7ab093e8e11fe43bd6225d04b18160",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "size",
+            "reverse",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "get_session_context",
+          "schemaHash": "efb01feb707fc4c7c043af1567661046a4ad801f0ff349985d7e6ab295091c40",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "tokens",
+            "summary",
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "get_derived_conclusions",
+          "schemaHash": "f0cfc0414bb2f37084574e4574962b3cb38e0ac90a8d90e7a2f4bd6352b83d53",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "size",
+            "workspace_id",
+            "conclusion_id"
+          ]
+        },
+        {
+          "name": "set_metadata",
+          "schemaHash": "c4825215baad248cb1e1829ec4aadf14f5c0606aa540845fc961e220a04b77bc",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "peer_id",
+            "metadata",
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "delete_session",
+          "schemaHash": "2b27006c10e7f7a33381ccc8d2beb6ce2b9b0166b268f86cc487ca993654c133",
+          "risk": "destructive",
+          "status": "active",
+          "parameters": [
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "list_scopes",
+          "schemaHash": "7d9e05d863afbdd19411e16a19b6ae1e0db6f8b12df9908a02b11226c94f59a9",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "page",
+            "size",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "create_conclusions",
+          "schemaHash": "7c1b8a08b7f57b59a5ea714ada9625fc28695ddb6aa663192a375a4ec511bf3b",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "peer_id",
+            "session_id",
+            "conclusions",
+            "workspace_id",
+            "target_peer_id"
+          ]
+        },
+        {
+          "name": "create_peer",
+          "schemaHash": "4dba9bb190cabe6783305a7deeb5ad40fbab40941ef5a9053b7d07cd0c07397a",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "peer_id",
+            "workspace_id",
+            "configuration"
+          ]
+        },
+        {
+          "name": "clone_session",
+          "schemaHash": "4c7a2c9db91039b4598bae3745df1e96b58013483349c8c1dc9a0c83647897e4",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "message_id",
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "create_scope",
+          "schemaHash": "0b5c75cf5fbcd39bb7949b1dbfb7637958e9618d9164719a0335703110f8e1ce",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "metadata",
+            "scope_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "delete_conclusion",
+          "schemaHash": "c9d4c97b02672a94bd1363d4c79078566e8817e3116519e2838416da023ce225",
+          "risk": "destructive",
+          "status": "active",
+          "parameters": [
+            "peer_id",
+            "workspace_id",
+            "conclusion_id",
+            "target_peer_id"
+          ]
+        },
+        {
+          "name": "list_peers",
+          "schemaHash": "7006ccbca84d1b922813b151e71e912a94036b941971232947f526180c2fb1fc",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "add_peers_to_session",
+          "schemaHash": "59001ee3487856fec80fc7292473f1f04b800b94eb210abe196c8e2d43ab5781",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "peers",
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "add_sessions_to_scope",
+          "schemaHash": "8a7124f64b416af308a658c17798fa623c2be5bacfc65bc90aecdb5f3e896213",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "scope_id",
+            "session_ids",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "schedule_dream",
+          "schemaHash": "0b55cca23970fa8f2ec70682d9f1920529ec071f95f13cd7d8e743fc2c25d81d",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "peer_id",
+            "session_id",
+            "workspace_id",
+            "target_peer_id"
+          ]
+        },
+        {
+          "name": "chat",
+          "schemaHash": "06abdd3077b3494be03be64e2d501654afa74d9599cb9ceac7c6b81636b56363",
+          "risk": "write",
+          "status": "active",
+          "parameters": [
+            "query",
+            "scope",
+            "peer_id",
+            "sessions",
+            "session_id",
+            "workspace_id",
+            "target_peer_id",
+            "reasoning_level",
+            "include_evidence"
+          ]
+        },
+        {
+          "name": "remove_peers_from_session",
+          "schemaHash": "7d10f74baffef038df46230abe8da948560b577f49b6a89cf38962fc2c248431",
+          "risk": "destructive",
+          "status": "active",
+          "parameters": [
+            "peer_ids",
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "remove_session_from_scope",
+          "schemaHash": "ae48f9cab61e27e86c1c12dce0b3c4fe59b822adaec80ad60017cc878c846ea1",
+          "risk": "destructive",
+          "status": "active",
+          "parameters": [
+            "scope_id",
+            "session_id",
+            "workspace_id"
+          ]
+        },
+        {
+          "name": "get_queue_status",
+          "schemaHash": "7006ccbca84d1b922813b151e71e912a94036b941971232947f526180c2fb1fc",
+          "risk": "read",
+          "status": "active",
+          "parameters": [
+            "workspace_id"
+          ]
+        }
+      ]
+    }
+  ]
+}

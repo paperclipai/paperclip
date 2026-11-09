@@ -1,0 +1,304 @@
+{
+  "auditBaseline": "a090035cafb29c06f6fca2dbe43561ad866b7c1b",
+  "stackBase": "58c5c4aa241c85f4665a3159c192888bbb2a5cfa",
+  "auditCodeCommit": "d8de9422f0703d4508a9dc880b67a07f13e0f110",
+  "savings": {
+    "netTestLinesRemoved": 2831,
+    "redundantExecutionsRemoved": 12,
+    "productionLinesRemoved": 0
+  },
+  "declarations": {
+    "total": 995,
+    "R": 619,
+    "F": 2,
+    "C": 370,
+    "D": 4
+  },
+  "actualExpandedHelperCalls": 625,
+  "packets": {
+    "adapter": {
+      "declarationDecisions": {
+        "R": 184,
+        "F": 1,
+        "C": 92,
+        "D": 2
+      },
+      "actualExpandedHelperCalls": 134,
+      "manifestSha256": "cb6f36fa4b836b7c16e23ce6f62326a15e27eed407742b0e09d4779f40f7c7b1",
+      "declarationLedgerSha256": "89bc46ce2eb796524adfdeaaa50c382b39ee7c555224fe2d4f0cb1be8ba036b1",
+      "expansionProofSha256": "8b3883f723147d2bcd53e0288d76fbf47b817d187a8fd79e4f85b258a840ad16"
+    },
+    "heartbeat": {
+      "declarationDecisions": {
+        "R": 141,
+        "F": 0,
+        "C": 130,
+        "D": 0
+      },
+      "actualExpandedHelperCalls": 282,
+      "manifestSha256": "85934e19feb6aed9247c09ff2057ab4acd1b9d5951e534047c597cbcc936417b",
+      "declarationLedgerSha256": "a6a5cd83ecc969c53e662a7e10b715741a11efc97bc28e52ab5e30aec8313d60",
+      "expansionProofSha256": "56e5b59358099059bc48204f74509a2bff8256ae91deeeea0f960575b0d221c1"
+    },
+    "ui": {
+      "declarationDecisions": {
+        "R": 276,
+        "F": 1,
+        "C": 147,
+        "D": 1
+      },
+      "actualExpandedHelperCalls": 209,
+      "manifestSha256": "0dd858bc5b8b2c3c23a6772ae0fea5087191af9a549a36d9db8f23be8e539127",
+      "declarationLedgerSha256": "ae284c6efbf141895df4dc54de49013f65eac40c9389ec29914089e9c29c739d",
+      "expansionProofSha256": "8bd16e860d15f25defa34dd49b6d7e48ac7bf1e0dccaa4c6bae5979562d60ad4"
+    },
+    "capability": {
+      "declarationDecisions": {
+        "R": 18,
+        "F": 0,
+        "C": 1,
+        "D": 1
+      },
+      "actualExpandedHelperCalls": 0,
+      "manifestSha256": "72fdcb9282dd7875bbc6df559fa8896c856151e60843657cdfe70054cd8b8924",
+      "declarationLedgerSha256": "ed2a5abcbba3fd17deca8b8158a4e90f3eeb8abcc8af0061a65dda63c3edf884"
+    }
+  },
+  "files": [
+    {
+      "path": "packages/adapter-utils/src/execution-target-sandbox.test.ts",
+      "originalSha256": "cf7db1f718e260cc62da670a48b5d35715bbb25cd7312e49433d73e2bbe1800c",
+      "executedCandidateSha256": "a3c8b8749df78efef34e9df476114ad09a7cbc8dd14e8ddbe50a40011ccde350",
+      "finalSha256": "7c1e921b0dcc3fce8bb14df98c739a35d938f75795986fcaf8a9f7dac70134be",
+      "testLinesRemoved": 191
+    },
+    {
+      "path": "packages/adapter-utils/src/sandbox-callback-bridge.test.ts",
+      "originalSha256": "2f687f0a26f0e1e32a92a464be46d5bfc6a3f821dda4b85d3cdaf7cef30f1216",
+      "executedCandidateSha256": "bb0f00b084ab342472ef72a1a4a20a03170a26ff7a66b8e7b571f92f9921402f",
+      "finalSha256": "79173674831037bde5938e1b2c37122f70bf4f63bd6a0df1a9ae2b2d4f94a25c",
+      "testLinesRemoved": 214
+    },
+    {
+      "path": "packages/adapter-utils/src/sandbox-managed-runtime.test.ts",
+      "originalSha256": "e5f81914f167dd36879823e25807e1f0098694f1748b34371f37d0d5c00597d6",
+      "executedCandidateSha256": "0751d74fd6b4396f5b84206ce33c45a680913c256ed3a9a97a305014d6046216",
+      "finalSha256": "1c575bfd8e391886a5a23facfa19ed149732139c908f19fb6fad650083270e25",
+      "testLinesRemoved": 470
+    },
+    {
+      "path": "server/src/__tests__/environment-execution-target-capabilities.test.ts",
+      "originalSha256": "7b89d2107451a0efc6e78664f9e8305cba940008a058d076d83963cf6cda4cbb",
+      "executedCandidateSha256": "b5da63ebba187ea7e9ac49524c9e5f6acbb149ab2c635ded2964a26b22e085ed",
+      "finalSha256": "b5da63ebba187ea7e9ac49524c9e5f6acbb149ab2c635ded2964a26b22e085ed",
+      "testLinesRemoved": 22
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-comment-wake-batching.test.ts",
+      "originalSha256": "21d7fc3642316f55c2eff83c482aab5649673cbe8cf82fe4ed111e1cae4ba5be",
+      "executedCandidateSha256": "288cf2d50a3a31133889b9c2c7b65d3a5eae4ef198b27162583016558a4afebd",
+      "finalSha256": "288cf2d50a3a31133889b9c2c7b65d3a5eae4ef198b27162583016558a4afebd",
+      "testLinesRemoved": 688
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-process-recovery.test.ts",
+      "originalSha256": "33b4140b1dff1ad5ed916463e997742c64dfa4b5e66e65c5658c22aa86ac9dc2",
+      "executedCandidateSha256": "bf7c888eaba44a56d12823bb948026d5db44f2249a75a6cf083343edbd7c0673",
+      "finalSha256": "bf7c888eaba44a56d12823bb948026d5db44f2249a75a6cf083343edbd7c0673",
+      "testLinesRemoved": 684
+    },
+    {
+      "path": "ui/src/components/IssueProperties.test.tsx",
+      "originalSha256": "8d604724e4c9c423b560d13dae6e939113f248b050905542970ee0660dfeab98",
+      "executedCandidateSha256": "2dd0c39f6be93e054ed7691984b68c25c32b9313dcfdacac8576d6e02d97128b",
+      "finalSha256": "2dd0c39f6be93e054ed7691984b68c25c32b9313dcfdacac8576d6e02d97128b",
+      "testLinesRemoved": 26
+    },
+    {
+      "path": "ui/src/components/TaskChatThread.test.tsx",
+      "originalSha256": "fc4707ae6a4b16ebf887b277d44f7432c7be3644b8eeb9388caa19a83405ffe4",
+      "executedCandidateSha256": "aa92b96c1f6fc2a87c4f99bdb4fc76eb8f839bcceb664114c11b3ee87dd392fa",
+      "finalSha256": "aa92b96c1f6fc2a87c4f99bdb4fc76eb8f839bcceb664114c11b3ee87dd392fa",
+      "testLinesRemoved": 250
+    },
+    {
+      "path": "ui/src/components/task-chat/TaskChatComposer.test.tsx",
+      "originalSha256": "3443b48fa7d7d4d11942ffe283ebd6d441e5bc2aa4cb5f30c87f6a98050b0a48",
+      "executedCandidateSha256": "93a07bec0a1d6d449754bbf856d557ea283c20e71ae8e5c1ff29ff2b53abd238",
+      "finalSha256": "93a07bec0a1d6d449754bbf856d557ea283c20e71ae8e5c1ff29ff2b53abd238",
+      "testLinesRemoved": 92
+    },
+    {
+      "path": "ui/src/pages/apps/AppsConnect.test.tsx",
+      "originalSha256": "7a3164ecef2d66c8a84d12cde1a0d7a0888ada5ca9c2f851e2a65420749091c7",
+      "executedCandidateSha256": "fcd9b439de18c5435b3ea6c6fc0f3de73f5880533f82652508b41cfaecc471b6",
+      "finalSha256": "fcd9b439de18c5435b3ea6c6fc0f3de73f5880533f82652508b41cfaecc471b6",
+      "testLinesRemoved": 194
+    }
+  ],
+  "completeFileRuns": [
+    {
+      "run": "baseline",
+      "completeFiles": 30,
+      "passed": 1841,
+      "failed": 0,
+      "pending": 0,
+      "jsonSha256": "98cf86a556acc308c9d9dfd1b5fa9d32b7156be6b92f77cd820608120c4875a3",
+      "wallSeconds": 692.28
+    },
+    {
+      "run": "extra-baseline",
+      "completeFiles": 9,
+      "passed": 219,
+      "failed": 0,
+      "pending": 0,
+      "jsonSha256": "bdba4be5d0390309f2e90cfe6f83f350c6e0cb69f76d1be0d6b9d84d02a0454d",
+      "wallSeconds": 29.05
+    },
+    {
+      "run": "candidate",
+      "completeFiles": 30,
+      "passed": 1831,
+      "failed": 0,
+      "pending": 0,
+      "jsonSha256": "1ca64e93260e51d2621dcb5e6ac996554b87db871be44643014ecc3b05d126be",
+      "wallSeconds": 429.46
+    },
+    {
+      "run": "extra-candidate",
+      "completeFiles": 9,
+      "passed": 217,
+      "failed": 0,
+      "pending": 0,
+      "jsonSha256": "817daf21df1ffa8a3daad411ad14210a15b445e14f0a93392595f5ac3a84a420",
+      "wallSeconds": 15.48
+    }
+  ],
+  "mutationControls": {
+    "acceptedIntendedFailures": [
+      {
+        "id": "F-actual-bridge-token-log-exclusion-retained",
+        "testTitle": "keeps sentinel route, query, body, and tokens off the http2 telemetry and logs",
+        "guard": "actual issued bridge-token exclusion from logDump",
+        "jsonSha256": "feaa61e1d9cebc1dbb2190dbed10c77901e4bd2c24e59871a11198d8dbf0d623",
+        "logSha256": "2b5ef18cb9ae39c203318fea74b448ab4752b26b50815afbbaf553d20d604def",
+        "failedAtIntendedAssertion": true,
+        "notSetupOrTimeout": true
+      },
+      {
+        "id": "C-missing-preface-cleanup-oracle-retained",
+        "testTitle": "test_fallback_to_queue_v1_happens_at_most_once_per_run",
+        "guard": "provider cleanup count before finally",
+        "jsonSha256": "d593dbe4bdfcc23958c1ebc5dabc7d62d5c9b042d1133ff5648ed98285c2173a",
+        "logSha256": "0eeea70f7b19da9b992caab26e32b393f8caad7b6a2673050a3153576c3f72cb",
+        "failedAtIntendedAssertion": true,
+        "notSetupOrTimeout": true
+      },
+      {
+        "id": "C-host-READY-newline-compatibility-retained",
+        "testTitle": "test_http2_gateway_writes_no_frame_between_ready_and_the_preface",
+        "guard": "independent host READY newline compatibility",
+        "jsonSha256": "4207fb4cbc0fd5dc6f51213e045f913ba7ec711e50132e4238a5ff1ae367ba82",
+        "logSha256": "894e44ae03faf6c35fd239e94a1cb469efbc4ac26373231ec5d1fdc3bf5db971",
+        "failedAtIntendedAssertion": true,
+        "notSetupOrTimeout": true
+      },
+      {
+        "id": "C-real-scratch-wipe-retained",
+        "testTitle": "the workspace wipe keeps an in-flight scratch tarball at the root but removes a stale sibling",
+        "guard": "seeded scratch-file .resolves bytes preservation",
+        "jsonSha256": "f2c2eb5d881f8bf294a6cc7344836315c0af53b3222facf0a523420a551f5671",
+        "logSha256": "2227abb5cef178d176dc3161e4ead11e9a0be84b85982f5b3a62b3c7181d3fb9",
+        "failedAtIntendedAssertion": true,
+        "notSetupOrTimeout": true
+      },
+      {
+        "id": "self-authored-comment-liveness-bypass-retained",
+        "testTitle": "cancels a deferred comment wake when its only queued comment was authored by the finishing run",
+        "guard": "exact cancelled wake self-authorship error",
+        "jsonSha256": "37db35d7e74e24546d93113301da10b34faba82556af855f26c1a202b9c9ebfe",
+        "logSha256": "9d9efb43f8d0ac1999cf749a87573df607fc13fad89945e97a42f25f48180790",
+        "failedAtIntendedAssertion": true,
+        "notSetupOrTimeout": true
+      },
+      {
+        "id": "F-reachable-PostHog-auth-methods-retained",
+        "testTitle": "renders the same PostHog method choices in page and task-dialog hosts",
+        "guard": "reachable OAuth aria-checked fixed assertion after Change",
+        "jsonSha256": "e05ddaa20035263df996b93af9e8af10af9ca60d91d9e12fff4659d2312a7a36",
+        "logSha256": "0d20720ae732945ccea500b0ca127d69bef8f93b8d64fefb17a64c377a83084f",
+        "failedAtIntendedAssertion": true,
+        "notSetupOrTimeout": true
+      },
+      {
+        "id": "post-drain-success-terminal-receipt-failed-retained",
+        "testTitle": "cancels a deferred comment wake when its only queued comment was authored by the finishing run",
+        "guard": "persisted exact firstRun id/succeeded matcher",
+        "jsonSha256": "e467fb18bc4b9857073a4e9fa2114f72690a87598664df7062e137bd88e03d0b",
+        "logSha256": "a823e1cc7c64c14ce7063f7c46d21ce91dd76529c149fc840d5cac47fd1ce98e",
+        "failedAtIntendedAssertion": true,
+        "notSetupOrTimeout": true
+      },
+      {
+        "id": "C-rejected-capability-snapshot-retained",
+        "testTitle": "never forces the persistent session when the resolution rejects",
+        "guard": "rejected-resolution snapshot toBeUndefined before execute",
+        "jsonSha256": "0af6106ffb09a5161e94bab6a41a89e27207bcc3bda656bdc6ce10e2b4ddfa5b",
+        "logSha256": "1474419f5cfeaf68845d2b7d7d26433b54e549cb296507fe0b63574c2389f694",
+        "failedAtIntendedAssertion": true,
+        "notSetupOrTimeout": true
+      }
+    ],
+    "originalWeakControlsPassed": 2,
+    "positiveUniqueKeeperCasesPassed": 7,
+    "allProductionOwnersRestored": true,
+    "restoredProductionOwners": [
+      {
+        "path": "packages/adapter-utils/src/duplex-frame-codec.ts",
+        "currentSha256": "97efc3275ab763b79f2afcbcdf4d6ad2a187e713c91c35c0186b6aa8828816b9",
+        "equalsPinnedBaselineBytes": true
+      },
+      {
+        "path": "packages/adapter-utils/src/execution-target.ts",
+        "currentSha256": "9f61140f7c27698e7837b97dd78f9b3056045a41527da06bb0cee9f11c9f62a6",
+        "equalsPinnedBaselineBytes": true
+      },
+      {
+        "path": "packages/adapter-utils/src/sandbox-managed-runtime.ts",
+        "currentSha256": "2b6093b6481d9ef1f30a9c5798d2d9b4d3c8355867dad4b2bb685a554413b49d",
+        "equalsPinnedBaselineBytes": true
+      },
+      {
+        "path": "server/src/modules/wake-queue/adapters/postgres.ts",
+        "currentSha256": "86529cb3acf96b165148654d76980dd1aaef69571b16662cf041e2f7530c8851",
+        "equalsPinnedBaselineBytes": true
+      },
+      {
+        "path": "server/src/services/environment-execution-target.ts",
+        "currentSha256": "7f78af7a3726f25068648938f686a2adb5a28445b61a9eb6626960e22a18798a",
+        "equalsPinnedBaselineBytes": true
+      },
+      {
+        "path": "server/src/services/heartbeat/run-completion.ts",
+        "currentSha256": "0136bfae6e3ea5dd0af3beaff535f414158d2eedc9a86ad385ef49e68014d9d7",
+        "equalsPinnedBaselineBytes": true
+      },
+      {
+        "path": "ui/src/features/connections/ConnectionSetupFlow.tsx",
+        "currentSha256": "cf61ae14cf58c496712fb003aae61453f3e907fc22a49b3bd170b3b2a3a9eb23",
+        "equalsPinnedBaselineBytes": true
+      }
+    ],
+    "coreRestorationReceiptSha256": "97a9bcdaaf480029ef05eeb9226acbf652ab516a2eee9554e111589f4baf892f",
+    "uiRestorationReceiptSha256": "2eef6a3afa1f876eef9c2fef3b82c2a0d0bb5711b9a9c55cc739b9ddab8f7c3e",
+    "rejectedEarlierReceiptMutation": "Changing the successful gateway receipt before queue drain timed out before the intended assertion. Excluded from accepted proof. The accepted replacement changes the persisted receipt atomically after real drain in the existing release transaction.",
+    "independentReviewSha256": "fadc62d0af5cae5c1347824cf8b7f86f4ae48a8aa5828f041a4b7292c0480982"
+  },
+  "formattingIdentity": {
+    "proofSha256": "4cd2af912973bf1a68a9ae34b1d50cc69f6e38d9b209a1fc8f6822a22075c339",
+    "completeRuntimeAstIncludingLiteralRawTextEqual": true,
+    "allStringTemplateRegexSourceBytesEqual": true,
+    "note": "The three adapter test files were tidied after the positive and negative runtime runs. Final source hashes differ only in leading indentation and one duplicate blank import line. Full literal-aware AST equality links the executed bytes to the final bytes; all 134 actual helper expansions were checked again."
+  },
+  "scope": "Owner and sibling preservation evidence. Whole-workspace verification and latest delivery-head CI/Greptile outcomes are recorded in the pull request."
+}

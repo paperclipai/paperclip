@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, ChevronDown, Loader2, Search, Store, X } from "lucide-react";
 import type { Agent, AgentDesiredSkillEntry } from "@paperclipai/shared";
 import { agentsApi } from "../../api/agents";
+import { describeError } from "../../api/errors";
 import { companySkillsApi } from "../../api/companySkills";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { queryKeys } from "../../lib/queryKeys";
@@ -95,7 +96,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
 
   const paperclipCoreSkill = useMemo(
     () => (companySkills ?? []).find((skill) => skill.key === PAPERCLIP_CORE_SKILL_KEY) ?? null,
-    [companySkills],
+    [companySkills, skillSnapshot],
   );
 
   // Seeded releases (release_id IS NOT NULL) for the paperclip core skill. Only
@@ -230,7 +231,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   // Library skills → row models (the store's visual language, tuned for rows).
   const libraryRows = useMemo<AgentSkillRowData[]>(
     () =>
-      (companySkills ?? []).map((skill) => ({
+      (companySkills ?? []).filter((skill) => !(skillSnapshot?.entries ?? []).some((entry) => entry.key === skill.key && entry.readOnly)).map((skill) => ({
         key: skill.key,
         name: skill.name,
         icon: {
@@ -251,14 +252,14 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         description: skill.description,
         categories: skill.categories,
       })),
-    [companySkills],
+    [companySkills, skillSnapshot],
   );
 
   // Adapter-detected, user-installed / unmanaged skills → read-only rows.
   const detectedRows = useMemo<AgentSkillRowData[]>(
     () =>
       (skillSnapshot?.entries ?? [])
-        .filter((entry) => isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys))
+        .filter((entry) => (entry.readOnly && entry.desired) || isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys))
         .map((entry) => ({
           key: entry.key,
           name: entry.runtimeName ?? entry.key,
@@ -345,6 +346,16 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   const releasePickerActive = betaSkillsEnabled && paperclipReleases.length > 0;
 
   const renderRow = (row: AgentSkillRowData, variant: "enabled" | "available") => {
+    // Historical assignments stay interactive so the user can remove them.
+    // The server rejects new assignments and omits stale ones from native
+    // runtime context, so disabling an enabled row would only trap stale data.
+    const legacyPaperclipBlocked = agent.adapterType === "paperclip_runner"
+      && variant === "available"
+      && row.key === PAPERCLIP_CORE_SKILL_KEY;
+    const rowDisabled = unsupported || legacyPaperclipBlocked;
+    const rowDisabledReason = legacyPaperclipBlocked
+      ? "Paperclip Runner uses native semantic coordination and cannot attach the legacy Paperclip operational skill."
+      : unsupportedMessage;
     const showReleasePicker =
       releasePickerActive && variant === "enabled" && row.key === PAPERCLIP_CORE_SKILL_KEY;
     const pinnedVersionId = versionPins[row.key] ?? null;
@@ -358,8 +369,8 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         variant={variant}
         data={row}
         checked={variant === "enabled"}
-        disabled={unsupported}
-        disabledReason={unsupportedMessage}
+        disabled={rowDisabled}
+        disabledReason={rowDisabledReason}
         onCheckedChange={(next) => toggleSkill(row.key, next)}
         badge={
           showReleasePicker && pinnedRelease ? (
@@ -373,7 +384,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
             <AgentSkillReleasePicker
               releases={paperclipReleases}
               value={pinnedVersionId}
-              disabled={unsupported || syncSkills.isPending}
+              disabled={rowDisabled || syncSkills.isPending}
               onChange={(versionId) => handleReleaseChange(row.key, versionId)}
             />
           ) : undefined
@@ -407,9 +418,9 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
           <SaveStatusChip
             pending={syncSkills.isPending}
             unsaved={hasUnsavedChanges}
-            error={syncSkills.isError && hasUnsavedChanges}
+            error={syncSkills.isError && hasUnsavedChanges} // query-error-ok: syncSkills is a save mutation result, not a query read
           />
-          <div className="ml-auto flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center">
+          <div data-canonical-toolbar="agent-skills" role="toolbar" aria-label="Agent skills controls" className="ml-auto flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center">
             <div className="relative w-full sm:w-auto">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -429,9 +440,9 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
           </div>
         </div>
 
-        {syncSkills.isError ? (
+        {syncSkills.isError ? ( // query-error-ok: syncSkills is a save mutation result; copy rendered from the mutation error below
           <p className="text-xs text-destructive">
-            {syncSkills.error instanceof Error ? syncSkills.error.message : "Failed to update skills"}
+            {describeError(syncSkills.error).body}
           </p>
         ) : null}
       </div>
@@ -452,7 +463,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
               className="flex items-center justify-between gap-3 border-b border-amber-300/40 bg-amber-50/60 px-3 py-2 text-xs text-amber-800 last:border-b-0 dark:border-amber-500/20 dark:bg-amber-950/20 dark:text-amber-200"
             >
               <span className="min-w-0 truncate">
-                <span className="font-medium">{key}</span> is enabled but missing from the company library.
+                <span className="font-medium">{key}</span> is enabled but missing from the organization library.
               </span>
               <button
                 type="button"
@@ -491,7 +502,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                 {search
                   ? "No available skills match your search."
                   : libraryEmpty
-                    ? "Import skills into the company library to enable them here."
+                    ? "Import skills into the organization library to enable them here."
                     : "Every library skill is enabled on this agent."}
               </SectionEmpty>
             )}
@@ -508,7 +519,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                     )}
                   />
                   <span className="text-xs font-medium text-muted-foreground">
-                    Detected on adapter (read-only)
+                    Automatic and detected skills (read-only)
                   </span>
                   <span className="text-xs text-muted-foreground/70">{filteredDetected.length}</span>
                 </CollapsibleTrigger>
@@ -604,9 +615,9 @@ function EmptyLibraryCard() {
     <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border px-6 py-10 text-center">
       <Store className="h-8 w-8 text-muted-foreground/60" />
       <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">No skills in the company library</p>
+        <p className="text-sm font-medium text-foreground">No skills in the organization library</p>
         <p className="text-xs text-muted-foreground">
-          Install skills to the company, then enable them on this agent.
+          Install skills to the organization, then enable them on this agent.
         </p>
       </div>
       <Button asChild variant="outline" size="sm">

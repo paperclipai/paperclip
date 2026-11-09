@@ -20,7 +20,7 @@ describe("kimi local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("reports configured Paperclip skills and installs them into the Kimi skills home", async () => {
+  it("defaults and installs the operational Paperclip skill in the Kimi skills home", async () => {
     const kimiCodeHome = await makeTempDir("paperclip-kimi-skill-sync-");
     cleanupDirs.add(kimiCodeHome);
 
@@ -31,9 +31,6 @@ describe("kimi local skill sync", () => {
       config: {
         env: {
           KIMI_CODE_HOME: kimiCodeHome,
-        },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
         },
       },
     } as const;

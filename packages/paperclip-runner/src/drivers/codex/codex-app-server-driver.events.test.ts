@@ -1,0 +1,826 @@
+import {
+  CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
+  CODEX_INVALID_REQUEST,
+  CODEX_METHOD_NOT_FOUND,
+  CODEX_RESULT_OUTPUT_SCHEMA,
+  CodexAppServerDriver,
+  CodexRpcError,
+  FakeCodexTransport,
+  HarnessCapabilityUnavailableError,
+  HarnessOperationAlreadyTerminalError,
+  HarnessReconciliationError,
+  HarnessStaleTurnError,
+  WORKSPACE,
+  applyPrpEvent,
+  collectUntilTerminal,
+  createCodexTaskEnvelope,
+  createIsolatedCodexAppServerArgs,
+  createSessionSnapshotFromMetadata,
+  describe,
+  envelope,
+  expect,
+  isSkilllessCodexContext,
+  it,
+  liveConsoleFixturePath,
+  loadLiveConsoleConformanceFixture,
+  makeDriver,
+  replayPersistedCodexEvents,
+  result,
+  reverseObjectKeys,
+  runCodexCodexTracer,
+  traceCompletedProposal,
+  validateCodexResultProposal,
+  validatePrpEvent,
+  vi,
+  type CodexAppServerTransport,
+  type CodexRpcNotification,
+  type CodexRpcServerRequest,
+  type CodexServerRequestHandler,
+  type CodexTraceInterpretation,
+  type HarnessRuntimeRequestResolution,
+  type PrpCapabilities,
+  type PrpEvent,
+  type PrpStructuredRunResult,
+} from "./codex-app-server-driver.test-support.js";
+
+import { RUNNERD_RUNTIME_ACTIVITY } from "./codex-driver-values.js";
+
+describe("Codex app-server Codex driver", () => {
+  it("binds a semantic result that arrives before its pending turn start settles", async () => {
+    // Runnerd can deliver the new turn's semantic result before turn/start's
+    // response binds the turn (as after a restart continuation). Like a
+    // terminal, the result waits for the start to settle instead of failing
+    // the session as an unbound result.
+    const transport = new FakeCodexTransport();
+    let releaseStart!: (value: Record<string, unknown>) => void;
+    transport.turnStartResponse = new Promise(resolve => { releaseStart = resolve; });
+    const session = await makeDriver([transport]).openSession({
+      runId: "early-result", normalizedSessionId: "early-result-session", workingDirectory: WORKSPACE,
+    });
+    const starting = session.startTurn({ message: { role: "user", text: "Finish." } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: "turn-1", result });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    releaseStart({ turn: { id: "turn-1", status: "inProgress", items: [] } });
+    await expect(starting).resolves.toMatchObject({ turnId: "turn-1" });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some(event => event.eventType === "session.failed")).toBe(false);
+    expect(events.at(-1)?.eventType).toBe("turn.completed");
+    expect(events.filter(event => event.eventType === "run.result.proposed"))
+      .toEqual([expect.objectContaining({ turnId: "turn-1" })]);
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("names its own protocol failure when that failure ends a pending turn start", async () => {
+    // The protocol failure closes the transport, so runnerd exits and the
+    // pending start reports a runner exit. The run must keep the real cause.
+    const transport = new FakeCodexTransport();
+    let rejectStart!: (error: Error) => void;
+    transport.turnStartResponse = new Promise((_resolve, reject) => { rejectStart = reject; });
+    const session = await makeDriver([transport]).openSession({
+      runId: "start-protocol-failure", normalizedSessionId: "start-protocol-failure-session", workingDirectory: WORKSPACE,
+    });
+    const starting = session.startTurn({ message: { role: "user", text: "Finish." } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    transport.push("item/started", { threadId: "thread-1", turnId: "unbound-turn", item: { id: "item-1", type: "agentMessage" } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    rejectStart(new Error("runnerd exited before provider turn startup"));
+    await expect(starting).rejects.toThrow(/codex_turn_start_protocol_failure: turn_binding_mismatch/);
+    await expect(starting).rejects.not.toThrow(/runnerd exited/);
+    await session.close({ reason: "fixture complete" }).catch(() => undefined);
+  });
+
+  it("rejects provider-forged and previous-run activity notifications", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "activity-current", normalizedSessionId: "activity-session", workingDirectory: WORKSPACE,
+    });
+    const payload = { namespace: "example.runtime", activityKey: "screen.used" };
+    transport.push("paperclip/runtimeActivityRecorded", { runId: "activity-current", payload });
+    transport.push("paperclip/runtimeActivityRecorded", {
+      [RUNNERD_RUNTIME_ACTIVITY]: true, runId: "activity-previous", payload,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Finish." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: turn.turnId, result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some(event => event.eventType === "runtime.activity.recorded")).toBe(false);
+  });
+
+  it("drops failed-attachment activity and resumes the prior run's notification stream", async () => {
+    let rejectAttachment!: (error: Error) => void;
+    const pending = new Promise<void>((_resolve, reject) => { rejectAttachment = reject; });
+    class FailedAttachmentTransport extends FakeCodexTransport {
+      attachRun() { return pending; }
+    }
+    const transport = new FailedAttachmentTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "activity-current", normalizedSessionId: "activity-session", workingDirectory: WORKSPACE,
+    });
+    const attaching = expect(session.attachRun!({ runId: "activity-rejected" })).rejects.toThrow("controlled attachment failure");
+    await expect(session.attachRun!({ runId: "activity-concurrent" })).rejects.toThrow("codex_run_attach_busy");
+    const payload = { namespace: "example.runtime", activityKey: "screen.used" };
+    transport.push("paperclip/runtimeActivityRecorded", {
+      [RUNNERD_RUNTIME_ACTIVITY]: true, runId: "activity-rejected", payload,
+    });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    rejectAttachment(new Error("controlled attachment failure"));
+    await attaching;
+    transport.push("paperclip/runtimeActivityRecorded", {
+      [RUNNERD_RUNTIME_ACTIVITY]: true, runId: "activity-current", payload,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Finish." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: turn.turnId, result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.filter(event => event.eventType === "runtime.activity.recorded")).toEqual([
+      expect.objectContaining({ runId: "activity-current", payload }),
+    ]);
+    expect(events.some(event => event.eventType === "run.attached")).toBe(false);
+  });
+
+  it("forwards credential updates before a turn with P0 priority", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-credential-update", normalizedSessionId: "session-credential-update", workingDirectory: WORKSPACE,
+    });
+    const payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+      bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+    transport.push("paperclip/canonicalProviderEvent", { eventType: "auth.credentials.updated", payload });
+    const turn = await session.startTurn({ message: { role: "user", text: "Finish." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: turn.turnId, result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const updates = events.filter(event => event.eventType === "auth.credentials.updated");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ priority: 0, payload });
+    expect(validatePrpEvent(updates[0]).ok).toBe(true);
+  });
+
+  it("rejects credential payloads containing secret fields before emitting them", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-invalid-credential-update", normalizedSessionId: "session-invalid-credential-update", workingDirectory: WORKSPACE,
+    });
+    transport.push("paperclip/canonicalProviderEvent", { eventType: "auth.credentials.updated", payload: {
+      schema: "paperclip.auth.credentials.updated.v1", provider: "codex", bindingId: "harness-auth",
+      revision: 1, detection: "credential_store", access_token: "credential-secret-sentinel",
+    } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some(event => event.eventType === "auth.credentials.updated")).toBe(false);
+    expect(JSON.stringify(events)).not.toContain("credential-secret-sentinel");
+    expect(events).toContainEqual(expect.objectContaining({ eventType: "session.failed",
+      payload: expect.objectContaining({ code: "credential_update_invalid" }) }));
+  });
+
+  it("admits a strictly bound semantic result from the durable runner", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-durable-result",
+      normalizedSessionId: "normalized-durable-result",
+      workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({
+      message: { role: "user", text: "Finish through runnerd." },
+    });
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "inProgress" },
+    });
+    transport.push("paperclip/runResult", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      itemId: "semantic-result-1",
+      result,
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    expect(
+      events.filter((event) => event.eventType === "run.result.proposed"),
+    ).toHaveLength(1);
+    expect(
+      events.find((event) => event.eventType === "run.result.proposed"),
+    ).toMatchObject({ turnId: turn.turnId, itemId: "semantic-result-1" });
+  });
+
+  it("correlates rehydrated notifications with the final canonical PRP event ids", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-traced",
+      normalizedSessionId: "normalized-traced",
+      workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({
+      message: { role: "user", text: "Trace the response." },
+    });
+
+    transport.pushTraced(
+      "turn/started",
+      {
+        threadId: "thread-1",
+        turn: { id: turn.turnId, status: "inProgress" },
+      },
+      "event_runner_000001",
+      "turn.started",
+    );
+    transport.pushTraced(
+      "item/started",
+      {
+        threadId: "thread-1",
+        turnId: turn.turnId,
+        item: { id: "answer-1", type: "agentMessage", phase: "final_answer" },
+      },
+      "event_runner_000002",
+      "item.started",
+    );
+    transport.pushTraced(
+      "turn/completed",
+      {
+        threadId: "thread-1",
+        turn: { id: turn.turnId, status: "completed", items: [] },
+      },
+      "event_runner_000003",
+      "turn.completed",
+    );
+
+    const events = await collectUntilTerminal(session.events());
+    const itemMapping = transport.traceInterpretations.find(
+      (entry) => entry.providerMethod === "item/started",
+    );
+    expect(itemMapping).toMatchObject({
+      sourceEventId: "event_runner_000002",
+      sourceEventType: "item.started",
+      disposition: "mapped",
+    });
+    expect(itemMapping?.emittedEventIds.length).toBeGreaterThan(0);
+    expect(events.map((event) => event.sourceEventId)).toEqual(
+      expect.arrayContaining(itemMapping?.emittedEventIds ?? []),
+    );
+    expect(JSON.stringify(events)).not.toContain("paperclipTrace");
+  });
+
+  it("maps canonical workspace snapshots with monotonic revisions and one terminal diff", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-canonical-workspace",
+      normalizedSessionId: "normalized-canonical-workspace",
+      workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({
+      message: { role: "user", text: "Change the workspace." },
+    });
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "inProgress" },
+    });
+    const first = {
+      schema: "paperclip.workspace.diff.v1",
+      changeSetId: `${turn.turnId}:workspace`,
+      revision: 1,
+      source: "harness_reported",
+      complete: false,
+      files: [{
+        path: "src/index.ts",
+        operation: "modify",
+        previousPath: null,
+        additions: 1,
+        deletions: 0,
+        binary: false,
+        diff: "+first\n",
+      }],
+      totals: { files: 1, additions: 1, deletions: 0 },
+      patchArtifactRef: null,
+    };
+    const second = {
+      ...first,
+      revision: 1,
+      files: [
+        first.files[0],
+        {
+          path: "src/new-name.ts",
+          operation: "rename",
+          previousPath: "src/old-name.ts",
+          additions: 0,
+          deletions: 0,
+          binary: false,
+          diff: "rename from src/old-name.ts\nrename to src/new-name.ts\n",
+        },
+        {
+          path: "public/image.png",
+          operation: "modify",
+          previousPath: null,
+          additions: null,
+          deletions: null,
+          binary: true,
+          diff: null,
+        },
+      ],
+      totals: { files: 3, additions: null, deletions: null },
+    };
+    transport.pushTraced(
+      "paperclip/workspaceChange/updated",
+      { threadId: "thread-1", turnId: turn.turnId, workspaceChange: first },
+      "event_workspace_1",
+      "workspace.change.updated",
+    );
+    transport.pushTraced(
+      "paperclip/workspaceChange/updated",
+      { threadId: "thread-1", turnId: turn.turnId, workspaceChange: second },
+      "event_workspace_2",
+      "workspace.change.updated",
+    );
+    transport.push("paperclip/workspaceChange/updated", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      workspaceChange: second,
+    });
+    transport.push("paperclip/workspaceChange/updated", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      workspaceChange: {
+        ...second,
+        files: [{ ...second.files[0], path: "/absolute/not-allowed.ts" }],
+      },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    const updates = events.filter(
+      (event) => event.eventType === "workspace.change.updated",
+    );
+    expect(
+      updates.map(
+        (event) => (event.payload as Record<string, unknown>).revision,
+      ),
+    ).toEqual([1, 2]);
+    expect(
+      (updates[1]?.payload as Record<string, unknown>).files,
+    ).toHaveLength(3);
+    expect(events.filter((event) => event.eventType === "workspace.diff.recorded"))
+      .toHaveLength(1);
+    expect(
+      events.find((event) => event.eventType === "workspace.diff.recorded")?.payload,
+    ).toMatchObject({
+      revision: 2,
+      source: "runner_verified",
+      complete: true,
+      totals: { files: 3, additions: null, deletions: null },
+    });
+    expect(
+      transport.traceInterpretations.filter((entry) =>
+        entry.providerMethod === "paperclip/workspaceChange/updated"
+      ).map((entry) => entry.disposition),
+    ).toEqual(["mapped", "mapped"]);
+  });
+
+  it("finalizes an authoritative empty workspace snapshot when a turn is interrupted", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-empty-interrupted-workspace",
+      normalizedSessionId: "normalized-empty-interrupted-workspace",
+      workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({
+      message: { role: "user", text: "Inspect without changing files." },
+    });
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "inProgress" },
+    });
+    transport.push("paperclip/workspaceChange/updated", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      workspaceChange: {
+        schema: "paperclip.workspace.diff.v1",
+        changeSetId: `${turn.turnId}:workspace`,
+        revision: 1,
+        source: "harness_reported",
+        complete: false,
+        files: [],
+        totals: { files: 0, additions: 0, deletions: 0 },
+        patchArtifactRef: null,
+      },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "interrupted", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    expect(events.find((event) => event.eventType === "workspace.change.updated")?.payload)
+      .toMatchObject({ revision: 1, complete: false, totals: { files: 0 } });
+    expect(events.filter((event) => event.eventType === "workspace.diff.recorded"))
+      .toHaveLength(1);
+    expect(events.find((event) => event.eventType === "workspace.diff.recorded")?.payload)
+      .toMatchObject({ revision: 1, source: "runner_verified", complete: true, totals: { files: 0 } });
+    expect(events.some((event) => event.eventType === "turn.interrupted")).toBe(true);
+  });
+
+  it.each(["output", "cache"])("does not certify partial provider usage using retained %s counters", async omitted => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-partial-usage", normalizedSessionId: "normalized-partial-usage", workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Work." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    const first = { inputTokens: 10, outputTokens: 4, ...(omitted === "cache" ? { cachedInputTokens: 2 } : {}) };
+    const second = { inputTokens: 20, ...(omitted === "cache" ? { outputTokens: 8 } : {}) };
+    for (const total of [first, second]) {
+      transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: turn.turnId, tokenUsage: { total } });
+    }
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const usage = events.filter(event => event.payload.kind === "usage");
+    expect(usage.map(event => event.payload.usage)).toMatchObject([
+      { runDelta: first, runDeltaComplete: true },
+      { runDelta: { ...first, ...second }, runDeltaComplete: false },
+    ]);
+    expect(await session.usage!()).toMatchObject({ runDeltaComplete: false });
+  });
+
+  it("keeps usage reported between runs in the next run's delta so totals stay exact", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-first", normalizedSessionId: "normalized-between-runs", workingDirectory: WORKSPACE,
+    });
+    const first = await session.startTurn({ message: { role: "user", text: "First." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: first.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: first.turnId, status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    // The first run's charge is final at 100; this report arrives after it.
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 130, outputTokens: 10 } } });
+    await new Promise(resolve => setImmediate(resolve));
+    await session.attachRun!({ runId: "run-second" });
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    const second = await session.startTurn({ message: { role: "user", text: "Second." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: second.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: second.turnId, tokenUsage: { total: { inputTokens: 150, outputTokens: 16 } } });
+    for await (const event of session.events()) if (event.payload.kind === "usage") break;
+    expect(await session.usage!()).toMatchObject({ runDelta: { inputTokens: 50, outputTokens: 6 } });
+  });
+
+  it("carries uncharged usage across a run that reports no usage", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-first", normalizedSessionId: "normalized-three-runs", workingDirectory: WORKSPACE,
+    });
+    const first = await session.startTurn({ message: { role: "user", text: "First." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: first.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: first.turnId, status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 130, outputTokens: 10 } } });
+    await new Promise(resolve => setImmediate(resolve));
+    // The second run attaches and ends without any usage report of its own.
+    await session.attachRun!({ runId: "run-second" });
+    await session.attachRun!({ runId: "run-third" });
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-3", status: "inProgress", items: [] } });
+    const third = await session.startTurn({ message: { role: "user", text: "Third." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: third.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: third.turnId, tokenUsage: { total: { inputTokens: 150, outputTokens: 16 } } });
+    for await (const event of session.events()) if (event.payload.kind === "usage") break;
+    expect(await session.usage!()).toMatchObject({ runDelta: { inputTokens: 50, outputTokens: 6 } });
+  });
+
+  it("accepts a thread usage snapshot replayed before a resumed turn starts", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-usage-replay",
+      normalizedSessionId: "normalized-usage-replay",
+      workingDirectory: WORKSPACE,
+    });
+
+    transport.push("thread/tokenUsage/updated", {
+      threadId: "thread-1",
+      turnId: "prior-turn",
+      tokenUsage: { total: { inputTokens: 10, outputTokens: 4 } },
+    });
+    const turn = await session.startTurn({
+      message: { role: "user", text: "Continue." },
+    });
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "inProgress" },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some((event) => event.eventType === "session.failed")).toBe(
+      false,
+    );
+    expect(await session.usage!()).toMatchObject({
+      total: { inputTokens: 10, outputTokens: 4 },
+    });
+  });
+
+  it("normalizes provider message and reasoning phases onto every streamed item event", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-stream-channels",
+      normalizedSessionId: "normalized-stream-channels",
+      workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({
+      message: { role: "user", text: "Stream progress." },
+    });
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "inProgress" },
+    });
+    transport.push("item/started", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: {
+        id: "progress-1",
+        type: "agentMessage",
+        phase: "commentary",
+        text: "",
+      },
+    });
+    transport.push("item/agentMessage/delta", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      itemId: "progress-1",
+      delta: "Running it now.",
+    });
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: {
+        id: "progress-1",
+        type: "agentMessage",
+        phase: "commentary",
+        text: "Running it now.",
+      },
+    });
+    transport.push("item/started", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: { id: "reason-1", type: "reasoning", summary: [] },
+    });
+    transport.push("item/reasoning/summaryTextDelta", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      itemId: "reason-1",
+      delta: "Summary",
+    });
+    transport.push("item/reasoning/textDelta", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      itemId: "reason-1",
+      delta: "Detail",
+    });
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: {
+        id: "reason-1",
+        type: "reasoning",
+        summary: [{ text: "Summary" }],
+      },
+    });
+    transport.push("item/started", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: {
+        id: "final-1",
+        type: "agentMessage",
+        phase: "final_answer",
+        text: "",
+      },
+    });
+    transport.push("item/agentMessage/delta", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      itemId: "final-1",
+      delta: JSON.stringify(result),
+    });
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: {
+        id: "final-1",
+        type: "agentMessage",
+        phase: "final_answer",
+        text: JSON.stringify(result),
+      },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    const pick = (kind: string, channel: string) =>
+      events.find(
+        (event) =>
+          event.payload.kind === kind && event.payload.channel === channel,
+      );
+    expect(pick("agentMessage", "progress")?.payload).toMatchObject({
+      providerPhase: "commentary",
+    });
+    expect(
+      events.find(
+        (event) =>
+          event.eventType === "item.delta" &&
+          event.payload.channel === "progress",
+      )?.payload,
+    ).toMatchObject({
+      providerMethod: "item/agentMessage/delta",
+      text: "Running it now.",
+    });
+    expect(
+      events.find(
+        (event) =>
+          event.eventType === "item.delta" &&
+          event.payload.channel === "summary",
+      )?.payload,
+    ).toMatchObject({ providerMethod: "item/reasoning/summaryTextDelta" });
+    expect(
+      events.find(
+        (event) =>
+          event.eventType === "item.delta" &&
+          event.payload.channel === "detail",
+      )?.payload,
+    ).toMatchObject({ providerMethod: "item/reasoning/textDelta" });
+    expect(pick("agentMessage", "final")?.payload).toMatchObject({
+      providerPhase: "final_answer",
+    });
+  });
+
+  it("requests reasoning summaries and keeps each summary part as its own section", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-reasoning-summary",
+      normalizedSessionId: "normalized-reasoning-summary",
+      workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({
+      message: { role: "user", text: "Think it through." },
+    });
+    expect(transport.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ summary: "auto" });
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "inProgress" },
+    });
+    transport.push("item/started", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: { id: "reason-1", type: "reasoning", summary: [], content: [] },
+    });
+    for (const [summaryIndex, delta] of [[0, "**Tracing the retry path**"], [1, "**Verifying edge cases**"]] as const) {
+      transport.push("item/reasoning/summaryPartAdded", {
+        threadId: "thread-1", turnId: turn.turnId, itemId: "reason-1", summaryIndex,
+      });
+      transport.push("item/reasoning/summaryTextDelta", {
+        threadId: "thread-1", turnId: turn.turnId, itemId: "reason-1", summaryIndex, delta,
+      });
+    }
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: {
+        id: "reason-1",
+        type: "reasoning",
+        summary: ["**Tracing the retry path**", "**Verifying edge cases**"],
+        content: [],
+      },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    const reasoningDeltas = events.filter(
+      (event) => event.eventType === "item.delta" && event.payload.kind === "reasoning",
+    );
+    expect(reasoningDeltas.map((event) => [event.payload.providerMethod, event.payload.text])).toEqual([
+      ["item/reasoning/summaryTextDelta", "**Tracing the retry path**"],
+      ["item/reasoning/summaryPartAdded", "\n\n"],
+      ["item/reasoning/summaryTextDelta", "**Verifying edge cases**"],
+    ]);
+    expect(reasoningDeltas.every((event) => event.payload.channel === "summary")).toBe(true);
+    expect(
+      events.find((event) => event.eventType === "item.completed" && event.payload.kind === "reasoning")?.payload,
+    ).toMatchObject({ channel: "summary", text: "**Tracing the retry path**\n\n**Verifying edge cases**" });
+  });
+
+  it("orders turn.accepted before a terminal event even when the provider notifies the terminal turn ahead of the turn/start response", async () => {
+    const transport = new FakeCodexTransport();
+    let resolveTurnStart: (value: Record<string, unknown>) => void = () => {};
+    transport.turnStartResponse = new Promise((resolve) => {
+      resolveTurnStart = resolve;
+    });
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-terminal-race",
+      normalizedSessionId: "normalized-terminal-race",
+      workingDirectory: WORKSPACE,
+    });
+    const startTurnPromise = session.startTurn({
+      message: { role: "user", text: "Race the terminal event." },
+    });
+    // Give the provider's turn/started and turn/completed notifications every
+    // chance to run ahead of the still-pending turn/start response, the way
+    // one read chunk can carry all three JSON-RPC lines back to back.
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "inProgress" },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: {
+        id: "turn-1",
+        status: "failed",
+        items: [],
+        error: { message: "provider rejected the turn" },
+      },
+    });
+    // A macrotask boundary drains every microtask the notification pump can
+    // run on its own, so an unguarded terminal handler has already run by
+    // the time the turn/start response resolves below.
+    await new Promise((resolve) => setImmediate(resolve));
+    resolveTurnStart({
+      turn: { id: "turn-1", status: "inProgress", items: [] },
+    });
+
+    const turn = await startTurnPromise;
+    expect(turn.turnId).toBe("turn-1");
+
+    const events = await collectUntilTerminal(session.events());
+    const eventTypes = events.map((event) => event.eventType);
+    expect(eventTypes).toEqual(
+      expect.arrayContaining(["turn.started", "turn.accepted", "turn.failed"]),
+    );
+    expect(eventTypes.indexOf("turn.started")).toBeLessThan(
+      eventTypes.indexOf("turn.accepted"),
+    );
+    expect(eventTypes.indexOf("turn.accepted")).toBeLessThan(
+      eventTypes.indexOf("turn.failed"),
+    );
+    expect(
+      events.some((event) => event.eventType === "session.failed"),
+    ).toBe(false);
+  });
+
+  it("does not release a terminal event for a turn when turn/start itself rejects", async () => {
+    const transport = new FakeCodexTransport();
+    let rejectTurnStart: (error: Error) => void = () => {};
+    transport.turnStartResponse = new Promise((_resolve, reject) => {
+      rejectTurnStart = reject;
+    });
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-terminal-reject-race",
+      normalizedSessionId: "normalized-terminal-reject-race",
+      workingDirectory: WORKSPACE,
+    });
+    const startTurnPromise = session.startTurn({
+      message: { role: "user", text: "Race the terminal event against a rejection." },
+    });
+    // The provider notifies turn/started and turn/completed ahead of its own
+    // turn/start response, then that response rejects. No turn was ever
+    // accepted, so neither notification may release a terminal event.
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "inProgress" },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: {
+        id: "turn-1",
+        status: "failed",
+        items: [],
+        error: { message: "provider rejected the turn" },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    rejectTurnStart(new CodexRpcError("turn/start rejected by provider", -32000));
+
+    await expect(startTurnPromise).rejects.toThrow(
+      "turn/start rejected by provider",
+    );
+
+    const events = await collectUntilTerminal(session.events());
+    const eventTypes = events.map((event) => event.eventType);
+    expect(eventTypes).not.toContain("turn.accepted");
+    expect(eventTypes).not.toContain("turn.completed");
+    expect(eventTypes).not.toContain("turn.failed");
+    expect(eventTypes).toContain("session.failed");
+  });
+
+});

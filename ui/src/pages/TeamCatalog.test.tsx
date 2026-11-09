@@ -8,7 +8,13 @@ import type {
   CatalogTeamImportPreviewResult,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TeamCatalog, parseTeamRoute, teamRoute } from "./TeamCatalog";
+import {
+  TeamCatalog,
+  listTeamInstallAdapterTypes,
+  parseTeamRoute,
+  resolveTeamInstallAdapterType,
+  teamRoute,
+} from "./TeamCatalog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockTeamCatalogApi = vi.hoisted(() => ({
@@ -27,9 +33,17 @@ const mockAgentsApi = vi.hoisted(() => ({
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockAdapterAvailability = vi.hoisted(() => ({
+  disabled: new Set<string>(["paperclip_runner"]),
+  loaded: true,
+}));
 
 vi.mock("../api/teamCatalog", () => ({ teamCatalogApi: mockTeamCatalogApi }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
+vi.mock("../adapters/use-disabled-adapters", () => ({
+  useDisabledAdaptersSync: () => mockAdapterAvailability.disabled,
+  useAdapterRegistryLoaded: () => mockAdapterAvailability.loaded,
+}));
 
 vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => <div>{children}</div>,
@@ -94,6 +108,21 @@ describe("TeamCatalog routes", () => {
       catalogRef: "paperclipai/bundled/test/team",
       filePath: "agents/a~b/AGENTS.md",
     });
+  });
+
+  it("fails closed for Paperclip Runner until adapter availability is loaded and enabled", () => {
+    expect(listTeamInstallAdapterTypes(new Set(), false)).not.toContain("paperclip_runner");
+    expect(listTeamInstallAdapterTypes(new Set(), false)).not.toContain("process");
+    expect(listTeamInstallAdapterTypes(new Set(), false)).not.toContain("http");
+    expect(listTeamInstallAdapterTypes(new Set(["paperclip_runner"]), true))
+      .not.toContain("paperclip_runner");
+    expect(listTeamInstallAdapterTypes(new Set(), true)).toContain("paperclip_runner");
+    expect(resolveTeamInstallAdapterType("paperclip_runner", ["claude_local", "codex_local"]))
+      .toBe("claude_local");
+    expect(resolveTeamInstallAdapterType("paperclip_runner", ["codex_local"]))
+      .toBe("codex_local");
+    expect(resolveTeamInstallAdapterType("paperclip_runner", []))
+      .toBeNull();
   });
 });
 
@@ -210,6 +239,8 @@ describe("TeamCatalog install preview path", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    mockAdapterAvailability.disabled = new Set(["paperclip_runner"]);
+    mockAdapterAvailability.loaded = true;
     container = document.createElement("div");
     document.body.appendChild(container);
     currentRoute = "team-no-deps";

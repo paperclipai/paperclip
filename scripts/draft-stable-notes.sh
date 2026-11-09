@@ -123,6 +123,26 @@ fi
 
 subjects="$(git -C "$repo_dir" log --no-merges --format='%s' "$range")"
 
+# Best-effort thoroughness: nest each referenced PR's own summary under its
+# subject line, so the skeleton is a genuinely thorough raw document at
+# creation time instead of a bare commit list. Prefers the PR template's
+# "What Changed" bullets, falls back to the first prose lines. Degrades
+# silently when gh or the network is unavailable (tests, offline runs);
+# set DRAFT_NOTES_SKIP_PR_ENRICHMENT=1 to disable explicitly.
+enrich_pr() {
+  local pr_num="$1" pr_body excerpt
+  [ "${DRAFT_NOTES_SKIP_PR_ENRICHMENT:-0}" = "1" ] && return 0
+  pr_body="$(cd "$repo_dir" && gh pr view "$pr_num" --json body --jq .body 2>/dev/null || true)"
+  [ -n "$pr_body" ] || return 0
+  if printf '%s\n' "$pr_body" | grep -q '^## What Changed'; then
+    excerpt="$(printf '%s\n' "$pr_body" | sed -n '/^## What Changed/,/^## /p' | grep -E '^- ' | head -3 || true)"
+  else
+    excerpt="$(printf '%s\n' "$pr_body" | grep -vE '^[[:space:]]*$|^#|^>|^<!--' | head -2 || true)"
+  fi
+  [ -n "$excerpt" ] || return 0
+  printf '%s\n' "$excerpt" | sed 's/^/  > /'
+}
+
 section() {
   local title="$1" pattern="$2" invert="${3:-false}" body
   if [ "$invert" = true ]; then
@@ -132,7 +152,14 @@ section() {
   fi
   [ -n "$body" ] || return 0
   printf '## %s\n\n' "$title"
-  printf '%s\n' "$body" | sed 's/^/- /'
+  while IFS= read -r subject_line; do
+    [ -n "$subject_line" ] || continue
+    printf -- '- %s\n' "$subject_line"
+    pr_ref="$(printf '%s' "$subject_line" | grep -oE '\(#[0-9]+\)$' | tr -dc '0-9' || true)"
+    if [ -n "$pr_ref" ]; then
+      enrich_pr "$pr_ref"
+    fi
+  done <<< "$body"
   printf '\n'
 }
 

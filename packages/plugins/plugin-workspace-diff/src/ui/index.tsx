@@ -255,6 +255,9 @@ function WorkspacePatchDiff({
   const { ref } = useFileDiffInstance({
     fileDiff,
     options,
+    // This tab only shows a diff; it does not open an edit session.
+    edit: false,
+    editorOptions: undefined,
     metrics: undefined,
     lineAnnotations: undefined,
     selectedLines: undefined,

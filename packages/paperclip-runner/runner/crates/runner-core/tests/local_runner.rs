@@ -69,6 +69,26 @@ fn event_type(message: &Value) -> Option<&str> {
 }
 
 #[test]
+fn runnerd_startup_reports_build_metadata_without_panicking() {
+    let output = Command::new(env!("CARGO_BIN_EXE_paperclip-runnerd"))
+        .arg("--build-metadata")
+        .output()
+        .expect("runner daemon should start");
+
+    assert!(output.status.success());
+    let metadata: Value =
+        serde_json::from_slice(&output.stdout).expect("build metadata should be valid JSON");
+    assert_eq!(metadata["binaryName"], "paperclip-runnerd");
+    if cfg!(unix) {
+        assert_eq!(metadata["privateHostControlVersion"], 1);
+    } else {
+        assert!(metadata.get("privateHostControlVersion").is_none());
+    }
+    assert!(metadata.get("hostedParkingVersion").is_none());
+    assert!(metadata.get("releaseResumeVersion").is_none());
+}
+
+#[test]
 fn happy_path_emits_one_result_and_one_terminal() {
     let commands = [
         command("command_prepare", 1, "run.prepare", json!({})),

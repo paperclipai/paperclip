@@ -90,11 +90,13 @@ export async function reconcileCodexLocalManagedHomesOnStartup(
       id: agents.id,
       companyId: agents.companyId,
       adapterConfig: agents.adapterConfig,
+      runtimeConfig: agents.runtimeConfig,
     })
     .from(agents)
     .where(eq(agents.adapterType, "codex_local"));
 
   for (const row of rows) {
+    if (row.runtimeConfig?.aiConnection) continue;
     summary.scanned += 1;
     const env = asRecord(asRecord(row.adapterConfig)?.env);
     const configuredCodexHome = env ? readPlainEnvValue(env.CODEX_HOME) : null;

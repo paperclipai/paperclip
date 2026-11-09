@@ -6,6 +6,40 @@ Paperclip CLI now supports both:
 - instance setup/diagnostics (`onboard`, `doctor`, `configure`, `env`, `allowed-hostname`, `env-lab`)
 - control-plane client operations (issues, approvals, agents, activity, dashboard)
 
+## Browser-approved Board authentication
+
+`npx paperclipai auth login --api-base <instance-url>` creates a ten-minute
+challenge and prints a browser approval link. Sign in to the instance, review
+the requesting command and full Board access, then approve. The pending token
+cannot authenticate before approval. The CLI verifies its resulting identity
+before storing its credential in its private auth store. The default Board key
+expires after thirty days; `npx paperclipai auth logout` attempts server-side revocation and removes the
+local credential; check its `revoked` result.
+
+A requested company supplies audit context, not a restriction on the key's
+access. Approval requires current access to that company (active membership or
+instance-admin authority). A different person cannot take over an approved
+challenge. Cancellation and approval serialize on the same challenge; cancelling
+an already approved challenge does not revoke its key.
+
+The instance limits challenge creation to twenty requests per minute per client
+IP, and polling to 120, using separate process-local budgets. The normal
+one-second poll interval remains supported. HTTP 429 includes `Retry-After`.
+Operators behind a proxy must configure `TRUST_PROXY` for their actual trusted
+proxy boundary; client-supplied forwarding headers alone never mint a budget.
+These limits are per instance process, not a distributed denial-of-service or
+historical-record retention guarantee.
+
+The browser approval page retries only rate-limited challenge reads, up to
+three times. It honors the server delay, or waits sixty seconds when no valid
+delay is provided. Scheduling stops at ten minutes or a known earlier
+challenge expiry. Browser suspension can delay a queued read. The server still
+enforces the original expiry. Approval is never resubmitted automatically.
+
+Cloud front doors must preserve only anonymous challenge creation and
+capability-bound status polling. Approval uses the normal signed-in browser;
+no Cloud user identity is synthesized for the CLI's unauthenticated requests.
+
 ## Security: safe invocation for content-bearing arguments
 
 Use `npx paperclipai` for any command whose argument can hold untrusted or
@@ -154,6 +188,90 @@ Choose local instance:
 npx paperclipai run --instance dev
 ```
 
+## Isolated Manual Test Drives
+
+`paperclipai test-drive` creates or reuses an isolated local data directory,
+ensures one usable CEO agent exists in a fresh database, starts Paperclip in the
+foreground, and opens the browser after initialization succeeds. It never
+installs a background service and never creates a goal, project, issue, task,
+or heartbeat.
+
+```sh
+npx paperclipai test-drive \
+  [-d, --data-dir <path>] \
+  [--company-name <name>] \
+  [--agent-name <name>] \
+  [--harness <claude|codex|opencode>] \
+  [--model <model-id>] \
+  [--api-key-env <variable> | --api-key <value>] \
+  [--no-browser]
+```
+
+Defaults are `Test Company`, a `CEO` agent with the `ceo` role, and the Claude
+harness. Without `--data-dir`, every invocation creates a unique OS temporary
+directory and prints its absolute path. The directory is retained after exit
+for inspection. An explicit data directory is reused and is never reset. The
+reused directory must use Paperclip's embedded database; `DATABASE_URL`,
+`DATABASE_MIGRATION_URL`, and configs with `database.mode: postgres` are
+rejected so test-drive cannot mutate an external database. The server also
+ignores the invocation directory's `.env` for test-drive launches, while still
+loading the selected instance's own environment file. Reused directories also
+retain the normal guard against colliding with a managed Paperclip service. The
+server uses the first available loopback port at or above `3100`, so an
+unrelated local Paperclip process can remain running.
+
+Harness configuration:
+
+| Harness | Agent adapter | Agent credential variable | Model |
+| --- | --- | --- | --- |
+| `claude` | `claude_local` | `ANTHROPIC_API_KEY` | Optional; omitted uses the adapter default |
+| `codex` | `codex_local` | `OPENAI_API_KEY` | Optional; omitted uses the adapter default |
+| `opencode` | `opencode_local` | `OPENROUTER_API_KEY` | Required and must begin with `openrouter/` |
+
+OpenCode model references retain their complete path, including additional
+slashes:
+
+```sh
+OPENROUTER_API_KEY=... npx paperclipai test-drive \
+  --harness opencode \
+  --model openrouter/anthropic/claude-sonnet-4.5
+```
+
+Credentials come from `--api-key`, the variable named by `--api-key-env`, or
+the harness's canonical environment variable shown in the table. `--api-key`
+and `--api-key-env` are mutually exclusive. A custom source variable is still
+stored and projected under the canonical target variable:
+
+```sh
+MY_ROUTER_KEY=... npx paperclipai test-drive \
+  --harness opencode \
+  --model openrouter/openai/gpt-5.4 \
+  --api-key-env MY_ROUTER_KEY
+```
+
+Credentials are stored through Paperclip's user-secret reference path and are
+redacted from Paperclip command output. Paperclip does not print `--api-key`,
+and it removes the value from its JavaScript argument view immediately after
+Commander parses it. Paperclip does not put the raw argument list in telemetry,
+API metadata, or diagnostics. Command wrappers, operating-system process
+listings, and shell history can still expose values passed in arguments. This
+is an explicit tradeoff for the local test-drive workflow. Prefer an exported
+canonical variable or `--api-key-env` when that matters. Provider connectivity,
+local harness installation, credential validity, and model availability are
+intentionally checked only when the agent first runs.
+
+When invoked inside a linked Git worktree, the command ignores inherited
+`PAPERCLIP_IN_WORKTREE` state, launches in worktree mode, and verifies **Run
+tasks in this worktree** is armed for the current instance before opening the
+browser. In a primary checkout or non-Git directory it launches without
+worktree mode and does not alter the setting. On reuse, if any company already
+exists, all bootstrap flags are ignored and companies, agents, and secrets are
+left untouched; worktree-setting reconciliation is the only permitted
+mutation.
+
+Use `--no-browser` for a foreground instance that prints its ready URL without
+opening it.
+
 ## Install, Update, And Uninstall
 
 Managed installs keep CLI payloads under `~/.paperclip/cli`, expose a stable
@@ -297,7 +415,7 @@ npx paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
 export PAPERCLIP_API_KEY=...
 ```
 
-## Company Commands
+## Organization Commands
 
 ```sh
 npx paperclipai company list
@@ -340,10 +458,10 @@ Notes:
 ```sh
 npx paperclipai issue list --company-id <company-id> [--status todo,in_progress] [--assignee-agent-id <agent-id>] [--match text]
 npx paperclipai issue get <issue-id-or-identifier>
-npx paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high]
+npx paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high] [--parent-id <issue-id> | --standalone]
 npx paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
 npx paperclipai issue delete <issue-id> --yes
-npx paperclipai issue comment <issue-id> --body "..." [--reopen]
+npx paperclipai issue comment <issue-id> --body "..." [--attachment-id <id...>] [--reopen]
 npx paperclipai issue comments <issue-id> [--limit 50]
 npx paperclipai issue comment:get <issue-id> <comment-id>
 npx paperclipai issue comment:delete <issue-id> <comment-id>
@@ -355,6 +473,8 @@ npx paperclipai issue checkout <issue-id> --agent-id <agent-id> [--expected-stat
 npx paperclipai issue release <issue-id>
 npx paperclipai issue force-release <issue-id>
 ```
+
+`issue create` sent from an agent run bound to an ordinary execution task is parented under that task when `--parent-id` is omitted; pass `--standalone` to create intentionally top-level work (`parentId: null`). The two flags are mutually exclusive.
 
 Issue subresources are exposed as Paperclip API wrappers. Commands that map to broad server schemas accept JSON payloads and validate them with shared schemas before sending.
 
@@ -480,7 +600,7 @@ npx paperclipai agent instructions-bundle <agent-id>
 npx paperclipai agent instructions-bundle:update <agent-id> --payload-json '{"mode":"managed"}'
 npx paperclipai agent instructions-file:get <agent-id> --path AGENTS.md
 npx paperclipai agent instructions-file:put <agent-id> --path AGENTS.md --content-file ./AGENTS.md
-npx paperclipai agent instructions-file:delete <agent-id> --path AGENTS.md
+npx paperclipai agent instructions-file:delete <agent-id> --path AGENTS.md --yes
 ```
 
 Agent config, instructions, skills, project env, environment, secret, and workspace edits affect the next run. Active runs finish with the config they started with. When a saved session, reused workspace, or sandbox lease no longer matches the effective next-run config, Paperclip may start fresh execution and records non-sensitive freshness categories in run result JSON and workspace operation logs.
@@ -633,7 +753,7 @@ npx paperclipai skills install paperclipai:optional:browser:agent-browser --comp
 External GitHub, skills.sh, local-path, and URL sources still go through
 `skills import`; catalog commands are for the app-shipped catalog only.
 
-### Company library
+### Organization library
 
 ```sh
 npx paperclipai skills list --company-id <company-id>
@@ -716,8 +836,10 @@ Preview/install options:
   `paperclipai company current --json`, or `PAPERCLIP_COMPANY_ID` to select the
   target company. `company list` falls back to the scoped current company when
   board-wide listing is forbidden. `teams install` creates agents and therefore
-  requires board authentication, an `agents:create` grant, or an agent with
-  explicit `canCreateAgents` permission.
+  requires board authentication, an `agents:create` grant, or an agent with the
+  `canCreateAgents` permission (enabled by default for newly created
+  standard-trust agents; low-trust agents and pre-existing agents without an
+  explicit value stay disabled).
 - `--request-approval-on-forbidden` turns a 403 install denial into a linked
   board approval request instead of a raw failed command; use
   `--approval-issue-id <id>` to attach it to a specific issue. During Paperclip
@@ -762,7 +884,7 @@ bootstrap credentials in Paperclip secrets.
 
 Per-company provider vaults (multiple vault instances per provider, default
 vault selection, coming-soon GCP/Vault) can be configured from the board UI under
-`Company Settings → Secrets → Provider vaults` or through the provider-config CLI
+`Organization Settings → Secrets → Provider vaults` or through the provider-config CLI
 commands above. See the
 [secrets deploy guide](../docs/deploy/secrets.md#provider-vaults) and
 [API reference](../docs/api/secrets.md#provider-vaults) for the contract.
@@ -846,6 +968,12 @@ npx paperclipai auth revoke-current
 
 `--token <challenge-secret>` is still supported for compatibility, but `--token-env` avoids putting challenge secrets in shell history or process arguments.
 
+Use the challenge UUID returned by `auth challenge create` for get, approve, and
+cancel. With the required secret and approval authentication present, malformed
+IDs return HTTP 400 before database access. A status request without a secret
+returns HTTP 404. Unknown challenges or incorrect challenge secrets still return
+HTTP 404. Approval requires board authentication, checked before ID validation.
+
 ## Instance Settings Commands
 
 ```sh
@@ -899,7 +1027,6 @@ npx paperclipai adapter delete <adapter-type>
 npx paperclipai adapter config-schema <adapter-type>
 npx paperclipai adapter ui-parser <adapter-type>
 npx paperclipai adapter models <adapter-type> --company-id <company-id> [--refresh] [--environment-id <id>]
-npx paperclipai adapter model-profiles <adapter-type> --company-id <company-id>
 npx paperclipai adapter detect-model <adapter-type> --company-id <company-id>
 npx paperclipai adapter test-environment <adapter-type> --company-id <company-id> --payload-json '{...}'
 ```
@@ -1079,3 +1206,18 @@ Supported providers:
 
 - `local_disk` (default; local single-user installs)
 - `s3` (S3-compatible object storage)
+
+When a challenge poll receives HTTP 429, the CLI waits for `Retry-After` and
+continues the same challenge. A missing or invalid value uses the normal poll
+interval. The wait never extends the original challenge deadline and never
+creates another challenge or key. This allows concurrent logins on a shared IP
+to complete after the process-local limit clears.
+
+Revocation records use the current key owner and trusted original creation or
+approved-challenge company context. Removing a company membership does not
+remove that audit history. Revocation and its audit records commit together;
+an audit failure leaves the key unchanged so the operation can be retried.
+Historical creation rows with a NULL responsible user do not provide trusted
+revocation context. The original approved challenge or current authorized
+company context can still provide that destination. Client-supplied activity
+rows cannot establish key ownership or a revocation audit destination.

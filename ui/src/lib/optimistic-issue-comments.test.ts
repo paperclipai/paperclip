@@ -20,6 +20,16 @@ import {
 } from "./optimistic-issue-comments";
 
 describe("optimistic issue comments", () => {
+  it("immediately replaces a derived status when a task moves or reopens", () => {
+    const monitoring = { status: "in_progress", displayStatus: "monitoring" } as Issue;
+    expect(applyOptimisticIssueFieldUpdate(monitoring, { status: "done" })).toMatchObject({ status: "done", displayStatus: "done" });
+    expect(applyOptimisticIssueFieldUpdate(monitoring, { priority: "high" })?.displayStatus).toBe("monitoring");
+    expect(applyOptimisticIssueCommentUpdate({ ...monitoring, status: "done", displayStatus: "done" }, { reopen: true })).toMatchObject({ status: "todo", displayStatus: "todo" });
+  });
+  it("keeps a workspace-held task blocked when a follow-up is sent", () => {
+    const issue = { status: "blocked", executionBlocker: { workspaceRepairRequired: true } } as Issue;
+    expect(applyOptimisticIssueCommentUpdate(issue, { reopen: true })?.status).toBe("blocked");
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -110,6 +120,66 @@ describe("optimistic issue comments", () => {
     );
 
     expect(merged.map((comment) => comment.id)).toEqual(["optimistic-1", "comment-2"]);
+  });
+
+  it("reconciles an optimistic comment with its canonical server copy", () => {
+    const optimistic = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Do not flash twice",
+      authorUserId: "board-1",
+    });
+    const { clientId: _clientId, clientStatus: _clientStatus, queueTargetRunId: _queueTargetRunId, ...persisted } = optimistic;
+
+    const merged = mergeIssueComments(
+      [{ ...persisted, id: "comment-1" }],
+      [optimistic],
+    );
+
+    expect(merged.map((comment) => comment.id)).toEqual(["comment-1"]);
+    expect(merged[0]).toMatchObject({ clientId: optimistic.clientId });
+  });
+
+  it("reconciles repeated identical comments one-for-one", () => {
+    const first = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Same text",
+      authorUserId: "board-1",
+    });
+    const second = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Same text",
+      authorUserId: "board-1",
+    });
+    const { clientId: _clientId, clientStatus: _clientStatus, queueTargetRunId: _queueTargetRunId, ...persisted } = first;
+
+    const merged = mergeIssueComments(
+      [{ ...persisted, id: "comment-1" }],
+      [first, second],
+    );
+
+    expect(merged).toHaveLength(2);
+    expect(merged.map((comment) => comment.id)).toContain("comment-1");
+    expect(merged.map((comment) => comment.id)).toContain(second.id);
+  });
+
+  it("keeps repeated identical optimistic comments when neither is persisted", () => {
+    const first = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Same pending text",
+      authorUserId: "board-1",
+    });
+    const second = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Same pending text",
+      authorUserId: "board-1",
+    });
+
+    expect(mergeIssueComments([], [first, second])).toHaveLength(2);
   });
 
   it("can take one optimistic queued comment back out of the queue", () => {

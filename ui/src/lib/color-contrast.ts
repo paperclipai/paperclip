@@ -82,21 +82,6 @@ const TEXT_LIGHT = READABLE_TEXT_LIGHT;
 const TEXT_DARK = READABLE_TEXT_DARK;
 
 /**
- * Pick a readable text color for a solid background.
- * Uses WCAG contrast ratios to choose between light and dark text.
- */
-export function pickTextColorForSolidBg(hexColor: string): string {
-  const rgb = hexToRgb(hexColor);
-  if (!rgb) return TEXT_LIGHT;
-  const bgLum = relativeLuminance(rgb.r, rgb.g, rgb.b);
-  const whiteLum = relativeLuminance(248, 250, 252);
-  const blackLum = relativeLuminance(17, 24, 39);
-  return contrastRatio(bgLum, whiteLum) >= contrastRatio(bgLum, blackLum)
-    ? TEXT_LIGHT
-    : TEXT_DARK;
-}
-
-/**
  * Pick a readable text color for a semi-transparent pill background.
  *
  * Composites `rgba(hexColor, alpha)` over the current page background

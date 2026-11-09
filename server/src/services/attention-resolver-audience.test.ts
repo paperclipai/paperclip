@@ -28,6 +28,7 @@ describe("attention feed resolver audience", () => {
       effectiveResolverPolicySource: "requested",
       resolverPolicyProvenance: "inherited",
       addresseeAgentId: null,
+      addresseeUserId: null,
       addresseeName: null,
       createdByAgentId: "agent-watchdog",
       createdByAgentName: "Watchdog",
