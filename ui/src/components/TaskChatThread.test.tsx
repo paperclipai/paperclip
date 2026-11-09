@@ -13,7 +13,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConnectivityProvider, createConnectivityStore } from "@/lib/connectivity";
-import { TaskChatThread } from "./TaskChatThread";
+import { INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS, TaskChatThread } from "./TaskChatThread";
 import { IssueChatThread } from "./IssueChatThread";
 import type {
   Agent,
@@ -879,6 +879,98 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
     };
     render(<TaskChatThread {...props} />);
     expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "saved-run" }]);
+  });
+
+  const transcriptHookCalls = () => runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy;
+  const historyLoading = () => container.querySelector('[data-testid="task-chat-history-loading"]') !== null;
+  // React commits the budget's state update when act() exits; the reveal then
+  // needs a few more (fake) animation frames to confirm stable geometry.
+  const passTranscriptBudget = async () => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    for (let frame = 0; frame < 3; frame++) await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+  };
+
+  it("reveals saved messages after the transcript budget and keeps a slow settled run behind a fixed control", async () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        issueId: "slow-failed-run", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+        linkedRuns: [{ ...retryRun, runId: "failed-run", status: "failed", startedAt: retryRun.createdAt }],
+        comments: createLongThreadComments(),
+      };
+      render(<TaskChatThread {...props} />);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "failed-run" }]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      expect(historyLoading()).toBe(true);
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(false);
+      expect(container.textContent).toContain("Thread message 1");
+      expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+      expect(container.textContent).not.toContain("Some task history is still loading.");
+      // The late transcript is no longer requested, so it cannot insert rows
+      // above the reader; the output stays one click away.
+      expect(transcriptHookCalls().at(-1)).toEqual([]);
+      const output = [...container.querySelectorAll("button")].find(button => button.textContent === "More run output");
+      expect(output).toBeDefined();
+      act(() => output!.click());
+      expect(props.onExpandHistory).toHaveBeenCalledOnce();
+      render(<TaskChatThread {...props} compactHistory={false} />);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "failed-run" }]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("reveals saved messages after the transcript budget while a live run keeps streaming", async () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        issueId: "slow-live-run", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+        linkedRuns: [{ ...retryRun, runId: "live-run", status: "running", startedAt: retryRun.createdAt }],
+        comments: createLongThreadComments(),
+      };
+      render(<TaskChatThread {...props} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      expect(historyLoading()).toBe(true);
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(false);
+      expect(container.textContent).toContain("Thread message 1");
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "live-run" }]);
+      // Finishing after the reveal keeps the visible transcript in place.
+      render(<TaskChatThread {...props} linkedRuns={[{ ...props.linkedRuns[0], status: "succeeded" }]} />);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "live-run" }]);
+      expect(container.textContent).not.toContain("More run output");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps waiting for a settled transcript that would insert output when no compact control exists", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<TaskChatThread issueId="settled-full-history" onAdd={async () => {}} comments={createLongThreadComments()}
+        linkedRuns={[{ ...retryRun, runId: "failed-run", status: "failed", startedAt: retryRun.createdAt }]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS + 100); });
+      vi.useRealTimers();
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+      expect(historyLoading()).toBe(true);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "failed-run" }]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not start the transcript budget while saved history is still loading", async () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        issueId: "saved-history-first", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+        linkedRuns: [{ ...retryRun, runId: "live-run", status: "running", startedAt: retryRun.createdAt }],
+        comments: createLongThreadComments(),
+      };
+      render(<TaskChatThread {...props} initialHistoryPending />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS * 3); });
+      expect(historyLoading()).toBe(true);
+      render(<TaskChatThread {...props} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      expect(historyLoading()).toBe(true);
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(false);
+    } finally { vi.useRealTimers(); }
   });
 
   it("retains a live transcript after the saved reply arrives", () => {
