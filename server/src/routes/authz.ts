@@ -127,6 +127,23 @@ export function boardAccessRequired(req: Request, controlPage?: BoardControlPage
   });
 }
 
+export const ISSUE_NOT_VISIBLE_CODE = "issue_not_visible";
+
+/**
+ * The 404 for a task lookup. A deleted task, a private task the caller cannot
+ * see and another company's task get this same body, so it never says which.
+ * Agents also learn that the lookup is final, so they reply instead of
+ * searching other routes for the task.
+ */
+export function issueNotFoundBody(req: Request): Record<string, unknown> {
+  if (req.actor.type !== "agent") return { error: "Issue not found" };
+  return {
+    error: "Issue not found",
+    code: ISSUE_NOT_VISIBLE_CODE,
+    remediation: "No task with this ID or identifier is visible to you. A deleted task, a private task you were not given and a task in another company all get this same answer, so this lookup is final: do not search for the task through other routes, lists, activity, files or hosts, and do not open a similarly named task in its place. Reply now: tell the person you cannot open it here, and that if it still exists they can share it with you from its sharing controls or paste the parts they need.",
+  };
+}
+
 /**
  * Board-only check. Pass `controlPage` when the board control lives on a different
  * page from the one the route path implies, e.g. a budget field on a general route.
@@ -286,10 +303,11 @@ export async function getAccessibleResource<T extends { companyId: string }>(
   res: Response,
   resource: T | null | undefined | Promise<T | null | undefined>,
   notFoundMessage: string,
+  notFoundBody: Record<string, unknown> = { error: notFoundMessage },
 ): Promise<T | null> {
   const resolved = await resource;
   if (!resolved || !hasCompanyAccess(req, resolved.companyId)) {
-    res.status(404).json({ error: notFoundMessage });
+    res.status(404).json(notFoundBody);
     return null;
   }
   assertCompanyAccess(req, resolved.companyId);

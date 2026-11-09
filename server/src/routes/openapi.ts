@@ -1429,6 +1429,14 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  // Budget changes are board-only (assertBoard in routes/costs.ts).
+  "POST /api/companies/{companyId}/budgets/policies",
+  "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
+  "PATCH /api/companies/{companyId}/budgets",
+  "PATCH /api/agents/{agentId}/budgets",
+  // Approval decisions are board-only (assertBoard in routes/approvals.ts).
+  "POST /api/approvals/{id}/approve",
+  "POST /api/approvals/{id}/reject",
   "GET /api/agents/{id}/project-access",
   "POST /api/agents/{id}/project-access",
   "GET /api/issues/{id}/pending-questions",
@@ -4123,11 +4131,12 @@ registry.registerPath({
   path: "/api/companies/{companyId}/adapters/{type}/models",
   tags: ["adapters"],
   summary: "List models for an adapter type and runner provider",
+  description: "Answers which models an agent's runtime can select. For a paperclip_runner agent, pass its adapterConfig.provider, its adapterConfig.acpxAgent when the provider is acpx, and its defaultEnvironmentId; the response is that runtime's own list. An OpenCode agent whose model starts with openrouter/ uses an OpenRouter key: list those choices with type opencode_local and provider=openrouter. That list is OpenRouter's public catalog, so whether a model works depends on the key's account and is not a qualification. With those inputs, these calls answer the question: report the options with that caveat and reply, rather than enumerating providers through other routes, the shell or the web.",
   request: {
     params: z.object({ companyId: z.string(), type: z.string() }),
     query: z.object({
       provider: z
-        .enum(["codex", "acpx", "opencode", "claude_managed", "aws_agentcore"])
+        .enum(["codex", "acpx", "opencode", "claude_managed", "aws_agentcore", "openrouter"])
         .optional(),
       environmentId: z.string().optional(),
       refresh: z.string().optional(),
@@ -6038,6 +6047,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
   tags: ["costs"],
   summary: "Resolve a budget incident",
+  description: "Board only: agent credentials get 403, so an agent cannot raise a limit or resume a budget-stopped agent. A board user chooses the new amount and resumes on the Budgets page: link [Open budgets](/<prefix>/activity/budgets) with this conversation's company prefix as <prefix>, and reply.",
   request: {
     params: z.object({ companyId: z.string(), incidentId: z.string() }),
     body: jsonBody(resolveBudgetIncidentSchema),
@@ -6076,6 +6086,7 @@ registry.registerPath({
   path: "/api/agents/{agentId}/budgets",
   tags: ["costs"],
   summary: "Update agent budget",
+  description: "Board only: agent credentials get 403. A board user changes the limit on the agent's budget tab: link [Open budget](/<prefix>/agents/<agentId>/budgets) with this conversation's company prefix as <prefix>, and reply.",
   request: {
     params: z.object({ agentId: z.string() }),
     body: jsonBody(updateBudgetSchema),
@@ -11828,7 +11839,8 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/connections",
   tags: ["tool-access"],
   summary: "Create a tool connection",
-  description: OWN_MCP_SERVER_KEY,
+  description: "Saves a connection as given without checking that its server answers. To connect an MCP server from its URL, use POST /api/companies/{companyId}/tools/apps/connect with link instead: it checks the server first, and a fresh setup saves no connection when the server cannot be reached. "
+    + OWN_MCP_SERVER_KEY,
   body: createToolConnectionSchema,
   responses: {
     201: r.ok(),

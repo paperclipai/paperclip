@@ -140,6 +140,8 @@ describe("board-only denial", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("so stop searching for one");
     expect(AGENT_CHAT_DIRECTIVE).toContain("tell the person which control in the Paperclip web app to use, link its page when you know the route");
     expect(AGENT_CHAT_DIRECTIVE).not.toContain("use permitted discovery to identify the supported operator path");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Reply now instead of making more calls");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("Complete other permitted work");
   });
 
   it("says in the API catalog who sets up a Claude Managed Agent profile", () => {
