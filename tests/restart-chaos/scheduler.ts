@@ -1,6 +1,7 @@
 import { isProviderFault, withProviderFaultRules } from "./provider-faults.js";
 import { takesJourneyTriggers } from "./journeys.js";
 import { workloadDefinitions } from "./workloads.js";
+import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
 import type { AdapterId, FaultKind, ScheduledFault, StormFault, StormPlan, TaskFaultKind, TaskPlan, TriggerId, WavePlan, WaveOptions, WorkloadId } from "./types.js";
 import type { ReplayRef } from "./config.js";
 
@@ -49,6 +50,8 @@ export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly
   stop: [0, 2_000],
   asked: [0, 3_000],
   answered: [0, 3_000],
+  // Not a `--triggers` choice: `--provider-fault-restart-after-seconds` sets its delay.
+  provider: [0, 0],
 };
 
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {
@@ -121,7 +124,7 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       ...cellRest,
       ...(trigger === "time" ? {} : { trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[trigger]) }),
       fireAfterMs: cell.fault === "K13" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
-      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : 0,
+      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int) : 0,
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,
       nonce: rng.hex(8),
     });
@@ -279,7 +282,10 @@ export function observedFaultSchedule(createdAt: number | null, faultIds: readon
 /** The faults a task schedules: its replayed sequence, or its one planned fault. */
 export function taskFaultSchedule(task: TaskPlan): ScheduledFault[] {
   if (task.replayFaults?.length) return task.replayFaults;
-  // A storm crosses K13 tasks; a provider fault (PV*) and a matrix baseline (K0) restart nothing.
+  // A storm crosses K13 tasks; a provider fault (PV*) and a matrix baseline (K0) restart nothing, unless
+  // `--provider-fault-restart` asked for a K1 once the provider fault applied (the `provider` trigger).
+  const restart = task.providerFault?.restart;
+  if (restart) return [{ kind: restart.kind, holdMs: 0, atMs: 0, trigger: "provider", delayMs: restart.afterAppliedMs }];
   if (task.fault === "K13" || task.fault === "K0" || isProviderFault(task.fault)) return [];
   const planned: ScheduledFault = { kind: task.fault, holdMs: task.holdMs, atMs: task.fireAfterMs };
   const trigger = task.trigger ?? "time";

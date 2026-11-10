@@ -13,6 +13,7 @@ import path from "node:path";
 import { WORKLOAD_TRIGGERS } from "./journeys.js";
 import { withProviderFaultRules } from "./provider-faults.js";
 import { createRng, k4HoldRange, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
+import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
 import { workloadDefinitions } from "./workloads.js";
 import type { AdapterId, TaskFaultKind, TaskPlan, TriggerId, WaveOptions, WavePlan, WorkloadId } from "./types.js";
 
@@ -55,7 +56,7 @@ export function planMatrixTasks(options: Pick<WaveOptions, "seed" | "workloads" 
       ...(cell.trigger === "time" ? {} : { trigger: cell.trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[cell.trigger]) }),
       // `--fault-after-seconds` pins time-fired restarts, as it does outside the matrix.
       fireAfterMs: cell.fault === "K0" || cell.fault.startsWith("PV") ? 0 : cell.trigger === "time" ? options.faultAfterMs ?? drawn : drawn,
-      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : 0,
+      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int) : 0,
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,
       nonce: rng.hex(8),
     };

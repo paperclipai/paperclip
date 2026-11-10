@@ -187,8 +187,8 @@ describe("provider fault planning", () => {
     expect(command.options).toMatchObject({ faults: [], providerFaults: ["PV2"], workloads: ["Q1", "S1"] });
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "K1,PV2"])).toThrow(/restart faults/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1,A1", "--faults", "PV1"])).toThrow(/remove A1/);
-    expect(() => parseCommand(["--adapters", "codex", "--faults", "PV1"])).toThrow(/interrupt a Codex turn/);
-    expect(() => parseCommand(["--adapters", "codex,claude", "--workloads", "Q1", "--faults", "PV1"])).toThrow(/Codex only/);
+    expect(() => parseCommand(["--adapters", "codex", "--faults", "PV1"])).toThrow(/interrupt a provider turn/);
+    expect(() => parseCommand(["--adapters", "codex,opencode", "--workloads", "Q1", "--faults", "PV1"])).toThrow(/cover codex and claude/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-delays", "18"])).toThrow(/PV1/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--provider-fault-message", "terminal"])).toThrow(/provider fault/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV1", "--provider-fault-message", "result"])).toThrow(/terminal/);

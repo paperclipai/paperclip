@@ -616,6 +616,26 @@ keeps the full save. The next run's reservation, cancelled-workspace
 preservation and a later final save each apply this release. A repeated save
 returns the same version.
 
+A save that requires a full capture also keeps the current saved version when
+the captured manifest, archive hash and size match the saved version. This
+comparison applies only to the same company and workspace. The saved encryption
+key must be readable. The archive must still exist with its recorded size. The save then completes its
+normal ownership checks, run receipt, repository metadata and waiter wake
+without uploading another archive. Its unused generation has no object and is
+marked deleted. A retry returns the completed receipt. An earlier upload attempt
+keeps its recovery path; it cannot be discarded by this comparison. Changed
+contents still create a new version and retain the previous version for seven
+days after replacement. Active work and recovery references can extend retention.
+
+The reused archive keeps its original source run, generation and encryption
+binding. Recovery and native replacement verify the new run's final save through
+its succeeded operation and empty retired generation, including its epoch,
+workspace, sandbox location, content hash and settled work. They do not borrow
+the old run's authority. Read-only historical attachments keep this proof after
+a later writer advances the workspace. Existing saves from earlier releases
+keep their original receipt checks. Reuse metadata requests, including retries
+and failures, count toward the save's storage request statistics.
+
 A writer stopped mid-run, for example by reassignment, keeps its unsaved files
 in its stopped sandbox. When the run used a reusable (warm) sandbox, the stop
 leaves that lease `released` under its reusable policy with a stop-and-retain

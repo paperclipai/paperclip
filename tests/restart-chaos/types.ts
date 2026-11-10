@@ -1,9 +1,13 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
 import type { ProviderFaultEvent, ProviderFaultKind, ProviderFaultRule, ProviderMessage } from "./provider-faults.js";
 import type { QuestionArtifacts, QuestionRecord } from "./question-handoff.js";
+import type { TimeFaultRecord } from "./time-faults.js";
 
-/** K14 (upgrade mid-run): a graceful stop, then the replacement starts from the current build (`--upgrade-from`). */
-export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14"] as const;
+/**
+ * K14 (upgrade mid-run): a graceful stop, then the replacement starts from the current build (`--upgrade-from`).
+ * TM1–TM3 (time faults, time-faults.ts): freeze the server, sleep with aged rows, or an aged outage.
+ */
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "TM1", "TM2", "TM3"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 /**
  * A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them.
@@ -25,7 +29,8 @@ export type AdapterId = (typeof ADAPTER_IDS)[number];
 
 /** `asked` and `answered`: the journey boundaries of Q1–Q3 (journeys.ts, question-handoff.ts). */
 export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result", "approval", "paused", "stop", "asked", "answered"] as const;
-export type TriggerId = (typeof TRIGGER_IDS)[number];
+/** `provider` is not a `--triggers` choice: `--provider-fault-restart` schedules it (K1 after a provider fault applied). */
+export type TriggerId = (typeof TRIGGER_IDS)[number] | "provider";
 
 export const ENVIRONMENT_KINDS = ["local", "daytona"] as const;
 export type EnvironmentKind = (typeof ENVIRONMENT_KINDS)[number];
@@ -86,7 +91,7 @@ export interface WaveOptions {
   upgradeFrom?: string;
   workspaceRepo?: string;
   storage?: "s3";
-  storageFaults?: Array<"ST1" | "ST2" | "ST3">;
+  storageFaults?: Array<import("./storage-chaos.js").StorageFaultKind>;
   storageFaultMs?: [number, number];
   storageWindows?: import("./storage-chaos.js").StorageFaultWindow[];
   storageTrigger?: import("./storage-trigger.js").StorageTriggerTarget;
@@ -103,6 +108,11 @@ export interface WaveOptions {
   matrix?: boolean;
   /** `--server-from <dir>`: every server of the wave runs from this prepared checkout (for example a pre-fix commit). */
   serverFrom?: string;
+  /** TM2/TM3: how far every database timestamp is shifted back (`--time-age-hours`, default 26 h). */
+  timeAgeMs?: number;
+  /** `--provider-fault-restart K1`: each PV1/PV2 task also kills -9 the control plane after its fault applied. */
+  providerFaultRestart?: "K1";
+  providerFaultRestartAfterMs?: number;
 }
 
 export interface StormFault {
@@ -226,7 +236,7 @@ export interface FaultReceipt {
   kind: FaultKind;
   /** Task that scheduled the fault; every other running task is also exposed. */
   requestedBy: string;
-  signal: "SIGKILL" | "SIGTERM";
+  signal: "SIGKILL" | "SIGTERM" | "SIGSTOP";
   holdMs: number;
   requestedAt: number;
   startedAt: number;
@@ -243,6 +253,8 @@ export interface FaultReceipt {
   crashPoint?: { name: string; hit: number; pid: number; token?: string };
   /** K14: the build the stopped server ran and the build its replacement runs. */
   upgrade?: { fromRoot: string; fromSha: string | null; toRoot: string; toSha: string | null; switched: boolean };
+  /** TM1–TM3: what was frozen and which rows were aged. */
+  timeFault?: TimeFaultRecord;
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;
@@ -361,6 +373,8 @@ export interface TaskRecord {
   question?: QuestionRecord;
   /** Q2, Q3: the board's journey actions (journey-driver.ts). */
   journey?: import("./journeys.js").JourneyRecord;
+  /** PV with `--provider-fault-restart`: when the shim logged the task's fault (arms the `provider` trigger). */
+  providerFaultAppliedAt?: number;
 }
 
 export interface TaskGrade {

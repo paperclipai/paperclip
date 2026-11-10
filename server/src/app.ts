@@ -757,6 +757,7 @@ export async function createApp(
   // start route drives a live login instead of the fixed 503.
   const setupTokenLoginTransport = buildSetupTokenLoginTransport({
     sandbox: createProductionSetupTokenSandboxProvider({
+      db,
       environments: environmentService(db),
       environmentRuntime: environmentRuntimeService(db, {
         pluginWorkerManager: workerManager,
