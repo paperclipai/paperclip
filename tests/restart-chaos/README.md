@@ -545,7 +545,7 @@ approach of replacing the executable cannot work. The sidecar itself is the buil
 harness builds a stand-in runner package under `<repo>/node_modules/.restart-chaos-<wave>/`. It is all
 symlinks to the real package, except that `dist/cli/acpx-runtime-sidecar.cjs` is a generated stand-in.
 It lives under the workspace `node_modules`, so the provider package root that product code derives from
-it is the same workspace root. A server hook loads only `dist/live/runnerd-codex-transport.js`, the
+it is the same workspace root. A server hook loads only `runnerd-codex-transport` (`src/live/*.ts` from source, `dist/live/*.js` when built), the
 module that computes the local sidecar path from its own URL, from the stand-in package. That module's
 imports still resolve to the real package. The runner then verifies and launches the stand-in. The
 stand-in installs the tap and runs the real sidecar bundle in the same process, as the runner's

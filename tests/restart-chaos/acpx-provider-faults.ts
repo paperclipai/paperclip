@@ -13,7 +13,7 @@
  *    workspace root it derives from the real package.
  * 2. `provider-shim/acpx-sidecar-hook.mjs`, loaded into the server through
  *    NODE_OPTIONS, loads the one module that computes the local sidecar path
- *    (`dist/live/runnerd-codex-transport.js`) from the stand-in package. Product
+ *    (`runnerd-codex-transport`, from `src/live` or `dist/live`) from the stand-in package. Product
  *    code then hashes the stand-in, and the runner verifies and launches it
  *    exactly as it would the real sidecar.
  * 3. The stand-in installs `provider-shim/acpx-fault-tap.cjs` and then loads the
@@ -77,30 +77,31 @@ async function mirror(source: string, target: string, replace: Record<string, st
 export async function installAcpxSidecarSeam(input: { repositoryRoot: string; waveId: string; controlPath: string; logPath: string;
   stateDirectory: string }): Promise<AcpxSidecarSeam> {
   const realRunner = await realpath(path.join(input.repositoryRoot, "packages", "paperclip-runner"));
-  const realTransport = path.join(realRunner, "dist", "live", "runnerd-codex-transport.js");
   const realSidecar = path.join(realRunner, "dist", "cli", "acpx-runtime-sidecar.cjs");
-  for (const required of [realTransport, realSidecar]) {
+  for (const required of [realSidecar]) {
     if (!existsSync(required)) throw new Error(`ACPX provider faults need the built runner (${path.relative(input.repositoryRoot, required)} is missing); run node scripts/agent-preflight.mjs`);
   }
   if (!/^[A-Za-z0-9._-]+$/.test(input.waveId)) throw new Error(`Unexpected wave id ${input.waveId}`);
   const container = path.join(await realpath(path.join(input.repositoryRoot, "node_modules")), `.restart-chaos-${input.waveId}`);
   const standInRoot = path.join(container, "paperclip-runner");
   await rm(container, { recursive: true, force: true });
-  // package.json and node_modules resolve to the real package; dist/cli and dist/live are real
-  // directories so the stand-in sidecar can replace one file and the hook can load one module.
-  await mirror(realRunner, standInRoot, { dist: null });
+  // package.json and node_modules resolve to the real package; dist/cli, dist/live and src/live are
+  // real directories so the stand-in sidecar can replace one file and the hook can load one module
+  // (from src/ when the server runs from source, from dist/ when it runs built).
+  await mirror(realRunner, standInRoot, { dist: null, src: null });
   await mirror(path.join(realRunner, "dist"), path.join(standInRoot, "dist"), { cli: null, live: null });
   await mirror(path.join(realRunner, "dist", "live"), path.join(standInRoot, "dist", "live"), {});
+  if (existsSync(path.join(realRunner, "src", "live"))) {
+    await mirror(path.join(realRunner, "src"), path.join(standInRoot, "src"), { live: null });
+    await mirror(path.join(realRunner, "src", "live"), path.join(standInRoot, "src", "live"), {});
+  }
   await mirror(path.join(realRunner, "dist", "cli"), path.join(standInRoot, "dist", "cli"), { "acpx-runtime-sidecar.cjs": null });
   const standInSidecar = path.join(standInRoot, "dist", "cli", "acpx-runtime-sidecar.cjs");
   await writeFile(standInSidecar, standInSidecarSource({ tapModule: ACPX_FAULT_TAP, realSidecar,
     controlPath: input.controlPath, logPath: input.logPath, stateDirectory: input.stateDirectory }), { mode: 0o755 });
   await chmod(standInSidecar, 0o755);
   return {
-    serverEnvironment: {
-      RESTART_CHAOS_ACPX_TRANSPORT_REAL: realTransport,
-      RESTART_CHAOS_ACPX_TRANSPORT_SHADOW: path.join(standInRoot, "dist", "live", "runnerd-codex-transport.js"),
-    },
+    serverEnvironment: { RESTART_CHAOS_ACPX_RUNNER_REAL: realRunner, RESTART_CHAOS_ACPX_RUNNER_SHADOW: standInRoot },
     standInRoot,
     realSidecar,
     remove: () => rm(container, { recursive: true, force: true }),

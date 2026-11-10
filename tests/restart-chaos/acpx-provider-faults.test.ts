@@ -201,7 +201,7 @@ describe("ACPX sidecar hook", () => {
     expect(seam.standInRoot).toBe(path.join(await import("node:fs/promises").then(fs => fs.realpath(root)), "node_modules", ".restart-chaos-w-test-s1", "paperclip-runner"));
     expect(await readlink(path.join(seam.standInRoot, "package.json"))).toBe(path.join(seam.realSidecar, "../../..", "package.json"));
     expect(await readlink(path.join(seam.standInRoot, "dist", "cli", "codex.js"))).toContain(path.join("packages", "paperclip-runner", "dist", "cli", "codex.js"));
-    const realTransport = seam.serverEnvironment.RESTART_CHAOS_ACPX_TRANSPORT_REAL!;
+    const realTransport = path.join(seam.serverEnvironment.RESTART_CHAOS_ACPX_RUNNER_REAL!, "dist", "live", "runnerd-codex-transport.js");
     const script = `const m = await import(${JSON.stringify(pathToFileURL(realTransport).href)}); console.log(JSON.stringify({ sidecar: m.sidecar, helperUrl: m.helperUrl, nodeOptions: process.env.NODE_OPTIONS ?? null }));`;
     const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8",
       env: { ...process.env, ...seam.serverEnvironment, NODE_OPTIONS: withAcpxSidecarHook("--no-warnings") } });
