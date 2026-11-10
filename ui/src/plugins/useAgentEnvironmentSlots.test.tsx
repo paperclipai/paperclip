@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { agentsApi } from "@/api/agents";
 import { environmentsApi } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -13,7 +14,7 @@ import { useAgentEnvironmentSlots } from "./useAgentEnvironmentSlots";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const view = { pluginKey: "example.computer", id: "view", agentEnvironmentDriver: "tasks" } as ResolvedPluginSlot;
 const ordinary = { pluginKey: "example.insights", id: "stats" } as ResolvedPluginSlot;
-const environment = { id: "computer", driver: "plugin", config: { pluginKey: "example.computer", driverKey: "tasks" } };
+const environment = { id: "computer", driver: "plugin", config: {}, pluginDriver: { pluginKey: "example.computer", driverKey: "tasks" } };
 let client: QueryClient, root: Root, container: HTMLDivElement;
 let result: ReturnType<typeof useAgentEnvironmentSlots>;
 let agentId: string | null;
@@ -40,7 +41,7 @@ it("shows matching environment views and ordinary views without checking desktop
 });
 it.each(["local", "other-plugin", "other-driver", "missing"])("hides a view for a %s environment", async kind => {
   client.setQueryData(queryKeys.environments.list("company"), kind === "missing" ? [] : [{ ...environment,
-    driver: kind === "local" ? "local" : "plugin", config: { ...environment.config,
+    driver: kind === "local" ? "local" : "plugin", pluginDriver: { ...environment.pluginDriver,
       ...(kind === "other-plugin" ? { pluginKey: "example.other" } : {}),
       ...(kind === "other-driver" ? { driverKey: "other" } : {}),
     },
@@ -70,4 +71,12 @@ it("does no environment discovery for ordinary contributions or an absent agent"
   slots = [ordinary]; agentId = null;
   await render(); expect(result.slots).toEqual([ordinary]);
   expect(agentsApi.get).not.toHaveBeenCalled(); expect(environmentsApi.list).not.toHaveBeenCalled(); expect(instanceSettingsApi.get).not.toHaveBeenCalled();
+});
+
+it.each([503, 403])("uses cached eligibility after a transient error and clears it after denial (%s)", async status => {
+  await render(); expect(result.slots).toContain(view);
+  vi.mocked(environmentsApi.list).mockRejectedValue(new ApiError("Unavailable", status, null));
+  await act(async () => { await client.refetchQueries({ queryKey: queryKeys.environments.list("company") }); });
+  await render();
+  expect(result.slots).toEqual(status === 503 ? [view, ordinary] : [ordinary]);
 });

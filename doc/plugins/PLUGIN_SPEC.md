@@ -430,8 +430,9 @@ Agent detail tabs can declare `agentEnvironmentDriver` to restrict settings navi
 direct plugin views, and manual task side panels to agents that use that driver.
 The host matches the effective agent environment's plugin key and driver key.
 An agent with no explicit environment inherits the instance default. Missing or
-unavailable configuration hides the restricted view. This check does not depend
-on desktop readiness, agent lifecycle state, or automatic panel activation.
+unavailable configuration hides the restricted view. A transient connection
+failure preserves the last known configuration. Eligibility does not depend
+on runtime readiness, agent lifecycle state, or automatic panel activation.
 
 Rules:
 

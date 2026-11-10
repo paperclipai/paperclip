@@ -22,11 +22,11 @@ vi.mock("./AgentDetail", async () => {
   } };
 });
 vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => state, PluginSlotMount: (props: unknown) => { mount(props); return <p>Plugin contribution</p>; } }));
-function view(environmentId = "local") {
+function view(environmentId = "local", loadEnvironments = true) {
   const client = new QueryClient();
   client.setQueryData([...queryKeys.agents.detail("agent"), "company"], { id: "agent-id", companyId: "company", name: "Agent", defaultEnvironmentId: environmentId });
   client.setQueryData([...queryKeys.agents.detail("agent-id"), "company"], { id: "agent-id", companyId: "company", defaultEnvironmentId: environmentId });
-  client.setQueryData(queryKeys.environments.list("company"), [{ id: "computer", driver: "plugin", config: { pluginKey: "example.computer", driverKey: "tasks" } }]);
+  if (loadEnvironments) client.setQueryData(queryKeys.environments.list("company"), [{ id: "computer", driver: "plugin", config: {}, pluginDriver: { pluginKey: "example.computer", driverKey: "tasks" } }]);
   return <QueryClientProvider client={client}><BreadcrumbProvider companyName="Test company"><AgentDetailPage /></BreadcrumbProvider></QueryClientProvider>;
 }
 function render() {
@@ -84,4 +84,13 @@ it.each(["computer", "local"])("gates direct environment-specific views for %s",
     expect(markup.includes("Plugin contribution")).toBe(environmentId === "computer");
     if (environmentId === "local") expect(markup).toContain("This plugin view is unavailable");
   } finally { state.slots = original; params.tab = "plugin:test.plugin:insights"; }
+});
+
+it("renders an unrestricted view while another tab's environment is unknown", () => {
+  const original = state.slots;
+  try {
+    state.slots = [...original, { pluginKey: "example.computer", id: "desktop", displayName: "Desktop", agentEnvironmentDriver: "tasks" }];
+    params.tab = "plugin:test.plugin:insights";
+    expect(renderToStaticMarkup(view("computer", false))).toContain("Plugin contribution");
+  } finally { state.slots = original; }
 });

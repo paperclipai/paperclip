@@ -79,7 +79,7 @@ describe("AgentContextualSidebar", () => {
 it.each(["computer", "local"])("offers environment-specific navigation only for the configured %s agent", environmentId => {
   const client = new QueryClient();
   client.setQueryData([...queryKeys.agents.detail("agent-1"), "company-1"], { id: "agent-1", companyId: "company-1", defaultEnvironmentId: environmentId });
-  client.setQueryData(queryKeys.environments.list("company-1"), [{ id: "computer", driver: "plugin", config: { pluginKey: "example.computer", driverKey: "tasks" } }]);
+  client.setQueryData(queryKeys.environments.list("company-1"), [{ id: "computer", driver: "plugin", config: {}, pluginDriver: { pluginKey: "example.computer", driverKey: "tasks" } }]);
   const markup = renderToStaticMarkup(<QueryClientProvider client={client}><MemoryRouter>
     <AgentContextualSidebar agentRef="agent" agentId="agent-1" agentName="Agent" />
   </MemoryRouter></QueryClientProvider>);

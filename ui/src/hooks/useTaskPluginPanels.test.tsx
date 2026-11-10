@@ -479,9 +479,12 @@ it.each(["computer", "local"])("gates manual task views using the running agent'
   const restricted = { ...slot, agentEnvironmentDriver: "tasks" };
   plugin.slots = [restricted];
   vi.spyOn(agentsApi, "get").mockResolvedValue({ id: "agent", companyId: "company", defaultEnvironmentId: environmentId } as Awaited<ReturnType<typeof agentsApi.get>>);
-  vi.spyOn(environmentsApi, "list").mockResolvedValue([{ id: "computer", name: "Computer", description: null, driver: "plugin", status: "active", config: { pluginKey: slot.pluginKey, driverKey: "tasks" }, envVars: {}, metadata: null, createdAt: new Date(0), updatedAt: new Date(0) }]);
+  vi.spyOn(environmentsApi, "list").mockResolvedValue([{ id: "computer", name: "Computer", description: null, driver: "plugin", status: "active", config: {}, pluginDriver: { pluginKey: slot.pluginKey, driverKey: "tasks" }, envVars: {}, metadata: null, createdAt: new Date(0), updatedAt: new Date(0) }]);
   await render();
   expect(panels.map(panel => panel.slot)).toEqual(environmentId === "computer" ? [restricted] : []);
+  if (environmentId === "local") {
+    expect(history).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled();
+  }
 });
 it("gates an idle task view using its assigned agent's environment", async () => {
   const restricted = { ...slot, agentEnvironmentDriver: "tasks" };

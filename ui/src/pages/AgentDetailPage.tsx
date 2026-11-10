@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, Link } from "@/lib/router";
@@ -24,8 +24,8 @@ function AgentPluginDetail() {
     enabled: Boolean(agentId && companyId),
   });
   const { slots: declaredSlots, isLoading: slotsLoading, errorMessage } = usePluginSlots({ slotTypes: ["detailTab"], entityType: "agent", companyId: agent?.companyId, enabled: Boolean(agent) });
-  const { slots, isLoading: environmentLoading } = useAgentEnvironmentSlots(declaredSlots, agent?.id, agent?.companyId);
-  const slot = slots.find(item => `plugin:${item.pluginKey}:${item.id}` === tab);
+  const requestedSlots = useMemo(() => declaredSlots.filter(item => `plugin:${item.pluginKey}:${item.id}` === tab), [declaredSlots, tab]);
+  const { slots: [slot], isLoading: environmentLoading } = useAgentEnvironmentSlots(requestedSlots, agent?.id, agent?.companyId);
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => {
     setBreadcrumbs([
