@@ -13261,6 +13261,8 @@ describe("native warm session supervision", () => {
       const decisions: Record<string, boolean> = {};
       for (const path of ["warm", "adoption"] as const) {
         githubAccess.create.mockReset().mockImplementation(async () => ({ env: {}, ready: true, duplexRequested: false,
+          requireGitHubConnection: false, githubProjectRepositoriesKey: JSON.stringify([]),
+          githubProjectBindingsKey: JSON.stringify(null), azureProjectRepositoriesKey: JSON.stringify(null),
           activate: githubAccess.activate.mockReset().mockImplementation(() => vi.fn()), stop: githubAccess.stop.mockReset().mockResolvedValue(undefined) }));
         const stateBase = await mkdtemp(join(tmpdir(), "paperclip-runnerd-reuse-key-"));
         const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;

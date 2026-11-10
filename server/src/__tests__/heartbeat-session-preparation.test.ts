@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, executionWorkspaces, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
+import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, executionWorkspaces, heartbeatRuns, issues, plugins, projects, projectWorkspaces } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -119,6 +119,8 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
   ])("keeps a default-attached repository policy stable through binding with settings %j and retains the provider on policy changes", async (settings) => {
     const f = await seed();
     const storage = await createPluginWorkspaceFixture(db, f.companyId);
+    await db.update(projectWorkspaces).set({ repoUrl: "https://gitlab.example/team/repo.git" })
+      .where(eq(projectWorkspaces.id, storage.input.projectWorkspaceId));
     const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
     await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson, workspaceProvider: {
       ...plugin.manifestJson.workspaceProvider!, defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" },

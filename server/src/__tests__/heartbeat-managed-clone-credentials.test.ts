@@ -267,6 +267,7 @@ exit 1
       await fs.writeFile(path.join(second, "secret.txt"), "private");
       const [repo] = await prepareProjectRepositoryWorkspaces({
         cwd: anchor.cwd, anchorRepoUrl: first,
+        resolveGitAuth: async () => ({ env: {}, configArgs: [], source: "managed_connection", secretName: null }),
         workspaces: [{ id: "second", cwd: second, repoUrl: "https://github.com/example/backend.git", repoRef: null }],
       });
       expect(await fs.readFile(path.join(repo!.cwd, "README.md"), "utf8")).toBe("local changes");
