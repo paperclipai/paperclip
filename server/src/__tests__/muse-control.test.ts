@@ -1106,30 +1106,40 @@ describe("personal Muse control plane",()=>{
   // Narrow first-evidence controls, not an assembled Cloud sleep/full-ACK proof.
   // Readiness is reached through OAuth, persisted contact and the actual HTTP
   // challenge response. No ready/status/contact/receipt is stamped by these tests.
+  const listenMuseHttp=(server:Server)=>new Promise<string>((resolve,reject)=>{
+    server.once("error",reject);server.listen(0,"127.0.0.1",()=>{
+      server.off("error",reject);const address=server.address();
+      if(!address||typeof address==="string"||address.address!=="127.0.0.1")return reject(new Error("Missing owned Muse loopback listener"));
+      resolve("http://127.0.0.1:"+address.port);
+    });
+  });
+  const closeMuseHttp=(server:Server|undefined)=>server?.listening
+    ?new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve())):Promise.resolve();
   async function actualReadyContact() {
     const f=await oauthFixture(false),tokens=await f.oauth.token(f.tokenInput());
     const receiverOwner=createDb(externalDatabaseUrl??temporary!.connectionString,{maxConnections:1});
     const receiver=museReceiver(receiverOwner);receiver.start();
     const app=express();app.use(museTransportRoutes(receiverOwner,oauthOrigin));app.use(errorHandler);
-    const access=tokens.access_token;
+    const access=tokens.access_token,httpServer=createServer(app);
     try {
-    expect((await request(app).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id)).status).toBe(200);
+    const origin=await listenMuseHttp(httpServer);
+    expect((await request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id)).status).toBe(200);
     await receiver.flush();
-    const inbox=await request(app).post("/api/muse/v1/queries").set("Authorization","Bearer "+access)
+    const inbox=await request(origin).post("/api/muse/v1/queries").set("Authorization","Bearer "+access)
       .send({version:1,query:"mailbox",after:0});
     expect(inbox.status).toBe(200);
     const challenge=inbox.body.items.find((item:{kind:string})=>item.kind==="readiness_challenge");
     expect(challenge).toBeDefined();
-    const confirmed=await request(app).post("/api/muse/v1/commands").set("Authorization","Bearer "+access)
+    const confirmed=await request(origin).post("/api/muse/v1/commands").set("Authorization","Bearer "+access)
       .send({version:1,command:"challenge.confirm",nonce:challenge.references.nonce,requestId:randomUUID()});
     expect(confirmed.status).toBe(200);expect(confirmed.body.status).toBe("ready");
-    const acknowledged=await request(app).post("/api/muse/v1/queries").set("Authorization","Bearer "+access)
+    const acknowledged=await request(origin).post("/api/muse/v1/queries").set("Authorization","Bearer "+access)
       .send({version:1,query:"mailbox",after:inbox.body.nextCursor});
     expect(acknowledged.status).toBe(200);expect(acknowledged.body.items).toEqual([]);
     const [ready]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
     expect(ready.status).toBe("ready");expect(ready.verifiedReplyAt).not.toBeNull();
     return {...f,receiverOwner};
-    } catch(error) {await receiver.stop();await receiverOwner.$client.end({timeout:1});throw error;}
+    } catch(error) {try {await receiver.stop();} finally {await receiverOwner.$client.end({timeout:1});}throw error;} finally {await closeMuseHttp(httpServer);}
   }
   it("observes a real settled HTTP contact admitted after empty handoff and persists it on normal stop",async()=>{
     const f=await actualReadyContact(),receiver=museReceiver(f.receiverOwner);
@@ -1142,8 +1152,10 @@ describe("personal Muse control plane",()=>{
     app.use(async(_req,_res,next)=>{arrived();await gate;next();});
     app.use(museTransportRoutes(f.receiverOwner,oauthOrigin));app.use(errorHandler);trackIdleRequestHandlers(app);
     const baseline=idleWorkSnapshot().active;
-    const contact=request(app).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id).then(response=>response);
+    const httpServer=createServer(app);let contact:Promise<request.Response>|undefined;
     try {
+      const origin=await listenMuseHttp(httpServer);
+      contact=request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id).then(response=>response);
       await atIngress;
       // HTTP is already admitted, but the receiver has no admitted signal yet.
       await receiver.prepareHostedHandoff(new AbortController().signal);
@@ -1157,7 +1169,7 @@ describe("personal Muse control plane",()=>{
       const saved=await read();expect(total(saved)).toBe(total(before)+1);
       receiver.start();await receiver.stop();
       expect(await read()).toEqual(saved);
-    } finally {release();await contact;await receiver.stop();await f.receiverOwner.$client.end({timeout:1});}
+    } finally {try {try {release();await contact;} finally {try {await receiver.stop();} finally {await f.receiverOwner.$client.end({timeout:1});}}} finally {await closeMuseHttp(httpServer);}}
   },15000);
   it("retains a late HTTP contact through failed stop and same-owner restart without inventing persisted custody",async()=>{
     const f=await actualReadyContact();let failNext=false;
@@ -1172,9 +1184,11 @@ describe("personal Muse control plane",()=>{
     app.use(museTransportRoutes(owner,oauthOrigin));app.use(errorHandler);trackIdleRequestHandlers(app);
     const read=()=>db.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id));
     const before=await read(),total=(rows:Awaited<ReturnType<typeof read>>)=>rows.reduce((sum,row)=>sum+row.contacts,0);
+    const httpServer=createServer(app);
     try {
+      const origin=await listenMuseHttp(httpServer);
       await receiver.prepareHostedHandoff(new AbortController().signal);
-      const response=await request(app).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id);
+      const response=await request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id);
       expect(response.status).toBe(200);expect(response.body).toEqual({version:1,signal:null});
       expect(await read()).toEqual(before);
       failNext=true;
@@ -1184,7 +1198,7 @@ describe("personal Muse control plane",()=>{
       const saved=await read();expect(total(saved)).toBe(total(before)+1);
       expect(saved.filter(row=>!before.some(old=>old.id===row.id)).every(row=>row.incomplete)).toBe(true);
       receiver.start();await receiver.stop();expect(await read()).toEqual(saved);
-    } finally {failNext=false;await receiver.stop();await museReceiver(f.receiverOwner).stop();await f.receiverOwner.$client.end({timeout:1});}
+    } finally {try {failNext=false;try {await receiver.stop();} finally {try {await museReceiver(f.receiverOwner).stop();} finally {await f.receiverOwner.$client.end({timeout:1});}}} finally {await closeMuseHttp(httpServer);}}
   },15000);
 
   // Selected fresh-paired-DB control. This tests actual worker/HTTP/commit/ACK
@@ -1222,8 +1236,7 @@ describe("personal Muse control plane",()=>{
     const pool=new Pool({connectionString:cloudUrl,max:2,connectionTimeoutMillis:5000,idleTimeoutMillis:1000});
     const limits={stack:{...quotaModule.MCP_IMPORT_LIMITS.stack,museContactRows:160},global:{...quotaModule.MCP_IMPORT_LIMITS.global}};
     const keys=new Map<string,Buffer>();const restorers:Array<()=>void>=[];
-    const listen=(server:Server)=>new Promise<string>((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",()=>{const address=server.address();if(!address||typeof address==="string")return reject(new Error("Missing owned listener"));resolve("http://127.0.0.1:"+address.port);});});
-    const close=(server:Server|undefined)=>server?new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve())):Promise.resolve();
+    const listen=listenMuseHttp,close=closeMuseHttp;
     const mapped:typeof fetch=async(input,init)=>{
       const original=new Request(input,init),url=new URL(original.url);
       if(![cloudOrigin,oauthOrigin].includes(url.origin))throw new Error("Off-boundary paired Muse request");
@@ -1287,7 +1300,7 @@ describe("personal Muse control plane",()=>{
         companyDeletionEnabled:false,managedPluginAutoInstall:[],decisionServiceOptions:{wakeOriginAgent:async()=>{throw new Error("No task work in contact-import control");}}});
       await app.locals.bundledPluginsStartup;appServer=createServer(app);appLoopback=await listen(appServer);
     };
-    const stopApp=async()=>{await app?.locals.paperclipShutdown();app=undefined;await close(appServer);appServer=undefined;await appDb?.$client.end({timeout:1});appDb=undefined;};
+    const stopApp=async()=>{try {await app?.locals.paperclipShutdown();} finally {app=undefined;try {await close(appServer);} finally {appServer=undefined;await appDb?.$client.end({timeout:1});appDb=undefined;}}};
     try {
       registry=await registryModule.PostgresCloudHarnessRegistry.connect({connectionString:cloudUrl,maxConnections:2,runMigrations:true,migrationsPath:path.join(checkout,"migrations"),migrationLockTimeoutMs:5000});
       await registry.createFleetReleaseArtifact({id:stackId,appVersion:"paired"});await registry.importFeatureCatalog({releaseArtifactId:stackId,catalogVersion:"paired",features:{"cloud.feature-masking":{tier:"managed"}}});
@@ -1438,8 +1451,10 @@ describe("personal Muse control plane",()=>{
     let release!:()=>void,arrived!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),atIngress=new Promise<void>(resolve=>{arrived=resolve;});
     const app=express();app.use(idleAdmissionMiddleware);app.use(async(_req,_res,next)=>{arrived();await gate;next();});
     app.use(museTransportRoutes(f.receiverOwner,oauthOrigin));app.use(errorHandler);trackIdleRequestHandlers(app);
-    const pending=request(app).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id).then(response=>response);
+    const httpServer=createServer(app);let pending:Promise<request.Response>|undefined;
     try {
+      const origin=await listenMuseHttp(httpServer);
+      pending=request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id).then(response=>response);
       await atIngress;await receiver.prepareHostedHandoff(new AbortController().signal);expect(await read()).toEqual(before);
       release();const response=await pending;expect(response.status).toBe(200);expect(response.body).toEqual({version:1,signal:null});
       const saved=await read();expect(total(saved)).toBe(total(before)+1);
@@ -1447,7 +1462,7 @@ describe("personal Muse control plane",()=>{
       const reconstructed=createDb(externalDatabaseUrl??temporary!.connectionString,{maxConnections:1});
       try {const next=museReceiver(reconstructed);next.start();await next.stop();expect(await read()).toEqual(saved);}
       finally {await reconstructed.$client.end({timeout:1});}
-    } finally {release();await pending;await receiver.stop();await f.receiverOwner.$client.end({timeout:1});await reset();}
+    } finally {try {try {release();await pending;} finally {try {await receiver.stop();} finally {try {await f.receiverOwner.$client.end({timeout:1});} finally {await reset();}}}} finally {await closeMuseHttp(httpServer);}}
   },15000);
   it("managed late persistence failure rejects HTTP and stop until same owner repairs its exact retained contact",async()=>{
     const f=await actualReadyContact(),reset=await applyActualManagedContactIdentity();let transactions=0,failPersistence=true;
@@ -1457,15 +1472,17 @@ describe("personal Muse control plane",()=>{
     const receiver=museReceiver(owner),app=express();app.use(museTransportRoutes(owner,oauthOrigin));app.use(errorHandler);
     const read=()=>db.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id));
     const before=await read(),total=(rows:Awaited<ReturnType<typeof read>>)=>rows.reduce((sum,row)=>sum+row.contacts,0);
+    const httpServer=createServer(app);
     try {
+      const origin=await listenMuseHttp(httpServer);
       await receiver.prepareHostedHandoff(new AbortController().signal);
-      const response=await request(app).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id);
+      const response=await request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id);
       expect(response.status).toBe(500);expect(await read()).toEqual(before);
       await expect(receiver.stop()).rejects.toThrow("Muse receiver contact persistence is incomplete.");expect(await read()).toEqual(before);
       failPersistence=false;receiver.start();await receiver.stop();const saved=await read();expect(total(saved)).toBe(total(before)+1);
       expect(saved.filter(row=>!before.some(old=>old.id===row.id)).every(row=>row.incomplete)).toBe(true);
       receiver.start();await receiver.stop();expect(await read()).toEqual(saved);
-    } finally {failPersistence=false;await receiver.stop();await museReceiver(f.receiverOwner).stop();await f.receiverOwner.$client.end({timeout:1});await reset();}
+    } finally {try {failPersistence=false;try {await receiver.stop();} finally {try {await museReceiver(f.receiverOwner).stop();} finally {try {await f.receiverOwner.$client.end({timeout:1});} finally {await reset();}}}} finally {await closeMuseHttp(httpServer);}}
   },15000);
   it("hosted handoff joins existing signal custody without stopping the receiver",async()=>{
     const f=await fixture(false);let entered!:()=>void,release!:()=>void;
