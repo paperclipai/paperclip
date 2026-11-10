@@ -1201,6 +1201,70 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledTimes(2);
   });
 
+  it("refreshes an untouched composer when the saved task mode arrives after mount", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+    renderComposer({ onAdd, onWorkModeChange, workMode: "standard", draftKey: "late-planning-mode" });
+    renderComposer({ onAdd, onWorkModeChange, workMode: "planning", draftKey: "late-planning-mode" });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("planning");
+    typeText("Use the saved planning mode");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledOnce();
+    expect(onWorkModeChange).not.toHaveBeenCalled();
+  });
+
+  it("preserves an explicitly selected pending mode when the saved task mode refreshes", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+    renderComposer({ onAdd, onWorkModeChange, workMode: "standard", draftKey: "selected-planning-mode" });
+    pressKey("Tab", { shiftKey: true });
+    renderComposer({ onAdd, onWorkModeChange, workMode: "ask", draftKey: "selected-planning-mode" });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("planning");
+    typeText("Keep my selected planning mode");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onWorkModeChange).toHaveBeenCalledWith("planning");
+    expect(onAdd).toHaveBeenCalledOnce();
+  });
+
+  it("follows later saved task modes after a selected mode has been submitted", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+    const props = { onAdd, onWorkModeChange, draftKey: "consumed-planning-mode" };
+    renderComposer({ ...props, workMode: "standard" });
+    pressKey("Tab", { shiftKey: true });
+    typeText("Submit the selected planning mode");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledOnce();
+    renderComposer({ ...props, workMode: "planning" });
+    await flushAsync();
+    renderComposer({ ...props, workMode: "ask" });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("ask");
+  });
+
+  it("does not consume a new pending mode choice when an earlier send completes", async () => {
+    let completeSend!: () => void;
+    const onAdd = vi.fn(() => new Promise<void>(resolve => { completeSend = resolve; }));
+    const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+    const props = { onAdd, onWorkModeChange, draftKey: "next-mode-while-sending" };
+    renderComposer({ ...props, workMode: "standard" });
+    pressKey("Tab", { shiftKey: true });
+    typeText("Send the planning message");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledOnce();
+    pressKey("Tab", { shiftKey: true });
+    await act(async () => { completeSend(); });
+    renderComposer({ ...props, workMode: "planning" });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("ask");
+  });
+
   it("cycles the pending mode with Shift+Tab and applies it on submit", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     const onWorkModeChange = vi.fn().mockResolvedValue(undefined);

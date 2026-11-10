@@ -452,6 +452,10 @@ export function TaskChatComposer({
   const [takeoverControlsSlot, setTakeoverControlsSlot] =
     useState<HTMLElement | null>(null);
   const [localPendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
+  const pendingModeChoiceVersion = useRef(0);
+  useEffect(() => {
+    if (pendingModeChoiceVersion.current === 0) setPendingMode(workMode);
+  }, [workMode]);
   const pendingMode = creation ? workMode : localPendingMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
@@ -704,6 +708,7 @@ export function TaskChatComposer({
   }
 
   function changeMode(mode: IssueWorkMode) {
+    pendingModeChoiceVersion.current += 1;
     setPendingMode(mode);
     if (creation) void onWorkModeChange?.(mode);
   }
@@ -926,6 +931,7 @@ export function TaskChatComposer({
     const submittedBody = bodyRef.current;
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
+    const submittedModeChoiceVersion = pendingModeChoiceVersion.current;
     const trimmed = submittedBody.trim();
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
@@ -1098,6 +1104,9 @@ export function TaskChatComposer({
       if (draftKey) settleDraftSubmission(draftKey, attemptId,
         mountedTaskKey.current === draftKey ? bodyRef.current : undefined);
       if (mountedTaskKey.current !== draftKey) return;
+      if (pendingModeChoiceVersion.current === submittedModeChoiceVersion) {
+        pendingModeChoiceVersion.current = 0;
+      }
       const submittedIds = new Set(submittedAttachments.map((item) => item.id));
       setAttachments((current) =>
         current.filter((item) => !submittedIds.has(item.id)),
