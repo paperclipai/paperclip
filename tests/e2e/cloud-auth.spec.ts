@@ -56,6 +56,7 @@ for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paper
       await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
       expect(handoffs).toBe(1);
       expect(formWasRendered).toBe(false);
+      await page.unrouteAll({ behavior: "wait" });
     });
   }
 }
