@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "slug": "azure-devops",
+  "name": "Azure DevOps",
+  "description": "Connect an Azure DevOps organization to list its Git repositories.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "urlPatterns": [
+    "https://dev.azure.com/*"
+  ],
+  "docsUrl": "https://learn.microsoft.com/en-us/rest/api/azure/devops/git/repositories/list?view=azure-devops-rest-7.1",
+  "methods": [
+    {
+      "key": "entra",
+      "label": "Sign in with Microsoft Entra ID",
+      "transport": "rest_api",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer"
+      ],
+      "grantKinds": [
+        "user",
+        "agent",
+        "organization"
+      ],
+      "whenToUse": "Use delegated Microsoft Entra access for an organization backed by Microsoft Entra ID.",
+      "defaults": {
+        "serverUrl": "https://dev.azure.com",
+        "authorizationEndpoint": "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize",
+        "tokenEndpoint": "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+        "scopesHint": [
+          "499b84ac-1321-427f-aa17-267ca6975798/vso.code",
+          "offline_access"
+        ]
+      },
+      "guidanceMd": "Sign in with the Microsoft Entra account that can access the Azure DevOps organization, then enter its organization name. This connection action only lists repository metadata and needs Code (Read). Git push is a separate capability and requires Code (Read & Write) permission through the supported Git credential path.",
+      "riskTier": "S2",
+      "tenantFields": [
+        {
+          "key": "organization",
+          "label": "Organization",
+          "type": "text",
+          "required": true,
+          "placeholder": "contoso",
+          "helperMd": "Enter the organization name from https://dev.azure.com/{organization}.",
+          "validation": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{0,49}$",
+            "maxLength": 50
+          }
+        }
+      ],
+      "requiredResourceFilters": [
+        "organization"
+      ]
+    },
+    {
+      "key": "entra-write",
+      "label": "Sign in with Microsoft Entra ID (Git write)",
+      "transport": "rest_api",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer"
+      ],
+      "grantKinds": [
+        "user",
+        "agent",
+        "organization"
+      ],
+      "whenToUse": "Use delegated Microsoft Entra access when agents need to push changes to repositories in this organization.",
+      "defaults": {
+        "serverUrl": "https://dev.azure.com",
+        "authorizationEndpoint": "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize",
+        "tokenEndpoint": "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+        "scopesHint": [
+          "499b84ac-1321-427f-aa17-267ca6975798/vso.code_write",
+          "offline_access"
+        ]
+      },
+      "guidanceMd": "Sign in with the Microsoft Entra account that can access the Azure DevOps organization, then enter its organization name. This separate Git write connection enables the supported Git credential path to read, update, and delete repository source code, including pushing changes. Azure DevOps also associates Code (Read & Write) with pull request and code review management and version-control service-hook notifications; Paperclip's Azure REST catalog exposes no such actions. It does not grant project administration, work items, pipelines, or other Azure DevOps operations. Use the existing Entra method for read-only repository discovery.",
+      "riskTier": "S3",
+      "tenantFields": [
+        {
+          "key": "organization",
+          "label": "Organization",
+          "type": "text",
+          "required": true,
+          "placeholder": "contoso",
+          "helperMd": "Enter the organization name from https://dev.azure.com/{organization}.",
+          "validation": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{0,49}$",
+            "maxLength": 50
+          }
+        }
+      ],
+      "requiredResourceFilters": [
+        "organization"
+      ]
+    },
+    {
+      "key": "pat",
+      "label": "Use a personal access token",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "grantKinds": [
+        "user",
+        "agent",
+        "organization"
+      ],
+      "whenToUse": "Use a personal access token when delegated sign-in is unavailable.",
+      "defaults": {
+        "serverUrl": "https://dev.azure.com"
+      },
+      "guidanceMd": "Create a short-lived Azure DevOps personal access token with Code (Read) permission, enter it below, and provide the organization name. This connection action only lists repository metadata. Git push is a separate capability and requires Code (Read & Write) permission through the supported Git credential path. Prefer Microsoft Entra sign-in when your organization supports it.",
+      "riskTier": "S2",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Azure DevOps personal access token",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your personal access token",
+          "secret": true,
+          "helperMd": "Use the minimum Code (Read) permission needed to list repositories. Azure DevOps organization policies may restrict PAT creation or lifetime."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "tenantFields": [
+        {
+          "key": "organization",
+          "label": "Organization",
+          "type": "text",
+          "required": true,
+          "placeholder": "contoso",
+          "helperMd": "Enter the organization name from https://dev.azure.com/{organization}.",
+          "validation": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{0,49}$",
+            "maxLength": 50
+          }
+        }
+      ],
+      "requiredResourceFilters": [
+        "organization"
+      ],
+      "consoleLinks": {
+        "keys": "https://dev.azure.com/",
+        "docs": "https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate?view=azure-devops"
+      },
+      "warnings": [
+        "Personal access tokens are bearer credentials. Create a short-lived token with Code (Read) only and share the connection only with trusted agents."
+      ]
+    }
+  ]
+}
