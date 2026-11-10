@@ -135,8 +135,10 @@ export function liveOwner(sample: TaskSample, queuedFor: ReadonlyMap<string, num
 /** U1: an item a person can see and act on (Retry, a question, an approval, a board-owned recovery, a named blocker). */
 export function actionableItem(sample: TaskSample): string | null {
   const interruption = sample.interruption;
-  // An accepted Retry that waits on the system ("Retry is waiting for Paperclip to ...") leaves nothing for
-  // the person to do: the Retry button, the failed notice and the blocker all describe work they already asked for.
+  // A named user action (for example `confirm_run_stopped`) is shown even while an accepted Retry waits.
+  if (interruption?.userAction) return `user action ${interruption.userAction}`;
+  // Otherwise an accepted Retry that waits on the system ("Retry is waiting for Paperclip to ...") leaves nothing
+  // for the person to do: the Retry button, the failed notice and the blocker describe work they already asked for.
   if (interruption?.retryWait) return null;
   if (interruption?.canRetry) return "Retry";
   if (interruption?.userAction) return `user action ${interruption.userAction}`;

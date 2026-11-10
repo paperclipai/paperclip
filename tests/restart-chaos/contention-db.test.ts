@@ -86,12 +86,24 @@ describe.skipIf(!support.supported)("--db-pressure against real PostgreSQL (#203
     await db.$client.unsafe(
       `update heartbeat_runs set status = 'succeeded', error_code = null, log_bytes = 4096, cost_accounted_at = now(),
          usage_json = usage_json || '{"accountingReceiptOwner":"native_producer","costUsd":0.25}'::jsonb where id = $1`, [f.runId]);
-    const evidence = await collectContentionEvidence(db, f.companyId, [f.runId], { spendCents: 0, pendingRunCount: 0 });
+    // Agent cost events name their agent; `agentOf` is the run whose agent is charged.
+    const cost = (companyId: string, runId: string | null, agentOf: string, cents: number) => db.$client.unsafe(
+      `insert into cost_events (company_id, agent_id, heartbeat_run_id, provider, model, cost_cents, occurred_at)
+       values ($1, (select agent_id from heartbeat_runs where id = $3), $2, 'openai', 'test-model', $4, now())`,
+      [companyId, runId, agentOf, cents]);
+    await cost(f.companyId, f.runId, f.runId, 10);
+    await cost(f.companyId, f.runId, f.runId, 15);
+    // A cost of the same company outside this run counts toward the company total only.
+    await cost(f.companyId, null, f.runId, 5);
+    // Another company's cost counts toward neither.
+    const elsewhere = await runningRun();
+    await cost(elsewhere.companyId, elsewhere.runId, elsewhere.runId, 1000);
+    const evidence = await collectContentionEvidence(db, f.companyId, [f.runId], { spendCents: 30, pendingRunCount: 0 });
     expect(evidence.error).toBeNull();
     expect(evidence.runs).toHaveLength(1);
     expect(evidence.runs[0]).toMatchObject({ id: f.runId, status: "succeeded", receipts: 4, duplicateReceipts: [`${sourceId}:evt-2`],
-      terminalReceipt: true, nativeProducer: true, costAccounted: true, recordedCostCents: 25, costEventCents: 0, logBytes: 4096, logEvents: 0 });
-    expect(evidence.companyCostEventCents).toBe(0);
+      terminalReceipt: true, nativeProducer: true, costAccounted: true, recordedCostCents: 25, costEventCents: 25, logBytes: 4096, logEvents: 0 });
+    expect(evidence.companyCostEventCents).toBe(30);
     // A run of another company is never read, even when its id is passed.
     const other = await runningRun();
     expect((await collectContentionEvidence(db, f.companyId, [other.runId], null)).runs).toEqual([]);

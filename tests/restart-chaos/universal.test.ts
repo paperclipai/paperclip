@@ -76,6 +76,10 @@ describe("U1 liveness", () => {
     const samples = polls(0, 9 * 60 * SEC, at => sample(at, "blocked", [failedRun], { interruption: waiting, executionBlocker: true }));
     expect(gradeU1(record(samples, { restAt: null }), BOUNDS)).toMatchObject({ verdict: "fail",
       detail: expect.stringMatching(/accepted Retry waiting on the system/) });
+    // A wait that names a person's action (confirm the previous run stopped) is actionable.
+    const confirm = polls(0, 9 * 60 * SEC, at => sample(at, "blocked", [failedRun],
+      { interruption: { ...waiting, userAction: "confirm_run_stopped" } }));
+    expect(gradeU1(record(confirm, { restAt: null }), BOUNDS).verdict).toBe("pass");
     // A short wait that ends in a dispatched run is fine.
     const short = [...polls(0, 60 * SEC, at => sample(at, "blocked", [failedRun], { interruption: waiting })),
       sample(63 * SEC, "in_progress", [failedRun, run("r2", "running", 62 * SEC, null, { lastEvidenceAt: iso(63 * SEC) })])];
