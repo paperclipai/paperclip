@@ -15,7 +15,7 @@ import { realizeExecutionWorkspace } from "../services/workspace-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { expireReconstructableGitWorkspace } from "../services/git-workspace-expiration.js";
 import { captureRestorePoint, currentRestorePointSnapshot } from "../services/git-restore-point.js";
-import { rehomeIsolatedRepositoryWorkspace, sweepOrphanedIsolatedRepositorySources } from "../services/isolated-repository-rehome.js";
+import { rehomeExpiredIsolatedRestoration, rehomeIsolatedRepositoryWorkspace, sweepOrphanedIsolatedRepositorySources } from "../services/isolated-repository-rehome.js";
 import { addNestedRepositoryWorktree, nestedRepositoryBaseCandidates, nestedWorktreeBranchPrefix, readLinkedNestedCheckout } from "../services/nested-repository-worktrees.js";
 import { getStorageService } from "../storage/index.js";
 
@@ -425,6 +425,36 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     expect(await dryRun.nextTerminalWorkspaceSweepAt()).toBe(retryAt);
     expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row(), { dryRun: true })).toMatchObject({ outcome: "dry_run", rehomed: false, to: f.target });
     await expectUntouched(f, before);
+  });
+
+  it("keeps an isolated workspace until its replacement preserves long paths", async () => {
+    const f = await fixture();
+    if (process.platform === "win32") git(f.cwd, "config", "--unset-all", "core.symlinks");
+    git(f.cwd, "config", "core.longpaths", "true");
+    git(f.sharedPath, "config", "core.longpaths", "false");
+    const before = await currentRestorePointSnapshot(f.cwd);
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ outcome: "skipped", reason: "unsupported_base_git_config" });
+    await expectUntouched(f, before);
+    git(f.sharedPath, "config", "core.longpaths", "true");
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ rehomed: true, reason: null });
+    expect(git(f.target, "config", "--local", "--get", "core.longpaths")).toBe("true");
+  });
+
+  it("keeps an expired isolated recipe until its replacement preserves long paths", async () => {
+    const f = await fixture({ issueStatus: "done" });
+    if (process.platform === "win32") git(f.cwd, "config", "--unset-all", "core.symlinks");
+    git(f.cwd, "config", "core.longpaths", "true");
+    git(f.sharedPath, "config", "core.longpaths", "false");
+    const expired = await expireReconstructableGitWorkspace(db, await f.row(), { dryRun: false, expireBase: false, now: new Date(),
+      restorePoint: { storage: getStorageService(), notBefore: new Date(Date.now() - DAY_MS), keyDurable: true } });
+    expect(expired.expired).toBe(true);
+    const row = await f.row();
+    expect(await rehomeExpiredIsolatedRestoration(db, row)).toEqual(row);
+    expect((await f.row()).metadata?.isolatedRemoteSource).toBeDefined();
+    git(f.sharedPath, "config", "core.longpaths", "true");
+    const moved = await rehomeExpiredIsolatedRestoration(db, await f.row());
+    expect(moved.metadata?.gitCacheRestoration).toMatchObject({ sourceKind: "managed_project", sourcePath: f.sharedPath });
+    expect(moved.metadata?.isolatedRemoteSource).toBeUndefined();
   });
 
   it("restores an expired isolated workspace into the shared project clone without recreating its clone", async () => {

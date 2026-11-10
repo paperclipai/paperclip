@@ -39,13 +39,15 @@ function managedRepositoryPreparationError(message: string, error: unknown): Err
 }
 
 async function copyManagedGitObjects(cwd: string, repoUrl: string, source: { cwd: string; commits: readonly string[] }) {
-  const git = (directory: string, args: string[]) => execFile("git", ["-C", directory, ...args], {
-    env: { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0" },
+  const git = (directory: string, args: string[], env: Record<string, string> = {}) => execFile("git", [...(process.platform === "win32" ? ["-c", "core.longpaths=true"] : []), "-C", directory, ...args], {
+    env: { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0", ...env },
     timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
   });
   const present = (directory: string, commit: string) => git(directory, ["cat-file", "-e", `${commit}^{commit}`]).then(() => true, () => false);
   if (source.commits.some(commit => !/^[a-f0-9]{40}$/.test(commit))) throw new Error("Invalid managed Git object source");
-  await git(cwd, ["init", "--quiet"]);
+  await git(cwd, ["init", "--quiet"], process.platform === "win32"
+    ? { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } : {});
+  if (process.platform === "win32") await git(cwd, ["config", "--local", "core.longpaths", "true"]);
   await git(cwd, ["remote", "add", "origin", repoUrl]);
   for (const commit of new Set(source.commits)) {
     if (await present(cwd, commit) || !await present(source.cwd, commit)) continue;

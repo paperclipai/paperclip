@@ -140,6 +140,11 @@ parent. This keeps Windows Git remote helpers below their metadata path limits
 without changing the published workspace or crossing filesystem boundaries.
 Nested-clone migration requires a replacement shared base to persist the same
 long-path setting; otherwise it skips migration and keeps the standalone clone.
+Object-backed restores initialize with global and system Git config disabled on
+Windows, then save the setting before fetching objects or checking out files.
+Use `GIT_TEMPLATE_DIR` for an explicit template directory on this restore path.
+Isolated workspace rehomes also preserve it. On Windows, an expired source
+whose Git config is no longer available requires a shared base with long paths enabled.
 
 ## Dependency Lockfile Policy
 

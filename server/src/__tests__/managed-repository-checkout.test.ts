@@ -11,6 +11,8 @@ import { PROJECT_REPOSITORIES_DIR, readManagedWorkspaceRepositories, listProject
 import { listLocalProjectRepositories } from "@paperclipai/adapter-utils/ssh";
 import { assertReproducibleGitFiles, assertReproducibleLocalGitConfig } from "../services/git-workspace-restoration.js";
 
+import { assertRehomeGitConfig } from "../services/isolated-repository-rehome.js";
+
 const execFile = promisify(execFileCallback);
 const directories: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
@@ -70,6 +72,63 @@ describe("atomic managed repository publication", () => {
       if (kind === "duplicate") await execFile("git", ["-C", source, "config", "--add", "core.longpaths", "true"]);
     }
     await expect(assertReproducibleLocalGitConfig(source)).rejects.toThrow("unsupported_local_git_config");
+  });
+  it.skipIf(process.platform !== "win32").each(
+    [false, true].flatMap(expired => ["missing", "false", "duplicate", "true"].map(value => ({ expired, value }))),
+  )("preserves long paths in isolated rehomes (expired=$expired, base=$value)", async ({ expired, value }) => {
+    const { root, source, target } = await fixture();
+    await execFile("git", ["-C", source, "config", "--unset-all", "core.symlinks"]);
+    await execFile("git", ["-C", source, "config", "core.longpaths", "true"]);
+    await materializeManagedProjectWorkspace(target, { repoUrl: source });
+    if (value === "missing") await execFile("git", ["-C", target, "config", "--unset-all", "core.longpaths"]);
+    else await execFile("git", ["-C", target, "config", "core.longpaths", value === "false" ? "false" : "true"]);
+    if (value === "duplicate") await execFile("git", ["-C", target, "config", "--add", "core.longpaths", "true"]);
+    const check = assertRehomeGitConfig(expired ? path.join(root, "expired-source") : source, target);
+    if (value === "true") await expect(check).resolves.toBeUndefined();
+    else await expect(check).rejects.toThrow("unsupported_base_git_config");
+    expect(await readFile(path.join(source, "source.txt"), "utf8")).toBe("initial\n");
+  });
+  it.skipIf(process.platform !== "win32")("enables long paths while initializing object-backed restore templates", async () => {
+    const { root, source, target } = await fixture();
+    const template = path.join(root, "template");
+    await mkdir(path.join(template, "hooks"), { recursive: true });
+    await writeFile(path.join(template, "hooks", "fsmonitor-watchman.sample"), "inert template fixture\n");
+    const canonicalRoot = await realpath(root);
+    const stagingParent = path.join(root, "deep-staging-".repeat(24).slice(0, 212 - canonicalRoot.length - 1));
+    await mkdir(stagingParent);
+    vi.stubEnv("GIT_TEMPLATE_DIR", template);
+    const disabledConfig = path.join(root, "disabled-gitconfig");
+    await writeFile(disabledConfig, "[core]\nlongpaths = false\n");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", disabledConfig);
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+
+    await materializeManagedProjectWorkspace(target, {
+      repoUrl: "https://example.test/source", gitObjectSource: { cwd: source, commits: [] }, stagingParent,
+      beforeCopy: async staging => {
+        expect(path.join(staging, ".git", "hooks", "fsmonitor-watchman.sample").length).toBeGreaterThan(260);
+      },
+    });
+    expect(await readFile(path.join(target, ".git", "hooks", "fsmonitor-watchman.sample"), "utf8")).toBe("inert template fixture\n");
+    expect((await execFile("git", ["-C", target, "config", "--local", "--get", "core.longpaths"])).stdout.trim()).toBe("true");
+  });
+  it.skipIf(process.platform !== "win32")("restores long tracked paths from Git objects and retains long-path support", async () => {
+    const { root, source } = await fixture();
+    const relative = path.join("long-directory-name-".repeat(3), "nested-directory-name-".repeat(3), "LongProject.Components.DistributedCaching.Redis.csproj");
+    await mkdir(path.dirname(path.join(source, relative)), { recursive: true });
+    await writeFile(path.join(source, relative), "restored\n");
+    await execFile("git", ["-c", "core.longpaths=true", "-C", source, "add", "."]);
+    await execFile("git", ["-c", "core.longpaths=true", "-C", source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "long path"]);
+    const commit = (await execFile("git", ["-C", source, "rev-parse", "HEAD"])).stdout.trim();
+    const target = path.join(root, "managed-workspace-".repeat(4));
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null");
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+    await materializeManagedProjectWorkspace(target, {
+      repoUrl: "https://example.test/source", repoRef: commit, gitObjectSource: { cwd: source, commits: [commit] },
+      beforeCopy: async staging => { expect(path.join(staging, relative).length).toBeGreaterThan(260); },
+    });
+    expect(await readFile(path.join(target, relative), "utf8")).toBe("restored\n");
+    expect((await execFile("git", ["-C", target, "config", "--local", "--get", "core.longpaths"])).stdout.trim()).toBe("true");
+    await execFile("git", ["-C", target, "checkout", "--detach", commit]);
   });
   it.skipIf(process.platform !== "win32")("clones and fetches HTTP repositories at deeply nested Windows paths", async () => {
     const { root, source } = await fixture();
