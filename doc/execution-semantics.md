@@ -2205,11 +2205,10 @@ Automatic productivity reviews are retired. Run counts, missing comments, and el
 ### Issue-thread interaction resolution
 
 Every issue-thread interaction kind inherits resolver policy `anyone` when the
-creator omits a policy. `anyone` includes the creator agent and creating run.
-Callers opt into independent review with `not_creator` or human resolution with
-`human_only`; a named addressee and company cap may narrow the effective audience.
-The legacy input aliases `board_or_agents` and `board_only` normalize to `anyone`
-and `human_only` for new writes.
+creator omits a policy. Restrictions are opt-in; the canonical policies, addressee
+rules, and company caps are listed below. The legacy input aliases
+`board_or_agents` and `board_only` normalize to `anyone` and `human_only` for new
+writes.
 
 Resolver policy is snapshotted with explicit/inherited provenance and an effective
 source (`requested`, `company_cap`, or `governed_action`). Existing ambiguous

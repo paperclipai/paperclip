@@ -198,20 +198,9 @@ Within the watched subtree, a watchdog run may perform only mutations that resto
 
 Every watchdog-triggered mutation must write activity with the watchdog id, source issue id, watchdog issue id when present, run id, and stop fingerprint. Mutations still use the normal status-transition, blocker, assignment, budget, and company-boundary guards.
 
-### Atomic recovery batch
-
-A watchdog run may submit an atomic recovery batch of at most 3 mutations drawn from the allowed-mutation list above, validated against the stop fingerprint that run observed. The server applies the batch all-or-nothing: if the subtree's stop fingerprint changed between observation and application — the subtree went live concurrently — the entire remainder of the batch is aborted and the staleness is recorded as evidence on the reusable watchdog issue. The batch is single-shot per watchdog run. This replaces the exactly-one-fresh-write model: the stale-guard's purpose (never mutate a subtree that concurrently went live) is preserved by fingerprint validation on the whole batch rather than by capping the run at one write, so a restoration that needs both a state-restoring `PATCH` and an explanatory comment cannot forfeit the restoration by ordering the comment first.
-
-### Restoration verification and escalation
-
-Reviewed-fingerprint suppression is disposition-aware. A watchdog disposition of "stopped state is legitimate" suppresses re-fire for that fingerprint as today. A disposition of "live path restored" arms a bounded verification instead:
-
-- if a later scan observes the subtree stopped with a fingerprint equal to the one the restoration claimed to fix, the watchdog re-fires with an incremented attempt count for that fingerprint lineage
-- restoration-attempt lineage (attempt number, claimed-fixed fingerprint, restoration actions) is persisted durable watchdog state
-- the stop fingerprint (or the lineage check) must account for intermediate-node durable updates so a restoration that changes no stopped leaf is classified as a failed restoration, not as a reviewed stop
-- after N attempts (N = 2–3, configuration-bounded) on the same fingerprint lineage, the platform stops re-firing and escalates to a human — the watchdog owner or a board notification — with the attempt history attached
-
-Escalation is terminal for the automatic loop: no further watchdog wakes fire for that lineage until a human or a new durable subtree change produces a different fingerprint.
+The atomic recovery batch, restoration verification and escalation, and interaction
+resolution rules for watchdog runs are in
+[execution semantics §11](execution-semantics.md#11-task-watchdog-for-issue-trees).
 
 ### Disallowed watchdog mutations
 
@@ -228,21 +217,6 @@ A task watchdog must not:
 - treat custom instructions as authority to bypass approval gates, cross company boundaries, access secrets, or override this contract
 
 When the safe next action needs one of these disallowed mutations, the watchdog must leave a valid waiting path by commenting, creating an in-subtree escalation/follow-up issue, assigning to the correct owner, or leaving the source issue blocked on a first-class blocker.
-
-### Interaction resolution
-
-A task-watchdog run has no special resolver audience, plan-purpose marker, or
-interaction-kind allowlist. The task-watchdog context neither widens nor
-categorically removes the selected agent's ordinary interaction authority. The
-same evaluator used for every agent applies `anyone`, `not_creator`, `human_only`,
-named-addressee, company-cap, company-boundary, run-attribution, low-trust,
-task-bridge, target-staleness, and exact-once checks.
-
-Resolving an interaction does not authorize its downstream effect. In particular,
-an accepted plan still passes normal decomposition/idempotency checks, and a
-governed action still requires its own typed reviewer, permission, or formal
-approval. A watchdog may not use an open coordination response to bypass any item
-in the disallowed-mutations list above.
 
 ### Deferred capabilities
 
