@@ -2483,7 +2483,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
       }
     });
-  it.each(["settled", "mismatched result", "rejected result", "controller", "successor", "pending lease", "live process", "operator stop", "native stop", "missing stop"] as const)(
+  it.each(["settled", "cleared identity", "mismatched result", "rejected result", "controller", "successor", "pending lease", "live process", "operator stop", "native stop", "missing stop"] as const)(
     "task Retry retains a committed cancelled result and checks cleanup: %s", async scenario => {
       const f = await seed(), contractId = randomUUID(), resultId = randomUUID(), requestId = randomUUID();
       await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
@@ -2502,6 +2502,14 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         leaseOwner: scenario === "controller" ? "active-controller" : null,
         failureDetail: scenario === "successor" ? { successorRunId: randomUUID() } : null,
       }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      if (scenario === "cleared identity") {
+        await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.sourceRunId));
+        await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null,
+          runnerProfileJson: { sessionCheckpoint: { fixture: true } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+        await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
+          eventType: PROCESS_IDENTITY_RECORDED, payload: { targetKind: "local", hostname: os.hostname(),
+            processPid: 999999999, processGroupId: null, processStartedAt: "2026-09-11T09:55:00.000Z" } });
+      }
       if (scenario === "pending lease") await db.insert(environmentLeases).values({ companyId: f.companyId,
         heartbeatRunId: f.sourceRunId, issueId: f.issueId, status: "pending_cleanup", provider: "local" });
       await db.insert(agentWakeupRequests).values({ id: requestId, companyId: f.companyId, agentId: f.agentId,
@@ -2514,7 +2522,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         return admitExplicitNativeContinuation({ ...f, db: tx as unknown as Db,
           reason: "task_retry", commentId: null, taskRetryRequestId: requestId });
       });
-      if (scenario === "settled") expect(result).toMatchObject({ previousRunId: f.sourceRunId, taskRetryRequestId: requestId });
+      if (scenario === "settled" || scenario === "cleared identity") expect(result).toMatchObject({ previousRunId: f.sourceRunId, taskRetryRequestId: requestId });
       else expect(result).toBeNull();
       expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId)))[0])
         .toMatchObject({ phase: "committed", resultId });

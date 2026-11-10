@@ -1,3 +1,4 @@
+import { notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
 import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 import { and, asc, desc, eq, exists, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
@@ -365,43 +366,78 @@ export function settledNativeProcessIdentityCondition(db: Db) {
       )))));
 }
 
+export function clearedNativeProcessIdentityCondition() {
+  return and(isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt),
+    sql`exists (select 1 from (select e.event_type, e.agent_id, e.payload from heartbeat_run_events e
+      where e.company_id = ${heartbeatRuns.companyId} and e.run_id = ${heartbeatRuns.id} and e.source_event_id is null
+        and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded', 'native.local_process_stopped')
+      order by e.seq desc limit 1) latest
+      where latest.event_type = 'native.process_identity_recorded' and latest.agent_id = ${heartbeatRuns.agentId}
+        and latest.payload->>'targetKind' = 'local' and latest.payload->>'hostname' = ${os.hostname()})`);
+}
+
 export async function releaseSettledNativeRunProcess(db: Db, runId: string, options: { onDeferredDeadline?: (at: number) => void } = {}): Promise<SettledProcessRelease> {
   const outcome = await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
-    const [run] = await tx.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+    const [run] = await tx.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId, nativeIssueId: heartbeatRuns.nativeIssueId,
       runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt,
       processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId, processStartedAt: heartbeatRuns.processStartedAt,
       hasSessionCheckpoint: sql<boolean>`coalesce(${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint', 'null'::jsonb) <> 'null'::jsonb`,
     }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update").limit(1);
-    if (!run || run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || !run.finishedAt ||
-        (run.processPid === null && run.processGroupId === null && run.processStartedAt === null)) return "skipped";
-    const [coordinator] = await tx.select({ phase: nativeRunFinalizations.phase }).from(nativeRunFinalizations)
-      .where(eq(nativeRunFinalizations.runId, run.id)).limit(1);
-    if (coordinator && !SETTLED_COORDINATOR_PHASES.includes(coordinator.phase)) return "skipped";
+    if (!run || run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || !run.finishedAt) return "skipped";
+    const cleared = run.processPid === null && run.processGroupId === null && run.processStartedAt === null;
+    const [coordinator] = await tx.select({ phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, run.id)).for("update", { skipLocked: true }).limit(1);
+    if (!coordinator) {
+      const [busy] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, run.id)).limit(1);
+      if (busy) {
+        options.onDeferredDeadline?.(Date.now() + 30_000);
+        return "pending";
+      }
+    }
+    if (coordinator && (coordinator.leaseOwner || !SETTLED_COORDINATOR_PHASES.includes(coordinator.phase))) return "skipped";
     if (!run.hasSessionCheckpoint &&
         !(await nativeSessionProviderEvidence(tx, [run.id])).has(run.id)) return "skipped";
     const leases = await tx.select().from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
     ));
     if (leases.some(lease => lease.provider !== "local")) {
+      if (cleared) return "skipped";
       if (!leases.every(hasRemoteTerminationReceipt)) return "pending";
     } else {
       if (leases.some(lease => !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return "pending";
-      const [identity] = await tx.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+      const [identity] = await tx.select({ eventType: heartbeatRunEvents.eventType, agentId: heartbeatRunEvents.agentId,
+        payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
         eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-        eq(heartbeatRunEvents.eventType, PROCESS_IDENTITY_RECORDED), isNull(heartbeatRunEvents.sourceEventId),
+        inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
+          ...(cleared ? [LOCAL_PROCESS_STOPPED] : [])]),
+        isNull(heartbeatRunEvents.sourceEventId),
       )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
-      if (identity?.payload?.targetKind !== "local" || identity.payload.hostname !== os.hostname() ||
-          identity.payload.processPid !== run.processPid || identity.payload.processGroupId !== run.processGroupId ||
-          (run.processStartedAt ? identity.payload.processStartedAt !== run.processStartedAt.toISOString()
+      const proof = identity?.payload;
+      if (identity?.eventType !== PROCESS_IDENTITY_RECORDED || identity.agentId !== run.agentId ||
+          proof?.targetKind !== "local" || proof.hostname !== os.hostname()) return "skipped";
+      let observed = run;
+      if (cleared) {
+        // Older cancellation commits cleared the mutable fields before writing
+        // a stop receipt. Recover only the latest server-owned local launch.
+        const pid = proof.processPid, group = proof.processGroupId;
+        const birth = typeof proof.processStartedAt === "string" ? new Date(proof.processStartedAt) : null;
+        if (!coordinator || !Number.isSafeInteger(pid) || typeof pid !== "number" || pid <= 1 ||
+            (group !== null && group !== pid) || !birth || !Number.isFinite(birth.getTime()) ||
+            birth > run.finishedAt) return "skipped";
+        observed = { ...run, processPid: pid, processGroupId: group as number | null, processStartedAt: birth };
+      } else if (proof.processPid !== run.processPid || proof.processGroupId !== run.processGroupId ||
+          (run.processStartedAt ? proof.processStartedAt !== run.processStartedAt.toISOString()
             : !Number.isSafeInteger(run.processPid) || run.processPid! <= 1 || run.processGroupId !== run.processPid)) return "skipped";
-      if (!(await recordNativeLocalProcessStop(tx, run))) {
+      if (!(await recordNativeLocalProcessStop(tx, observed))) {
         options.onDeferredDeadline?.(Date.now() + 30_000);
         return "pending";
       }
     }
     await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id, agentId: run.agentId });
     await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
+    if (run.nativeIssueId) await notifyDeferredWakesForIssue(tx, { companyId: run.companyId, issueId: run.nativeIssueId });
     // Local and remote stops both close the run's usage source.
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
     await tx.update(heartbeatRuns).set({
@@ -449,7 +485,8 @@ export async function discoverSettledNativeRunProcesses(db: Db, input: {
       eq(heartbeatRuns.runtimeMode, "native"),
       inArray(heartbeatRuns.status, SETTLED_RUN_STATUSES),
       isNotNull(heartbeatRuns.finishedAt),
-      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), isNotNull(heartbeatRuns.processStartedAt)),
+      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), isNotNull(heartbeatRuns.processStartedAt),
+        clearedNativeProcessIdentityCondition()),
       ...(after ? [gt(heartbeatRuns.id, after)] : []),
     )).orderBy(asc(heartbeatRuns.id)).limit(limit);
     for (const candidate of candidates) {

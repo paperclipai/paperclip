@@ -1,6 +1,6 @@
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
-import { settledNativeProcessIdentityCondition } from "../native-local-process-stop.js";
+import { clearedNativeProcessIdentityCondition, settledNativeProcessIdentityCondition } from "../native-local-process-stop.js";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { agents, environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
@@ -88,7 +88,8 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
                     : and(eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["failed", "cancelled", "timed_out", "interrupted"]),
                       isNotNull(heartbeatRuns.finishedAt), or(pendingApiStop,
                         and(or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId),
-                          isNotNull(heartbeatRuns.processStartedAt)), settledNativeProcessIdentityCondition(db)))),
+                          isNotNull(heartbeatRuns.processStartedAt)), settledNativeProcessIdentityCondition(db)),
+                        clearedNativeProcessIdentityCondition())),
             )).orderBy(asc(heartbeatRuns.id)).limit(100);
           rows = candidates.map(row => ({ id: row.id, companyId: row.companyId, dueAt: kind === "native"
             ? Math.max(Date.now(), row.nextAttemptAt?.getTime() ?? 0, row.leaseExpiresAt?.getTime() ?? 0) : Date.now() }));

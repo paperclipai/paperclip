@@ -950,13 +950,12 @@ async function materializeDecisionEffect(input: {
     };
   }
   if (effect.kind === "release_run_resources") {
+    // Process settlement owns the stop receipt and clears this identity only
+    // after verifying termination. A committed decision alone cannot do that.
     failAt("recovery_materialization", input.failpoint);
     const [released] = await input.tx
       .update(heartbeatRuns)
       .set({
-        processPid: null,
-        processGroupId: null,
-        processStartedAt: null,
         nativePhase: "committed",
         nativePhaseUpdatedAt: new Date(),
         updatedAt: new Date(),
@@ -967,13 +966,14 @@ async function materializeDecisionEffect(input: {
           eq(heartbeatRuns.companyId, input.companyId),
         ),
       )
-      .returning({ id: heartbeatRuns.id });
+      .returning({ id: heartbeatRuns.id, processPid: heartbeatRuns.processPid,
+        processGroupId: heartbeatRuns.processGroupId, processStartedAt: heartbeatRuns.processStartedAt });
     if (!released) throw new Error("native_run_resources_not_released");
     return {
       effectKind: effect.kind,
       targetType: "heartbeat_run",
       targetId: released.id,
-      payload: { processReleased: true },
+      payload: { processReleased: released.processPid === null && released.processGroupId === null && released.processStartedAt === null },
     };
   }
   if (effect.kind === "record_expiry") {
