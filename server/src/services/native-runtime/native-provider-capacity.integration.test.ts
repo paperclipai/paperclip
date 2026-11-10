@@ -8,6 +8,7 @@ import {
   connectionGrants,
   companySecrets,
   aiConnectionTaskPins,
+  aiConnectionQuotaCooldowns,
   companies,
   completionContracts,
   createDb,
@@ -44,9 +45,10 @@ import { join } from "node:path";
 import { aiConnectionService } from "../ai-connections.js";
 import { aiConnectionRouterService } from "../ai-connection-router.js";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember } from "@paperclipai/shared";
-import { recordVerifiedRouterQuotaCooldown } from "../heartbeat/run-completion.js";
+import { recordVerifiedRouterQuotaCooldown, recoverNativePoolAttribution } from "../heartbeat/run-completion.js";
 import { NativeProviderTerminalFailure } from "../../vendor/paperclip-runner/index.js";
 import { fenceQuotaReplacementStop } from "./native-cancellation-request.js";
+import { executionControlSchedule } from "../execution-control-work.js";
 import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
 
 describe("native provider capacity failure persistence", () => {
@@ -93,11 +95,13 @@ describe("native provider capacity failure persistence", () => {
     { replayed: false, structured: false, kind: "runner_definitive", hold: "unknown_action" },
     ...["quota", "auth", "runner_definitive"].map(kind => ({ replayed: false, structured: false, kind, hold: "", poolHarness: true })),
     { replayed: false, structured: false, kind: "quota", hold: "", poolHarness: true, ordinaryRetry: true },
+    ...["quota", "auth", "runner_definitive"].map(kind => ({ replayed: false, structured: true, kind, hold: "", poolHarness: true, recoverAttribution: true })),
   ])(
-    "persists $kind failure and continues receipted work (replayed=$replayed, structured=$structured, hold=$hold)",
+    "persists $kind failure and continues receipted work (replayed=$replayed, structured=$structured, hold=$hold, recoverAttribution=$recoverAttribution)",
     async scenario => {
       const { replayed, structured, kind: scenarioKind, hold } = scenario;
       const poolHarness = "poolHarness" in scenario && scenario.poolHarness === true;
+      const recoveringAttribution = "recoverAttribution" in scenario && scenario.recoverAttribution === true;
       const ordinaryRetry = "ordinaryRetry" in scenario && scenario.ordinaryRetry === true;
       const immediate = scenarioKind === "runner_definitive";
       const kind = immediate ? "runner" : scenarioKind;
@@ -384,7 +388,7 @@ describe("native provider capacity failure persistence", () => {
       const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, selection.binding.grantId));
       const ref = grant.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
       const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
-      if (poolHarness && kind === "quota") await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, agentId));
+      if (poolHarness && kind === "quota" && !recoveringAttribution) await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, agentId));
       if (kind === "runner" && structured) {
         expect(coordinator.failureDetail).toMatchObject({ originalFailureCode: "notification_transport_failed" });
         const attribute = () => recordVerifiedRouterQuotaCooldown(db, { companyId, agentId, runId,
@@ -402,21 +406,62 @@ describe("native provider capacity failure persistence", () => {
         expect(await attribute()).toBe(false);
         await db.update(heartbeatRuns).set({ errorCode: failedRun.errorCode }).where(eq(heartbeatRuns.id, runId));
       }
+      if (recoveringAttribution) {
+        await db.update(heartbeatRuns).set({ responsibleUserId: userId, contextSnapshot: { ...failedRun.contextSnapshot,
+          aiConnection: { provider: "openai", connectionId: selection.binding.connectionId, grantId: grant.id,
+            sessionIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}` } } }).where(eq(heartbeatRuns.id, runId));
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+      }
+      const expectedDelay = kind === "runner" ? 5 * 60_000 : 2 * 60 * 60_000;
       const attributionStartedAt = Date.now();
-      const attributed = await recordVerifiedRouterQuotaCooldown(db, { companyId, agentId, runId,
+      let recoveredScheduled: number | undefined;
+      if (recoveringAttribution) {
+        const [admitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        const original = admitted.contextSnapshot!;
+        for (const candidate of [
+          { ...admitted, companyId: randomUUID() },
+          { ...admitted, contextSnapshot: { ...original, aiConnection: { ...original.aiConnection as object, connectionId: randomUUID() } } },
+          { ...admitted, contextSnapshot: { ...original, aiConnection: { ...original.aiConnection as object,
+            sessionIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch + 1}` } } },
+        ]) expect(await recoverNativePoolAttribution(db, candidate)).toBe(false);
+        await db.update(companySecrets).set({ aiSessionEpoch: secret.aiSessionEpoch + 1 }).where(eq(companySecrets.id, secret.id));
+        expect(await recoverNativePoolAttribution(db, admitted)).toBe(false);
+        await db.update(companySecrets).set({ aiSessionEpoch: secret.aiSessionEpoch }).where(eq(companySecrets.id, secret.id));
+        const cooldownsBefore = await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+        await expect(reconcileSafeNativeReplacements(db, new Date(), { failpoint: phase => {
+          if (phase === "pool_attribution_recorded") throw Object.assign(new Error("attribution transaction interrupted"), { code: "40001" });
+        } })).rejects.toThrow("attribution transaction interrupted");
+        expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId),
+          eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`)))).toHaveLength(0);
+        expect(await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId))).toHaveLength(cooldownsBefore.length);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        const originalFinishedAt = new Date(Date.now() - expectedDelay - 5 * 60_000);
+        await db.update(heartbeatRuns).set({ finishedAt: originalFinishedAt }).where(eq(heartbeatRuns.id, runId));
+        recoveredScheduled = (await reconcileSafeNativeReplacements(db, new Date(), {
+          verifyStoppedSession: async candidate => candidate.id === runId ? { evidence: {}, retire: () => true } : null,
+        })).scheduled;
+        expect(recoveredScheduled).toBe(1);
+        expect((await reconcileSafeNativeReplacements(db)).scheduled).toBe(0);
+        const [receipt] = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId),
+          eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`)));
+        expect(receipt.payload).toMatchObject({ retryAt: new Date(originalFinishedAt.getTime() + expectedDelay).toISOString() });
+      }
+      const attributed = recoveringAttribution || await recordVerifiedRouterQuotaCooldown(db, { companyId, agentId, runId,
         credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`,
         retryNotBefore: null, failureKind: kind as "quota" | "auth" | "runner",
       });
       expect(attributed).toBe(true);
       if (poolHarness && kind === "quota") await db.update(agents).set({ runtimeConfig: { harnessPool: { poolId: pool.id } } }).where(eq(agents.id, agentId));
       const cooldown = await router.accountCooldown(companyId, selection.binding.connectionId, `secret:${secret.id}:${secret.aiSessionEpoch}`, poolHarness ? { config: selection.runtimeConfig, scope: { environmentId: null } } : undefined);
-      const expectedDelay = kind === "runner" ? 5 * 60_000 : 2 * 60 * 60_000;
-      expect(cooldown!.getTime()).toBeGreaterThanOrEqual(attributionStartedAt + expectedDelay);
-      expect(cooldown!.getTime()).toBeLessThanOrEqual(Date.now() + expectedDelay);
+      if (recoveringAttribution) expect(cooldown).toBeNull();
+      else {
+        expect(cooldown!.getTime()).toBeGreaterThanOrEqual(attributionStartedAt + expectedDelay);
+        expect(cooldown!.getTime()).toBeLessThanOrEqual(Date.now() + expectedDelay);
+      }
       if (hold === "stop") expect(await fenceQuotaReplacementStop(db, failedRun)).toMatchObject({ kind: "fenced" });
       // This DB lifecycle test injects containment; the real local owner verifier
       // has separate Codex/ACPX stop-receipt and changed-process coverage.
-      expect((await reconcileSafeNativeReplacements(db, new Date(), {
+      expect(recoveredScheduled ?? (await reconcileSafeNativeReplacements(db, new Date(), {
         verifyStoppedSession: async candidate => candidate.id === runId ? { evidence: {}, retire: () => true } : null,
       })).scheduled).toBe(hold ? 0 : 1);
       if (hold) {

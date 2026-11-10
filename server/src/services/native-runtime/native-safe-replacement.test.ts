@@ -157,6 +157,21 @@ const support = externalDatabaseUrl
       });
       return { companyId, agentId, issueId, runId };
     }
+    it("holds an invalid admitted attribution once without recurring replacement work", async () => {
+      const source = await seed();
+      await db.update(heartbeatRuns).set({ errorCode: "native_provider_auth_failed", finishedAt: new Date(),
+        contextSnapshot: { issueId: source.issueId, aiConnection: { sessionIdentity: "invalid-account" } } })
+        .where(eq(heartbeatRuns.id, source.runId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_auth_failed" })
+        .where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(owner.failureDetail).toMatchObject({ replacementDenied: "pool_attribution_unverified" });
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scanned: 0, scheduled: 0 });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(0);
+    });
     it("does not consider a quota failure without a run-bound attribution receipt", async () => {
       const source = await seed();
       await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" })

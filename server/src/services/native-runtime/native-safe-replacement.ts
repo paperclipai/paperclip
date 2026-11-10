@@ -1,3 +1,4 @@
+import { recoverNativePoolAttribution } from "../heartbeat/run-completion.js";
 import { effectiveAiConnectionInput } from "@paperclipai/shared";
 import { NATIVE_POOL_FAILURE_CODES, nativePoolFailureKind } from "./native-pool-failure.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -261,6 +262,24 @@ export function nativeReplacementPending() {
   );
 }
 
+/** Missing receipts remain durable work; they never authorize backup admission. */
+export function nativePoolAttributionPending() {
+  return and(eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "failed"),
+    eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+    eq(nativeRunFinalizations.phase, "terminal_failure"),
+    inArray(nativeRunFinalizations.failureCode, NATIVE_POOL_FAILURE_CODES), isNull(nativeRunFinalizations.resultId),
+    isNull(nativeRunFinalizations.leaseOwner),
+    sql`coalesce(${heartbeatRuns.contextSnapshot}->'aiConnection'->>'sessionIdentity', '') <> ''`,
+    sql`coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = ''`,
+    sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') = ''`,
+    sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'state', '') not in ('requested', 'acknowledged')`,
+    sql`not exists (select 1 from heartbeat_run_events e where e.company_id = ${heartbeatRuns.companyId}
+      and e.run_id = ${heartbeatRuns.id} and e.event_type = 'ai_connection.' || case ${nativeRunFinalizations.failureCode}
+      when 'native_provider_auth_failed' then 'auth' when 'native_provider_runner_failed' then 'runner' else 'quota' end || '_attributed'
+      and e.source_event_id = 'ai-connection-' || case ${nativeRunFinalizations.failureCode}
+      when 'native_provider_auth_failed' then 'auth' when 'native_provider_runner_failed' then 'runner' else 'quota' end || '-attributed:' || ${heartbeatRuns.id}::text)`);
+}
+
 const REPLACEMENT_SCAN_LIMIT = 100;
 const replacementDiscovery = new WeakMap<object, { after: string | undefined; complete: boolean; generation: number; rescan: boolean }>();
 function replacementDiscoveryState(db: Db) {
@@ -364,7 +383,7 @@ export async function reconcileSafeNativeReplacements(
       retire: () => boolean;
     } | null>;
     /** Test fault injection at durability boundaries; never exposed by an API. */
-    failpoint?: (phase: "successor_inserted" | "lineage_committed" | "authentication_repair_requested") => void | Promise<void>;
+    failpoint?: (phase: "successor_inserted" | "lineage_committed" | "authentication_repair_requested" | "pool_attribution_recorded") => void | Promise<void>;
   } = {},
 ) {
   const quotaCandidates = await db
@@ -375,7 +394,7 @@ export async function reconcileSafeNativeReplacements(
       eq(nativeRunFinalizations.runId, heartbeatRuns.id),
     )
     .where(
-      and(nativeReplacementPending(), inArray(nativeRunFinalizations.failureCode, NATIVE_POOL_FAILURE_CODES)),
+      and(or(nativeReplacementPending(), nativePoolAttributionPending()), inArray(nativeRunFinalizations.failureCode, NATIVE_POOL_FAILURE_CODES)),
     )
     .orderBy(sql`case when ${nativeRunFinalizations.failureCode} in ('native_provider_usage_limit', 'native_provider_auth_failed', 'native_provider_runner_failed') and
         coalesce(${nativeRunFinalizations.failureDetail}->>'replacementWaitingForCleanup', 'false') = 'true' and
@@ -431,6 +450,16 @@ export async function reconcileSafeNativeReplacements(
     };
     try {
       if (coordinator.failureDetail?.successorRunId || coordinator.failureDetail?.replacementDenied) continue;
+      if (poolFailure) {
+        const [missing] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+          .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+          .where(and(eq(heartbeatRuns.id, run.id), nativePoolAttributionPending())).limit(1);
+        if (missing && !await recoverNativePoolAttribution(db, run, options.failpoint
+          ? () => options.failpoint!("pool_attribution_recorded") : undefined)) {
+          await holdQuotaForOperator("pool_attribution_unverified", "Inspect the original account revision and failure evidence before retrying this task.");
+          continue;
+        }
+      }
       const execution = record(
         record(run.runnerProfileJson).nativeExecutionInput,
       );

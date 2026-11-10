@@ -41,7 +41,7 @@ import { isConversation, settleConversationTurn } from "../agent-conversations.j
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, aiConnectionPools, aiConnectionTaskPins, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, companySecrets, connectionGrants, aiConnectionPools, aiConnectionTaskPins, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { readProviderFailure, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
 import { aiConnectionRouterService, quotaIdentityFromSessionSnapshot } from "../ai-connection-router.js";
@@ -102,6 +102,10 @@ function providerQuotaRetryAt(value: unknown): string | undefined {
 export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
   runId: string; companyId: string; agentId: string; credentialIdentity: string | undefined;
   retryNotBefore: string | null | undefined; now?: Date; failureKind?: "quota" | "auth" | "runner";
+  /** Test-only fault injection inside the receipt transaction. */
+  beforeCommit?: () => void | Promise<void>;
+  /** Recovery anchors the deadline without backdating authority checks. */
+  cooldownAnchor?: Date;
 }) {
   const now = input.now ?? new Date();
   const [source] = await db.select({ run: heartbeatRuns, adapterType: agents.adapterType }).from(heartbeatRuns)
@@ -115,9 +119,10 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
   const accountProof = legacyAccountFailure && proofScope ? await observeLegacyPoolAccountFailure(db, proofScope, now, legacyAccountFailure) : null;
   if (legacyAccountFailure && !accountProof) return false;
   const supplied = accountProof ? accountProof.retryAt.getTime() : kind === "quota" && input.retryNotBefore ? Date.parse(input.retryNotBefore) : NaN;
-  const deadline = new Date(Number.isFinite(supplied) && supplied > now.getTime()
+  const anchor = input.cooldownAnchor ?? now;
+  const deadline = new Date(Number.isFinite(supplied) && supplied > anchor.getTime()
     ? supplied
-    : now.getTime() + (input.failureKind === "runner" ? 5 * 60_000 : POOL_ACCOUNT_DEFAULT_COOLDOWN_MS));
+    : anchor.getTime() + (input.failureKind === "runner" ? 5 * 60_000 : POOL_ACCOUNT_DEFAULT_COOLDOWN_MS));
   return db.transaction(async tx => {
     const [candidate] = await tx.select({ scopeKind: heartbeatRuns.scopeKind, issueId: heartbeatRuns.issueId }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId)));
@@ -196,9 +201,35 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
         eventType: `ai_connection.${kind}_attributed`, stream: "system", level: "info", sourceEventId: eventId, payload });
     }
     await aiConnectionRouterService(tx as unknown as Db).recordQuotaCooldown(run.companyId, connectionId, cooldownIdentity, new Date(receiptDeadline), credentialIdentity);
+    await input.beforeCommit?.();
     return true;
   });
 }
+
+/** Restart recovery uses only the account revision captured before provider admission. */
+export async function recoverNativePoolAttribution(db: Db, run: Run, beforeCommit?: () => void | Promise<void>) {
+  const kind = poolFailureKind(run);
+  if (run.runtimeMode !== "native" || run.status !== "failed" || !run.finishedAt || !kind) return false;
+  const selection = parseObject(run.contextSnapshot?.aiRouterSelection);
+  const binding = parseObject(selection.binding);
+  const account = parseObject(run.contextSnapshot?.aiConnection);
+  const identity = readNonEmptyString(account.sessionIdentity);
+  if (!identity || account.connectionId !== binding.connectionId || account.grantId !== binding.grantId ||
+      account.provider !== binding.provider || !identity.startsWith(`${binding.grantId}:${run.responsibleUserId ?? "shared"}:`)) return false;
+  const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.companyId, run.companyId),
+    eq(connectionGrants.id, String(binding.grantId)), eq(connectionGrants.connectionId, String(binding.connectionId))));
+  if (!grant) return false;
+  const credential = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
+  if (credential) {
+    const [secret] = await db.select({ epoch: companySecrets.aiSessionEpoch }).from(companySecrets).where(and(
+      eq(companySecrets.companyId, run.companyId), eq(companySecrets.id, credential.secretId)));
+    if (!secret || identity !== `${grant.id}:${run.responsibleUserId ?? "shared"}:${credential.secretId}:${secret.epoch}`) return false;
+  } else if (identity !== `${grant.id}:${run.responsibleUserId ?? "shared"}:no-auth`) return false;
+  return recordVerifiedRouterQuotaCooldown(db, { runId: run.id, companyId: run.companyId, agentId: run.agentId,
+    credentialIdentity: identity, failureKind: kind, cooldownAnchor: run.finishedAt,
+    retryNotBefore: providerQuotaRetryAt(readProviderFailure(run.resultJson?.providerFailure)), beforeCommit });
+}
+
 type Agent = typeof agents.$inferSelect;
 type RunState = ReturnType<typeof createHeartbeatRunState>;
 type IssueContext = Awaited<ReturnType<ReturnType<typeof createHeartbeatRunPreparation>["getIssueExecutionContext"]>> | null;
