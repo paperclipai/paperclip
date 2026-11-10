@@ -419,11 +419,11 @@ async function main(): Promise<number> {
     const outageMs = plan.options.nativeTrigger?.outageMs;
     const outageWindows: StorageFaultWindow[] = [];
     const outageClock = Date.now();
-    if (outageMs && storageProxy && !storageChaos) {
+    if (outageMs && storageProxy && !storageChaos && !plan.replayOf) {
       storageChaos = new StorageChaos(outageWindows, outageClock, credentialRotation?.wrap(storageProxy) ?? storageProxy, (kind, data) => timeline.add(kind, data));
       storageChaos.start(1_000, outageClock);
     }
-    if (plan.options.nativeTrigger) {
+    if (plan.options.nativeTrigger && !plan.replayOf) {
       nativeTrigger = new NativeTrigger(plan.options.nativeTrigger, {
         canFire: () => !interrupted && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady,
         isOpen: taskId => observers.some(observer => observer.plan.taskId === taskId && !observer.done && observer.record.restAt === null),
@@ -437,7 +437,10 @@ async function main(): Promise<number> {
             const exposed = await exposedAfterLaunch(launching, launched);
             await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
             const queued = faultWork.length;
-            if (outageMs) outageWindows.push(triggeredOutageWindow(Date.now() - outageClock, outageMs));
+            if (outageMs) {
+              outageWindows.push(triggeredOutageWindow(Date.now() - outageClock, outageMs));
+              storageChaos?.tick();
+            }
             fireFault(armed.kind, armed.holdMs, armed.taskId, exposed, undefined, undefined, armed.restartSteps);
             await faultWork[queued];
           })().finally(() => { faultsQueued -= 1; });
@@ -779,10 +782,10 @@ async function main(): Promise<number> {
     storageChaos?.stop();
     await credentialRotation?.settled();
     if (credentialRotation?.failures.length) harnessError ??= new Error(`ST5R credential rotation failed: ${credentialRotation.failures.join("; ")}`);
+    if (nativeTrigger) await writeFile(path.join(waveDir, "native-trigger.json"), `${JSON.stringify(nativeTrigger.finish(faults), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
     if (storageProxy) {
       storageProxy.observe(null);
       if (storageTrigger) await writeFile(path.join(waveDir, "storage-trigger.json"), `${JSON.stringify(storageTrigger.finish(faults), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
-      if (nativeTrigger) await writeFile(path.join(waveDir, "native-trigger.json"), `${JSON.stringify(nativeTrigger.finish(faults), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       if (storageChaos) await writeFile(path.join(waveDir, "storage-faults.json"), `${JSON.stringify(storageChaos.receipts, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await writeFile(path.join(waveDir, "storage-proxy.json"), `${JSON.stringify(storageProxy.counts(), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await storageProxy.close().catch(() => undefined);

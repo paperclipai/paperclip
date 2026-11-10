@@ -10,6 +10,7 @@ export const NATIVE_TRIGGER_BOARD_WORKLOADS: readonly WorkloadId[] = ["G1", "H1"
 export const NATIVE_START_EVENT = "native.process_start_requested";
 const PROVIDER_EVENT_TYPES = new Set(["session.started", "turn.submitted", "turn.started", "turn.accepted"]);
 const EVENT_PAGE = 200;
+const EVENT_PAGES_PER_LOOK = 3;
 
 export function nativeTriggerMatches(target: NativeTriggerTarget, eventType: string): boolean {
   return target === "native-start" ? eventType === NATIVE_START_EVENT : PROVIDER_EVENT_TYPES.has(eventType);
@@ -80,7 +81,7 @@ export class NativeTrigger {
 
   constructor(readonly spec: NativeTriggerSpec, private readonly hooks: NativeTriggerHooks) {}
 
-  get busy(): boolean { return this.firing; }
+  get busy(): boolean { return this.firing || this.armed.some(entry => entry.receipt.seenAt !== null); }
 
   arm(fault: ArmedNativeFault): void {
     const receipt: NativeTriggerReceipt = { target: this.spec.target, delayMs: this.spec.delayMs, taskId: fault.taskId,
@@ -95,7 +96,7 @@ export class NativeTrigger {
     for (const entry of [...this.armed]) {
       if (!this.hooks.isOpen(entry.fault.taskId)) {
         this.armed.splice(this.armed.indexOf(entry), 1);
-        this.miss(entry.receipt, now, "task_rested");
+        this.miss(entry.receipt, now, entry.receipt.seenAt === null ? "task_rested" : "task_rested_after_event");
         continue;
       }
       if (entry.receipt.seenAt === null) await this.look(entry.receipt);
@@ -119,7 +120,7 @@ export class NativeTrigger {
     const runs = await this.hooks.runs(issueId).catch(() => null);
     for (const runId of runningRunIds(runs)) {
       let afterSeq = this.cursors.get(runId) ?? 0;
-      for (;;) {
+      for (let page = 0; page < EVENT_PAGES_PER_LOOK; page += 1) {
         const events = await this.hooks.events(runId, afterSeq, EVENT_PAGE).catch(() => null);
         if (!events?.length) break;
         for (const event of events) {
@@ -145,7 +146,10 @@ export class NativeTrigger {
   }
 
   finish(faults: readonly FaultReceipt[], now = Date.now()): NativeTriggerReceipt[] {
-    for (const { receipt } of this.armed.splice(0)) this.miss(receipt, now, this.hooks.isOpen(receipt.taskId) ? "no_matching_event" : "task_rested");
+    for (const { receipt } of this.armed.splice(0)) {
+      this.miss(receipt, now, receipt.seenAt !== null ? "task_rested_after_event"
+        : this.hooks.isOpen(receipt.taskId) ? "no_matching_event" : "task_rested");
+    }
     for (const receipt of this.receipts) {
       if (receipt.firedAt === null) continue;
       const fault = faults.filter(candidate => candidate.requestedBy === receipt.taskId && candidate.requestedAt >= receipt.firedAt!)
@@ -158,7 +162,9 @@ export class NativeTrigger {
 
 export function nativeTriggerShortfall(receipts: readonly NativeTriggerReceipt[]): string | null {
   const fired = receipts.filter(receipt => receipt.firedAt !== null);
-  if (!fired.length) return `--native-trigger: no restart followed a matching run event (${receipts.length} armed, none fired)`;
+  if (!fired.length && !receipts.some(receipt => receipt.seenAt !== null)) {
+    return `--native-trigger: no restart followed a matching run event (${receipts.length} armed, none fired)`;
+  }
   const unproven = fired.filter(receipt => !receipt.faultId);
   return unproven.length ? `--native-trigger: ${unproven.length} fired trigger(s) produced no fault: ${unproven.map(receipt => receipt.taskId).join(", ")}` : null;
 }

@@ -101,6 +101,41 @@ describe("native-triggered restart", () => {
     expect(trigger.receipts[0]).toMatchObject({ runId: "run-1", eventType: "session.started" });
   });
 
+  it("stays busy while a seen event waits out its delay and does not fail the wave when the task rests first", async () => {
+    const armedAt = 4_000_000;
+    let open = true;
+    const h = harness({ events: { "run-1": [{ seq: 1, eventType: NATIVE_START_EVENT, createdAt: iso(armedAt + 10) }] } });
+    h.hooks.isOpen = () => open;
+    const trigger = new NativeTrigger({ target: "native-start", delayMs: 600_000 }, h.hooks);
+    trigger.arm(armed(armedAt));
+    expect(trigger.busy).toBe(false);
+    await trigger.tick(armedAt + 1_000);
+    expect(trigger.busy).toBe(true);
+    open = false;
+    await trigger.tick(armedAt + 2_000);
+    expect(trigger.busy).toBe(false);
+    const receipts = trigger.finish([]);
+    expect(receipts[0]).toMatchObject({ missedReason: "task_rested_after_event", firedAt: null });
+    expect(nativeTriggerShortfall(receipts)).toBeNull();
+  });
+
+  it("reads at most three event pages per run in one pass and resumes from its cursor", async () => {
+    const armedAt = 5_000_000;
+    const deltas = Array.from({ length: 700 }, (_, index) => ({ seq: index + 1, eventType: "item.delta", createdAt: iso(armedAt + 1) }));
+    const h = harness({ events: { "run-1": [...deltas, { seq: 701, eventType: NATIVE_START_EVENT, createdAt: iso(armedAt + 2) }] } });
+    let reads = 0;
+    const events = h.hooks.events;
+    h.hooks.events = async (...args) => { reads += 1; return events(...args); };
+    const trigger = new NativeTrigger({ target: "native-start", delayMs: 0 }, h.hooks);
+    trigger.arm(armed(armedAt));
+    await trigger.tick(armedAt + 100);
+    expect(reads).toBe(3);
+    expect(h.fired).toEqual([]);
+    await trigger.tick(armedAt + 200);
+    expect(h.fired).toHaveLength(1);
+    expect(trigger.receipts[0]).toMatchObject({ eventType: NATIVE_START_EVENT });
+  });
+
   it("records a missed trigger when the task rests or no event arrives, and links fired faults", async () => {
     const resting = harness({ open: false });
     const rested = new NativeTrigger({ target: "native-start", delayMs: 0 }, resting.hooks);
