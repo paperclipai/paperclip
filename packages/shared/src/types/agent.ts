@@ -223,6 +223,8 @@ export interface CodexAccountBindingClaim {
 // The owner read of a login session. It adds the one-time prompt to the public
 // response. Only the owner principal that started the session reads this shape.
 export interface AdapterAuthSessionOwnerResponse extends AdapterAuthSessionResponse {
+  /** The saved computer executing this login; independent of account grants. */
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   prompt: AdapterAuthSessionPrompt | null;
   codexAccountBinding?: CodexAccountBindingClaim | null;
@@ -306,6 +308,7 @@ export interface ClaudeSetupTokenSessionResponse {
 // the session reads this shape.
 export interface ClaudeSetupTokenSessionOwnerResponse
   extends ClaudeSetupTokenSessionResponse {
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   panelMode: AdapterAuthPanelMode;
   prompt: ClaudeSetupTokenSessionPrompt | null;

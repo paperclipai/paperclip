@@ -153,7 +153,7 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 
 import { environmentRuntimeService } from "../services/environment-runtime.js";
-import { resolvePluginEnvironmentDriver, resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
+import { pluginSupportsLoginPty, resolvePluginEnvironmentDriver, resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type {
   AdapterEnvironmentCheck,
@@ -1564,7 +1564,7 @@ export function agentRoutes(
       try {
         const resolved = await resolvePluginEnvironmentDriver({ db, workerManager: options.pluginWorkerManager, config: config as unknown as import("@paperclipai/shared").PluginEnvironmentConfig });
         const methods = options.pluginWorkerManager.getWorker(resolved.plugin.id)?.supportedMethods ?? [];
-        return resolved.driver.supportsLoginPty === true && ["loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose", ...(requireCredentialRead ? ["loginPtyReadCredential"] : [])].every(method => methods.includes(method));
+        return pluginSupportsLoginPty(resolved.driver, methods, requireCredentialRead);
       } catch { return false; }
     }
     const provider = typeof config.provider === "string" ? config.provider : "";
@@ -6936,7 +6936,7 @@ export function agentRoutes(
         ? { authorizationUrl: descriptor.loginUrl, transportAdvisory: assessSetupTokenTransport(req) }
         : null,
     };
-    res.json({ ...body, ...(descriptor.aiConnection ? { aiConnection: descriptor.aiConnection } : {}) });
+    res.json({ ...body, ...(descriptor.agentId ? { agentId: descriptor.agentId } : {}), ...(descriptor.aiConnection ? { aiConnection: descriptor.aiConnection } : {}) });
   });
 
   router.get("/companies/:companyId/setup-token-login-sessions/:sessionId", managementGuard("connections:read", "GET /companies/:companyId/setup-token-login-sessions/:sessionId", { personal: true }), async (req, res) => {

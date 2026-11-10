@@ -32,3 +32,20 @@ it("waits for an explicit eligible transport target before starting login", asyn
   flushSync(() => options[0].click()); await settle();
   expect(container.querySelector('[data-target="eligible"]')).not.toBeNull();
 });
+
+it("keeps selection work linear across a company-sized agent list", async () => {
+  let reads = 0;
+  const agents = Array.from({ length: 600 }, (_, index) => ({
+    get id() { if (++reads > 50000) throw new Error("Agent selection exceeded its linear work bound"); return `computer-${index}`; },
+    name: `Computer ${index}`, adapterType: "paperclip_runner", lifecycleState: "ready", defaultEnvironmentId: "environment",
+  }));
+  mocks.list.mockResolvedValue(agents);
+  mount(); await settle();
+  flushSync(() => container.querySelector('[role="combobox"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await settle();
+  const options = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'));
+  expect(options).toHaveLength(600);
+  flushSync(() => options[599].click()); await settle();
+  expect(container.querySelector('[data-target="computer-599"]')).not.toBeNull();
+  expect(reads).toBeLessThan(50000);
+});

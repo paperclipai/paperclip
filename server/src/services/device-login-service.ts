@@ -5,7 +5,7 @@ import type { ConnectionManagementContext } from "./connection-management.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { adapterAuthSessions } from "@paperclipai/db";
+import { adapterAuthSessions, environmentLeases } from "@paperclipai/db";
 import type {
   AdapterAuthSessionFailure,
   AdapterAuthSessionInternalStatus,
@@ -344,6 +344,7 @@ export interface CompareAndSetAdapterAuthSessionStatusInput
 /** The store for the login-session rows. The service inserts, transitions, and
  *  reads through it. The insert maps the active-slot conflict to a `409`. */
 export interface AdapterAuthSessionStore {
+  getLoginAgentId?(providerLeaseId: string, companyId: string, environmentId: string): Promise<string | undefined>;
   insert(input: InsertAdapterAuthSessionInput): Promise<void>;
   recordLeaseAcquired(input: {
     sessionId: string;
@@ -624,6 +625,10 @@ export function createDbAdapterAuthSessionStore(
         .limit(1);
       const row = rows[0];
       return row ? toRow(row) : null;
+    },
+    async getLoginAgentId(providerLeaseId, companyId, environmentId) {
+      const [lease] = await db.select({ companyId: environmentLeases.companyId, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(eq(environmentLeases.providerLeaseId, providerLeaseId), eq(environmentLeases.companyId, companyId), eq(environmentLeases.environmentId, environmentId))).limit(1);
+      return lease?.companyId === companyId && lease.metadata?.purpose === "login" ? (typeof lease.metadata.agentId === "string" ? lease.metadata.agentId : undefined) : undefined;
     },
     async getActiveByOwner(companyId, startedByUserId, adapterType) {
       // The predicate matches the same three columns as the active-slot partial
@@ -1321,17 +1326,19 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
   // terminal transition deletes the prompt at its own write site instead (see
   // `terminate`, `abandonAfterLostClaim`, and `cancelOwnerSession`), so a
   // terminal response always carries a null prompt.
-  function buildOwnerResponse(
+  async function buildOwnerResponse(
     row: AdapterAuthSessionRow,
     requestingUserId: string,
-  ): AdapterAuthSessionOwnerResponse {
+  ): Promise<AdapterAuthSessionOwnerResponse> {
     const isOwner = row.startedByUserId === requestingUserId;
     const status = resolvePublicStatus(row);
     // The prompt map keys on the internal id, so read it by `row.id`, not the
     // public id. Only the owner principal ever reads the prompt.
     const prompt = isOwner ? promptsBySession.get(row.id) ?? null : null;
+    const agentId = isOwner && row.providerLeaseId ? await store.getLoginAgentId?.(row.providerLeaseId, row.companyId, row.environmentId) : undefined;
     return {
       sessionId: row.publicSessionId,
+      ...(agentId ? { agentId } : {}),
       ...(isOwner && row.aiConnection ? { aiConnection: row.aiConnection } : {}),
       environmentId: row.environmentId,
       status,
@@ -1665,6 +1672,7 @@ export function createProductionLoginSessionRuntime(
       await deps.assertProviderSupportsLoginPty(input.environmentId);
       const record = await deps.environmentRuntime.acquireRunLease(
         buildLoginLeaseAcquireArgs({
+          browserLogin: true,
           metadata: {
             companyId: input.companyId,
             environment,

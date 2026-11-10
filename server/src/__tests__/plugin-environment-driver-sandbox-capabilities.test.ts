@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environment-driver.js";
+import { listReadyPluginEnvironmentDrivers, pluginSupportsLoginPty } from "../services/plugin-environment-driver.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const mockRegistry = vi.hoisted(() => ({
@@ -76,5 +76,18 @@ describe("listReadyPluginEnvironmentDrivers sandbox capability projection", () =
       persistentProcessSessions: false,
     });
     expect(drivers[0]?.supportsReusableLeases).toBe(true);
+  });
+});
+
+describe("live login capability admission and presentation", () => {
+  const hooks = ["loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose"];
+  it("fails closed for each missing transport hook", () => {
+    for (const missing of hooks) expect(pluginSupportsLoginPty({ supportsLoginPty: true }, hooks.filter(hook => hook !== missing))).toBe(false);
+    expect(pluginSupportsLoginPty({ supportsLoginPty: false }, hooks)).toBe(false);
+  });
+  it("requires the narrow credential hook only for Codex", () => {
+    expect(pluginSupportsLoginPty({ supportsLoginPty: true }, hooks)).toBe(true);
+    expect(pluginSupportsLoginPty({ supportsLoginPty: true }, hooks, true)).toBe(false);
+    expect(pluginSupportsLoginPty({ supportsLoginPty: true }, [...hooks, "loginPtyReadCredential"], true)).toBe(true);
   });
 });

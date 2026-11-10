@@ -32,6 +32,8 @@ export interface BuildLoginLeaseAcquireArgsOptions {
    * flow passes the target agent.
    */
   targetAgentId?: string | null;
+  /** Explicit browser login; ordinary probes keep their execution allocation. */
+  browserLogin?: boolean;
   /**
    * Re-check the environment company binding inside the lease insert
    * transaction. The setup-token flow sets this to true.
@@ -54,11 +56,12 @@ export interface BuildLoginLeaseAcquireArgsOptions {
 export function buildLoginLeaseAcquireArgs(
   options: BuildLoginLeaseAcquireArgsOptions,
 ): AcquireLoginLeaseArgs {
+  const pluginLogin = options.browserLogin === true && options.metadata.environment.driver === "plugin";
   return {
-    ...(options.metadata.environment.driver === "plugin" ? { purpose: "login" as const, loginCommandKey: resolveLoginCommandKey(options.metadata.adapterType ?? "") } : {}),
+    ...(pluginLogin ? { purpose: "login" as const, loginCommandKey: resolveLoginCommandKey(options.metadata.adapterType ?? "") } : {}),
     companyId: options.metadata.companyId,
     environment: options.metadata.environment,
-    adapterType: options.metadata.environment.driver === "plugin" ? "paperclip_runner" : options.metadata.adapterType ?? null,
+    adapterType: pluginLogin ? "paperclip_runner" : options.metadata.adapterType ?? null,
     agentId: options.targetAgentId ?? null,
     // A null issue, a null heartbeat run, and a null execution workspace disable
     // lease reuse, so the login session always runs in a fresh sandbox.

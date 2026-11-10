@@ -422,6 +422,7 @@ export function createProductionSetupTokenSandboxProvider(
 
       const leaseRecord = await deps.environmentRuntime.acquireRunLease(
         buildLoginLeaseAcquireArgs({
+          browserLogin: true,
           metadata: {
             companyId: scope.companyId,
             environment,

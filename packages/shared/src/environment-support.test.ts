@@ -109,5 +109,7 @@ describe("environment login PTY support", () => {
     expect(environmentSupportsLoginPty({ driver: "plugin", config: { pluginKey: "fixture", driverKey: "computer" } }, capabilities)).toBe(true);
     expect(environmentSupportsLoginPty({ driver: "plugin", config: { pluginKey: "other", driverKey: "computer" } }, capabilities)).toBe(false);
     expect(environmentSupportsLoginPty({ driver: "local", config: {} }, capabilities)).toBe(false);
+    expect(environmentSupportsLoginPty({ driver: "plugin", config: { pluginKey: "fixture", driverKey: "computer" } }, capabilities, "codex_local")).toBe(false);
+    expect(environmentSupportsLoginPty({ driver: "plugin", config: { pluginKey: "fixture", driverKey: "computer" } }, { ...capabilities, loginPtyDrivers: { "fixture:computer": { supportsLoginPty: true, supportsCodexLogin: true } } }, "codex_local")).toBe(true);
   });
 });

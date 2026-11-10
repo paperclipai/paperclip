@@ -133,6 +133,11 @@ export interface ReadyPluginWorkerRecovery {
   timeoutMs?: number;
 }
 
+/** Shared admission/presentation check against the running worker, not only its manifest. */
+export function pluginSupportsLoginPty(driver: { supportsLoginPty?: boolean }, methods: readonly string[], requireCredentialRead = false): boolean {
+  return driver.supportsLoginPty === true && ["loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose", ...(requireCredentialRead ? ["loginPtyReadCredential"] : [])].every(method => methods.includes(method));
+}
+
 export interface ReadyPluginEnvironmentDriver {
   pluginId: string;
   pluginKey: string;
@@ -150,6 +155,7 @@ export interface ReadyPluginEnvironmentDriver {
    * matches the acquisition guard, which also verifies the same methods live.
    */
   reusableLeaseMethodsVerified: boolean;
+  supportsCodexLogin?: boolean;
   supportsInteractiveSetup?: PluginEnvironmentDriverDeclaration["supportsInteractiveSetup"];
   interactiveSetupConnectionTypes?: PluginEnvironmentDriverDeclaration["interactiveSetupConnectionTypes"];
   supportsTemplateCapture?: PluginEnvironmentDriverDeclaration["supportsTemplateCapture"];
@@ -392,7 +398,8 @@ export async function listReadyPluginEnvironmentDrivers(input: {
           templateRefKind: driver.templateRefKind,
           templateConfigBinding: driver.templateConfigBinding,
           supportsTemplateDelete: driver.supportsTemplateDelete,
-          supportsLoginPty: driver.supportsLoginPty,
+          supportsLoginPty: driver.kind === "environment_driver" ? pluginSupportsLoginPty(driver, [...workerMethods]) : driver.supportsLoginPty,
+          supportsCodexLogin: pluginSupportsLoginPty(driver, [...workerMethods], true),
         })),
     );
   }
