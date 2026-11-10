@@ -71,11 +71,11 @@ test("a short new-project dialog keeps actions visible and rejects unavailable s
   await page.getByRole("button", { name: "Create project", exact: true }).first().click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("textbox", { name: "Project name" }).fill("Rejected draft");
-  await dialog.getByRole("button", { name: "Add GitHub repo", exact: true }).click();
-  await page.getByPlaceholder("Search GitHub repos…").fill("org/repo-80");
+  await dialog.getByRole("button", { name: "Add repository", exact: true }).click();
+  await page.getByPlaceholder("Search repositories…").fill("org/repo-80");
   await page.getByRole("option").filter({ hasText: "org/repo-80" }).click();
   await dialog.getByRole("button", { name: "Add another repo", exact: true }).click();
-  await page.getByPlaceholder("Search GitHub repos…").fill("org/repo-79");
+  await page.getByPlaceholder("Search repositories…").fill("org/repo-79");
   await page.getByRole("option").filter({ hasText: "org/repo-79" }).click();
   const submit = dialog.getByRole("button", { name: "Create project", exact: true });
   const bounds = await submit.boundingBox();
