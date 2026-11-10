@@ -3380,7 +3380,7 @@
       "chat-catalog-domains/identity-auth.ts",
       "../../packages/shared/src/validators/issue.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.inbox.restore-archive.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "setupHumanMessageCount": 1,
