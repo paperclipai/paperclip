@@ -238,7 +238,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   executeRun: (runId: string) => Promise<void>;
   releaseIssueExecutionAndPromote: (run: Pick<HeartbeatRun, "id" | "companyId">, options?: { suppressImmediateRecovery?: boolean; resumeStrandedQueue?: boolean; deferredPostCommitEffects?: WakeQueuePostCommitEffect[] }) => Promise<unknown>;
   applyWakeQueuePostCommitEffects: (effects: WakeQueuePostCommitEffect[]) => Promise<void>;
-  publishRunLifecyclePluginEvent: (run: HeartbeatRun) => void;
+  publishRunLifecyclePluginEvent: (run: HeartbeatRun) => Promise<void>;
   cancelRunInternal: (runId: string, reason?: string,
     options?: { errorCode?: string; resultJson?: Record<string, unknown> }) => Promise<unknown>;
   cancelActiveForAgentInternal: (agentId: string, reason: string) => Promise<unknown>;
@@ -838,7 +838,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             error: settled.error,
           },
         });
-        publishRunLifecyclePluginEvent(settled);
+        await publishRunLifecyclePluginEvent(settled);
         if (stage === "dispatch")
           await finalizeAgentStatus(settled.agentId, "cancelled");
       }
@@ -1589,7 +1589,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             : null,
         },
       });
-      publishRunLifecyclePluginEvent(queuedCommentClaim.run);
+      await publishRunLifecyclePluginEvent(queuedCommentClaim.run);
       // Fire-and-forget: nothing else in this path depends on the emission,
       // so it must not delay the return.
       void emitAgentTaskRun(db, queuedCommentClaim.run);
@@ -1656,7 +1656,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           : null,
       },
     });
-    publishRunLifecyclePluginEvent(claimed);
+    await publishRunLifecyclePluginEvent(claimed);
 
     if (!nativeReviewContext) {
       crashPoint("wake.claim.after_run_running_before_wakeup_claimed");

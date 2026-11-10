@@ -35,6 +35,7 @@ import {
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE } from "./run-preparation.js";
 import { WORKSPACE_VALIDATION_FAILURE_CODE } from "./workspaces.js";
 import { boundHeartbeatRunEventPayloadForStorage } from "./run-log.js";
+import { resolveRunSourceCommentId } from "./run-source-comment.js";
 import { preserveWorkspaceRestoreRecoveryMetadata } from "../workspace-restore-recovery-state.js";
 import { pendingNativeWorkspaceFinalizationCondition } from "../native-runtime/native-workspace-finalization-state.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
@@ -1191,7 +1192,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         type: "heartbeat.run.status",
         payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
-      publishRunLifecyclePluginEvent(updated);
+      await publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
     }
 
@@ -1348,7 +1349,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         type: "heartbeat.run.status",
         payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
-      publishRunLifecyclePluginEvent(updated);
+      await publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null, failureReport);
       return { run: updated, updated: true as const };
     }
@@ -1447,10 +1448,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     return terminalRun ?? run;
   }
 
-  function publishRunLifecyclePluginEvent(
+  async function publishRunLifecyclePluginEvent(
     run: typeof heartbeatRuns.$inferSelect,
   ) {
+    const sourceCommentId = await resolveRunSourceCommentId(db, run).catch((error) => {
+      logger.warn({ err: error, runId: run.id }, "failed to verify run source comment");
+      return null;
+    });
     publishRunLifecyclePluginEventData({
+      sourceCommentId,
       companyId: run.companyId,
       runId: run.id,
       agentId: run.agentId,
@@ -1466,6 +1472,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   }
 
   function publishRunLifecyclePluginEventData(run: {
+    sourceCommentId?: string | null;
     companyId: string;
     runId: string;
     agentId: string;
@@ -1507,6 +1514,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         error: run.error ?? null,
         errorCode: run.errorCode ?? null,
         issueId: run.issueId,
+        sourceCommentId: run.sourceCommentId ?? null,
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt
           ? new Date(run.finishedAt).toISOString()
