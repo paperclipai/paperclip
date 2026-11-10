@@ -950,7 +950,10 @@ server's pid, start, exit and freezes). A violation fails the wave.
   (`native.process_identity_recorded`) before the first was shown stopped (`native.local_process_stopped`).
 - Ownership failures whose owner is not a wave server (or is unknown) are listed as `unattributed`.
 
-The usual R1–R6, U1–U4 and T checks grade every task as before.
+The usual R1–R6, U1–U4 and T checks grade every task as before. In the speed grade, MS1 and MS2 take no
+restart-recovery sample (the primary never restarts; MS2 does when the primary exited after the thaw and was
+replaced), MS3 is timed from the primary replacement's readiness, and only the time the primary could not serve
+counts as outage.
 
 ## Fault timing (`--triggers`)
 

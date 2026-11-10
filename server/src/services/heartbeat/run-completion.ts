@@ -866,6 +866,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               finalizationPhase: persistedResultJson?.finalizationPhase,
               finalizationReasonCode: persistedResultJson?.finalizationReasonCode,
             })),
+          nativeConversationFinalResponse: livenessRun.runtimeMode === "native" && isConversation(issueContext),
           existingComment: existingRunComment,
           finalAgentMessage,
           preferFinalResponseOverExistingComment:
