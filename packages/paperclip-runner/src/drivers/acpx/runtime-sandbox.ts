@@ -57,7 +57,7 @@ export interface AcpxRuntimeSandbox {
   cacheDirectory: string;
   agentHomeDirectory: string;
   workspaceRecordPath: string;
-  initializeOwnedConfiguration?: () => Promise<void>;
+  initializeOwnedConfiguration?: (agentFilesRoot?: string) => Promise<void>;
   launchEnvironment: Readonly<NodeJS.ProcessEnv>;
   persistedEnvironment: Readonly<NodeJS.ProcessEnv>;
   /** The host sandbox must protect these runtime/config paths from tools. */
@@ -430,7 +430,17 @@ export async function prepareAcpxRuntimeSandbox(input: {
     const configuration = piProviderConfiguration(input.environment);
     if (configuration) await writePrivateFile(join(agentHomeDirectory, "models.json"), configuration.json);
   }
-  const initializeOwnedConfiguration = input.agent === "claude" ? async () => {
+  const initializeOwnedConfiguration = input.agent === "claude" ? async (agentFilesRoot?: string) => {
+    // The registered agent directory is outside Claude's workspace; modes other
+    // than approve-all need it granted. approve-all approves every operation.
+    const permissions = {
+      ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
+        ? { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) }
+        : {}),
+      ...(agentFilesRoot !== undefined && input.binding.permissionMode !== "approve-all"
+        ? { additionalDirectories: [agentFilesRoot] }
+        : {}),
+    };
     // ACP otherwise rewrites exact IDs (including user-entered model IDs) to
     // picker aliases such as "sonnet". Its supported availableModels setting
     // preserves our requested ID through selection and model verification.
@@ -440,9 +450,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
         model: input.binding.requestedModel,
         availableModels: [input.binding.requestedModel],
         ...(input.binding.claudeEffort ? { effortLevel: input.binding.claudeEffort } : {}),
-        ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
-          ? { permissions: { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) } }
-          : {}),
+        ...(Object.keys(permissions).length > 0 ? { permissions } : {}),
       })}\n`,
     );
   } : input.agent === "antigravity" ? async () => {
