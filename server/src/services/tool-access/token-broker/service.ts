@@ -1,3 +1,4 @@
+import { isGitHubAppConnection } from "../../github-app-credentials.js";
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
 import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { isBrowserUseConnection } from "../../browser-use-client.js";
@@ -172,9 +173,11 @@ export function createConnectionTokenBroker(db: Db, { now, secrets, policySvc, a
       }
 
       if (
-        runContext.run.activeIdentityContextId &&
-        (connection.config.sourceTemplateKey === "github" ||
-          connection.transportConfig?.sourceTemplateKey === "github")
+        isGitHubAppConnection(connection) || (
+          runContext.run.activeIdentityContextId &&
+          (connection.config.sourceTemplateKey === "github" ||
+            connection.transportConfig?.sourceTemplateKey === "github")
+        )
       ) {
         await fail(
           409,

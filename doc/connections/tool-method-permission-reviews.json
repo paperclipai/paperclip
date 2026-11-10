@@ -2942,6 +2942,25 @@
       "reviewedAt": "2026-10-22",
       "liveProof": "read-write-verified",
       "evidenceLimit": "2026-10-23: a replacement token passed all eight actions through a real run-scoped gateway for personal and shared credentials, including create/list/read/update/secret resolution/archive/delete on synthetic items. Both test items were deleted and absent from subsequent listings. Catalog refresh, reconnect preserving identity, removal, retained-session denial and credential absence passed. The 2026-10-22 token denied creation; the first 2026-10-23 attempt stopped before provider calls due to host PostgreSQL semaphore exhaustion. A temporary ten-connection test profile allowed the complete live retry to pass without changing shared services."
+    },
+    {
+      "app": "github",
+      "method": "app-installation",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Governed hosted MCP repository, issue, pull-request and Actions tools; managed shell Git, gh, and authorized server repository reads. Selected repositories and template or custom permissions restrict every installation token. User-only get_me is excluded.",
+      "evidence": [
+        "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app",
+        "https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app",
+        "https://github.com/github/github-mcp-server/blob/main/docs/policies-and-governance.md#2-remote-github-mcp-server",
+        "https://github.com/github/github-mcp-server/blob/main/docs/server-configuration.md"
+      ],
+      "reviewedAt": "2026-10-24",
+      "liveProof": "not-run",
+      "keyPermissions": "The App installation must grant the selected repositories and permissions. Templates request contents, pull requests and issues; Custom requests exactly the permissions you enter. Approve updated App permissions in GitHub installation settings.",
+      "evidenceLimit": "Provider and MCP protocol tests are fixtures. Account-bound MCP discovery, read/write calls, bot attribution, renewal, rotation and revocation need live acceptance."
     }
   ]
 }

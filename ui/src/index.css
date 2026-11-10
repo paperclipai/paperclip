@@ -5065,6 +5065,11 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible), .empty-state-artwork:has(.empty-state-graphic:hover)) [data-artifact-spread="right"] {
     transform: rotate(calc(var(--artifact-base, 0deg) - 5deg));
   }
+
+}
+
+.secret-textarea {
+  -webkit-text-security: disc;
 }
 
 /* Coordinator workspace: the approved Precision palette with Editorial
