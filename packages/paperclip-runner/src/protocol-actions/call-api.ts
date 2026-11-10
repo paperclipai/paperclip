@@ -28,7 +28,7 @@ export const callApiAction = {
   },
   "documentation": {
     "title": "Call the Paperclip API",
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For lossless helper input, use saveResponse:true on a non-sensitive GET to save the full response as an artifact of any size, then download_artifact. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "note": "Production HTTP fallback; does not grant privileges or replace dedicated tools."
   },
   "examples": {
@@ -51,7 +51,7 @@ export const callApiAction = {
       "operationId": "call_api",
       "version": 1,
       "title": "Call the Paperclip API",
-      "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+      "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For lossless helper input, use saveResponse:true on a non-sensitive GET to save the full response as an artifact of any size, then download_artifact. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
       "exposure": "optional",
       "requiredClaims": [
         "api:call"
@@ -95,6 +95,10 @@ export const callApiAction = {
           "contentType": {
             "type": "string",
             "maxLength": 120
+          },
+          "saveResponse": {
+            "description": "GET only: save the complete authorized, non-sensitive response as an immutable artifact regardless of size. Returns artifactId, byteSize and sha256 for download_artifact without inline body transcription. Uses existing capture limits and budgets. Cannot combine with responseText. Denied, sensitive and partial responses are not exported. Never repeats the source request.",
+            "type": "boolean"
           },
           "responseText": {
             "description": "GET only: return a bounded UTF-8 text window inline, including JSON as text, without saving another artifact. Offsets and limits are bytes. Use the returned nextOffsetBytes to continue; null means complete. Prefer reading a saved artifact for a stable snapshot. New live responses have a 1 GiB capture limit and a 4 GiB per-run capture budget. Existing larger assets remain readable in bounded pages. If a live response returns an artifact, continue on its content operation for a stable snapshot.",
