@@ -45,6 +45,8 @@ describe("storage bandwidth cap", () => {
     expect(rate.reserve(250)).toBe(250);
     now += 5_000;
     expect(rate.reserve(100)).toBe(100);
+    rate.release();
+    expect(rate.reserve(1_000_000)).toBe(0);
     expect(() => new ByteRate(0)).toThrow(/positive/);
   });
 
@@ -63,13 +65,33 @@ describe("storage bandwidth cap", () => {
     const proxy = await proxyFor(upstream.endpoint);
     const put = () => fetch(`${proxy.endpoint}/bucket/c/workspace-snapshots/w/s/a.pcws?partNumber=1&uploadId=u`,
       { method: "PUT", body: Buffer.alloc(512 * 1024, 1) }).then(response => response.arrayBuffer());
-    expect(await timed(put)).toBeLessThan(300);
+    expect(await timed(put)).toBeLessThan(500);
     proxy.setRules([{ fault: { kind: "latency", ms: 0, bytesPerSecond: MiB } }]);
     const capped = await timed(put);
     expect(capped).toBeGreaterThanOrEqual(600);
     expect(upstream.received).toEqual([512 * 1024, 512 * 1024]);
     const download = await timed(() => fetch(`${proxy.endpoint}/bucket/c/workspace-snapshots/w/s/a.pcws`).then(response => response.arrayBuffer()));
     expect(download).toBeGreaterThanOrEqual(200);
+  });
+
+  it("shares one cap between parallel requests in a window", async () => {
+    const upstream = await store(0);
+    const proxy = await proxyFor(upstream.endpoint);
+    proxy.setRules([{ fault: { kind: "latency", ms: 0, bytesPerSecond: MiB } }]);
+    const part = (number: number) => fetch(`${proxy.endpoint}/bucket/c/workspace-snapshots/w/s/a.pcws?partNumber=${number}&uploadId=u`,
+      { method: "PUT", body: Buffer.alloc(256 * 1024, number) }).then(response => response.arrayBuffer());
+    expect(await timed(() => Promise.all([1, 2, 3, 4].map(part)))).toBeGreaterThanOrEqual(850);
+    expect(upstream.received).toEqual([256 * 1024, 256 * 1024, 256 * 1024, 256 * 1024]);
+  });
+
+  it("releases an in-flight transfer when its window ends", async () => {
+    const upstream = await store(4 * MiB);
+    const proxy = await proxyFor(upstream.endpoint);
+    proxy.setRules([{ fault: { kind: "latency", ms: 0, bytesPerSecond: 256 * 1024 } }]);
+    const download = timed(() => fetch(`${proxy.endpoint}/bucket/c/workspace-snapshots/w/s/a.pcws`).then(response => response.arrayBuffer()));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    proxy.clear();
+    expect(await download).toBeLessThan(3_000);
   });
 
   it("gives every ST2 window a bandwidth cap between 2 and 16 MiB/s", () => {

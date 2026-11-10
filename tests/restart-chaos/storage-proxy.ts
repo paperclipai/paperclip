@@ -1,7 +1,7 @@
 import { Agent, createServer, request, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import type { Socket } from "node:net";
-import { linkRates, paced, type LinkRates } from "./storage-bandwidth.js";
+import { linkRates, paced, releaseLinks, type LinkRates } from "./storage-bandwidth.js";
 
 export type StorageFault =
   | { kind: "pass" }
@@ -45,7 +45,8 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
   const sockets = new Set<Socket>();
   const delayed = new Set<ReturnType<typeof setTimeout>>();
   const agent = new Agent({ keepAlive: true });
-  const links = new WeakMap<StorageFaultRule, LinkRates>();
+  const links = new Map<StorageFaultRule, LinkRates>();
+  const endLinks = () => { releaseLinks(links.values()); links.clear(); };
   const note = (method: string, status: number | "reset", injected: boolean) => {
     counts.requests += 1;
     counts.byMethod[method] = (counts.byMethod[method] ?? 0) + 1;
@@ -104,8 +105,8 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
   return {
     endpoint: `http://127.0.0.1:${address.port}`,
     counts: () => structuredClone(counts),
-    setRules(next: readonly StorageFaultRule[]) { rules = next.map(rule => ({ ...rule })); },
-    clear() { rules = []; },
+    setRules(next: readonly StorageFaultRule[]) { endLinks(); rules = next.map(rule => ({ ...rule })); },
+    clear() { endLinks(); rules = []; },
     async close() {
       for (const timer of delayed) clearTimeout(timer);
       delayed.clear();

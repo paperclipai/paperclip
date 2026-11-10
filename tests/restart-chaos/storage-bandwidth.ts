@@ -3,12 +3,16 @@ import { setTimeout as delay } from "node:timers/promises";
 
 export class ByteRate {
   private next = 0;
+  private released = false;
 
   constructor(readonly bytesPerSecond: number, private readonly now: () => number = Date.now) {
     if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) throw new Error("A bandwidth cap needs a positive bytes-per-second rate");
   }
 
+  release(): void { this.released = true; }
+
   reserve(bytes: number): number {
+    if (this.released) return 0;
     const now = this.now();
     this.next = Math.max(this.next, now) + (bytes * 1_000) / this.bytesPerSecond;
     return Math.max(0, Math.round(this.next - now));
@@ -16,6 +20,10 @@ export class ByteRate {
 }
 
 export interface LinkRates { up: ByteRate; down: ByteRate }
+
+export function releaseLinks(links: Iterable<LinkRates>): void {
+  for (const link of links) { link.up.release(); link.down.release(); }
+}
 
 export function linkRates(bytesPerSecond: number, now?: () => number): LinkRates {
   return { up: new ByteRate(bytesPerSecond, now), down: new ByteRate(bytesPerSecond, now) };
