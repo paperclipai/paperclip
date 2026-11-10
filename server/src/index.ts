@@ -2045,6 +2045,11 @@ async function startServerWithDatabaseTeardown(
     );
   }
   
+  const abortStuckMultipartUploads = async (signal: "SIGINT" | "SIGTERM") => {
+    const abortedUploads = await abortInFlightMultipartUploads(new Error("server_shutdown"));
+    if (abortedUploads) logger.info({ signal, abortedUploads }, "aborted in-flight multipart uploads before exit");
+  };
+
   const performShutdown = async (
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
@@ -2072,10 +2077,11 @@ async function startServerWithDatabaseTeardown(
     unsubscribeRetainedNativeSessionCleanup?.();
     // B can accept Stop/answers while A still owns an execution. Preserve the
     // owner command workers and their transport until the handoff below ends.
-    await preDrain.run("delivery_work_stop", () => deliveryWork.stop(deploymentHints ? new Set([
+    const deliveryWorkStop = await preDrain.run("delivery_work_stop", () => deliveryWork.stop(deploymentHints ? new Set([
       DELIVERY_QUEUES.nativeCancellation, DELIVERY_QUEUES.nativeRuntimeResponses, DELIVERY_QUEUES.question,
       DELIVERY_QUEUES.deploymentNotifications, DELIVERY_QUEUES.liveInvalidations,
     ]) : undefined));
+    if (deliveryWorkStop.outcome !== "completed") await abortStuckMultipartUploads(signal);
     await preDrain.run("run_evidence_migration_stop", async () => {
       await runEvidenceMigrationWork?.stop();
     });
@@ -2146,8 +2152,7 @@ async function startServerWithDatabaseTeardown(
 
     await workspaceRecoveryStop;
 
-    const abortedUploads = await abortInFlightMultipartUploads(new Error("server_shutdown"));
-    if (abortedUploads) logger.info({ signal, abortedUploads }, "aborted in-flight multipart uploads before exit");
+    await abortStuckMultipartUploads(signal);
 
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
