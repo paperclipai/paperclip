@@ -440,7 +440,12 @@ At rest the harness reads each L1 task's runs from the wave database, and the T-
 | `company_spend_settled` | the board's cost summary differs from the cost-event sum, or runs still wait for accounting |
 | `contention_produced` | the task produced fewer than 40 log events or 6 receipts (it did not test anything) |
 
-RED_GREEN_PLACEHOLDER
+`contention-db.test.ts` checks the knob itself on real PostgreSQL: with four writers, the
+pre-#20385 repeatable-read receipt write exhausted its four retries with 40001 in 8 of 8 attempts
+locally, and the current READ COMMITTED writer (`persistUsageReceipt`) committed all 8. A live L1
+wave needs the runner stall (20 failed deliveries over at least 45 s) to show
+`native_event_replay_conflict`; run it against the parent of the #20385 merge (red) and against
+master (green) with the command above.
 
 ## Universal checks (U1–U4)
 
