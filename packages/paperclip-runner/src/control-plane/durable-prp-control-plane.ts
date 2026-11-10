@@ -302,8 +302,15 @@ export interface DurablePrpControlPlaneOptions {
   }) => Promise<{ readonly result: unknown; readonly isError?: boolean }>;
   /** Persist the canonical event before the runner receives its cumulative ACK. */
   onCommittedEvent?: (event: PrpEvent) => Promise<void>;
+  /**
+   * Resolve a saved input that has no durable result. Return null to keep it
+   * pending. `admission` says whether this controller instance dispatched the
+   * callback itself, or restored it from a journal that an earlier controller
+   * wrote (for example one that a server restart replaced).
+   */
   recoverSemanticToolInput?: (
-    input: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0],
+    input: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0]
+      & { readonly admission: SemanticInputAdmission },
   ) => Promise<{ readonly result: unknown; readonly isError?: boolean } | null>;
   /** Stop this exact owner after a proven, authenticated permanent integrity fault. */
   onProtocolIntegrityError?: (
@@ -313,6 +320,14 @@ export interface DurablePrpControlPlaneOptions {
   onAuthenticatedConnection?: () => void;
   connectionLeaseTtlMs?: number;
 }
+
+/**
+ * Who dispatched a saved semantic input: this controller instance, or an
+ * earlier one whose journal this controller restored. This controller now
+ * owns the journal, so an earlier controller can never record a result for
+ * its callback. The caller decides whether that callback's owner is gone.
+ */
+export type SemanticInputAdmission = "this_controller" | "earlier_controller";
 
 export interface DurablePrpCheckpoint {
   /** Read-only protocol evidence. Does not grant attachment or execution authority. */
@@ -2030,6 +2045,10 @@ export class DurablePrpControlPlane {
   #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
   #connectionLeaseFailure: DurablePrpConnectionLeaseFailure | null = null;
   #pendingSemanticCalls = new Set<string>();
+  /** Result command ids whose callback this instance dispatched live and has
+   * not journaled a result for. A queued result removes its id, so only
+   * in-flight and failed dispatches remain. */
+  #liveDispatchedSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
   #semanticResultPersistenceFailed = false;
   #semanticResultFailures: Array<{
@@ -2308,7 +2327,9 @@ export class DurablePrpControlPlane {
           sourceEventId: event.sourceEventId, sourceEventType: event.eventType,
           correlation: { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
             turnId: identity.turnId, itemId: event.itemId ?? identity.itemId } };
-        const outcome = await this.#recoverSemanticToolInput(call);
+        const admission: SemanticInputAdmission = this.#liveDispatchedSemanticCalls.has(commandId)
+          ? "this_controller" : "earlier_controller";
+        const outcome = await this.#recoverSemanticToolInput({ ...call, admission });
         if (this.#identity !== identity || this.#semanticCallbacksRetired || this.#retainsSourceInputs()) return;
         if (!outcome || this.#getCommand(commandId)) continue;
         const { input, ...metadata } = call;
@@ -4403,7 +4424,10 @@ export class DurablePrpControlPlane {
       && !this.#getCommand(liveCommandId) && !this.#pendingSemanticCalls.has(liveCommandId);
     // Reserve the original callback before exposing its checkpoint wait to
     // recovery. A missing saved outcome must never suppress first dispatch.
-    if (ownsLiveDispatch) this.#pendingSemanticCalls.add(liveCommandId!);
+    if (ownsLiveDispatch) {
+      this.#pendingSemanticCalls.add(liveCommandId!);
+      this.#liveDispatchedSemanticCalls.add(liveCommandId!);
+    }
     let dispatched = false;
     try {
       try {
@@ -4443,6 +4467,8 @@ export class DurablePrpControlPlane {
               commandId,
               true,
             );
+            // Its journaled result settles it; recovery never asks again.
+            this.#liveDispatchedSemanticCalls.delete(commandId);
           } catch (error) {
             // A result that cannot fit the bounded durable journal cannot be
             // acknowledged as a usable tool response. Force a reconnect so

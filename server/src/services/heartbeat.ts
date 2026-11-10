@@ -1,4 +1,5 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
+import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
@@ -1539,10 +1540,12 @@ export function heartbeatService(
   }
   // The interrupted-preparation ownership kind settles a hold, then replays the
   // preparation through this same resume path (bounded, uncharged retry).
-  registerHeldPreparationResumer(async ({ companyId, runId }) => {
+  const resumeSettledRun = async ({ companyId, runId }: { companyId: string; runId: string }) => {
     const run = await getRun(runId);
     if (run && run.companyId === companyId) await resumeRemoteStopComments(run);
-  });
+  };
+  registerHeldPreparationResumer(resumeSettledRun);
+  registerCompletedTurnCleanupResumer(resumeSettledRun);
 
   function cancelRunInternal(...args: Parameters<typeof runControl.cancelRunInternal>) {
     return runControl.cancelRunInternal(...args);
@@ -2008,6 +2011,15 @@ export function heartbeatService(
         }
         run = cleared;
       }
+    }
+    // A failed session close (this run's own, or a finished predecessor's) may
+    // still hold this process's cleanup gate for the task. When its runner and
+    // providers are proven stopped, retire it so admission is not refused.
+    const cleanupGateIssueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
+    if (cleanupGateIssueId) {
+      const { retireStoppedSessionCleanupGates } = await import("./native-runtime/native-session-executor.js");
+      await retireStoppedSessionCleanupGates(db, { companyId: run.companyId, issueId: cleanupGateIssueId,
+        ...(run.runtimeMode === "native" ? { run } : {}) });
     }
 
     if (run.runtimeMode === "legacy" && run.controllerBootId &&
