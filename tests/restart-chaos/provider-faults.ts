@@ -212,7 +212,7 @@ export async function readProviderFaultEvents(logPath: string, nonce?: string): 
  * exercised (for example the turn ended before any interrupt), and a pass would prove nothing.
  *
  * With `--provider-fault-restart K1` the fault must also straddle the restart: the K1 started after
- * the fault applied and, for PV1, before the held message was released. The K1 kills the runner
+ * the fault applied and, for PV1, before the held message was released or discarded. The K1 kills the runner
  * with the held message, so a PV1 task then needs no release. Whether the task itself recovered
  * is the ordinary grade (R1–R6 and its T-oracle), which this check never replaces.
  */
@@ -229,10 +229,14 @@ export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, eve
   let restartDetail = "";
   if (rule.restart) {
     const appliedAt = applied[0]?.at ?? null;
+    // Released or discarded before the K1: the message was already gone, so nothing straddled the restart.
     const releasedBeforeRestart = restartStartedAt !== null && released.some(event => event.at < restartStartedAt);
-    exercised = applied.length === 1 && appliedAt !== null && restartStartedAt !== null && restartStartedAt >= appliedAt && !releasedBeforeRestart;
+    const discardedBeforeRestart = restartStartedAt !== null && discarded.some(event => event.at < restartStartedAt);
+    exercised = applied.length === 1 && appliedAt !== null && restartStartedAt !== null && restartStartedAt >= appliedAt
+      && !releasedBeforeRestart && !discardedBeforeRestart;
     restartDetail = restartStartedAt === null ? " restart=none"
-      : ` restartAfterAppliedMs=${appliedAt === null ? "n/a" : restartStartedAt - appliedAt}${releasedBeforeRestart ? " releasedBeforeRestart" : ""}`;
+      : ` restartAfterAppliedMs=${appliedAt === null ? "n/a" : restartStartedAt - appliedAt}`
+        + (releasedBeforeRestart ? " releasedBeforeRestart" : "") + (discardedBeforeRestart ? " discardedBeforeRestart" : "");
   } else {
     exercised = applied.length === 1 && (rule.kind !== "PV1" || released.length === 1);
   }
