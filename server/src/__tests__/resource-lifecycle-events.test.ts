@@ -1,8 +1,8 @@
 import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { and, eq, ne, sql } from "drizzle-orm";
-import { agentApiKeys, agents, budgetPolicies, companies, costEvents, createDb, pluginCompanySettings, pluginLifecycleAcknowledgments, plugins, projects, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { agentApiKeys, agents, budgetPolicies, companies, costEvents, createDb, pluginCompanySettings, pluginLifecycleAcknowledgments, pluginLifecycleResourceCursors, plugins, projects, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -545,6 +545,140 @@ describePostgres("Resource lifecycle events", () => {
     await inbox.acknowledge(companyId, String(lateCreate.id));
     expect((await inbox.list(companyId)).map(e => Number(e.id))).toEqual([latePause.id, gap[2].id, projectArchive.id].sort((a, b) => a - b));
     await expect(inbox.acknowledge(companyId, String(runtime[10].id))).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("carries acknowledgments from an earlier release into resource cursors without redelivery or loss", async () => {
+    const plugin = await createPlugin();
+    const other = await createPlugin();
+    const inbox = pluginLifecycleInbox(db, plugin.id);
+    const all = ["agent", "project", "agent_runtime"] as const;
+    const agentId = randomUUID(), gapId = randomUUID(), runtimeId = randomUUID(), createdOnlyId = randomUUID();
+    type Row = typeof resourceLifecycleEvents.$inferInsert;
+    const insert = async (rows: Row[]) => db.insert(resourceLifecycleEvents).values(rows).returning();
+    // An earlier release wrote only per-event acknowledgment rows.
+    const ack = async (ids: number[], pluginId = plugin.id) => {
+      if (ids.length) await db.insert(pluginLifecycleAcknowledgments).values(ids.map(eventId => ({ pluginId, eventId })));
+    };
+    const [agentCreate, ...agentTransitions] = await insert([
+      { companyId, resourceType: "agent", resourceId: agentId, action: "create" },
+      ...Array.from({ length: 6 }, (_, index) => ({ companyId, resourceType: "agent" as const, resourceId: agentId, action: index % 2 ? "resume" as const : "pause" as const })),
+    ]);
+    const gap = await insert([0, 1, 2].map(() => ({ companyId, resourceType: "project" as const, resourceId: gapId, action: "update" as const })));
+    const runtime = await insert(Array.from({ length: 5 }, () => ({ companyId, resourceType: "agent_runtime" as const, resourceId: runtimeId, action: "update" as const })));
+    const [createdOnly] = await insert([{ companyId, resourceType: "agent", resourceId: createdOnlyId, action: "create" }]);
+    await ack([agentCreate.id, ...agentTransitions.slice(0, 3).map(e => e.id), gap[1].id, ...runtime.map(e => e.id), createdOnly.id]);
+    await ack([gap[0].id], other.id);
+
+    const before = await inbox.list(companyId, 100, undefined, [...all]);
+    const otherBefore = await pluginLifecycleInbox(db, other.id).list(companyId, 100, undefined, [...all]);
+    expect(before.map(e => Number(e.id))).toEqual([agentTransitions[3].id, gap[0].id]);
+
+    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0462_plugin_lifecycle_resource_cursors.sql", import.meta.url), "utf8");
+    const backfill = migration.split("--> statement-breakpoint").filter(statement => statement.includes('INSERT INTO "plugin_lifecycle_resource_cursors"'));
+    expect(backfill).toHaveLength(1);
+    await db.execute(sql.raw(backfill[0]));
+    await db.execute(sql.raw(backfill[0]));
+
+    const cursors = await db.select().from(pluginLifecycleResourceCursors).where(eq(pluginLifecycleResourceCursors.companyId, companyId));
+    expect(cursors.map(c => [c.pluginId, c.resourceType, c.resourceId, c.acknowledgedThroughId]).sort()).toEqual([
+      [plugin.id, "agent", agentId, agentTransitions[2].id],
+      // The cursor stops before the unacknowledged gap, so the gap is still delivered.
+      [plugin.id, "project", gapId, gap[0].id - 1],
+      [plugin.id, "agent_runtime", runtimeId, runtime[4].id],
+      [plugin.id, "agent", createdOnlyId, createdOnly.id],
+      [other.id, "project", gapId, gap[0].id],
+    ].sort());
+    expect(await inbox.list(companyId, 100, undefined, [...all])).toEqual(before);
+    expect(await pluginLifecycleInbox(db, other.id).list(companyId, 100, undefined, [...all])).toEqual(otherBefore);
+    expect(await inbox.hasPending(companyId, ["agent_runtime"])).toBe(false);
+
+    // Reads use the cursor: history at or below it stays acknowledged without its rows.
+    await db.delete(pluginLifecycleAcknowledgments).where(and(eq(pluginLifecycleAcknowledgments.pluginId, plugin.id), inArray(pluginLifecycleAcknowledgments.eventId, runtime.map(e => e.id))));
+    expect(await inbox.hasPending(companyId, ["agent_runtime"])).toBe(false);
+    await inbox.acknowledge(companyId, String(runtime[2].id));
+    expect(await inbox.list(companyId, 100, undefined, ["agent_runtime"])).toEqual([]);
+
+    // Acknowledging the gap moves the cursor and skips the event that the earlier release acknowledged.
+    await expect(inbox.acknowledge(companyId, String(gap[2].id))).rejects.toMatchObject({ status: 409 });
+    await inbox.acknowledge(companyId, String(gap[0].id));
+    expect((await inbox.list(companyId, 100, undefined, ["project"])).map(e => Number(e.id))).toEqual([gap[2].id]);
+    await inbox.acknowledge(companyId, String(gap[2].id));
+    expect(await inbox.list(companyId, 100, undefined, ["project"])).toEqual([]);
+    const [gapCursor] = await db.select().from(pluginLifecycleResourceCursors)
+      .where(and(eq(pluginLifecycleResourceCursors.pluginId, plugin.id), eq(pluginLifecycleResourceCursors.resourceId, gapId)));
+    expect(gapCursor.acknowledgedThroughId).toBe(gap[2].id);
+    // An earlier release that reads only acknowledgment rows sees the same progress after a rollback.
+    const rows = await db.select({ eventId: pluginLifecycleAcknowledgments.eventId }).from(pluginLifecycleAcknowledgments)
+      .where(and(eq(pluginLifecycleAcknowledgments.pluginId, plugin.id), inArray(pluginLifecycleAcknowledgments.eventId, gap.map(e => e.id))));
+    expect(rows.map(r => r.eventId).sort((a, b) => a - b)).toEqual(gap.map(e => e.id));
+
+    // A new transition after the cursor is delivered, and a later one waits behind it.
+    const [late, later] = await insert([{ companyId, resourceType: "agent_runtime", resourceId: runtimeId, action: "update" }, { companyId, resourceType: "agent_runtime", resourceId: runtimeId, action: "delete" }]);
+    expect((await inbox.list(companyId, 100, undefined, ["agent_runtime"])).map(e => Number(e.id))).toEqual([late.id]);
+    await expect(inbox.acknowledge(companyId, String(later.id))).rejects.toMatchObject({ status: 409 });
+    await inbox.acknowledge(companyId, String(late.id));
+    expect((await inbox.list(companyId, 100, undefined, ["agent_runtime"])).map(e => Number(e.id))).toEqual([later.id]);
+
+    await db.delete(plugins).where(eq(plugins.id, plugin.id));
+    expect(await db.select().from(pluginLifecycleResourceCursors).where(eq(pluginLifecycleResourceCursors.pluginId, plugin.id))).toEqual([]);
+  });
+
+  it("returns a full page when a manifest repeats a resource type", async () => {
+    const plugin = await createPlugin();
+    const inbox = pluginLifecycleInbox(db, plugin.id);
+    await db.insert(resourceLifecycleEvents).values(Array.from({ length: 101 }, () => ({
+      companyId, resourceType: "agent" as const, resourceId: randomUUID(), action: "create" as const,
+    })));
+    const page = await inbox.list(companyId, 100, undefined, ["agent", "agent"]);
+    expect(page).toHaveLength(100);
+    expect(page).toEqual(await inbox.list(companyId, 100, undefined, ["agent"]));
+    expect(await inbox.list(companyId, 100, page.at(-1)!.id, ["agent", "agent"])).toHaveLength(1);
+  });
+
+  it("keeps the cursor behind a pending transition when a late creation is acknowledged first", async () => {
+    const plugin = await createPlugin();
+    const inbox = pluginLifecycleInbox(db, plugin.id);
+    const lateId = randomUUID(), freshId = randomUUID();
+    const through = async (resourceId: string) => (await db.select().from(pluginLifecycleResourceCursors)
+      .where(and(eq(pluginLifecycleResourceCursors.pluginId, plugin.id), eq(pluginLifecycleResourceCursors.resourceId, resourceId))))[0]?.acknowledgedThroughId;
+    const [pause] = await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "agent", resourceId: lateId, action: "pause" }).returning();
+    const [create] = await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "agent", resourceId: lateId, action: "create" }).returning();
+    const [freshCreate] = await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "agent", resourceId: freshId, action: "create" }).returning();
+    expect((await inbox.list(companyId)).map(e => Number(e.id))).toEqual([create.id, freshCreate.id]);
+    await inbox.acknowledge(companyId, String(create.id));
+    await inbox.acknowledge(companyId, String(freshCreate.id));
+    // The earlier pause is still pending, so the creation does not move the cursor past it.
+    expect(await through(lateId)).toBeUndefined();
+    expect(await through(freshId)).toBe(freshCreate.id);
+    expect((await inbox.list(companyId)).map(e => Number(e.id))).toEqual([pause.id]);
+    await inbox.acknowledge(companyId, String(pause.id));
+    expect(await through(lateId)).toBe(pause.id);
+    // The creation above the cursor stays acknowledged through its row.
+    expect(await inbox.list(companyId)).toEqual([]);
+    expect(await inbox.hasPending(companyId)).toBe(false);
+    const [resume] = await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "agent", resourceId: lateId, action: "resume" }).returning();
+    expect(await inbox.hasPending(companyId)).toBe(true);
+    expect((await inbox.list(companyId)).map(e => Number(e.id))).toEqual([resume.id]);
+    await inbox.acknowledge(companyId, String(resume.id));
+    expect(await through(lateId)).toBe(resume.id);
+    expect(await inbox.list(companyId)).toEqual([]);
+  });
+
+  it("acknowledges a head without reading the resource's acknowledged history", async () => {
+    // Before the cursor, eligibility read every older event of the resource. Remove the
+    // acknowledgment rows below the cursor: a history scan would now see them as pending.
+    const plugin = await createPlugin();
+    const inbox = pluginLifecycleInbox(db, plugin.id);
+    const resourceId = randomUUID();
+    const rows = await db.insert(resourceLifecycleEvents).values(Array.from({ length: 50 }, () => ({
+      companyId, resourceType: "agent_runtime" as const, resourceId, action: "update" as const,
+    }))).returning({ id: resourceLifecycleEvents.id });
+    for (const row of rows.slice(0, 40)) await inbox.acknowledge(companyId, String(row.id));
+    await db.delete(pluginLifecycleAcknowledgments).where(eq(pluginLifecycleAcknowledgments.pluginId, plugin.id));
+    const all = ["agent_runtime"] as const;
+    expect((await inbox.list(companyId, 100, undefined, [...all])).map(e => Number(e.id))).toEqual([rows[40].id]);
+    await inbox.acknowledge(companyId, String(rows[40].id));
+    expect((await inbox.list(companyId, 100, undefined, [...all])).map(e => Number(e.id))).toEqual([rows[41].id]);
   });
 
   it("never skips a lower event id that commits after a higher id is acknowledged", async () => {

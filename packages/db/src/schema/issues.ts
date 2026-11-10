@@ -132,6 +132,13 @@ export const issues = pgTable(
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     originIssueIdx: index("issues_company_origin_issue_idx").on(table.companyId, table.originIssueId),
+    // Tasks whose creation provenance is only a run. The created-from list
+    // probes this set by the source task's runs. The predicate must stay
+    // identical to the legacy run branch of `createdFromIssueCondition`.
+    legacyOriginRunIdx: index("issues_company_legacy_origin_run_idx")
+      .on(table.companyId, table.originRunId)
+      .where(sql`${table.originIssueId} is null and ${table.originRunId} is not null`)
+      .concurrently(),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),

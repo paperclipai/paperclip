@@ -3163,6 +3163,8 @@ describe("native harness persistence profiles", () => {
         ".tmp",
         "auth.json",
         "config.toml",
+        "auth-refresh.json",
+        "auth-refresh.json.tmp",
         ".remote-plugin-install-staging",
         "cache/remote_plugin_catalog",
         "plugins/.remote-plugin-install-staging",
@@ -3209,6 +3211,8 @@ describe("native harness persistence profiles", () => {
         `acpx/${sessionDirectory}/codex-home/.tmp`,
         `acpx/${sessionDirectory}/codex-home/auth.json`,
         `acpx/${sessionDirectory}/codex-home/config.toml`,
+        `acpx/${sessionDirectory}/codex-home/auth-refresh.json`,
+        `acpx/${sessionDirectory}/codex-home/auth-refresh.json.tmp`,
         `acpx/${sessionDirectory}/codex-home/.remote-plugin-install-staging`,
         `acpx/${sessionDirectory}/codex-home/cache/remote_plugin_catalog`,
         `acpx/${sessionDirectory}/codex-home/plugins/.remote-plugin-install-staging`,
@@ -3920,22 +3924,23 @@ describe("split durable provider checkpoint identity", () => {
 });
 
 describe("remote provider checkpoint snapshots", () => {
-  it("excludes Grok credentials and diagnostic logs from real checkpoint copies while retaining sessions", async () => {
-    const root = await mkdtemp(join(tmpdir(), "grok-checkpoint-"));
+  it.each(["codex", "grok"] as const)("excludes %s credentials and handoffs from real checkpoint copies while retaining sessions", async provider => {
+    const root = await mkdtemp(join(tmpdir(), `${provider}-checkpoint-`));
     try {
       const source = join(root, "source");
       const target = join(root, "backup");
       const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
-      const relativeHome = join("acpx", sessionDirectory, "grok-home");
+      const relativeHome = join("acpx", sessionDirectory, `${provider}-home`);
       const home = join(source, relativeHome);
       await mkdir(join(home, "logs"), { recursive: true });
       await mkdir(join(home, "sessions"));
       await writeFile(join(home, "logs", "unified.jsonl"), "AUTH_SENTINEL");
       await writeFile(join(home, "auth.json"), "AUTH_SENTINEL");
       await writeFile(join(home, "auth-refresh.json"), "AUTH_SENTINEL");
+      await writeFile(join(home, "auth-refresh.json.tmp"), "AUTH_SENTINEL");
       await writeFile(join(home, "sessions", "session.json"), "resume-state");
       const profile = resolveNativeHarnessPersistenceProfile({
-        provider: { kind: "acpx", agent: "grok" },
+        provider: { kind: "acpx", agent: provider },
         session: { normalizedSessionId: "session", driverKind: "acpx_runtime" },
       } as unknown as NativeExecutionInputV1);
       const execute = async ({ command, args }: { command: string; args: string[] }) => ({
@@ -3948,7 +3953,7 @@ describe("remote provider checkpoint snapshots", () => {
       await syncRemoteRunnerDirectoryOut({ runner: { execute, syncOut } as never,
         sourcePath: source, targetPath: target, mode: 0o700,
         excludeEntries: profile.directories.find(directory => directory.name === "acpx")!.excludeEntries });
-      for (const entry of ["auth.json", "auth-refresh.json", "logs"])
+      for (const entry of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", ...(provider === "grok" ? ["logs"] : [])])
         await expect(access(join(target, relativeHome, entry))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(join(target, relativeHome, "sessions", "session.json"), "utf8")).toBe("resume-state");
       expect(await readFile(join(home, "logs", "unified.jsonl"), "utf8")).toBe("AUTH_SENTINEL");
@@ -4054,6 +4059,8 @@ describe("remote provider checkpoint snapshots", () => {
       const source = join(root, "codex-home");
       const target = join(root, "backup");
       const files: Record<string, string> = {
+        "auth-refresh.json": "AUTH_SENTINEL",
+        "auth-refresh.json.tmp": "AUTH_SENTINEL",
         "sessions/2026/10/20/rollout.jsonl": "resume-state",
         "state_5.sqlite": "state",
         "cache/codex_apps_tools/tools.json": "apps",
@@ -4086,7 +4093,7 @@ describe("remote provider checkpoint snapshots", () => {
       for (const kept of ["sessions/2026/10/20/rollout.jsonl", "state_5.sqlite", "cache/codex_apps_tools/tools.json",
         "plugins/data/sites/data.json", "plugins/cache/openai-bundled/browser/1.0.0/plugin.json"])
         expect(await readFile(join(target, kept), "utf8")).toBe(files[kept]);
-      for (const omitted of ["cache/remote_plugin_catalog", "plugins/cache/openai-curated-remote",
+      for (const omitted of ["auth-refresh.json", "auth-refresh.json.tmp", "cache/remote_plugin_catalog", "plugins/cache/openai-curated-remote",
         "plugins/cache/workspace-shared-with-me", "plugins/.remote-plugin-install-staging", ".remote-plugin-install-staging"])
         await expect(access(join(target, omitted))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(join(source, "plugins/cache/openai-curated-remote/sites/1.0.2/plugin.json"), "utf8")).toBe("remote");

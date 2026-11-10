@@ -9,6 +9,18 @@ import { createSystemRecovery, isExhaustedStopProofWait, readStopProofRecovery, 
   STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, type SystemRecoveryState } from "./system-recovery-state.js";
 import { terminalWorkspaceRunStates, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
 
+/**
+ * The source run ended and nothing still executes or finalizes it, so a new
+ * recovery generation may start. Shared by every exhausted-hold re-arm. The
+ * attempt refuses any recorded finalizer owner (inspectWorkspaceRecoverySource);
+ * a stale one is released by the abandoned-owner settlement first.
+ */
+export function sourceRunProvablyOver(run: typeof heartbeatRuns.$inferSelect,
+  coordinator: { leaseOwner: string | null } | undefined, at: Date) {
+  return terminalWorkspaceRunStates.includes(run.status) && Boolean(run.finishedAt) && !adapterExecutionControls.has(run.id)
+    && !(run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > at) && !coordinator?.leaseOwner;
+}
+
 /** Delay before re-arm n+1, measured from re-arm n. The first re-arm is due at once. */
 const STOP_PROOF_REARM_DELAYS_MS = [30 * 60_000, 2 * 60 * 60_000, 8 * 60 * 60_000];
 
@@ -52,11 +64,7 @@ export async function rearmExhaustedStopProof(db: Db, input: WorkspaceRecoverySo
     // The agent is provably gone: its run ended and nothing still executes or
     // finalizes it. The new attempt still proves the sandbox stop itself.
     const at = new Date(now);
-    if (!terminalWorkspaceRunStates.includes(run.status) || !run.finishedAt || adapterExecutionControls.has(run.id)
-      || (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > at)
-      // The attempt refuses any recorded finalizer owner (inspectWorkspaceRecoverySource);
-      // a stale one is released by the abandoned-owner settlement first.
-      || coordinator?.leaseOwner) return null;
+    if (!sourceRunProvablyOver(run, coordinator, at)) return null;
     const marker = readStopProofRecovery(action.evidence);
     const rearms = marker?.rearms ?? 0;
     if (rearms >= STOP_PROOF_MAX_REARMS || (marker?.nextRearmAt ?? 0) > now) return null;

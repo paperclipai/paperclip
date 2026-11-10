@@ -1,7 +1,7 @@
 ---
 name: doc-maintenance
 description: >
-  Audit README, SPEC, and PRODUCT docs against recent git history for drift and
+  Audit README and PRODUCT docs against recent git history for drift and
   make minimal PR-ready edits. Use when asked to review docs for accuracy, after
   major feature merges, or on a schedule.
 ---
@@ -15,14 +15,13 @@ Detect documentation drift and fix it via PR — no rewrites, no churn.
 - Periodic doc review (e.g. weekly or after releases)
 - After major feature merges
 - When asked "are our docs up to date?"
-- When asked to audit README / SPEC / PRODUCT accuracy
+- When asked to audit README / PRODUCT accuracy
 
 ## Target Documents
 
 | Document | Path | What matters |
 |----------|------|-------------|
 | README | `README.md` | Features table, roadmap, quickstart, "what is" accuracy, "works with" table |
-| SPEC | `doc/SPEC.md` | No false "not supported" claims, major model/schema accuracy |
 | PRODUCT | `doc/PRODUCT.md` | Core concepts, feature list, principles accuracy |
 
 Out of scope: DEVELOPING.md, DATABASE.md, CLI.md, doc/plans/, skill files,
@@ -122,7 +121,7 @@ Apply **only** the edits needed to fix drift. Rules:
 Commit the changes and open a PR:
 
 ```bash
-git add README.md doc/SPEC.md doc/PRODUCT.md .doc-review-cursor
+git add README.md doc/PRODUCT.md .doc-review-cursor
 git commit -m "docs: update documentation for accuracy
 
 - [list each fix briefly]
@@ -184,7 +183,7 @@ were needed, commit the cursor update to the current branch.
 - If adding a feature mention, match the format of surrounding entries
   (e.g. if features are in a table, add a table row)
 - Keep README changes especially minimal — it shouldn't churn often
-- For SPEC/PRODUCT, prefer updating existing statements over adding new ones
+- For PRODUCT, prefer updating existing statements over adding new ones
   (e.g. change "not supported in V1" to "supported via X" rather than adding
   a new section)
 

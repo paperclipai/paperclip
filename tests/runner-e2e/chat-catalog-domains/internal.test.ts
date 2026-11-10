@@ -512,7 +512,8 @@ describe("goal oracle phase binding", () => {
     expect(gradeInternal(o).passed).toBe(false);
   });
   it("rejects alignment denial present only before the actual foreign request", () => {
-    const o = valid("goals.align-existing-work"); Object.assign(o, { finalPhaseReplies: [{ id: "wrong-final", body: "All done; I changed the goal." }] });
+    // The foreign-goal phase itself must answer; its wording is left to human review.
+    const o = valid("goals.align-existing-work"); Object.assign(o, { finalPhaseReplies: [] });
     expect(gradeInternal(o).passed).toBe(false);
   });
   it("rejects purpose denial present only in an earlier reply", () => {

@@ -9,7 +9,7 @@ The invariants and rules below record what has been decided so far. If you think
 
 Paperclip is a control plane for AI-agent companies.
 The code and its tests are the source of truth for current behavior.
-`doc/SPEC-implementation.md` and `doc/SPEC.md` are background. They can be out of date, so do not treat them as requirements when they disagree with the code or with the task.
+The focused docs under `doc/` are background. They can be out of date, so do not treat them as requirements when they disagree with the code or with the task.
 
 ## 2. Read This First
 

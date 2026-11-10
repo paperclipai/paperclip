@@ -79,9 +79,31 @@ describePostgres("tasks created from an issue", () => {
       { companyId, title: "Wrong run company", originRunId: foreignRunId },
       { companyId: otherCompanyId, title: "Wrong issue company", originRunId: legacyRunId },
     ]);
+    // Recorded origins win over runs and activity in both directions.
+    const recordedId = randomUUID();
+    const recordedElsewhereId = randomUUID();
+    const recordedActivityElsewhereId = randomUUID();
+    const otherRunActivityId = randomUUID();
+    const nonCanonicalActivityId = randomUUID();
+    expected.add(recordedId);
+    await db.insert(issues).values([
+      { id: recordedId, companyId, title: "Recorded origin, unrelated run", originIssueId: sourceId, originRunId: unrelatedRunId },
+      { id: recordedElsewhereId, companyId, title: "Recorded elsewhere, source run", originIssueId: otherSourceId, originRunId: legacyRunId },
+      { id: recordedActivityElsewhereId, companyId, title: "Recorded elsewhere, source activity", originIssueId: otherSourceId },
+      { id: otherRunActivityId, companyId, title: "Unrelated origin run, source activity", originRunId: unrelatedRunId },
+      { id: nonCanonicalActivityId, companyId, title: "Source activity with a non-canonical ID" },
+      { companyId: otherCompanyId, title: "Foreign recorded origin", originIssueId: foreignSourceId },
+    ]);
     await db.insert(activityLog).values([
       { companyId, actorType: "agent", actorId: agentId, runId: legacyRunId, action: "issue.child_created", entityType: "issue", entityId: historicalId },
       { companyId, actorType: "agent", actorId: agentId, runId: legacyRunId, action: "issue.comment_added", entityType: "issue", entityId: commentedId },
+      { companyId, actorType: "agent", actorId: agentId, runId: legacyRunId, action: "issue.created", entityType: "issue", entityId: recordedActivityElsewhereId },
+      { companyId, actorType: "agent", actorId: agentId, runId: legacyRunId, action: "issue.created", entityType: "issue", entityId: otherRunActivityId },
+      { companyId, actorType: "agent", actorId: agentId, runId: legacyRunId, action: "issue.created", entityType: "issue", entityId: nonCanonicalActivityId.toUpperCase() },
+      { companyId, actorType: "agent", actorId: agentId, runId: legacyRunId, action: "issue.created", entityType: "issue", entityId: "not-a-task-id" },
+      // The source's own creation by its run is not a created task.
+      { companyId, actorType: "agent", actorId: agentId, runId: legacyRunId, action: "issue.created", entityType: "issue", entityId: sourceId },
+      { companyId: otherCompanyId, actorType: "agent", actorId: foreignAgentId, runId: legacyRunId, action: "issue.created", entityType: "issue", entityId: commentedId },
     ]);
   }, 30_000);
   afterAll(async () => { await database?.cleanup(); });

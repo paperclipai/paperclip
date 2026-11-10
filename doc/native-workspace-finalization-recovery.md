@@ -353,6 +353,25 @@ finalization from the accepted result. Confirm the run's native phase and
 `resultJson.finalizationPhase` are `committed`, there is no `nextAttemptAt`, and
 no workspace operation is still running. The accepted provider result is reused.
 
+## Symlinks in remote workspace saves
+
+The remote workspace save (`remote-workspace-snapshot-archive.ts`) records
+symlinks and never follows them. A link whose target resolves inside the
+workspace, such as `node_modules/.bin/tool -> ../tool/cli.js`, is saved as a
+link and restored as the same link. A link that is absolute or leaves the
+workspace through `..`, such as a headless Chromium profile's
+`SingletonSocket -> /tmp/...` or a link into a sandbox-only cache, has no
+portable meaning: the save records its path in the archive manifest's
+`excluded` list, omits it, and continues. Such a link no longer fails the save
+with `remote_workspace_archive_unsafe_symlink`. Restore materializes only the
+manifest entries, so an omitted link is absent after restore, and restore still
+refuses any archive whose manifest names an absolute or escaping link. Omitting
+a tracked link shows as a deletion in `git status` after restore.
+
+Saves that recovery exhausted before this policy (capture policy version 1) are
+retried once automatically; see the capture-policy re-arm in
+`doc/execution-semantics.md`.
+
 ## Automatic unsafe archive recovery
 
 An unsafe link in a native workspace must not fail a completed task or require

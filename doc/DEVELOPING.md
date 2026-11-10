@@ -2374,8 +2374,7 @@ for storage, import, retention, and lifecycle regression checks. These checks do
 not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
 the existing persistent volume until the other instance data paths and deploy
 handoff are separately qualified. See the
-[implementation contract](SPEC-implementation.md#experimental-native-remote-workspace-authority-2026-10-30)
-and [snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
+[snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
 
 ## Agent Artifact Uploads
 

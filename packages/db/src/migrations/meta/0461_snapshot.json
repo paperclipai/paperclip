@@ -1,5 +1,5 @@
 {
-  "id": "0ba661ff-ea99-4444-8a57-301fc2a6de89",
+  "id": "f409684f-c629-4648-9123-a5e1064308ef",
   "prevId": "f93ccf18-7e86-4788-be77-b17430c86b2f",
   "version": "7",
   "dialect": "postgresql",
@@ -43580,6 +43580,28 @@
           "method": "btree",
           "with": {}
         },
+        "issues_company_legacy_origin_run_idx": {
+          "name": "issues_company_legacy_origin_run_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "origin_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"issues\".\"origin_issue_id\" is null and \"issues\".\"origin_run_id\" is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "issues_company_project_workspace_idx": {
           "name": "issues_company_project_workspace_idx",
           "columns": [
@@ -65028,12 +65050,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "dot_device_cutover": {
-          "name": "dot_device_cutover",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",

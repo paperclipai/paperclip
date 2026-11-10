@@ -4218,6 +4218,14 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
     expect(pendingIndicator()).toBeNull();
   });
 
+  it("links a review request's own document so the person can open what it asks them to review", () => {
+    const review = { ...planReviewInteraction(), id: "draft-review", title: "Review draft", payload: { version: 1, prompt: "Review the unpublished draft.",
+      target: { type: "issue_document", key: "draft", revisionId: "draft-revision-1" } } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={[]} interactions={[review]} />);
+    const link = takeover()?.querySelector<HTMLAnchorElement>('a[href="#document-draft"]');
+    expect(link?.textContent).toContain("draft");
+  });
+
   it("keeps unrelated approvals and accepted plan history when a plan changes", () => {
     planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
     const review = { ...planReviewInteraction(), payload: { version: 1, prompt: "Review another task", target: { type: "issue_document", issueId: "other-task", key: "plan", revisionId: "revision-3" } } } as IssueThreadInteraction;

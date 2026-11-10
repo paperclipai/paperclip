@@ -895,10 +895,55 @@ describe("portable remote workspace archives", () => {
       expect(await git(parent, "rev-parse", "HEAD")).toBe(head);
     },
   );
-  it("rejects an external symlink before creating an archive", async () => {
-    const cwd = await source(); await fs.symlink("../outside", path.join(cwd, "unsafe"));
-    await expect(capture(cwd)).rejects.toThrow("unsafe_symlink");
-    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+  /**
+   * The staging shape (Nov 10): a review workspace with a dependency tree
+   * whose `.bin` links stay inside it, a headless Chromium profile whose
+   * SingletonSocket links by absolute path into the sandbox's /tmp, and a link
+   * that escapes the workspace with `..`. The save keeps the confined link,
+   * records and drops the other two without following them, and restores the
+   * same tree.
+   */
+  it.each(["local", "serialized"])("keeps confined links and drops outside links in %s capture", async mode => {
+    const cwd = await source(), outside = path.join(root, "outside"), privateBytes = "SYNTHETIC_OUTSIDE_SECRET\n";
+    await fs.mkdir(outside); await fs.writeFile(path.join(outside, "secret.txt"), privateBytes);
+    await fs.writeFile(path.join(cwd, "saved.txt"), "review evidence\n");
+    await fs.mkdir(path.join(cwd, "node_modules", "tool"), { recursive: true });
+    await fs.mkdir(path.join(cwd, "node_modules", ".bin"));
+    await fs.writeFile(path.join(cwd, "node_modules", "tool", "cli.js"), "#!/usr/bin/env node\n", { mode: 0o755 });
+    await fs.symlink("../tool/cli.js", path.join(cwd, "node_modules", ".bin", "tool"));
+    await fs.mkdir(path.join(cwd, ".review-chrome"));
+    await fs.symlink(path.join(outside, "secret.txt"), path.join(cwd, ".review-chrome", "SingletonSocket"));
+    await fs.symlink("../outside/secret.txt", path.join(cwd, "escape"));
+    let snapshot: Awaited<ReturnType<typeof capture>>;
+    if (mode === "serialized") {
+      const helper = path.join(root, "helper.cjs"), archivePath = path.join(root, "snapshot.pcws");
+      await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+      snapshot = { archivePath, ...JSON.parse((await execute(process.execPath, [helper, "capture", cwd, archivePath], { env })).stdout) };
+    } else snapshot = await capture(cwd);
+    const archive = await fs.readFile(snapshot.archivePath), start = Buffer.from("PCWS1\n").length;
+    const manifest = JSON.parse(archive.subarray(start + 4, start + 4 + archive.readUInt32BE(start)).toString());
+    expect(manifest.excluded).toEqual([".review-chrome/SingletonSocket", "escape"]);
+    expect(manifest.entries.filter((entry: { type: string }) => entry.type === "symlink"))
+      .toEqual([{ path: "node_modules/.bin/tool", type: "symlink", target: "../tool/cli.js" }]);
+    // The link is never followed: the outside bytes are not in the archive.
+    expect(archive.includes(Buffer.from(privateBytes))).toBe(false);
+    // The source workspace is unchanged.
+    expect(await fs.readlink(path.join(cwd, "escape"))).toBe("../outside/secret.txt");
+    const restored = await restore(snapshot);
+    expect(await fs.readFile(path.join(restored, "saved.txt"), "utf8")).toBe("review evidence\n");
+    expect(await fs.readlink(path.join(restored, "node_modules", ".bin", "tool"))).toBe("../tool/cli.js");
+    expect(await fs.readFile(path.join(restored, "node_modules", ".bin", "tool"), "utf8")).toBe("#!/usr/bin/env node\n");
+    expect(await fs.readdir(path.join(restored, ".review-chrome"))).toEqual([]);
+    await expect(fs.lstat(path.join(restored, "escape"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("still refuses an archive that names an outside link on restore", async () => {
+    const manifest = { schema: "paperclip.remote-workspace-archive.v1", entries: [{ path: "escape", type: "symlink", target: "../outside" }] };
+    const bytes = Buffer.from(JSON.stringify(manifest)), length = Buffer.alloc(4); length.writeUInt32BE(bytes.length);
+    const archivePath = path.join(root, "unsafe.pcws"), targetDir = path.join(root, "target");
+    await fs.writeFile(archivePath, Buffer.concat([Buffer.from("PCWS1\n"), length, bytes]));
+    await expect(restoreRemoteWorkspaceArchive({ archivePath, targetDir,
+      expectedManifestDigest: createHash("sha256").update(bytes).digest("hex") })).rejects.toThrow("remote_workspace_archive_unsafe_symlink");
+    await expect(fs.access(targetDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("redacts a real missing-source error in the serialized capture helper", async () => {
     const helper = path.join(root, "archive.cjs"), archivePath = path.join(root, "snapshot.pcws");
