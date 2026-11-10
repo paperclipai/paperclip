@@ -442,6 +442,9 @@ function createRunContextDb(
       }),
     })),
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+    })),
   };
   return dbStub;
 }
@@ -1849,6 +1852,72 @@ describe("agent issue mutation checkout ownership", () => {
         unblockDescriptor: { owner: "board", action: "Review the blocker" },
       }),
     );
+  });
+
+  it("keeps a committed blocked PATCH successful when the owner wake fails", async () => {
+    const existing = makeIssue({
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      blockedOwnerNotifiedAt: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...existing,
+      ...patch,
+      blockedTransitionAt: new Date(),
+    }));
+    mockHeartbeatService.wakeup.mockRejectedValueOnce(new Error("wake dispatch failed"));
+    const db = createRunContextDb();
+
+    const res = await request(await createApp(ownerActor(), db)).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "blocked",
+      blockedOwnerNotifiedAt: null,
+      unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Review the blocker" },
+    });
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledOnce();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps a committed blocked PATCH successful when the notification marker write fails", async () => {
+    const existing = makeIssue({
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      blockedOwnerNotifiedAt: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...existing,
+      ...patch,
+      blockedTransitionAt: new Date(),
+    }));
+    const db = createRunContextDb();
+    db.update.mockImplementationOnce(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(async () => {
+          throw new Error("delivery marker write failed");
+        }),
+      })),
+    }));
+
+    const res = await request(await createApp(ownerActor(), db)).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "blocked",
+      blockedOwnerNotifiedAt: null,
+      unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Review the blocker" },
+    });
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledOnce();
+    expect(db.update).toHaveBeenCalledOnce();
   });
 
   it.each(["bare blocked update", "human-owned inbox fixture"] as const)(
