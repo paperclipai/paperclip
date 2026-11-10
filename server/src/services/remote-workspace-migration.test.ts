@@ -758,10 +758,10 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       return result;
     };
     const restore = workspaceArchive.restoreRemoteWorkspaceArchive, lstat = fs.lstat.bind(fs);
-    vi.spyOn(workspaceArchive, "restoreRemoteWorkspaceArchive").mockImplementation(async input => {
+    const restoreSpy = vi.spyOn(workspaceArchive, "restoreRemoteWorkspaceArchive").mockImplementation(async input => {
       const result = await restore(input); restored = input.targetDir; return result;
     });
-    vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+    const lstatSpy = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
       if (restored && String(args[0]) === path.join(restored, "untracked.txt")) {
         finalProof++;
         for (const name of ["workspace.pcws", "verified.pcws", "current.pcws"])
@@ -770,13 +770,15 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       }
       return lstat(...args);
     });
-    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("repository_preparation_unresolved");
-    expect(changed).toBe(true); expect(finalProof).toBeGreaterThan(0);
-    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
-    expect((await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, f.repository.id)))[0])
-      .toEqual({ ...f.repository, relativePath: "untracked.txt" });
-    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(f.task);
-    await expect(fs.lstat(path.dirname(restored))).rejects.toMatchObject({ code: "ENOENT" });
+    try {
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("repository_preparation_unresolved");
+      expect(changed).toBe(true); expect(finalProof).toBeGreaterThan(0);
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+      expect((await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, f.repository.id)))[0])
+        .toEqual({ ...f.repository, relativePath: "untracked.txt" });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(f.task);
+      await expect(fs.lstat(path.dirname(restored))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { lstatSpy.mockRestore(); restoreSpy.mockRestore(); }
   });
   it("rechecks the current archived repository intent path at publication", async () => {
     const f = await archivedRepositoryFixture(), put = storage.putFile.bind(storage); let uploaded = false;
