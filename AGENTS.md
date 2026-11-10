@@ -96,6 +96,9 @@ preflight", "Start Dev", "Quick Health Checks", and "Database in Dev" in
    - Budget hard-stop auto-pause behavior
    - Activity logging for mutating actions
 
+4. **Keep behavior with its owning module.**
+   Provider protocols, payload parsing, and feature-specific sequencing belong to the module that owns them. Shared code uses narrow, normalized contracts. Explain any substantive change outside the owning module. See [`rules/module-boundaries.mdc`](rules/module-boundaries.mdc).
+
 ## 6. Database Changes
 
 Follow "Schema change workflow" in `doc/DATABASE.md`: edit the schema, run
