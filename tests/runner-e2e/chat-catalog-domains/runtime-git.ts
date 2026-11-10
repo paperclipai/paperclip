@@ -72,7 +72,12 @@ export const runtimeGitCases = [runtimeDefinition("workspaces.inspect-git", asyn
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
     await expect(ctx.input.page.getByRole("heading", { name: task.title!, exact: true }).first()).toBeVisible();
-    await ctx.input.page.getByRole("button", { name: "Open a new tab", exact: true }).click();
+    // The task side panel can start closed; open it through its ordinary toggle, as a person would.
+    const newTab = ctx.input.page.getByRole("button", { name: "Open a new tab", exact: true }).filter({ visible: true });
+    const toggle = ctx.input.page.getByRole("button", { name: "Toggle side panel", exact: true, pressed: false }).filter({ visible: true });
+    await expect.poll(async () => await newTab.isVisible() || await toggle.isVisible()).toBe(true);
+    if (!await newTab.isVisible()) await toggle.click();
+    await newTab.click();
     await ctx.input.page.getByRole("option", { name: /^Files/ }).click();
     await expect(ctx.input.page.getByText("header.html", { exact: true }).first()).toBeVisible();
     await expect(ctx.input.page.getByText("existing-notes.txt", { exact: true }).first()).toBeVisible();
