@@ -61,6 +61,7 @@ import {
   asc,
   desc,
   eq,
+  gt,
   inArray,
   isNull,
   lte,
@@ -9484,6 +9485,7 @@ export function createToolGatewayService(
             eq(toolMcpGatewayTokens.id, input.tokenId),
             eq(toolMcpGatewayTokens.pendingReveal, true),
             isNull(toolMcpGatewayTokens.revokedAt),
+            or(isNull(toolMcpGatewayTokens.expiresAt), gt(toolMcpGatewayTokens.expiresAt, now)),
           ))
           .returning();
         if (!updated) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");

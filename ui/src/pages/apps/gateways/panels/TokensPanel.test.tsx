@@ -231,6 +231,12 @@ describe("TokensPanel", () => {
     expect(container.textContent).toContain("pcgw_live_REVEALEDVALUE");
   });
 
+  it("does not offer to reveal a token that expired before its reveal", async () => {
+    const pending = token({ id: "agent-token", name: "Expired client", createdByAgentId: "agent-1", createdByUserId: null, responsibleUserId: "user-1", pendingReveal: true, expiresAt: "2026-06-01T00:00:00.000Z" });
+    await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [pending] })} />);
+    expect(container.textContent).not.toContain("Waiting for you to reveal");
+  });
+
   it("does not offer to reveal a token that acts for another person", async () => {
     const pending = token({ id: "agent-token", name: "Someone else's client", createdByAgentId: "agent-1", createdByUserId: null, responsibleUserId: "user-2", pendingReveal: true });
     await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [pending] })} />);

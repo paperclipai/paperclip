@@ -29,11 +29,12 @@ export function tokenStatus(
   now: number = Date.now(),
 ): TokenStatus {
   if (token.revokedAt) return "revoked";
-  if (token.pendingReveal) return "pending";
   const expires = toDate(token.expiresAt);
-  if (!expires) return "active";
-  const diffMs = expires.getTime() - now;
+  const diffMs = expires ? expires.getTime() - now : Infinity;
+  // An unrevealed token that expired can never be revealed, so it shows as expired.
   if (diffMs <= 0) return "expired";
+  if (token.pendingReveal) return "pending";
+  if (!expires) return "active";
   if (diffMs <= TOKEN_EXPIRING_WINDOW_DAYS * 24 * 60 * 60 * 1000) return "expiring";
   return "active";
 }
