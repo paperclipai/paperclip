@@ -2568,6 +2568,66 @@ describe("TaskChatComposer", () => {
       );
     }
 
+    it.each([
+      { exit: "cancel", explicitChoice: false },
+      { exit: "save", explicitChoice: false },
+      { exit: "cancel", explicitChoice: true },
+      { exit: "save", explicitChoice: true },
+    ])("restores the pending mode choice without pinning canonical data: %j", async ({ exit, explicitChoice }) => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+      const onSaveQueuedEdit = vi.fn().mockResolvedValue(undefined);
+      const onCancelQueuedEdit = vi.fn();
+      const props = { onAdd, onWorkModeChange, onSaveQueuedEdit, onCancelQueuedEdit, draftKey };
+      renderComposer({ ...props, workMode: "standard" });
+      if (explicitChoice) pressKey("Tab", { shiftKey: true });
+      typeText("Keep my unsent draft");
+      renderComposer({ ...props, workMode: "standard", queuedEdit: { commentId: "queued", body: "Queued message" } });
+      await flushAsync();
+      renderComposer({ ...props, workMode: "ask", queuedEdit: { commentId: "queued", body: "Queued message" } });
+      await flushAsync();
+      if (exit === "save") {
+        pressKey("Enter", { metaKey: true });
+        await flushAsync();
+        expect(onSaveQueuedEdit).toHaveBeenCalledWith("queued", "Queued message");
+      } else {
+        const cancel = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Cancel")!;
+        flushSync(() => cancel.click());
+      }
+      expect(onCancelQueuedEdit).toHaveBeenCalledOnce();
+      renderComposer({ ...props, workMode: "ask", queuedEdit: null });
+      await flushAsync();
+      expect(editable().textContent).toBe("Keep my unsent draft");
+      expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode"))
+        .toBe(explicitChoice ? "planning" : "ask");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledOnce();
+      if (explicitChoice) expect(onWorkModeChange).toHaveBeenCalledWith("planning");
+      else expect(onWorkModeChange).not.toHaveBeenCalled();
+    });
+
+    it("preserves the submitted choice identity through queued editing and recovery", async () => {
+      const onAdd = vi.fn().mockRejectedValue(new CommentSubmissionUnknownError());
+      const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+      const props = { onAdd, onWorkModeChange, draftKey };
+      renderComposer({ ...props, workMode: "standard" });
+      pressKey("Tab", { shiftKey: true });
+      typeText("Recover my planning send");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      const attemptId = onAdd.mock.calls[0]![4] as string;
+      expect(container.textContent).toContain("Sending when reconnected…");
+      renderComposer({ ...props, workMode: "standard", queuedEdit: { commentId: "queued", body: "Queued message" } });
+      await flushAsync();
+      renderComposer({ ...props, workMode: "ask", queuedEdit: null });
+      await flushAsync();
+      renderComposer({ ...props, workMode: "ask", queuedEdit: null, confirmedSubmissionIds: new Set([attemptId]) });
+      await flushAsync();
+      expect(container.textContent).not.toContain("Sending when reconnected…");
+      expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("ask");
+    });
+
     it("restores the existing composer draft after cancelling an edit", async () => {
       localStorage.setItem(draftKey, "Unsent normal draft");
       render(<Harness onSave={vi.fn().mockResolvedValue(undefined)} />);
