@@ -38,7 +38,22 @@ export async function requireVerifiedAcpxModel(
       );
     }
     // Catalogs may be incomplete. Let the provider accept or reject the exact ID.
-    await control.setModel(providerModel);
+    try {
+      await control.setModel(providerModel);
+    } catch (error) {
+      // The provider answered the selection of a model it does not advertise with
+      // an ACP error: it rejected that model. Name it as such so the task asks the
+      // user to choose a model. Transport failures and an advertised model's
+      // rejection keep their original error.
+      const advertised = status.models?.availableModelIds ?? [];
+      if (!advertised.includes(providerModel) && acpErrorResponse(error)) {
+        throw Object.assign(
+          new Error(`ACP agent rejected the requested model ${requestedModel}`, { cause: error }),
+          { code: "ACP_MODEL_UNSUPPORTED", retryable: false },
+        );
+      }
+      throw error;
+    }
     status = await control.getStatus();
   }
   if (status.models?.currentModelId !== providerModel) {
@@ -48,6 +63,14 @@ export async function requireVerifiedAcpxModel(
     );
   }
   return normalizeVerifiedModelStatus(status, profile);
+}
+
+/** A JSON-RPC error response from the ACP agent, found on the error or its causes. */
+function acpErrorResponse(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  const entry = error as Record<string, unknown>;
+  if (typeof entry.code === "number" && Number.isInteger(entry.code) && typeof entry.message === "string") return true;
+  return ["acp", "cause", "error"].some(key => acpErrorResponse(entry[key], depth + 1));
 }
 
 function acpxModelVerificationError(code: string, message: string): Error {
