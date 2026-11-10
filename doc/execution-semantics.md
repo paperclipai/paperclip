@@ -3012,8 +3012,11 @@ Older releases stored the no-session evidence in the terminal coordinator's fail
 detail instead of an execution-recovery receipt. That shape is eligible only when
 all three saved flags explicitly deny a provider session, provider events and a
 checkpoint. Admission also verifies the database has no result or Runner checkpoint,
-no remote lease, and a server-authored local stop after the latest launch or process
-identity. Saved controller or session checkpoints remain holds. The same ownership,
+no remote lease, and the latest server-authored launch/stop event must be a machine
+`unidentified_runner_absent` receipt. This proves absence of both the process and
+saved runner state; an operator attestation or ordinary process stop is insufficient.
+The native runtime owns this classification, including old ambiguous or mode-less
+records: false flags alone never establish that provider work did not start. Saved controller or session checkpoints remain holds. The same ownership,
 copyback and cleanup guards apply. This read-only compatibility check keeps the old
 run and failed workspace operation intact; it does not replay or mark either successful.
 

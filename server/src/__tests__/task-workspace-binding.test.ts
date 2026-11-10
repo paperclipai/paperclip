@@ -431,10 +431,10 @@ const support = await getEmbeddedPostgresTestSupport();
       const f = await settledNativeTask("native_session_interrupted", acceptedResult);
       await db.update(heartbeatRuns).set({ status: "failed", resultJson: {} }).where(eq(heartbeatRuns.id, f.run.id));
       await db.update(nativeRunFinalizations).set({ failureDetail: {
-        providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false,
+        recoveryMode: "ambiguous_state", providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false,
       } }).where(eq(nativeRunFinalizations.runId, f.run.id));
       await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.run.agentId,
-        runId: f.run.id, seq: 1, eventType: "native.local_process_stopped", stream: "system", payload: {} });
+        runId: f.run.id, seq: 1, eventType: "native.local_process_stopped", stream: "system", payload: { basis: "unidentified_runner_absent" } });
       await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
         heartbeatRunId: f.run.id, executionWorkspaceId: f.workspaceId, phase: "workspace_finalize", status: "failed" });
       return f;
@@ -450,7 +450,7 @@ const support = await getEmbeddedPostgresTestSupport();
     });
 
     it.each(["unknown startup", "provider event", "new launch", "untrusted stop", "checkpoint", "unlinked result",
-      "remote lease", "pending cleanup", "sync descriptor", "saved checkpoint"] as const)(
+      "remote lease", "pending cleanup", "sync descriptor", "saved checkpoint", "operator stop", "ordinary stop"] as const)(
       "keeps legacy pre-session failure with %s fenced", async obligation => {
         const f = await legacyPreSessionTask(obligation === "unlinked result");
         if (obligation === "unlinked result") await db.update(nativeRunFinalizations).set({ resultId: null }).where(eq(nativeRunFinalizations.runId, f.run.id));
@@ -458,6 +458,9 @@ const support = await getEmbeddedPostgresTestSupport();
         if (obligation === "provider event" || obligation === "new launch") await db.insert(heartbeatRunEvents).values({
           companyId: f.companyId, agentId: f.run.agentId, runId: f.run.id, seq: 2, stream: "system", payload: {},
           eventType: obligation === "provider event" ? "turn.started" : "native.process_start_requested" });
+        if (obligation === "operator stop" || obligation === "ordinary stop") await db.update(heartbeatRunEvents).set({
+          payload: obligation === "operator stop" ? { basis: "operator_attested" } : {},
+        }).where(eq(heartbeatRunEvents.runId, f.run.id));
         if (obligation === "untrusted stop") await db.update(heartbeatRunEvents).set({ sourceEventId: "provider-stop" }).where(eq(heartbeatRunEvents.runId, f.run.id));
         if (obligation === "checkpoint") await db.insert(nativeRunnerCheckpoints).values({ companyId: f.companyId, issueId: f.issueId, runId: f.run.id, part: "header", material: {} });
         if (obligation === "remote lease") await db.update(environmentLeases).set({ provider: "daytona" }).where(eq(environmentLeases.id, f.lease.id));
