@@ -204,6 +204,7 @@ import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
+  afterStalledShutdownStep,
   closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
   createPreDrainShutdownBudget,
@@ -2081,7 +2082,7 @@ async function startServerWithDatabaseTeardown(
       DELIVERY_QUEUES.nativeCancellation, DELIVERY_QUEUES.nativeRuntimeResponses, DELIVERY_QUEUES.question,
       DELIVERY_QUEUES.deploymentNotifications, DELIVERY_QUEUES.liveInvalidations,
     ]) : undefined));
-    if (deliveryWorkStop.outcome !== "completed") await abortStuckMultipartUploads(signal);
+    await afterStalledShutdownStep(deliveryWorkStop, () => abortStuckMultipartUploads(signal));
     await preDrain.run("run_evidence_migration_stop", async () => {
       await runEvidenceMigrationWork?.stop();
     });
@@ -2090,7 +2091,8 @@ async function startServerWithDatabaseTeardown(
       await skillVersionRetentionWorker?.dispose();
     });
     const workspaceRecoveryStop = workspaceRecoveryWork.stop();
-    await preDrain.run("workspace_recovery_stop", () => workspaceRecoveryStop);
+    await afterStalledShutdownStep(await preDrain.run("workspace_recovery_stop", () => workspaceRecoveryStop),
+      () => abortStuckMultipartUploads(signal));
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
 

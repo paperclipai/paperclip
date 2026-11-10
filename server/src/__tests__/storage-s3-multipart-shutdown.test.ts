@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { abortInFlightMultipartUploads, putS3Multipart, putS3MultipartFile } from "../storage/s3-multipart.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
+import { afterStalledShutdownStep, runBoundedShutdownStep } from "../shutdown.js";
 
 const MIB = 1024 * 1024;
 
@@ -89,5 +90,21 @@ describe("aborting a key's incomplete multipart uploads", () => {
       .toEqual([["p/c/a.pcws", undefined, undefined], ["p/c/a.pcws", "p/c/a.pcws", "u2"]]);
     expect(aborted).toEqual(["p/c/a.pcws#u1", "p/c/a.pcws#u2"]);
     send.mockRestore();
+  });
+});
+
+describe("shutdown steps that stall on a held upload", () => {
+  const log = { info: () => {}, error: () => {} };
+
+  it("aborts in-flight uploads after a step that timed out or failed, and not after one that completed", async () => {
+    const onStalled = vi.fn(async () => {});
+    const held = new Promise<void>(() => {});
+    await afterStalledShutdownStep(await runBoundedShutdownStep({ step: "workspace_recovery_stop", signal: "SIGTERM", timeoutMs: 5, run: () => held, log }), onStalled);
+    expect(onStalled).toHaveBeenCalledTimes(1);
+    await afterStalledShutdownStep(await runBoundedShutdownStep({ step: "workspace_recovery_stop", signal: "SIGTERM", timeoutMs: 5,
+      run: async () => { throw new Error("stop failed"); }, log }), onStalled);
+    expect(onStalled).toHaveBeenCalledTimes(2);
+    await afterStalledShutdownStep(await runBoundedShutdownStep({ step: "workspace_recovery_stop", signal: "SIGTERM", timeoutMs: 1000, run: async () => {}, log }), onStalled);
+    expect(onStalled).toHaveBeenCalledTimes(2);
   });
 });
