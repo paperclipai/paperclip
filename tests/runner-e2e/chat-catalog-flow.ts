@@ -17,6 +17,7 @@ import { findChatCatalogCase, loadChatCatalogImplementation } from "./chat-catal
 import { chatCatalogInventoryDigest } from "./chat-catalog-inventory.js";
 import { resolveChatCatalogQuery } from "./chat-query-bindings.js";
 import { chatRunEvidenceApi } from "./chat-run-evidence-observer.js";
+import { markReturningBrowser } from "./chat-returning-browser.js";
 
 /** The case owns product semantics; this flow owns the actual chat entry point and evidence lifecycle. */
 export async function runChatCatalogFlow(context: ChatCatalogContext) {
@@ -26,6 +27,8 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
   const fingerprint = chatCatalogCaseFingerprint(descriptor, normalizedChatCatalogExecution(input.execution));
   assertSdkCanaryFingerprintMatches(input.execution, fingerprint);
   const implementation = await loadChatCatalogImplementation(descriptor);
+  // Setup may finish five or more tasks; a returning person has already dismissed the star prompt.
+  await markReturningBrowser(input.page, input.api.baseURL);
   if (implementation.optionalCompanySecretBindingApproval===true && (input.execution.task.optionalCompanySecretBindingApproval!==true || input.execution.task.expectedHumanMessageCount!==2)) throw new Error("Company governed approval task metadata is missing");
   if (implementation.companionSurface) return runScopedCompanionSurface(context, implementation, fingerprint);
   const slack = implementation.journeyKind === "native-slack-thread";
