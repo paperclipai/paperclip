@@ -43,6 +43,8 @@ describe("task repository acquisition authority", () => {
   it("matches GitHub URLs with Azure repositories also present in the catalog", () => {
     expect(resolveTaskRepository({ kind: "url", url: repository.url }, [azureRepository, repository]))
       .toMatchObject({ catalogRepositoryId: repository.id, repositoryIdentity: repository.url });
+    expect(resolveTaskRepository({ kind: "url", url: "https://github.com/public/repo" }, [azureRepository]))
+      .toMatchObject({ catalogRepositoryId: null });
   });
   it("converges repository aliases into a stable contained path and rejects conflicting refs", () => {
     const source = resolveTaskRepository({ kind: "catalog", id: "123" }, [repository]);
