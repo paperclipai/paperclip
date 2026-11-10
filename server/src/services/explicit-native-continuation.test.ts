@@ -1019,6 +1019,17 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     },
   );
 
+  it("keeps the user's continuation while it waits out a storage outage", async () => {
+    const f = await seedTimedOutExplicitTurn();
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "storage_unavailable" }).where(eq(heartbeatRuns.id, f.parent.id));
+    const scheduled = await heartbeatService(db).scheduleBoundedRetry(f.parent.id, { now: f.now });
+    expect(scheduled.outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id));
+    expect(successor).toMatchObject({ scheduledRetryReason: "storage_unavailable_wait",
+      contextSnapshot: { explicitUserContinuation: { previousRunId: f.parent.id } } });
+    await expect(dispatchExplicitRetry(f, successor!)).resolves.toBeTruthy();
+  });
+
   it("binds the initial user-message admission before any automatic retry", async () => {
     const f = await seedTimedOutExplicitTurn();
     await expect(dispatchExplicitRetry(f, f.parent)).resolves.toMatchObject({ interruptedRunId: f.sourceRunId });

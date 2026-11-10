@@ -1,5 +1,5 @@
 {
-  "id": "df029d70-7b79-4f34-bfeb-ab3ad254ba5c",
+  "id": "2be53987-902a-41b6-8cb4-6e89a768f8cf",
   "prevId": "f98af245-4a2e-4c3d-b89e-6ed3e81a074c",
   "version": "7",
   "dialect": "postgresql",
@@ -35421,6 +35421,22 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_pending_budget_cancellation_idx": {
+          "name": "heartbeat_runs_pending_budget_cancellation_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "jsonb_typeof(\"heartbeat_runs\".\"result_json\"->'startupCancellation'->'budgetEnforcement') = 'object'\n        and \"heartbeat_runs\".\"result_json\"->'startupCancellation'->'budgetEnforcement'->>'deliveredAt' is null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_tree_hold_suppression_idx": {
           "name": "heartbeat_runs_tree_hold_suppression_idx",
           "columns": [
@@ -42707,13 +42723,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "conversation_default": {
-          "name": "conversation_default",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "conversation_state": {
           "name": "conversation_state",
           "type": "text",
@@ -43143,7 +43152,6 @@
             }
           ],
           "isUnique": true,
-          "where": "\"issues\".\"conversation_default\" = true",
           "concurrently": false,
           "method": "btree",
           "with": {}
