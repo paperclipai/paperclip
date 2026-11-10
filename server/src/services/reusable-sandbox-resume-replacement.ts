@@ -35,7 +35,7 @@ export function sandboxStateTransitionFailure(error: unknown): boolean {
 
 /**
  * Decide whether a preserved reusable sandbox that could not be resumed may be
- * replaced, and if so retire it for the cleanup sweep in one guarded write.
+ * replaced.
  *
  * Replacement is safe only when nothing lives solely on that sandbox:
  * - its last run has ended (released or retained, and no live run holds it);
@@ -45,11 +45,11 @@ export function sandboxStateTransitionFailure(error: unknown): boolean {
  * Anything else (unsaved work, a live owner, a legacy workspace with no saved
  * version, an access refusal) keeps the strict preserve-and-retry behavior.
  *
- * The old sandbox is not destroyed here: a provider that cannot start it may
- * also be slow to delete it, and that must not delay this run's first turn.
- * The `pending_cleanup` row hands the destroy to the existing cleanup sweep.
+ * This only reads. The caller creates and records the replacement first, then
+ * calls `retireReplacedReusableSandboxLease`, so a failed creation or a restart
+ * in between leaves the preserved lease eligible for the next attempt.
  */
-export async function retireUnresumableReusableSandboxLease(input: {
+export async function reusableSandboxReplacementIsSafe(input: {
   db: Db;
   lease: EnvironmentLease;
   companyId: string;
@@ -69,6 +69,12 @@ export async function retireUnresumableReusableSandboxLease(input: {
   const status = failure.status ?? readEnvironmentResumeErrorDiagnostic(input.cause)?.httpStatus ?? null;
   if (failure.label === "provider_access_denied" || failure.label === "permission_denied"
     || status === 401 || status === 403) return false;
+  // A run that still holds the sandbox may have work on it.
+  if (lease.heartbeatRunId && lease.heartbeatRunId !== input.heartbeatRunId) {
+    const [owner] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, lease.heartbeatRunId)));
+    if (owner && ["queued", "scheduled_retry", "running"].includes(owner.status)) return false;
+  }
 
   const [workspace] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
     .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.executionWorkspaceId)));
@@ -94,6 +100,24 @@ export async function retireUnresumableReusableSandboxLease(input: {
     && !await verifyRecoverableNativeHarnessBackup({ db, companyId: lease.companyId,
       stamp: lease.metadata?.nativeHarnessBackup, providerLeaseId: lease.providerLeaseId })) return false;
 
+  return true;
+}
+
+/**
+ * Retire a preserved lease after its replacement lease is recorded. The old
+ * sandbox is not destroyed here: a provider that cannot start it may also be
+ * slow to delete it, and that must not delay this run's first turn. The
+ * `pending_cleanup` row hands the destroy to the existing cleanup sweep. The
+ * write is guarded, so a lease that another run resumed meanwhile is untouched.
+ */
+export async function retireReplacedReusableSandboxLease(input: {
+  db: Db;
+  lease: EnvironmentLease;
+  companyId: string;
+  heartbeatRunId: string;
+}): Promise<boolean> {
+  const { db, lease } = input;
+  if (!lease.providerLeaseId) return false;
   const now = new Date();
   const [claimed] = await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
     status: "pending_cleanup",

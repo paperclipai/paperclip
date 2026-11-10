@@ -153,11 +153,13 @@ describeEmbeddedPostgres("reusable sandbox resume failure replacement", () => {
     return { companyId, agentId, environment, pluginId, runId, executionWorkspaceId, lease, providerLeaseId };
   }
 
-  function worker(seeded: Awaited<ReturnType<typeof seed>>, resume: (attempt: number) => Promise<unknown>) {
+  function worker(seeded: Awaited<ReturnType<typeof seed>>, resume: (attempt: number) => Promise<unknown>,
+    options: { acquireFails?: boolean } = {}) {
     let attempts = 0;
     const call = vi.fn(async (_pluginId: string, method: string, _params: unknown, _timeoutMs?: number) => {
       if (method === "environmentResumeLease") return await resume(++attempts);
       if (method === "environmentAcquireLease") {
+        if (options.acquireFails) throw new JsonRpcCallError({ code: -32000, message: "create refused" });
         return { providerLeaseId: "replacement-sandbox", metadata: { provider: "fake-plugin", image: "fake:test",
           timeoutMs: 300_000, reuseLease: true, remoteCwd: "/home/daytona/paperclip-workspace" } };
       }
@@ -169,9 +171,10 @@ describeEmbeddedPostgres("reusable sandbox resume failure replacement", () => {
     return { call, runtime: environmentRuntimeService(db, { pluginWorkerManager: manager }) };
   }
 
-  function acquire(seeded: Awaited<ReturnType<typeof seed>>, runtime: ReturnType<typeof environmentRuntimeService>) {
+  function acquire(seeded: Awaited<ReturnType<typeof seed>>, runtime: ReturnType<typeof environmentRuntimeService>,
+    runId = seeded.runId) {
     return runtime.acquireRunLease({ companyId: seeded.companyId, environment: seeded.environment, issueId: null,
-      agentId: seeded.agentId, adapterType: "paperclip_runner", heartbeatRunId: seeded.runId,
+      agentId: seeded.agentId, adapterType: "paperclip_runner", heartbeatRunId: runId,
       persistedExecutionWorkspace: { id: seeded.executionWorkspaceId, mode: "isolated_workspace" } });
   }
 
@@ -205,6 +208,34 @@ describeEmbeddedPostgres("reusable sandbox resume failure replacement", () => {
     await expect(environmentService(db).getLeaseById(seeded.lease.id)).resolves.toMatchObject({
       status: "pending_cleanup", cleanupStatus: "failed", failureReason: "resume_failed",
     });
+  });
+
+  it("keeps the preserved lease when the replacement cannot be created, so the next attempt replaces it", async () => {
+    const seeded = await seed();
+    const refuse = async () => { throw new JsonRpcCallError({ code: -32000, message: STAGING_REFUSAL }); };
+    const step = stepClock();
+    const failing = worker(seeded, async () => { step(); return await refuse(); }, { acquireFails: true });
+    await expect(acquire(seeded, failing.runtime)).rejects.toThrow();
+    await expect(environmentService(db).getLeaseById(seeded.lease.id)).resolves.toMatchObject({
+      status: "retained", providerLeaseId: seeded.providerLeaseId,
+    });
+
+    // The bounded retry runs as a new run that reserves the same clean workspace.
+    const retryRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: retryRunId, companyId: seeded.companyId, agentId: seeded.agentId,
+      invocationSource: "assignment", status: "running" });
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, seeded.runId));
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    await db.update(executionWorkspaces).set({ metadata: { ...workspace!.metadata,
+      remoteWorkspace: { ...(workspace!.metadata!.remoteWorkspace as Record<string, unknown>), writerRunId: retryRunId } } })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const retry = worker(seeded, async () => { step(); return await refuse(); });
+    const acquired = await acquire(seeded, retry.runtime, retryRunId);
+    expect(acquired.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "replacement", reason: "resume_failed" });
+    // The replacement carries the verified harness backup, so the session restores
+    // without waiting for the old sandbox to be deleted.
+    expect(acquired.lease.metadata?.nativeHarnessBackup).toMatchObject({ authorizedProviderLeaseId: seeded.providerLeaseId });
+    await expect(environmentService(db).getLeaseById(seeded.lease.id)).resolves.toMatchObject({ status: "pending_cleanup" });
   });
 
   it("replaces a released lease saved by an older release in the same way", async () => {

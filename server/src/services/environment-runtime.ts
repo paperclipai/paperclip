@@ -5,7 +5,8 @@ import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-
 import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
 import {
   REUSABLE_SANDBOX_RESUME_BUDGET_MS,
-  retireUnresumableReusableSandboxLease,
+  retireReplacedReusableSandboxLease,
+  reusableSandboxReplacementIsSafe,
   sandboxStateTransitionFailure,
 } from "./reusable-sandbox-resume-replacement.js";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
@@ -1891,7 +1892,7 @@ function createSandboxEnvironmentDriver(
           } catch (error) {
             // A refusal is not proof the sandbox is lost. Replace it only when
             // nothing lives solely on it; otherwise preserve it for the retry.
-            if (!await retireUnresumableReusableSandboxLease({
+            if (!await reusableSandboxReplacementIsSafe({
               db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
               executionWorkspaceId: input.executionWorkspaceId, adapterType: input.adapterType, cause: error,
             })) {
@@ -2034,7 +2035,7 @@ function createSandboxEnvironmentDriver(
             : {}),
           ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
         };
-        return await environmentsSvc.acquireLease({
+        const recordedLease = await environmentsSvc.acquireLease({
           creationOperationId: providerLease ? undefined : acquiredLease.metadata?.creationOperationId as string | undefined,
           companyId: input.companyId,
           environmentId: input.environment.id,
@@ -2061,7 +2062,15 @@ function createSandboxEnvironmentDriver(
               ? reusableLease?.id
               : null,
         });
-
+        // Retire the unresumable sandbox only once its replacement, which
+        // carries the harness backup, is recorded. A failed creation or a
+        // restart before this point leaves it eligible for the next attempt.
+        if (replacementReason === "resume_failed" && reusableLease && input.heartbeatRunId) {
+          await retireReplacedReusableSandboxLease({
+            db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+          });
+        }
+        return recordedLease;
       }
 
       // Built-in sandbox provider path. Same guard as the plugin-backed path:
