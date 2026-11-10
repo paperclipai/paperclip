@@ -143,9 +143,8 @@ suite("durable plugin task credential handoff", () => {
     const metadata = { ...(await f.lease()).metadata, runnerTaskDispatched: false, runnerTaskExecutionStopped: true,
       runnerTaskIdentity: { runnerId: "fixture-runner" } };
     await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, f.leaseId));
-    await settlePluginTaskCredentialHandoff(db, { companyId: f.companyId, leaseId: f.leaseId }, metadata, async () => ({
-      type: "codex-auth-json", authJson: auth("fixture-refreshed", 2021),
-    }));
+    expect(await f.settle()).toBe("stopped");
+    expect(f.calls).toEqual(["credentials"]);
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete", outcome: "rotated" });
   });
