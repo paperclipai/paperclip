@@ -29,6 +29,8 @@ import { waitForPendingRunFailureReports } from "../services/run-failure-report.
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
 import { preparePoolAdapterClaim, effectiveRunAgent } from "../services/heartbeat/effective-run-adapter.js";
 import { resolveCodexExecutionEngineForRun } from "../../../packages/adapters/codex-local/src/server/acp.js";
+import * as localRunnerPlatform from "../lib/agent-runner-platform.js";
+import { environmentService } from "../services/environments.js";
 
 const captureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../sentry.js", async (importOriginal) => ({
@@ -207,6 +209,63 @@ afterAll(async () => {
 });
 
 describe("durable, authorized connection routing", () => {
+  it.each([["win32", "local"], ["linux", "local"], ["win32", "ssh"]] as const)("selects a compatible pool account for the %s/%s execution platform", async (platform, driver) => {
+    const target = vi.spyOn(localRunnerPlatform, "localAgentRunnerTarget").mockReturnValue({
+      driver: "local", platform, architecture: "x64", ...(platform === "linux" ? { libc: "glibc" as const, glibcVersion: "2.39" } : {}),
+    });
+    try {
+      const { harnessPoolService } = await import("../services/harness-pools.js");
+      const local = await environmentService(db).ensureLocalEnvironment(companyId);
+      const environment = driver === "local" ? local : await environmentService(db).create(companyId, {
+        name: randomUUID(), driver: "ssh", config: { host: "pool-fixture.invalid", username: "fixture" },
+      });
+      const claude = members[1]!, codex = members[0]!;
+      const backupId = randomUUID();
+      const pool = await harnessPoolService(db).save(companyId, { config: {
+        schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", members: [
+          { id: claude.id, harness: { type: "claude_code" }, connection: claude.binding, model: claude.profile.model },
+          { id: codex.id, harness: { type: "codex" }, connection: codex.binding, model: codex.profile.model },
+          { id: backupId, harness: { type: "codex" }, connection: codex.binding, model: "gpt-6-luna" },
+        ],
+      } }, "alice");
+      const taskKey = randomUUID();
+      const selected = await resolve(pool.id, taskKey, { environmentId: environment.id, skipUsageProbe: true });
+      const nativeWindows = platform === "win32" && driver === "local";
+      expect(selected.memberId).toBe(nativeWindows ? codex.id : claude.id);
+      expect(selected.runtimeConfig.provider).toBe(nativeWindows ? "codex" : "acpx");
+      if (nativeWindows) {
+        const transitioned = await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db).transitionQuotaPin({
+          companyId, agentId, poolId: pool.id, taskKey, expectedSelection: selected, userId: "alice", adapterType: "paperclip_runner",
+          attemptedMemberIds: [codex.id], failureKind: "runner", environmentId: environment.id,
+        }));
+        expect(transitioned).toMatchObject({ kind: "selected", selection: { memberId: backupId } });
+      }
+      if (platform === "linux" && driver === "local") {
+        target.mockReturnValue({ driver: "local", platform: "win32", architecture: "x64" });
+        await expect(resolve(pool.id, taskKey, { environmentId: local.id, skipUsageProbe: true }))
+          .rejects.toMatchObject({ details: { code: "pool_execution_platform_incompatible" } });
+        const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
+        expect(pin?.member.id).toBe(claude.id);
+      }
+    } finally { target.mockRestore(); }
+  });
+  it("refuses an unsupported-only pool on the execution platform without recording a pin", async () => {
+    const target = vi.spyOn(localRunnerPlatform, "localAgentRunnerTarget").mockReturnValue({ driver: "local", platform: "win32", architecture: "x64" });
+    try {
+      const { harnessPoolService } = await import("../services/harness-pools.js");
+      const local = await environmentService(db).ensureLocalEnvironment(companyId);
+      const claude = members[1]!;
+      const pool = await harnessPoolService(db).save(companyId, { config: {
+        schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", members: [
+          { id: claude.id, harness: { type: "claude_code" }, connection: claude.binding, model: claude.profile.model },
+        ],
+      } }, "alice");
+      const taskKey = randomUUID();
+      await expect(resolve(pool.id, taskKey, { environmentId: local.id, skipUsageProbe: true }))
+        .rejects.toMatchObject({ details: { code: "pool_execution_platform_incompatible" } });
+      expect(await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id))).toEqual([]);
+    } finally { target.mockRestore(); }
+  });
   it("manages central harness pools without exposing V2 records to legacy clients", async () => {
     await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
     const app = express(); app.use(express.json());
@@ -401,27 +460,31 @@ describe("durable, authorized connection routing", () => {
   it("shares quota across five model members and agents but scopes runner cooldowns by environment", async () => {
     const { harnessPoolService } = await import("../services/harness-pools.js");
     const { poolRunnerCooldownIdentity } = await import("../services/ai-connection-pool-cooldown.js");
+    const envs = environmentService(db);
+    const environmentA = (await envs.ensureLocalEnvironment(companyId)).id;
+    const environmentB = (await envs.create(companyId, { name: randomUUID(), driver: "ssh", config: { host: "pool-b.invalid", username: "fixture" } })).id;
+    const environmentC = (await envs.create(companyId, { name: randomUUID(), driver: "ssh", config: { host: "pool-c.invalid", username: "fixture" } })).id;
     const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Scoped pool fixture", apiKey: "scoped-pool-fixture", agentIds: [], allAgents: true }, randomUUID());
     const connection = { mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account };
     const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Five models", enabled: true, mode: "failover", members: Array.from({ length: 5 }, (_, index) => ({ id: randomUUID(), harness: { type: "codex" as const }, connection, model: ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"][index]! })) } }, "alice");
-    const first = await resolve(pool.id, "scope-first", { environmentId: "environment-a" });
+    const first = await resolve(pool.id, "scope-first", { environmentId: environmentA });
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
     const ref = grant!.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
     const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
     const identity = `secret:${secret!.id}:${secret!.aiSessionEpoch}`;
     const deadline = new Date(Date.now() + 300_000);
-    await service().recordQuotaCooldown(companyId, account.connectionId, poolRunnerCooldownIdentity(identity, first.runtimeConfig, "environment-a"), deadline, identity);
-    await expect(resolve(pool.id, "scope-blocked", { environmentId: "environment-a" })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
-    const otherEnvironment = await resolve(pool.id, "scope-other", { agentId: secondAgentId, environmentId: "environment-b" });
+    await service().recordQuotaCooldown(companyId, account.connectionId, poolRunnerCooldownIdentity(identity, first.runtimeConfig, environmentA), deadline, identity);
+    await expect(resolve(pool.id, "scope-blocked", { environmentId: environmentA })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
+    const otherEnvironment = await resolve(pool.id, "scope-other", { agentId: secondAgentId, environmentId: environmentB });
     expect(otherEnvironment.memberId).toBe(first.memberId);
-    const moved = await resolve(pool.id, "scope-first", { environmentId: "environment-b" });
-    expect(moved.runnerScope).toEqual({ environmentId: "environment-b" });
+    const moved = await resolve(pool.id, "scope-first", { environmentId: environmentB });
+    expect(moved.runnerScope).toEqual({ environmentId: environmentB });
     await expect(service().recheckPinnedPoolAccount({ companyId, agentId, userId: "alice", taskKey: "scope-first", selection: moved })).resolves.toBeUndefined();
-    await service().recordQuotaCooldown(companyId, account.connectionId, poolRunnerCooldownIdentity(identity, moved.runtimeConfig, "environment-b"), deadline, identity);
+    await service().recordQuotaCooldown(companyId, account.connectionId, poolRunnerCooldownIdentity(identity, moved.runtimeConfig, environmentB), deadline, identity);
     await expect(service().recheckPinnedPoolAccount({ companyId, agentId, userId: "alice", taskKey: "scope-first", selection: moved })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
     expect(await service().accountCooldown(companyId, account.connectionId, identity)).toBeNull();
     await service().recordQuotaCooldown(companyId, account.connectionId, identity, deadline);
-    for (const candidate of [agentId, secondAgentId]) await expect(resolve(pool.id, randomUUID(), { agentId: candidate, environmentId: "environment-c" })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
+    for (const candidate of [agentId, secondAgentId]) await expect(resolve(pool.id, randomUUID(), { agentId: candidate, environmentId: environmentC })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
   });
   it("refuses cross-provider execution when source CLI policy cannot be preserved", () => {
     const target = { poolId: randomUUID(), memberId: members[1]!.id, binding: members[1]!.binding,

@@ -19,6 +19,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { resolvePaperclipRunnerProviderProfile, resolvePaperclipRunnerNativeProviderInput } from "./native-runtime/provider-profile.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { parseObject } from "../adapters/utils.js";
+import { assertPoolExecutionPlatform, resolvePoolExecutionPlatform } from "./ai-connection-pool-platform.js";
 
 const usageCache = new Map<string, { expires: number; value: AiConnectionUsage }>();
 const usageInFlight = new Map<string, Promise<AiConnectionUsage | undefined>>();
@@ -359,8 +360,10 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
 
   async function resolve(input: { companyId: string; poolId: string; agentId: string; userId: string | null; adapterType: string; taskKey: string; overrides?: Record<string, unknown>; existingGrantId?: string; requireExisting?: boolean; persisted?: AiConnectionRouterSelection; skipUsageProbe?: boolean; environmentId?: string | null; sourceAdapterConfig?: Record<string, unknown> }) {
     const pinWhere = and(eq(aiConnectionTaskPins.companyId, input.companyId), eq(aiConnectionTaskPins.poolId, input.poolId), eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey));
+    const platform = await resolvePoolExecutionPlatform(db, input.companyId, input.environmentId !== undefined ? input.environmentId : input.persisted?.runnerScope?.environmentId);
     const validateSelection = async (selection: AiConnectionRouterSelection, client = db) => {
       const effectiveAdapter = selection.adapterType ?? input.adapterType;
+      assertPoolExecutionPlatform(platform, effectiveAdapter, selection.runtimeConfig);
       assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effectiveAdapter, selection.runtimeConfig);
       return aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: effectiveAdapter, binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
     };
@@ -405,6 +408,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       const candidates: AiConnectionRouterRequest["candidates"] = [];
       const identities = new Map<string, string>();
       let policyRefusal: HttpError | undefined;
+      let platformRefusal: HttpError | undefined;
       for (const member of pin ? [pin.member] : pool.members) {
         try {
           const effective = poolMemberRuntimeConfig(member, input.adapterType, input.overrides, builtin);
@@ -417,9 +421,11 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         } catch (error) {
           if (pin) throw error;
           if (error instanceof HttpError && parseObject(error.details).code === "pool_execution_policy_incompatible") policyRefusal = error;
+          if (error instanceof HttpError && parseObject(error.details).code === "pool_execution_platform_incompatible") platformRefusal = error;
         }
       }
       if (candidates.length === 0 && policyRefusal) throw policyRefusal;
+      if (candidates.length === 0 && platformRefusal) throw platformRefusal;
       if (!pin && input.requireExisting) {
         const existing = candidates.find((candidate) => candidate.member.binding.grantId === input.existingGrantId);
         if (!existing) throw unprocessable("Reset this task session before adopting the connection pool");
@@ -524,6 +530,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         !pin || !samePoolSelection(pin.selection, input.expectedSelection, input.adapterType) || pin.member.id !== pin.selection.memberId ||
         !isDeepStrictEqual(pin.member.binding, pin.selection.binding) || !row.pool.config.members.some(member => member.id === pin.member.id && isDeepStrictEqual(member.binding, pin.member.binding))) return { kind: "unavailable" };
     const members = row.pool.config.members.filter((member) => !input.attemptedMemberIds.includes(member.id));
+    const platform = await resolvePoolExecutionPlatform(db, input.companyId, input.environmentId !== undefined ? input.environmentId : input.expectedSelection.runnerScope?.environmentId);
     const memberIdentities = new Map<string, string>();
     let legacySourceIdentity: string | null = null;
     if (LOCAL_POOL_ADAPTERS.includes(input.adapterType) && (input.failureKind ?? "quota") === "quota") {
@@ -541,6 +548,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     for (const member of members) {
       try {
         const effective = poolMemberRuntimeConfig(member, input.adapterType);
+        assertPoolExecutionPlatform(platform, effective.adapterType, effective.config);
         assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config);
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
           adapterType: effective.adapterType, binding: member.binding, model: effective.config.model,
@@ -590,6 +598,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       let effective: ReturnType<typeof poolMemberRuntimeConfig>;
       try {
         effective = poolMemberRuntimeConfig(member, input.adapterType);
+        assertPoolExecutionPlatform(platform, effective.adapterType, effective.config);
         assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config);
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
           adapterType: effective.adapterType, binding: member.binding, model: effective.config.model,
@@ -641,6 +650,8 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, input.companyId),
       eq(aiConnectionTaskPins.poolId, input.selection.poolId), eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey)));
     const adapterType = input.selection.adapterType ?? "claude_local";
+    const platform = await resolvePoolExecutionPlatform(db, input.companyId, input.selection.runnerScope?.environmentId);
+    assertPoolExecutionPlatform(platform, adapterType, input.selection.runtimeConfig);
     if (!pin || !samePoolSelection(pin.selection, input.selection, adapterType)) throw conflict("The task pool selection changed before provider start");
     const selected = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
       adapterType, binding: pin.selection.binding, model: pin.selection.runtimeConfig.model,

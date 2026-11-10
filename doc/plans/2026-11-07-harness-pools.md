@@ -63,6 +63,14 @@ Healthy work stays pinned to its member. Confirmed quota/authentication/definiti
 
 Runs show both **Pool: Smart** and the **actual harness/model/account used**, plus a concise transition/wait reason. Historical runs retain their original values after pool edits or renames. Editing a pool does not rewrite active work. Disabling/archive prevents new allocations without destroying settlement/recovery evidence; show affected agents before archive.
 
+For a local execution environment, new allocations and failover candidates must
+also satisfy the existing Runner platform contract. On Windows x64, native
+Codex is supported; ACPX harnesses are not. Skip unsupported candidates without
+changing the saved pool order or recording an account cooldown. A remote
+environment is not filtered by the control-plane host's operating system; its
+own admission retains platform qualification. An existing task pin that becomes
+incompatible fails closed instead of silently switching its provider session.
+
 Switching harnesses starts a new provider conversation with the existing authorized, bounded task handoff and preserved workspace. Provider-private session state is not portable. Completed actions are references, not tool requests to replay; known unfinished mutations remain held. Generic task/model errors do not trigger a cheaper/more expensive model switch.
 
 ## 3. Ownership and data contract
