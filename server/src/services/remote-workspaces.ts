@@ -282,6 +282,7 @@ export async function reserveRemoteWorkspace(input: {
       strategyType: source.kind === "git" ? "git_worktree" : "project_primary", name: "Task workspace", status: "active",
       providerType: "cloud_sandbox", cwd: `/workspaces/${id}`, repoUrl: source.kind === "git" ? source.repoUrl : null,
       baseRef: source.kind === "git" ? source.ref : null, branchName: source.kind === "git" ? source.branchName ?? null : null,
+      derivedFromExecutionWorkspaceId: input.fresh?.previousWorkspaceId ?? null,
       metadata: { remoteWorkspace: initial, ...(input.recoverySourceRunIds?.length
         ? { remoteWorkspaceRecoverySourceRunIds: input.recoverySourceRunIds } : {}) },
     }).returning();

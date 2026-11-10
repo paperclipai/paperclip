@@ -80,6 +80,7 @@ describe.skipIf(!support.supported)("provider-owned fresh retry reservations", (
     const directory = await service.update(id, { metadata: { runnerTaskFreshWorkspace: f.fresh,
       runnerTaskWorkspaceOwner: { pluginKey: "forged" } } });
     expect(directory!.metadata).toMatchObject({ runnerTaskFreshWorkspace: next, runnerTaskWorkspaceOwner: owner });
+    expect(directory!.derivedFromExecutionWorkspaceId).toBe(prepared!.id);
     const cleared = await service.update(id, { metadata: null });
     expect(cleared!.metadata).toMatchObject({ runnerTaskFreshWorkspace: next, runnerTaskWorkspaceOwner: owner });
   });
