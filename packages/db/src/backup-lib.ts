@@ -286,7 +286,7 @@ function formatSqlValue(
   const val = columnName && nullifiedColumns.has(columnName) ? null : rawValue;
   if (val === null || val === undefined) return "NULL";
   if (dataType === "json" || dataType === "jsonb") {
-    return formatSqlLiteral(JSON.stringify(val));
+    return formatSqlLiteral(String(val));
   }
   if (dataType === "bytea" && val instanceof Uint8Array) {
     return `decode('${Buffer.from(val).toString("hex")}', 'hex')`;
@@ -998,7 +998,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
       const binaryArray = (column: (typeof cols)[number]) => column.data_type === "ARRAY"
         && column.udt_schema === "pg_catalog" && column.udt_name === "_bytea";
-      const projection = cols.some(binaryArray) ? cols.map(column => binaryArray(column)
+      const jsonValue = (column: (typeof cols)[number]) => column.data_type === "json" || column.data_type === "jsonb";
+      const castToText = (column: (typeof cols)[number]) => binaryArray(column) || jsonValue(column);
+      const projection = cols.some(castToText) ? cols.map(column => castToText(column)
         ? `${quoteIdentifier(column.column_name)}::text AS ${quoteIdentifier(column.column_name)}`
         : quoteIdentifier(column.column_name)).join(", ") : "*";
       const rowCursor = sql
