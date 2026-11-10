@@ -13,8 +13,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { AnnouncementCard } from "./AnnouncementCard";
 
 // Includes the command palette, sheets and dialogs created outside DialogContext.
-const MODAL_SELECTOR = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [aria-modal="true"]:not([data-state="closed"]), dialog[open]';
-function useModalOpen(enabled: boolean) {
+export const MODAL_SELECTOR = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [aria-modal="true"]:not([data-state="closed"]), dialog[open]';
+export function useModalOpen(enabled: boolean) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!enabled) return;
@@ -30,11 +30,11 @@ function useModalOpen(enabled: boolean) {
 const FINISHED_ONBOARDING_STATUSES = new Set(["done", "cancelled"]);
 
 /**
- * A new user's first session is the onboarding first task. Announcements wait
- * until that task is finished so they cannot cover its questions. Unknown
- * state (loading or a failed read) keeps the optional card hidden.
+ * A new user's first session is the onboarding first task. Announcements and
+ * other optional prompts wait until that task is finished so they cannot cover
+ * its questions. Unknown state (loading or a failed read) keeps them hidden.
  */
-function useOnboardingInProgress(companyId: string | null) {
+export function useOnboardingInProgress(companyId: string | null) {
   const query = useQuery({
     queryKey: queryKeys.issues.onboardingFirstTask(companyId ?? "__none__"),
     queryFn: ({ signal }) => issuesApi.list(companyId!, { originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND, limit: 1 }, { signal }),

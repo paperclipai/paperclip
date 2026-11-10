@@ -396,6 +396,39 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("paused by board");
   });
 
+  it("names the recorded cause of an adapter failure and keeps the plain label for older runs", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-adapter-cause",
+          status: "failed",
+          errorCode: "adapter_failed",
+          failureCause: "40001",
+          resultJson: { stopReason: "adapter_failed" },
+        }),
+        createRun({
+          runId: "run-adapter-legacy",
+          status: "failed",
+          errorCode: "adapter_failed",
+          resultJson: { stopReason: "adapter_failed" },
+          createdAt: "2026-04-18T19:57:00.000Z",
+        }),
+        createRun({
+          runId: "run-adapter-malformed",
+          status: "failed",
+          errorCode: "adapter_failed",
+          failureCause: "select * from secrets",
+          resultJson: { stopReason: "adapter_failed" },
+          createdAt: "2026-04-18T19:56:00.000Z",
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("adapter failed (40001)");
+    expect(container.textContent?.match(/adapter failed(?! \()/g)).toHaveLength(2);
+    expect(container.textContent).not.toContain("secrets");
+  });
+
   it("surfaces active and completed child issue summaries", () => {
     renderLedger({
       childIssues: [

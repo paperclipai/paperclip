@@ -2665,6 +2665,28 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).not.toContain("after returning a final response");
   });
 
+  it("names the rejected model id that the task interruption carries", () => {
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      interruption: { intentId: null, responsibility: "user", state: "waiting_for_user", nextRetryAt: null,
+        canRetry: false, userAction: "choose_model", rejectedModel: "chaos-missing-model-1234", sourceRunIds: ["model-missing"], observedRunId: "model-missing" },
+      linkedRuns: [{
+        runId: "model-missing", runtimeMode: "native", status: "failed",
+        errorCode: "native_provider_model_rejected",
+        error: "The selected model is not available through the current AI connection. Choose a supported model or a compatible AI connection.",
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z",
+        finishedAt: "2026-08-25T18:00:02.000Z",
+      }],
+    });
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Model unavailable");
+    flushSync(() => marker!.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!.click());
+    expect(container.textContent).toContain('The provider rejected the model "chaos-missing-model-1234".');
+    expect(container.textContent).toContain("Choose a supported model");
+  });
+
   it("keeps workspace contention out of the conversation's cancellation markers", () => {
     renderThread({
       comments: [],

@@ -45,7 +45,7 @@ import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemot
 import { nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
 import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
-import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
+import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
@@ -8210,6 +8210,11 @@ const NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION =
 const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
   "The provider could not start the selected model before any provider work began. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
 
+// The provider session opened, then the provider refused the selected model on
+// the turn. The task needs a model choice, not a reconciliation of session state.
+const NATIVE_TURN_MODEL_REJECTED_ACTION =
+  "The provider rejected the selected model. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
+
 const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
   "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
 
@@ -10157,6 +10162,7 @@ async function executePaperclipNativeSessionAttempt(
             companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId,
             leaseOwner, attempt: claimedAttempt, controller,
             remote: input.runnerExecutionTarget?.kind === "remote",
+            controllerGeneration,
             confirmedDeadline: confirmedLeaseDeadline,
             onLost: () => {
               startup.providerPackSourceAbort.abort(new Error("native_session_lease_lost"));
@@ -10333,7 +10339,7 @@ async function executePaperclipNativeSessionAttempt(
     const history = await input.db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
       eq(heartbeatRunEvents.companyId, input.execution.binding.companyId), eq(heartbeatRunEvents.runId, input.execution.binding.runId),
       or(sql`${heartbeatRunEvents.payload}->'prpEvent'->'payload'->>'kind' = 'usage'`,
-        inArray(heartbeatRunEvents.eventType, ["turn.started", "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"])),
+        inArray(heartbeatRunEvents.eventType, ["turn.started", "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted", "session.resumed"])),
     )).orderBy(heartbeatRunEvents.seq);
     for (const row of history) {
       const event = record(row.payload).prpEvent as PrpEvent;
@@ -11860,6 +11866,9 @@ async function executePaperclipNativeSessionAttempt(
             ),
           )
           .for("update");
+        // Issue → coordinator → run, as below. A lease that lapsed untouched
+        // (host sleep) is still this owner's to settle; see the held condition.
+        await lockNativeExecutionLeaseForReacquire(tx, { ...input.execution.binding, leaseOwner, preResultOnly: true });
         await notifyExecutionRunWork(tx, { companyId: input.execution.binding.companyId });
         await notifyNativeFinalizationWork(tx, input.execution.binding);
         const updated = await tx
@@ -11909,6 +11918,8 @@ async function executePaperclipNativeSessionAttempt(
                     ? "The work and waiting state are saved. Confirm shutdown of the retained execution and settle that same handoff without repeating provider work."
                   : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
                     ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
+                  : sourceFailureCode === "native_provider_model_rejected"
+                    ? NATIVE_TURN_MODEL_REJECTED_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                     ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING
@@ -11992,7 +12003,8 @@ async function executePaperclipNativeSessionAttempt(
                 nativeRunFinalizations.controllerProcessStartedAt,
                 controller.processStartedAt,
               ),
-              gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+              nativeExecutionLeaseHeldCondition({ remote: input.runnerExecutionTarget?.kind === "remote",
+                controllerGeneration }),
             ),
           )
           .returning({ runId: nativeRunFinalizations.runId, resultId: nativeRunFinalizations.resultId })
@@ -12165,6 +12177,8 @@ async function executePaperclipNativeSessionAttempt(
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
               : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
                 ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
+              : sourceFailureCode === "native_provider_model_rejected"
+                ? NATIVE_TURN_MODEL_REJECTED_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                 ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING
@@ -12457,6 +12471,8 @@ async function executePaperclipNativeSessionAttempt(
       }
       const releaseNow = new Date();
       const released = await timeController("coordinator_release", () => input.db.transaction(async tx => {
+        // A lease that lapsed untouched (host sleep) is still this owner's to release.
+        await lockNativeExecutionLeaseForReacquire(tx, { ...input.execution.binding, leaseOwner });
         await notifyNativeFinalizationWork(tx, input.execution.binding);
         return tx.update(nativeRunFinalizations)
           .set({
@@ -12479,7 +12495,8 @@ async function executePaperclipNativeSessionAttempt(
                 nativeRunFinalizations.controllerProcessStartedAt,
                 controller.processStartedAt,
               ),
-              gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+              nativeExecutionLeaseHeldCondition({ remote: input.runnerExecutionTarget?.kind === "remote",
+                controllerGeneration, relinquishAccepted: true }),
             ),
           )
           .returning({ runId: nativeRunFinalizations.runId })

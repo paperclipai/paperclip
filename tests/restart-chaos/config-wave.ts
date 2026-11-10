@@ -233,7 +233,8 @@ async function snapshot(api: ChaosApi, issueId: string, agentId: string, errors:
     return {
       at, reachable: true, issueStatus: String(issue.status), runs: runSamples,
       interruption: interruption ? { state: interruption.state ?? null, canRetry: interruption.canRetry === true, userAction: interruption.userAction ?? null,
-        workspaceFailure: interruption.workspaceFailure?.message ?? null, observedRunId: interruption.observedRunId ?? null } : null,
+        workspaceFailure: interruption.workspaceFailure?.message ?? null, setupFailure: interruption.setupFailure?.message ?? null,
+        rejectedModel: interruption.rejectedModel ?? null, observedRunId: interruption.observedRunId ?? null } : null,
       execution: projection ? { label: projection.label ?? null, cause: projection.cause ?? null, nextAction: projection.nextAction ?? null } : null,
       cards: (Array.isArray(interactions) ? interactions : []).map(card => ({ id: String(card.id), kind: String(card.kind), status: String(card.status),
         serviceSlug: card.payload?.serviceSlug ?? null, agentSetup: card.payload?.agentSetup === true })),
@@ -253,7 +254,7 @@ function time(value: unknown): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
-/** Use what the task offers: complete a pending connection card, then Retry, then the agent's setup Retry. */
+/** Use what the task offers: complete a pending connection card, then Retry (the task's, or a rejected model's marker), then the agent's setup Retry. */
 async function offeredAction(api: ChaosApi, record: ConfigTaskRecord, resources: TaskResources, current: ConfigSnapshot): Promise<string> {
   const card = current.cards.find(candidate => candidate.status === "pending" && candidate.kind === "connection_intent");
   if (card && resources.connectionId) {
@@ -263,6 +264,12 @@ async function offeredAction(api: ChaosApi, record: ConfigTaskRecord, resources:
   if (current.interruption?.canRetry && current.interruption.observedRunId) {
     const response = await api.post<Json>(`/api/issues/${record.issueId}/retry`, { idempotencyKey: randomUUID(), observedRunId: current.interruption.observedRunId });
     return `clicked Retry (accepted=${String(response?.accepted)})`;
+  }
+  // A rejected model offers Retry on the run's "Model unavailable" marker, which retries that run on the agent.
+  if (current.interruption?.userAction === "choose_model" && current.interruption.observedRunId) {
+    const response = await api.post<Json>(`/api/agents/${resources.agentId}/wakeup`, { source: "on_demand", triggerDetail: "manual",
+      reason: "retry_failed_run", failedRunId: current.interruption.observedRunId });
+    return `clicked the model marker's Retry (run ${String(response?.id ?? "none")})`;
   }
   if (current.agent && current.agent.lifecycleState !== "ready") {
     await api.post(`/api/agents/${resources.agentId}/lifecycle/retry`, {});
