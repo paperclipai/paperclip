@@ -1201,6 +1201,37 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledTimes(2);
   });
 
+  it("reflects an externally updated task mode after mounting", async () => {
+    const onAdd = vi.fn();
+    const onWorkModeChange = vi.fn();
+    renderComposer({ onAdd, onWorkModeChange, workMode: "standard" });
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')).toBeNull();
+
+    renderComposer({ onAdd, onWorkModeChange, workMode: "planning" });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode"))
+      .toBe("planning");
+  });
+
+  it("keeps a local draft mode while persisted task data refreshes", async () => {
+    const onAdd = vi.fn();
+    const onWorkModeChange = vi.fn();
+    renderComposer({ onAdd, onWorkModeChange, workMode: "standard" });
+    pressKey("Tab", { shiftKey: true });
+
+    renderComposer({ onAdd, onWorkModeChange, workMode: "ask" });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode"))
+      .toBe("planning");
+    expect(onWorkModeChange).not.toHaveBeenCalled();
+
+    // Once the task acknowledges the local choice, later external changes apply.
+    renderComposer({ onAdd, onWorkModeChange, workMode: "planning" });
+    renderComposer({ onAdd, onWorkModeChange, workMode: "standard" });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')).toBeNull();
+  });
+
   it("cycles the pending mode with Shift+Tab and applies it on submit", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
