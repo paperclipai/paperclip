@@ -1,6 +1,8 @@
 import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
+import type { Breadcrumb } from "../context/BreadcrumbContext";
+
 import { DispositionRecoveryNotice, type DispositionRecoverySnapshot } from "../components/DispositionRecoveryNotice";
 import { RichWorkProductCard } from "../components/task-chat/RichWorkProductCard";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -2972,6 +2974,37 @@ describe("IssueDetail", () => {
     expect(chip).not.toBeNull();
     expect(chip?.textContent).toBe(isMobile ? "Private" : "PAP-0");
     expect(container.querySelector('a, [role="link"]')).toBeNull();
+  });
+
+  it("updates the private parent label when an open task changes viewport", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      ancestors: [{ id: "private-parent", identifier: "PAP-0", locked: true }] as unknown as Issue["ancestors"],
+    }));
+    const captured: Breadcrumb[][] = [];
+    for (const isMobile of [false, true, false]) {
+      mockSidebarState.isMobile = isMobile;
+      await act(async () => { renderIssueView(); });
+      await flushReact();
+      captured.push(mockSetBreadcrumbs.mock.calls.at(-1)![0]);
+    }
+
+    const { BreadcrumbProvider, useBreadcrumbs } = await vi.importActual<
+      typeof import("../context/BreadcrumbContext")
+    >("../context/BreadcrumbContext");
+    let updateBreadcrumbs: (crumbs: Breadcrumb[]) => void = () => {};
+    function RenderBreadcrumbControl() {
+      const { breadcrumbs, setBreadcrumbs } = useBreadcrumbs();
+      updateBreadcrumbs = setBreadcrumbs;
+      return breadcrumbs[1]?.control;
+    }
+    await act(async () => {
+      renderIssueView(<BreadcrumbProvider><RenderBreadcrumbControl /></BreadcrumbProvider>);
+    });
+    for (const [index, expected] of ["PAP-0", "Private", "PAP-0"].entries()) {
+      await act(async () => { updateBreadcrumbs(captured[index]); });
+      expect(container.querySelector('[data-testid="locked-issue-chip"]')?.textContent).toBe(expected);
+      expect(container.querySelector('a, [role="link"]')).toBeNull();
+    }
   });
 
   it("preserves hierarchy breadcrumbs and label chips when Streamlined UI is off", async () => {

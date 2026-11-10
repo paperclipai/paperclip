@@ -5981,7 +5981,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         control: isLockedIssueStub(breadcrumbParent)
           ? <LockedIssueChip identifier={isMobile ? null : breadcrumbParent.identifier} />
           : undefined,
-        controlKey: isLockedIssueStub(breadcrumbParent) ? "private-parent" : undefined,
+        controlKey: isLockedIssueStub(breadcrumbParent) ? `private-parent:${isMobile}` : undefined,
       }] : []),
       {
         // The status glyph (leading) already conveys in-progress/live state;

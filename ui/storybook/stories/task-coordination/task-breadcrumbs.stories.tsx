@@ -33,7 +33,7 @@ function TaskBreadcrumbPreview({
         identifier: "PAP-120",
         href: privateParent ? undefined : "/issues/PAP-120",
         control: privateParent ? <LockedIssueChip identifier={isMobile ? null : "PAP-120"} /> : undefined,
-        controlKey: privateParent ? "private-parent" : undefined,
+        controlKey: privateParent ? `private-parent:${isMobile}` : undefined,
       }] : []),
       { label: title, identifier: "PAP-121", leading: <StatusIcon status="in_progress" className="size-3" />, leadingKey: "in_progress" },
     ]);
