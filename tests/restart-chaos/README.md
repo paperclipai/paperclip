@@ -173,6 +173,54 @@ receipt names both commits (`upgrade` in `faults.json`, `upgrade_switched` in th
 timeline). K14 is local-only, because a Daytona runner must match its image, and
 it is never part of a storm's default faults.
 
+## Config faults (CF1–CF3, `config-wave.ts`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/config-wave.ts \
+  --faults CF1,CF3 --adapters codex --tasks 4 --concurrency 1 --restarts K1,K2 --seed 61
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/config-wave.ts --faults CF2 --tasks 1 --seed 62
+```
+
+A fresh wave only has valid settings. Config faults break one saved setting that refers
+to another object. Each task gets its own agent, credential secret and project, so one
+task's break never affects another task. The harness breaks the setting through the
+board routes a user would use, launches an A1 brief task on that agent and project, and
+then checks four things:
+
+1. **Bounded rest.** Within `--park-seconds` (default 420) the task either completes, or
+   rests on something that waits for a person: a pending card, an interruption that
+   offers Retry or a user action, parked agent setup, or a blocked task. An unstarted
+   Queued run counts as a rest only with a card or parked setup that says why it waits.
+2. **Actionable message.** While the task rests, the task page names the broken setting:
+   the interruption, the execution status, cards, the agent's setup status, or a notice.
+   A message that appears only in the run's own error text fails as
+   `message_only_in_run_detail`.
+3. **No loop, no ownerless queue.** At most 3 runs start while the setting is broken.
+   Agent setup does not say it "will retry automatically" while the configuration is
+   unchanged. No Queued run sits unstarted for more than 3 minutes without a named wait.
+4. **Restart and repair.** A K1 or K2 restart fires while the task rests (`--restarts`,
+   alternating), and the task must rest again. The harness then repairs the setting and
+   uses the action the task offers: complete the connection card, click Retry, or retry
+   the agent's setup. The task must then finish within `--repair-seconds`, and the A1
+   brief oracle must pass.
+
+A break that the server refuses on write passes as `refused_on_write`.
+
+| Fault | Setting broken |
+| --- | --- |
+| CF1 | Project `workspaceStrategy.provisionCommand` set to `bash ./scripts/provision-worktree.sh`, a script that does not exist (as in #20269) |
+| CF2 | OpenCode agent `runtimeConfig.aiConnection` selects the responsible user's personal OpenRouter default, which was never created (as in #20361). Repair connects a personal account |
+| CF3 | Seeded walk over `provision_command`, `ai_default` (opencode only), `agent_secret` (secret deleted), `workspace_cwd` (path removed), `base_ref` (missing branch), `model_id` (unknown model). Pin a set with `--references` |
+
+Waves are capped at 4 tasks and a concurrency of 2. A wave can contain only one
+`ai_default` task, because the product has no route that clears a default once a repair
+creates it. Results go to `results/<wave>-cf/` (`SUMMARY.md`, `<task>.config-grade.json`,
+`timeline.jsonl`, `server.log`). The instance is deleted when the wave ends.
+
+Settings that CF3 does not break, and why, are listed in `CONFIG_REFERENCES_NOT_BROKEN`
+and in every wave summary. CF4 (an instance aged by an older release) is designed in
+[`doc/plans/2026-11-09-chaos-config-and-aged-state-faults.md`](../../doc/plans/2026-11-09-chaos-config-and-aged-state-faults.md).
+
 ## Cloud storage (`--storage s3`, `--storage-faults`)
 
 ```sh
@@ -386,6 +434,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `scheduler.ts` | Seeded plan: workload × adapter × fault cells and a random fire time per task. Saved to `results/<wave>/plan.json`. `--replay` reruns one task alone with the same choices and fires the recorded sequence of faults that crossed it (other tasks' faults included) at the same offsets from launch. |
 | `observer.ts` | Polls each issue and its runs. When a task rests needing Retry it calls `POST /api/issues/:id/retry` once (once more only if a later fault started after that click), with the body `useTaskRetry.ts` sends. Collects T-oracle artifacts and the R6 sweep. |
 | `grader.ts` | Pure R1–R6 grading over the samples. |
+| `config-faults.ts`, `config-wave.ts` | Config faults: the reference catalog, seeded plan and oracle (pure), and the wave runner that breaks, restarts, repairs and grades. |
 | `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, with their T-oracles. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
