@@ -19,6 +19,7 @@ import { companiesApi, type CompanyImportJobAccepted } from "../api/companies";
 import { adaptersApi } from "../api/adapters";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { agentsApi } from "../api/agents";
+import { skillSourcesApi } from "../api/skillSources";
 import { routinesApi } from "../api/routines";
 import { sidebarPreferencesApi } from "../api/sidebarPreferences";
 import { queryKeys } from "../lib/queryKeys";
@@ -33,6 +34,7 @@ import {
   Check,
   ChevronRight,
   Download,
+  GitBranch,
   Loader2,
   Package,
   Upload,
@@ -935,9 +937,25 @@ export function CompanyImport() {
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
+  const { data: projectRepositories = [], isLoading: projectRepositoriesLoading, error: projectRepositoriesError } = useQuery({
+    queryKey: ["company-import", "project-repositories", selectedCompanyId],
+    queryFn: () => skillSourcesApi.projectRepositories(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const azureProjectRepositories = projectRepositories.filter((repository) => {
+    try {
+      const hostname = new URL(repository.repositoryUrl).hostname.toLowerCase();
+      return hostname === "dev.azure.com";
+    } catch {
+      return false;
+    }
+  });
+
   // Source state
-  const [sourceMode, setSourceMode] = useState<"github" | "local">("github");
+  const [sourceMode, setSourceMode] = useState<"github" | "project_repository" | "local">("github");
+  const sourceCompanyIdRef = useRef(selectedCompanyId);
   const [importUrl, setImportUrl] = useState("");
+  const [projectWorkspaceId, setProjectWorkspaceId] = useState("");
   const [localPackage, setLocalPackage] = useState<{
     name: string;
     file: File;
@@ -1136,6 +1154,16 @@ export function CompanyImport() {
     return { type: "github", url };
   }
 
+  function buildProjectRepositorySource(): CompanyPortabilitySource | null {
+    const repository = azureProjectRepositories.find((item) => item.workspaceId === projectWorkspaceId);
+    if (!repository || !selectedCompanyId) return null;
+    return {
+      type: "project_repository",
+      companyId: selectedCompanyId,
+      workspaceId: repository.workspaceId,
+    };
+  }
+
   // Import fields shared by preview and apply, and by both transports. The
   // multipart zip upload ships these as a JSON `meta` field; the inline GitHub
   // request spreads them alongside its `source`.
@@ -1173,7 +1201,7 @@ export function CompanyImport() {
         // inline bundle the importer consumes.
         return companiesApi.importPreviewPackage(localPackage.file, meta);
       }
-      const source = buildGithubSource();
+      const source = sourceMode === "project_repository" ? buildProjectRepositorySource() : buildGithubSource();
       if (!source) throw new Error("No source configured.");
       return companiesApi.importPreview({ source, ...meta });
     },
@@ -1300,8 +1328,8 @@ export function CompanyImport() {
         pauseAutomations: variables.pauseAutomations,
       };
       const localFile = sourceMode === "local" ? localPackage?.file : null;
-      const githubSource = sourceMode === "local" ? null : buildGithubSource();
-      if (sourceMode === "local" ? !localFile : !githubSource) {
+      const importSource = sourceMode === "local" ? null : sourceMode === "project_repository" ? buildProjectRepositorySource() : buildGithubSource();
+      if (sourceMode === "local" ? !localFile : !importSource) {
         throw new Error("No source configured.");
       }
       const storageKey = currentImportJobStorageKey();
@@ -1315,7 +1343,7 @@ export function CompanyImport() {
         } else {
           accepted = localFile
             ? await companiesApi.importBundlePackageAsync(localFile, meta)
-            : await companiesApi.importBundleAsync({ source: githubSource!, ...meta });
+            : await companiesApi.importBundleAsync({ source: importSource!, ...meta });
         }
       } catch (err) {
         // 409: this user's previous import is still running. Adopt that job
@@ -1441,6 +1469,16 @@ export function CompanyImport() {
     setImportPreview(null);
     resetMutationState();
   }
+
+  useEffect(() => {
+    if (sourceCompanyIdRef.current === selectedCompanyId) return;
+    sourceCompanyIdRef.current = selectedCompanyId;
+    setProjectWorkspaceId("");
+    resetImportFlowState();
+    // This transition is keyed only to the company change; the reset helper
+    // intentionally uses current mutation state from the committed render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCompanyId]);
 
   async function handleChooseLocalPackage(e: ChangeEvent<HTMLInputElement>) {
     const fileList = e.target.files;
@@ -1800,7 +1838,7 @@ export function CompanyImport() {
   }
 
   const hasSource =
-    sourceMode === "local" ? !!localPackage : importUrl.trim().length > 0;
+    sourceMode === "local" ? !!localPackage : sourceMode === "project_repository" ? Boolean(buildProjectRepositorySource()) : importUrl.trim().length > 0;
   const hasErrors = importPreview ? importPreview.errors.length > 0 : false;
 
   // The local .zip uploads its raw compressed file as multipart and is unzipped
@@ -2004,14 +2042,15 @@ export function CompanyImport() {
         <div>
           <h2 className="text-base font-semibold">Import source</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Choose a GitHub repo or upload a local Paperclip zip package.
+            Choose a GitHub repo, an Azure DevOps project repository, or upload a local Paperclip zip package.
           </p>
         </div>
 
-        <div className="grid gap-2 md:grid-cols-2">
+        <div className="grid gap-2 md:grid-cols-3">
           {(
             [
               { key: "github", icon: GithubIcon, label: "GitHub repo" },
+              { key: "project_repository", icon: GitBranch, label: "Azure DevOps project" },
               { key: "local", icon: Upload, label: "Local zip" },
             ] as const
           ).map(({ key, icon: Icon, label }) => (
@@ -2072,6 +2111,29 @@ export function CompanyImport() {
               </p>
             )}
           </div>
+        ) : sourceMode === "project_repository" ? (
+          <Field label="Project repository" hint="Choose an Azure DevOps repository already connected to this organization.">
+            <select
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              value={projectWorkspaceId}
+              disabled={importMutation.isPending || projectRepositoriesLoading}
+              onChange={(event) => {
+                setProjectWorkspaceId(event.target.value);
+                resetImportFlowState();
+              }}
+            >
+              <option value="">{projectRepositoriesLoading ? "Loading repositories…" : "Select a repository"}</option>
+              {azureProjectRepositories.map((repository) => (
+                <option key={repository.workspaceId} value={repository.workspaceId}>
+                  {repository.projectName} · {repository.repositoryUrl} ({repository.trackingRef})
+                </option>
+              ))}
+            </select>
+            {projectRepositoriesError && <p role="alert" className="mt-1 text-xs text-destructive">Could not load project repositories.</p>}
+            {!projectRepositoriesLoading && !projectRepositoriesError && azureProjectRepositories.length === 0 && (
+              <p className="mt-1 text-xs text-muted-foreground">No Azure DevOps project repositories are connected to this organization.</p>
+            )}
+          </Field>
         ) : (
           <Field
             label="GitHub URL"

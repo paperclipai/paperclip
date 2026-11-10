@@ -3800,6 +3800,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       );
     }
 
+    if (source.type !== "github") throw forbidden("Project repository sources must be authorized before import.");
     const parsed = parseGitHubSourceUrl(source.url);
     let ref = parsed.ref;
     const warnings: string[] = [];

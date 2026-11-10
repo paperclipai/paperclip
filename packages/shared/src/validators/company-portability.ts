@@ -278,6 +278,18 @@ export const portabilitySourceSchema = z.discriminatedUnion("type", [
     type: z.literal("github"),
     url: z.string().url(),
   }),
+  z.object({
+    type: z.literal("project_repository"),
+    companyId: z.string().guid(),
+    workspaceId: z.string().guid(),
+    // Accept a simple Git ref name/path only. Reject option-like values and
+    // Git's special or traversal-like ref forms before they reach consumers.
+    ref: z.string().min(1).max(128)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/)
+      .refine((ref) => !ref.includes("..") && !ref.includes("//") && !ref.includes("@{"))
+      .refine((ref) => !ref.endsWith(".") && !ref.endsWith("/") && !ref.endsWith(".lock"))
+      .optional(),
+  }),
 ]);
 
 export const portabilityTargetSchema = z.discriminatedUnion("mode", [

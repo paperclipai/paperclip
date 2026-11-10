@@ -51,6 +51,7 @@ const mockAuthApi = vi.hoisted(() => ({
 const mockSidebarPreferencesApi = vi.hoisted(() => ({
   updateProjectOrder: vi.fn(),
 }));
+const mockSkillSourcesApi = vi.hoisted(() => ({ projectRepositories: vi.fn() }));
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
 const mockOptionalCompany = vi.hoisted(() => vi.fn());
@@ -94,6 +95,7 @@ vi.mock("../api/auth", () => ({
 vi.mock("../api/sidebarPreferences", () => ({
   sidebarPreferencesApi: mockSidebarPreferencesApi,
 }));
+vi.mock("../api/skillSources", () => ({ skillSourcesApi: mockSkillSourcesApi }));
 
 vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
@@ -303,6 +305,7 @@ describe("CompanyImport", () => {
     mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
     mockCompaniesApi.get.mockResolvedValue({ id: "company-2", name: "Imported Test", issuePrefix: "IMP" });
     mockSidebarPreferencesApi.updateProjectOrder.mockResolvedValue(undefined);
+    mockSkillSourcesApi.projectRepositories.mockResolvedValue([]);
   });
 
   afterEach(async () => {
@@ -417,6 +420,46 @@ describe("CompanyImport", () => {
     } finally {
       invalidateSpy.mockRestore();
     }
+  });
+
+  it("previews and imports an Azure DevOps project repository source", async () => {
+    mockSkillSourcesApi.projectRepositories.mockResolvedValue([
+      {
+        projectId: "project-1", projectName: "Platform", projectVisibility: "private",
+        workspaceId: "workspace-1", repositoryUrl: "https://dev.azure.com/acme/Platform/_git/company-kit",
+        trackingRef: "refs/heads/main", bindingId: "binding-1", sourceId: null, status: "available", lastError: null,
+      },
+      {
+        projectId: "project-2", projectName: "GitHub", projectVisibility: "open",
+        workspaceId: "workspace-2", repositoryUrl: "https://github.com/acme/other",
+        trackingRef: "main", bindingId: "binding-2", sourceId: null, status: "available", lastError: null,
+      },
+      {
+        projectId: "project-3", projectName: "Legacy Azure", projectVisibility: "private",
+        workspaceId: "workspace-3", repositoryUrl: "https://acme.visualstudio.com/Platform/_git/legacy",
+        trackingRef: "main", bindingId: "binding-3", sourceId: null, status: "available", lastError: null,
+      },
+    ]);
+    await renderPage();
+    await clickButton((text) => text.includes("Azure DevOps project"));
+    const select = container.querySelector<HTMLSelectElement>('select');
+    expect(select?.textContent).toContain("Platform");
+    expect(select?.textContent).not.toContain("GitHub");
+    expect(select?.textContent).not.toContain("Legacy Azure");
+    await act(async () => {
+      select!.value = "workspace-1";
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+    await clickButton((text) => text === "Preview import");
+    expect(mockCompaniesApi.importPreview).toHaveBeenCalledWith(expect.objectContaining({
+      source: { type: "project_repository", companyId: "company-1", workspaceId: "workspace-1" },
+    }));
+    await clickButton((text) => text.startsWith("Import "));
+    await settle();
+    expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalledWith(expect.objectContaining({
+      source: { type: "project_repository", companyId: "company-1", workspaceId: "workspace-1" },
+    }));
   });
 
   it("keeps activating remaining items and surfaces per-item failures", async () => {

@@ -9,7 +9,7 @@ import { skillSourceRetryAt } from './skill-source-retry.js';
 import path from 'node:path';
 import { folderService } from './folders.js';
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
-import { companySkillSources as sources, companySkillSourceEntries as entries, companySkills, companySkillRepositorySnapshots, projectSkillSources, projects, type Db, type SkillPackageRestoreRecipe, authUsers } from '@paperclipai/db';
+import { companySkillSources as sources, companySkillSourceEntries as entries, companySkills, companySkillRepositorySnapshots, projectSkillSources, projectProviderAuthorizations, connectionGrants, projects, type Db, type SkillPackageRestoreRecipe, authUsers } from '@paperclipai/db';
 import type { CompanySkill, SkillSource, SkillSourceCreateRequest, SkillSourceDiscoveryRequest, SkillSourceSelectionRequest, SkillSourceRefreshResult, SkillSourcePreviewRequest, SkillSourceSettingsRequest, SkillSourceDisconnectRequest, SkillSourceDisconnectResult, SkillSourceBranchesQuery } from '@paperclipai/shared';
 import { normalizeAgentUrlKey } from '@paperclipai/shared';
 import { conflict, notFound, unprocessable } from '../errors.js';
@@ -17,6 +17,10 @@ import { companySkillService, parseSkillImportSourceInput } from './company-skil
 import { scanGitHubSkillsWithPackageFallback as scanGitHubSkills, previewGitHubSkillFile, type GitHubRead, type ScannedSkillSource, type SkillScanOptions } from './github-skill-source.js';
 import { skillAccessService } from './skill-access.js';
 import { skillSnapshotHash } from './skill-snapshot.js';
+import { scanAzureDevOpsProjectSkillsWithPackageFallback } from './azure-project-skill-source.js';
+import { resolveAzureDevOpsProjectGitCredentials } from './azure-project-git-credentials.js';
+import { readAzureProjectSkillHead } from './azure-project-skill-head.js';
+import { authorizeAzureSkillSourceBindings, lockAzureSkillAuthority } from './azure-project-skill-bindings.js';
 
 type PreparedPackages = Map<string, { id: string; restore: SkillPackageRestoreRecipe }>;
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -33,10 +37,24 @@ export type SkillSourceContext = {
   publishCommittedActivity?: () => void;
 };
 const scope = (companyId: string, id: string) => and(eq(sources.companyId, companyId), eq(sources.id, id));
+const isAzureRepository = (url: string) => { try { return new URL(url).hostname === 'dev.azure.com'; } catch { return false; } };
 
 export function skillSourceService(db: Db) {
   const skills = companySkillService(db);
   const packages = skillPackageStore(db);
+  async function assertAzureScanAuthority(companyId: string, projectId: string, scan: ScannedSkillSource) {
+    const organization = new URL(scan.repositoryUrl).pathname.split('/')[1]?.toLowerCase();
+    if (!organization || !scan.grantId || !scan.connectionId || !scan.credentialSecretId || !scan.credentialSecretVersion) throw conflict('Azure DevOps authorization changed during import.');
+    const auth = await resolveAzureDevOpsProjectGitCredentials(db, { companyId, projectId, repoUrl: scan.repositoryUrl });
+    const [current] = await db.select({ grantId: projectProviderAuthorizations.grantId, connectionId: connectionGrants.connectionId })
+      .from(projectProviderAuthorizations).innerJoin(connectionGrants, and(eq(connectionGrants.id, projectProviderAuthorizations.grantId),
+        eq(connectionGrants.companyId, companyId))).where(and(eq(projectProviderAuthorizations.companyId, companyId),
+        eq(projectProviderAuthorizations.projectId, projectId), eq(projectProviderAuthorizations.provider, 'azure-devops'),
+        eq(projectProviderAuthorizations.scopeKey, organization)));
+    if (current?.grantId !== scan.grantId || current.connectionId !== scan.connectionId || auth.grantId !== scan.grantId ||
+        auth.connectionId !== scan.connectionId || auth.credentialSecretId !== scan.credentialSecretId ||
+        auth.credentialSecretVersion !== scan.credentialSecretVersion) throw conflict('Azure DevOps authorization changed during import.');
+  }
   async function preparePackages(companyId: string, scan: ScannedSkillSource, selected: string[], sourceId: string, signal?: AbortSignal): Promise<PreparedPackages> {
     const prepared: PreparedPackages = new Map();
     if (!skillPackageStorageEnabled()) return prepared;
@@ -122,7 +140,9 @@ export function skillSourceService(db: Db) {
     // New imports after removal must not overwrite retained editable copies.
     // Existing entries keep their installed identity across later revisions.
     const identity = createHash('sha256').update(`${scan.repositoryId}:${sourceId}${revision ? `:${revision}` : ''}:${skillPath}`).digest('hex').slice(0, 16);
-    return `github/${scan.repositoryId}/${identity}/${normalizeAgentUrlKey(name) || 'skill'}`;
+    const provider = new URL(scan.repositoryUrl).hostname === 'dev.azure.com' ? 'azure-devops' : 'github';
+    const repositoryKey = provider === 'azure-devops' ? scan.repositoryId.replace(/:/g, '-') : scan.repositoryId;
+    return `${provider}/${repositoryKey}/${identity}/${normalizeAgentUrlKey(name) || 'skill'}`;
   }
   async function publish(tx: Tx, source: SourceRow, scan: ScannedSkillSource, selectedPaths: string[], excludedFolders: string[], context: SkillSourceContext, selectionReviewed: boolean, prepared: PreparedPackages): Promise<Omit<SkillSourceRefreshResult, 'source'>> {
     await tx.execute(sql`SET CONSTRAINTS paperclip_skill_runtime_changed DEFERRED`);
@@ -162,14 +182,15 @@ export function skillSourceService(db: Db) {
         const slug = normalizeAgentUrlKey(candidate.name) || 'skill';
         const key = current?.key ?? newSkillKey(scan, candidate.path, candidate.name, source.id, source.revision);
         const ownerRepo = scan.fullName.split('/');
-        const metadata = { ...(current?.metadata ?? {}), sourceKind: 'github', hostname: 'github.com',
-          owner: ownerRepo[0], repo: ownerRepo[1], ref: current?.metadata?.snapshotHash === hash && current.currentVersionId ? current.sourceRef : scan.commitSha, trackingRef: scan.trackingRef,
+        const azure = new URL(scan.repositoryUrl).hostname === 'dev.azure.com';
+        const metadata = { ...(current?.metadata ?? {}), sourceKind: azure ? 'azure-devops' : 'github', hostname: azure ? 'dev.azure.com' : 'github.com',
+          owner: ownerRepo[0], repo: azure ? ownerRepo.slice(1).join('/') : ownerRepo[1], ref: current?.metadata?.snapshotHash === hash && current.currentVersionId ? current.sourceRef : scan.commitSha, trackingRef: scan.trackingRef,
           repoSkillDir: path.posix.dirname(candidate.path) === '.' ? '' : path.posix.dirname(candidate.path),
           skillSourceId: source.id, skillSourcePath: candidate.path, skillSourceState: 'synced', snapshotHash: hash, packageMode: mode };
         const trustFiles = mode === 'repository' ? scan.repositoryFiles! : candidate.files;
         const values = { name: candidate.name, description: candidate.description, markdown: candidate.files.find(file => file.path === 'SKILL.md')!.content,
           accessSourceId: source.accessScope === 'projects' ? source.id : current?.accessSourceId ?? null,
-          sourceType: 'github', sourceLocator: scan.repositoryUrl, sourceRef: current?.metadata?.snapshotHash === hash && current.currentVersionId ? current.sourceRef : scan.commitSha,
+          sourceType: azure ? 'url' : 'github', sourceLocator: scan.repositoryUrl, sourceRef: current?.metadata?.snapshotHash === hash && current.currentVersionId ? current.sourceRef : scan.commitSha,
           fileInventory: candidate.files.map(({ path, kind }) => ({ path, kind })),
           trustLevel: trustFiles.some(file => file.kind === 'script' || file.executable) ? 'scripts_executables' : trustFiles.some(file => file.kind === 'asset' || file.kind === 'other') ? 'assets' : 'markdown_only',
           metadata, updatedAt: new Date() };
@@ -228,6 +249,7 @@ export function skillSourceService(db: Db) {
   }
   async function create(companyId: string, input: SkillSourceCreateRequest, context: SkillSourceContext, staged?: ScannedSkillSource) {
     await context.authorize('skills.import', { sourceType: 'git', sourceLocator: input.repositoryUrl });
+    if (isAzureRepository(input.repositoryUrl) && !context.projectBindingId) throw unprocessable('Azure DevOps skill sources require an authorized project repository.');
     const reader = context.read(input.connectionId ?? null);
     const scan = staged ?? await scanGitHubSkills(input, reader);
     if (!context.projectBindingId && scan.trackingRef === scan.defaultBranch && (await list(companyId)).some(source => source.repositoryUrl.toLowerCase() === scan.repositoryUrl.toLowerCase() && source.trackingRef === 'HEAD')) {
@@ -241,17 +263,29 @@ export function skillSourceService(db: Db) {
     }
     const prepared = await preparePackages(companyId, scan, input.selectedPaths, id, context.signal);
     context.signal?.throwIfAborted();
+    if (isAzureRepository(scan.repositoryUrl)) {
+      const [binding] = await db.select().from(projectSkillSources).where(and(eq(projectSkillSources.companyId, companyId),
+        eq(projectSkillSources.id, context.projectBindingId!), eq(projectSkillSources.active, true)));
+      if (!binding || binding.repositoryUrl !== scan.repositoryUrl) throw conflict('Project repository changed during import.');
+      await assertAzureScanAuthority(companyId, binding.projectId, scan);
+    }
     const published = await db.transaction(async tx => {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
       const [source] = await tx.insert(sources).values({ id, companyId, repositoryId: scan.repositoryId, repositoryUrl: scan.repositoryUrl, fullName: scan.fullName,
         packageMode: scan.packageMode ?? 'skills', trackingRef: context.projectBindingId && input.trackingRef === 'HEAD' ? 'HEAD' : scan.trackingRef, connectionId: scan.connectionId ?? input.connectionId ?? null, lastAttemptAt: new Date(),
         accessScope: context.projectBindingId ? 'projects' : 'company', importNewSkills: Boolean(context.projectBindingId),
-        refreshUserId: context.setup?.userId, refreshAgentId: context.setup?.agentId, refreshLocalTrusted: context.setup?.localTrusted ?? false, refreshGrantId: reader.grantId ?? context.setup?.grantId }).onConflictDoNothing().returning();
+        refreshUserId: context.setup?.userId, refreshAgentId: context.setup?.agentId, refreshLocalTrusted: context.setup?.localTrusted ?? false, refreshGrantId: scan.grantId ?? reader.grantId ?? context.setup?.grantId }).onConflictDoNothing().returning();
       if (!source) throw conflict('This repository and branch are already in Sources. Manage its skills there.');
       if (context.projectBindingId) {
         const [binding] = await tx.select().from(projectSkillSources).where(and(eq(projectSkillSources.companyId, companyId), eq(projectSkillSources.id, context.projectBindingId))).for('update');
         if (!binding?.active || (context.projectBindingLeaseToken && binding.leaseToken !== context.projectBindingLeaseToken)) throw conflict('Project repository changed during import.');
+        if (isAzureRepository(scan.repositoryUrl)) {
+          const org = new URL(scan.repositoryUrl).pathname.split('/')[1]!.toLowerCase();
+          await lockAzureSkillAuthority(tx, { companyId, projectId: binding.projectId, organization: org,
+            grantId: scan.grantId!, connectionId: scan.connectionId!, credentialSecretId: scan.credentialSecretId!,
+            credentialSecretVersion: scan.credentialSecretVersion! });
+        }
         await tx.update(projectSkillSources).set({ sourceId: source.id, status: 'ready', lastError: null }).where(eq(projectSkillSources.id, binding.id));
       }
       const result = await publish(tx, source, scan, input.selectedPaths, input.excludedFolders ?? [], context, true, prepared);
@@ -277,7 +311,52 @@ export function skillSourceService(db: Db) {
     try {
       const connectionId = selection?.connectionId !== undefined ? selection.connectionId : source.connectionId;
       const reader = context.read(connectionId);
-      if (options.checkCommit && source.repositoryId && source.lastScanCommit) {
+      const azure = isAzureRepository(source.repositoryUrl);
+      const signal = options.signal ?? context.signal;
+      if (azure && (source.accessScope !== 'projects' || !source.repositoryId)) throw unprocessable('Azure DevOps skill sources require an authorized project repository.');
+      const authorizeBindings = () => authorizeAzureSkillSourceBindings(db, { companyId, sourceId: id,
+        repositoryUrl: source.repositoryUrl, repositoryId: source.repositoryId! }, signal);
+      let authorizedBindings = azure ? await authorizeBindings() : [];
+      const bindingIds = () => authorizedBindings.map(row => row.binding.id).sort();
+      const assertCurrentBindingIds = async (tx: Tx) => {
+        const current = await tx.select({ id: projectSkillSources.id, active: projectSkillSources.active }).from(projectSkillSources).where(and(
+          eq(projectSkillSources.companyId, companyId), eq(projectSkillSources.sourceId, id))).for('update');
+        if (current.some(row => !row.active) || JSON.stringify(current.map(row => row.id).sort()) !== JSON.stringify(bindingIds())) throw conflict('Project repositories changed during refresh.');
+        for (const row of authorizedBindings) {
+          const org = new URL(source.repositoryUrl).pathname.split('/')[1]!.toLowerCase();
+          await lockAzureSkillAuthority(tx, { companyId, projectId: row.binding.projectId, organization: org,
+            grantId: row.grantId, connectionId: row.connectionId, credentialSecretId: row.credentialSecretId,
+            credentialSecretVersion: row.credentialSecretVersion });
+        }
+      };
+      if (options.checkCommit && azure && source.repositoryId && source.lastScanCommit) {
+        let checked = false;
+        for (const { binding } of authorizedBindings) {
+          try {
+            const head = await readAzureProjectSkillHead(db, { companyId, projectId: binding.projectId,
+              repoUrl: source.repositoryUrl, ref: source.trackingRef }, { signal });
+            checked = true;
+            if (head.commitSha !== source.lastScanCommit) break;
+            authorizedBindings = await authorizeBindings();
+            await db.transaction(async tx => {
+              if (!options.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+              const [locked] = await tx.select().from(sources).where(scope(companyId, id)).for('update');
+              if (!locked || locked.leaseToken !== token || locked.revision !== source.revision) throw conflict('Source refresh changed. Try again.');
+              await assertCurrentBindingIds(tx);
+              await context.audit(tx, id, 'company.skill_source_checked', { commit: head.commitSha });
+              await tx.update(sources).set({ leaseToken: null, leaseExpiresAt: null, lastError: null, lastSuccessAt: new Date(), failureCount: 0,
+                nextSyncAt: new Date(Date.now() + 5 * 60_000) }).where(scope(companyId, id));
+            });
+            context.publishCommittedActivity?.();
+            return { source: await detail(companyId, id), imported: [], updated: [], unchanged: (await detail(companyId, id)).entries.filter(entry => entry.selection === 'selected').length, warnings: [] };
+          } catch (error) {
+            signal?.throwIfAborted();
+            if (error instanceof Error && 'status' in error && error.status === 409) throw error;
+          }
+        }
+        if (!checked) throw unprocessable('Azure DevOps project authorization is unavailable. Reconnect or select a connection.');
+      }
+      if (options.checkCommit && !azure && source.repositoryId && source.lastScanCommit) {
         const repo = await reader(`/repos/${source.fullName}`, options.signal) as { id: number; default_branch: string };
         if (String(repo.id) !== source.repositoryId) throw conflict('The repository at this URL has changed identity. Add it as a new source.');
         const ref = source.trackingRef === 'HEAD' ? repo.default_branch : source.trackingRef;
@@ -304,7 +383,23 @@ export function skillSourceService(db: Db) {
       }
       const packageMode = selection?.packageMode ?? (source.accessScope === 'projects' ? 'repository' : source.packageMode);
       if (options.automatic) await reserveAutomaticSkillWork(db, source, token, options.now ?? new Date());
-      const scan = staged ?? await scanGitHubSkills({ repositoryUrl: source.repositoryUrl, trackingRef: source.trackingRef, packageMode }, reader, { signal: options.signal });
+      let azureProjectId: string | null = null;
+      let azureGrantId: string | null = null;
+      if (azure && staged) throw unprocessable('Azure DevOps sources must be refreshed against the current project authorization.');
+      let scan = staged;
+      if (!scan && azure) {
+        for (const { binding } of authorizedBindings) {
+          try {
+            const result = await scanAzureDevOpsProjectSkillsWithPackageFallback(db, { companyId, projectId: binding.projectId,
+              repositoryUrl: source.repositoryUrl, trackingRef: source.trackingRef, packageMode }, { signal });
+            scan = result; azureProjectId = binding.projectId; azureGrantId = result.grantId; break;
+          } catch { signal?.throwIfAborted(); }
+        }
+        if (!scan) throw unprocessable('Azure DevOps project authorization is unavailable. Reconnect or select a connection.');
+      }
+      scan ??= await scanGitHubSkills({ repositoryUrl: source.repositoryUrl, trackingRef: source.trackingRef, packageMode }, reader, { signal: options.signal });
+      if (azure && selection?.connectionId !== undefined && selection.connectionId !== scan.connectionId)
+        throw unprocessable('Change the Azure DevOps authorization in the project before selecting another connection.');
       if (options.automatic) await settleAutomaticSkillWork(db, companyId, id, token,
         packageMode === 'repository' && (scan.packageMode === 'skills' || scan.repositorySubset) ? {} : scan);
       if (source.repositoryId && source.repositoryId !== scan.repositoryId) throw conflict('The repository at this URL has changed identity. Add it as a new source.');
@@ -330,14 +425,25 @@ export function skillSourceService(db: Db) {
       await authorizeScan(source, scan, selectedPaths, context);
       const prepared = await preparePackages(companyId, scan, selectedPaths, id, options.signal ?? context.signal);
       (options.signal ?? context.signal)?.throwIfAborted();
+      if (azure && azureProjectId) {
+        await assertAzureScanAuthority(companyId, azureProjectId, scan);
+        authorizedBindings = await authorizeBindings();
+      }
       const published = await db.transaction(async tx => {
         if (!options.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
         const [locked] = await tx.select().from(sources).where(scope(companyId, id)).for('update');
         if (!locked || locked.leaseToken !== token || locked.revision !== source.revision || locked.leaseExpiresAt! < new Date()) throw conflict('Source refresh expired or changed. Try again.');
+        if (azure && azureProjectId) {
+          await assertCurrentBindingIds(tx);
+          const [binding] = await tx.select({ id: projectSkillSources.id }).from(projectSkillSources).where(and(
+            eq(projectSkillSources.companyId, companyId), eq(projectSkillSources.projectId, azureProjectId),
+            eq(projectSkillSources.sourceId, id), eq(projectSkillSources.repositoryUrl, source.repositoryUrl), eq(projectSkillSources.active, true))).for('update');
+          if (!binding) throw conflict('Project repository changed during refresh.');
+        }
         const result = await publish(tx, locked, scan, selectedPaths, selection?.excludedFolders ?? source.excludedFolders, context, Boolean(selection), prepared);
         if (selection || scan.connectionId !== undefined) await tx.update(sources).set({ ...(selection ? { enabled: true } : {}), connectionId: scan.connectionId ?? connectionId,
-          ...(source.refreshGrantId === null && reader.grantId ? { refreshGrantId: reader.grantId } : {}),
+          ...(azureGrantId ? { refreshGrantId: azureGrantId } : source.refreshGrantId === null && reader.grantId ? { refreshGrantId: reader.grantId } : {}),
           ...(selection?.connectionId !== undefined || (!source.refreshUserId && !source.refreshLocalTrusted && context.setup) ? { refreshUserId: context.setup?.userId, refreshAgentId: context.setup?.agentId ?? null, refreshLocalTrusted: context.setup?.localTrusted ?? false, refreshGrantId: reader.grantId ?? null } : {}) }).where(scope(companyId, id));
         return { ...result, source: await detail(companyId, id, tx) };
       });
@@ -348,7 +454,8 @@ export function skillSourceService(db: Db) {
       const message = error instanceof Error && 'status' in error ? error.message : 'Refresh failed. The installed skills were kept. Try again.';
       await db.transaction(async tx => {
         if (!options.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
-        await tx.update(sources).set({ leaseToken: null, leaseExpiresAt: null, lastError: options.signal?.aborted ? source.lastError : message, failureCount: options.signal?.aborted ? source.failureCount : source.failureCount + 1, nextSyncAt: options.signal?.aborted ? new Date() : skillSourceRetryAt(error, source.failureCount) }).where(and(scope(companyId, id), eq(sources.leaseToken, token)));
+        const aborted = (options.signal ?? context.signal)?.aborted;
+        await tx.update(sources).set({ leaseToken: null, leaseExpiresAt: null, lastError: aborted ? source.lastError : message, failureCount: aborted ? source.failureCount : source.failureCount + 1, nextSyncAt: aborted ? new Date() : skillSourceRetryAt(error, source.failureCount) }).where(and(scope(companyId, id), eq(sources.leaseToken, token)));
       });
       throw error;
     }
@@ -357,12 +464,15 @@ export function skillSourceService(db: Db) {
     await skillAccessService(db).assertSource(companyId, id);
     const source = await row(companyId, id);
     await context.authorize('skills.edit', { sourceType: 'git', sourceLocator: source.repositoryUrl });
+    if (isAzureRepository(source.repositoryUrl)) throw unprocessable('Update the Azure DevOps branch in its project settings.');
     return listSkillSourceBranches(source, context.read(input.connectionId ?? source.connectionId), signal);
   }
   async function settings(companyId: string, id: string, input: SkillSourceSettingsRequest, context: SkillSourceContext) {
     await skillAccessService(db).assertSource(companyId, id);
     const source = await row(companyId, id);
     await context.authorize('skills.edit', { sourceType: 'git', sourceLocator: source.repositoryUrl });
+    if (isAzureRepository(source.repositoryUrl) && (input.connectionId !== undefined || input.trackingRef !== undefined))
+      throw unprocessable('Update the Azure DevOps connection or branch in its project settings.');
     // Validate a replacement connection before binding unattended work to it.
     let reader: GitHubRead | undefined;
     if (input.trackingRef !== undefined) {
