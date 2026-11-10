@@ -71,7 +71,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
     });
   } catch (error) { environmentError = describeError(error).body; }
   const loginEnvironments = (envs.data ?? []).filter((env) =>
-    env.status === "active" && (env.driver === "local" || (provider !== "google" && environmentSupportsLoginPty(env, caps.data, provider === "openai" ? "codex_local" : "claude_local"))),
+    env.status === "active" && (env.driver === "local" || (provider !== "google" && environmentSupportsLoginPty(env, caps.data, provider === "openai" ? "codex_local" : provider === "anthropic" ? "claude_local" : "unsupported"))),
   );
   // Signing in may use a different environment from later agent execution.
   // Prefer a supported login environment without changing any agent routing.
@@ -80,7 +80,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
     environmentId = loginEnvironments[0]?.id ?? null;
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
-  const canLogin = environmentSupportsLoginPty(environment, caps.data, provider === "openai" ? "codex_local" : "claude_local");
+  const canLogin = environmentSupportsLoginPty(environment, caps.data, provider === "openai" ? "codex_local" : provider === "anthropic" ? "claude_local" : "unsupported");
   const loading = [envs, caps, settings, experimental, general].some((query) => query.isPending) || views.some((view) => view.kind === "reconnecting");
   const loadError = views.find((view) => view.kind === "error");
   const intent: AiConnectionLoginIntent = { provider: provider as AiConnectionLoginIntent["provider"], method: "subscription", name, ownership, agentIds, allAgents, connectionId };

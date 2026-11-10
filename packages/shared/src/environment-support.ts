@@ -209,7 +209,8 @@ export function environmentSupportsLoginPty(environment: { driver: string; confi
   if (environment.driver === "sandbox") return typeof environment.config.provider === "string" && capabilities.sandboxProviders[environment.config.provider]?.supportsLoginPty === true;
   if (environment.driver === "plugin") {
     const driver = capabilities.loginPtyDrivers?.[`${environment.config.pluginKey}:${environment.config.driverKey}`];
-    return driver?.supportsLoginPty === true && (adapterType !== "codex_local" || driver.supportsCodexLogin === true);
+    return driver?.supportsLoginPty === true
+      && (adapterType === undefined || adapterType === "claude_local" || (adapterType === "codex_local" && driver.supportsCodexLogin === true));
   }
   return false;
 }

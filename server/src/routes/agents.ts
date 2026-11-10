@@ -1529,9 +1529,9 @@ export function agentRoutes(
   async function assertSandboxLoginEnvironment(
     companyId: string,
     environmentId: string,
-    options?: { requireSetupTokenLoginProvider?: boolean; agentId?: string },
+    options?: { requireSetupTokenLoginProvider?: boolean; agentId?: string; adapterType?: string },
   ): Promise<void> {
-    await assertLoginEnvironmentTarget(db, { companyId, environmentId, agentId: options?.agentId });
+    await assertLoginEnvironmentTarget(db, { companyId, environmentId, agentId: options?.agentId, adapterType: options?.adapterType });
     // Gate the Claude setup-token login on the provider capability. Only a
     // sandbox provider that advertises the setup-token login capability
     // implements the setup-token pseudo-terminal methods. The setup-token start
@@ -3723,7 +3723,7 @@ export function agentRoutes(
           // the route on the current provider capability before any session or
           // lease state. The lease-acquisition path re-checks it from current
           // runtime state before the provider lease.
-          await assertSandboxLoginEnvironment(companyId, data.environmentId, { agentId: data.agentId });
+          await assertSandboxLoginEnvironment(companyId, data.environmentId, { agentId: data.agentId, adapterType: data.adapterType });
           await assertCodexLoginProviderCapability(data.environmentId);
         },
       });
@@ -6859,6 +6859,7 @@ export function agentRoutes(
         assertSandboxLoginEnvironment(companyId, data.environmentId, {
           requireSetupTokenLoginProvider: true,
           agentId: data.agentId,
+          adapterType: data.adapterType,
         }),
     });
     if (!resolved) return;
