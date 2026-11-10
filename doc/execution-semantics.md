@@ -1380,14 +1380,33 @@ identity, unknown failures, active leases, and incomplete cleanup still require
 their normal reconciliation and termination proof. Unknown historical setup errors remain
 outside this policy, and generic recovery cannot renew its exhausted budget.
 
-A preserved reusable sandbox that the provider refuses to resume before provider
-dispatch uses the same bounded bootstrap budget (`reusable_sandbox_resume_failed`).
-A common cause is a follow-up that arrives while the provider is auto-stopping an
-idle sandbox. The retry inherits the source wake, so a reply is delivered once,
-and it resumes the same recorded lease. A refusal is not proof that the sandbox is
-lost, so the retry never destroys it or creates a replacement. Only an explicit
-provider not-found or a workspace identity mismatch with a verified backup permits
-replacement. The run records the refusal by closed labels only (cause label, HTTP
+A preserved reusable sandbox is resumed within a bounded budget of 90 seconds per
+run (or the provider's configured start deadline when that is shorter), not the
+provider's whole start deadline. A stopped Daytona sandbox resumes in seconds and
+an archived one in under a minute. Inside that budget the run retries transient
+refusals with jittered backoff: HTTP 429 and 5xx, closed connections, timeouts,
+and a sandbox that is still changing state (for example "state change in
+progress", or still stopping or archiving at the provider's start deadline). A
+common cause is a follow-up that arrives while the provider is auto-stopping or
+archiving an idle sandbox.
+
+When the resume still fails, the run replaces the sandbox only when nothing lives
+solely on it: the lease is `released` or `retained` and no live run holds it, the
+task workspace is clean with a committed saved snapshot, and a native runner
+session has a verified, lease-bound harness backup. The run then moves the old
+lease to `pending_cleanup` (failure reason `resume_failed`) in one guarded write,
+so the cleanup sweep destroys the old sandbox later and no provider delete delays
+the first turn. It creates a new sandbox, records the acquisition as
+`replacement` with reason `resume_failed`, and workspace preparation restores the
+saved snapshot into it. Leases saved by older releases have the same fields and
+follow the same rule; one without a verified backup stays strict.
+
+Otherwise (unsaved work, a live owner, a workspace with no committed saved
+version, an access refusal, or an unavailable worker) the refusal keeps the strict
+behavior: the run fails with `reusable_sandbox_resume_failed` and uses the bounded
+bootstrap budget. The retry inherits the source wake, so a reply is delivered once,
+and it resumes the same recorded lease without destroying it. The run records the
+refusal by closed labels only (cause label such as `sandbox_state_transition`, HTTP
 status, errno-style code), never by provider text. On exhaustion, the task gets a
 specific recovery notice, and generic recovery does not grant another budget.
 
