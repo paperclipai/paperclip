@@ -112,14 +112,14 @@ export function noteLivenessEvent(cursor: RunEventCursor, event: Json) {
     case "tool.execution.completed": cursor.openTools = Math.max(0, cursor.openTools - 1); break;
     case "native.process_identity_recorded":
       if (payload.targetKind === "local" && Number.isSafeInteger(payload.processPid) && typeof payload.processStartedAt === "string") {
-        // A replacement runner cannot finish a tool its predecessor started.
-        if (cursor.process && cursor.process.pid !== payload.processPid) cursor.openTools = 0;
+        // A replacement runner cannot finish a tool or turn its predecessor started.
+        if (cursor.process && cursor.process.pid !== payload.processPid) { cursor.openTools = 0; cursor.turnActive = false; }
         cursor.process = { pid: payload.processPid, startedAt: payload.processStartedAt };
       }
       break;
     case "native.local_process_stopped":
-      // A stopped runner's in-flight tools can never send their completion.
-      if (cursor.process && payload.processPid === cursor.process.pid) { cursor.process = null; cursor.openTools = 0; }
+      // A stopped runner's in-flight tools and turn can never send their completion.
+      if (cursor.process && payload.processPid === cursor.process.pid) { cursor.process = null; cursor.openTools = 0; cursor.turnActive = false; }
       break;
   }
 }

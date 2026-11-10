@@ -546,6 +546,9 @@ An S1 task with a provider fault clicks Stop on the first poll that shows a live
 finish before that window, so the fault was never injected (waves w-20261110T082702-s212 and
 w-20261110T091057-s213, t03: `applied=0`). The continue comment still waits for the window. If the
 run ends before any live turn is seen, the Stop is recorded as missed once the task rests after the window.
+A live turn is seen only when a poll (`--poll-ms`, 2–5 s) lands inside it, so a turn shorter than the
+poll interval can still be missed. A runner replacement or stop clears the live-turn mark, as it does for
+an open tool.
 
 | Adapter | `terminal` | `interrupt_ack` |
 | --- | --- | --- |
