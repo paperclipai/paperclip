@@ -826,7 +826,7 @@ land the stops inside recovery. In the first live waves `/api/ready` reported `r
 15–80 ms before `/api/health` answered, and `ready` 0.25–0.5 s after it, so every gap from health
 (even 1 s) landed after recovery. A replacement that goes straight to `ready` is stopped there and
 records `ready`. The receipt records `stopOn`, and each follow-up entry has `gapMs: null`; only the last
-replacement is waited on to health, so the earlier entries have no `healthyAt`.
+replacement is waited on to health, so the earlier entries have no `healthyAt`. The first replacement (of the K1 kill) is also watched from its spawn, not from its health.
 
 **Evidence.** Each stop and replacement (the first kill included) is recorded with its signal, planned
 gap, stopped PID, the `/api/ready` status just before the stop (`recovering` means it landed inside

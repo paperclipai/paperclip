@@ -103,6 +103,8 @@ export interface RepeatedRestartRecord {
   kind: RepeatedRestartKind;
   /** `--rr-stop-on`: the follow-up stops fired on this status instead of after `planned[].gapMs`. */
   stopOn?: RepeatedRestartStopOn;
+  /** `stopOn`: the status the first replacement reported when the watch from its spawn fired. */
+  firstStopPhase?: string;
   planned: RestartStep[];
   restarts: RepeatedRestartEntry[];
   /** `<wave>/repeated-restarts/<faultId>.json`. */
@@ -130,6 +132,21 @@ export function recordFirstRestart(record: RepeatedRestartRecord, receipt: { sto
   first.restartedAt ??= receipt.restartedAt;
   first.healthyAt ??= receipt.healthyAt;
   first.replacementPid ??= replacementPid;
+}
+
+/**
+ * `stopOn`: the stop-status watcher for `runRepeatedRestarts`. The first replacement was already watched
+ * from its spawn (inside the first kill's restart) and fired with `firstPhase`; it is used once, for that
+ * server, so the first follow-up stop does not wait for health and miss a short recovery. Every later
+ * replacement is watched with `watch`.
+ */
+export function stopPhaseWatcher<P>(first: P, firstPhase: string | null | undefined,
+  watch: (server: P, target: RepeatedRestartStopOn) => Promise<string>): (server: P, target: RepeatedRestartStopOn) => Promise<string> {
+  let cached = firstPhase ?? null;
+  return async (server, target) => {
+    if (server === first && cached !== null) { const phase = cached; cached = null; return phase; }
+    return watch(server, target);
+  };
 }
 
 export interface RepeatedRestartHooks<P> {

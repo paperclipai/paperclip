@@ -35,7 +35,7 @@ import { runnerE2ETypeScriptProcessArgs } from "../runner-e2e/web-server-command
 import type { MatrixExecution } from "../runner-e2e/types.js";
 import { DEFAULT_TIME_AGE_MS, ProcessFreezer, ageWaveDatabase, databaseUrlFromConfig, runFreezeFault, type AgingShift, type TimeFaultRecord } from "./time-faults.js";
 import type { Timeline } from "./timeline.js";
-import { isRepeatedRestartFault, newRepeatedRestartRecord, recordFirstRestart, runRepeatedRestarts, type RepeatedRestartKind, type RepeatedRestartStopOn,
+import { isRepeatedRestartFault, newRepeatedRestartRecord, recordFirstRestart, runRepeatedRestarts, stopPhaseWatcher, type RepeatedRestartKind, type RepeatedRestartStopOn,
   type RepeatedRestartRecord, type RestartStep } from "./repeated-restarts.js";
 import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 
@@ -462,7 +462,15 @@ export class ChaosSupervisor {
           this.timeline.add("fault_restarting", { faultId: receipt.faultId });
           return this.spawnServer();
         },
-        waitForReady: async replacement => { receipt.healthyAt = await this.waitForHealth(replacement, receipt.phases); },
+        waitForReady: async replacement => {
+          // RR with `--rr-stop-on`: watch the first replacement from spawn; waiting for health first would let a
+          // short recovery pass between two 250 ms health polls. Only the last replacement is waited on to health.
+          if (receipt.repeatedRestart?.stopOn) {
+            receipt.repeatedRestart.firstStopPhase = await this.waitForCrashLoopPhase(replacement, receipt.repeatedRestart.stopOn, receipt.phases);
+            return;
+          }
+          receipt.healthyAt = await this.waitForHealth(replacement, receipt.phases);
+        },
         cancelled: () => this.shuttingDown,
         record: async progress => { outage = progress; },
       });
@@ -557,8 +565,11 @@ export class ChaosSupervisor {
   private async repeatedRestarts(record: RepeatedRestartRecord, receipt: FaultReceipt): Promise<number> {
     const first = this.child;
     recordFirstRestart(record, receipt, first?.pid ?? null);
-    if (!first || receipt.healthyAt === null) throw new Error(`${record.kind} has no healthy replacement after its first kill`);
-    const result = await runRepeatedRestarts({ record, steps: record.planned, server: first, healthyAt: receipt.healthyAt,
+    if (!first || (receipt.healthyAt === null && !record.stopOn)) throw new Error(`${record.kind} has no healthy replacement after its first kill`);
+    // `--rr-stop-on`: the first replacement was already watched from spawn to its stop status (`firstStopPhase`).
+    const waitForStopPhase = stopPhaseWatcher(first, record.firstStopPhase,
+      (server: ChildProcess, target: RepeatedRestartStopOn) => this.waitForCrashLoopPhase(server, target, receipt.phases));
+    const result = await runRepeatedRestarts({ record, steps: record.planned, server: first, healthyAt: receipt.healthyAt ?? Date.now(),
       ...(record.stopOn ? { stopOn: record.stopOn } : {}), hooks: {
       now: () => Date.now(),
       sleep: ms => delay(ms),
@@ -575,7 +586,7 @@ export class ChaosSupervisor {
       start: () => this.spawnServer(),
       waitHealthy: server => this.waitForHealth(server, receipt.phases),
       // The K6 phase poll (50 ms): fires on `recovering`, or on `ready` when recovery was too short to see.
-      waitForStopPhase: (server, target) => this.waitForCrashLoopPhase(server, target, receipt.phases),
+      waitForStopPhase,
       onEntry: (entry, stage) => {
         if (stage === "stopping") {
           this.timeline.add("repeated_restart_stop", { faultId: receipt.faultId, index: entry.index, signal: entry.signal, gapMs: entry.gapMs,

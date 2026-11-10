@@ -4,7 +4,7 @@ import { crossingFaults } from "./grader.js";
 import { planMatrixWave } from "./journey-matrix.js";
 import { createRng, observedFaultSchedule, planTasks, taskFaultSchedule } from "./scheduler.js";
 import {
-  RR3_KILL_RANGE, RR_GAP_RANGE_MS, newRepeatedRestartRecord, planRestartSteps, recordFirstRestart, runRepeatedRestarts, type RepeatedRestartRecord, type RestartStep,
+  RR3_KILL_RANGE, RR_GAP_RANGE_MS, newRepeatedRestartRecord, planRestartSteps, recordFirstRestart, runRepeatedRestarts, stopPhaseWatcher, type RepeatedRestartRecord, type RestartStep,
 } from "./repeated-restarts.js";
 import type { FaultReceipt, TaskRecord } from "./types.js";
 
@@ -245,6 +245,30 @@ describe("runRepeatedRestarts with --rr-stop-on recovering", () => {
     expect(rr.restarts.map(entry => [entry.phaseAtStop, entry.gapMs, entry.replacementPid])).toEqual([["recovering", null, 200], ["recovering", null, 201]]);
     expect(rr.restarts[0]!.healthyAt).toBeNull();
     expect(rr.restarts[1]!.healthyAt).toBe(result.healthyAt);
+  });
+
+  it("uses the status the first replacement fired on from spawn, without waiting for its health", async () => {
+    const steps: RestartStep[] = [{ signal: "SIGKILL", gapMs: 12_000 }, { signal: "SIGKILL", gapMs: 25_000 }];
+    const fake = fakeHooks();
+    const first = { pid: 100 };
+    const watched: number[] = [];
+    const watch = async (server: { pid: number }) => { watched.push(server.pid); return "recovering"; };
+    const rr = record("RR3", steps);
+    // The first kill's restart watched pid 100 from spawn and saw `recovering`; health was never awaited.
+    await runRepeatedRestarts({ record: rr, steps, server: first, healthyAt: fake.now(), stopOn: "recovering",
+      hooks: { ...fake.hooks, waitForStopPhase: stopPhaseWatcher(first, "recovering", watch) } });
+    expect(watched).toEqual([200]);
+    expect(rr.restarts.map(entry => entry.phaseAtStop)).toEqual(["recovering", "recovering"]);
+    expect(fake.log).toEqual(["stop 100 SIGKILL", "start 200", "stop 200 SIGKILL", "start 201"]);
+  });
+
+  it("uses the first status once, and watches the first server when none was recorded", async () => {
+    const first = { pid: 100 };
+    const watch = async () => "ready";
+    const cached = stopPhaseWatcher(first, "recovering", watch);
+    expect(await cached(first, "recovering")).toBe("recovering");
+    expect(await cached(first, "recovering")).toBe("ready");
+    expect(await stopPhaseWatcher(first, undefined, watch)(first, "recovering")).toBe("ready");
   });
 
   it("records `ready` when recovery was too short to see", async () => {
