@@ -872,7 +872,7 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
   });
 
   /**
-   * PAP-3808 through the sandbox command path: a `node_modules/.bin` link
+   * The staging shape through the sandbox command path: a `node_modules/.bin` link
    * inside the workspace, a Chromium profile link by absolute path into /tmp,
    * and a `..` link out of the workspace. The save completes; only the
    * confined link is restored.

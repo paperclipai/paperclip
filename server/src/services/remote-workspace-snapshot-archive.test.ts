@@ -896,7 +896,7 @@ describe("portable remote workspace archives", () => {
     },
   );
   /**
-   * The staging shape (PAP-3808): a review workspace with a dependency tree
+   * The staging shape (Nov 10): a review workspace with a dependency tree
    * whose `.bin` links stay inside it, a headless Chromium profile whose
    * SingletonSocket links by absolute path into the sandbox's /tmp, and a link
    * that escapes the workspace with `..`. The save keeps the confined link,

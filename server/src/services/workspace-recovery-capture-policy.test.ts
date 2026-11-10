@@ -31,7 +31,7 @@ describe("saves exhausted under an older workspace capture policy", () => {
   afterEach(() => { vi.unstubAllEnvs(); });
 
   /**
-   * The staging shape (PAP-3808, Nov 10): the run's save was refused with
+   * The staging shape (Nov 10): the run's save was refused with
    * `remote_workspace_archive_unsafe_symlink` because a headless Chromium
    * profile in the workspace linked its SingletonSocket by absolute path into
    * /tmp. Automatic recovery then spent its whole budget on the same refusal,
