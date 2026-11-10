@@ -101,6 +101,7 @@ type SealedEnvelope = {
 };
 
 type ConnectorResponse = {
+  museContactPage?: unknown;
   slackManager?: unknown;
   confirmationUrl?: unknown;
   authorizationUrl?: unknown;

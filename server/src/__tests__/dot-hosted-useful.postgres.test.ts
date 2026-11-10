@@ -634,8 +634,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       expect((await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId)))[0].status).toBe("ready");
       const [readyAgent]=await db.select().from(agents).where(eq(agents.id,agentId));expect(readyAgent.lifecycleState).toBe("ready");expect(["active","idle"].includes(readyAgent.status)).toBe(true);
     },{timeout:10_000,interval:25});
-    const selected=await request(appLoopback).patch(`/api/agents/${agentId}`).set("Host",host).set("Origin",origin).set("x-selected-operator",userId).send({defaultEnvironmentId:environment.body.id});
-    expect(selected.status).toBe(200);expect(selected.body.defaultEnvironmentId).toBe(environment.body.id);
+    const environmentSelection=await request(appLoopback).patch(`/api/agents/${agentId}`).set("Host",host).set("Origin",origin).set("x-selected-operator",userId).send({defaultEnvironmentId:environment.body.id});
+    expect(environmentSelection.status).toBe(200);expect(environmentSelection.body.defaultEnvironmentId).toBe(environment.body.id);
     const binary=process.env.PAPERCLIP_DOT_HOSTED_RUNNER_BINARY;
     expect(binary,"Explicit source-matched local Runner binary is required").toBeTruthy();if(!binary||!path.isAbsolute(binary))throw new Error("PAPERCLIP_DOT_HOSTED_RUNNER_BINARY must be absolute");await access(binary);
     vi.stubEnv("PAPERCLIP_RUNNER_BINARY",binary);vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR",path.join(home,"runner-state"));vi.stubEnv("PAPERCLIP_IN_WORKTREE","false");

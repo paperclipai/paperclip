@@ -2,8 +2,8 @@
 // or base64-over-exec. The normal SDK mapping/ordered-command contract remains.
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream, constants } from "node:fs";
-import { chmod, lstat, mkdir, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { createWriteStream, constants } from "node:fs";
+import { chmod, lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import type { PluginEnvironmentSyncResult, PluginSyncOperation } from "@paperclipai/plugin-sdk";
 
@@ -56,8 +56,13 @@ export async function transferOwnedMappings(scope: TransferScope, operations: re
       if (bytesTransferred + stat.size > 512 * 1024 * 1024) throw new Error("owned_sync_byte_overflow");
       const temporary = path.join(path.dirname(destination), ".sync-" + randomUUID());
       try {
-        await pipeline(createReadStream(source, { flags: constants.O_RDONLY | constants.O_NOFOLLOW }),
-          createWriteStream(temporary, { flags: "wx", mode: mode ?? (stat.mode & 0o777) }));
+        const input = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          await pipeline(input.createReadStream(),
+            createWriteStream(temporary, { flags: "wx", mode: mode ?? (stat.mode & 0o777) }));
+        } finally {
+          await input.close();
+        }
         await rename(temporary, destination);
       } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
       filesTransferred++; bytesTransferred += stat.size;

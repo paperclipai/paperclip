@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { mcpClientMirrorState } from "@paperclipai/db";
+import { mcpOauthClientMirrorState as mcpClientMirrorState } from "@paperclipai/db";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { mcpClientMirrorReceiptSchema } from "../services/public-mcp/client-mirror-contract.js";
@@ -1193,6 +1193,7 @@ describe("personal Muse control plane",()=>{
     const cloudUrl=process.env.PAPERCLIP_MUSE_CONTACT_CLOUD_TEST_DATABASE_URL;
     const checkout=process.env.PAPERCLIP_MUSE_CONTACT_CLOUD_CHECKOUT;
     if(!externalDatabaseUrl||!cloudUrl||!checkout||!path.isAbsolute(checkout))throw new Error("Explicit paired owned databases and own compiled Cloud checkout required");
+    const appDatabaseUrl=externalDatabaseUrl;
     const parsed=new URL(cloudUrl);
     if(!["postgres:","postgresql:"].includes(parsed.protocol)||!["127.0.0.1","localhost","[::1]"].includes(parsed.hostname)
       ||!parsed.port||!/^[A-Za-z0-9_]+_test$/.test(decodeURIComponent(parsed.pathname.slice(1)))
@@ -1277,7 +1278,7 @@ describe("personal Muse control plane",()=>{
       cloudServer=createServer((req,res)=>cloud.handler(req,res));cloudLoopback=await listen(cloudServer);return store;
     };
     const makeApp=async()=>{
-      appDb=createDb(externalDatabaseUrl,{maxConnections:2,applicationName:"muse-paired-import"});
+      appDb=createDb(appDatabaseUrl,{maxConnections:2,applicationName:"muse-paired-import"});
       for(const owner of [appDb,livenessDb(appDb),checkpointDb(appDb),fileStorageDb(appDb)])owner.$client.options.debug=()=>{appQueries++;};
       await migrateCloudConfiguration(appDb);await initializeAdapterSettings(appDb);await initializeCloudRuntimeConfig(appDb);
       const {createApp}=await import("../app.js");
