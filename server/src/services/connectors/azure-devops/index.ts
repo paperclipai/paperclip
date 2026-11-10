@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { HttpError } from "../../../errors.js";
-import { azureDevOpsAuthorization, loadAzureDevOpsRepositories } from "./repositories.js";
-import { AZURE_DEVOPS_API_URL, AZURE_DEVOPS_ENTRA_METHOD, AZURE_DEVOPS_ENTRA_WRITE_METHOD, AZURE_DEVOPS_PAT_METHOD, AZURE_DEVOPS_TOOLS } from "./catalog.js";
+import { AzureDevOpsResponseError, azureDevOpsAuthorization, loadAzureDevOpsRepositories } from "./repositories.js";
+import { AZURE_DEVOPS_API_URL, AZURE_DEVOPS_ENTRA_METHOD, AZURE_DEVOPS_PAT_METHOD, AZURE_DEVOPS_TOOLS } from "./catalog.js";
 
-export { AZURE_DEVOPS_API_URL, AZURE_DEVOPS_ENTRA_METHOD, AZURE_DEVOPS_ENTRA_WRITE_METHOD, AZURE_DEVOPS_PAT_METHOD, AZURE_DEVOPS_TOOLS, azureDevOpsRisk, isCurrentAzureDevOpsCatalogEntry } from "./catalog.js";
+export { AZURE_DEVOPS_API_URL, AZURE_DEVOPS_ENTRA_METHOD, AZURE_DEVOPS_PAT_METHOD, AZURE_DEVOPS_TOOLS, azureDevOpsRisk, isCurrentAzureDevOpsCatalogEntry } from "./catalog.js";
 export type AzureDevOpsRequest = (url: string, init: RequestInit) => Promise<Response>;
 const emptySchema = z.object({}).strict();
 const organizationSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,49}$/i);
@@ -18,7 +18,7 @@ export function isAzureDevOpsConnection(connection: Connection): boolean {
   const config = connection.config;
   const method = methodConfig(connection);
   const methodKey = config?.connectionMethodKey;
-  const expectedAuth = methodKey === AZURE_DEVOPS_ENTRA_METHOD || methodKey === AZURE_DEVOPS_ENTRA_WRITE_METHOD ? "oauth"
+  const expectedAuth = methodKey === AZURE_DEVOPS_ENTRA_METHOD ? "oauth"
     : methodKey === AZURE_DEVOPS_PAT_METHOD ? "api_key" : undefined;
   return connection.transport === "rest_api" && config?.sourceTemplateKey === "azure-devops"
     && (config.url === AZURE_DEVOPS_API_URL || config.url === `${AZURE_DEVOPS_API_URL}/`)
@@ -65,6 +65,10 @@ export function azureDevOpsClient(connection: Connection, headers: Record<string
     };
     try { return await loadAzureDevOpsRepositories(organization, { Authorization: authorization }, loaderRequest, requestSignal); }
     catch (error) {
+      if (error instanceof AzureDevOpsResponseError && error.kind === "denied")
+        throw new HttpError(403, "Azure DevOps denied access. Reconnect and check repository permissions.", { code: "azure_devops_access_denied" });
+      if (error instanceof AzureDevOpsResponseError && error.kind === "rate_limited")
+        throw new HttpError(429, "Azure DevOps rate limit reached. Try again later.", { code: "azure_devops_rate_limited" });
       throw new HttpError(502, "Azure DevOps could not complete the repository request.", { code: "azure_devops_request_failed" });
     }
   }

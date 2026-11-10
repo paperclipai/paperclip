@@ -6,7 +6,7 @@ import { connectorToolPolicy } from "../tool-policy.js";
 import { getConnectableAppDefinition } from "@paperclipai/shared";
 import { normalizeConnectionMethodConfig } from "../../tool-access/connection-methods.js";
 import { azureDevOpsAuthorization } from "./repositories.js";
-import { AZURE_DEVOPS_API_URL, AZURE_DEVOPS_ENTRA_METHOD, AZURE_DEVOPS_ENTRA_WRITE_METHOD, AZURE_DEVOPS_PAT_METHOD, AZURE_DEVOPS_TOOLS, azureDevOpsClient,
+import { AZURE_DEVOPS_API_URL, AZURE_DEVOPS_ENTRA_METHOD, AZURE_DEVOPS_PAT_METHOD, AZURE_DEVOPS_TOOLS, azureDevOpsClient,
   azureDevOpsRisk, isAzureDevOpsConnection, isCurrentAzureDevOpsCatalogEntry } from "./index.js";
 
 const pat = "azure-secret-pat";
@@ -14,12 +14,19 @@ const entra = "azure-secret-entra";
 const organization = "Example-Org";
 const connection = (kind: "pat" | "entra" | "entra-write" = "pat") => ({ transport: "rest_api", authKind: kind === "pat" ? "api_key" : "oauth", config: {
   sourceTemplateKey: "azure-devops", connectionMethodKey: kind === "pat" ? AZURE_DEVOPS_PAT_METHOD
-    : kind === "entra-write" ? AZURE_DEVOPS_ENTRA_WRITE_METHOD : AZURE_DEVOPS_ENTRA_METHOD,
+    : kind === "entra-write" ? "entra-write" : AZURE_DEVOPS_ENTRA_METHOD,
   url: AZURE_DEVOPS_API_URL, methodConfig: { organization },
 } });
 const payload = { value: [{ id: "12345678-1234-1234-1234-1234567890ab", name: "repo", project: { name: "project" } }] };
 
 describe("Azure DevOps REST connector", () => {
+  it.each([[401, 403, "azure_devops_access_denied"], [403, 403, "azure_devops_access_denied"], [429, 429, "azure_devops_rate_limited"]])(
+    "returns safe actionable errors for provider status %i", async (status, expectedStatus, code) => {
+      const request = vi.fn(async () => new Response("private provider details", { status }));
+      await expect(azureDevOpsClient(connection(), { Authorization: `Bearer ${pat}` }, request).probe())
+        .rejects.toMatchObject({ status: expectedStatus, details: { code }, message: expect.not.stringContaining("private provider details") });
+    },
+  );
   it("recognizes the URL produced by the real connection setup for every supported method", () => {
     const app = getConnectableAppDefinition("azure-devops")!;
     for (const method of app.methods) {
@@ -35,7 +42,7 @@ describe("Azure DevOps REST connector", () => {
     expect(isAzureDevOpsConnection({ ...connection(), config: { ...connection().config, url: `${AZURE_DEVOPS_API_URL}/attacker` } })).toBe(false);
     expect(isAzureDevOpsConnection({ ...connection(), config: { ...connection().config, url: `${AZURE_DEVOPS_API_URL}/?redirect=evil` } })).toBe(false);
     expect(isAzureDevOpsConnection(connection("entra"))).toBe(true);
-    expect(isAzureDevOpsConnection(connection("entra-write"))).toBe(true);
+    expect(isAzureDevOpsConnection(connection("entra-write"))).toBe(false);
     expect(isAzureDevOpsConnection({ ...connection("entra-write"), authKind: "api_key" })).toBe(false);
     expect(isAzureDevOpsConnection({ ...connection("entra-write"), config: { ...connection("entra-write").config,
       connectionMethodKey: "entra-unreviewed" } })).toBe(false);
@@ -57,7 +64,7 @@ describe("Azure DevOps REST connector", () => {
   it("registers only valid Azure connection methods with the governed REST gateway", () => {
     expect(restConnectorFor(connection("pat"))?.sourceTemplateKey).toBe("azure-devops");
     expect(restConnectorFor(connection("entra"))?.sourceTemplateKey).toBe("azure-devops");
-    expect(restConnectorFor(connection("entra-write"))?.sourceTemplateKey).toBe("azure-devops");
+    expect(restConnectorFor(connection("entra-write"))).toBeUndefined();
     expect(restConnectorFor({ ...connection("pat"), authKind: "none" })).toBeUndefined();
     expect(connectorToolPolicy("azure-devops", connection("pat")).quarantineNewEntries).toBe(true);
   });
@@ -65,7 +72,6 @@ describe("Azure DevOps REST connector", () => {
   it.each([
     ["pat", `Bearer ${pat}`],
     ["entra", `Bearer ${entra}`],
-    ["entra-write", `Bearer ${entra}`],
   ] as const)("uses %s credentials through the fixed repository endpoint", async (kind, authorization) => {
     const outgoingAuthorization = kind === "pat" ? azureDevOpsAuthorization({ kind, token: pat }) : authorization;
     const request = vi.fn(async (url: string, init: RequestInit) => {

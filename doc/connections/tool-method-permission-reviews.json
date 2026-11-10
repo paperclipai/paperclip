@@ -2953,7 +2953,7 @@
         "offline_access"
       ],
       "capability": "read",
-      "supportedActions": "List Git repositories and their metadata in the configured Azure DevOps organization (read). No source contents, repository writes, project administration, work items, pipelines, or other operations are exposed. Git push is a separate capability and requires Code (Read & Write) permission through the supported Git credential path.",
+      "supportedActions": "List Git repositories and their metadata in the configured Azure DevOps organization (read). No source contents, repository writes, project administration, work items, pipelines, or other operations are exposed.",
       "providerRestrictions": "Delegated Microsoft Entra access follows the signed-in user's Azure DevOps organization membership and permissions. The Azure DevOps resource must have the Code (Read) delegated permission consented for the Entra application. Microsoft account (MSA) users are not supported by the Entra flow.",
       "evidence": [
         "https://learn.microsoft.com/en-us/rest/api/azure/devops/git/repositories/list?view=azure-devops-rest-7.1",
@@ -2966,33 +2966,12 @@
     },
     {
       "app": "azure-devops",
-      "method": "entra-write",
-      "auth": "oauth",
-      "policy": "explicit",
-      "requestedScopes": [
-        "499b84ac-1321-427f-aa17-267ca6975798/vso.code_write",
-        "offline_access"
-      ],
-      "capability": "write",
-      "supportedActions": "The supported project Git credential path can read, update, delete, and push repository source code. Azure DevOps documents vso.code_write as also permitting creation and management of pull requests and code reviews and receiving version-control service-hook notifications, but Paperclip exposes no corresponding REST catalog actions. No project or repository administration, work items, pipelines, or other Azure DevOps actions are exposed.",
-      "providerRestrictions": "Delegated Microsoft Entra access follows the signed-in user's Azure DevOps organization membership and repository permissions. The Azure DevOps resource must have Code (Read & Write) delegated permission consented for the Entra application. The user's organization permissions still govern each Git operation; this scope does not bypass Azure DevOps repository ACLs. Microsoft account (MSA) users are not supported by the Entra flow.",
-      "evidence": [
-        "https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-requests/create?view=azure-devops-rest-7.1",
-        "https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/oauth?view=azure-devops",
-        "https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/entra-oauth"
-      ],
-      "reviewedAt": "2026-11-04",
-      "liveProof": "not-run",
-      "evidenceLimit": "Microsoft documentation establishes the vso.code_write scope and its Git, pull request, code review, and service-hook permissions. No account-bound consent or Git push has been performed. Paperclip's REST connector exposes repository listing only; write use is limited to the separately governed Git credential path."
-    },
-    {
-      "app": "azure-devops",
       "method": "pat",
       "auth": "api_key",
       "policy": "provider-key",
       "requestedScopes": [],
       "capability": "read",
-      "supportedActions": "List Git repositories and their metadata in the configured Azure DevOps organization (read). No source contents, repository writes, project administration, work items, pipelines, or other operations are exposed. Git push is a separate capability and requires Code (Read & Write) permission through the supported Git credential path.",
+      "supportedActions": "List Git repositories and their metadata in the configured Azure DevOps organization (read). No source contents, repository writes, project administration, work items, pipelines, or other operations are exposed.",
       "keyPermissions": "Create a short-lived personal access token with Code (Read) only. Azure DevOps organization policies may restrict PAT creation, permissions, or lifetime; Paperclip cannot increase an existing token's permissions.",
       "providerRestrictions": "The token owner must belong to the configured organization and have permission to list its repositories. PATs are bearer credentials and inherit organization policy and user access.",
       "evidence": [

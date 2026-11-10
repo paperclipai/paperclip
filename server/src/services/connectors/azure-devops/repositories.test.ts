@@ -2,6 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import { azureDevOpsAuthorization, loadAzureDevOpsRepositories } from "./repositories.js";
 
 describe("Azure DevOps repository discovery", () => {
+  it("cancels an oversized provider response while reading", async () => {
+    let cancelled = false;
+    let chunks = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) { if (chunks++ < 6) controller.enqueue(new Uint8Array(1024 * 1024)); else controller.close(); },
+      cancel() { cancelled = true; },
+    });
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(body));
+    await expect(loadAzureDevOpsRepositories("org", {}, request)).rejects.toThrow(/limit/i);
+    expect(cancelled).toBe(true);
+  });
   it("creates the provider-specific authorization header without embedding credentials in URLs", () => {
     expect(azureDevOpsAuthorization({ kind: "pat", token: "fixture-pat" })).toBe(`Basic ${Buffer.from(":fixture-pat").toString("base64")}`);
     expect(azureDevOpsAuthorization({ kind: "entra", token: "fixture-token" })).toBe("Bearer fixture-token");

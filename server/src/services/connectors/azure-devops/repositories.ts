@@ -1,5 +1,32 @@
 import { unprocessable } from "../../../errors.js";
 
+export class AzureDevOpsResponseError extends Error {
+  constructor(readonly kind: "denied" | "rate_limited") { super(`Azure DevOps ${kind}`); }
+}
+
+const MAX_REPOSITORY_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+async function readRepositoryResponse(response: Response): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) throw unprocessable("Azure DevOps returned invalid repository metadata");
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > MAX_REPOSITORY_RESPONSE_BYTES) {
+        void reader.cancel().catch(() => {});
+        throw unprocessable("Azure DevOps repository response exceeds the size limit");
+      }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  try { return JSON.parse(Buffer.concat(chunks, length).toString("utf8")); }
+  catch { throw unprocessable("Azure DevOps returned invalid repository metadata"); }
+}
+
 type AzureRepository = {
   provider: "azure-devops";
   id: string;
@@ -35,9 +62,10 @@ export async function loadAzureDevOpsRepositories(
   const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
   requestSignal.throwIfAborted();
   const response = await request(endpoint, { headers: { ...headers, Accept: "application/json" }, redirect: "error", signal: requestSignal });
-  if (!response.ok) throw unprocessable("Could not load Azure DevOps repositories. Reconnect and try again.");
-  let payload: unknown;
-  try { payload = await response.json(); } catch { throw unprocessable("Azure DevOps returned invalid repository metadata"); }
+  if (response.status === 401 || response.status === 403) throw new AzureDevOpsResponseError("denied");
+  if (response.status === 429) throw new AzureDevOpsResponseError("rate_limited");
+  if (!response.ok) throw unprocessable("Could not load Azure DevOps repositories. Try again later.");
+  const payload = await readRepositoryResponse(response);
   if (!payload || typeof payload !== "object" || !Array.isArray((payload as { value?: unknown }).value))
     throw unprocessable("Azure DevOps returned invalid repository metadata");
   const result: AzureRepository[] = [];
