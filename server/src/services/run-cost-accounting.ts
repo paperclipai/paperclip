@@ -238,7 +238,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
   if (!identity.accountedAt && closure.runtimeMode === "native" && !closure.preProviderFailure && !closure.providerWorkNeverStarted
     && closure.coordinatorId && !closure.resultId && closure.phase !== "terminal_failure") return false;
   const pendingReceipts = !identity.accountedAt
-    ? await readPendingRunUsageReceipts({ companyId: identity.companyId, runId }, undefined, index) : [];
+    ? await readPendingRunUsageReceipts(db, { companyId: identity.companyId, runId }, undefined, index) : [];
   let recoveredFiles: string[] = [];
   const accounted = await withBudgetSpan("budget.accounting.settlement", () => withOperationAccountingTransaction(db, identity.companyId, async (tx, publications) => {
     // The operation wrapper can retry a transaction PostgreSQL rolled back.

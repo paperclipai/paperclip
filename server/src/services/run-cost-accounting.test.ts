@@ -141,7 +141,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const envelope = receipt(owner, sourceId, 1, 0.02);
     const file = await usageReceipts.spoolUsageReceipt(envelope, directory);
     const read = usageReceipts.readPendingRunUsageReceipts;
-    const spool = vi.spyOn(usageReceipts, "readPendingRunUsageReceipts").mockImplementation(input => read(input, directory));
+    const spool = vi.spyOn(usageReceipts, "readPendingRunUsageReceipts").mockImplementation((database, input) => read(database, input, directory));
     let attempt = 0;
     const observed = new Proxy(db, { get(target, property) {
       if (property === "transaction") return async (callback: Parameters<Db["transaction"]>[0], options?: Parameters<Db["transaction"]>[1]) => {

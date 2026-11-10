@@ -2,7 +2,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { priceAnthropicReceipt } from "./anthropic-pricing.js";
 import { priceCodexReceipt } from "./codex-pricing.js";
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { and, eq, isNull, sql } from "drizzle-orm";
@@ -24,6 +24,7 @@ import { createCostEventInTransaction } from "./costs.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 
+const receiptIdSchema = z.string().uuid();
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
 const usage = z.object({ inputTokens: token, outputTokens: token, cachedInputTokens: token.optional(), cacheWriteTokens: token.optional() });
@@ -513,7 +514,7 @@ export type PendingRunUsageReceipt = { file: string; envelope: UsageReceiptEnvel
 
 /** Capture immutable spool evidence before a database transaction. Finalizers
  * revalidate their closed producer identity after taking the run-row fence. */
-export async function readPendingRunUsageReceipts(input: { companyId: string; runId: string }, directory = usageReceiptSpoolPath(), index?: UsageReceiptIndex): Promise<PendingRunUsageReceipt[]> {
+export async function readPendingRunUsageReceipts(db: Db, input: { companyId: string; runId: string }, directory = usageReceiptSpoolPath(), index?: UsageReceiptIndex): Promise<PendingRunUsageReceipt[]> {
   const pending = new Map<string, PendingRunUsageReceipt>();
   for (let scan = 0; scan < 3; scan++) {
     const names = await fs.readdir(directory).catch(error => {
@@ -521,23 +522,41 @@ export async function readPendingRunUsageReceipts(input: { companyId: string; ru
       throw error;
     });
     let moved = false;
+    const vanishedIds = new Set<string>();
     for (const name of names.filter(name => name.endsWith(".json"))) {
       const file = path.join(directory, name);
       if (pending.has(file)) continue;
       const indexed = index?.get(file);
       if (indexed !== undefined && (indexed?.companyId !== input.companyId || indexed?.runId !== input.runId)) continue;
       try {
-        const info = await fs.lstat(file);
-        if (!info.isFile() || info.size > 1024 * 1024) continue;
-        const raw: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+        const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        let raw: unknown;
+        try {
+          const info = await handle.stat();
+          if (!info.isFile() || info.size > 1024 * 1024) continue;
+          raw = JSON.parse(await handle.readFile("utf8"));
+        } finally { await handle.close(); }
         const identity = receiptIdentity(raw);
         if (identity?.companyId !== input.companyId || identity?.runId !== input.runId) continue;
         pending.set(file, { file, envelope: envelopeSchema.parse(raw) });
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") { moved = true; continue; }
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          const id = name.slice(0, -5);
+          if (receiptIdSchema.safeParse(id).success) vanishedIds.add(id.toLowerCase());
+          else moved = true;
+          continue;
+        }
+        if ((error as NodeJS.ErrnoException).code === "ELOOP") continue;
         if (error instanceof SyntaxError) continue;
         throw error;
       }
+    }
+    const ids = [...vanishedIds];
+    for (let offset = 0; offset < ids.length; offset += 1000) {
+      const batch = ids.slice(offset, offset + 1000);
+      const journaled = await db.select({ id: runUsageReceipts.id }).from(runUsageReceipts)
+        .where(sql`${runUsageReceipts.id} = any(${sql.param(batch)}::uuid[])`);
+      if (journaled.length !== batch.length) moved = true;
     }
     if (!moved) return [...pending.values()];
   }
@@ -545,7 +564,7 @@ export async function readPendingRunUsageReceipts(input: { companyId: string; ru
 }
 
 export async function recoverPendingRunUsageReceipts(db: Db, input: { companyId: string; runId: string }, directory = usageReceiptSpoolPath(), options: { retainFiles?: boolean; index?: UsageReceiptIndex } = {}) {
-  const pending = await readPendingRunUsageReceipts(input, directory, options.index);
+  const pending = await readPendingRunUsageReceipts(db, input, directory, options.index);
   for (const item of pending) {
     await persistUsageReceipt(db, item.envelope);
     if (!options.retainFiles) await fs.rm(item.file, { force: true });
@@ -567,7 +586,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
   const receiptIdentity = (state: Record<string, unknown> | null | undefined) => JSON.stringify([
     state?.accountingReceiptSourceId, state?.accountingReceiptSequence, state?.accountingReceiptId,
   ]);
-  const pending = await readPendingRunUsageReceipts(input, directory);
+  const pending = await readPendingRunUsageReceipts(db, input, directory);
   const bound = await withOperationAccountingTransaction(db, input.companyId, async tx => {
     const [run] = await tx.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId,
       usageJson: heartbeatRuns.usageJson, costAccountedAt: heartbeatRuns.costAccountedAt }).from(heartbeatRuns)
