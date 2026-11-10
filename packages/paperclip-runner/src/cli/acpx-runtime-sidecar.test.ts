@@ -1167,6 +1167,59 @@ describe("qualified ACPX runtime sidecar", () => {
     } finally { await sidecar.close(); rmSync(root,{recursive:true,force:true}); }
   }, 15000);
 
+  it("shuts down and finishes cleanup when the controller output pipe closes mid-turn", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acpx-shutdown-"));
+    const loader = join(root, "loader.mjs"), fixture = join(root, "host.mjs");
+    const base = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
+    writeFileSync(fixture, `import { AcpxRuntimeHost as Base } from ${JSON.stringify(base)};
+      import { appendFileSync } from "node:fs";
+      import { join } from "node:path";
+      export class AcpxRuntimeHost extends Base {
+        static async open(options) { const host = await Base.open(options); Object.setPrototypeOf(host, this.prototype); return host; }
+        startTurn({ requestId }) {
+          for (const callId of ["resolved", "cancelled", "pending-1", "pending-2"]) {
+            const controller = new AbortController();
+            this.options.semanticTools.handler({callId, tool:"call_api", arguments:{secret:"PRIVATE_REQUEST_BODY"}, signal:controller.signal})
+              .then(() => appendFileSync(join(process.env.PAPERCLIP_TEST_OUTPUT_ROOT,"outcomes"), callId+":resolved\\n"),
+                error => appendFileSync(join(process.env.PAPERCLIP_TEST_OUTPUT_ROOT,"outcomes"), callId+":"+error.message+"\\n"));
+            if (callId === "cancelled") controller.abort();
+          }
+          return {requestId, promptStarted:Promise.resolve(), result:this.result, events:(async function*(){})()};
+        }
+      }`);
+    writeFileSync(loader, `import { registerHooks } from "node:module"; import { pathToFileURL } from "node:url";
+      registerHooks({resolve(specifier,context,next){
+        if(context.parentURL?.includes("/acpx-runtime-sidecar.") && specifier.endsWith("/runtime-host.js"))
+          return {url:pathToFileURL(${JSON.stringify(fixture)}).href,shortCircuit:true};
+        return next(specifier,context);
+      }});`);
+    const sidecar = new SidecarProcess({loader, environment:{PAPERCLIP_TEST_OUTPUT_ROOT:root}});
+    children.add(sidecar);
+    const send = async (id:number, command:string, params:Record<string,unknown>) => {
+      sidecar.write({protocolVersion:ACPX_SIDECAR_PROTOCOL_VERSION,id,command,params});
+      expect(await sidecar.next(frame=>frame.id === id)).toMatchObject({ok:true});
+    };
+    try {
+      sidecar.write(initializeRequest(1,"codex"));
+      expect(await sidecar.next(frame=>frame.id === 1)).toMatchObject({ok:true});
+      await send(2,"session.open",{agent:"codex",model:"gpt-5.6-sol",runtimeDirectory:root,workingDirectory:root,
+        normalizedSessionId:"shutdown-session",permissionMode:"deny-all",systemInstructions:"Test shutdown.",tools:[]});
+      await send(3,"run.attach",{runId:"shutdown-run",catalogRevision:1,tools:[]});
+      await send(4,"turn.start",{turnId:"shutdown-turn",message:"Test pending calls."});
+      await sidecar.next(frame=>frame.eventType === "runtime.tool_called" && (frame.payload as Record<string,unknown>).callId === "pending-2");
+      sidecar.closeOutput();
+      sidecar.write({protocolVersion:ACPX_SIDECAR_PROTOCOL_VERSION,id:5,command:"tool.resolve",
+        params:{turnId:"shutdown-turn",callId:"resolved",result:{private:"PRIVATE_RESPONSE_BODY"}}});
+      await expect(sidecar.exited()).resolves.toEqual({code:1, signal:null});
+      expect(sidecar.stderr()).toContain("sidecar_shutdown_requested");
+      expect(sidecar.stderr()).not.toMatch(/Unhandled 'error' event|EPIPE/);
+      const outcomes = readFileSync(join(root,"outcomes"),"utf8");
+      expect(outcomes).toContain("pending-1:ACPX sidecar output failed");
+      expect(outcomes).toContain("pending-2:ACPX sidecar output failed");
+      expect(JSON.parse(readFileSync(join(root,"provider-cleanup.json"),"utf8"))).toMatchObject({closeCount:1,code:0});
+    } finally { await sidecar.close(); rmSync(root,{recursive:true,force:true}); }
+  }, 15000);
+
   it("keeps session admission closed while any cleanup owner remains", () => {
     const cleanup = Promise.resolve();
 
@@ -1882,6 +1935,10 @@ class SidecarProcess {
   async shutdown(trigger: "stdin" | "SIGTERM" | "SIGINT") {
     if (trigger === "stdin") this.#child.stdin.end();
     else this.#child.kill(trigger);
+    return this.exited();
+  }
+
+  async exited() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([

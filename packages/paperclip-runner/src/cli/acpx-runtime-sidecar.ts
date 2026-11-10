@@ -123,10 +123,9 @@ const MAX_EVENT_PAYLOAD_BYTES = 256 * 1024;
 let outputFailed = false;
 process.stdout.on("error", () => {
   outputFailed = true;
+  requestShutdown("ACPX sidecar output failed");
 });
-process.stderr.on("error", () => {
-  outputFailed = true;
-});
+process.stderr.on("error", () => undefined);
 let goalSourceRevision = 0;
 function observedGoalProjection(...args: Parameters<typeof acpxGoalProjection>) {
   return { ...acpxGoalProjection(...args), providerRevision: ++goalSourceRevision };
@@ -233,7 +232,7 @@ process.once("SIGINT", () => {
 function requestShutdown(reason: string): void {
   if (shutdownRequested) return;
   shutdownRequested = true;
-  recordSidecarShutdownThenQueue(
+  if (!recordSidecarShutdownThenQueue(
     () => diagnostic("sidecar_shutdown_requested", JSON.stringify(sidecarShutdownSnapshot(
       reason, tools, inputs.size, permissions.size, normalizingTools.size,
     ))),
@@ -245,7 +244,7 @@ function requestShutdown(reason: string): void {
         (error) => diagnostic("sidecar_shutdown_failed", safeMessage(error)),
       );
     },
-  );
+  )) outputFailed = true;
 }
 
 async function receiveLine(line: string): Promise<void> {
