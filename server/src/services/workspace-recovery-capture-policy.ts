@@ -47,13 +47,14 @@ export async function rearmExhaustedCapturePolicy(db: Db, input: WorkspaceRecove
     // still proves the sandbox stop itself before it reads any file.
     const at = new Date(now);
     if (!sourceRunProvablyOver(run, coordinator, at)) return null;
-    await releaseLapsedCoordinatorOwner(tx, input, coordinator, at);
+    // A lapsed owner of the finished coordinator would refuse the new attempt's stop check.
+    const releasedLapsedOwner = await releaseLapsedCoordinatorOwner(tx, input, coordinator, at);
     const next: SystemRecoveryState = { ...createSystemRecovery(run.id), revision: system.revision + 1,
       preservationOperationIds: system.preservationOperationIds, providerCooldownAt: system.providerCooldownAt,
       nextAttemptAt: system.providerCooldownAt };
     const marker = { schema: CAPTURE_POLICY_RECOVERY_SCHEMA, policyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION,
       previousPolicyVersion: system.capturePolicyVersion ?? 1, generationId: next.generationId,
-      previousGenerationId: system.generationId, rearmedAt: now };
+      previousGenerationId: system.generationId, rearmedAt: now, ...(releasedLapsedOwner ? { releasedLapsedOwner: true } : {}) };
     const prior = action.evidence.workspaceRecovery as { requestIds?: unknown } | undefined;
     await notifyIssueRecovery(tx, { companyId: input.companyId });
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
@@ -68,7 +69,8 @@ export async function rearmExhaustedCapturePolicy(db: Db, input: WorkspaceRecove
       action: "issue.workspace_recovery_rearmed", entityType: "issue", entityId: input.issueId, runId: run.id,
       details: { recoveryActionId: action.id, reason: "capture_policy_changed", failureCode: system.failure?.code ?? null,
         policyVersion: marker.policyVersion, previousPolicyVersion: marker.previousPolicyVersion,
-        previousGenerationId: system.generationId, generationId: next.generationId } });
+        previousGenerationId: system.generationId, generationId: next.generationId,
+        ...(releasedLapsedOwner ? { releasedLapsedOwner: coordinator!.leaseOwner } : {}) } });
   });
   if (!outcome) return false;
   try { publishActivity(outcome.publication); } catch { logger.warn({ runId: input.runId }, "Recovery activity delivery deferred"); }
