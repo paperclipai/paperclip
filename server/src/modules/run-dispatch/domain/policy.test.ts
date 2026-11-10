@@ -282,6 +282,18 @@ describe("decideQueuedRunStaleness", () => {
       .toMatchObject({ stale: true, errorCode: "issue_waiting_for_response" });
   });
 
+  it("delivers a queued response to a reviewer only while the reviewer keeps the issue", () => {
+    const reviewer: ReviewParticipantFacts = { isInReview: true, hasParticipant: true, participantIsAgent: true,
+      participantAgentId: "agent-1", currentStageType: "review", currentParticipant: { type: "agent", agentId: "agent-1" } };
+    const response = { ...baseStalenessFacts(), isResolvedInteractionContinuation: true,
+      issueStatus: "in_review", reviewParticipant: reviewer };
+    expect(decideQueuedRunStaleness(response, NOW)).toEqual({ stale: false });
+    expect(decideQueuedRunStaleness({ ...response, issueAssigneeAgentId: "agent-2",
+      reviewParticipant: { ...reviewer, participantAgentId: "agent-2", currentStageType: "approval",
+        currentParticipant: { type: "agent", agentId: "agent-2" } } }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
+  });
+
   it("is not stale when every rule passes", () => {
     expect(decideQueuedRunStaleness(baseStalenessFacts(), NOW)).toEqual({
       stale: false,

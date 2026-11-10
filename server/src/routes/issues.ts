@@ -15483,9 +15483,12 @@ export function issueRoutes(
       if (assigneeWillChange && actor.actorType === "agent" &&
           existing.assigneeAgentId === actor.agentId && updateFields.status === "in_review" &&
           await hasQueuedInteractionResponse(db, existing.companyId, existing.id, existing.assigneeAgentId)) {
-        throw conflict("The user already responded. Keep the current assignee so the queued response can continue after this run.", {
-          code: "interaction_response_queued",
-        });
+        throw conflict(
+          transition.decision
+            ? "The user already responded to you. This stage decision was not saved. Read the queued response in your next run on this issue, then submit the decision again."
+            : "The user already responded. Keep the current assignee so the queued response can continue after this run.",
+          { code: "interaction_response_queued" },
+        );
       }
       if (assigneeWillChange && !transition.workflowControlledAssignment) {
         if (!isAgentReturningIssueToCreator) {
