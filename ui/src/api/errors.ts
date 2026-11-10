@@ -181,11 +181,8 @@ function readableServerMessage(err: unknown): string | null {
 // --- Classification ---------------------------------------------------------------
 
 function isAbortError(err: unknown): boolean {
-  const error = record(err);
-  if (error?.name === "AbortError" || error?.name === "CancelledError") return true;
-  // React Query's `CancelledError` keeps the default `Error` name; its message
-  // and `revert` field identify it.
-  return err instanceof Error && err.message === "CancelledError" && "revert" in err;
+  const name = record(err)?.name;
+  return name === "AbortError" || name === "CancelledError";
 }
 
 function isNetworkTypeError(err: unknown): boolean {

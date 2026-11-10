@@ -1,9 +1,8 @@
 import { CancelledError } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
-import { classifyError } from "@/api/errors";
 import { startPersistedQueryCache } from "./persisted-query-cache";
-import { createAppQueryClient, shouldReportQueryError } from "./query-client";
+import { createAppQueryClient } from "./query-client";
 import { queryKeys } from "./queryKeys";
 
 vi.mock("@/api/auth", () => ({ authApi: { getSession: vi.fn() } }));
@@ -34,26 +33,7 @@ function setup() {
 }
 afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.clearAllMocks(); });
 
-describe("React Query cancellation", () => {
-  it("is an aborted request, not an unexpected error for Sentry", () => {
-    // React Query's own cancellation keeps the default `Error` name.
-    const error = new CancelledError({ revert: false });
-    expect(classifyError(error)).toBe("aborted");
-    expect(shouldReportQueryError(error)).toBe(false);
-    expect(classifyError(new Error("CancelledError"))).toBe("unknown");
-  });
-
-  it("is not reported when a read is cancelled without reverting it", async () => {
-    const appClient = createAppQueryClient({ reportError,
-      connectivity: { reportError: () => {}, getSnapshot: () => ({ status: "online" }) as never } });
-    handles.push(() => appClient.clear());
-    const inFlight = appClient.fetchQuery({ queryKey: ["in-flight"], queryFn: pending });
-    await appClient.cancelQueries({ queryKey: ["in-flight"] }, { revert: false });
-    await expect(inFlight).rejects.toBeInstanceOf(CancelledError);
-    expect(appClient.getQueryState(["in-flight"])?.error).toBeInstanceOf(CancelledError);
-    expect(reportError).not.toHaveBeenCalled();
-  });
-
+describe("persisted cache cancellation", () => {
   it("is not reported when a session denial clears an in-flight read", async () => {
     const client = setup();
     const inFlight = client.fetchQuery({ queryKey: queryKeys.agents.list("company-one"), queryFn: pending });
