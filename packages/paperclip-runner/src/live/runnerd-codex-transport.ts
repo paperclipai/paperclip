@@ -678,7 +678,8 @@ function recoveredRunAttachment(state: {
   };
 }
 
-const RUNNER_MAINTENANCE_COMMAND_TYPES = new Set(["runner.drain", "runner.suspend", "runner.shutdown", "session.snapshot"]);
+// Committed events that show a provider turn or tool work started. Commands
+// use the control plane's shared recovery-maintenance vocabulary instead.
 const PROVIDER_WORK_EVENT_TYPES = new Set(["turn.accepted", "turn.started", "item.started", "tool.execution.started",
   "semantic_tool.input", "runtime_request.created", "mcp_app.tool_input"]);
 
@@ -688,7 +689,9 @@ const PROVIDER_WORK_EVENT_TYPES = new Set(["turn.accepted", "turn.started", "ite
  * runner settled it as `execution_indeterminate` and will not execute it
  * again. Attaching binds the run to its saved session and starts no turn, so a
  * new attachment with the same payload is safe while nothing after the old one
- * started provider work. Each runner refuses the new one unless its provider
+ * started provider work: every later command is recovery maintenance (see
+ * isRunnerRecoveryMaintenanceCommand), and no committed event shows a turn or
+ * tool work. Each runner refuses the new one unless its provider
  * session is settled. Warm transitions and staged attachments keep their own
  * exact replay paths and are never re-issued here.
  */
@@ -705,7 +708,7 @@ function cutOffRunAttachmentPayload(state: {
     && record(record(attach.result).result).code === "execution_indeterminate");
   if (!outcomeUnknown) return null;
   if (state.commands.some(command => command.controllerSeq > attach.controllerSeq
-    && !RUNNER_MAINTENANCE_COMMAND_TYPES.has(command.type))) return null;
+    && !isRunnerRecoveryMaintenanceCommand(command.type))) return null;
   if (state.committedEvents.some(event => PROVIDER_WORK_EVENT_TYPES.has(event.eventType))) return null;
   return structuredClone(attach.payload);
 }

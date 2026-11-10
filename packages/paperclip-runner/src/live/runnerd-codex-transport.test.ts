@@ -1029,8 +1029,8 @@ it("re-issues only this run's own cut-off attachment before any provider work", 
   const reissue = runnerdRecoveryInternals.cutOffRunAttachmentPayload;
   expect(reissue(state())).toEqual(attach.payload);
   expect(reissue(state({ status: "indeterminate", result: null }))).toEqual(attach.payload);
-  expect(reissue(state({}, [{ type: "runner.drain", status: "failed" }, { type: "runner.suspend" }], ["runner.reconciled", "session.resumed"])))
-    .toEqual(attach.payload);
+  expect(reissue(state({}, [{ type: "runner.drain", status: "failed" }, { type: "runner.suspend" }, { type: "session.goal.get" },
+    { type: "turn.stop" }, { type: "session.snapshot" }], ["runner.reconciled", "session.resumed"]))).toEqual(attach.payload);
   // A definite answer, a pending command, or a warm or staged attachment keeps its own path.
   expect(reissue(state({ status: "completed", result: { status: "completed" } }))).toBeNull();
   expect(reissue(state({ status: "failed", result: { result: { code: "command_execution_failed" } } }))).toBeNull();
@@ -1039,7 +1039,9 @@ it("re-issues only this run's own cut-off attachment before any provider work", 
   expect(reissue({ ...(state() as object), warmTransition: {} } as never)).toBeNull();
   expect(reissue({ ...(state() as object), stagedRunAttachment: {} } as never)).toBeNull();
   // Any provider work after it means the run moved on.
-  expect(reissue(state({}, [{ type: "turn.start" }]))).toBeNull();
+  for (const type of ["turn.start", "turn.steer", "request.resolve", "semantic_tool.result", "session.goal.set", "run.attach"]) {
+    expect(reissue(state({}, [{ type }]))).toBeNull();
+  }
   expect(reissue(state({}, [], ["turn.started"]))).toBeNull();
 });
 
