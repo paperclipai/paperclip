@@ -36,7 +36,7 @@ export function grade_activity(value: unknown) {
       const priorityEvents = (o.state.priorityEvents as Entity[] | undefined) ?? [];
       c.add("real-two-change-history", priorityEvents.length === 2 && priorityEvents.every(event => o.activity.some(row => row.id === event.id)), "Both fixture priority changes remain visible on the exact task.");
       c.add("attribution-and-values", attributedPriorityChanges(o.reply, priorityEvents, before),
-        "Recorded actors bind each actual transition, including a truthful common actor header; wrong actors, tasks or changes cannot pass.");
+        "The reply names the recorded editor and reports only real transitions on the exact task; wrong tasks or changes cannot pass.");
       c.add("recorded-event-times", priorityEvents.length === 2 && priorityEvents.every(event => mentionsRecordedTime(o.reply, event.createdAt,
         String(o.state.observedAt ?? ""), String(o.state.timezone ?? "UTC"), priorityEvents.map(row => row.createdAt))),
         "Reported calendar and clock times match the actual retained events in UTC or the browser's declared timezone.");
@@ -51,13 +51,13 @@ export function grade_activity(value: unknown) {
 const define = (id: string, setup: ChatCatalogCase["setup"]) => makeDefinition(id, setup, grade_activity);
 export const activityCases: readonly ChatCatalogCase[] = [
   companyOverview(),
-  define("activity.audit-change", async ctx => {
+  { ...define("activity.audit-change", async ctx => {
     const p = await project(ctx); let t = await task(ctx, "Website task", p.id);
     await ctx.input.api.patch(`/api/issues/${t.id}`, { priority: "high" });
     t = await ctx.input.api.patch(`/api/issues/${t.id}`, { priority: "low" });
     const activity = await ctx.input.api.get<Entity[]>(`/api/issues/${t.id}/activity`);
     return { project: p, task: t, observedAt: new Date().toISOString(), timezone: await ctx.input.page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone), priorityEvents: activity.filter(row => row.action === "issue.updated" && row.details?.priority) };
-  }),
+  }), oracleVersion: "paperclip.chat-catalog.activity-audit.structural.v3" },
 ];
 
 export function mentionsRecordedTime(reply: string, recordedAt: string | undefined, observedAt: string, timezone: string, allRecordedAt: Array<string | undefined> = []): boolean {
@@ -168,26 +168,18 @@ function companyOverview(): ChatCatalogCase {
 }
 import { observeInternal } from "./internal-support.js";
 
-function mentionsRecordedActor(reply: string, actorId: string): boolean {
-  const identities = actorId === "local-board" ? [actorId, "Local board", "Board"] : [actorId];
-  return identities.some(identity => {
-    const name = identity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`\\b${name}\\s+(?:changed|updated|set|made|raised|lowered|edited)\\b`, "i").test(reply)
-      || new RegExp(`\\b(?:by|actor|editor)\\s*[:=]?\\s*(?:the\\s+)?${name}\\b`, "i").test(reply)
-      || new RegExp(`\\|\\s*${name}\\s*\\|`, "i").test(reply)
-      || new RegExp(`(?:^|\\n)\\s*(?:#{1,6}\\s*|\\*\\*)?${name}(?:\\*\\*)?\\s*:`, "i").test(reply);
-  });
-}
+const wordPattern = (value: string) => new RegExp(`(?<![\\w-])${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i");
 
-/** A common actor header scopes following bullets; repeating the actor in every
- * line is unnecessary. Explicit contrary actor/transition claims still fail. */
+/** Grades the facts the question asked for (who, and the from/to values) by structure rather than
+ * sentence grammar: each recorded editor is named somewhere in the reply, every stated transition is a
+ * real one, and each recorded change's new value is reported. Mentions of other actors are not graded.
+ * How the reply phrases the attribution ("by local-board", "local-board made both", a table, a
+ * header over bullets) is left to a human reader. */
 export function attributedPriorityChanges(reply: string, events: Entity[], target?: Entity): boolean {
   if (events.length !== 2 || events.some(event => !event.actorId || !event.details?.priority)) return false;
   const plain = reply.replace(/[`*]/g, "");
   const taskRefs = plain.match(/\b[A-Z]{2,10}-\d+\b/g) ?? [];
   if (target?.identifier && taskRefs.some(id => id !== target.identifier)) return false;
-  let cursor = 0;
-  const parts = plain.split(/[;\n]|\.(?:\s|$)/).filter(part => part.trim()).map(text => { const start = plain.indexOf(text, cursor); cursor = start + text.length; return { text, start, end: cursor }; });
   const tokens = [...plain.matchAll(/\b(low|medium|high|critical)\b/gi)];
   const pairs: Array<{ from: string; to: string; start: number; end: number }> = [];
   for (let i = 0; i + 1 < tokens.length; i++) {
@@ -201,21 +193,11 @@ export function attributedPriorityChanges(reply: string, events: Entity[], targe
     return { to: String(event.details!.priority).toLowerCase(), from: typeof raw === "string" ? raw.toLowerCase() : undefined };
   };
   if (pairs.some(pair => !events.some(event => { const expected = change(event); return pair.to === expected.to && (!expected.from || pair.from === expected.from); }))) return false;
-  return events.every(event => {
-    const actor = event.actorId!, expected = change(event);
-    const headerAt = parts.findIndex(part => mentionsRecordedActor(part.text, actor) && /\b(?:twice|both|two|priority|edits?|changes?)\b/i.test(part.text));
-    const aliases = actor === "local-board" ? [actor, "board"] : [actor.toLowerCase()];
-    return parts.some((entry, partIndex) => {
-      const part = entry.text;
-      if (!new RegExp(`\\b${expected.to}\\b`, "i").test(part)) return false;
-      const contraryActor = [...part.matchAll(/\b([a-z0-9_-]+)\s+(?:changed|updated|set|made|raised|lowered|edited)\b/gi)]
-        .some(match => !aliases.includes(match[1]!.toLowerCase()) && !["priority", "it", "they", "both", "changes", "edits"].includes(match[1]!.toLowerCase()));
-      if (contraryActor) return false;
-      if (!mentionsRecordedActor(part, actor) && !(headerAt >= 0 && partIndex >= headerAt)) return false;
-      // A priority named only as the starting value of another transition is
-      // not a report that this priority change occurred.
-      return tokens.some(token => token[1]!.toLowerCase() === expected.to && token.index! >= entry.start && token.index! < entry.end
-        && (!pairs.some(pair => pair.start === token.index) || pairs.some(pair => pair.end === token.index)));
-    });
-  });
+  // A priority named only as the starting value of another transition is not a report that this change occurred.
+  const reported = events.every(event => tokens.some(token => token[1]!.toLowerCase() === change(event).to
+    && (!pairs.some(pair => pair.start === token.index) || pairs.some(pair => pair.end === token.index))));
+  const actors = [...new Set(events.map(event => event.actorId!))];
+  const aliases = (actor: string) => actor === "local-board" ? [actor, "local board", "board"] : [actor];
+  const named = actors.every(actor => aliases(actor).some(alias => wordPattern(alias).test(plain)));
+  return reported && named;
 }

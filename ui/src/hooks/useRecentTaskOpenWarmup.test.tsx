@@ -8,6 +8,7 @@ import { TASK_COLLECTION_PAINTED_EVENT } from "@/lib/issue-detail-preload-events
 import type { Issue } from "@paperclipai/shared";
 import { seedIssueChatBootstrap, type IssueChatBootstrapEntry } from "@/lib/issueChatBootstrapCache";
 import { queryKeys } from "@/lib/queryKeys";
+import { resetIssueChatBootstrapsForTest } from "@/lib/issue-chat-bootstrap";
 import { resetRecentTaskChatPreloadForTests, useRecentTaskOpenWarmup, type RecentTaskOpenWarmupTask } from "./useRecentTaskOpenWarmup";
 
 const chatBootstrap = vi.hoisted(() => vi.fn());
@@ -57,6 +58,7 @@ function render(props: { companyId?: string | null; userId?: string | null; task
 
 beforeEach(() => {
   resetRecentTaskChatPreloadForTests();
+  resetIssueChatBootstrapsForTest();
   chatBootstrap.mockReset();
   chatBootstrap.mockImplementation(async (_companyId: string, ids: string[]) => ({
     items: ids.map((id) => bootstrapItem(Number(id.slice(3)))),
@@ -164,20 +166,28 @@ describe("useRecentTaskOpenWarmup", () => {
     expect(queryClient.getQueryData([...queryKeys.issues.detail("PAP-5"), "core"])).toBeUndefined();
   });
 
-  it("drops the answer when the sidebar unmounts before it arrives", async () => {
+  it("keeps an answer in flight when the sidebar unmounts, so a task opened meanwhile can use it", async () => {
     let answer!: (value: unknown) => void;
-    chatBootstrap.mockImplementationOnce((_companyId: string, _ids: string[], options: { signal: AbortSignal }) => new Promise((resolve) => {
-      answer = resolve;
-      expect(options.signal.aborted).toBe(false);
-    }));
+    chatBootstrap.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
     render({ tasks: tasks(1) });
     await settle();
     expect(chatBootstrap).toHaveBeenCalledTimes(1);
-    const signal = (chatBootstrap.mock.calls[0]![2] as { signal: AbortSignal }).signal;
     act(() => root.unmount());
-    expect(signal.aborted).toBe(true);
+    await act(async () => { answer({ items: [bootstrapItem(0)] }); });
+    expect(queryClient.getQueryData([...queryKeys.issues.detail("PAP-0"), "core"])).toMatchObject({ id: "id-0" });
+    root = createRoot(container);
+  });
+
+  it("drops the answer when the account changes before it arrives", async () => {
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    let answer!: (value: unknown) => void;
+    chatBootstrap.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    render({ tasks: tasks(1) });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(1);
+    act(() => { queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } }); });
     await act(async () => { answer({ items: [bootstrapItem(0)] }); });
     expect(queryClient.getQueryData([...queryKeys.issues.detail("PAP-0"), "core"])).toBeUndefined();
-    root = createRoot(container);
+    expect(queryClient.getQueryData([...queryKeys.issues.detail("id-0"), "core"])).toBeUndefined();
   });
 });

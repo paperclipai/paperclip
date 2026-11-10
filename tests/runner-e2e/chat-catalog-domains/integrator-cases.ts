@@ -39,8 +39,12 @@ export function gradeIntegratorCases(value: unknown) {
     c.add("real-project-and-case-status", o.casesEnabled && o.casesReadStatus === 200 && expected.length === 2
       && expected.every(before => o.cases.some(now => now.id === before.id && now.status === before.status && now.projectId === before.projectId))
       && o.tasks.some(row => row.id === (o.state.finishedTask as { id: string } | undefined)?.id && row.status === "done"), "Two actual open Launch cases remain open even when related task work is done.");
+    // Results are the rendered case links and the reply's list items or table rows. An excluded case
+    // may be mentioned in prose (for example "COM-C3 is closed"); it must not be linked or listed as a result.
+    const resultRows = o.reply.split("\n").filter(line => /^\s*(?:[-*+]|\d+[.)]|\|)\s*/.test(line));
     c.add("exact-filtered-case-results", expected.every(row => !!caseHref(o, row)) && excluded.every(row => !caseHref(o, row)
-      && !o.reply.includes(row.title) && !o.reply.includes(row.identifier)), "Rendered results include the real open Launch cases and exclude the closed case and other project's open case.");
+      && !resultRows.some(line => line.includes(row.title) || (!!row.identifier && new RegExp(`(?<![\\w-])${row.identifier}(?![\\w-])`).test(line)))),
+      "Rendered results link the real open Launch cases; the closed case and the other project's open case are neither linked nor listed as results.");
     c.add("read-does-not-mutate-cases-or-columns", !o.activity.some(event => event.agentId === o.leadId && /^case\./.test(event.action ?? ""))
       && !/\b(?:changed|saved|updated|reordered)\b[^.!?\n]{0,45}\b(?:columns?|board layout)\b/i.test(o.reply), "Browsing does not mutate case records or claim browser-only presentation changes.");
   } else c.add("owned-case-oracle", false, "No independent oracle exists for this case scenario.");
@@ -85,7 +89,7 @@ export const integratorCasesCases: readonly ChatCatalogCase[] = [
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: "Customer bug: the checkout button stops responding on mobile Safari after a trial item and a test address are entered. The person is asking about this bug." });
     return {};
   }),
-  define("cases.browse-cases", true, async ctx => {
+  { ...define("cases.browse-cases", true, async ctx => {
     const launch = await project(ctx, "Launch"); const other = await project(ctx, "Research");
     const create = (title: string, projectId: string, status: string) => ctx.input.api.post<CaseRecord>(`${root(ctx)}/cases`, { caseType: "customer", key: `browse-${ctx.input.nonce}-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, title, projectId, status });
     const open = await create("Mobile checkout failure", launch.id, "in_progress"); const second = await create("Keyboard focus loss", launch.id, "in_review");
@@ -95,5 +99,5 @@ export const integratorCasesCases: readonly ChatCatalogCase[] = [
     const saved = await ctx.input.api.get<CaseRecord[]>(`${root(ctx)}/cases?limit=200`);
     if (new Set([open, second, closed, elsewhere].map(row => row.id)).size !== 4 || ![open, second, closed, elsewhere].every(row => saved.some(now => now.id === row.id && now.status === row.status && now.projectId === row.projectId))) throw new Error("Case browsing setup did not retain four distinct scoped status records");
     return { project: launch, openCases: [open, second], excludedCases: [closed, elsewhere], finishedTask };
-  }),
+  }), oracleVersion: "paperclip.chat-catalog.cases-browse.structural.v2" },
 ];

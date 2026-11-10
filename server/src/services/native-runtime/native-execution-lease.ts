@@ -39,13 +39,32 @@ const RENEWAL_STATEMENT_TIMEOUT_MS = 10_000;
  * Callers lock with `lockNativeExecutionLeaseForReacquire` first, so the run
  * row this reads is the latest committed version and stays so until commit.
  */
+const OWN_RESTART_CLAIM_STATES: ReadonlyArray<readonly [disposition: string, recoveryState: string]> = [
+  ["resume_dead_runner", "resuming_session"],
+  ["reattach_existing_runner", "awaiting_runner_reattach"],
+  ["bootstrap_incomplete", "bootstrap_incomplete"],
+];
+
+function nativeOwnRestartClaimUnchanged(): SQL {
+  const last = sql`(${nativeRunFinalizations.recoveryHistory} -> -1)`;
+  const pairs = sql.join(OWN_RESTART_CLAIM_STATES.map(([disposition, state]) =>
+    sql`(${last} ->> 'disposition' = ${disposition} and ${nativeRunFinalizations.recoveryState} = ${state})`), sql` or `);
+  return sql`(jsonb_typeof(${nativeRunFinalizations.recoveryHistory}) = 'array'
+    and (${pairs})
+    and ${last} ->> 'controllerGeneration' = ${nativeRunFinalizations.controllerGeneration}::text
+    and ${last} ->> 'controllerBootId' = ${nativeRunFinalizations.controllerBootId}
+    and ${nativeRunFinalizations.recoveryRequestId} is not distinct from (${last} ->> 'recoveryRequestId'))`;
+}
+
 function nativeExecutionLeaseUntouchedCondition(stage: "observed" | "accepted"): SQL {
   const coordinatorStage = stage === "observed"
     ? sql`${nativeRunFinalizations.phase} = 'observed' and ${nativeRunFinalizations.resultId} is null`
     : sql`${nativeRunFinalizations.phase} = 'workspace_finalizing' and ${nativeRunFinalizations.resultId} is not null`;
   return sql`(${coordinatorStage}
-    and ${nativeRunFinalizations.recoveryState} is null
-    and ${nativeRunFinalizations.recoveryRequestId} is null
+    and (
+      (${nativeRunFinalizations.recoveryState} is null and ${nativeRunFinalizations.recoveryRequestId} is null)
+      or ${nativeOwnRestartClaimUnchanged()}
+    )
     and ${nativeRunFinalizations.failureCode} is null
     and ${nativeRunFinalizations.nextAttemptAt} is null
     and ${nativeRunFinalizations.controllerHostHash} is distinct from ${OPERATOR_ATTESTED_CONTROLLER_HOST}

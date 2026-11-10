@@ -151,6 +151,8 @@ export function findRemoteWorkspaceRestoreError(error: unknown): RemoteWorkspace
 const TRANSPORT_FAILURE_LABELS: Array<[RegExp, string]> = [
   [/daytona_sandbox_not_found/i, "daytona_sandbox_not_found"],
   [/sandbox lease \S+ is no longer active/i, "sandbox_lease_inactive"],
+  // The provider was still stopping, archiving, or starting the sandbox.
+  [/state change in progress|\bis still [a-z_]+ at its start deadline\b/i, "sandbox_state_transition"],
   [/\b(?:EACCES|EPERM|permission denied)\b/i, "permission_denied"],
   [/\b(?:not (?:started|running)|is stopped|state[^A-Za-z]{1,4}stopped|stopped sandbox)\b/i, "sandbox_not_running"],
   [/\b(?:timed? ?out|timeout|ETIMEDOUT)\b/i, "transport_timeout"],

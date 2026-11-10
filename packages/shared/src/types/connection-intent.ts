@@ -5,10 +5,10 @@ import type { RemoteMcpConnectorId } from "../remote-mcp-connectors.js";
 
 /** A saved setup's next human step. This is not an authorization grant. */
 export interface ConnectionRequiredUserAction {
-  kind: "authenticate" | "consent" | "enter_credentials" | "confirm_identity";
+  kind: "authenticate" | "consent" | "enter_credentials" | "confirm_identity" | "reveal_credential";
   userId: string;
   reason: string;
-  resource: { type: "connection" | "chat_endpoint" | "ai_login"; id: string; companyId: string };
+  resource: { type: "connection" | "chat_endpoint" | "ai_login" | "gateway_token"; id: string; companyId: string };
   setupPath: string;
   expiresAt?: string;
   continuation?: string;

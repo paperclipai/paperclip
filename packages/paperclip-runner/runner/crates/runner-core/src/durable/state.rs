@@ -1947,13 +1947,17 @@ fn preserve_bounded_display_content(
     original: &Value,
     mut sanitized: Value,
 ) -> Result<Value, DurableRunnerError> {
-    use crate::acpx_event_payload::{has_bounded_rich_display_shape, validate_question_set};
+    use crate::acpx_event_payload::{
+        fit_redacted_display_to_length_bounds, has_bounded_rich_display_shape,
+        validate_question_set,
+    };
 
     // Rich display payloads are already closed and byte-bounded by their exact
     // protocol schemas. Applying a diagnostic preview cap again would silently
     // change complete output into a truncated artifact without its metadata.
     if has_bounded_rich_display_shape(event_type, original) {
-        let preserved = sanitize_bounded_display_value(original);
+        let mut preserved = sanitize_bounded_display_value(original);
+        fit_redacted_display_to_length_bounds(event_type, &mut preserved);
         if !has_bounded_rich_display_shape(event_type, &preserved) {
             return Err(DurableRunnerError::invalid(
                 "redacted display activity exceeds its schema bounds",
@@ -4677,4 +4681,6 @@ mod tests {
             .is_err());
         assert!(state.outbox.is_empty());
     }
+
+    include!("tests/redaction_display_bounds.rs");
 }

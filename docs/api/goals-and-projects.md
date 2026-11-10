@@ -61,7 +61,7 @@ GET /api/companies/{companyId}/projects
 GET /api/projects/{projectId}
 ```
 
-Returns project details including workspaces.
+Returns project details including workspaces and the project-owned `environmentId`.
 
 ### Create Project
 
@@ -84,6 +84,12 @@ POST /api/companies/{companyId}/projects
 
 Notes:
 
+- `environmentId` optionally selects the project environment. When omitted, creation
+  saves the creator's effective default. The saved choice does not change when the
+  creator or instance default changes later.
+- `expectedStorageProviderPluginId` optionally guards the observed storage owner.
+  Use `GET /api/companies/{companyId}/project-environments` to discover compatible
+  groups and the creator's default. Unknown or changed storage is rejected.
 - `workspace` is optional. If present, the project is created and seeded with that workspace.
 - A workspace must include at least one of `cwd` or `repoUrl`.
 - For repo-only projects, omit `cwd` and provide `repoUrl`.
@@ -96,6 +102,12 @@ PATCH /api/projects/{projectId}
   "status": "in_progress"
 }
 ```
+
+`environmentId` can be updated independently of workspace/isolation policy. Set it
+to an available compatible environment ID, or `null` to inherit agent/instance
+defaults. The update affects only this project. An incompatible or unavailable
+environment returns `409`; company access is required. Existing plugin-owned data
+cannot be moved to another storage owner through this field.
 
 ## Project Workspaces
 

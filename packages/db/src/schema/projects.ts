@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, date, index, jsonb, check, uniqueIndex } from "drizzle-orm/pg-core";
 import type { AgentEnvConfig } from "@paperclipai/shared";
 import { companies } from "./companies.js";
+import { environments } from "./environments.js";
 import { goals } from "./goals.js";
 import { agents } from "./agents.js";
 import { connectionGrants } from "./tool_access.js";
@@ -23,6 +24,7 @@ export const projects = pgTable(
     color: text("color"),
     icon: text("icon"),
     env: jsonb("env").$type<AgentEnvConfig>(),
+    environmentId: uuid("environment_id").references(() => environments.id, { onDelete: "set null" }),
     gitAuthorizationGrantId: uuid("git_authorization_grant_id").references(() => connectionGrants.id, { onDelete: "set null" }),
     gitAuthorizedByUserId: text("git_authorized_by_user_id"),
     pauseReason: text("pause_reason"),

@@ -40,7 +40,7 @@ import {
   runnerLifecycleDefaultNeedsLeaseProbe,
   resolveWarmRunnerIdleTimeoutMsForRun,
 } from "./runner-environment-lifecycle.js";
-import { environmentService } from "./environments.js";
+import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
   buildEnvironmentLeaseContext,
@@ -209,6 +209,7 @@ export function environmentRunOrchestrator(
       });
     }
 
+    await assertEnvironmentCompanyBinding(db, environment.id, input.companyId);
     return environment;
   }
 
@@ -231,7 +232,7 @@ export function environmentRunOrchestrator(
     runnerReconnectGraceMs?: number;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
-      return await environmentRuntime.acquireRunLease(input);
+      return await environmentRuntime.acquireRunLease({ ...input, assertCompanyBinding: true });
     } catch (err) {
       // A transient provider refusal (HTTP 5xx/429/timeout) is retried by the
       // setup path with its bounded bootstrap budget. Saved-sandbox resume and

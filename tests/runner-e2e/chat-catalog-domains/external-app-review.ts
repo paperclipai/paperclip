@@ -12,7 +12,7 @@ import {
   type NotesProvider,
 } from "./external-provider.js";
 import { probeReviewApproval } from "./external-app-review-probe.js";
-import { reviewReplyNamesRecord, type ReviewedConnection } from "./external-app-review-outcomes.js";
+import { reviewReplyStaysOnRecord, type ReviewedConnection } from "./external-app-review-outcomes.js";
 import { observeReviewAdmission, reviewAdmissionSummary } from "./external-app-review-diagnostic.js";
 import { openStandingChat } from "./identity-support.js";
 import {
@@ -91,7 +91,7 @@ export function appReviewProposal(value: unknown) {
   } catch { return undefined; }
 }
 
-export { reviewReplyNamesRecord } from "./external-app-review-outcomes.js";
+export { reviewReplyStaysOnRecord } from "./external-app-review-outcomes.js";
 
 function reviewedConnection(connections: unknown, connectionId: unknown): ReviewedConnection | undefined {
   const row = Array.isArray(connections) ? (connections as ReviewedConnection[]).find(item => item?.id === connectionId) : undefined;
@@ -225,12 +225,12 @@ export function gradeAppReview(value: unknown) {
     "Actual card/human/run/task/catalog and action-request outcomes independently bind rejection/no call, service failure/no change, and successful exact launch update; no human action rescues a different requested resource.",
   );
   c.add(
-    "phase-bound-continuations-name-reviewed-record",
+    "phase-bound-continuations-stay-on-reviewed-record",
     phases.every((phase) =>
       o.phaseReplies.some(
         (reply) =>
           reply.runId === phase.replyRunId &&
-          reviewReplyNamesRecord(reply.body, reviewedConnection(o.connections, o.state.connectionId), o.origin) &&
+          reviewReplyStaysOnRecord(reply.body, reviewedConnection(o.connections, o.state.connectionId), o.origin) &&
           o.runs.some(
             (run) =>
               run.id === reply.runId &&
@@ -244,7 +244,7 @@ export function gradeAppReview(value: unknown) {
           ),
       ),
     ),
-    "Every outcome explanation belongs to its own actual production review-delivery continuation and names or links the reviewed app connection; the outcome itself is graded from saved records.",
+    "Every outcome explanation belongs to its own actual production review-delivery continuation and links no app record other than the reviewed connection; the outcome itself is graded from saved records and its wording is left to a human reader.",
   );
   const rules = o.state.trustRules as TrustRule[] | undefined,
     last = phases[2]!;
@@ -364,7 +364,7 @@ export const appReviewExternalCases = [
     gradeAppReview,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.app-review.v8",
+      oracleVersion: "paperclip.chat-catalog.app-review.v9",
       queryAttachments: [{ stateKey: "factualContextAttachment", filename: "launch-update.md" }],
       expectedRunCount: 6,
       minimumRunCount: 6,
@@ -659,9 +659,9 @@ export const appReviewExternalCases = [
             body =
               observed.phaseReplies.find((row) => row.runId === reply.id)
                 ?.body ?? "";
-          if (!reviewReplyNamesRecord(body, reviewedConnection(observed.connections, state.connectionId), observed.origin))
+          if (!reviewReplyStaysOnRecord(body, reviewedConnection(observed.connections, state.connectionId), observed.origin))
             throw new Error(
-              "Actual model continuation did not name or link the reviewed app connection",
+              "Actual model continuation was empty or linked an app record other than the reviewed connection",
             );
         }
       },

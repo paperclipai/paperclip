@@ -32,6 +32,7 @@ vi.mock("../services/workspace-realization.js", () => ({
 }));
 
 vi.mock("../services/environments.js", () => ({
+  assertEnvironmentCompanyBinding: vi.fn(async () => {}),
   environmentService: vi.fn(() => ({
     ensureLocalEnvironment: vi.fn(),
     getById: mockGetEnvironment,
@@ -282,6 +283,15 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       "run-1", "released", expect.any(Function), "stop_and_retain",
       ...(cancelActiveWork ? [true] : []),
     );
+  });
+
+  it("enforces company bindings when a caller acquires a lease directly", async () => {
+    const runtime = makeMockRuntime();
+    await environmentRunOrchestrator(mockDb, { environmentRuntime: runtime }).acquireLease({
+      companyId: "company-1", environment: makeEnvironment(), issueId: null, agentId: "agent-1", heartbeatRunId: "run-1",
+      persistedExecutionWorkspace: null, executionWorkspaceSettings: null, adapterType: null,
+    });
+    expect(runtime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({ assertCompanyBinding: true }));
   });
 
   it("realizes an enrolled remote workspace in place and persists its authoritative remote root", async () => {

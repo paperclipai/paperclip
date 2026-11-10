@@ -292,7 +292,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
         items={(needsAttention ? collection.matchingItems : collection.visibleItems).map(enrichItem)} allItems={collection.companyItems.map(enrichItem)}
         preferenceLocation={userId ? { companyId, collectionKey: `coordinator-tasks:${userId}` } : undefined}
         collectionKey={JSON.stringify([companyId, userId, needsAttention, deferredQuery, participantAgentId, workspaceIds, collection.view, collection.filters])}
-        sort={sort} onSortChange={setSort}
+        sort={sort} onSortChange={setSort} preloadCompanyId={collection.layout === "list" ? companyId : null}
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>
       {collection.layout === "board" ? collection.matchingItems.length
         ? <KanbanBoard showOverflowFades issues={collection.matchingItems.map(item => enrichIssueRow(item.issue))} agents={agents.data} onUpdateIssue={(id, data) => update.mutate({ id, data })} /> : empty : null}

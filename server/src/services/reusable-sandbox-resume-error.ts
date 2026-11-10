@@ -3,8 +3,9 @@ import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 
 /**
  * Setup failure code for a preserved reusable sandbox that could not be
- * resumed before provider work began. The failure is retried with the bounded
- * bootstrap budget; it never authorizes a replacement sandbox.
+ * resumed before provider work began, where replacing it was not safe (see
+ * `reusable-sandbox-resume-replacement.ts`). The failure is retried with the
+ * bounded bootstrap budget; it never authorizes a replacement sandbox.
  */
 export const REUSABLE_SANDBOX_RESUME_FAILED_CODE = "reusable_sandbox_resume_failed";
 

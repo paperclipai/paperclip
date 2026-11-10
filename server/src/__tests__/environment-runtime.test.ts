@@ -3817,8 +3817,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   });
 
   it.each([
-    { label: "declared provider startup budget", timeoutMs: null, defaultAcquireTimeoutMs: 300_000, expectedRpcTimeoutMs: 330_000 },
-    { label: "explicit startup budget", timeoutMs: 120_000, defaultAcquireTimeoutMs: 300_000, expectedRpcTimeoutMs: 150_000 },
+    // A run's resume budget is capped at 90s rather than the provider's whole
+    // start deadline; a 61s start still fits.
+    { label: "declared provider startup budget", timeoutMs: null, defaultAcquireTimeoutMs: 300_000, expectedRpcTimeoutMs: 90_000 },
+    { label: "explicit startup budget", timeoutMs: 120_000, defaultAcquireTimeoutMs: 300_000, expectedRpcTimeoutMs: 90_000 },
   ])("resumes the same sandbox after a slow start within its $label", async (options) => {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner", options);
     let signalResumeStarted!: () => void;

@@ -19996,7 +19996,26 @@ describe("runnerd provider runtime wiring", () => {
     ["a settled restore hold retained the stopped source", "stopped", "matching", false, true, "settled_hold"],
     ["a settled restore hold names another backup", "stopped", "foreign", false, false, "settled_hold"],
     ["a restore hold has no stop-and-retain receipt", "stopped", "matching", false, false, "unconfirmed_hold"],
-  ] as const)("restores a warm backup into a created lease only when %s", async (_label, terminationState, stampKind, laterProviderWork, restores, hold?: "settled_hold" | "unconfirmed_hold") => {
+    // Regression: the previous run succeeded and left its warm
+    // sandbox `retained` for reuse, but its workspace export was still saving when
+    // the monitor wake acquired a lease, so reuse skipped it and created a new one.
+    // The export finished before the harness prepared; the idle source held exactly
+    // the backup, yet the run failed backup_without_reusable_lease and blocked.
+    ["an idle warm source finished its run and its export", "none", "matching", false, true, "idle_warm"],
+    ["an idle warm source still has a workspace export pending", "none", "matching", false, false, "idle_warm_export_pending"],
+    ["the warm source's run is still running", "none", "matching", false, false, "idle_warm_run_active"],
+    ["an idle warm source had provider work after the backup", "none", "matching", true, false, "idle_warm"],
+    ["an idle warm source stamp names another backup", "none", "foreign", false, false, "idle_warm"],
+    ["another run claimed the idle warm source first", "none", "matching", false, false, "idle_warm_claim_lost"],
+    // Old-saved/new-resumed: the next run resumes the created lease that the failed
+    // run left without any harness state. It takes the backup under the same proof.
+    ["a resumed lease never held the session and the warm source is idle", "none", "matching", false, true, "resumed_idle_warm"],
+    ["a resumed lease lost the state the backup came from", "none", "matching", false, false, "resumed_own_source"],
+  ] as const)("restores a warm backup into a created lease only when %s", async (_label, terminationState, stampKind, laterProviderWork, restores, hold?: "settled_hold" | "unconfirmed_hold" | "idle_warm" | "idle_warm_export_pending" | "idle_warm_run_active" | "idle_warm_claim_lost" | "resumed_idle_warm" | "resumed_own_source") => {
+    const restoreHold = hold === "settled_hold" || hold === "unconfirmed_hold";
+    const idleWarm = !!hold && !restoreHold;
+    const resumed = hold === "resumed_idle_warm" || hold === "resumed_own_source";
+    const targetProviderLeaseId = hold === "resumed_own_source" ? "prior-sandbox" : "sandbox-created";
     // Regression: a legacy follow-up retired the warm sandbox as an obsolete lease, so the
     // next reply got a created lease. The backup was the newest checkpoint, yet
     // every reply failed backup_without_reusable_lease and asked for another reply.
@@ -20011,18 +20030,21 @@ describe("runnerd provider runtime wiring", () => {
     const confirmedAt = new Date().toISOString();
     const sourceLease = (manifestSha256: string) => ({
       id: "source-lease", companyId: current.binding.companyId, heartbeatRunId: "source-run", provider: "daytona",
-      providerLeaseId: "prior-sandbox", status: hold ? "released" : "expired", cleanupStatus: "success",
-      leasePolicy: hold ? "retain_on_failure" : "reuse_by_environment",
-      acquiredAt: new Date(Date.now() - 60_000), releasedAt: new Date(Date.now() + 1_000), expiresAt: null,
+      providerLeaseId: "prior-sandbox", status: idleWarm ? "retained" : restoreHold ? "released" : "expired", cleanupStatus: "success",
+      leasePolicy: restoreHold ? "retain_on_failure" : "reuse_by_environment",
+      acquiredAt: new Date(Date.now() - 60_000), releasedAt: idleWarm ? null : new Date(Date.now() + 1_000), expiresAt: null,
       metadata: {
         nativeHarnessBackup: { schema: "paperclip.native-harness-backup-stamp.v2", normalizedSessionId: current.session.normalizedSessionId,
           runnerInstanceId, sessionScopeSha256: "a".repeat(64), sourceProviderLeaseId: "prior-sandbox",
           authorizedProviderLeaseId: "prior-sandbox", manifestSha256, completedAt },
-        remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId: current.binding.companyId,
-          runId: "source-run", leaseId: "source-lease", provider: "daytona", providerLeaseId: "prior-sandbox",
-          state: terminationState, confirmedAt },
+        // The idle warm source has no termination receipt: its sandbox is still running.
+        ...(terminationState === "none" ? { pluginId: "daytona-plugin", sandboxState: "started",
+          reusableSandboxLease: { version: 1, executionWorkspaceId: current.binding.executionWorkspaceId } } : {
+          remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId: current.binding.companyId,
+            runId: "source-run", leaseId: "source-lease", provider: "daytona", providerLeaseId: "prior-sandbox",
+            state: terminationState, confirmedAt } }),
         // The exact row the hold left: marker, stop-and-retain receipt, no reuse.
-        ...(hold ? { pluginId: "daytona-plugin",
+        ...(restoreHold ? { pluginId: "daytona-plugin",
           workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", runId: "source-run" } } : {}),
         ...(hold === "settled_hold" ? { sandboxStopAndRetainReceipt: { schema: "paperclip.sandbox-stop-and-retain-receipt.v1",
           requestId: "stop-request", companyId: current.binding.companyId, runId: "source-run", leaseId: "source-lease",
@@ -20033,19 +20055,32 @@ describe("runnerd provider runtime wiring", () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const db = leaseDb(current, {}, {}, updates), ordinarySelect = db.select.bind(db);
     db.select = ((fields?: Record<string, unknown>) => ({ from: (table: unknown) => {
-      if (table !== executionWorkspaces && table !== environmentLeases && table !== heartbeatRunEvents)
+      const sourceRunQuery = Boolean(table === heartbeatRuns && fields && "sourceRunStatus" in fields);
+      if (table !== executionWorkspaces && table !== environmentLeases && table !== heartbeatRunEvents && !sourceRunQuery)
         return ordinarySelect(fields as never).from(table as never);
       const manifest = backupDirectory.root ? readFileSync(join(backupDirectory.root, "manifest.json")) : "";
       const sha = `sha256:${createHash("sha256").update(stampKind === "matching" ? manifest : "other").digest("hex")}`;
-      // No unsaved remote writer is bound to the held allocation.
-      const rows = table === executionWorkspaces || fields?.run ? []
+      // No unsaved remote writer is bound to the held allocation, unless the
+      // previous run's workspace export is still observed on the warm sandbox.
+      const rows = sourceRunQuery ? [{ sourceRunStatus: hold === "idle_warm_run_active" ? "running" : "succeeded" }]
+        : fields?.run ? (hold === "idle_warm_export_pending" ? [{ lease: sourceLease(sha),
+          run: { id: "source-run", runtimeMode: "native", observedRemoteWorkspace: true, reference: null }, workspace: null }] : [])
+        : table === executionWorkspaces ? []
         : table === heartbeatRunEvents ? (laterProviderWork ? [{ runId: "later-run" }] : [])
-          : [{ metadata: {}, providerLeaseId: "sandbox-created", companyId: current.binding.companyId,
+          : [{ metadata: {}, providerLeaseId: targetProviderLeaseId, companyId: current.binding.companyId,
             heartbeatRunId: current.binding.runId }, sourceLease(sha)];
       const query = { then: Promise.resolve(rows).then.bind(Promise.resolve(rows)),
         leftJoin: () => query, innerJoin: () => query, where: () => query, limit: () => query };
       return query;
     } })) as unknown as Db["select"];
+    if (hold === "idle_warm_claim_lost") {
+      // A run resumed the warm source between the proof and the claim; the
+      // compare-and-swap matches no row and the backup stays unrestored.
+      db.update = ((table: unknown) => ({ set: () => ({ where: () => ({ returning: async () => {
+        expect(table).toBe(environmentLeases);
+        return [];
+      } }) }) })) as unknown as Db["update"];
+    }
     const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
       if (command.args?.[0] === "--build-metadata") return { exitCode: 0, timedOut: false, stderr: "", stdout: JSON.stringify({
         schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
@@ -20069,7 +20104,7 @@ describe("runnerd provider runtime wiring", () => {
       runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd, environmentId: "environment",
         leaseId: "lease-created", providerKey: "daytona", reusableLeaseConfigured: true,
         effectiveCapabilities: { runnerWebSocketIngress: true },
-        sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "sandbox-created" },
+        sandboxLeaseAcquisition: { outcome: resumed ? "resumed" : "created", providerLeaseId: targetProviderLeaseId },
         runner: { execute: remoteExecute, syncIn },
       } as never,
     });
@@ -20097,13 +20132,22 @@ describe("runnerd provider runtime wiring", () => {
         createHash("sha256").update(current.session.normalizedSessionId!).digest("hex"));
       expect(JSON.parse(await readFile(join(remoteSession, "runner/runner-state.json"), "utf8"))).toEqual(runnerState);
       expect(await readFile(join(remoteSession, "filesystem/codex-home/sentinel.txt"), "utf8")).toBe("retained provider home");
-      expect(updates.filter(update => update.table === environmentLeases)).toEqual([expect.objectContaining({
-        values: expect.objectContaining({ metadata: { nativeHarnessBackup: expect.objectContaining({
-          normalizedSessionId: current.session.normalizedSessionId, sourceProviderLeaseId: "prior-sandbox",
-          authorizedProviderLeaseId: "sandbox-created" }) } }),
-      })]);
+      expect(updates.filter(update => update.table === environmentLeases)).toEqual([
+        // The idle source is claimed first: its reuse scope moves into a superseded
+        // receipt, so it is never resumed with the older state again.
+        ...(idleWarm ? [expect.objectContaining({ values: expect.objectContaining({
+          metadata: expect.not.objectContaining({ reusableSandboxLease: expect.anything() }) }) })] : []),
+        expect.objectContaining({
+          values: expect.objectContaining({ metadata: { nativeHarnessBackup: expect.objectContaining({
+            normalizedSessionId: current.session.normalizedSessionId, sourceProviderLeaseId: "prior-sandbox",
+            authorizedProviderLeaseId: "sandbox-created" }) } }),
+        })]);
+      if (idleWarm) expect(updates.filter(update => update.table === environmentLeases)[0]!.values.metadata).toEqual(
+        expect.objectContaining({ reusableSandboxLeaseSuperseded: expect.objectContaining({
+          supersededByRunId: current.binding.runId, supersededByProviderLeaseId: "sandbox-created",
+          reusableSandboxLease: { version: 1, executionWorkspaceId: current.binding.executionWorkspaceId } }) }));
     } else {
-      await expect(options.prepareExternalRunnerState()).rejects.toThrow("backup_without_reusable_lease");
+      await expect(options.prepareExternalRunnerState()).rejects.toThrow(resumed ? "resumed_unavailable" : "backup_without_reusable_lease");
       expect(syncIn).not.toHaveBeenCalled();
       expect(updates.filter(update => update.table === environmentLeases)).toEqual([]);
     }

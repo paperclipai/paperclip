@@ -179,3 +179,49 @@ fn full_plan_presentation_survives_utf8_redaction_without_diagnostic_truncation(
             .contains("196 KiB")
     );
 }
+
+#[test]
+fn redaction_keeps_full_length_rich_display_inside_its_schema_bounds() {
+    let markdown: String = format!("# Plan\ntoken=abc\n{}", "- step\n".repeat(10_000))
+        .chars()
+        .take(60_000)
+        .collect();
+    let line = format!("{}\nGITHUB_TOKEN: ***\n", "x".repeat(70));
+    let output: String = line
+        .repeat(65_536 / line.len() + 1)
+        .chars()
+        .take(65_536)
+        .collect();
+    for (event_type, payload, field, limit) in [
+        (
+            "plan.proposed",
+            json!({"schema":"paperclip.plan.proposed.v1","proposalId":"proposal-1","status":"completed","markdown":markdown,"source":"claude_exit_plan_mode"}),
+            "markdown",
+            60_000,
+        ),
+        (
+            "tool.execution.completed",
+            json!({"schema":"paperclip.tool.execution.v1","executionId":"tool-1","transport":"builtin","operation":"execute","status":"completed","output":output,"outputBytes":200_000,"outputTruncated":false,"outputDigest":null}),
+            "output",
+            65_536,
+        ),
+    ] {
+        let decoded = decode_acpx_event(&scope(), &event(event_type, payload))
+            .unwrap_or_else(|error| panic!("{event_type} was rejected: {error:?}"));
+        let AcpxEventPayload::RichActivity { payload, .. } = decoded else {
+            panic!("{event_type} did not decode as rich activity");
+        };
+        let text = payload[field].as_str().unwrap();
+        assert_eq!(text.chars().count(), limit, "{event_type}");
+        assert!(text.contains("[REDACTED]"), "{event_type}");
+        assert!(
+            !text.contains("token=abc") && !text.contains("TOKEN: ***"),
+            "{event_type}"
+        );
+        if field == "markdown" {
+            assert!(text.starts_with("# Plan\ntoken=[REDACTED]\n"));
+        } else {
+            assert_eq!(payload["outputTruncated"], true);
+        }
+    }
+}

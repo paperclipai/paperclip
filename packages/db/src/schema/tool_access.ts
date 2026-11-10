@@ -571,6 +571,9 @@ export const toolMcpGatewayTokens = pgTable(
     // Null distinguishes board/legacy clients from delegated agent clients.
     responsibleUserId: text("responsible_user_id"),
     ownerNote: text("owner_note").notNull().default(""),
+    // Agent-created client tokens have no usable value until the responsible
+    // person reveals one on the gateway's Tokens page; agents never receive it.
+    pendingReveal: boolean("pending_reveal").notNull().default(false),
     allowedActions: jsonb("allowed_actions").$type<ToolMcpGatewayTokenAction[]>().notNull().default(["tools/list", "tools/call"]),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     expiryOverrideReason: text("expiry_override_reason"),

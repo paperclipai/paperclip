@@ -58,7 +58,15 @@ export {
   type RunnerProcessConnection,
   type RunnerProcessLaunchSpec,
   type RunnerProcessHandle,
+  type SemanticInputAdmission,
 } from "./control-plane/durable-prp-control-plane.js";
+export {
+  TOOL_CALLBACK_INTERRUPTED_CODE,
+  dispatchToolCallback,
+  interruptedToolCallbackOutcome,
+  recoverToolCallback,
+  toolCallbackOwnedByThisProcess,
+} from "./control-plane/orphaned-tool-callback.js";
 export type { DurableRecoveryIdentity } from "./control-plane/prp-transport-types.js";
 export * from "./drivers/codex/app-server-transport.js";
 export * from "./drivers/codex/codex-app-server-driver.js";

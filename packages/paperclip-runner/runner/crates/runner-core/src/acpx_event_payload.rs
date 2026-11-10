@@ -377,7 +377,8 @@ fn decode_rich_event(value: &Value) -> Result<AcpxEventPayload, LocalRunnerError
             value => value.clone(),
         }
     }
-    let payload = sanitize_display(payload);
+    let mut payload = sanitize_display(payload);
+    fit_redacted_display_to_length_bounds(event_type, &mut payload);
     if !validator.is_valid(&payload) {
         return Err(LocalRunnerError::invalid(
             "ACPX rich event redaction exceeded its schema bounds",
@@ -409,6 +410,45 @@ pub(crate) fn has_bounded_rich_display_shape(event_type: &str, payload: &Value) 
                 .get(schema)
                 .is_some_and(|validator| validator.is_valid(payload))
         })
+}
+
+fn rich_display_length_overflows(event_type: &str, payload: &Value) -> Vec<(String, usize)> {
+    let Some(schema) = rich_event_schema(event_type) else {
+        return Vec::new();
+    };
+    let Some(validator) = rich_event_validators()
+        .ok()
+        .and_then(|validators| validators.get(schema))
+    else {
+        return Vec::new();
+    };
+    validator
+        .iter_errors(payload)
+        .filter_map(|error| match error.kind() {
+            jsonschema::error::ValidationErrorKind::MaxLength { limit } => usize::try_from(*limit)
+                .ok()
+                .map(|limit| (error.instance_path().as_str().to_owned(), limit)),
+            _ => None,
+        })
+        .collect()
+}
+
+pub(crate) fn fit_redacted_display_to_length_bounds(event_type: &str, payload: &mut Value) {
+    let mut output_truncated = false;
+    for (pointer, limit) in rich_display_length_overflows(event_type, payload) {
+        if let Some(Value::String(text)) = payload.pointer_mut(&pointer) {
+            let excess = text.chars().count().saturating_sub(limit);
+            *text = if pointer == "/output" {
+                output_truncated = true;
+                text.chars().skip(excess).collect()
+            } else {
+                text.chars().take(limit).collect()
+            };
+        }
+    }
+    if output_truncated && event_type.starts_with("tool.execution.") {
+        payload["outputTruncated"] = Value::Bool(true);
+    }
 }
 
 fn sanitize_question_set(mut value: Value) -> Result<Value, LocalRunnerError> {

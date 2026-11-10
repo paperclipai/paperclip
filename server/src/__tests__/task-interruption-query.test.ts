@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, heartbeatRuns, issueRecoveryActions,
+import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, environmentLeases, heartbeatRuns, issueRecoveryActions,
   issueRelations, issues,
   toolApplications, toolConnections,
   nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
@@ -212,20 +212,27 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     await db.insert(heartbeatRuns).values(staged(runId, "completed"));
     await db.insert(nativeRunFinalizations).values({ companyId, issueId: task.id, runId, phase: "terminal_failure",
       attempt: 2, failureCode: "native_session_cleanup_quarantined" });
-    // Without its own wait, a missing task disposition stays visible, with no Retry.
+    // Nothing settles a gate without an owner (s9107 t04): Retry is offered.
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true });
+    // An unreleased remote environment is that owner: its termination receipt retires the gate.
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, heartbeatRunId: runId, provider: "daytona",
+      providerLeaseId: "sandbox" });
     expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: false,
       retryWait: { reason: "cleanup_quarantined" } });
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date() }).where(eq(environmentLeases.id, leaseId));
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true });
     // The task waits on an active child: it shows that wait, not a failed attempt.
     const [child] = await db.insert(issues).values({ companyId, title: "Verify review", identifier: "CMP-8",
       status: "in_progress", assigneeAgentId: agentId }).returning();
     await db.insert(issueRelations).values({ companyId, issueId: child.id, relatedIssueId: task.id, type: "blocks" });
     expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "resolved", canRetry: false });
-    // A quarantine whose turn did not complete is still unfinished, but it never
-    // offers the Retry that the retry route refuses.
+    // A quarantine whose turn did not complete is still unfinished; with no
+    // owner settling its gate, Retry is the way forward.
     await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 120_000) }).where(eq(heartbeatRuns.id, runId));
     await db.insert(heartbeatRuns).values(staged(otherRunId, "interrupted"));
-    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: false,
-      observedRunId: otherRunId, retryWait: { reason: "cleanup_quarantined" } });
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true,
+      observedRunId: otherRunId });
   });
 
   it("shows a queued-message Interrupt as handing off, not as a failed attempt", async () => {

@@ -2,8 +2,9 @@
 
 A repository project belongs to one storage owner. Creation shows **Available in**
 when the configured environments require more than one owner. Each choice names
-all environments that use that owner. An environment choice selects storage; it
-is not an allowlist or an override of an agent's run environment.
+all environments that use that owner. An environment choice saves both the storage owner and the project's
+`environmentId`. This is a project-owned execution target, not a company or agent
+setting. Compatible environments can share its repository storage.
 
 ## Compatibility rule
 
@@ -47,9 +48,10 @@ provider configs, credentials, endpoints, or host paths. A cold worker does not
 change a durable storage choice.
 
 `POST /api/companies/:companyId/projects` accepts an optional `environmentId`.
-The server validates the choice again and stores its storage owner. The project
-is then available to the compatible environments in that group; no single run
-environment is pinned. An explicit `executionWorkspacePolicy.storageProviderPluginId`
+The server validates the choice again and stores its storage owner and environment
+on that project. Creation saves the effective default once; changing the instance
+or primary agent later does not rewrite existing projects. Compatible environments
+share repository storage; the saved environment is the run target. An explicit `executionWorkspacePolicy.storageProviderPluginId`
 continues to work. The UI sends both the environment and its observed storage
 owner in `expectedStorageProviderPluginId`, so a changed environment cannot
 silently select different storage. This guard does not create a workspace-mode
@@ -68,3 +70,28 @@ projects keep their stored owner. This change does not migrate managed storage
 or detach projects that contain existing work. A managed project run in an
 incompatible environment fails with `project_environment_incompatible` before a
 workspace provider operation, with a message naming the storage and environment.
+
+## Project Configuration
+
+`PATCH /api/projects/:id` accepts `environmentId` and the optional
+`expectedStorageProviderPluginId` precondition. The Environment selector reads
+and writes this project field, independently of checkout/isolation settings.
+Changing one project never changes another project, the agent, or instance settings.
+Only environments compatible with the project's current storage are offered.
+Changing storage ownership is subject to the existing retained-data safeguards.
+
+Ordinary run selection uses the project's saved target before the agent default,
+instance default, and local fallback. A null project target explicitly inherits
+those defaults. An operator-selected low-trust task sandbox and enforced sandbox
+policies retain precedence. Provider API execution keeps its existing placement.
+
+The migration preserves existing valid project-policy environment selections in
+the new project field. Older clients may still write the policy field; the service
+normalizes it into the project association. Existing projects with no selection
+remain unset. Environment deletion counts and clears only matching associations.
+
+Changing or clearing placement requires project workspace-write authority. A
+saved selection is checked against company bindings before runtime admission and
+again during lease creation. Recovery uses the admitted run's owned environment
+lease; a later project edit affects new admissions. The task's organizational
+project owns placement even when its files come from another project.

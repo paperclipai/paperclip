@@ -287,6 +287,9 @@ impl ProviderBridgeError {
                                 .collect::<String>();
                             format!("{location} (missing {name})")
                         }
+                        jsonschema::error::ValidationErrorKind::MaxLength { limit } => {
+                            format!("{location} (maximum {limit} characters)")
+                        }
                         _ => location,
                     }
                 })
@@ -1685,6 +1688,73 @@ mod tests {
             assert!(message.len() <= 512);
             assert!(!message.chars().any(char::is_control));
         }
+    }
+
+    #[test]
+    fn monitor_notes_length_error_reports_the_authorized_numeric_limit() {
+        let contract = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/capability/semantic-tool-contracts.json"),
+        )
+        .unwrap();
+        let tools: Value = serde_json::from_str(&contract).unwrap();
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "set_task_monitor")
+            .unwrap();
+        let schema = &tool["inputSchema"];
+        let limit = schema["properties"]["monitor"]["properties"]["notes"]["maxLength"]
+            .as_u64()
+            .unwrap() as usize;
+        let validator = jsonschema::validator_for(schema).unwrap();
+        let valid = json!({"idempotencyKey": "check-ci", "monitor": {
+            "nextCheckAt": "2030-01-01T12:00:00Z", "notes": "x".repeat(limit)
+        }});
+        assert!(validator.is_valid(&valid));
+        let mut invalid = valid.clone();
+        invalid["monitor"]["notes"] = json!("x".repeat(limit + 1));
+        assert!(!validator.is_valid(&invalid));
+        let operation = AuthorizedTool {
+            operation_id: "set_task_monitor".to_owned(),
+            version: 1,
+            description: tool["description"].as_str().unwrap().to_owned(),
+            input_schema: schema.clone(),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        bridge
+            .begin_call("maximum".to_owned(), "set_task_monitor".to_owned(), valid)
+            .unwrap();
+        let error = bridge
+            .begin_call(
+                "oversized".to_owned(),
+                "set_task_monitor".to_owned(),
+                invalid,
+            )
+            .unwrap_err();
+        assert!(!bridge.has_call_receipt("oversized"));
+        let message = error.safe_provider_message().unwrap();
+        assert!(
+            message.contains("/properties/monitor/properties/notes/maxLength"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("maximum {limit} characters")),
+            "{message}"
+        );
+        assert!(!message.contains(&"x".repeat(20)));
+        assert!(message.len() <= 512);
     }
 
     #[test]

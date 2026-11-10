@@ -754,6 +754,8 @@ export interface ToolMcpGatewayToken {
   createdByUserId: string | null;
   /** Agent client delegation. Null with an issuing agent identifies an unbound legacy client. */
   responsibleUserId?: string | null;
+  /** True for an agent-created client token whose value has not yet been revealed to its responsible person. */
+  pendingReveal?: boolean;
   createdAt: Date | string;
   updatedAt: Date | string;
 }

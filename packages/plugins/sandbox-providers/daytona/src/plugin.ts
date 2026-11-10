@@ -646,12 +646,87 @@ function isSandboxStateChangeInProgress(error: unknown): boolean {
   return /state change in progress/i.test(error instanceof Error ? error.message : String(error));
 }
 
-async function waitOutSandboxTransition(sandbox: Sandbox, deadline: number, readTimeoutMs: number): Promise<void> {
-  while (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") && Date.now() + SANDBOX_TRANSITION_POLL_MS < deadline) {
-    await new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS));
-    await withLivenessTimeout("sandbox.refreshData", Math.min(readTimeoutMs, Math.max(1, deadline - Date.now())),
-      () => sandbox.refreshData());
+/**
+ * How long a sandbox may stay `stopping` before a start forces the stop. The
+ * host stops an idle sandbox gracefully with a 30 s budget, so a stop still
+ * pending after this is stuck, typically on a process that ignores SIGTERM.
+ * Daytona can leave such a sandbox `stopping` for many minutes.
+ */
+export const STUCK_STOPPING_FORCE_AFTER_MS = 30_000;
+const STUCK_STOPPING_FORCE_STOP_SECONDS = 30;
+/**
+ * One forced stop per stuck stop, whichever caller sends it. A confirmed start
+ * ends the episode early (see {@link endForcedStopEpisode}).
+ */
+export const FORCED_STOP_COOLDOWN_MS = 10 * 60_000;
+
+// Forced stops are owned by the sandbox, not by a caller. Several callers can
+// wait on one stuck sandbox at once (execute, sync, realize, resume). Only one
+// of them sends the forced stop, and no caller starts the sandbox while that
+// request is unsettled: a late stop would otherwise kill a sandbox another
+// caller has just restarted. The entry outlives its liveness timeout until
+// the SDK request itself settles.
+const forcedSandboxStops = new Map<string, { issuedAt: number; pending: Promise<void> | null }>();
+
+function forcedStopInFlight(key: string): Promise<void> | null {
+  return forcedSandboxStops.get(key)?.pending ?? null;
+}
+
+// A confirmed start ends the stuck stop. A later stuck stop is a new episode
+// and may be forced at once. An unsettled request still blocks every start.
+function endForcedStopEpisode(key: string): void {
+  if (forcedSandboxStops.get(key)?.pending === null) forcedSandboxStops.delete(key);
+}
+
+function claimForcedStop(key: string, now: number): boolean {
+  const previous = forcedSandboxStops.get(key);
+  if (previous && (previous.pending || now - previous.issuedAt < FORCED_STOP_COOLDOWN_MS)) return false;
+  forcedSandboxStops.set(key, { issuedAt: now, pending: null });
+  return true;
+}
+
+async function sendForcedStop(sandbox: Sandbox, key: string, deadline: number): Promise<void> {
+  const remainingSeconds = Math.max(1, Math.floor((deadline - Date.now()) / 1_000));
+  const stopSeconds = Math.min(STUCK_STOPPING_FORCE_STOP_SECONDS, remainingSeconds);
+  const entry = forcedSandboxStops.get(key)!;
+  // `request` settles only when the SDK call does, even past the liveness bound.
+  const request = Promise.resolve().then(() => sandbox.stop(stopSeconds, true));
+  entry.pending = request.then(() => undefined, () => undefined)
+    .finally(() => { if (forcedSandboxStops.get(key) === entry) entry.pending = null; });
+  try {
+    await traceLeaseStep("lease.force_stop", () => withLivenessTimeout("sandbox.stop",
+      stopSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS, () => request));
+  } catch {
+    // Keep waiting within the same deadline; the next read reports the state.
   }
+}
+
+async function waitOutSandboxTransition(sandbox: Sandbox, scope: SandboxScope, deadline: number,
+  readTimeoutMs: number): Promise<void> {
+  const key = sandboxHandleCacheKey(scope);
+  const mustWait = () => SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") || forcedStopInFlight(key) !== null;
+  if (!mustWait()) return;
+  await traceLeaseStep("lease.wait_transition", async () => {
+    let stoppingSince: number | null = null;
+    while (mustWait() && Date.now() + SANDBOX_TRANSITION_POLL_MS < deadline) {
+      stoppingSince = sandbox.state === "stopping" ? stoppingSince ?? Date.now() : null;
+      // The sandbox is about to be started, so killing what holds the stop
+      // loses nothing a graceful stop would keep: the disk survives a stop.
+      // A refusal leaves the plain wait unchanged.
+      if (stoppingSince !== null && Date.now() - stoppingSince >= STUCK_STOPPING_FORCE_AFTER_MS
+        && claimForcedStop(key, Date.now())) {
+        await sendForcedStop(sandbox, key, deadline);
+        continue;
+      }
+      const pending = forcedStopInFlight(key);
+      await Promise.race([
+        new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS)),
+        ...(pending ? [pending] : []),
+      ]);
+      await withLivenessTimeout("sandbox.refreshData", Math.min(readTimeoutMs, Math.max(1, deadline - Date.now())),
+        () => sandbox.refreshData());
+    }
+  }, leaseStateAttributes(sandbox.state));
 }
 
 async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number, scope: SandboxScope): Promise<void> {
@@ -660,13 +735,15 @@ async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number, sc
   const deadline = Date.now() + timeoutSeconds * 1_000;
   const readTimeoutMs = Math.min(scope.config.livenessTimeoutMs, 30_000);
   for (;;) {
-    await waitOutSandboxTransition(sandbox, deadline, readTimeoutMs);
-    if (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") || Date.now() >= deadline) {
+    await waitOutSandboxTransition(sandbox, scope, deadline, readTimeoutMs);
+    if (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") || forcedStopInFlight(sandboxHandleCacheKey(scope))
+      || Date.now() >= deadline) {
       throw new Error(`Daytona sandbox ${sandbox.id} is still ${sandbox.state ?? "changing state"} at its start deadline`);
     }
     const remainingSeconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1_000));
     try {
       await startSettledSandbox(sandbox, remainingSeconds, scope);
+      endForcedStopEpisode(sandboxHandleCacheKey(scope));
       return;
     } catch (error) {
       if (!isSandboxStateChangeInProgress(error) || Date.now() + SANDBOX_TRANSITION_POLL_MS >= deadline) throw error;
@@ -1858,6 +1935,7 @@ export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleActivityGates.reset();
   sandboxHandleLeaseAdmissionStates.reset();
   sandboxHandleWritableDirs.reset();
+  forcedSandboxStops.clear();
   sandboxHandleSessionStore.reset();
   runnerIngressGenerationStore.reset();
   retiredDaytonaDuplexChannelByRoute.clear();

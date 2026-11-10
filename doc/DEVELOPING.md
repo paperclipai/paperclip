@@ -551,6 +551,28 @@ no remote metadata requests. Run its light/dark desktop/mobile checks with:
 STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test inline-links.spec.ts --config=tests/storybook-visual/playwright.config.ts --project=stories
 ```
 
+**Link previews** mounts the same Markdown renderer with its production preview
+provider. A delayed hover or keyboard focus requests PR metadata. Repeated PR URLs,
+including diff links and fragments, share a viewer/company-scoped query. The card
+stays aligned with the link, and the exact navigation URL stays intact. The stories
+simulate the API response for open, merged, conflicts, draft, closed, loading,
+unavailable and failed reads, with a narrow long-title example. Run:
+
+```sh
+STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test link-previews.spec.ts --config=tests/storybook-visual/playwright.config.ts --project=stories
+```
+
+The board-only `GET /api/companies/:companyId/link-preview?url=...` is optional
+enrichment, independent of the External Objects experiment. Its GitHub adapter
+uses the viewer's eligible managed connection, then the existing company/public
+credential path only when no managed connection is configured. Personal results
+remain in bounded, process-local viewer/company caches and are never persisted as
+company external objects. Successful responses live for one minute; unavailable
+responses use a short negative cache or GitHub's retry window. Reads have an
+abortable deadline and a bounded concurrency budget. Nothing polls while idle.
+The browser neither retries these reads nor refreshes them on window focus.
+These stories do not verify live GitHub authentication.
+
 **Task chat → Failure notices** covers compact run errors and adjacent recovery
 notices in both presentation modes, with expanded details, fixture retry
 callbacks (including the legacy run retry when recovery retry is unavailable),

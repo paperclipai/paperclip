@@ -170,11 +170,20 @@ it("names a budget gate instead of generic execution checks for a refused Retry"
       message: "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage." } });
 });
 
-it.each(["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed"])("does not offer Retry for terminal Retry waits: %s", reason => {
+it.each(["cancelled_by_operator", "retry_source_changed"])("does not offer Retry for terminal Retry waits: %s", reason => {
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
   expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
     wait: { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: reason } }))
     .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason } });
+});
+
+it("holds a Retry on a cleanup gate only while an owner settles it", () => {
+  const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
+  const wait = { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: "cleanup_quarantined" };
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false, wait, cleanupSettling: true }))
+    .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason: "cleanup_quarantined" } });
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false, wait }))
+    .toMatchObject({ state: "failed", canRetry: true, retryWait: { reason: "cleanup_quarantined" } });
 });
 
 it("keeps Retry for a Retry declined for its requester's access, since a new click replaces it", () => {
@@ -492,21 +501,42 @@ describe("native cleanup quarantine presentation", () => {
       waitingOnBlockers: true, paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
   });
 
-  it("keeps a missing disposition visible when the task has no wait of its own", () => {
-    expect(projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup: true }, agent,
-      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: false,
-      retryWait: { reason: "cleanup_quarantined" } });
+  it("waits without Retry while an owner settles the gate", () => {
+    for (const completedTurnCleanup of [true, false]) {
+      const presentation = projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup }, agent,
+        cleanupSettling: true, paused: false, approval: false });
+      expect(presentation).toMatchObject({ state: "failed", canRetry: false, retryWait: { reason: "cleanup_quarantined" } });
+      expect(presentation?.retryWait?.message).not.toMatch(/operator|admin/i);
+    }
+    const preparation = { id: "retry", requestedAt: new Date(0), sourceRunId: quarantined.id, preparationStatus: "failed" };
+    expect(projectTaskInterruption(issue, { run: quarantined, agent, retryWait: preparation, cleanupSettling: true,
+      paused: false, approval: false })).toMatchObject({ canRetry: false });
   });
 
-  it("never offers a Retry that the retry route refuses", () => {
-    const presentation = projectTaskInterruption(issue, { run: quarantined, agent, paused: false, approval: false });
-    expect(presentation).toMatchObject({ state: "failed", canRetry: false,
-      retryWait: { reason: "cleanup_quarantined" } });
-    expect(presentation?.retryWait?.message).not.toMatch(/operator|admin/i);
-    // Every other path that offers Retry is refused for the same run too.
-    const preparation = { id: "retry", requestedAt: new Date(0), sourceRunId: quarantined.id, preparationStatus: "failed" };
-    expect(projectTaskInterruption(issue, { run: quarantined, agent, retryWait: preparation, paused: false, approval: false }))
-      .toMatchObject({ canRetry: false });
+  it("offers Retry when nothing settles the gate by itself (s9107 t04/t05)", () => {
+    // An operator-required gate, or one lost with a restarted process, has no
+    // owner. Waiting would never end, so Retry is the way forward.
+    for (const completedTurnCleanup of [true, false]) {
+      const presentation = projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup }, agent,
+        paused: false, approval: false });
+      expect(presentation).toMatchObject({ state: "failed", canRetry: true });
+      expect(presentation).not.toHaveProperty("retryWait");
+    }
+  });
+
+  it("never leaves a failed task without Retry, a scheduled retry or a settling owner", () => {
+    // Invariant: a failed presentation without Retry must name a wait that an
+    // owner is settling. Enumerate the quarantine-related inputs.
+    const waits = [undefined, ...["cleanup_quarantined", "local_cleanup", "execution_settling"].map(reason =>
+      ({ id: "retry", requestedAt: new Date(0), sourceRunId: quarantined.id, executionWaitReason: reason }))];
+    for (const completedTurnCleanup of [true, false]) for (const wait of waits) for (const settling of [true, false]) {
+      const presentation = projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup }, agent,
+        retryWait: wait, cleanupSettling: settling, paused: false, approval: false });
+      if (presentation?.state !== "failed" || presentation.canRetry) continue;
+      expect(presentation.retryWait, JSON.stringify({ completedTurnCleanup, wait: wait?.executionWaitReason, settling }))
+        .toBeDefined();
+      if (presentation.retryWait?.reason === "cleanup_quarantined") expect(settling).toBe(true);
+    }
   });
 
   it("keeps Retry for ordinary failed native attempts", () => {

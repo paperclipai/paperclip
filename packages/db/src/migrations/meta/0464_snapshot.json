@@ -1,6 +1,6 @@
 {
-  "id": "f93ccf18-7e86-4788-be77-b17430c86b2f",
-  "prevId": "e070677d-cfb8-4438-847c-29c4da7ca8c5",
+  "id": "e2a678da-05cc-4316-a40e-d85a69be01e3",
+  "prevId": "aaf06ddb-56bd-4455-b2d1-fdb0254445e7",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -43580,6 +43580,28 @@
           "method": "btree",
           "with": {}
         },
+        "issues_company_legacy_origin_run_idx": {
+          "name": "issues_company_legacy_origin_run_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "origin_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"issues\".\"origin_issue_id\" is null and \"issues\".\"origin_run_id\" is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "issues_company_project_workspace_idx": {
           "name": "issues_company_project_workspace_idx",
           "columns": [
@@ -49085,6 +49107,93 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.plugin_lifecycle_resource_cursors": {
+      "name": "plugin_lifecycle_resource_cursors",
+      "schema": "",
+      "columns": {
+        "plugin_id": {
+          "name": "plugin_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource_type": {
+          "name": "resource_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource_id": {
+          "name": "resource_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "acknowledged_through_id": {
+          "name": "acknowledged_through_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "plugin_lifecycle_resource_cursors_plugin_id_plugins_id_fk": {
+          "name": "plugin_lifecycle_resource_cursors_plugin_id_plugins_id_fk",
+          "tableFrom": "plugin_lifecycle_resource_cursors",
+          "tableTo": "plugins",
+          "columnsFrom": [
+            "plugin_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plugin_lifecycle_resource_cursors_company_id_companies_id_fk": {
+          "name": "plugin_lifecycle_resource_cursors_company_id_companies_id_fk",
+          "tableFrom": "plugin_lifecycle_resource_cursors",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "plugin_lifecycle_resource_cursors_pk": {
+          "name": "plugin_lifecycle_resource_cursors_pk",
+          "columns": [
+            "plugin_id",
+            "company_id",
+            "resource_type",
+            "resource_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.plugin_logs": {
       "name": "plugin_logs",
       "schema": "",
@@ -50949,6 +51058,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "git_authorization_grant_id": {
           "name": "git_authorization_grant_id",
           "type": "uuid",
@@ -51098,6 +51213,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_environment_id_environments_id_fk": {
+          "name": "projects_environment_id_environments_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "environments",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "projects_git_authorization_grant_id_connection_grants_id_fk": {
@@ -59493,6 +59621,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "''"
+        },
+        "pending_reveal": {
+          "name": "pending_reveal",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "allowed_actions": {
           "name": "allowed_actions",

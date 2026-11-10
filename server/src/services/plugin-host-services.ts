@@ -541,7 +541,7 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
   "session.open",
   "session.close",
   "lease.wait_for_teardown", "lease.lookup", "lease.refresh", "lease.channel_cleanup",
-  "lease.start", "lease.recover", "lease.verify", "lease.workspace", "lease.sentinel",
+  "lease.start", "lease.recover", "lease.wait_transition", "lease.force_stop", "lease.verify", "lease.workspace", "lease.sentinel",
   "lease.shell", "lease.create", "lease.expiry", "lease.cleanup",
   "plugin.worker", "plugin.host.identity.read", "plugin.host.config.read", "plugin.host.progress.read", "plugin.host.progress.write",
   "plugin.workspace.prepare", "plugin.workspace.failure", "plugin.storage.queue", "plugin.storage.execute",
@@ -591,6 +591,12 @@ const KNOWN_SPAN_OUTCOMES: ReadonlySet<string> = new Set(["ok", "skipped", "fail
 /** The closed value set for the `transfer.direction` attribute. */
 const KNOWN_TRANSFER_DIRECTIONS: ReadonlySet<string> = new Set(["inbound", "outbound"]);
 
+// Settled states plus the transitions a start waits out; anything else is dropped.
+const PROVIDER_STARTUP_STATES: ReadonlySet<string> = new Set([
+  "started", "stopped", "archived", "error", "other",
+  "starting", "stopping", "restoring", "archiving", "resizing",
+]);
+
 /**
  * Re-clamp the worker-sent attributes at the trust boundary. Drop every key that
  * is not on the allowlist. Re-map `provider` through `normalizeProviderFamily`,
@@ -606,7 +612,7 @@ export function clampProviderSpanAttributes(
   for (const [key, value] of Object.entries(raw)) {
     if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
     if (key === SPAN_ATTRS.state) {
-      if (typeof value === "string" && ["started", "stopped", "archived", "error", "other"].includes(value)) clamped[key] = value;
+      if (typeof value === "string" && PROVIDER_STARTUP_STATES.has(value)) clamped[key] = value;
       continue;
     }
     if (key === "plugin.operation") {

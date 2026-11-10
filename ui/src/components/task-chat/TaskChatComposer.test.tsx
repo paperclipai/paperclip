@@ -25,6 +25,7 @@ import {
   saveDraftSubmission,
 } from "../../lib/composer-draft";
 import { CommentSubmissionUnknownError } from "../../lib/comment-submit-result";
+import { ApiError } from "../../api/api-error";
 import { queryKeys } from "../../lib/queryKeys";
 import { useAccountBoundMutation } from "../../hooks/useAccountBoundMutation";
 import { waitForStoppedRuns } from "../../lib/wait-for-stopped-runs";
@@ -2626,6 +2627,37 @@ describe("TaskChatComposer", () => {
         expect(editable().textContent).toBe("Keep this replacement text");
         expect(container.textContent).toContain("Editing queued message");
       });
+    });
+
+    it("shows why a concurrent queue change rejected the save and keeps the edit", async () => {
+      const onSave = vi.fn().mockRejectedValue(new ApiError(
+        "The queued messages changed in another session",
+        409,
+        { error: "The queued messages changed in another session", details: { code: "queued_comment_revision_conflict" } },
+      ));
+      render(<Harness onSave={onSave} />);
+      await flushAsync();
+      typeText("Make the website blue");
+
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      await vi.waitFor(() => {
+        const alert = container.querySelector('[data-testid="task-chat-queued-edit-error"]');
+        expect(alert?.getAttribute("role")).toBe("alert");
+        expect(alert?.textContent).toBe(
+          "The queue changed in another session. Your edit is still here; save again to apply it to the latest queue.",
+        );
+        expect(editable().textContent).toBe("Make the website blue");
+        expect(container.textContent).toContain("Editing queued message");
+      });
+
+      onSave.mockResolvedValueOnce(undefined);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      await flushAsync();
+      expect(onSave).toHaveBeenLastCalledWith("queued-1", "Make the website blue");
+      expect(container.querySelector('[data-testid="task-chat-queued-edit-error"]')).toBeNull();
     });
 
     it("offers a stale edit as a new queued message and preserves its Markdown source", async () => {

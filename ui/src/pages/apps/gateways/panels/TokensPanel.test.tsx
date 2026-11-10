@@ -10,13 +10,19 @@ import { TokensPanel } from "./TokensPanel";
 
 const createGatewayTokenMock = vi.hoisted(() => vi.fn());
 const revokeGatewayTokenMock = vi.hoisted(() => vi.fn());
+const revealGatewayTokenMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     createGatewayToken: (...args: unknown[]) => createGatewayTokenMock(...args),
     revokeGatewayToken: (...args: unknown[]) => revokeGatewayTokenMock(...args),
+    revealGatewayToken: (...args: unknown[]) => revealGatewayTokenMock(...args),
   },
+}));
+
+vi.mock("@/api/companies-query", () => ({
+  useAccountIdentity: () => ({ userId: "user-1", settled: true, failed: false, bootstrap: undefined, updatedAt: 0 }),
 }));
 
 vi.mock("@/context/ToastContext", () => ({
@@ -207,6 +213,35 @@ describe("TokensPanel", () => {
 
     await clickButton("Copy");
     expect(writeText).toHaveBeenCalledWith("pcgw_live_FULLSECRETVALUE");
+  });
+
+  it("lets the person reveal an agent-created token value once, outside the folded history", async () => {
+    const pending = token({ id: "agent-token", name: "Replacement client", createdByAgentId: "agent-1", createdByUserId: null, responsibleUserId: "user-1", pendingReveal: true });
+    revealGatewayTokenMock.mockResolvedValue({ ...pending, pendingReveal: false, token: "pcgw_live_REVEALEDVALUE" });
+    await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [pending] })} />);
+
+    expect(container.textContent).toContain("Waiting for you to reveal");
+    expect(container.textContent).toContain("Replacement client");
+    expect(container.textContent).not.toContain("pcgw_live_REVEALEDVALUE");
+
+    await clickButton("Reveal token");
+    await flushReact();
+    expect(revealGatewayTokenMock).toHaveBeenCalledWith("company-1", "agent-token");
+    expect(container.textContent).toContain("New token — copy now");
+    expect(container.textContent).toContain("pcgw_live_REVEALEDVALUE");
+  });
+
+  it("does not offer to reveal a token that expired before its reveal", async () => {
+    const pending = token({ id: "agent-token", name: "Expired client", createdByAgentId: "agent-1", createdByUserId: null, responsibleUserId: "user-1", pendingReveal: true, expiresAt: "2026-06-01T00:00:00.000Z" });
+    await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [pending] })} />);
+    expect(container.textContent).not.toContain("Waiting for you to reveal");
+  });
+
+  it("does not offer to reveal a token that acts for another person", async () => {
+    const pending = token({ id: "agent-token", name: "Someone else's client", createdByAgentId: "agent-1", createdByUserId: null, responsibleUserId: "user-2", pendingReveal: true });
+    await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [pending] })} />);
+    expect(container.textContent).not.toContain("Waiting for you to reveal");
+    expect([...container.querySelectorAll("button")].some((el) => el.textContent?.trim() === "Reveal token")).toBe(false);
   });
 
   it("gates revoke behind a typed confirmation matching the token name", async () => {

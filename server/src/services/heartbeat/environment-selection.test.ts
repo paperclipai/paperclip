@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, createDb, environments, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, environments, environmentLeases, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -81,6 +81,48 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     };
     return { input, issue, project, workspace, recover };
   }
+
+  it("uses each project's saved environment before the shared agent and instance defaults", async () => {
+    const f = await fixture();
+    const local = await environmentService(db).ensureLocalEnvironment(f.input.agent.companyId);
+    const [target] = await db.insert(environments).values({ name: `Project host ${randomUUID()}`, driver: "ssh", config: { host: "project.example.test" } }).returning();
+    const [other] = await db.insert(projects).values({ companyId: f.input.agent.companyId, name: "Other project", environmentId: local.id }).returning();
+    await db.update(projects).set({ environmentId: target.id }).where(eq(projects.id, f.project.id));
+    f.input.agent.defaultEnvironmentId = local.id;
+    f.input.policy.isolatedWorkspacesEnabled = false;
+    expect((await selectHeartbeatEnvironment(db, f.input)).environmentResolution).toEqual({ environmentId: target.id, source: "project" });
+    f.input.task.executionProjectId = other.id;
+    f.input.task.issueRef!.projectId = other.id;
+    expect((await selectHeartbeatEnvironment(db, f.input)).environmentResolution).toEqual({ environmentId: local.id, source: "project" });
+    f.input.task.executionProjectId = f.project.id;
+    f.input.task.issueRef!.projectId = f.project.id;
+    await db.update(projects).set({ environmentId: null }).where(eq(projects.id, f.project.id));
+    expect((await selectHeartbeatEnvironment(db, f.input)).environmentResolution).toEqual({ environmentId: local.id, source: "agent" });
+  });
+
+  it("keeps task project placement when files come from another project", async () => {
+    const f = await fixture();
+    const local = await environmentService(db).ensureLocalEnvironment(f.input.agent.companyId);
+    const [source] = await db.insert(projects).values({ companyId: f.project.companyId, name: "File source" }).returning();
+    await db.update(projects).set({ environmentId: local.id }).where(eq(projects.id, f.project.id));
+    f.input.task.executionProjectId = source.id;
+    expect((await selectHeartbeatEnvironment(db, f.input)).environmentResolution).toEqual({ environmentId: local.id, source: "project" });
+  });
+
+  it("restores the admitted environment after a project edit and rejects a foreign lease", async () => {
+    const f = await fixture();
+    const local = await environmentService(db).ensureLocalEnvironment(f.input.agent.companyId);
+    const [next] = await db.insert(environments).values({ name: `Next target ${randomUUID()}`, driver: "ssh", config: { host: "next.example.test" } }).returning();
+    const saved = await f.workspace();
+    f.recover(saved.id);
+    await db.update(projects).set({ environmentId: next.id }).where(eq(projects.id, f.project.id));
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.project.companyId, environmentId: local.id,
+      heartbeatRunId: f.input.run.id, issueId: f.issue.id, executionWorkspaceId: saved.id, metadata: { agentId: f.input.agent.id } }).returning();
+    f.input.run.contextSnapshot = { paperclipEnvironment: { id: local.id, leaseId: lease.id } };
+    expect((await selectHeartbeatEnvironment(db, f.input)).environmentResolution).toEqual({ environmentId: local.id, source: "run" });
+    await db.update(environmentLeases).set({ metadata: { agentId: randomUUID() } }).where(eq(environmentLeases.id, lease.id));
+    await expect(selectHeartbeatEnvironment(db, f.input)).rejects.toThrow("Cannot restore the admitted execution environment");
+  });
 
   it("keeps the admitted workspace binding when the issue points at a newer workspace", async () => {
     const { input, workspace, recover } = await fixture();

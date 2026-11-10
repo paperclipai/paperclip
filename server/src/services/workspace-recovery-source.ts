@@ -26,13 +26,15 @@ export function workspaceSourceBindingFailure(reason: WorkspaceSourceVerificatio
 
 export class WorkspaceSourceInspectionLimit extends Error {}
 
+// A resolved hold that a sibling's save settled has nothing left to recover,
+// so it is never selected again, even when it names a historical source.
 export function workspaceRecoverySourceEligible(includeCompleted = false) {
   const actionEligible = sql`(${issueRecoveryActions.status} in ('active', 'escalated') or
     (${issueRecoveryActions.status} = 'cancelled'
       and ${inArray(issueRecoveryActions.cause, workspaceExportCauses)}
       and jsonb_typeof(${issueRecoveryActions.evidence}#>'{workspaceRecovery,requestIds}') = 'array'
       and ${issueRecoveryActions.evidence}#>'{workspaceRecovery,requestIds}' <> '[]'::jsonb) or
-    (${issueRecoveryActions.status} = 'resolved' and (
+    (${issueRecoveryActions.status} = 'resolved' and ${issueRecoveryActions.evidence}->'siblingWorkspaceRecovery' is null and (
       (${issueRecoveryActions.evidence}#>>'{automaticRecovery,policy}' = 'preserve_without_replay_v1'
         and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
         and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,runId}' = ${heartbeatRuns.id}::text) or

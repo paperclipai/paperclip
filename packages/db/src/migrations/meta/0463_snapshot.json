@@ -1,5 +1,5 @@
 {
-  "id": "c45094a7-f0f1-44a0-b560-39583eb58938",
+  "id": "aaf06ddb-56bd-4455-b2d1-fdb0254445e7",
   "prevId": "0287d884-1fee-4e8d-9ae0-2be0aac45b71",
   "version": "7",
   "dialect": "postgresql",
@@ -59603,6 +59603,13 @@
           "notNull": true,
           "default": "''"
         },
+        "pending_reveal": {
+          "name": "pending_reveal",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "allowed_actions": {
           "name": "allowed_actions",
           "type": "jsonb",
@@ -65137,12 +65144,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "dot_device_cutover": {
-          "name": "dot_device_cutover",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",

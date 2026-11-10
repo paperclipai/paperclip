@@ -130,6 +130,13 @@ describe("identity catalog independent oracle calibration", () => {
     const silent = valid("access.private-resource"); silent.reply = "";
     expect(grade(silent).passed).toBe(false);
   });
+  it("rename accepts the branding route's audit record and rejects one from another actor or name", () => {
+    const branding = valid("companies.rename-company"); branding.activity = [{ ...branding.activity[0]!, action: "company.branding_updated" }];
+    expect(gradeCompanyRename(branding).passed).toBe(true);
+    const human = structuredClone(branding); human.activity[0]!.agentId = null; expect(gradeCompanyRename(human).passed).toBe(false);
+    const otherName = structuredClone(branding); otherName.activity[0]!.details = { name: "Acorn" }; expect(gradeCompanyRename(otherName).passed).toBe(false);
+    const unrelated = structuredClone(branding); unrelated.activity[0]!.action = "company.logo_updated"; expect(gradeCompanyRename(unrelated).passed).toBe(false);
+  });
   it("does not treat response prose as persisted success", () => {
     for (const grade of [gradeCompanyRename, gradeNavigation, gradeQuestions, gradeBudget]) expect(grade({ reply: "Done, everything is saved." }).passed).toBe(false);
   });

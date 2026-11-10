@@ -2,6 +2,7 @@ import { errorCodes, isTransientError } from "@/api/errors";
 import { useQueryView } from "@/components/QueryView";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
+import { topTaskRefs, usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
 import { describeError } from "../api/errors";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { IssueRowDetailsNotice } from "../components/IssueRowDetailsNotice";
@@ -180,6 +181,7 @@ import {
   type InboxWorkItemGroupBy,
   INBOX_FILTER_PREFERENCES_KEY_PREFIX,
   INBOX_ISSUE_COLUMNS_KEY,
+  inboxNavEntryTask,
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
 import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
@@ -2624,6 +2626,11 @@ function StreamlinedInbox({
   }, [initialSourcesSettled, listError, revealScope]);
   const allLoaded = initialSourcesSettled || revealedScope === revealScope;
   useWarmTaskDetailCode(allLoaded && !listError && tab !== "blocked" && showWorkItemsSection);
+  // Preload the chat of the top visible tasks, in display order, so opening
+  // one renders its latest messages and composer from cache.
+  // The walk stops at the preload limit, whatever the size of the Inbox.
+  const preloadTaskRefs = useMemo(() => topTaskRefs(flatNavItems, inboxNavEntryTask), [flatNavItems]);
+  usePreloadTaskChats(selectedCompanyId, preloadTaskRefs, allLoaded && !listError && showWorkItemsSection);
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(

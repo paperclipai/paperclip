@@ -1999,6 +1999,8 @@ execution.plugin_dispatch
     ├── sandbox.daytona.lease.lookup
     ├── sandbox.daytona.lease.refresh            (missing-container confirmation)
     ├── sandbox.daytona.lease.channel_cleanup    (before restart)
+    ├── sandbox.daytona.lease.wait_transition    (only while the sandbox is changing state)
+    │   └── sandbox.daytona.lease.force_stop     (only when `stopping` outlasts 30 s)
     ├── sandbox.daytona.lease.start              (or lease.recover)
     └── sandbox.daytona.lease.verify
         ├── sandbox.daytona.lease.workspace
@@ -2011,8 +2013,16 @@ execution.plugin_dispatch
 internal readiness wait. They also cover starts triggered by execution or sync.
 They do not separate SDK-internal requests or provider-side queue time.
 Their `paperclip.sandbox.startup.state` attribute records the state before the
-call: `started`, `stopped`, `archived`, `error`, or `other`. Both the plugin and
+call: `started`, `stopped`, `archived`, `error`, a transition (`starting`,
+`stopping`, `restoring`, `archiving`, `resizing`), or `other`. Both the plugin and
 host restrict this value; no provider error text or resource identity is sent.
+`lease.wait_transition` covers polling a sandbox that is changing state before a
+start; its state attribute is the state it found. A start that finds the sandbox
+`stopping` for more than 30 s forces the stop (`lease.force_stop`) and keeps
+waiting within the same start deadline if Daytona refuses. The forced stop belongs
+to the sandbox: parallel callers send one, and none of them starts the sandbox
+until that request settles. A confirmed start ends that stuck stop, so a later
+one is forced again.
 
 Fresh acquisition emits `lease.create`, `lease.workspace`, `lease.shell`,
 `lease.expiry`, and `lease.sentinel`. `lease.create` covers the existing creation

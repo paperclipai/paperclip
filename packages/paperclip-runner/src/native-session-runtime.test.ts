@@ -220,7 +220,8 @@ function canonicalTestJson(value: unknown): string {
 const RESTART_LOST_PROCESS_GUIDANCE = "may no longer be running";
 function expectRestartContinuationGuidance(text: string) {
   const events = String(JSON.parse(text).events);
-  expect(events).toContain("This is a resumed session after a Paperclip control-plane restart.");
+  expect(events).toContain("This is a resumed session. The process running the previous turn was lost");
+  expect(events).not.toContain("control-plane restart");
   expect(events).toContain("Shell commands and background processes started in earlier turns " + RESTART_LOST_PROCESS_GUIDANCE);
   expect(events).toContain("check the workspace for the outputs or artifacts");
   expect(events).toContain("If the expected output is missing, re-run the command.");

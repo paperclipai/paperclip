@@ -344,6 +344,7 @@ function OrganizationIssues({
   return (
     <IssuesList
       issues={issues ?? []}
+      preloadTaskChats
       isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       isLoadingMoreIssues={isFetchingNextPage}
       agents={agents}

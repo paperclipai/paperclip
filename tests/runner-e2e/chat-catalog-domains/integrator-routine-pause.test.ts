@@ -16,6 +16,10 @@ describe("routine schedule pause versus actual in-flight work", () => {
     expect(gradeIntegratorRoutinePause(undefined).passed).toBe(false);
     const paraphrase = valid(); paraphrase.state.pauseCheckpoint.reply = "Future schedules are disabled. The in-flight execution continues normally.";
     expect(gradeIntegratorRoutinePause(paraphrase).passed).toBe(true);
+    const finishing = valid(); finishing.state.pauseCheckpoint.reply = "Paused the routine. COM-2 had already started and is still finishing under Morgan.";
+    expect(gradeIntegratorRoutinePause(finishing).passed).toBe(true);
+    const empty = valid(); empty.state.pauseCheckpoint.reply = " ";
+    expect(gradeIntegratorRoutinePause(empty).passed).toBe(false);
   });
   it("rejects an active schedule, discarded history, changed owner, or fabricated busy checkpoint", () => {
     const active = valid(); active.routine.status = "active";

@@ -2731,10 +2731,10 @@ export async function executeNativeSession(
       message: { role: "user" as const, text: JSON.stringify({
         schema: "paperclip.native-continuation.v1",
         events: [
-          "This is a resumed session after a Paperclip control-plane restart. Paperclip restored this same conversation and workspace; the restart interrupted the previous turn.",
+          "This is a resumed session. The process running the previous turn was lost, for example in a Paperclip restart. Paperclip restored this same conversation and workspace; that loss interrupted the previous turn.",
           "Continue the current user request from the recorded progress and preserved workspace.",
           ...(steeredMessages.length > 0 ? [
-            "During the interrupted turn the user sent the messages in steeredMessages. The restart happened before you read them. Handle each one in this turn, oldest first, together with the current request.",
+            "During the interrupted turn the user sent the messages in steeredMessages. The interruption happened before you read them. Handle each one in this turn, oldest first, together with the current request.",
           ] : []),
           "Shell commands and background processes started in earlier turns may no longer be running, and their tool sessions may be gone. Do not block only because such a process or its tool session cannot be found or inspected.",
           "Reconcile any unfinished tool or command before proceeding: check the workspace for the outputs or artifacts it should have produced. If the expected output is present, use it. If the expected output is missing, re-run the command.",

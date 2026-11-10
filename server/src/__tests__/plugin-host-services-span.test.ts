@@ -349,6 +349,9 @@ describe("nested worker timing receipts",()=>{
     startTimeMs: now - 80, endTimeMs: now - 20, attributes: { "paperclip.sandbox.startup.state": "archived" } });
   expect(JSON.stringify(mockRecordSpan.mock.calls)).not.toContain("private-token");
   expect(clampProviderSpanAttributes({ "paperclip.sandbox.startup.state": "private-state" })).toEqual({});
+  for (const state of ["starting", "stopping", "restoring", "archiving", "resizing"]) {
+    expect(clampProviderSpanAttributes({ "paperclip.sandbox.startup.state": state })).toEqual({ "paperclip.sandbox.startup.state": state });
+  }
  });
 
  it("admits a workspace failure span with only a closed failure reason", () => {
@@ -366,7 +369,7 @@ describe("nested worker timing receipts",()=>{
  it("admits every closed lease phase and rejects dynamic phase names", () => {
   mockRecordSpan.mockReset();
   const names = ["lease.wait_for_teardown", "lease.lookup", "lease.refresh", "lease.channel_cleanup",
-    "lease.start", "lease.recover", "lease.verify", "lease.workspace", "lease.sentinel", "lease.shell",
+    "lease.start", "lease.recover", "lease.wait_transition", "lease.force_stop", "lease.verify", "lease.workspace", "lease.sentinel", "lease.shell",
     "lease.create", "lease.expiry", "lease.cleanup", "lease.private-resource-id"];
   for (const name of names) recordWorkerProviderSpan({ name }, { traceparent: VALID_TRACEPARENT });
   expect(mockRecordSpan.mock.calls.map(call => call[0].name)).toEqual([

@@ -162,6 +162,8 @@ export const STOP_PROOF_RECOVERY_KEY = "stopProofRecovery";
 export const STOP_PROOF_RECOVERY_SCHEMA = "paperclip.stop-proof-recovery.v1";
 export const STOP_PROOF_MAX_REARMS = 4;
 export const STOP_PROOF_WAIT_CODE = "agent_stop_unconfirmed";
+/** Coordinator phases after which no finalizer or provider work runs under the coordinator. */
+export const FINISHED_COORDINATOR_PHASES = ["committed", "terminal_failure", "applied"] as const;
 
 export function readStopProofRecovery(evidence: Record<string, unknown> | null | undefined): { rearms: number; nextRearmAt: number | null } | null {
   const marker = evidence?.[STOP_PROOF_RECOVERY_KEY] as Record<string, unknown> | undefined;

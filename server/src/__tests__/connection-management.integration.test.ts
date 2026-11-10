@@ -1546,27 +1546,92 @@ describe("connection management with production default agents", () => {
     return { status: 201, body: { ...row, token } };
   }
 
-  it("never returns gateway client token plaintext to agent callers", async () => {
+  it("lets agents create and revoke gateway client tokens without ever receiving a token value", async () => {
     const f = await fixture();
     const profile = await f.request("POST", `/companies/${f.companyId}/tools/profiles`, { profileKey: "gateway-profile", name: "Gateway profile", entries: [] });
     expect(profile, JSON.stringify(profile)).toMatchObject({ status: 201 });
     const gateway = await f.request("POST", `/companies/${f.companyId}/tools/gateways`, { name: "Delegated gateway", slug: "delegated", profileId: profile.body.id });
     expect(gateway, JSON.stringify(gateway)).toMatchObject({ status: 201 });
     const body = { companyId: f.companyId, name: "Fixture client", clientLabel: "fixture", expiresAt: new Date(Date.now() + 3600000).toISOString() };
-    const call = { tool: "call_api", callId: "gateway-client-secret", arguments: {
-      operationId: "POST /api/tool-gateway/gateways/{gatewayId}/tokens", pathParams: { gatewayId: gateway.body.id }, body,
-    } };
+    const call = (callId: string, operationId: string, pathParams: Record<string, string>, payload: unknown) =>
+      f.authority.execute({ tool: "call_api", callId, arguments: { operationId, pathParams, body: payload } }) as Promise<{ status: number; data: Record<string, unknown> }>;
+    const tokenValue = /pcgw_[0-9a-f-]{36}\.[A-Za-z0-9_-]+/;
     const [company] = await server.db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, f.companyId));
     const tokensPath = `/${company.issuePrefix}/apps/gateways/${gateway.body.id}/tokens`;
-    const denied = await f.authority.execute(call) as { status: number; data: Record<string, unknown> };
-    expect(denied, JSON.stringify(denied)).toMatchObject({ status: 403, data: { reasonCode: "gateway_token_requires_person", tokensPath } });
-    expect(JSON.stringify(denied)).not.toMatch(/pcgw_/);
-    expect(await f.request("POST", `/tool-gateway/gateways/${gateway.body.id}/tokens`, body)).toMatchObject({ status: 403, body: { reasonCode: "gateway_token_requires_person" } });
-    expect(await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.gatewayId, gateway.body.id))).toHaveLength(0);
+    expect(gateway.body).toMatchObject({ tokensPath, gatewayPath: `/${company.issuePrefix}/apps/gateways/${gateway.body.id}/overview` });
+
+    const created = await call("gateway-client-create", "POST /api/tool-gateway/gateways/{gatewayId}/tokens", { gatewayId: gateway.body.id }, body);
+    expect(created, JSON.stringify(created)).toMatchObject({ status: 201, data: { name: "Fixture client", pendingReveal: true, tokensPath,
+      tokenPrefix: expect.stringMatching(/^pcgw_[0-9a-f]{8}$/), createdByAgentId: f.agentId, responsibleUserId: f.userId,
+      requiredUserAction: { kind: "reveal_credential", userId: f.userId, setupPath: tokensPath, resource: { type: "gateway_token", id: created.data.id, companyId: f.companyId } } } });
+    expect(created.data).not.toHaveProperty("token");
+    expect(JSON.stringify(created)).not.toMatch(tokenValue);
+    const [pending] = await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, created.data.id as string));
+    expect(pending).toMatchObject({ pendingReveal: true, createdByAgentId: f.agentId, responsibleUserId: f.userId, subjectType: "gateway_client", revokedAt: null });
+    // Agents cannot reveal any value.
+    const agentReveal = await call("gateway-client-reveal", "POST /api/tool-gateway/gateway-tokens/{tokenId}/reveal", { tokenId: created.data.id as string }, { companyId: f.companyId });
+    expect(agentReveal, JSON.stringify(agentReveal)).toMatchObject({ status: 403, data: { reasonCode: "gateway_token_requires_person" } });
+    expect(JSON.stringify(agentReveal)).not.toMatch(tokenValue);
+    expect(await f.request("POST", `/tool-gateway/gateway-tokens/${created.data.id}/reveal`, { companyId: f.companyId })).toMatchObject({ status: 403 });
+
+    // The responsible person reveals the value exactly once, and it works.
     const cookie = await server.humanSession(f.userId);
+    const reveal = () => fetch(`${server.apiUrl}/api/tool-gateway/gateway-tokens/${created.data.id}/reveal`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
+    const revealed = await reveal();
+    expect(revealed.status).toBe(200);
+    const value = await revealed.json() as { token: string; pendingReveal: boolean; id: string };
+    expect(value).toMatchObject({ id: created.data.id, pendingReveal: false, token: expect.stringMatching(new RegExp(`^pcgw_${created.data.id}\\.`)) });
+    expect(await reveal()).toMatchObject({ status: 409 });
+    expect(await server.db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId), eq(activityLog.action, "tool_gateway.token_revealed"))))
+      .toEqual([expect.objectContaining({ actorType: "user", actorId: f.userId, entityId: gateway.body.id, details: { tokenId: created.data.id } })]);
+    const use = () => f.request("POST", `/mcp/gateways/${gateway.body.gatewayPublicId}`, { jsonrpc: "2.0", id: 1, method: "tools/list" }, value.token);
+    expect(await use()).toMatchObject({ status: 200 });
+
+    // Agents keep delegated revoke.
+    const revoked = await call("gateway-client-revoke", "POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke", { tokenId: created.data.id as string }, { companyId: f.companyId });
+    expect(revoked, JSON.stringify(revoked)).toMatchObject({ status: 200, data: { id: created.data.id, revokedAt: expect.any(String) } });
+    expect((await use()).status).toBeGreaterThanOrEqual(400);
+
+    // A token revoked before reveal never gets a value.
+    const unrevealed = await call("gateway-client-create-2", "POST /api/tool-gateway/gateways/{gatewayId}/tokens", { gatewayId: gateway.body.id }, { ...body, name: "Never revealed" });
+    expect(unrevealed).toMatchObject({ status: 201 });
+    expect(await call("gateway-client-revoke-2", "POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke", { tokenId: unrevealed.data.id as string }, { companyId: f.companyId })).toMatchObject({ status: 200 });
+    expect(await fetch(`${server.apiUrl}/api/tool-gateway/gateway-tokens/${unrevealed.data.id}/reveal`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) }))
+      .toMatchObject({ status: 409 });
+
+    // A token that expired before reveal never gets a value.
+    const expiring = await call("gateway-client-create-3", "POST /api/tool-gateway/gateways/{gatewayId}/tokens", { gatewayId: gateway.body.id }, { ...body, name: "Expired before reveal" });
+    expect(expiring).toMatchObject({ status: 201 });
+    await server.db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(toolMcpGatewayTokens.id, expiring.data.id as string));
+    const expiredReveal = await fetch(`${server.apiUrl}/api/tool-gateway/gateway-tokens/${expiring.data.id}/reveal`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
+    expect(expiredReveal.status).toBe(409);
+    expect(await expiredReveal.json()).toMatchObject({ reasonCode: "gateway_token_expired" });
+    const [stillPending] = await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, expiring.data.id as string));
+    expect(stillPending).toMatchObject({ pendingReveal: true });
+
+    // Person callers keep receiving the value from create.
     const personal = await fetch(`${server.apiUrl}/api/tool-gateway/gateways/${gateway.body.id}/tokens`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify(body) });
     expect(personal.status).toBe(201);
-    expect(await personal.json()).toMatchObject({ token: expect.stringMatching(/^pcgw_/), createdByUserId: f.userId, createdByAgentId: null });
+    expect(await personal.json()).toMatchObject({ token: expect.stringMatching(/^pcgw_/), createdByUserId: f.userId, createdByAgentId: null, pendingReveal: false });
+  });
+
+  it("reveals an agent-created gateway token value only to its responsible person", async () => {
+    const f = await fixture();
+    const profile = await f.request("POST", `/companies/${f.companyId}/tools/profiles`, { profileKey: "gateway-profile", name: "Gateway profile", entries: [] });
+    const gateway = await f.request("POST", `/companies/${f.companyId}/tools/gateways`, { name: "Delegated gateway", slug: "delegated", profileId: profile.body.id });
+    const created = await f.request("POST", `/tool-gateway/gateways/${gateway.body.id}/tokens`, { companyId: f.companyId, name: "Fixture client", clientLabel: "fixture" });
+    expect(created, JSON.stringify(created)).toMatchObject({ status: 201, body: { pendingReveal: true } });
+    const otherId = `other-admin-${randomUUID()}`;
+    await server.db.insert(authUsers).values({ id: otherId, name: "Other admin", email: `${otherId}@fixture.invalid`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+    const access = accessService(server.db);
+    await access.ensureMembership(f.companyId, "user", otherId, "owner", "active");
+    await access.ensureRoleDefaultGrants(f.companyId, otherId, "owner", otherId);
+    const cookie = await server.humanSession(otherId);
+    const reveal = await fetch(`${server.apiUrl}/api/tool-gateway/gateway-tokens/${created.body.id}/reveal`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
+    expect(reveal.status).toBe(403);
+    expect(await reveal.json()).toMatchObject({ reasonCode: "gateway_token_reveal_requires_responsible_person" });
+    const [still] = await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, created.body.id));
+    expect(still).toMatchObject({ pendingReveal: true });
   });
 
   it("keeps durable agent-issued gateway client tokens bound to the issuer and responsible user", async () => {

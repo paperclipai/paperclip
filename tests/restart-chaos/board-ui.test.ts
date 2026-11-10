@@ -1,4 +1,7 @@
 import { createServer, type Server } from "node:http";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { once } from "node:events";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BoardUi, UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, isRetryRequestFor } from "./board-ui.js";
@@ -7,10 +10,13 @@ const retry = (issue: string) => `fetch('/api/issues/${issue}/retry',{method:'PO
 const pages: Record<string, string> = {
   "/issues/CHA-1": `<div role="status">Couldn’t finish this attempt. <button onclick="${retry("i1")}">Retry</button></div>`,
   "/issues/CHA-2": `<div role="status">Saving files from the previous attempt</div>`,
+  "/issues/CHA-7": `<div role="status">Couldn’t finish this attempt. <button style="display:none">Retry</button></div>`,
   "/issues/CHA-3": `<div role="status">Automatic recovery stopped. <button>Retry</button></div>`,
   "/issues/CHA-4": `<section><p>Couldn’t load the subtasks.</p><button onclick="window.reloaded=true">Retry</button></section>
     <div role="status">Couldn’t finish this attempt. <button onclick="${retry("i4")}">Retry</button></div>`,
   "/issues/CHA-5": `<div role="status">Couldn’t finish this attempt. <button onclick="${retry("other")}">Retry</button></div>`,
+  "/issues/CHA-6": `<button style="width:0;height:0;padding:0;border:0;overflow:hidden">Retry</button>
+    <div role="status">Couldn’t finish this attempt. Your message is saved. <button onclick="${retry("i6")}">Retry</button></div>`,
 };
 let server: Server;
 let baseUrl: string;
@@ -52,6 +58,37 @@ describe("BoardUi.clickRetry", () => {
     });
   }, 60_000);
 
+  it("saves a screenshot and the banner's HTML when no visible Retry appears", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "chaos-retry-diagnostics-"));
+    const board = new BoardUi(baseUrl, undefined, directory);
+    try {
+      const result = await board.clickRetry("CHA-2", "i2", 1_500);
+      expect(result).toMatchObject({ clicked: false, error: UI_RETRY_BUTTON_MISSING,
+        diagnostics: { screenshot: expect.stringMatching(/\.png$/), dom: expect.stringMatching(/\.json$/) } });
+      expect((await readdir(directory)).sort()).toHaveLength(2);
+      const dom = JSON.parse(await readFile(result.diagnostics!.dom!, "utf8"));
+      expect(dom).toMatchObject({ url: expect.stringContaining("/issues/CHA-2"), retryButtons: [],
+        banners: [expect.stringContaining("Saving files from the previous attempt")] });
+    } finally {
+      await board.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("records a hidden Retry with its visibility and box", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "chaos-retry-hidden-"));
+    const board = new BoardUi(baseUrl, undefined, directory);
+    try {
+      const result = await board.clickRetry("CHA-7", "i7", 1_500);
+      expect(result).toMatchObject({ clicked: false, error: UI_RETRY_BUTTON_MISSING });
+      const dom = JSON.parse(await readFile(result.diagnostics!.dom!, "utf8"));
+      expect(dom.retryButtons).toEqual([expect.objectContaining({ visible: false, box: null, inBanner: true })]);
+    } finally {
+      await board.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("reports a Retry button whose click sends no retry request", async () => {
     await withBoard(async board => {
       expect(await board.clickRetry("CHA-3", "i3", 1_500, 500)).toMatchObject({ clicked: true, httpStatus: null, error: UI_RETRY_NO_REQUEST });
@@ -63,6 +100,13 @@ describe("BoardUi.clickRetry", () => {
       expect(await board.clickRetry("CHA-4", "i4", 10_000, 500)).toMatchObject({ clicked: true, httpStatus: 202, accepted: true });
     });
     expect(posts).toContain("/api/issues/i4/retry");
+  }, 60_000);
+
+  it("finds the visible banner Retry when an earlier Retry match has no box", async () => {
+    await withBoard(async board => {
+      expect(await board.clickRetry("CHA-6", "i6", 3_000, 500)).toMatchObject({ clicked: true, httpStatus: 202, accepted: true, error: null });
+    });
+    expect(posts).toContain("/api/issues/i6/retry");
   }, 60_000);
 
   it("does not count a retry request for a different issue", async () => {

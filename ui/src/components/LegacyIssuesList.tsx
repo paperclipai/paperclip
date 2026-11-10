@@ -2,6 +2,7 @@ import { QueryErrorState } from "./QueryView";
 import { ISSUE_SORT_FIELDS, sortIssues, type IssueSort, type IssueSortField } from "../lib/issue-sort";
 import { saveTaskCollectionPreferences } from "../lib/task-collection-preferences";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
+import { topRenderedNavEntryRefs, usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
 import { includeIssueHierarchyContext } from "../lib/issue-hierarchy-context";
@@ -438,6 +439,8 @@ type ProjectOption = Pick<Project, "id" | "name"> & Partial<Pick<Project, "color
 type IssueListRequestFilters = NonNullable<Parameters<typeof issuesApi.list>[1]>;
 
 interface IssuesListProps {
+  /** Preload the chat of the top visible rows. Only the top-level tasks page sets this. */
+  preloadTaskChats?: boolean;
   issues: Issue[];
   isLoading?: boolean;
   error?: Error | null;
@@ -663,6 +666,7 @@ const MOBILE_TREE_INDENT = ["", "pl-4 sm:pl-0", "pl-8 sm:pl-0", "pl-12 sm:pl-0",
 
 export function IssuesList({
   issues,
+  preloadTaskChats = false,
   isLoading,
   error,
   onRetry,
@@ -1376,6 +1380,13 @@ export function IssuesList({
     viewState.collapsedParents,
     viewState.nestingEnabled,
   ]);
+  // The top rows the list renders, in display order (collapsed groups and
+  // parents hide theirs), so the preload warms what a person can click.
+  const preloadTaskRefs = useMemo(
+    () => preloadTaskChats ? topRenderedNavEntryRefs(flatNavEntries, renderedIssueRowLimit) : [],
+    [flatNavEntries, preloadTaskChats, renderedIssueRowLimit],
+  );
+  usePreloadTaskChats(selectedCompanyId, preloadTaskRefs, !isLoading && !error && (!hierarchyEnabled || !hierarchy.isLoading) && preloadTaskRefs.length > 0);
 
   const listNavStateRef = useRef({
     flatNavEntries,
