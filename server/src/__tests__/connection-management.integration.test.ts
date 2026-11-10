@@ -1,7 +1,7 @@
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { commitToolActionReview } from "../services/tool-action-review.js";
 import { googleWorkspaceSelectedScopes, defaultGitHubReviewPolicy, SLACK_CHAT_BOT_SCOPES, SLACK_BOT_TOOL_SCOPES } from "@paperclipai/shared";
-import { randomUUID, generateKeyPairSync } from "node:crypto";
+import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { and, eq, sql } from "drizzle-orm";
@@ -1536,26 +1536,46 @@ describe("connection management with production default agents", () => {
     }
   });
 
-  it("keeps durable gateway client tokens bound to the issuer and responsible user", async () => {
+  // Tokens issued by agents before client-token minting became person-only
+  // remain valid until revoked, so runtime enforcement still covers them.
+  async function legacyAgentIssuedGatewayToken(f: Awaited<ReturnType<typeof fixture>>, gatewayId: string, name: string) {
+    const id = randomUUID(), token = `pcgw_${id}.${randomBytes(32).toString("base64url")}`;
+    const [row] = await server.db.insert(toolMcpGatewayTokens).values({ id, companyId: f.companyId, gatewayId, name, tokenHash: createHash("sha256").update(token).digest("hex"),
+      tokenPrefix: `pcgw_${id.slice(0, 8)}`, subjectType: "gateway_client", clientLabel: "fixture", allowedActions: ["tools/list", "tools/call", "resources/list", "resources/read", "prompts/list", "prompts/get"],
+      responsibleUserId: f.userId, createdByAgentId: f.agentId }).returning();
+    return { status: 201, body: { ...row, token } };
+  }
+
+  it("never returns gateway client token plaintext to agent callers", async () => {
     const f = await fixture();
     const profile = await f.request("POST", `/companies/${f.companyId}/tools/profiles`, { profileKey: "gateway-profile", name: "Gateway profile", entries: [] });
     expect(profile, JSON.stringify(profile)).toMatchObject({ status: 201 });
     const gateway = await f.request("POST", `/companies/${f.companyId}/tools/gateways`, { name: "Delegated gateway", slug: "delegated", profileId: profile.body.id });
     expect(gateway, JSON.stringify(gateway)).toMatchObject({ status: 201 });
+    const body = { companyId: f.companyId, name: "Fixture client", clientLabel: "fixture", expiresAt: new Date(Date.now() + 3600000).toISOString() };
     const call = { tool: "call_api", callId: "gateway-client-secret", arguments: {
-      operationId: "POST /api/tool-gateway/gateways/{gatewayId}/tokens", pathParams: { gatewayId: gateway.body.id },
-      body: { companyId: f.companyId, name: "Fixture client", clientLabel: "fixture", expiresAt: new Date(Date.now() + 3600000).toISOString() },
+      operationId: "POST /api/tool-gateway/gateways/{gatewayId}/tokens", pathParams: { gatewayId: gateway.body.id }, body,
     } };
-    const issued = await f.authority.execute(call) as { status: number; data: { id: string; token: string } };
-    expect(issued, JSON.stringify(issued)).toMatchObject({ status: 201, data: { token: expect.any(String), responsibleUserId: f.userId } });
-    expect(await f.authority.execute(call)).toEqual(issued);
-    const token = { status: issued.status, body: issued.data };
-    const [receiptRun] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-    expect(JSON.stringify(receiptRun.resultJson)).not.toContain(token.body.token);
-    const receipts = (receiptRun.resultJson as { apiToolReceipts: Record<string, { operationId: string }> }).apiToolReceipts;
-    expect(Object.values(receipts).find(receipt => receipt.operationId === call.arguments.operationId)).toHaveProperty("encryptedResult");
-    expect(JSON.stringify(redactRunnerApiPayloads(issued))).not.toContain(token.body.token);
-    expect(await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.gatewayId, gateway.body.id))).toHaveLength(1);
+    const [company] = await server.db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, f.companyId));
+    const tokensPath = `/${company.issuePrefix}/apps/gateways/${gateway.body.id}/tokens`;
+    const denied = await f.authority.execute(call) as { status: number; data: Record<string, unknown> };
+    expect(denied, JSON.stringify(denied)).toMatchObject({ status: 403, data: { reasonCode: "gateway_token_requires_person", tokensPath } });
+    expect(JSON.stringify(denied)).not.toMatch(/pcgw_/);
+    expect(await f.request("POST", `/tool-gateway/gateways/${gateway.body.id}/tokens`, body)).toMatchObject({ status: 403, body: { reasonCode: "gateway_token_requires_person" } });
+    expect(await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.gatewayId, gateway.body.id))).toHaveLength(0);
+    const cookie = await server.humanSession(f.userId);
+    const personal = await fetch(`${server.apiUrl}/api/tool-gateway/gateways/${gateway.body.id}/tokens`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    expect(personal.status).toBe(201);
+    expect(await personal.json()).toMatchObject({ token: expect.stringMatching(/^pcgw_/), createdByUserId: f.userId, createdByAgentId: null });
+  });
+
+  it("keeps durable agent-issued gateway client tokens bound to the issuer and responsible user", async () => {
+    const f = await fixture();
+    const profile = await f.request("POST", `/companies/${f.companyId}/tools/profiles`, { profileKey: "gateway-profile", name: "Gateway profile", entries: [] });
+    expect(profile, JSON.stringify(profile)).toMatchObject({ status: 201 });
+    const gateway = await f.request("POST", `/companies/${f.companyId}/tools/gateways`, { name: "Delegated gateway", slug: "delegated", profileId: profile.body.id });
+    expect(gateway, JSON.stringify(gateway)).toMatchObject({ status: 201 });
+    const token = await legacyAgentIssuedGatewayToken(f, gateway.body.id, "Fixture client");
     const [saved] = await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, token.body.id));
     expect(saved).toMatchObject({ createdByAgentId: f.agentId, responsibleUserId: f.userId, subjectType: "gateway_client" });
     const use = () => f.request("POST", `/mcp/gateways/${gateway.body.gatewayPublicId}`, { jsonrpc: "2.0", id: 1, method: "tools/list" }, token.body.token);
@@ -1617,7 +1637,7 @@ describe("connection management with production default agents", () => {
       const token = mode === "ask-board" ? await (async () => {
         const response = await fetch(`${server.apiUrl}/api/tool-gateway/gateways/${gateway.body.id}/tokens`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify(tokenBody) });
         return { status: response.status, body: await response.json() };
-      })() : await f.request("POST", `/tool-gateway/gateways/${gateway.body.id}/tokens`, tokenBody);
+      })() : await legacyAgentIssuedGatewayToken(f, gateway.body.id, tokenBody.name);
       expect(token, JSON.stringify(token)).toMatchObject({ status: 201 });
       const path = `/mcp/gateways/${gateway.body.gatewayPublicId}`;
       const rpc = (method: string, params?: unknown) => f.request("POST", path, { jsonrpc: "2.0", id: randomUUID(), method, ...(params ? { params } : {}) }, token.body.token);

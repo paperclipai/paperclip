@@ -2,7 +2,7 @@
  * Pure statistics for the Phase 0 time-to-first-token baseline
  * (doc/plans/2026-11-07-ttft-baseline.md). Input is the run log only:
  * `run.performance.span`, `run.startup.reuse` and `native.recovery.transition`
- * rows from `heartbeat_run_events`. Never Telemetry (AGENTS.md §5.7).
+ * rows from `heartbeat_run_events`. Never Telemetry (rules/data-paths.mdc).
  */
 
 export interface BaselineEvent {
@@ -314,11 +314,12 @@ export function openShellExecutions(events: readonly BaselineEvent[], marker?: s
  * Whether finished tasks keep their Daytona sandbox for the idle window. The warm
  * fixture always does. An inheriting environment defers to the agent, whose catalog
  * profile pins per_turn unless --lifecycle warm replaces it. --lifecycle default
- * leaves the agent unset, and a remote run with no lifecycle anywhere is per-turn.
+ * leaves the agent unset; on Daytona, which keeps reusable leases, a measured
+ * harness with no lifecycle anywhere then defaults to warm.
  */
 export function daytonaRetainsSandboxes(input: { warmEnvironment: boolean; inheritEnvironment: boolean; lifecycle: string | undefined }): boolean {
   if (input.warmEnvironment) return true;
-  return input.inheritEnvironment && input.lifecycle === "warm";
+  return input.inheritEnvironment && (input.lifecycle === "warm" || input.lifecycle === "default");
 }
 
 /** Daytona sandboxes a TTFT baseline can hold at once, for the vCPU budget check. */

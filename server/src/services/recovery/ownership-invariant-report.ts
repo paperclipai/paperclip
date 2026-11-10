@@ -31,7 +31,7 @@ import {
  * is settled when its owner is proven gone, and its `onUnprovable` action is
  * surfaced when the owner is unprovable; an unprovable owner is never
  * released. Report-only kinds are never changed. Nothing is sent to Telemetry
- * (AGENTS.md §5.7).
+ * (rules/data-paths.mdc).
  */
 
 export const OWNERSHIP_INVARIANT_VIOLATION_ACTION = "recovery.invariant_violation";
@@ -413,6 +413,20 @@ const COMMENT_WAKE_GRACE_MS = 30_000;
 
 export const USER_COMMENT_DROPPED_BY_STALE_RUN = "user_comment_dropped_by_stale_continuation";
 
+/** Whether a run of comment `c`'s task matches `condition`. A run belongs to
+ * the task by its legacy context or its native column. Each binding is a
+ * separate indexed probe per comment: one OR across both lets PostgreSQL hash
+ * every run of the company and read each run's context. `offset 0` keeps each
+ * probe a per-row index lookup; without it PostgreSQL can also build a hashed
+ * subplan or a hash join over all runs of the company. */
+function taskRuns(alias: string, condition: SQL) {
+  const run = sql.raw(alias);
+  return sql`(exists (select 1 from heartbeat_runs ${run} where ${run}.company_id = c.company_id
+      and ${run}.context_snapshot->>'issueId' = c.issue_id::text and ${condition} offset 0)
+    or exists (select 1 from heartbeat_runs ${run} where ${run}.company_id = c.company_id
+      and ${run}.native_issue_id = c.issue_id and ${condition} offset 0))`;
+}
+
 /** Invariant 4, the durable half of the stale-continuation rule (chaos
  * s9401/t72). A user comment on a done task whose only carrying wakes were
  * cancelled as stale continuations, that a settled agent run which started
@@ -421,32 +435,36 @@ export const USER_COMMENT_DROPPED_BY_STALE_RUN = "user_comment_dropped_by_stale_
  * also covers a stale check that ran before that run reached succeeded, or a
  * save that failed. The worker saves it so the release drain reopens the
  * task and delivers it once. */
-async function checkStaleDroppedComments(db: Db, now: Date, limit: number): Promise<InvariantViolation[]> {
+export async function checkStaleDroppedComments(db: Db, now: Date, limit: number): Promise<InvariantViolation[]> {
   const since = new Date(now.getTime() - INTENT_LOOKBACK_MS).toISOString();
+  // Two stages. The first keeps the comments that a stale-continuation
+  // cancellation dropped and that no open wake carries. These are rare, so the
+  // run probes (taskRuns) read only these few comments. `offset 0` keeps the
+  // stale-wake lookup a per-comment index probe; without it PostgreSQL can
+  // hash every wake request of the company and read each payload.
   const rows = await db.execute<{ id: string; company_id: string; issue_id: string; agent_id: string }>(sql`
-    select c.id, c.company_id, c.issue_id, i.assignee_agent_id as agent_id from issue_comments c
-    join issues i on i.id = c.issue_id and i.company_id = c.company_id
-    where c.author_user_id is not null and c.deleted_at is null
-      and c.author_agent_id is null and c.created_by_run_id is null and c.created_at >= ${since}::timestamptz
-      and i.status = 'done' and i.assignee_agent_id is not null and i.conversation_agent_id is null
-      and ${taskClosedByAgentSql(sql`c.company_id`, sql`c.issue_id`)}
-      and exists (select 1 from agent_wakeup_requests stale where stale.company_id = c.company_id
-        and stale.payload->>'issueId' = c.issue_id::text and stale.status = 'cancelled'
-        and stale.error = 'continuation_task_ownership_changed'
-        and (stale.payload->>'commentId' = c.id::text
-          or coalesce(stale.payload#>'{_paperclipWakeContext,wakeCommentIds}', '[]'::jsonb) ? c.id::text))
-      and not exists (select 1 from agent_wakeup_requests open_wake where open_wake.company_id = c.company_id
-        and open_wake.payload->>'issueId' = c.issue_id::text
-        and open_wake.status not in ('cancelled', 'skipped', 'failed', 'coalesced')
-        and (open_wake.payload->>'commentId' = c.id::text
-          or coalesce(open_wake.payload#>'{_paperclipWakeContext,wakeCommentIds}', '[]'::jsonb) ? c.id::text))
-      and exists (select 1 from heartbeat_runs closing where closing.company_id = c.company_id
-        and closing.agent_id = i.assignee_agent_id and closing.status = 'succeeded'
-        and (closing.context_snapshot->>'issueId' = c.issue_id::text or closing.native_issue_id = c.issue_id)
-        and closing.started_at < c.created_at and closing.finished_at >= c.created_at)
-      and not exists (select 1 from heartbeat_runs r where r.company_id = c.company_id
-        and (r.context_snapshot->>'issueId' = c.issue_id::text or r.native_issue_id = c.issue_id)
-        and r.status in ('queued', 'running', 'scheduled_retry'))
+    with dropped as materialized (
+      select c.id, c.company_id, c.issue_id, c.created_at, i.assignee_agent_id as agent_id from issue_comments c
+      join issues i on i.id = c.issue_id and i.company_id = c.company_id
+      where c.author_user_id is not null and c.deleted_at is null
+        and c.author_agent_id is null and c.created_by_run_id is null and c.created_at >= ${since}::timestamptz
+        and i.status = 'done' and i.assignee_agent_id is not null and i.conversation_agent_id is null
+        and ${taskClosedByAgentSql(sql`c.company_id`, sql`c.issue_id`)}
+        and exists (select 1 from agent_wakeup_requests stale where stale.company_id = c.company_id
+          and stale.payload->>'issueId' = c.issue_id::text and stale.status = 'cancelled'
+          and stale.error = 'continuation_task_ownership_changed'
+          and (stale.payload->>'commentId' = c.id::text
+            or coalesce(stale.payload#>'{_paperclipWakeContext,wakeCommentIds}', '[]'::jsonb) ? c.id::text) offset 0)
+        and not exists (select 1 from agent_wakeup_requests open_wake where open_wake.company_id = c.company_id
+          and open_wake.payload->>'issueId' = c.issue_id::text
+          and open_wake.status not in ('cancelled', 'skipped', 'failed', 'coalesced')
+          and (open_wake.payload->>'commentId' = c.id::text
+            or coalesce(open_wake.payload#>'{_paperclipWakeContext,wakeCommentIds}', '[]'::jsonb) ? c.id::text))
+    )
+    select c.id, c.company_id, c.issue_id, c.agent_id from dropped c
+    where ${taskRuns("closing", sql`closing.agent_id = c.agent_id and closing.status = 'succeeded'
+        and closing.started_at < c.created_at and closing.finished_at >= c.created_at`)}
+      and not ${taskRuns("r", sql`r.status in ('queued', 'running', 'scheduled_retry')`)}
     order by c.created_at limit ${Math.min(limit, MAX_RECORDS_PER_KIND)}`);
   // Consumption is per comment: a later run counts only if it received this
   // comment (its own wake input, or a retry's task history), never ordinary
@@ -469,19 +487,9 @@ async function checkStaleDroppedComments(db: Db, now: Date, limit: number): Prom
  * The reconciliation worker saves it as a deferred receipt and promotes it. */
 export async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: number, processStartedAt: Date): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
   const since = new Date(now.getTime() - INTENT_LOOKBACK_MS).toISOString();
-  // A run belongs to the task by its legacy context or its native column. Each
-  // binding is a separate indexed probe per comment: one OR across both lets
-  // PostgreSQL hash every run of the company and read each run's context.
-  // `offset 0` keeps each probe, and the steer check's event lookup, a
-  // per-row index lookup; without it PostgreSQL can also build a hashed
-  // subplan or a hash join over all runs or all events of the company.
-  const taskRuns = (alias: string, condition: SQL) => {
-    const run = sql.raw(alias);
-    return sql`(exists (select 1 from heartbeat_runs ${run} where ${run}.company_id = c.company_id
-        and ${run}.context_snapshot->>'issueId' = c.issue_id::text and ${condition} offset 0)
-      or exists (select 1 from heartbeat_runs ${run} where ${run}.company_id = c.company_id
-        and ${run}.native_issue_id = c.issue_id and ${condition} offset 0))`;
-  };
+  // Run lookups are taskRuns probes. `offset 0` also keeps the steer check's
+  // event lookup a per-row index lookup; without it PostgreSQL can build a
+  // hash join over all events of the company.
   // Three stages, cheapest first. Most user comments have a wake (stage one)
   // or a later run (stage two). Only the few comments left reach the steer
   // check, which reads run event payloads.
@@ -577,7 +585,7 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
     const page = await db.select({ id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId,
     updatedAt: issues.updatedAt })
     .from(issues).where(and(eq(issues.status, "in_progress"), isNotNull(issues.assigneeAgentId),
-      // A saved monitor deadline is a first-class wait path (SPEC-implementation).
+      // A saved monitor deadline is a first-class wait path (doc/execution-semantics.md §8).
       or(isNull(issues.monitorNextCheckAt), lt(issues.monitorNextCheckAt, now)),
       notExists(db.select({ one: sql`1` }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, issues.companyId), inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
