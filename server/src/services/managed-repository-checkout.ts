@@ -129,7 +129,7 @@ export async function materializeManagedProjectWorkspace(
     ? await measureRunPhase("workspace.checkout.git_auth", () => input.resolveGitAuth!(input.repoUrl!))
     : null;
   const cloneTmpDir = await fs.mkdtemp(process.platform === "win32"
-    ? path.join(await fs.realpath(input.stagingParent ?? path.dirname(cwd)), ".clone-")
+    ? path.join(await fs.realpath(input.stagingParent ?? path.dirname(cwd)), "repo.clone-")
     : input.stagingParent
       ? path.join(input.stagingParent, `${path.basename(cwd)}.clone-`)
       : `${cwd}.clone-`);

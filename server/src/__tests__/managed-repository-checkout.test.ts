@@ -7,6 +7,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, readManagedRepositoryPreparationFailure } from "../services/managed-repository-checkout.js";
 
+import { PROJECT_REPOSITORIES_DIR, readManagedWorkspaceRepositories, listProjectRepositoryStagingPaths } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { listLocalProjectRepositories } from "@paperclipai/adapter-utils/ssh";
+import { assertReproducibleGitFiles, assertReproducibleLocalGitConfig } from "../services/git-workspace-restoration.js";
+
 const execFile = promisify(execFileCallback);
 const directories: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
@@ -22,6 +26,39 @@ async function fixture() {
   return { root, source, target: path.join(root, "target") };
 }
 describe("atomic managed repository publication", () => {
+  it("keeps in-progress clone staging out of concurrent repository scans", async () => {
+    const { root, source } = await fixture();
+    const parent = path.join(root, PROJECT_REPOSITORIES_DIR);
+    await mkdir(parent);
+    await materializeManagedProjectWorkspace(path.join(parent, "repository"), {
+      repoUrl: source,
+      beforeCopy: async staging => {
+        expect(await readManagedWorkspaceRepositories(root)).toEqual([]);
+        expect(await listLocalProjectRepositories(root)).toEqual([]);
+        expect(await listProjectRepositoryStagingPaths(root)).toEqual([`${PROJECT_REPOSITORIES_DIR}/${path.basename(staging)}`]);
+      },
+    });
+  });
+  it("accepts reproducible long-path config for standalone and linked checkouts", async () => {
+    const { root, source, target } = await fixture();
+    await materializeManagedProjectWorkspace(target, { repoUrl: source });
+    if (process.platform === "win32") await execFile("git", ["-C", target, "config", "--unset-all", "core.symlinks"]);
+    await execFile("git", ["-C", target, "config", "core.longpaths", "true"]);
+    await expect(assertReproducibleGitFiles(target)).resolves.toEqual([]);
+    const linked = path.join(root, "linked");
+    await execFile("git", ["-C", target, "worktree", "add", "-b", "linked", linked]);
+    await expect(assertReproducibleGitFiles(linked)).resolves.toEqual([]);
+  });
+  it.each(["false", "duplicate", "unsupported"])("rejects non-reproducible local config: %s", async kind => {
+    const { source } = await fixture();
+    if (process.platform === "win32") await execFile("git", ["-C", source, "config", "--unset-all", "core.symlinks"]);
+    if (kind === "unsupported") await execFile("git", ["-C", source, "config", "core.hooksPath", "custom-hooks"]);
+    else {
+      await execFile("git", ["-C", source, "config", "core.longpaths", kind === "false" ? "false" : "true"]);
+      if (kind === "duplicate") await execFile("git", ["-C", source, "config", "--add", "core.longpaths", "true"]);
+    }
+    await expect(assertReproducibleLocalGitConfig(source)).rejects.toThrow("unsupported_local_git_config");
+  });
   it.skipIf(process.platform !== "win32")("clones and fetches HTTP repositories at deeply nested Windows paths", async () => {
     const { root, source } = await fixture();
     await execFile("git", ["-C", source, "update-server-info"]);
@@ -52,10 +89,16 @@ describe("atomic managed repository publication", () => {
     const template = path.join(root, "template");
     await mkdir(path.join(template, "hooks"), { recursive: true });
     await writeFile(path.join(template, "hooks", "fsmonitor-watchman.sample"), "inert template fixture\n");
-    const target = path.join(root, "nested-workspace-".repeat(9));
-    expect(path.join(`${target}.clone-123456`, ".git", "hooks", "fsmonitor-watchman.sample").length).toBeGreaterThan(260);
+    const canonicalRoot = await realpath(root);
+    const stagingParent = path.join(root, "deep-staging-".repeat(24).slice(0, 226 - canonicalRoot.length - 1));
+    await mkdir(stagingParent);
+    const target = path.join(root, "target");
     await materializeManagedProjectWorkspace(target, {
-      repoUrl: source,
+      repoUrl: source, stagingParent,
+      beforeCopy: async staging => {
+        expect(path.dirname(staging)).toBe(await realpath(stagingParent));
+        expect(path.join(staging, ".git", "hooks", "fsmonitor-watchman.sample").length).toBeGreaterThan(260);
+      },
       resolveGitAuth: async () => ({
         configArgs: [], source: "managed_connection", secretName: null,
         env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TEMPLATE_DIR: template,

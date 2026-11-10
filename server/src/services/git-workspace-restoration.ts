@@ -547,6 +547,16 @@ async function assertReproducibleFetchHead(cwd: string, gitDir: string, signal?:
   }
 }
 
+export async function assertReproducibleLocalGitConfig(cwd: string, signal?: AbortSignal) {
+  const localConfig = await gitCacheCommand(cwd, ["config", "--local", "--name-only", "--list"], signal);
+  const keys = localConfig.split("\n").map(key => key.trim()).filter(Boolean);
+  if (keys.some(key => !/^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|longpaths)|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge))$/.test(key))) throw new Error("unsupported_local_git_config");
+  if (keys.includes("core.longpaths")
+    && (await gitCacheCommand(cwd, ["config", "--local", "--null", "--get-all", "core.longpaths"], signal)) !== "true\0") {
+    throw new Error("unsupported_local_git_config");
+  }
+}
+
 export async function assertReproducibleGitFiles(cwd: string, signal?: AbortSignal, options: {
   proveManagedCheckout?: ManagedCheckoutProver;
   preserveSettings?: boolean;
@@ -555,8 +565,7 @@ export async function assertReproducibleGitFiles(cwd: string, signal?: AbortSign
 } = {}) {
   if (!options.restorePoint && (await gitCacheCommand(cwd, ["status", "--porcelain=v1", "--untracked-files=all", "-z"], signal)).length) throw new Error("dirty_or_untracked_files");
   if ((await gitCacheCommand(cwd, ["ls-files", "-v"], signal)).split("\n").some(line => /^[a-zS] /.test(line))) throw new Error("unsupported_index_flags");
-  const localConfig = await gitCacheCommand(cwd, ["config", "--local", "--name-only", "--list"], signal);
-  if (localConfig.split("\n").filter(Boolean).some(key => !/^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge))$/.test(key))) throw new Error("unsupported_local_git_config");
+  await assertReproducibleLocalGitConfig(cwd, signal);
   const regenerable = await findRegenerableWorkspaceDirs(cwd, { signal });
   const ignored = (await gitCacheCommand(cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], signal)).split("\0").filter(Boolean);
   const unexplained = ignored.filter(file => !(options.preserveSettings && file === PAPERCLIP_CLAUDE_SETTINGS_FILE) && !regenerable.some(dir => file.startsWith(`${dir}/`))
