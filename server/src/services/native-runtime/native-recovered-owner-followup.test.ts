@@ -645,7 +645,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
         await db.update(heartbeatRuns).set({ processPid: 4_242 }).where(eq(heartbeatRuns.id, failed));
       }
       if (scenario === "provider event") {
-        await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: failed, seq: 1, eventType: "session.started",
+        await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: failed, seq: 100, eventType: "session.started",
           stream: "system", payload: {} });
       }
       if (scenario === "controller checkpoint") {
