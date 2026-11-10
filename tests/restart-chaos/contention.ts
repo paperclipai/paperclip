@@ -174,6 +174,10 @@ export interface PressureStats { writers: number; updates: number; rowsTouched: 
  * to back. Each statement keeps every value (`updated_at = updated_at`) but
  * still writes a new row version, which is exactly what invalidates a
  * repeatable-read snapshot that later locks the row.
+ *
+ * Each statement updates one row, like a run-log append. A statement over
+ * every running row locked several rows at once and deadlocked with product
+ * transactions (40P01 in the first live L1 wave), which the stream never does.
  */
 export class RunRowPressure {
   readonly stats: PressureStats;
@@ -194,12 +198,17 @@ export class RunRowPressure {
   async #loop() {
     while (!this.#stopped) {
       try {
-        const rows = await this.#db.$client.unsafe(
-          "update heartbeat_runs set updated_at = updated_at where company_id::text = $1 and status = 'running' returning id", [this.companyId]);
-        this.stats.updates += 1;
-        this.stats.rowsTouched += rows.length;
-        // Nothing running: idle briefly instead of spinning on an empty update.
-        if (!rows.length) await delay(50);
+        const running = await this.#db.$client.unsafe(
+          "select id::text as id from heartbeat_runs where company_id::text = $1 and status = 'running'", [this.companyId]) as Array<{ id: string }>;
+        // Nothing running: idle briefly instead of spinning on an empty read.
+        if (!running.length) { await delay(50); continue; }
+        for (const { id } of running) {
+          if (this.#stopped) break;
+          const rows = await this.#db.$client.unsafe(
+            "update heartbeat_runs set updated_at = updated_at where id::text = $1 and status = 'running' returning id", [id]);
+          this.stats.updates += 1;
+          this.stats.rowsTouched += rows.length;
+        }
       } catch (error) {
         // The server (and its database) restart during faults; keep going once it is back.
         this.stats.errors += 1;

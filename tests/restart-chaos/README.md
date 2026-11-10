@@ -549,8 +549,10 @@ runner_event_commit_stalled ... last cause: Error`).
 events and many usage reports. L1 is opt-in (not a default workload).
 
 **`--db-pressure <writers>`** (1–8) starts harness-owned writers against the wave's own database.
-Each one runs `update heartbeat_runs set updated_at = updated_at` on the wave company's `running`
-rows back to back. No value changes, but every statement writes a new row version, which is what a
+Each one runs `update heartbeat_runs set updated_at = updated_at` on each of the wave company's
+`running` rows, one row per statement, back to back. One row per statement matches a run-log
+append; a statement over every running row locked several rows at once and deadlocked with
+product transactions (40P01), which a real stream never does. No value changes, but every statement writes a new row version, which is what a
 fast stream does to a run row. Locally the race window between a snapshot and its row lock is well
 under a millisecond, so without pressure the race almost never fires; the writers stand in for a
 hosted database whose round trip widens that window. The writers stop before the R6 sweep;
@@ -570,10 +572,22 @@ At rest the harness reads each L1 task's runs from the wave database, and the T-
 
 `contention-db.test.ts` checks the knob itself on real PostgreSQL: with four writers, the
 pre-#20385 repeatable-read receipt write exhausted its four retries with 40001 in 8 of 8 attempts
-locally, and the current READ COMMITTED writer (`persistUsageReceipt`) committed all 8. A live L1
-wave needs the runner stall (20 failed deliveries over at least 45 s) to show
-`native_event_replay_conflict`; run it against the parent of the #20385 merge (red) and against
-master (green) with the command above.
+locally, and the current READ COMMITTED writer (`persistUsageReceipt`) committed all 8.
+
+Live waves on 2026-11-10 (command above, codex and claude, four tasks each):
+
+| Wave | Build | Receipt write 40001 in the server log | Tasks passed | Failures |
+| --- | --- | --- | --- | --- |
+| `w-20261110T040531-s20385` | #20385 parent `bf818280f2` | 117 | 1 of 4 | `adapter_failed`: 40001 exhausted in `createRunUsageRecorder`, `reserveRunBudget` and native finalization |
+| `w-20261110T044338-s20385` | master `8004ad069e` + harness | 2 | 1 of 4 | `adapter_failed`: 40001 in `createRunUsageRecorder`; deadlocks with the old multi-row writers |
+| `w-20261110T050818-s20386` | same build, one-row writers | 0 | 0 of 4 | every first run failed in `reserveRunBudget` before spawn (the log keeps only the failed SQL, not its cause); each accepted Retry then waited on `process_identity_missing` and never started a run |
+
+No wave reached the runner's commit stall (20 failed deliveries over at least 45 s), so none showed
+`native_event_replay_conflict`: on the parent a receipt write failed 117 times but a later delivery
+committed. #20385 removed the receipt-write failures; the other repeatable-read accounting writers
+that lock the run row still fail under the same contention on master. The contention check
+(`contention_produced`) fired only on tasks whose runs failed before any usage was reported; a run
+that finished produced 208 log events and 20 receipts, well above the 40 and 6 thresholds.
 
 ## Universal checks (U1–U4)
 
@@ -582,7 +596,7 @@ its workload. They catch a stuck or misleading task that no scenario anticipated
 
 | Rule | Fails when | Bound (env override) |
 | --- | --- | --- |
-| U1 liveness | a non-terminal task has neither a live owner (a running run with recent evidence, a run queued within the queue bound, a retry timer, a system recovery action) nor a visible, actionable item (Retry, a question or `userAction`, a failed notice, a board recovery action, an execution blocker, `blocked` or `in_review`) for longer than the bound, counting only time with the server ready | 3 min ownerless (`RESTART_CHAOS_U1_ORPHAN_SECONDS`); a run counts as an owner for 5 min of queueing (`RESTART_CHAOS_U1_QUEUED_SECONDS`) |
+| U1 liveness | a non-terminal task has neither a live owner (a running run with recent evidence, a run queued within the queue bound, a scheduled retry, an accepted Retry that waits on the system within the queue bound, a system recovery action) nor a visible, actionable item (Retry, a question or `userAction`, a failed notice, a board recovery action, an execution blocker, `blocked` or `in_review`; none of these count while an accepted Retry waits on the system) for longer than the bound, counting only time with the server ready | 3 min ownerless (`RESTART_CHAOS_U1_ORPHAN_SECONDS`); a queued run or an accepted Retry's wait counts as an owner for 5 min (`RESTART_CHAOS_U1_QUEUED_SECONDS`) |
 | U2 retry loop | more than N consecutive failed runs with the same status and code while the issue status stays the same | 3 (`RESTART_CHAOS_U2_SAME_FAILURE_RUNS`) |
 | U3 diagnosable | a failed run has no code or a generic one (`adapter_failed`, `unknown`, `error`, ...), its stored error is empty or names only a bare cause (`last cause: Error`), or a recovery action's cause or next action is empty or bare | none |
 | U4 stale notice | a Retry or failed notice stays on a task after its latest run succeeded, longer than the bound or at rest | 60 s (`RESTART_CHAOS_U4_STALE_SECONDS`) |
@@ -592,8 +606,8 @@ U1, U2 and U4 fail the task (signature `U<n>:...`). U3 is a warning: it is repor
 never fails a task. U3 reads run error text and recovery-action causes from the wave database at
 wave end, because the board's run list hides most error text.
 
-The rules and bounds come from an audit of the saved evidence of 74 waves (1,592 tasks, 1,465 of
-them passing R1–R6 and T; 28 waves where every task passed), run with:
+The rules and bounds come from an audit of the saved evidence of 79 waves (1,620 tasks, 1,483 of
+them passing R1–R6 and T; 30 waves where every task passed), run with:
 
 ```sh
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/universal-audit.ts <results dir> [...]
@@ -601,17 +615,18 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/universal-audit.ts <r
 
 | Rule | Flagged tasks | On passing tasks | On all-pass waves |
 | --- | --- | --- | --- |
-| U1 | 7 | 0 | 0 |
+| U1 | 17 | 0 | 0 |
 | U2 | 1 | 0 | 0 |
-| U3 | 22 | 3 | 0 |
+| U3 | 30 | 3 | 0 |
 | U4 | 0 | 0 | 0 |
 
-On passing tasks the longest ownerless stretch was 19 s and the longest queue wait 136 s (p99 40 s),
-and no failure repeated more than twice; the bounds leave about 9×, 2× and one more repeat of
-headroom. U1 flags a C1 task that sat 181 s in `todo` with a resolved interruption (it also failed
+On passing tasks the longest ownerless stretch was 19 s, the longest queue wait 136 s (p99 40 s),
+the longest accepted-Retry wait 278 s, and no failure repeated more than twice; with the 3-minute
+ownerless clock on top, a queued run or a Retry wait is flagged after 8 minutes. U1 flags a C1 task that sat 181 s in `todo` with a resolved interruption (it also failed
 R5), and six R1 tasks in three waves whose run stayed `queued` for 8 minutes while the issue still
-showed a retry row: the #20361 shape, which those waves graded only as a late R1. A retry row counts
-as a live timer only until its run is dispatched. U2 flags a claude task that failed four times in a
+showed a retry row, which those waves graded only as a late R1. A retry row counts as a live timer
+only until its run is dispatched. It also flags ten tasks whose accepted Retry waited on the system
+for 8 minutes without starting a run (five in saved waves, five in the L1 waves above). U2 flags a claude task that failed four times in a
 row with `adapter_failed`. Every U3
 flag is `adapter_failed`, including three tasks that passed after a retry, which is why U3 stays a
 warning until `adapter_failed` names its cause. The audit saw only failure codes; the error-text
