@@ -2556,6 +2556,19 @@ for (const operation of githubBotOperations) {
 registry.registerPath({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/provider-work/{actionId}/retry",
+  tags: ["chat-channels"],
+  summary: "Retry retained provider receipt work",
+  description: "Requires current company connection-management access. Rearms only the same authorized retained Slack receipt or cleanup responsibility. Does not create a new form or spend a trigger. Revoked, foreign, or changed ownership is refused.",
+  request: { params: z.object({ endpointId: z.string().uuid(), actionId: z.string().uuid() }), body: jsonBody(z.object({}).strict()) },
+  responses: { 200: r.ok(z.object({ actionId: z.string().uuid(), state: z.enum(["scheduled", "already_scheduled", "complete"]) })),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
   method: "patch",
   path: "/api/chat-endpoints/{endpointId}",
   tags: ["chat-channels"],
@@ -7310,6 +7323,17 @@ registry.registerPath({
   description: "With idleSleepSafety=1, the exact current idle owner can retire idle native sessions before a fresh safety inspection. Busy or failed retirement prevents sleep. Native retirement is skipped for diagnostic inspection. scheduledWake=domain-deadlines-v1 requires signed Cloud authority with idleCapabilities.deadlineCatalog=domain_deadlines_v1 and returns a mandatory deadlineProof even when no wake is scheduled. Cloud must acknowledge any returned durable alarm and revalidate the report before stopping the instance.",
   request: { query: z.object({ upgradeReadiness: z.literal("1").optional().describe("Instance operators can request a bounded aggregate report of current remote-runner recovery eligibility. This read does not hold admission or detach runners."), ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional().describe("Instance admins can request a conservative durable-work report while admission and ingress are held. Unknown or present work must prevent automatic sleep."), scheduledWake: z.enum(["1", "2", "domain-deadlines-v1"]).optional().describe("Cloud control callers may request routine deadlines (1), routines and issue monitors (2), or the domain deadline catalog (domain-deadlines-v1). The domain catalog requires signed Cloud authority with idleCapabilities.deadlineCatalog=domain_deadlines_v1 and returns a deadlineProof even when no wake is scheduled. Cloud must acknowledge any returned durable alarm and revalidate this report before stopping the instance.") }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/task-drain/status",
+  tags: ["instance"],
+  summary: "Read task-drain status with body-bound signed Cloud idle capabilities",
+  description: "Requires the task-drain:read-body Cloud control assertion bound to the exact raw JSON SHA256. The body alone and browser administrator access do not grant this authority. Uses the same status/idle-safety reader and owner/scheduled-wake semantics as GET; does not start or stop a drain.",
+  request: { body: jsonBody(z.object({ idleCapabilities: z.unknown().describe("Complete closed incoming-wake and deadline catalogs, validated by the existing capability parser after signature and exact raw-body binding") }).strict()),
+    query: z.object({ upgradeReadiness: z.literal("1").optional(), ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional(), scheduledWake: z.enum(["1", "2", "domain-deadlines-v1"]).optional() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
