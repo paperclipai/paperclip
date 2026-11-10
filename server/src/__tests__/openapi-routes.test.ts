@@ -78,6 +78,7 @@ const apiPrefixes: Record<string, string> = {
   "issues.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
+  "link-previews.ts": "/api",
   "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
   "openapi.ts": "/api",
@@ -1298,6 +1299,17 @@ describe("openapi routes", () => {
     const base = "/api/companies/{companyId}/agents/{agentId}/dot-binding";
     expect(spec.paths[base].post.requestBody.content["application/json"].schema.properties.replaceBindingId).toMatchObject({ type: "string", format: "uuid" });
     expect(spec.paths[base + "/event-test"].post.requestBody.content["application/json"].schema.properties.bindingId).toMatchObject({ type: "string", format: "uuid" });
+  });
+
+  it("documents project environment compatibility and creation selection", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/companies/{companyId}/project-environments"].get;
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
+    expect(operation.responses["403"]).toBeDefined();
+    expect(operation.responses["200"].content["application/json"].schema.properties).toHaveProperty("defaultEnvironmentId");
+    const creation = spec.paths["/api/companies/{companyId}/projects"].post;
+    expect(creation.requestBody.content["application/json"].schema.properties.environmentId).toMatchObject({ type: "string", format: "uuid" });
+    expect(creation.requestBody.content["application/json"].schema.properties.expectedStorageProviderPluginId).toMatchObject({ type: "string", nullable: true });
   });
 
   it("documents board-only repository discovery and selection", () => {

@@ -36,7 +36,8 @@ import { adoptHistoricalWorkspaceRecoveries } from "./workspace-recovery-backfil
 import { canAdoptNativeSourceRetention, retainNativeRecoverySource, settleRecoveredNativeSourceRetention } from "./native-runtime/native-source-retention.js";
 import { saveRemoteWorkspace } from "./remote-workspaces.js";
 import { continueFromLastSavedWorkspace, isUnverifiableSourceFailure, recordRetainedSourceFallbackDeferral, settleExhaustedRetainedHold } from "./workspace-recovery-fallback.js";
-import { retainedSourceFallbackDueCondition, stopProofRearmDueCondition } from "./workspace-recovery-fallback-discovery.js";
+import { capturePolicyRearmDueCondition, retainedSourceFallbackDueCondition, stopProofRearmDueCondition } from "./workspace-recovery-fallback-discovery.js";
+import { rearmExhaustedCapturePolicy } from "./workspace-recovery-capture-policy.js";
 import { rearmExhaustedStopProof } from "./workspace-recovery-stop-proof.js";
 import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-settlement.js";
 
@@ -208,6 +209,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
     && await settleExhaustedRetainedHold(input, initial, { fallback: !canAdoptNativeSourceRetention(initial) })) return;
   // An exhausted wait for stop proof is re-armed, bounded, once the run is over.
   if (initial?.state === "exhausted" && await rearmExhaustedStopProof(db, input, initial))
+    initial = await loadSystemRecovery(db, input);
+  // A save exhausted under an older capture policy is retried once under the current one.
+  if (initial?.state === "exhausted" && await rearmExhaustedCapturePolicy(db, input, initial))
     initial = await loadSystemRecovery(db, input);
   if (initial?.state === "exhausted" && !canAdoptNativeSourceRetention(initial)) {
     // A budget spent before this hold existed still names its receipt, so the
@@ -628,7 +632,8 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
           and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'))` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
         or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput}
-        or ${retainedSourceFallbackDueCondition(Date.now())} or ${stopProofRearmDueCondition(Date.now())})` : undefined,
+        or ${retainedSourceFallbackDueCondition(Date.now())} or ${stopProofRearmDueCondition(Date.now())}
+        or ${capturePolicyRearmDueCondition(Date.now())})` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
         and (${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
           or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${Date.now()}::bigint)))`,

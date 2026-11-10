@@ -4078,7 +4078,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (isMobile) setMobilePropsOpen(true);
     }
   }, [pluginPanels, taskPanelAccountScope, issue?.companyId, issue?.id, openTaskSidePanel, isMobile]);
-  const browserQuery = useTaskBrowsers(issue?.id);
+  const browserQuery = useTaskBrowsers(issue?.id, issue?.companyId);
   const { openBrowserId, openBrowser: setOpenBrowserId, acknowledgeBrowserOpened: handleBrowserOpened } =
     useBrowserArrivals(currentUserId ?? "anonymous", issue?.id, browserQuery.data);
   useEffect(() => {
@@ -5951,6 +5951,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const conversationAgent = conversation?.agent ?? agents?.find(agent => agent.id === issue?.conversationAgentId);
+  const breadcrumbParent = issue?.ancestors?.[0];
+  const breadcrumbParentRef = breadcrumbParent && !isLockedIssueStub(breadcrumbParent)
+    ? breadcrumbParent.identifier ?? breadcrumbParent.id
+    : null;
+  const rememberBreadcrumbParent = useCallback(() => {
+    if (!breadcrumbParentRef) return;
+    rememberIssueDetailLocationState(
+      breadcrumbParentRef,
+      resolvedIssueDetailState ?? location.state,
+      location.search,
+    );
+  }, [breadcrumbParentRef, resolvedIssueDetailState, location.state, location.search]);
   useEffect(() => {
     if (conversationAgent) {
       setBreadcrumbs([{ label: "Chat" }]);
@@ -5958,6 +5970,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     }
     setBreadcrumbs([
       sourceBreadcrumb,
+      ...(breadcrumbParent ? [{
+        label: isLockedIssueStub(breadcrumbParent) ? "Private task" : breadcrumbParent.title,
+        identifier: breadcrumbParent.identifier ?? undefined,
+        href: isLockedIssueStub(breadcrumbParent)
+          ? undefined
+          : createIssueDetailPath(breadcrumbParent.identifier ?? breadcrumbParent.id),
+        onClick: isLockedIssueStub(breadcrumbParent) ? undefined : rememberBreadcrumbParent,
+        control: isLockedIssueStub(breadcrumbParent)
+          ? <LockedIssueChip identifier={isMobile ? null : breadcrumbParent.identifier} />
+          : undefined,
+        controlKey: isLockedIssueStub(breadcrumbParent) ? `private-parent:${isMobile}` : undefined,
+      }] : []),
       {
         // The status glyph (leading) already conveys in-progress/live state;
         // no redundant 🔵 emoji prefix on the title.
@@ -5972,6 +5996,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     coordinatorWorkspaceEnabled,
     breadcrumbTitle,
     breadcrumbIdentifier,
+    breadcrumbParent,
+    isMobile,
+    rememberBreadcrumbParent,
     hasLiveRuns,
     setBreadcrumbs,
     sourceBreadcrumb.href,

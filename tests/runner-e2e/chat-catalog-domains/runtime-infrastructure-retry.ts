@@ -79,7 +79,7 @@ export function gradeInfrastructureRetry(value: unknown) {
   return c.result();
 }
 export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retry-exhausted", exhaustedNativeInfrastructure, gradeInfrastructureRetry, {
-  oracleVersion: "paperclip.chat-catalog.runtime.retry-exhausted.v4", authentication: "human-session", expectedHumanMessageCount: 3, expectedRunCount: 5, attemptTimeoutMs: 1_800_000,
+  oracleVersion: "paperclip.chat-catalog.runtime.retry-exhausted.v5", authentication: "human-session", expectedHumanMessageCount: 3, expectedRunCount: 5, attemptTimeoutMs: 1_800_000,
   setupPolicy: runtimeInfrastructureCases[0]!.setupPolicy, verifySetup: runtimeInfrastructureCases[0]!.verifySetup,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { failed: 1, succeeded: 4 } },
   sourceFiles: ["chat-catalog-domains/runtime-infrastructure-retry.ts", "chat-catalog-domains/runtime-infrastructure.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-native-fault.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "../../server/src/services/hot-restart.ts", "../../server/src/vendor/paperclip-runner/index.ts", "chat-scenarios/recovery.yaml"],

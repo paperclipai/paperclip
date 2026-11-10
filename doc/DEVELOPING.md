@@ -551,6 +551,28 @@ no remote metadata requests. Run its light/dark desktop/mobile checks with:
 STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test inline-links.spec.ts --config=tests/storybook-visual/playwright.config.ts --project=stories
 ```
 
+**Link previews** mounts the same Markdown renderer with its production preview
+provider. A delayed hover or keyboard focus requests PR metadata. Repeated PR URLs,
+including diff links and fragments, share a viewer/company-scoped query. The card
+stays aligned with the link, and the exact navigation URL stays intact. The stories
+simulate the API response for open, merged, conflicts, draft, closed, loading,
+unavailable and failed reads, with a narrow long-title example. Run:
+
+```sh
+STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test link-previews.spec.ts --config=tests/storybook-visual/playwright.config.ts --project=stories
+```
+
+The board-only `GET /api/companies/:companyId/link-preview?url=...` is optional
+enrichment, independent of the External Objects experiment. Its GitHub adapter
+uses the viewer's eligible managed connection, then the existing company/public
+credential path only when no managed connection is configured. Personal results
+remain in bounded, process-local viewer/company caches and are never persisted as
+company external objects. Successful responses live for one minute; unavailable
+responses use a short negative cache or GitHub's retry window. Reads have an
+abortable deadline and a bounded concurrency budget. Nothing polls while idle.
+The browser neither retries these reads nor refreshes them on window focus.
+These stories do not verify live GitHub authentication.
+
 **Task chat → Failure notices** covers compact run errors and adjacent recovery
 notices in both presentation modes, with expanded details, fixture retry
 callbacks (including the legacy run retry when recovery retry is unavailable),
@@ -2374,8 +2396,7 @@ for storage, import, retention, and lifecycle regression checks. These checks do
 not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
 the existing persistent volume until the other instance data paths and deploy
 handoff are separately qualified. See the
-[implementation contract](SPEC-implementation.md#experimental-native-remote-workspace-authority-2026-10-30)
-and [snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
+[snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
 
 ## Agent Artifact Uploads
 
@@ -5208,3 +5229,33 @@ failure remains retryable even when the clone directory already exists. Later
 workspace saves retain repository coverage only for directories present in the
 captured archive. Deleted checkouts lose coverage and can be acquired again.
 A failed batch upload marks the affected repository rows as needing repair.
+
+### Native Runner credential refreshes
+
+Core handles PRP `auth.credentials.updated` notifications for managed Codex and
+Grok subscriptions across local, SSH, sandbox, and supported plugin Runner tasks.
+After validating the company, agent, run, session, and Runner binding, it exports
+the selected account and writes newer credentials directly to the tenant secret.
+Grant, secret, version-selector, session-epoch, and provider freshness checks are
+shared across execution targets. Explicit reconnects and revoked grants win over
+old refreshes. Providers that do not emit this event keep their existing flow;
+operator-owned homes do not acquire tenant writeback authority.
+
+The transport's credential handler rebinds with each warm invocation, including
+its current target exporter. Idle refreshes and recovered controller handles do
+not depend on a completed invocation's temporary home. Detached handles cannot
+process new updates. Native/ACPX Codex and Grok use bounded, descriptor-based file
+reads; SSH and sandbox readers use the Node runtime already required by remote
+isolated-home preparation. Plugin tasks use their account-bound export operation.
+
+A notification is acknowledged only after writeback succeeds or its authority is
+intentionally discarded. Export and database failures replay through PRP. An
+unchanged managed-subscription turn does no credential export or database write.
+Retirement keeps a final export for legacy and recovery paths; a failed final
+export retains the provider's credential files for retry. After verified provider
+exit, ACPX Codex and Grok preserve a private `auth-refresh.json` handoff before
+scrubbing `auth.json`; Core removes it after retirement writeback. Plugin retirement also
+records rotation, unchanged credential, changed binding, undispatched task, or a
+null export. No secret bytes appear in PRP events or lease metadata. The plugin
+provider must support live account-bound exports before enabling the paired Core
+handler.

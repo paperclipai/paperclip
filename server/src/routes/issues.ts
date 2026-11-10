@@ -5822,7 +5822,7 @@ export function issueRoutes(
     // watched subtree. This must be evaluated before the base assignee-ownership
     // boundary below: that boundary denies an agent mutating an issue owned by a
     // different agent, which is exactly the watchdog's primary job
-    // (SPEC-implementation §9.9 — comment, transition, reassign within the
+    // (`doc/TASK-WATCHDOG.md`, "Authority contract" — comment, transition, reassign within the
     // watched subtree). The watchdog scope can only widen access to the watched
     // subtree; downstream status-transition, assignment, recovery, and budget
     // guards in the route handlers still apply.
@@ -6247,9 +6247,10 @@ export function issueRoutes(
       });
     }
     // Resolving an interaction on another run's issue is a cross-issue mutation
-    // like a comment or a PATCH, so it consumes the same per-run budget (§9.3,
-    // §9.8.1). This runs last: company/resource access, run attribution,
-    // containment, and the audience decision have all already passed, and the
+    // like a comment or a PATCH, so it consumes the same per-run budget (see
+    // `doc/agent-permission-defaults.md`). This runs last: company/resource
+    // access, run attribution, containment, and the audience decision have all
+    // already passed, and the
     // terminal interaction mutation plus every child-task, continuation,
     // activity, tool, and wake side effect is still downstream. Same-issue
     // resolutions short-circuit inside the counter transaction and are not
@@ -10247,7 +10248,14 @@ export function issueRoutes(
     // The receipt commits before dispatch. Maintenance redelivers it after a
     // crash or a lost response; this nudge only reduces perceived latency.
     const chatActionId = "chatActionId" in receipt ? receipt.chatActionId : undefined;
-    if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
+    const finalizeRunId = "finalizeRunId" in receipt ? receipt.finalizeRunId : undefined;
+    if (finalizeRunId) {
+      // The saved result is applied again; no provider run starts. The
+      // result-commit worker repeats this if the process stops first.
+      const { refinalizeSavedNativeResult } = await import("../services/native-runtime/exhausted-finalization-retry.js");
+      void refinalizeSavedNativeResult(db, { companyId: issue.companyId, runId: finalizeRunId }).catch(err =>
+        logger.warn({ err, issueId: issue.id, runId: finalizeRunId }, "Saved result finalization remains queued"));
+    } else if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Connected task Retry remains queued"));
     else if (receipt.accepted && receipt.requestId) void heartbeat.resumeTaskRetry(issue.companyId, receipt.requestId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Task Retry remains queued"));
