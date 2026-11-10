@@ -13,8 +13,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { AnnouncementCard } from "./AnnouncementCard";
 
 // Includes the command palette, sheets and dialogs created outside DialogContext.
-const MODAL_SELECTOR = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [aria-modal="true"]:not([data-state="closed"]), dialog[open]';
-function useModalOpen(enabled: boolean) {
+export const MODAL_SELECTOR = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [aria-modal="true"]:not([data-state="closed"]), dialog[open]';
+export function useModalOpen(enabled: boolean) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!enabled) return;
