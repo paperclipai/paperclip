@@ -1,10 +1,9 @@
 import { nativeTaskConstraints } from "../backends/runtime-context.js";
-import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
 import { describe, expect, it } from "vitest";
 
-import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, type NativeExecutionInputV1 } from "./native-execution.js";
+import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10, type NativeExecutionInputV1 } from "./native-execution.js";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
@@ -12,6 +11,7 @@ import {
   canonicalNativeRuntimeContextDigest,
   composeNativeSystemInstructions,
   nativeRuntimePromptDigest,
+  type NativeRuntimeContextSnapshot,
 } from "./runtime-context.js";
 
 const input: NativeExecutionInputV1 = {
@@ -82,6 +82,7 @@ describe("NativeExecutionInputV1", () => {
         runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
       }));
       const recovered = parseNativeExecutionInput(persisted);
+      if (!("runtimeContext" in recovered)) throw new Error("Expected a runtime context");
       expect(recovered.runtimeContext).toEqual(persisted.runtimeContext);
       expect(parseNativeExecutionInput(recovered)).toEqual(recovered);
     },
@@ -89,7 +90,7 @@ describe("NativeExecutionInputV1", () => {
 
   it("parses v3 immutable runtime context without changing the model task envelope", () => {
     const digest = "0".repeat(64);
-    const context = {
+    const context: Omit<NativeRuntimeContextSnapshot, "aggregateDigest"> = {
       prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
       instructions: {
         entryPath: "AGENTS.md",
@@ -102,7 +103,7 @@ describe("NativeExecutionInputV1", () => {
         bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/skills/research", fileCount: 2, totalBytes: 42 },
       }],
       mcp: { assignmentSetId: "sha256:test", digest, bindingId: "native-mcp:run-1" },
-    } as const;
+    };
     const preconfigured = {
       ...input, schema: "paperclip.native-execution-input.v7", homeMode: "preconfigured",
       provider: { kind: "codex", model: null, approvalPolicy: "never" },
@@ -130,6 +131,7 @@ describe("NativeExecutionInputV1", () => {
       runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
     });
     expect(parsed.schema).toBe("paperclip.native-execution-input.v3");
+    if (!("runtimeContext" in parsed)) throw new Error("Expected a runtime context");
     const envelope = buildNativeModelEnvelope(parsed);
     expect(envelope.task).toEqual(buildNativeModelEnvelope(input).task);
     expect(envelope.completionContract).toEqual(buildNativeModelEnvelope(input).completionContract);
@@ -194,6 +196,13 @@ describe("NativeExecutionInputV1", () => {
     });
     expect(withEffort.provider).toMatchObject({ kind: "codex", reasoningEffort: "ultra" });
     expect(parseNativeExecutionInput(withEffort)).toEqual(withEffort);
+    const disabledSearch = parseNativeExecutionInput({ ...withEffort, provider: { ...withEffort.provider, webSearch: "disabled" } });
+    expect(disabledSearch.provider).toHaveProperty("webSearch", "disabled");
+    expect(parseNativeExecutionInput(JSON.parse(JSON.stringify(disabledSearch)))).toEqual(disabledSearch);
+    for (const webSearch of [true, false, "live", "cached", null]) {
+      expect(() => parseNativeExecutionInput({ ...withEffort, provider: { ...withEffort.provider, webSearch } })).toThrow("webSearch");
+    }
+
     expect(() => parseNativeExecutionInput({
       ...withEffort,
       provider: { kind: "codex", model: "gpt-6-astra", approvalPolicy: "on-request", reasoningEffort: "impossible" },
@@ -271,7 +280,7 @@ describe("NativeExecutionInputV1", () => {
   });
 
   it("deserializes pre-provider Codex state as Codex", () => {
-    const legacy = structuredClone(input) as Record<string, unknown>;
+    const legacy: Record<string, unknown> = { ...structuredClone(input) };
     delete legacy.provider;
     expect(parseNativeExecutionInput(legacy).provider).toEqual({
       kind: "codex",
@@ -428,20 +437,21 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("does not match");
   });
 
-  it.each([17, 43, 44] as const)("decodes saved Copilot v%s input after the current source declaration advances", (version) => {
-    const historical = JSON.parse(readFileSync(new URL(`../../test/fixtures/copilot-profile-v${version}-identity.json`, import.meta.url), "utf8"));
+  // Old saved inputs decode with their own digest; admission refuses them later.
+  it.each([
+    [17, `sha256:${"1".repeat(64)}`],
+    [91, "sha256:e4383c48ad21898dfe38609fdc8c0fa9a76dfcb8582a64b5415f107846904aa9"],
+  ] as const)("decodes saved Copilot v%s input after the current profile advances", (version, commandDigest) => {
     const { permissionPolicy, qualificationStatus: _status, ...currentProfile } = QUALIFIED_ACPX_PROFILES.copilot;
     const provider = { kind: "acpx", agent: "copilot", model: "explicit-provider-model", permissionPolicy,
-      profile: { ...currentProfile, agentProfileVersion: version, commandDigest: historical.commandDigest } };
+      profile: { ...currentProfile, agentProfileVersion: version, commandDigest } };
     const parsed = parseNativeExecutionInput({ ...input, session: { ...input.session, driverKind: "acpx_runtime" }, provider });
     expect(parsed.provider).toEqual(provider);
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
   });
 
   it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40] as const)("decodes closed Copilot profile history at version %s without admitting a future version", (agentProfileVersion) => {
-    const { qualificationModel: _qualificationModel, reportedModelId: _reportedModelId,
-      permissionPolicy, qualificationStatus: _qualificationStatus, modelPolicy: _modelPolicy,
-      ...snapshot } = QUALIFIED_ACPX_PROFILES.copilot;
+    const { permissionPolicy, qualificationStatus: _qualificationStatus, ...snapshot } = QUALIFIED_ACPX_PROFILES.copilot;
     const provider = {
       kind: "acpx", agent: "copilot", model: "gpt-5.6-luna", permissionPolicy,
       profile: { ...snapshot, agentProfileVersion },
@@ -465,11 +475,10 @@ describe("NativeExecutionInputV1", () => {
   it.each(Object.values(QUALIFIED_ACPX_PROFILES))(
     "admits the current $agent profile through the native execution boundary",
     (declaration) => {
-      const { qualificationModel, reportedModelId: _reported, permissionPolicy,
-        modelPolicy: _modelPolicy, qualificationStatus: _status, ...profile } = declaration;
+      const { permissionPolicy, qualificationStatus: _status, ...profile } = declaration;
       const provider = {
         kind: "acpx", agent: declaration.agent,
-        model: qualificationModel || "explicit-provider-model",
+        model: "explicit-provider-model",
         permissionPolicy, profile,
         ...(declaration.agent === "pi" ? { piThinkingLevel: "low" } : {}),
       };
@@ -484,7 +493,7 @@ describe("NativeExecutionInputV1", () => {
   );
 
   it("defaults legacy lifecycle state to per-turn and validates warm timeouts", () => {
-    const legacy = structuredClone(input) as Record<string, unknown>;
+    const legacy: Record<string, unknown> = { ...structuredClone(input) };
     delete (legacy.session as Record<string, unknown>).lifecyclePolicy;
     expect(parseNativeExecutionInput(legacy).session.lifecyclePolicy).toEqual({
       mode: "per_turn",
@@ -556,36 +565,64 @@ describe("NativeExecutionInputV2 planning", () => {
       planningContext: null,
     })).toMatchObject({ task: { workMode: "planning" }, executionMode: "default" });
   });
+
+  const cloudContext: Omit<NativeRuntimeContextSnapshot, "aggregateDigest"> = {
+    prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+    instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest: "0".repeat(64), manifestDigest: "0".repeat(64), rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 1 } },
+    skills: [], mcp: { assignmentSetId: "none", digest: "0".repeat(64), bindingId: null },
+  };
+  const cloudPlanning = {
+    ...planning, schema: "paperclip.native-execution-input.v5",
+    provider: { kind: "cursor_cloud", model: "explicit-cloud-model", cursorCloud: { schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/example/fixture" }] } },
+    session: { ...planning.session, driverKind: "cursor_cloud_api" },
+    runtimeContext: { ...cloudContext, aggregateDigest: canonicalNativeRuntimeContextDigest(cloudContext) },
+  } as const;
+
+  it("preserves Cursor Cloud semantic planning and its pinned revision in the model envelope", () => {
+    const parsed = parseNativeExecutionInput(cloudPlanning);
+    expect(parsed).toMatchObject({ provider: { kind: "cursor_cloud" }, task: { workMode: "planning" }, executionMode: "plan", planningContext: planning.planningContext });
+    expect(buildNativeModelEnvelope(parsed)).toMatchObject({ executionMode: "plan", task: { workMode: "planning" }, planningContext: planning.planningContext });
+    expect(parseNativeExecutionInput(JSON.parse(JSON.stringify(parsed)))).toEqual(parsed);
+  });
+
+  it.each([
+    ["missing context", { planningContext: null }, "planningContext is required"],
+    ["standard task", { task: { ...cloudPlanning.task, workMode: "standard" } }, "requires planning work mode"],
+    ["default with context", { executionMode: "default" }, "only valid in plan execution mode"],
+    ["warm session", { session: { ...cloudPlanning.session, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 1000 } } }, "Cursor Cloud requires"],
+  ])("keeps Cursor Cloud planning validation closed for %s", (_name, change, error) => {
+    expect(() => parseNativeExecutionInput({ ...cloudPlanning, ...change })).toThrow(error as string);
+  });
 });
 
-describe("NativeExecutionInputV2 ask mode", () => {
-  it("round-trips ask mode as a default execution without planning context", () => {
+describe.each(["ask", "skill_test"])("NativeExecutionInputV2 %s mode", (workMode) => {
+  it("round-trips the restricted mode as a default execution without planning context", () => {
     const parsed = parseNativeExecutionInput({
       ...input,
       schema: "paperclip.native-execution-input.v2",
       executionMode: "default",
-      task: { ...input.task, workMode: "ask" },
+      task: { ...input.task, workMode },
       planningContext: null,
     });
     expect(parsed).toMatchObject({
       schema: "paperclip.native-execution-input.v2",
       executionMode: "default",
-      task: { workMode: "ask" },
+      task: { workMode },
     });
     expect(buildNativeModelEnvelope(parsed)).toMatchObject({
       schema: "paperclip.native-model-envelope.v2",
-      task: { workMode: "ask" },
+      task: { workMode },
       executionMode: "default",
       planningContext: null,
     });
   });
 
-  it("rejects plan execution for ask mode", () => {
+  it("rejects plan execution for the restricted mode", () => {
     expect(() => parseNativeExecutionInput({
       ...input,
       schema: "paperclip.native-execution-input.v2",
       executionMode: "plan",
-      task: { ...input.task, workMode: "ask" },
+      task: { ...input.task, workMode },
       planningContext: {
         documentId: null,
         baseRevisionId: null,
@@ -602,12 +639,12 @@ describe("NativeExecutionInputV2 ask mode", () => {
 describe("native task context ownership", () => {
   function currentInput() {
     const digest = "0".repeat(64);
-    const context = {
+    const context: Omit<NativeRuntimeContextSnapshot, "aggregateDigest"> = {
       prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
       instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 1 } },
       skills: [],
       mcp: { assignmentSetId: "none", digest, bindingId: null },
-    } as const;
+    };
     return parseNativeExecutionInput({
       ...input,
       schema: NATIVE_EXECUTION_INPUT_SCHEMA,
@@ -619,8 +656,7 @@ describe("native task context ownership", () => {
     });
   }
 
-  const { qualificationModel: _copilotQualificationModel, reportedModelId: _copilotReportedModelId,
-    permissionPolicy: _copilotPermissionPolicy, qualificationStatus: _copilotQualificationStatus, modelPolicy: _copilotModelPolicy,
+  const { permissionPolicy: _copilotPermissionPolicy, qualificationStatus: _copilotQualificationStatus,
     ...copilotSnapshot } = QUALIFIED_ACPX_PROFILES.copilot;
 
   it.each([
@@ -653,6 +689,7 @@ describe("native task context ownership", () => {
       } : {}),
     }));
     const recovered = parseNativeExecutionInput(persisted);
+    if (!("runtimeContext" in recovered)) throw new Error("Expected a runtime context");
     expect(recovered.runtimeContext).toEqual(context);
     expect(recovered.provider).toEqual(provider);
     expect(recovered.session.driverKind).toBe(driverKind);
@@ -722,6 +759,7 @@ describe("native task context ownership", () => {
 
     const fullResume = buildNativeModelEnvelope(parsed, { resumedSession: true });
     expect(fullResume.schema).toBe(envelopeSchema);
+    if (!("task" in fullResume)) throw new Error("Expected a full resume envelope");
     expect(fullResume.task.prompt).toBe(parsed.task.prompt);
     expect(fullResume.task.prompt).not.toContain(guidance);
 
@@ -759,6 +797,7 @@ describe("native task context ownership", () => {
       completionContract: { ...execution.completionContract, contract },
       completionSources: { promptSha256: createHash("sha256").update(execution.task.prompt).digest("hex"), contractRevision: contract.revision, criteria: [{ id: "objective", source }] },
     });
+    if (completeInput.schema !== NATIVE_EXECUTION_INPUT_SCHEMA) throw new Error("Expected a v5 execution input");
     const before = structuredClone(completeInput.completionContract);
     const envelope = buildNativeModelEnvelope(completeInput);
     expect(envelope.completionContract.criteria).toEqual([
@@ -778,7 +817,7 @@ describe("native task context ownership", () => {
 
 
 describe("Claude effort input v9", () => {
-  const { permissionPolicy: _permission, qualificationModel: _model, reportedModelId: _reported, ...profile } = QUALIFIED_ACPX_PROFILES.claude;
+  const { permissionPolicy: _permission, ...profile } = QUALIFIED_ACPX_PROFILES.claude;
   const digest = "0".repeat(64);
   const context = { prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
     instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 1 } },
@@ -815,5 +854,54 @@ describe("Claude effort input v9", () => {
     }
     expect(() => parseNativeExecutionInput({ ...current, provider: { ...current.provider, claudeEffort: "ultra" } })).toThrow("Claude effort");
     expect(() => parseNativeExecutionInput({ ...current, provider: { ...current.provider, agent: "codex", profile: QUALIFIED_ACPX_PROFILES.codex, claudeEffort: "high" } })).toThrow("Claude effort");
+  });
+});
+
+describe("Grok effort input v10", () => {
+  const { permissionPolicy: _permission, ...profile } = QUALIFIED_ACPX_PROFILES.grok;
+  const digest = "0".repeat(64);
+  const context = { prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+    instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 1 } },
+    skills: [], mcp: { assignmentSetId: "none", digest, bindingId: null } };
+  const current = { ...input, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V10, homeMode: "isolated", executionMode: "default", planningContext: null,
+    runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
+    session: { ...input.session, driverKind: "acpx_runtime" },
+    provider: { kind: "acpx", agent: "grok", model: "grok-4.7", permissionMode: "approve-all", profile } };
+  it.each([undefined, true, false])("round trips Grok search policy %s and rejects it on other providers", grokDisableWebSearch => {
+    expect(parseNativeExecutionInput({ ...current, provider: { ...current.provider, grokDisableWebSearch } }).provider)
+      .toMatchObject(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch });
+    if (grokDisableWebSearch !== undefined) {
+      expect(() => parseNativeExecutionInput({ ...current, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V9, provider: { ...current.provider, grokDisableWebSearch } })).toThrow("grokDisableWebSearch");
+      expect(() => parseNativeExecutionInput({ ...current, provider: { ...current.provider, agent: "codex", profile: QUALIFIED_ACPX_PROFILES.codex, grokDisableWebSearch } })).toThrow("Grok web search");
+    }
+  });
+  it.each(["minimal", "low", "medium", "high", "xhigh"])("round trips explicit %s and retains the compact model envelope", grokEffort => {
+    const parsed = parseNativeExecutionInput({ ...current, provider: { ...current.provider, grokEffort } });
+    expect(parsed).toMatchObject({ schema: NATIVE_EXECUTION_INPUT_SCHEMA_V10, provider: { grokEffort } });
+    expect(buildNativeModelEnvelope(parsed).schema).toBe("paperclip.native-model-envelope.v3");
+    expect(JSON.stringify(buildNativeModelEnvelope(parsed))).not.toContain("grokEffort");
+  });
+  it("directs answered Grok v10 questions to the actual compact envelope on fresh and resumed turns", () => {
+    const response = { interactionId: "answer-1", kind: "ask_user_questions", response: {
+      status: "answered", result: { version: 1, answers: [{ questionId: "destination", optionIds: ["workspace"], otherText: "Use the task workspace." }] },
+    } };
+    const parsed = parseNativeExecutionInput({ ...current, provider: { ...current.provider, grokEffort: "high" }, interactionResponses: [response] });
+    const constraint = nativeTaskConstraints(parsed).find(value => value.includes("already authoritatively answered"));
+    expect(constraint).toContain("interactionResponses[0].response.result.answers");
+    expect(constraint).not.toContain("message.interactionResponses");
+    expect(constraint).not.toContain("Use the task workspace.");
+    for (const envelope of [buildNativeModelEnvelope(parsed), buildNativeModelEnvelope(parsed, { resumedSession: true })]) {
+      expect(envelope).toHaveProperty("interactionResponses.0.response.result.answers", response.response.result.answers);
+      expect(envelope).not.toHaveProperty("message");
+    }
+  });
+  it("keeps historical readers closed and rejects aliases and foreign effort", () => {
+    const { homeMode: _homeMode, ...historical } = current;
+    for (const schema of ["paperclip.native-execution-input.v4", NATIVE_EXECUTION_INPUT_SCHEMA]) {
+      expect(() => parseNativeExecutionInput({ ...historical, schema, provider: { ...current.provider, grokEffort: "high" } })).toThrow("grokEffort");
+      expect(parseNativeExecutionInput({ ...historical, schema }).schema).toBe(schema);
+    }
+    expect(() => parseNativeExecutionInput({ ...current, provider: { ...current.provider, grokEffort: "ultra" } })).toThrow("Grok effort");
+    expect(() => parseNativeExecutionInput({ ...current, provider: { ...current.provider, agent: "codex", profile: QUALIFIED_ACPX_PROFILES.codex, grokEffort: "high" } })).toThrow("Grok effort");
   });
 });

@@ -1,3 +1,5 @@
+import { readIssueSortParams, type IssueSort, type IssueSortField } from "./issue-sort";
+
 /** Ordered columns and token references shared by the proposed header and rows. */
 export const taskListColumns = [
   { id: "task", label: "Task", width: "var(--task-list-column-task)" },
@@ -12,11 +14,12 @@ export const taskListColumns = [
 ] as const;
 
 export type TaskListColumnId = (typeof taskListColumns)[number]["id"];
-export type TaskListSort = { column: TaskListColumnId; direction: "ascending" | "descending" };
+export type TaskListSort<Column extends string = TaskListColumnId> = { column: Column; direction: "ascending" | "descending" };
+export type TaskListOrder = TaskListSort<TaskListColumnId | "created" | "status" | "priority" | "workflow">;
 export type TaskListSortValue = string | number | null | undefined;
 export const allTaskListColumns: readonly TaskListColumnId[] = taskListColumns.map(column => column.id);
 export const defaultTaskListColumns: readonly TaskListColumnId[] = ["task", "taskId", "lastUpdated"];
-export const defaultTaskListSort: TaskListSort = { column: "taskId", direction: "ascending" };
+export const defaultTaskListSort: TaskListSort = { column: "lastUpdated", direction: "descending" };
 
 /** Task occupies two adjacent physical tracks: status/disclosure, then title. */
 export function taskListColumnStart(columns: readonly TaskListColumnId[], id: TaskListColumnId): number {
@@ -40,7 +43,7 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
  * Callers supply timestamps, task titles, names and sorted tag names,
  * never formatted relative dates or rendered React nodes.
  */
-export function sortTaskListItems<T>(items: readonly T[], sort: TaskListSort, value: (item: T, column: TaskListColumnId) => TaskListSortValue): T[] {
+export function sortTaskListItems<T, Column extends TaskListOrder["column"]>(items: readonly T[], sort: TaskListSort<Column>, value: (item: T, column: Column) => TaskListSortValue): T[] {
   return [...items].sort((a, b) => {
     const left = value(a, sort.column);
     const right = value(b, sort.column);
@@ -52,4 +55,31 @@ export function sortTaskListItems<T>(items: readonly T[], sort: TaskListSort, va
       : collator.compare(String(left), String(right));
     return sort.direction === "ascending" ? result : -result;
   });
+}
+
+const issueSortFieldByColumn = {
+  task: "title", lastUpdated: "updated", taskId: "taskId", createdBy: "createdBy",
+  assignee: "assignee", project: "project", parentTask: "parentTask", tags: "tags",
+  worktree: "worktree", created: "created", status: "status", priority: "priority", workflow: "workflow",
+} as const satisfies Record<TaskListOrder["column"], IssueSortField>;
+
+export function isTaskListColumnSort(sort: TaskListOrder): sort is TaskListSort {
+  return allTaskListColumns.some(column => column === sort.column);
+}
+
+export function taskListOrderToIssueSort(sort: TaskListOrder): IssueSort {
+  return { sortField: issueSortFieldByColumn[sort.column], sortDir: sort.direction === "ascending" ? "asc" : "desc" };
+}
+
+/** Read shared links even when the selected field has no visible table column. */
+export function readTaskListSortParams(params: URLSearchParams): TaskListOrder | undefined {
+  const sort = readIssueSortParams(params);
+  if (!sort) return undefined;
+  const column = (Object.keys(issueSortFieldByColumn) as TaskListOrder["column"][])
+    .find(column => issueSortFieldByColumn[column] === sort.sortField);
+  if (!column) return undefined;
+  return {
+    column,
+    direction: sort.sortDir === "asc" ? "ascending" : "descending",
+  };
 }

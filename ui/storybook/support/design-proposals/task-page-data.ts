@@ -7,7 +7,7 @@ const extraTasks: TaskListItem[] = [
   task(460, "Collect feedback on the refreshed task list", "todo"),
 ].map((issue, index) => {
   const data = columnData(issue, index === 2 ? "Design" : "Codex");
-  return { issue: data.issue, createdBy: data.creator, assignee: data.assignee, unread: index === 0 };
+  return { issue: data.issue, createdBy: data.creator, assignee: data.assignee, assigneeAgent: data.assigneeAgent, assigneeUserAvatarUrl: data.assigneeUserAvatarUrl, unread: index === 0 };
 });
 export const initialItems = [...reviewTaskItems, ...extraTasks];
 export const recentTasks = [...initialItems]

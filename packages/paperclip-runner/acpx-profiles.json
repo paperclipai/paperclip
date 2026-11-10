@@ -4,8 +4,18 @@
   "driverKind": "acpx_runtime",
   "protocolVersion": 1,
   "profiles": {
-    "grok": {
+    "antigravity": {
       "agentProfileVersion": 1,
+      "agentServerPackage": "native:antigravity-acp",
+      "agentServerVersion": "1.4.3",
+      "agentRuntimePackage": "native:antigravity-localharness",
+      "agentRuntimeVersion": "1.4.3",
+      "commandDigest": "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+      "requiresProviderPolicy": true,
+      "qualificationStatus": "pending"
+    },
+    "grok": {
+      "agentProfileVersion": 20,
       "agentServerPackage": "builtin:grok-acp",
       "agentServerVersion": "1",
       "agentRuntimePackage": "native:grok",
@@ -14,30 +24,30 @@
       "requiresProviderPolicy": false
     },
     "pi": {
-      "agentProfileVersion": 28,
+      "agentProfileVersion": 37,
       "agentServerPackage": "pi-acp",
       "agentServerVersion": "0.0.33",
       "agentRuntimePackage": "@earendil-works/pi-coding-agent",
       "agentRuntimeVersion": "1.0.0",
-      "commandDigest": "sha256:4918a4d5472d66b22b1ec642b68b5c60a8092a39c84ec1ab1c9ad0289cb8c68c",
+      "commandDigest": "sha256:42e186b921f36accf3087cf64986a88346dcdb0bdf78c2ef44a2c4f8abd3453a",
       "requiresProviderPolicy": true
     },
     "cursor": {
-      "agentProfileVersion": 15,
+      "agentProfileVersion": 17,
       "agentServerPackage": "cursor-agent",
       "agentServerVersion": "2026.09.26-dd393fe",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:ac8092119542c8fbe95dae18ba5ef4d3689803fec56b7d2735fa193eea42f59b",
+      "commandDigest": "sha256:c2e39f931fdb89eb226ddee17bdcd16ad14c80fe4d311a41df89f2947d72103d",
       "requiresProviderPolicy": true
     },
     "copilot": {
-      "agentProfileVersion": 58,
+      "agentProfileVersion": 92,
       "agentServerPackage": "@github/copilot",
       "agentServerVersion": "1.0.88",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:d490dacdab02051d24c84aae49ac6fb12b8226cf8a47b014ec53f3d3a8410a94",
+      "commandDigest": "sha256:4ec9c9d399e0f97d3addd9ac3333a69588a8103d5e534e206c02604432d89f9b",
       "requiresProviderPolicy": true
     },
     "claude": {
@@ -57,6 +67,15 @@
       "agentRuntimeVersion": "0.160.0",
       "commandDigest": "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
       "requiresProviderPolicy": false
+    },
+    "kimi": {
+      "agentProfileVersion": 17,
+      "agentServerPackage": "@moonshot-ai/kimi-code",
+      "agentServerVersion": "2.3.3",
+      "agentRuntimePackage": null,
+      "agentRuntimeVersion": null,
+      "commandDigest": "sha256:6ee5fb7ac18c1361ac63effe9117d08ed129add8349756a140e73e0c86ba5da7",
+      "requiresProviderPolicy": true
     }
   }
 }

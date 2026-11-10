@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb, executionWorkspaceRestorePoints, executionWorkspaces, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { agents, applyPendingMigrations, companies, createDb, executionWorkspaceRestorePoints, executionWorkspaces, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "../services/managed-repository-checkout.js";
@@ -14,8 +14,8 @@ import { isolatedRemoteSourcePath, materializeIsolatedRemoteWorkspaceSource } fr
 import { realizeExecutionWorkspace } from "../services/workspace-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { expireReconstructableGitWorkspace } from "../services/git-workspace-expiration.js";
-import { currentRestorePointSnapshot } from "../services/git-restore-point.js";
-import { rehomeIsolatedRepositoryWorkspace } from "../services/isolated-repository-rehome.js";
+import { captureRestorePoint, currentRestorePointSnapshot } from "../services/git-restore-point.js";
+import { rehomeIsolatedRepositoryWorkspace, sweepOrphanedIsolatedRepositorySources } from "../services/isolated-repository-rehome.js";
 import { addNestedRepositoryWorktree, nestedRepositoryBaseCandidates, nestedWorktreeBranchPrefix, readLinkedNestedCheckout } from "../services/nested-repository-worktrees.js";
 import { getStorageService } from "../storage/index.js";
 
@@ -25,17 +25,21 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 const exists = (target: string) => fs.lstat(target).then(() => true, () => false);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ISOLATED_REHOME_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = support.supported ? describe : describe.skip;
 describeEmbeddedPostgres("isolated repository source re-home", () => {
   let db: ReturnType<typeof createDb>;
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let root: string;
   const previousHome = process.env.PAPERCLIP_HOME;
   const previousInstance = process.env.PAPERCLIP_INSTANCE_ID;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("isolated-repository-rehome-");
-    db = createDb(database.connectionString);
+    if (external) await applyPendingMigrations(external);
+    else database = await startEmbeddedPostgresTestDatabase("isolated-repository-rehome-");
+    db = createDb(external ?? database!.connectionString);
     root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-isolated-rehome-"));
     process.env.PAPERCLIP_HOME = path.join(root, "home");
     process.env.PAPERCLIP_INSTANCE_ID = "default";
@@ -44,12 +48,13 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
   afterEach(async () => {
     await db.delete(executionWorkspaceRestorePoints);
     await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
+    await fs.rm(path.join(root, "home", "instances", "default", "isolated-repository-sources"), { recursive: true, force: true });
   });
   afterAll(async () => {
     vi.unstubAllEnvs();
     if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
     if (previousInstance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID; else process.env.PAPERCLIP_INSTANCE_ID = previousInstance;
-    await db.$client.end({ timeout: 1 }); await database.cleanup(); await fs.rm(root, { recursive: true, force: true });
+    await db.$client.end({ timeout: 1 }); await database?.cleanup(); await fs.rm(root, { recursive: true, force: true });
   });
 
   async function fixture(options: { sharedBase?: boolean; issueStatus?: "in_progress" | "done" } = {}) {
@@ -408,11 +413,16 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     await executionWorkspaceService(db, { gitCacheExpirationEnabled: true }).sweepTerminalWorkspaces();
     await executionWorkspaceService(db, { isolatedSourceRehomeEnabled: true }).sweepTerminalWorkspaces();
     await expectUntouched(f, before);
-    const dryRun = executionWorkspaceService(db, { gitCacheExpirationEnabled: true, isolatedSourceRehomeEnabled: true, isolatedSourceRehomeDryRun: true });
+    let tick = Date.now();
+    const dryRun = executionWorkspaceService(db, { gitCacheExpirationEnabled: true, isolatedSourceRehomeEnabled: true,
+      isolatedSourceRehomeDryRun: true, now: () => new Date(tick++) });
     await dryRun.sweepTerminalWorkspaces();
     await expectUntouched(f, before);
     expect(await exists(f.clone)).toBe(true);
-    expect(await dryRun.nextTerminalWorkspaceSweepAt()).toBeGreaterThan(Date.now());
+    const retryAt = await dryRun.nextTerminalWorkspaceSweepAt();
+    expect(retryAt).toBeGreaterThan(Date.now());
+    await dryRun.sweepTerminalWorkspaces();
+    expect(await dryRun.nextTerminalWorkspaceSweepAt()).toBe(retryAt);
     expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row(), { dryRun: true })).toMatchObject({ outcome: "dry_run", rehomed: false, to: f.target });
     await expectUntouched(f, before);
   });
@@ -471,5 +481,174 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     expect(row.metadata?.isolatedRemoteSource).toBeDefined();
     expect(git(f.cwd, "rev-parse", "HEAD")).toBe(unpushed);
     expect(await fs.readFile(path.join(f.cwd, "notes.txt"), "utf8")).toBe("untracked work\n");
+  });
+
+  async function crashedRehome(f: Awaited<ReturnType<typeof fixture>>) {
+    const result = await rehomeIsolatedRepositoryWorkspace(db, await f.row(), { hooks: { afterDatabaseUpdate: async () => { throw new Error("simulated crash"); } } });
+    expect(result).toMatchObject({ rehomed: true, cloneRemoved: false });
+    return result;
+  }
+
+  async function publishUnfetchedHistory(f: Awaited<ReturnType<typeof fixture>>) {
+    git(f.author, "checkout", "-q", "-b", "feature");
+    await fs.writeFile(path.join(f.author, "feature.txt"), "feature\n"); git(f.author, "add", "."); git(f.author, "commit", "-qm", "feature");
+    const feature = git(f.author, "rev-parse", "HEAD");
+    git(f.author, "checkout", "-q", "main");
+    const release = git(f.author, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "release");
+    git(f.author, "tag", "v1", release);
+    git(f.author, "push", "-q", f.remote, "feature", "v1");
+    git(f.clone, "fetch", "-q", "--tags", "origin");
+    return { feature, release };
+  }
+
+  it("deletes a clean clone whose only extra history is remote branches and tags the shared clone never fetched", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    const { feature, release } = await publishUnfetchedHistory(f);
+    await fs.appendFile(path.join(f.clone, ".git", "info", "exclude"), "\n.paperclip/\n");
+    await crashedRehome(f);
+    expect(() => git(f.sharedPath, "cat-file", "-e", `${release}^{commit}`)).toThrow();
+    expect(() => git(f.sharedPath, "cat-file", "-e", `${feature}^{commit}`)).toThrow();
+    expect(git(f.clone, "rev-parse", "refs/tags/v1")).toBe(release);
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ outcome: "cleaned", cloneRemoved: true, cloneKeptReason: null });
+    expect(await exists(f.clone)).toBe(false);
+  });
+
+  it("keeps a clone with a local branch commit that is neither upstream nor in the shared clone", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    await crashedRehome(f);
+    const local = git(f.clone, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "local only");
+    git(f.clone, "branch", "local-work", local);
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ cloneRemoved: false, cloneKeptReason: "unique_clone_history", cloneKeptPaths: [local] });
+    expect(await exists(f.clone)).toBe(true);
+    expect((await f.row()).metadata?.isolatedRepositoryRehome).toMatchObject({ cleanedAt: null });
+  });
+
+  it("keeps a clone whose detached HEAD holds the only copy of a commit", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    await crashedRehome(f);
+    const detached = git(f.clone, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "detached only");
+    git(f.clone, "checkout", "-q", "--detach", detached);
+    git(f.clone, "reflog", "expire", "--expire=now", "--all");
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ cloneRemoved: false, cloneKeptReason: "unique_clone_history", cloneKeptPaths: [detached] });
+    expect(await exists(f.clone)).toBe(true);
+  });
+
+  it("keeps a clone whose own checkout has changes or unexplained ignored files", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    await crashedRehome(f);
+    await fs.writeFile(path.join(f.clone, "marker.txt"), "edited in the clone\n");
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ cloneRemoved: false, cloneKeptReason: "clone_checkout_has_files", cloneKeptPaths: ["marker.txt"] });
+    git(f.clone, "checkout", "--", "marker.txt");
+    await fs.writeFile(path.join(f.clone, "cache.tsbuildinfo"), "ignored but not regenerable\n");
+    await fs.mkdir(path.join(f.clone, "node_modules", "dep"), { recursive: true });
+    await fs.writeFile(path.join(f.clone, "node_modules", "dep", "index.js"), "regenerable\n");
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ cloneRemoved: false, cloneKeptReason: "clone_checkout_has_files", cloneKeptPaths: ["cache.tsbuildinfo"] });
+    await fs.rm(path.join(f.clone, "cache.tsbuildinfo"));
+    await fs.mkdir(path.join(f.clone, "build"));
+    await fs.writeFile(path.join(f.clone, "build", "notes.txt"), "untracked, not ignored\n");
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ cloneRemoved: false, cloneKeptReason: "clone_checkout_has_files", cloneKeptPaths: ["build/"] });
+    await fs.rm(path.join(f.clone, "build"), { recursive: true });
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ outcome: "cleaned", cloneRemoved: true });
+  });
+
+  it("keeps a clone with another registered worktree", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    await crashedRehome(f);
+    const extra = path.join(path.dirname(f.remote), "extra-worktree");
+    git(f.clone, "worktree", "add", "-q", "-b", "extra", extra);
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ cloneRemoved: false, cloneKeptReason: "base_has_worktrees" });
+    expect(await exists(f.clone)).toBe(true);
+  });
+
+  it("removes the old worktree and clone when the old worktree's registration was already pruned", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    await crashedRehome(f);
+    await fs.rm(path.join(f.clone, ".git", "worktrees", "fixture-task"), { recursive: true });
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ outcome: "cleaned", cloneRemoved: true, cloneKeptReason: null });
+    expect(await exists(f.cwd)).toBe(false);
+  });
+
+  it("sweeps orphaned clones that no workspace needs and keeps those with unique history", async () => {
+    const orphan = await fixture();
+    await makeWork(orphan.cwd);
+    await publishUnfetchedHistory(orphan);
+    await crashedRehome(orphan);
+    git(orphan.clone, "worktree", "remove", "--force", orphan.cwd);
+    const current = await orphan.row();
+    await db.update(executionWorkspaces).set({ metadata: { ...current.metadata, isolatedRepositoryRehome: {
+      ...current.metadata?.isolatedRepositoryRehome as Record<string, unknown>, cleanedAt: new Date().toISOString() } } }).where(eq(executionWorkspaces.id, orphan.workspaceId));
+    const unknown = await fixture();
+    await makeWork(unknown.cwd);
+    await crashedRehome(unknown);
+    git(unknown.clone, "worktree", "remove", "--force", unknown.cwd);
+    await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, unknown.workspaceId));
+
+    const first = await sweepOrphanedIsolatedRepositorySources(db, { dryRun: true, limit: 1 });
+    expect(first.results).toHaveLength(1);
+    expect(first.next).toEqual(expect.any(String));
+    const second = await sweepOrphanedIsolatedRepositorySources(db, { dryRun: true, limit: 1, after: first.next });
+    expect(second).toMatchObject({ results: [expect.anything()], next: null });
+    expect(new Set([...first.results, ...second.results].map(result => result.issueId))).toEqual(new Set([orphan.issueId, unknown.issueId]));
+    const dryRun = executionWorkspaceService(db, { gitCacheExpirationEnabled: true, isolatedSourceRehomeEnabled: true, isolatedSourceRehomeDryRun: true });
+    await dryRun.sweepTerminalWorkspaces();
+    expect(await exists(orphan.clone)).toBe(true);
+
+    const service = executionWorkspaceService(db, { gitCacheExpirationEnabled: true, isolatedSourceRehomeEnabled: true });
+    await service.sweepTerminalWorkspaces();
+    expect(await exists(orphan.clone)).toBe(false);
+    expect(await exists(unknown.clone)).toBe(true);
+    expect(await service.nextTerminalWorkspaceSweepAt()).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
+  });
+
+  it("re-homes a workspace whose changes exceed the default restore point limits", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    const large = Buffer.alloc(65 * 1024 * 1024, 7);
+    await fs.writeFile(path.join(f.cwd, "notes", "large.bin"), large);
+    await fs.writeFile(path.join(f.cwd, "large.tsbuildinfo"), large);
+    await expect(captureRestorePoint({ cwd: f.cwd, upstreamCommits: [] })).rejects.toMatchObject({ reason: "restore_point_too_large" });
+    const before = await currentRestorePointSnapshot(f.cwd);
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ rehomed: true, cloneRemoved: true, reason: null });
+    expect(await currentRestorePointSnapshot(f.target)).toEqual(before);
+    expect((await fs.readFile(path.join(f.target, "notes", "large.bin"))).equals(large)).toBe(true);
+    expect((await fs.readFile(path.join(f.target, "large.tsbuildinfo"))).equals(large)).toBe(true);
+  }, 60_000);
+
+  it("keeps an orphaned clone whose origin no longer matches the recorded repository", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    await crashedRehome(f);
+    git(f.clone, "worktree", "remove", "--force", f.cwd);
+    const current = await f.row();
+    await db.update(executionWorkspaces).set({ metadata: { ...current.metadata, isolatedRepositoryRehome: {
+      ...current.metadata?.isolatedRepositoryRehome as Record<string, unknown>, cleanedAt: new Date().toISOString() } } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const decoy = path.join(path.dirname(f.remote), "decoy.git");
+    git(path.dirname(f.remote), "clone", "-q", "--bare", f.clone, decoy);
+    git(f.clone, "remote", "set-url", "origin", pathToFileURL(decoy).href);
+    const { results } = await sweepOrphanedIsolatedRepositorySources(db);
+    expect(results).toMatchObject([{ issueId: f.issueId, removed: false, reason: "source_identity_changed" }]);
+    expect(await exists(f.clone)).toBe(true);
+    await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect((await sweepOrphanedIsolatedRepositorySources(db)).results).toMatchObject([{ issueId: f.issueId, removed: false, reason: "unproven_repository" }]);
+  });
+
+  it("keeps a clone with more ignored directories than the cleanup budget", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    await crashedRehome(f);
+    await fs.appendFile(path.join(f.clone, ".git", "info", "exclude"), "\nscratch-*/\n");
+    for (let index = 0; index <= 1_000; index += 1) {
+      await fs.mkdir(path.join(f.clone, `scratch-${index}`, "node_modules"), { recursive: true });
+      await fs.writeFile(path.join(f.clone, `scratch-${index}`, "node_modules", "x.js"), "x\n");
+    }
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ cloneRemoved: false, cloneKeptReason: "clone_file_budget" });
+    for (let index = 1; index <= 1_000; index += 1) await fs.rm(path.join(f.clone, `scratch-${index}`), { recursive: true });
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ outcome: "cleaned", cloneRemoved: true });
   });
 });

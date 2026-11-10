@@ -1,6 +1,7 @@
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { randomBytes } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, subscribeDatabaseWork } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -107,14 +108,15 @@ describe("heartbeat lifecycle module boundary", () => {
   });
 });
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LIFECYCLE_TEST_DATABASE_URL");
+const support = external ? { supported: true as const } : await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Skipping lifecycle module database tests: ${support.reason}`);
 describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-lifecycle-module");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-lifecycle-module");
+    db = createDb(external ?? database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     await db?.$client.end();
@@ -236,6 +238,55 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
       expect(persisted.status).toBe("succeeded");
       expect(persisted.costAccountingPending).toBe(true);
       expect(settled).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
+
+  it.each(["native", "legacy", "unbound"] as const)("keeps %s run-status response recovery scoped to its task or run", async binding => {
+    const { run } = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: run.companyId, title: "Scope owner" }).returning();
+    await db.update(heartbeatRuns).set(binding === "native" ? { nativeIssueId: issue.id }
+      : binding === "legacy" ? { contextSnapshot: { issueId: issue.id } } : { contextSnapshot: {} }).where(eq(heartbeatRuns.id, run.id));
+    const hints: unknown[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.nativeResponsePresentation, (event, scopes) => {
+      if (event === "settled") for (const hint of scopes ?? []) hints.push(JSON.parse(hint));
+    });
+    try {
+      await createHeartbeatLifecycle(db, callbacks(db)).setRunStatusIfRunning(run.id, "succeeded", { finishedAt: new Date() });
+      expect(hints).toEqual([binding === "unbound" ? { companyId: run.companyId, runId: run.id }
+        : { companyId: run.companyId, issueId: issue.id }]);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("succeeded");
+    } finally { unsubscribe(); }
+  });
+
+  it.each(["setRunStatus", "setRunStatusIfRunning"] as const)("wakes retained cleanup only after the outer %s terminal write commits", async operation => {
+    const { run } = await fixture();
+    const hints: unknown[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.retainedNativeSessionCleanup, (event, scopes) => {
+      if (event === "settled") for (const scope of scopes ?? []) hints.push(JSON.parse(scope));
+    });
+    try {
+      await db.transaction(async transaction => {
+        const tx = transaction as unknown as Db;
+        await createHeartbeatLifecycle(tx, callbacks(tx))[operation](run.id, "succeeded", { finishedAt: new Date() });
+        expect(hints).toEqual([]);
+        expect((await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("succeeded");
+      });
+      expect(hints).toEqual([{ companyId: run.companyId, runId: run.id }]);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].finishedAt).not.toBeNull();
+      hints.length = 0;
+
+      await createHeartbeatLifecycle(db, callbacks(db)).setRunStatus(run.id, "succeeded", { error: "repaired metadata" });
+      expect(hints).toEqual([{ companyId: run.companyId, runId: run.id }]);
+    } finally { unsubscribe(); }
+  });
+
+  it("does not wake retained cleanup for running progress", async () => {
+    const { run } = await fixture();
+    const settled = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.retainedNativeSessionCleanup, settled);
+    try {
+      await createHeartbeatLifecycle(db, callbacks(db)).setRunStatus(run.id, "running");
+      expect(settled).not.toHaveBeenCalled();
     } finally { unsubscribe(); }
   });
 

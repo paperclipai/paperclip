@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/runner/v1/runtime-context.schema.json",
+  "title": "Paperclip native runtime context",
+  "description": "The runtime context that the controller sends in native execution input and in sidecar session.open. Every object is closed; parseNativeRuntimeContext rejects unknown fields with field lists generated from this schema.",
+  "$ref": "#/$defs/runtimeContext",
+  "$defs": {
+    "sha256Hex": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "nonEmptyText": { "type": "string", "minLength": 1 },
+    "runtimeContext": {
+      "type": "object",
+      "required": ["prompt", "instructions", "skills", "mcp", "aggregateDigest"],
+      "properties": {
+        "prompt": { "$ref": "#/$defs/prompt" },
+        "instructions": { "$ref": "#/$defs/instructions" },
+        "skills": { "type": "array", "items": { "$ref": "#/$defs/skill" } },
+        "mcp": { "$ref": "#/$defs/mcp" },
+        "connectionInstructions": { "$ref": "#/$defs/connectionInstructions" },
+        "aggregateDigest": { "$ref": "#/$defs/sha256Hex" }
+      },
+      "additionalProperties": false
+    },
+    "prompt": {
+      "type": "object",
+      "required": ["revision", "text", "digest"],
+      "properties": {
+        "revision": { "$ref": "#/$defs/nonEmptyText" },
+        "text": { "$ref": "#/$defs/nonEmptyText" },
+        "digest": { "$ref": "#/$defs/sha256Hex" }
+      },
+      "additionalProperties": false
+    },
+    "instructions": {
+      "type": "object",
+      "required": ["entryPath", "bundle"],
+      "properties": {
+        "entryPath": { "$ref": "#/$defs/nonEmptyText" },
+        "bundle": { "$ref": "#/$defs/asset" },
+        "workingCopy": { "$ref": "#/$defs/workingCopy" }
+      },
+      "additionalProperties": false
+    },
+    "workingCopy": {
+      "type": "object",
+      "required": ["rootPath", "entryPath"],
+      "properties": {
+        "rootPath": { "$ref": "#/$defs/nonEmptyText" },
+        "entryPath": { "$ref": "#/$defs/nonEmptyText" },
+        "kind": { "const": "agent_files" }
+      },
+      "additionalProperties": false
+    },
+    "skill": {
+      "type": "object",
+      "required": ["key", "runtimeName", "versionId", "bundle"],
+      "properties": {
+        "key": { "$ref": "#/$defs/nonEmptyText" },
+        "runtimeName": { "$ref": "#/$defs/nonEmptyText" },
+        "versionId": { "anyOf": [{ "$ref": "#/$defs/nonEmptyText" }, { "type": "null" }] },
+        "bundle": { "$ref": "#/$defs/asset" }
+      },
+      "additionalProperties": false
+    },
+    "mcp": {
+      "type": "object",
+      "required": ["assignmentSetId", "digest", "bindingId"],
+      "properties": {
+        "assignmentSetId": { "$ref": "#/$defs/nonEmptyText" },
+        "digest": { "$ref": "#/$defs/sha256Hex" },
+        "bindingId": { "anyOf": [{ "$ref": "#/$defs/nonEmptyText" }, { "type": "null" }] }
+      },
+      "additionalProperties": false
+    },
+    "connectionInstructions": {
+      "type": "object",
+      "required": ["text", "digest"],
+      "properties": {
+        "text": { "$ref": "#/$defs/nonEmptyText" },
+        "digest": { "$ref": "#/$defs/sha256Hex" }
+      },
+      "additionalProperties": false
+    },
+    "asset": {
+      "type": "object",
+      "required": ["schema", "digest", "manifestDigest", "rootPath", "fileCount", "totalBytes"],
+      "properties": {
+        "schema": { "const": "paperclip.runtime-asset.v1" },
+        "digest": { "$ref": "#/$defs/sha256Hex" },
+        "manifestDigest": { "$ref": "#/$defs/sha256Hex" },
+        "rootPath": { "$ref": "#/$defs/nonEmptyText" },
+        "fileCount": { "type": "integer", "minimum": 0 },
+        "totalBytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

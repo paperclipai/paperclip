@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import type { Db } from "@paperclipai/db";
+import { companyMemberships, instanceUserRoles, issues, type Db } from "@paperclipai/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/error-handler.js";
 import { chatChannelRoutes } from "../routes/chat-channels.js";
@@ -25,11 +25,21 @@ function app(actor = boardActor) {
     req.actor = actor;
     next();
   });
-  instance.use("/api", chatChannelRoutes({} as Db, {
+  // Supply the resource and active membership that the management read guard
+  // now resolves. Connector service behavior stays isolated in this unit suite.
+  const db = { select: () => ({ from: (table: unknown) => {
+    const rows = table === issues ? [{ id: issueId, companyId, projectId: null }]
+      : table === companyMemberships ? [{ companyId, principalType: "user", principalId: boardActor.userId, membershipRole: "operator", status: "active" }]
+      : table === instanceUserRoles ? []
+      : null;
+    if (!rows) throw new Error("Unexpected resource query in task read fixture");
+    return { where: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }) };
+  } }) } as unknown as Db;
+  instance.use("/api", chatChannelRoutes(db, {
     service: chat as unknown as ChatChannelService,
     heartbeat: { wakeup: vi.fn() },
   }));
-  instance.use("/api", emailRoutes({} as Db, email as unknown as EmailChannelService));
+  instance.use("/api", emailRoutes(db, email as unknown as EmailChannelService));
   instance.use(errorHandler);
   return instance;
 }
@@ -69,7 +79,7 @@ describe("task connector read routes", () => {
 
   it.each([issueId, `chat:${issueId}`])("retains authentication checks for %s", async (id) => {
     const server = app({ type: "none", source: "none" });
-    await request(server).get(`/api/issues/${id}/chat-binding`).expect(403);
+    await request(server).get(`/api/issues/${id}/chat-binding`).expect(401);
     await request(server).get(`/api/companies/${companyId}/email/tasks/${id}`).expect(401);
     expect(chat.getIssueBinding).not.toHaveBeenCalled();
     expect(email.authorizeRead).not.toHaveBeenCalled();

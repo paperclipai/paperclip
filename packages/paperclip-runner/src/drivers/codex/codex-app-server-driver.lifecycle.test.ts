@@ -115,6 +115,17 @@ class WarmAttachTransport extends FakeCodexTransport {
 }
 
 describe("Codex app-server Codex driver", () => {
+  it.each(["codex_app_server", "acpx_runtime"])("keeps startup provider evidence for the selected %s driver", async kind => {
+    const transport = new FakeCodexTransport();
+    transport.rejectMethods.set("thread/start", new CodexRpcError(JSON.stringify({ error: {
+      code: "insufficient_quota", message: "The provider allowance is exhausted." }, status: 429 }), -32603));
+    const driver = makeDriver([transport], { driverIdentity: { kind, displayName: "Fixture", version: "1" } });
+    const error = await driver.openSession({ runId: "startup-cause", normalizedSessionId: "startup-cause", workingDirectory: WORKSPACE }).catch(error => error);
+    if (kind === "codex_app_server") expect(error.providerFailure).toMatchObject({ provider: "openai", phase: "startup",
+      category: "quota_exhausted", message: "The provider allowance is exhausted.", httpStatus: 429 });
+    else expect(error.providerFailure).toBeUndefined();
+  });
+
   it("accepts runner-proven warm attachment when the host active-turn reducer is stale", async () => {
     const transport = new WarmAttachTransport();
     const driver = makeDriver([transport]);
@@ -413,6 +424,61 @@ describe("Codex app-server Codex driver", () => {
 
     expect(detachControllerForRestart).toHaveBeenCalledOnce();
     expect(close).not.toHaveBeenCalled();
+  });
+
+  it("ends the detached controller's event stream so its consumer can unwind", async () => {
+    const transport = new FakeCodexTransport();
+    Object.assign(transport, { detachControllerForRestart: vi.fn(async () => undefined) });
+    const driver = makeDriver([transport]);
+    const session = await driver.openSession({
+      runId: "run-detach-consumer",
+      normalizedSessionId: "normalized-detach-consumer",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Keep working" } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+    const iterator = session.events()[Symbol.asyncIterator]();
+    // Drain what the provider published before the restart.
+    for (;;) {
+      const pending = await Promise.race([
+        iterator.next(),
+        new Promise<"waiting">(resolve => setTimeout(() => resolve("waiting"), 20)),
+      ]);
+      if (pending === "waiting") break;
+      expect(pending.done).toBe(false);
+    }
+    const next = iterator.next();
+
+    await session.detachControllerForRestart?.();
+    // The provider keeps running for the next controller; a late notification
+    // must not reach the detached consumer.
+    transport.push("item/agentMessage/delta", { threadId: "thread-1", turnId: "turn-1", itemId: "m", delta: "late" });
+
+    await expect(Promise.race([
+      next,
+      new Promise<"hung">(resolve => setTimeout(() => resolve("hung"), 200)),
+    ])).resolves.toEqual({ value: undefined, done: true });
+  });
+
+  it("drops events the detached controller had not read yet", async () => {
+    const transport = new FakeCodexTransport();
+    Object.assign(transport, { detachControllerForRestart: vi.fn(async () => undefined) });
+    const driver = makeDriver([transport]);
+    const session = await driver.openSession({
+      runId: "run-detach-buffered",
+      normalizedSessionId: "normalized-detach-buffered",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Keep working" } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+    // Let the notification pump buffer these events without a reader.
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    await session.detachControllerForRestart?.();
+
+    // The next controller replays them from the runner journal instead.
+    await expect(session.events()[Symbol.asyncIterator]().next())
+      .resolves.toEqual({ value: undefined, done: true });
   });
 
   it("sends direct chat as plain text and permits a follow-up turn", async () => {
@@ -774,6 +840,7 @@ describe("Codex app-server Codex driver", () => {
         runId: "run-1",
         environmentLeaseId: "lease-1",
         runnerInstanceId: "runner-codex",
+        driverSessionId: "thread-1",
         normalizedSessionId: "normalized-1",
       },
       capabilities,
@@ -808,7 +875,7 @@ it("sends explicit skill input on every requested turn", async () => {
     await collectUntilTerminal(session.events());
     transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
   }
-  await session.close();
+  await session.close({ reason: "fixture complete" });
 });
 
 
@@ -819,7 +886,7 @@ it("reapplies explicit skills after recovery without persisting them into ordina
     runId: "initial", normalizedSessionId: "skill-recovery", workingDirectory: WORKSPACE,
   });
   const snapshot = await original.snapshot();
-  await original.close();
+  await original.close({ reason: "fixture complete" });
   for (const selected of [skillInputs, []]) {
     const transport = new FakeCodexTransport();
     const recovery = await makeDriver([transport], { skillInputs: selected }).recoverSession(snapshot);
@@ -829,6 +896,6 @@ it("reapplies explicit skills after recovery without persisting them into ordina
       await session.startTurn({ message: { role: "user", text: "Continue" } });
       const items = transport.calls.find((call) => call.method === "turn/start")?.params.input as Array<{type:string}>;
       expect(items.filter((item) => item.type === "skill")).toEqual(selected);
-    } finally { await session.close(); }
+    } finally { await session.close({ reason: "fixture complete" }); }
   }
 });

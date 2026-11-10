@@ -13,7 +13,7 @@ it("keeps Codex authentication, observability and runtime transports out of the 
   const configured = {
     SLACK_BOT_TOKEN: "assigned", OPENAI_API_KEY: "openai", CODEX_API_KEY: "codex",
     PAPERCLIP_AI_PROVIDER_KEY: "managed", OTEL_EXPORTER_OTLP_HEADERS: "authorization=export",
-    PAPERCLIP_GITHUB_BROKER_TOKEN: "broker", PAPERCLIP_NATIVE_MCP_TOKEN: "mcp",
+    PAPERCLIP_NATIVE_MCP_TOKEN: "mcp",
   };
   const names = codexShellEnvironmentKeys(configured, configured, true);
   expect(names).toContain("SLACK_BOT_TOKEN");
@@ -33,4 +33,12 @@ it("removes the secret opt-in when a binding is removed or has not been resolved
   expect(codexShellEnvironmentKeys(environment, {}, false)).not.toContain("SLACK_BOT_TOKEN");
   expect(codexShellEnvironmentKeys(environment, { SLACK_BOT_TOKEN: { type: "secret_ref" } }, false)).not.toContain("SLACK_BOT_TOKEN");
   expect(codexShellEnvironmentKeys(environment, {}, true)).not.toContain("SLACK_BOT_TOKEN");
+});
+
+it("passes the run's GitHub broker capability so the gh and git launchers can fetch its credential", () => {
+  const environment = { PAPERCLIP_GITHUB_BROKER_URL: "https://paperclip.example", PAPERCLIP_GITHUB_BROKER_TOKEN: "capability", PAPERCLIP_GITHUB_BRIDGE_TOKEN: "" };
+  const names = codexShellEnvironmentKeys(environment, environment, true);
+  expect(names).toEqual(expect.arrayContaining(["PAPERCLIP_GITHUB_BROKER_URL", "PAPERCLIP_GITHUB_BROKER_TOKEN"]));
+  expect(names).not.toContain("PAPERCLIP_GITHUB_BRIDGE_TOKEN");
+  expect(JSON.stringify(names)).not.toContain("capability");
 });

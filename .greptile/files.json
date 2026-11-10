@@ -21,6 +21,13 @@
       "description": "Module ownership, justification of shared contract changes, delivery scope, and verification across affected consumers."
     },
     {
+      "path": "rules/feature-map-scope.mdc",
+      "description": "Limit feature-map additions to substantial new user capabilities; avoid minor-update churn and keep factual corrections minimal.",
+      "scope": [
+        "maps/**"
+      ]
+    },
+    {
       "path": "rules/runtime-dependency-boundaries.mdc",
       "description": "Dependency cost, responsiveness, and verification requirements for changed server, adapter, and runner execution paths.",
       "scope": [
@@ -70,6 +77,48 @@
         "packages/plugins/*/src/**",
         "packages/paperclip-runner/src/**",
         "packages/paperclip-runner/runner/**"
+      ]
+    },
+    {
+      "path": "rules/acpx-profile-identity.mdc",
+      "description": "ACPX provider identity model: provider digests attest upstream releases, the pack contract digest covers Runner source and the shared ACPX layer, and profile versions change only for deliberate resets.",
+      "scope": [
+        "packages/paperclip-runner/acpx-profiles.json",
+        "packages/paperclip-runner/cursor-contract.json",
+        "packages/paperclip-runner/cursor-distributions.json",
+        "packages/paperclip-runner/antigravity-distributions.json",
+        "packages/paperclip-runner/scripts/acpx-release-attestations.mjs",
+        "packages/paperclip-runner/scripts/generate-acpx-profiles.mjs",
+        "packages/paperclip-runner/scripts/contracts/**",
+        "packages/paperclip-runner/src/drivers/acpx/**",
+        "packages/paperclip-runner/src/providers/**",
+        "packages/paperclip-runner/protocol/**"
+      ]
+    },
+    {
+      "path": "rules/ui-render-cost.mdc",
+      "description": "Render cost of UI components and hooks over large collections: no nested scans, stable memo dependencies, and realistic-size tests for changed large-collection paths.",
+      "scope": [
+        "ui/src/**/*.tsx",
+        "ui/src/**/use*.ts"
+      ]
+    },
+    {
+      "path": "rules/upgrade-safe-run-state.mdc",
+      "description": "Upgrade safety for persisted run, session, launch, and pack state: state saved by the previous release resumes or fails with a permanent, named code, with old-saved/new-resumed and mid-run deploy tests.",
+      "scope": [
+        "server/src/services/native-runtime/**",
+        "server/src/services/recovery/**",
+        "server/src/services/heartbeat/session-preparation.ts",
+        "server/src/services/heartbeat/run-state.ts",
+        "server/src/services/runner-revision-mismatch.ts",
+        "server/src/services/sandbox-provider-runtime.ts",
+        "packages/paperclip-runner/**",
+        "packages/adapter-utils/src/acpx-engine/**",
+        "docker/daytona-runner/**",
+        "packages/db/src/schema/native_*.ts",
+        "packages/db/src/schema/agent_task_sessions.ts",
+        "packages/db/src/schema/run_identity_contexts.ts"
       ]
     }
   ]

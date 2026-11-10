@@ -239,12 +239,29 @@ it.each(["json", "protobuf"])("meters repeated resource/scope data and full reco
 
 it("accepts thousands of small native records while bounding their total count", async () => {
   const upstream = vi.fn<typeof fetch>(async () => Response.json({}));
-  const f = await fixture({ transport: upstream, limits: { ...EVAL_OTLP_LIMITS, maxRecords: 3000 } });
+  const f = await fixture({ transport: upstream });
   const body = JSON.stringify({ resource_logs: [{ scope_logs: [{ log_records: Array.from({ length: 2533 }, () => ({ body: { stringValue: "event" } })) }] }] });
   expect((await f.send(body, {}, "/v1/logs")).status).toBe(200);
   expect((await f.send(body, {}, "/v1/logs")).status).toBe(429);
   expect(upstream).toHaveBeenCalledTimes(1);
   expect((await f.records()).find(row => row.type === "admitted").recordCount).toBe(2533);
+});
+
+it("enforces the smaller default expanded-source allowance before export", async () => {
+  const upstream = vi.fn<typeof fetch>(async () => Response.json({}));
+  const f = await fixture({ transport: upstream });
+  const body = JSON.stringify({ resourceLogs: [{ scopeLogs: [{ logRecords: [
+    { body: { stringValue: "x".repeat(3 * 1024 * 1024) } },
+  ] }] }] });
+  expect((await f.send(body, {}, "/v1/logs")).status).toBe(200);
+  expect((await f.send(body, {}, "/v1/logs")).status).toBe(200);
+  expect((await f.send(body, {}, "/v1/logs")).status).toBe(429);
+  expect(upstream).toHaveBeenCalledTimes(2);
+  await f.relay.close();
+  const rows = await f.records();
+  expect(rows[0].limits.maxExpandedBytes).toBe(16 * 1024 * 1024);
+  expect(rows.at(-1).admittedExpandedBytes).toBeGreaterThan(12 * 1024 * 1024);
+  expect(rows.filter(row => row.type === "quota_exhausted")).toHaveLength(1);
 });
 
 it("rejects unknown protobuf fields instead of excluding forwarded data from sizing", async () => {
@@ -255,4 +272,21 @@ it("rejects unknown protobuf fields instead of excluding forwarded data from siz
     headers: { authorization: `Bearer ${f.relay.token}`, "content-type": "application/x-protobuf" } });
   expect(response.status).toBe(400);
   expect(upstream).not.toHaveBeenCalled();
+});
+
+it("binds native relay headers and payload parents to the assigned attempt within the same project", async () => {
+  const expectedParent = exportBraintrustAttemptParent({ projectId, spanId: "1234567890abcdef", traceId: "abcdef0123456789abcdef0123456789" });
+  const other = exportBraintrustAttemptParent({ projectId, spanId: "abcdef0123456789", traceId: "abcdef0123456789abcdef0123456789" });
+  const upstream = vi.fn<typeof fetch>(async () => Response.json({}));
+  const f = await fixture({ expectedParent, transport: upstream });
+  expect((await f.send()).status).toBe(400);
+  expect((await f.send("{}", { "x-bt-parent": other })).status).toBe(400);
+  for (const parent of [other, `project_id:${projectId}`]) {
+    const body = { resourceLogs: [{ resource: { attributes: [{ key: "braintrust.parent", value: { stringValue: parent } }] } }] };
+    expect((await f.send(JSON.stringify(body), { "x-bt-parent": expectedParent }, "/v1/logs")).status).toBe(400);
+  }
+  expect(upstream).not.toHaveBeenCalled();
+  expect((await f.send("{}", { "x-bt-parent": expectedParent })).status).toBe(200);
+  await f.relay.close();
+  expect((await f.records())[0].expectedParent).toBe(expectedParent);
 });

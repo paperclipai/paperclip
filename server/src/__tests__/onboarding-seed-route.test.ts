@@ -62,7 +62,7 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     return { ...seeded, app: routeApp(ctx.db, seeded.actor, onboardingSeedRoutes) };
   }
 
-  function post(app: ReturnType<typeof routeApp>, companyId: string, body: unknown) {
+  function post(app: ReturnType<typeof routeApp>, companyId: string, body: object) {
     return request(app).post(`/api/companies/${companyId}/onboarding-seed`).send(body);
   }
 

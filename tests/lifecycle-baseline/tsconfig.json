@@ -7,5 +7,5 @@
     "types": ["node"],
     "typeRoots": ["../../cli/node_modules/@types", "../../server/node_modules/@types"]
   },
-  "include": ["./*.ts", "../../server/test-baselines/*.ts"]
+  "include": ["./*.ts", "../../server/test-baselines/*.ts", "../../server/src/types/express.d.ts"]
 }

@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: goals
+status: planned
+scenarios:
+  - id: goals.create-goal-tree
+    capabilities:
+      - goals/hierarchy
+    context: >-
+      The company has a growth mission and no matching quarterly goal; the agent may create
+      goals.
+    query: >-
+      Set a company goal of reaching a thousand signups, with a team goal for launching the
+      website.
+    expected_outcome: >-
+      The saved goals have the requested levels, valid parent relationship and appropriate
+      ownership or an explicit missing-owner question. Chat links to the hierarchy and does not
+      invent progress metrics. A retry reuses the intended goals rather than creating another
+      parallel tree.
+  - id: goals.align-existing-work
+    capabilities:
+      - goals/alignment
+      - projects/defaults
+    context: >-
+      Launch and the growth goal are accessible in the same company.
+    query: >-
+      Tie the Launch project and website task to our growth goal.
+    expected_outcome: >-
+      The agent updates the allowed goal associations on the intended records and confirms them
+      through readback. Cross-company goals are rejected. The response distinguishes changing
+      strategic context from changing task priority, ownership or execution state.
+  - id: goals.explain-purpose
+    capabilities:
+      - goals/navigation
+    context: >-
+      Website task links to Launch and a team goal beneath the company goal.
+    query: >-
+      Why are we doing this website task?
+    expected_outcome: >-
+      The answer follows the real task, project and goal references and explains the chain in
+      plain language with links. Missing associations are described as missing rather than
+      filled with an invented business rationale, and inaccessible goals do not leak through the
+      explanation.

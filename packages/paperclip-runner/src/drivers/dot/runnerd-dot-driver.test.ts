@@ -96,7 +96,7 @@ it.each([
     return handle;
   });
   const getCommand = controlPlane.DurablePrpControlPlane.prototype.getCommand;
-  const commandSpy = vi.spyOn(controlPlane.DurablePrpControlPlane.prototype, "getCommand").mockImplementation(function (id) {
+  const commandSpy = vi.spyOn(controlPlane.DurablePrpControlPlane.prototype, "getCommand").mockImplementation(function (this: controlPlane.DurablePrpControlPlane, id) {
     const command = getCommand.call(this, id);
     // Hold the SDK poll until the real process has exited. The authenticated
     // shutdown receipt and its ACK remain committed in the transport journal.
@@ -112,7 +112,7 @@ it.each([
   });
   let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
   try {
-    session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
+    session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, workingDirectory: root });
     if (kind === "shutdown") {
       await expect(session.close({ reason: "Test complete" })).resolves.toBeUndefined();
       expect(exited).toBe(true);
@@ -132,7 +132,7 @@ it.each([
   }
 }, 45000);
 
-it.each(["local", "custom local directory", "external launcher", "grok external launcher"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
+it.each(["local", "local pending finish", "custom local directory", "external launcher", "grok external launcher", "external launcher empty controller"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
   const root = await mkdtemp(join(tmpdir(), "dot-driver-recovery-"));
   await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
   const input = execution(root, launch === "grok external launcher" ? "grok_bot" : "openai_dot");
@@ -142,25 +142,35 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
   const settlements = new Map<string, unknown>();
   const dispatches: unknown[] = [];
   let controllerPort = 0;
+  const emptyController = launch === "external launcher empty controller";
+  const pendingFinish = launch === "local pending finish";
+  const firstCompletion = vi.fn(() => new Promise<string>(() => {}));
+  const recoveredCompletion = vi.fn(async () => "Completion accepted");
+  let checkpoint: controlPlane.DurablePrpCheckpoint | undefined;
   const options: RunnerdDotDriverOptions = {
     execution: input, stateDirectory: join(root, "state"),
     identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
       normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId },
     runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
-    onSpawn: process => { spawned = process; },
+    onSpawn: async process => { spawned = process; },
     controlPlaneRegistration: async authority => {
+      if (emptyController) {
+        authority.setCheckpointPersistence(async saved => { checkpoint = controlPlane.decodeDurablePrpCheckpoint(new Map(saved.records)); });
+        await authority.flushCheckpoint();
+      }
       await authority.start(controllerPort);
       controllerPort = Number(new URL(authority.connectUrl).port);
       return { connectUrl: authority.connectUrl, release: () => authority.stop() };
     },
     dynamicTools: [{ name: "synthetic_counter", description: "Read a synthetic counter", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
     dynamicToolHandler: async () => ({ count: ++calls }),
+    ...(pendingFinish ? { completionFeedback: firstCompletion } : {}),
     port: { dispatch: async event => { dispatches.push(event); }, settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome); },
       attach: async callback => { send = callback; return async () => { send = undefined; }; } },
   };
-  const runnerState = launch === "local" ? join(root, "state/runner") : join(root, "external-runtime/runner");
+  const runnerState = launch === "local" || pendingFinish ? join(root, "state/runner") : join(root, "external-runtime/runner");
   if (launch === "custom local directory") options.runnerStateDirectory = runnerState;
-  if (["external launcher", "grok external launcher"].includes(launch)) {
+  if (launch.includes("external launcher")) {
     await mkdir(runnerState, { recursive: true });
     options.runnerStateDirectory = runnerState;
     options.readProviderState = async () => {
@@ -168,6 +178,7 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     };
     options.runnerProcessLauncher = spec => {
+      if (emptyController) expect(Object.keys(JSON.parse(checkpoint!.records.get("header")!).state.tickets)).toHaveLength(1);
       expect(spec.environment).not.toHaveProperty("OPENAI_API_KEY");
       expect(spec.args).toContain(runnerState);
       const child = spawn(spec.command, [...spec.args], { cwd: runnerState, env: spec.environment, stdio: "ignore" });
@@ -179,7 +190,7 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
     };
   }
   const driver = new RunnerdDotDriver(options);
-  let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
+  let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, workingDirectory: root });
   const operation = (action: ExternalProviderOperation["action"], args: Record<string, unknown>): ExternalProviderOperation => ({
     requestId: randomUUID(), bindingId: input.provider.binding.bindingId, bindingGeneration: 1, runId: input.binding.runId,
     normalizedSessionId: input.session.normalizedSessionId!, turnId: options.identity.turnId, assignmentRevision: 1,
@@ -196,13 +207,37 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
       await send!(renewal);
       await vi.waitFor(() => expect(settlements.get(renewal.requestId)).toMatchObject({ status: "renewed" }), { timeout: 10000 });
     }
+    const finish = operation("tool", { name: "paperclip_finish", arguments: {
+      schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Read the counter",
+      completionClaim: { contractRevision: "1", objectiveSatisfied: true, criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+      evidence: [], verification: [], attentionRequests: [], artifacts: [],
+    } });
+    if (pendingFinish) {
+      await send!(finish);
+      await vi.waitFor(() => expect(firstCompletion).toHaveBeenCalledOnce(), { timeout: 10000 });
+      expect(settlements.has(finish.requestId)).toBe(false);
+    }
     const snapshot = await session.snapshot();
     expect(snapshot).toMatchObject({ providerSessionId: null, activeTurnId: options.identity.turnId, providerRecoveryPolicy: "same_session_only" });
     await session.detachControllerForRestart!();
-    const recoveredDriver = new RunnerdDotDriver({ ...options, adoptExistingRunner: { ...spawned!, isAlive: () => true } });
+    if (emptyController) {
+      await rm(options.stateDirectory, { recursive: true });
+      checkpoint!.restoreSessionDirectory(options.stateDirectory);
+    }
+    const recoveredDriver = new RunnerdDotDriver({ ...options,
+      ...(pendingFinish ? { completionFeedback: recoveredCompletion } : {}),
+      ...(emptyController ? { runnerBinary: join(root, "unavailable-old-runner"),
+        runnerArtifact: { version: checkpoint!.runnerVersion, digest: checkpoint!.runnerDigest } } : {}),
+      adoptExistingRunner: { ...spawned!, isAlive: () => true } });
     const recovered = await recoveredDriver.recoverSession(snapshot, { signal: new AbortController().signal });
     expect(recovered.recovered).toBe(true);
     session = recovered.session!;
+    if (pendingFinish) {
+      expect(options.recoverSemanticToolInput).toBeUndefined();
+      await vi.waitFor(() => expect(settlements.get(finish.requestId)).toMatchObject({ status: "completed", isError: false }), { timeout: 10000 });
+      expect(recoveredCompletion).toHaveBeenCalledOnce();
+      expect(firstCompletion).toHaveBeenCalledOnce();
+    }
     await send!(call);
     expect(calls).toBe(1);
     expect(dispatches).toHaveLength(1);

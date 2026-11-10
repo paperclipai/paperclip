@@ -11,6 +11,12 @@ export const GROK_PUBLIC_INSTALL_LIFECYCLE = [
   'npm', 'rebuild', '--offline', '--ignore-scripts=false', '--dangerously-allow-all-scripts',
 ];
 
+export function grokPublicInstallVersion(sourceRevision) {
+  assert.match(sourceRevision, /^[a-f0-9]{40}$/);
+  // An all-numeric hash with a leading zero is not a valid numeric prerelease.
+  return `0.0.0-grok-verify.g${sourceRevision.slice(0, 12)}`;
+}
+
 export function runMacInitialInstallWithDiagnostics(install, { sourceRevision, platform, architecture, cacheDirectory, receiptPath }) {
   const started = performance.now();
   try {

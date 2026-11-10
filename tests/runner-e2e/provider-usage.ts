@@ -1,5 +1,5 @@
 import { usdToUnits } from "../../packages/shared/src/money.js";
-import type { EvalCostObservation } from "./cost-ledger.js";
+import { validEvalLedgerId, type EvalCostObservation } from "./cost-ledger.js";
 
 type Tokens = NonNullable<EvalCostObservation["tokens"]>;
 type Row = Record<string, unknown>;
@@ -96,7 +96,8 @@ export class ProviderUsageAccumulator {
   private usage: Row = {};
   private final = false;
   private readonly cachePolicy: ReturnType<typeof openAiRequestCachePolicy>;
-  constructor(readonly provider: "openai" | "anthropic", request?: unknown) {
+  constructor(readonly provider: "openai" | "anthropic", request?: unknown,
+    private readonly price?: Pick<EvalModelPrice, "provider" | "model" | "responseModels">) {
     this.cachePolicy = provider === "openai" ? openAiRequestCachePolicy(request) : undefined;
   }
   observe(event: unknown) {
@@ -124,7 +125,9 @@ export class ProviderUsageAccumulator {
   receipt() {
     const receipt = normalizeProviderUsage(this.provider, { ...this.body, usage: this.usage });
     const details = row(this.usage.input_tokens_details);
-    if (this.cachePolicy && receipt.model === this.cachePolicy.model && receipt.complete && receipt.tokens.cachedWrite! > 0
+    const policyMatchesResponse = this.cachePolicy && (receipt.model === this.cachePolicy.model
+      || this.price?.provider === this.provider && this.price.model === this.cachePolicy.model && matchesPriceResponseModel(this.price, receipt.model));
+    if (this.cachePolicy && policyMatchesResponse && receipt.complete && receipt.tokens.cachedWrite! > 0
         && !("cache_write_tokens_details" in details)) {
       receipt.cacheWrite30m = this.cachePolicy.ttl === "30m" ? receipt.tokens.cachedWrite : 0;
       receipt.cacheWrite12h = this.cachePolicy.ttl === "12h" ? receipt.tokens.cachedWrite : 0;
@@ -146,13 +149,29 @@ export interface EvalTokenRates {
 export interface EvalModelPrice extends EvalTokenRates {
   provider: "openai" | "anthropic";
   model: string;
+  responseModels?: string[];
   version: string;
   sourceUrl: string;
   longContext?: { aboveInputTokens: number; rates: EvalTokenRates };
 }
 
+export function validatePriceResponseModels(price: Pick<EvalModelPrice, "model" | "responseModels">): void {
+  const models = price.responseModels;
+  if (models === undefined) return;
+  if (!Array.isArray(models) || models.length < 1 || models.length > 16 || new Set(models).size !== models.length) {
+    throw new Error("Invalid eval price response model mapping");
+  }
+  for (const model of models) {
+    if (!validEvalLedgerId(model) || model === price.model) throw new Error("Invalid eval price response model mapping");
+  }
+}
+
+export function matchesPriceResponseModel(price: Pick<EvalModelPrice, "model" | "responseModels">, model: unknown): boolean {
+  return typeof model === "string" && (model === price.model || Array.isArray(price.responseModels) && price.responseModels.includes(model));
+}
+
 export function estimateProviderCost(receipt: ProviderUsageReceipt, price: EvalModelPrice): string | null {
-  if (!receipt.complete || receipt.model !== price.model || receipt.provider !== price.provider) return null;
+  if (!receipt.complete || !matchesPriceResponseModel(price, receipt.model) || receipt.provider !== price.provider) return null;
   const { tokens } = receipt;
   const totalInput = tokens.input! + tokens.cachedRead! + tokens.cachedWrite!;
   if (!Number.isSafeInteger(totalInput)) return null;

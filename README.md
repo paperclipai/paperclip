@@ -504,7 +504,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Better Budgeting
 - ✅ Agent Reviews and Approvals
 - ✅ Multiple Human Users
-- ✅ Cloud / Sandbox agents (e2b, Cloudflare, Daytona, Modal, Novita, self-hosted Kubernetes)
+- ✅ Cloud / Sandbox agents (e2b, Cloudflare, Daytona, Modal, Novita, boxd, self-hosted Kubernetes)
 - ✅ Artifacts & Work Products
 - ✅ Deep Planning (planning mode, revisioned plans, plan approvals)
 - ✅ Enforced Outcomes (watchdogs, recovery actions, review gates)

@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "grok_dispatch_prepared_idx" ON "grok_bot_dispatches" USING btree ("created_at","id") WHERE "grok_bot_dispatches"."status" = 'prepared';

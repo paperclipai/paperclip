@@ -1,5 +1,7 @@
+import { groupImageResources } from "./image-resources";
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { TaskChatRunHealthBanner } from "./TaskChatRunHealthBanner";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { Check, ChevronRight, X } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -108,12 +110,13 @@ export function TaskChatTurn({
                 : "Worked"}
           </span> : null}
         </div> : null}
+        <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />
         {item.items.length > 0 ? (
           <div
             className="flex min-w-0 flex-col gap-2 py-1"
             data-testid="task-chat-turn-timeline"
           >
-            {item.items.map((child) => (
+            {groupImageResources(item.items).map((child) => (
               <div
                 className="min-w-0"
                 key={child.id}
@@ -267,6 +270,7 @@ export function TaskChatTurn({
       ) : (
         header
       )}
+      <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />
       <div
         className="tc-turn-fold"
         data-folded={folded ? "true" : "false"}
@@ -274,7 +278,7 @@ export function TaskChatTurn({
       >
         <div>
           <div className="flex flex-col gap-2 pt-1">
-            {historyMounted && foldedItems.map((child) => (
+            {historyMounted && groupImageResources(foldedItems).map((child) => (
               <div key={child.id}>{renderChild(child)}</div>
             ))}
           </div>

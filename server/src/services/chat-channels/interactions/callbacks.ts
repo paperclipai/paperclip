@@ -1,3 +1,7 @@
+import { notifyChatEndpointConfiguration } from "../configuration-work-notifications.js";
+import { notifyChatConnectionHealth } from "../connection-health-notifications.js";
+import { slackQuestionFormValidationError } from "../slack/question-forms.js";
+import { chatInteractionForm, chatItemVerdicts } from "../../chat-interaction-forms.js";
 import { createDiscordQuestionForms } from "../discord/question-forms.js";
 
 import { createProviderEffects, type ProviderEffectPayload } from "../provider-effects.js";
@@ -38,6 +42,7 @@ import type {
   ChatAdapterCapabilities,
   ChatProvider,
   SafeChatPublicationPayload,
+  IssueThreadInteraction,
 } from "@paperclipai/shared";
 
 import {
@@ -74,6 +79,8 @@ import {
 import {
   enqueueTerminalIssueInteractionChatPublications,
   nativeChatQuestion,
+  nativeChatMultiQuestion,
+  nativeChatCustomQuestion,
   TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
   telegramChatSdkCallbackData,
 } from "../../chat-interaction-publications.js";
@@ -104,10 +111,11 @@ import type {
 } from "chat";
 
 import type { EndpointRecord } from "../runtime-types.js";
-import { createTelegramConfirmationActions } from "../telegram/confirmation-actions.js";
+import { createChatConfirmationActions } from "./confirmation-actions.js";
 type ResourceRow = typeof chatEndpointResources.$inferSelect;
 type PrincipalResolution = { principal: typeof chatExternalPrincipals.$inferSelect; userId: string | null; linkedDenied: boolean };
 type InteractionCallbacksOptions = {
+  heartbeat: import("../../issue-assignment-wakeup.js").IssueAssignmentWakeupDeps;
   CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities>;
   MAX_ERROR_TEXT: number;
   actionThreadMatchesConversation: (provider: ChatProvider, actionThreadId: string, conversationThreadId: string) => boolean;
@@ -137,8 +145,8 @@ type InteractionCallbacksOptions = {
 export function createChatInteractionCallbacks(db: Db, options: InteractionCallbacksOptions) {
   const { CAPABILITIES, MAX_ERROR_TEXT, actionThreadMatchesConversation, nonDirectDestinationAllowed, sameTeamsThreadIdentity, ensurePrincipal, endpointRecord, runtimeCallbackRecord, runtimeCallbackEndpoint, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, recordCurrentMicrosoftTeamsRoute, lockTelegramCallbackNoticeAuthority, stageProviderEffect, scheduleProviderEffect, invalidateRuntime, redactError, persistence, questionResponses, scheduleMessageProcessing, processPendingPublications } = options;
   const { handleDiscordFormCorrection, acceptDiscordQuestionForm } = createDiscordQuestionForms(db, { requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, persistence });
-  const { reconcileTerminalConfirmationActions, handleTelegramConfirmation } = createTelegramConfirmationActions(db, {
-    requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, scheduleMessageProcessing, processPendingPublications,
+  const { reconcileTerminalConfirmationActions, handleChatConfirmation, registerTerminalConfirmationWork } = createChatConfirmationActions(db, {
+    heartbeat: options.heartbeat, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, scheduleMessageProcessing, processPendingPublications,
     get confirmationResolutionPersistBarrier() { return options.confirmationResolutionPersistBarrier; },
   });
 
@@ -410,6 +418,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
             ["active"],
           );
           if (currentEndpoint) {
+            await notifyChatEndpointConfiguration(tx, currentEndpoint);
             await tx
               .update(chatEndpoints)
               .set({
@@ -420,6 +429,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
                 updatedAt: processedAt,
               })
               .where(eq(chatEndpoints.id, endpoint.id));
+            await notifyChatConnectionHealth(tx, currentEndpoint);
             await tx
               .update(toolConnections)
               .set({
@@ -777,7 +787,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
           .then((rows) => rows[0] ?? null);
         if (occupied && occupied.publicationId !== current.id) return null;
         const reconciledAt = new Date();
-        await notifyChatPublicationWork(tx);
+        await notifyChatPublicationWork(tx, current.state === "delivery_unknown" ? current : undefined);
         const [reconciled] = await tx
           .update(chatPublications)
           .set({
@@ -896,10 +906,10 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
       (!correction &&
         event.provider !== "telegram" &&
         event.event.value !== payload.interactionId) ||
-      !payload.card?.actions?.some(
-        (action) =>
-          action.type === "callback" && action.actionId === sourceActionId,
-      )
+      !(payload.card?.actions?.some(
+        (action) => action.type === "callback" && action.actionId === sourceActionId,
+      ) || payload.card?.selection?.options.some(option => option.actionId === sourceActionId) ||
+        payload.card?.selection?.multiple && payload.card.selection.actionId === sourceActionId)
     ) {
       return deny(safelyKnown);
     }
@@ -956,12 +966,11 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
       }
       return deny(safelyKnown);
     }
-    if (interaction.kind === "request_confirmation") {
-      return handleTelegramConfirmation({ record, event, runtimeContext, conversation, principal: { ...principal, userId: principal.userId }, issued, interaction, deny, safelyKnown });
+    if (interaction.kind === "request_confirmation" || event.provider === "slack" && (interaction.kind === "request_checkbox_confirmation" || interaction.kind === "suggest_tasks" || interaction.kind === "connection_intent")) {
+      return handleChatConfirmation({ record, event, runtimeContext, conversation, principal: { ...principal, userId: principal.userId }, issued, interaction, deny, safelyKnown });
     }
-    if (interaction.kind !== "ask_user_questions") {
-      return deny(safelyKnown);
-    }
+    const formInteraction = chatInteractionForm(interaction, event.provider);
+    if (!formInteraction) return deny(safelyKnown);
     if (isChatQuestionFormOpenActionId(sourceActionId)) {
       if (
         event.provider !== "slack" &&
@@ -1001,7 +1010,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
             companyId: record.endpoint.companyId,
             endpointId: record.endpoint.id,
             conversationId: conversation.id,
-            interaction,
+            interaction: formInteraction,
             openActionId: sourceActionId,
           });
           if (!resolved || resolved.publicationId !== issued.publication.id) {
@@ -1167,17 +1176,28 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
       tokenPayload.publicationId !== issued.publication.id ||
       tokenPayload.interactionId !== payload.interactionId ||
       typeof tokenPayload.questionId !== "string" ||
-      typeof tokenPayload.optionId !== "string"
+      (typeof tokenPayload.optionId !== "string" && !Array.isArray(tokenPayload.selectionOptions))
     ) {
       return deny(safelyKnown);
     }
 
-    const question = nativeChatQuestion(interaction);
-    const option = question?.options.find(
-      (candidate) => candidate.id === tokenPayload.optionId,
-    );
-    if (!question || question.id !== tokenPayload.questionId || !option)
-      return deny(safelyKnown);
+    if (interaction.kind !== "ask_user_questions") return deny(safelyKnown);
+    const multiple = event.provider === "slack" && Array.isArray(tokenPayload.selectionOptions);
+    const question = multiple ? nativeChatMultiQuestion(interaction) : nativeChatQuestion(interaction, event.provider === "slack" ? 100 : undefined) ?? (event.provider === "slack" ? nativeChatCustomQuestion(interaction) : null);
+    if (!question || question.id !== tokenPayload.questionId) return deny(safelyKnown);
+    const selected = multiple ? event.selectionValues : undefined;
+    if (multiple && (!selected || new Set(selected).size !== selected.length)) return deny(safelyKnown);
+    const optionIds = multiple ? selected!.map(value => {
+      const mapping = (tokenPayload.selectionOptions as Array<{ value?: unknown; optionId?: unknown }>).find(item => item.value === value);
+      return typeof mapping?.optionId === "string" ? mapping.optionId : null;
+    }) : [tokenPayload.optionId as string];
+    const selectedOptions = optionIds.map(id => question.options.find(option => option.id === id));
+    if (selectedOptions.some(option => !option)) return deny(safelyKnown);
+    if (multiple && !optionIds.length && question.required !== false) {
+      await event.event.thread?.postEphemeral(event.event.user, { markdown: "Choose at least one option, then select Submit answer." }, { fallbackToDM: false });
+      return;
+    }
+    const answerLabel = selectedOptions.map(option => option!.label).join("; ") || "No options selected";
 
     await options.questionResolutionPersistBarrier?.();
 
@@ -1201,11 +1221,11 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
         issue,
         interaction.id,
         {
-          answers: [{ questionId: question.id, optionIds: [option.id] }],
+          answers: [{ questionId: question.id, optionIds: optionIds as string[] }],
         },
         { userId: principal.userId },
         {
-          beforeResolveInTransaction: async (tx) => {
+          beforeResolveInTransaction: async (tx: DbTransaction) => {
             await requireCurrentExternalActionAuthorization(tx, {
               conversationId: conversation.id,
               endpointId: record.endpoint.id,
@@ -1214,7 +1234,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
               runtimeContext,
             });
           },
-          afterResolveInTransaction: async (tx, resolved) => {
+          afterResolveInTransaction: async (tx: DbTransaction, resolved: IssueThreadInteraction) => {
             const [completed] = await tx
               .update(chatActions)
               .set({
@@ -1225,6 +1245,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
                   messageId: event.event.messageId,
                   actionId: event.event.actionId,
                   value: event.event.value ?? null,
+                  ...(multiple ? { selectionValues: selected } : {}),
                 },
                 result: {
                   interactionId: resolved.id,
@@ -1298,13 +1319,13 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
                 payload: projectSafeChatPublication({
                   classification: "external",
                   source: "issue_interaction",
-                  text: `Answered: ${option.label}.`,
+                  text: `Answered: ${answerLabel}.`,
                   interaction: {
                     id: resolved.id,
                     card: {
                       kind: "question",
                       title: question.prompt,
-                      body: `Answered: ${option.label}.`,
+                      body: `Answered: ${answerLabel}.`,
                       actions: [],
                     },
                   },
@@ -1644,6 +1665,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
     const interaction = (
       await issueThreadInteractionService(db).listForIssue(conversation.issueId)
     ).find((candidate) => candidate.id === loaded.interactionId);
+    const formInteraction = interaction ? chatInteractionForm(interaction, event.provider) : null;
     const discordReplayAnswersMatch = (
       resolved: typeof interaction,
     ): boolean => {
@@ -1673,7 +1695,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
     ) =>
       interaction?.companyId === record.endpoint.companyId &&
       interaction.issueId === conversation.issueId &&
-      interaction.kind === "ask_user_questions" &&
+      (interaction.kind === "ask_user_questions" || event.provider === "slack" && interaction.kind === "request_item_verdicts") &&
       interaction.status === "answered" &&
       interaction.resolvedByUserId === principal.userId &&
       current?.status === "processed" &&
@@ -1716,7 +1738,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
       !interaction ||
       interaction.companyId !== record.endpoint.companyId ||
       interaction.issueId !== conversation.issueId ||
-      interaction.kind !== "ask_user_questions" ||
+      !formInteraction ||
       interaction.status !== "pending"
     ) {
       // Another callback can commit the same token between the initial token
@@ -1727,7 +1749,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
       if (
         interaction?.companyId === record.endpoint.companyId &&
         interaction.issueId === conversation.issueId &&
-        interaction.kind === "ask_user_questions" &&
+        (interaction.kind === "ask_user_questions" || event.provider === "slack" && interaction.kind === "request_item_verdicts") &&
         interaction.status === "answered"
       ) {
         try {
@@ -1775,20 +1797,20 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
     const validation = validateChatQuestionFormSubmission({
       callbackId: event.event.callbackId,
       privateMetadata: event.event.privateMetadata,
-      interaction,
+      interaction: formInteraction,
       payload: loaded.payload,
       values: event.event.values,
     });
     if (!validation.ok) {
       if (validation.code === "invalid_form") {
         if (event.provider === "discord") {
-          return handleDiscordFormCorrection({ record, event, runtimeContext, conversation, principal: { ...principal, userId: principal.userId }, loaded, originalPublication, providerMessageId, interaction, payload, validation, deny });
+          return handleDiscordFormCorrection({ record, event, runtimeContext, conversation, principal: { ...principal, userId: principal.userId }, loaded, originalPublication, providerMessageId, interaction: formInteraction, payload, validation, deny });
         }
         return chatQuestionFormValidationResponse({
           provider: event.provider,
           callbackId: event.event.callbackId,
           privateMetadata: event.event.privateMetadata,
-          interaction,
+          interaction: formInteraction,
           payload: loaded.payload,
           values: event.event.values,
         });
@@ -1827,19 +1849,12 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
       );
     }
     await options.questionResolutionPersistBarrier?.();
-    let answered: Awaited<
-      ReturnType<
-        ReturnType<typeof issueThreadInteractionService>["answerQuestions"]
-      >
-    >;
+    const itemVerdicts = chatItemVerdicts(interaction, validation.answers, loaded.payload);
+    if (itemVerdicts && Object.keys(itemVerdicts.errors).length) return { action: "errors", errors: itemVerdicts.errors };
+    let answered: IssueThreadInteraction;
     try {
-      answered = await issueThreadInteractionService(db).answerQuestions(
-        issue,
-        interaction.id,
-        { answers: validation.answers },
-        { userId: principal.userId },
-        {
-          beforeResolveInTransaction: async (tx) => {
+      const mutationOptions = {
+          beforeResolveInTransaction: async (tx: DbTransaction) => {
             await requireCurrentExternalActionAuthorization(tx, {
               conversationId: conversation.id,
               endpointId: event.endpointId,
@@ -1848,7 +1863,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
               runtimeContext,
             });
           },
-          afterResolveInTransaction: async (tx, resolved) => {
+          afterResolveInTransaction: async (tx: DbTransaction, resolved: IssueThreadInteraction) => {
             const claimed = await claimChatQuestionFormSubmission(tx, {
               actionRowId: loaded.actionRowId,
               principalId: principal.principal.id,
@@ -1900,8 +1915,10 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
               },
             });
           },
-        },
-      );
+      };
+      answered = itemVerdicts
+        ? (await issueThreadInteractionService(db).submitItemVerdicts(issue, interaction.id, { verdicts: itemVerdicts.verdicts }, { userId: principal.userId }, mutationOptions)).interaction
+        : await issueThreadInteractionService(db).answerQuestions(issue, interaction.id, { answers: validation.answers }, { userId: principal.userId }, mutationOptions);
     } catch (error) {
       if (isExternalActionAuthorizationChange(error)) {
         await db.transaction(async (tx) => {
@@ -1953,6 +1970,10 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
           error && typeof error === "object"
             ? (error as { status?: unknown }).status
             : null;
+        if (event.provider === "slack") {
+          const response = slackQuestionFormValidationError(error, loaded.payload.fields);
+          if (response) return response;
+        }
         if (status === 403) {
           return deny(
             "chat_modal_resolution_not_authorized",
@@ -2003,9 +2024,10 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
       );
     }
     scheduleMessageProcessing(async () => {
-      await questionResponses.deliver(answered.id);
+      if (answered.kind === "ask_user_questions") await questionResponses.deliver(answered.id);
+      else await processPendingPublications();
     });
     return acceptedResponse();
   }
-  return { handleAction, handleModalSubmit, reconcileTerminalConfirmationActions };
+  return { handleAction, handleModalSubmit, reconcileTerminalConfirmationActions, registerTerminalConfirmationWork };
 }

@@ -1,4 +1,5 @@
 import type { ChatEndpointSetupState } from "@paperclipai/shared";
+import type { ConnectionManagementContext } from "../../connection-management.js";
 import type { VerifiedProviderIdentity } from "../runtime-types.js";
 
 import { createSetupProbes } from "../setup-probes.js";
@@ -77,8 +78,8 @@ type GitHubAppSetupOptions = {
   reconcileProviderResourceRows: ReturnType<typeof createChatResourceReconciliation>["reconcileProviderResourceRows"];
   listResources: ReturnType<typeof createChatResourceReconciliation>["listResources"];
   replaceResources: ReturnType<typeof createChatResourceReconciliation>["replaceResources"];
-  update: (endpointId: string, input: UpdateChatEndpointInput, actorUserId?: string | null) => Promise<ChatEndpoint>;
-  configure: (endpointId: string, input: ConfigureChatEndpointInput, actorUserId?: string | null) => Promise<ChatEndpoint>;
+  update: (endpointId: string, input: UpdateChatEndpointInput, actorUserId?: string | null, managementContext?: ConnectionManagementContext) => Promise<ChatEndpoint>;
+  configure: (endpointId: string, input: ConfigureChatEndpointInput, actorUserId?: string | null, managementContext?: ConnectionManagementContext) => Promise<ChatEndpoint>;
   test: ReturnType<typeof createSetupProbes>["test"];
   githubWizardOrigin?: string | null;
   handleWebhook: (publicId: string, provider: "github", request: Request) => Promise<Response>;
@@ -88,7 +89,9 @@ export function createGitHubAppSetup(db: Db, options: GitHubAppSetupOptions) {
   const { endpointRecord, withCredentialMutationLease, normalizedCredentials, verifyCredentials, nativeBotIdentityMatches, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict, persistCredentials, resolveCredentials, fetchImpl, get, getPublicBaseUrl, getWebhookPublicBaseUrl, prepareProviderInventory, reconcileProviderResourceRows, listResources, replaceResources, update, configure, test, handleWebhook } = options;
 
 
-  async function storeGitHubApp(endpointId: string, userId: string, credentials: Record<string, string>, source: "manifest" | "existing_app" = "existing_app") {
+  async function storeGitHubApp(endpointId: string, userId: string, credentials: Record<string, string>, source: "manifest" | "existing_app" = "existing_app", managementContext?: ConnectionManagementContext) {
+    await managementContext?.reauthorize();
+    if (managementContext?.actor.type === "agent") throw forbidden("GitHub signing credentials require a human setup handoff");
     const initial = await endpointRecord(endpointId);
     if (!initial || initial.endpoint.provider !== "github") throw notFound("GitHub bot not found");
     await withCredentialMutationLease(initial.endpoint, async credentialLease => {
@@ -98,6 +101,7 @@ export function createGitHubAppSetup(db: Db, options: GitHubAppSetupOptions) {
       const identity = await verifyCredentials("github", normalized);
       if (record.endpoint.botExternalId && !nativeBotIdentityMatches("github", record.endpoint, identity)) throw conflict("This App belongs to a different bot. Create a new connection instead.");
       await assertNativeBotIdentityAvailable(record.endpoint, identity);
+      await managementContext?.reauthorize();
       // Claim the globally unique App identity before writing credentials.
       // A losing concurrent registration must never persist usable secrets.
       if (!record.endpoint.botExternalId) {
@@ -119,6 +123,7 @@ export function createGitHubAppSetup(db: Db, options: GitHubAppSetupOptions) {
           throw error;
         }
       }
+      await managementContext?.reauthorize();
       await persistCredentials(record.endpoint, normalized, credentialLease, userId);
       const slug = identity.botUsername?.replace(/\[bot\]$/, "");
       if (!slug || !/^[a-z0-9-]+$/.test(slug)) throw unprocessable("GitHub did not identify this App");
@@ -146,7 +151,7 @@ export function createGitHubAppSetup(db: Db, options: GitHubAppSetupOptions) {
             sql`${chatGitHubRegistrations.handoff} ? 'manifestClaimId'`,
           ));
         }
-        await logActivity(tx as unknown as Db, { companyId: record.endpoint.companyId, actorType: "user", actorId: userId, action: "chat_github.app_connected", entityType: "tool_connection", entityId: record.endpoint.connectionId, details: { endpointId, appId: identity.botExternalId } });
+        await logActivity(tx as unknown as Db, { companyId: record.endpoint.companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }), action: "chat_github.app_connected", entityType: "tool_connection", entityId: record.endpoint.connectionId, details: { endpointId, appId: identity.botExternalId } });
       });
     });
     // Manifest registration can send its ping before the credential exchange
@@ -167,10 +172,11 @@ export function createGitHubAppSetup(db: Db, options: GitHubAppSetupOptions) {
 
   const githubRegistration = githubChatRegistrationService(db, {
     publicOrigin: () => getPublicBaseUrl(), webhookOrigin: () => getWebhookPublicBaseUrl(), fetch: fetchImpl,
-    storeApp: async (endpointId, userId, app) => { await storeGitHubApp(endpointId, userId, { appId: app.appId, privateKey: app.privateKey, webhookSecret: app.webhookSecret, ...(app.clientId ? { clientId: app.clientId } : {}), ...(app.clientSecret ? { clientSecret: app.clientSecret } : {}) }, "manifest"); },
+    storeApp: async (endpointId, userId, app, managementContext) => { await storeGitHubApp(endpointId, userId, { appId: app.appId, privateKey: app.privateKey, webhookSecret: app.webhookSecret, ...(app.clientId ? { clientId: app.clientId } : {}), ...(app.clientSecret ? { clientSecret: app.clientSecret } : {}) }, "manifest", managementContext); },
   });
 
-  async function refreshGitHubRepositories(endpointId: string, userId: string) {
+  async function refreshGitHubRepositories(endpointId: string, userId: string, managementContext?: ConnectionManagementContext) {
+    await managementContext?.reauthorize();
     const initial = await endpointRecord(endpointId);
     if (!initial || initial.endpoint.provider !== "github") throw notFound("GitHub bot not found");
     await withCredentialMutationLease(initial.endpoint, async lease => {
@@ -178,6 +184,7 @@ export function createGitHubAppSetup(db: Db, options: GitHubAppSetupOptions) {
       if (!record) throw notFound("GitHub bot not found");
       const credentials = await resolveCredentials(record.endpoint);
       const prepared = await prepareProviderInventory(record.endpoint, credentials);
+      await managementContext?.reauthorize();
       if (prepared.credentials.installationId !== credentials.installationId) await persistCredentials(record.endpoint, prepared.credentials, lease, userId);
       if (prepared.inventory) await reconcileProviderResourceRows(record.endpoint, prepared.inventory, lease);
       await lease.assertOwned();
@@ -188,7 +195,7 @@ export function createGitHubAppSetup(db: Db, options: GitHubAppSetupOptions) {
 
   const githubWizard = githubChatWizardService(db, {
     origin: () => getPublicBaseUrl() ?? options.githubWizardOrigin ?? null, fetch: fetchImpl, startDirect: githubRegistration.start, completeDirect: githubRegistration.complete, resumeDirect: githubRegistration.resumeRegistration,
-    storeApp: (id, userId, credentials) => storeGitHubApp(id, userId, credentials, "manifest"),
+    storeApp: (id, userId, credentials, managementContext) => storeGitHubApp(id, userId, credentials, "manifest", managementContext),
     storeCredentials: async (id, userId, additional) => {
       const record = await endpointRecord(id);
       if (!record || record.endpoint.provider !== "github") throw notFound("GitHub bot not found");
@@ -200,11 +207,11 @@ export function createGitHubAppSetup(db: Db, options: GitHubAppSetupOptions) {
       });
     },
     refreshRepositories: refreshGitHubRepositories, resources: listResources, replaceResources,
-    configure: async (id, userId) => {
-      await update(id, { allowGroupChats: true }, userId);
-      return configure(id, { action: "configure" }, userId);
+    configure: async (id, userId, context) => {
+      await update(id, { allowGroupChats: true }, userId, context);
+      return configure(id, { action: "configure" }, userId, context);
     },
-    finish: (id, userId) => test(id, { optionalSlackTestForUser: userId }),
+    finish: (id, userId, context) => test(id, { optionalSlackTestForUser: userId }, context),
   });
   const unregisterGitHubCloudIngress = registerGitHubBotCloudIngress(
     db,

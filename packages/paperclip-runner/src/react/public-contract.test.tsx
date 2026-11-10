@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { SessionItemSnapshot } from "../reducer/session-reducer.js";
-import type { TranscriptEntry } from "../browser/transcript-model.js";
+import type { TranscriptEntry, TranscriptItemEntry } from "../browser/transcript-model.js";
 import { Composer } from "./components/composer.js";
 import { Conversation } from "./components/conversation.js";
 import { parseStructuredResponse } from "./components/message.js";
@@ -17,7 +17,7 @@ const item: SessionItemSnapshot = {
   text: "Canonical answer",
 };
 
-const entries: TranscriptEntry[] = [
+const entries: TranscriptItemEntry[] = [
   {
     kind: "item",
     key: "item:assistant-1",

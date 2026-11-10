@@ -2,6 +2,9 @@ import { validateRetainedRunnerResult } from "./result-validation.js";
 import { createHash } from "node:crypto";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
+/** Presentation aliases only; retained execution identities never change. */
+export const retainedSuiteLabels: Readonly<Record<string, string>> = { "qa-basics": "Basic app journeys" };
+
 /** Display-only metadata: never load or reconstruct executable branch fixtures. */
 export interface ReportExecution {
   id: string;
@@ -26,6 +29,9 @@ export function parseReportExecutionId(id: string) {
     throw new Error("Report execution identity must be a string");
   const journey = /^(product-journeys)\.([a-z0-9][a-z0-9_-]*)\.([a-z0-9][a-z0-9_-]*)\.(local|daytona)\.([a-z0-9][a-z0-9_-]*)$/.exec(id);
   if (journey && id.length <= 512) return { suiteId: journey[1]!, targetId: journey[2]!, profileId: journey[3]!, environmentId: journey[4]! as "local" | "daytona", caseId: journey[5]! };
+  // Only the chat catalog has a two-part area.case task identity.
+  const chat = /^(chat-features)\.([a-z0-9][a-z0-9_-]*)\.(local|daytona)\.([a-z0-9][a-z0-9_-]*\.[a-z0-9][a-z0-9_-]*)$/.exec(id);
+  if (chat && id.length <= 512) return { suiteId: chat[1]!, profileId: chat[2]!, environmentId: chat[3]! as "local" | "daytona", caseId: chat[4]!, targetId: undefined };
   const match =
     /^([a-z0-9][a-z0-9_-]*)\.([a-z0-9][a-z0-9_-]*)\.(local|daytona)\.([a-z0-9][a-z0-9_-]*)$/.exec(
       id,
@@ -92,13 +98,16 @@ export function discoverReportCatalog(input: {
       .sort();
     const suite = knownSuites.get(identity.suiteId) ?? {
       id: identity.suiteId,
-      label: identity.suiteId,
+      label: retainedSuiteLabels[identity.suiteId] ?? identity.suiteId,
       description:
         "Suite discovered from retained campaign identities; full suite size is not known to this publisher.",
       expectedMatrixSize: suiteIds.length,
     };
     const knownProfile = input.catalog.find(
-      (execution) => execution.profile.id === identity.profileId,
+      (execution) => execution.suite.id === identity.suiteId && execution.profile.id === identity.profileId,
+    )?.profile ?? input.catalog.find(
+      (execution) => execution.profile.id === identity.profileId &&
+        (!result || execution.profile.provider === result.provider && execution.profile.model === result.model),
     )?.profile;
     const knownEnvironment = input.catalog.find(
       (execution) => execution.environment.id === identity.environmentId,

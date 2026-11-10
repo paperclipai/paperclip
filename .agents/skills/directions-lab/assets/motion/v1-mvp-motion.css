@@ -1,0 +1,21 @@
+[data-direction="<id>"] [data-rotate] {
+  transform: rotate(var(--<p>-base, 0deg));
+}
+
+[data-direction="<id>"] {
+  --<p>-hover-ease: 300ms cubic-bezier(0.3, 0, 0.1, 1);
+}
+@media (prefers-reduced-motion: no-preference) {
+  html[data-lab-anim="1"] [data-direction="<id>"] :is([data-rotate][data-spread], [data-front]) {
+    transition: transform var(--<p>-hover-ease);
+  }
+  html[data-lab-anim="1"] [data-direction="<id>"] button:hover [data-front] {
+    transform: translateY(-6px);
+  }
+  html[data-lab-anim="1"] [data-direction="<id>"] button:hover [data-spread="left"] {
+    transform: rotate(calc(var(--<p>-base, 0deg) + 5deg));
+  }
+  html[data-lab-anim="1"] [data-direction="<id>"] button:hover [data-spread="right"] {
+    transform: rotate(calc(var(--<p>-base, 0deg) - 5deg));
+  }
+}

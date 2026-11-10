@@ -1,3 +1,5 @@
+import { notifyChatResponseAvailability } from "../../chat-response-availability.js";
+import { notifyVoicePublication } from "../../voice/voice-reply-notifications.js";
 import { createGitHubPublicationPolicy } from "../github/publication-policy.js";
 
 import { createTeamsFileDelivery } from "../microsoft-teams/file-delivery.js";
@@ -153,7 +155,8 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
         ? classified.retryAfterMs
         : Math.min(60_000, 2 ** Math.max(0, attempts) * 1_000);
     const result = await db.transaction(async (tx) => {
-      await notifyChatPublicationWork(tx);
+      await notifyChatPublicationWork(tx, terminal ? publication : undefined);
+      if (!terminal) await notifyChatResponseAvailability(tx, publication);
       const [settled] = await tx
         .update(chatPublications)
         .set({
@@ -379,7 +382,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
     }
     if (explicitSlackDelivery === "delivered") {
       await db.transaction(async (tx) => {
-        await notifyChatPublicationWork(tx);
+        await notifyChatPublicationWork(tx, publication);
         return tx.update(chatPublications).set({ state: "cancelled", redactedError: "Identical response already delivered by Slack tool", updatedAt: new Date() }).where(and(eq(chatPublications.id, publication.id), inArray(chatPublications.state, ["pending", "retry"])))
 ;
       });
@@ -474,6 +477,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
           await publicationLease.assertOwned();
           await db.transaction(async (tx) => {
             await notifyChatPublicationWork(tx);
+            await notifyChatResponseAvailability(tx, publication);
             return tx
               .update(chatPublications)
               .set({
@@ -506,7 +510,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
         ) {
           await publicationLease.assertOwned();
           await db.transaction(async (tx) => {
-            await notifyChatPublicationWork(tx);
+            await notifyChatPublicationWork(tx, publication);
             return tx
               .update(chatPublications)
               .set({
@@ -530,7 +534,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
           if (!endpoint.allowDirectMessages) {
             await publicationLease.assertOwned();
             await db.transaction(async (tx) => {
-              await notifyChatPublicationWork(tx);
+              await notifyChatPublicationWork(tx, publication);
               return tx
                 .update(chatPublications)
                 .set({
@@ -565,7 +569,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
           if (!nonDirectDestinationAllowed(endpoint, resource)) {
             await publicationLease.assertOwned();
             await db.transaction(async (tx) => {
-              await notifyChatPublicationWork(tx);
+              await notifyChatPublicationWork(tx, publication);
               return tx
                 .update(chatPublications)
                 .set({
@@ -604,7 +608,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
           if (!currentInteraction || currentInteraction.status !== "pending") {
             await publicationLease.assertOwned();
             await db.transaction(async (tx) => {
-              await notifyChatPublicationWork(tx);
+              await notifyChatPublicationWork(tx, publication);
               return tx
                 .update(chatPublications)
                 .set({
@@ -637,7 +641,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
         if (progressSupersessionReason) {
           await publicationLease.assertOwned();
           await db.transaction(async (tx) => {
-            await notifyChatPublicationWork(tx);
+            await notifyChatPublicationWork(tx, publication);
             return tx
               .update(chatPublications)
               .set({
@@ -709,7 +713,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
               if (!authorizationClaim) {
                 await db.transaction(async (tx) => {
                   await credentialLease.assertOwned(tx);
-                  await notifyChatPublicationWork(tx);
+                  await notifyChatPublicationWork(tx, publication);
                   await tx
                     .update(chatPublications)
                     .set({
@@ -857,7 +861,8 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
               await db.transaction(async (tx) => {
                 await credentialLease.assertOwned(tx);
                 const committedAt = new Date();
-                await notifyChatPublicationWork(tx);
+                await notifyChatPublicationWork(tx, publication);
+                await notifyVoicePublication(tx, authorizationClaim.endpoint, publication.conversationId);
                 const [completedPublication] = await tx
                   .update(chatPublications)
                   .set({

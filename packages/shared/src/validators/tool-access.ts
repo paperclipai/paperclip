@@ -191,7 +191,8 @@ export const createToolConnectionSchema = z.object({
   status: toolConnectionStatusSchema.optional(),
   connectionKind: toolConnectionKindSchema.default("managed"),
   config: toolTransportConfigSchema.optional(),
-  transportConfig: toolTransportConfigSchema.default({}),
+  // No default: when the caller omits it, the service stores `config` here.
+  transportConfig: toolTransportConfigSchema.optional(),
   credentialRefs: z.array(mcpConnectionCredentialRefSchema).optional(),
   credentialSecretRefs: z.array(toolCredentialSecretRefSchema).default([]),
   enabled: z.boolean().optional(),
@@ -240,6 +241,8 @@ export const connectionGrantSchema = z.object({
       managementUrl: z.string().url().max(2000).optional(),
       appSlug: z.string().regex(/^[a-z0-9-]{1,100}$/).optional(),
       lastAccessRefreshAt: z.string().datetime().optional(),
+      bindingSync: z.object({ id: z.string().uuid(), removeInstallationIds: z.array(z.string().regex(/^[1-9][0-9]{0,30}$/)).max(100) }).optional(),
+      continuityRetry: z.object({ at: z.string().datetime(), attempts: z.number().int().min(1).max(16), revision: z.string().max(2000) }).optional(),
       lastWebhookAt: z.string().datetime().optional(),
       webhookHealth: z.enum(["pending", "healthy", "unhealthy"]).optional(),
     }).optional(),

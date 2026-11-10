@@ -28,6 +28,26 @@ export function restartProcessStartMatches(observed: string, expected: string, p
     : actualTime === expectedTime;
 }
 
+export const UNCERTAIN_GROUP_IDENTITY = "Owned process group identity became uncertain";
+
+/**
+ * Under load or during a graceful drain a whole group can turn over between
+ * two inspections: its observed members exit and a member nobody saw start
+ * is left for a moment, reparented away from every owned anchor. Its identity
+ * is unproven, so the owner refuses to signal anything. Re-run the step until
+ * a later inspection settles it or the deadline passes, never signaling
+ * meanwhile; a straggler that outlives the deadline keeps the original error.
+ */
+export async function settleUncertainIdentity<T>(step: () => Promise<T>, until: () => number, pollMs = 100): Promise<T> {
+  for (;;) {
+    try { return await step(); }
+    catch (error) {
+      if (!String(error).includes(UNCERTAIN_GROUP_IDENTITY) || Date.now() >= until()) throw error;
+      await new Promise(resolve => setTimeout(resolve, pollMs));
+    }
+  }
+}
+
 export function createProcessTreeOwner(root: ChildProcess, options: {
   readTable?: () => Promise<ProcessObservation[] | null>;
   signalGroup?: (pid: number, signal: NodeJS.Signals) => void;
@@ -67,7 +87,13 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
       const lost = groups.filter(group => !retained.includes(group) && next.some(row => row.processGroupId === group.processGroupId && running(row)));
       const uncertain = lost.filter(group => next.some(row => row.processGroupId === group.processGroupId
         && running(row) && !ownedNow.has(row.pid)));
-      if (uncertain.length) throw new Error(`Owned process group identity became uncertain: ${uncertain.map(group => group.processGroupId).join(",")}`);
+      if (uncertain.length) {
+        // Name the unproven members so the next occurrence identifies the process.
+        const ids = new Set(uncertain.map(group => group.processGroupId));
+        const members = next.filter(row => ids.has(row.processGroupId) && running(row) && !ownedNow.has(row.pid))
+          .map(row => `pid=${row.pid} ppid=${row.parentPid} pgid=${row.processGroupId} kind=${row.kind} started=${row.started}`);
+        throw new Error(`${UNCERTAIN_GROUP_IDENTITY}: ${[...ids].join(",")} (unowned members: ${members.join("; ")})`);
+      }
       const refreshed = refreshContinuouslyLiveProcessGroups([...retained, ...lost], next)
         .filter(group => group.processGroupId !== callerGroup);
       const anchors = refreshed.flatMap(group => group.members.map(member => member.pid));
@@ -138,7 +164,14 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     const ids = new Set(preserved.map(group => group.processGroupId));
     return new Set(liveGroups().filter(group => !ids.has(group.processGroupId)).map(group => group.processGroupId));
   }
-  function signalSnapshot(signal: NodeJS.Signals, selected?: ReadonlySet<number>) {
+  /** Darwin killpg reports EPERM, not ESRCH, when every remaining group member
+   * has exited but is not yet reaped. A zombie-only group needs no signal; any
+   * running member keeps EPERM a real failure. */
+  async function exitedSinceSnapshot(pid: number) {
+    const fresh = await readTable();
+    return !!fresh && !fresh.some(row => row.processGroupId === pid && running(row));
+  }
+  async function signalSnapshot(signal: NodeJS.Signals, selected?: ReadonlySet<number>) {
     const currentProcessGroupId = table.find(row => row.pid === process.pid)?.processGroupId ?? null;
     if (currentProcessGroupId === null) throw new Error("Cleanup caller group identity is unavailable");
     const live = liveGroups();
@@ -147,14 +180,18 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     for (const pid of ordered) {
       if (selected && !selected.has(pid)) continue;
       try { signalGroup(pid, signal); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; else continue; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ESRCH" || (code === "EPERM" && await exitedSinceSnapshot(pid))) continue;
+        throw error;
+      }
       signaled.push(pid);
     }
     return signaled;
   }
   async function signal(signal: NodeJS.Signals, selected?: ReadonlySet<number>) {
     await observe();
-    return signalSnapshot(signal, selected);
+    return await signalSnapshot(signal, selected);
   }
   function gracefulRoots() {
     const live = liveGroups();
@@ -183,7 +220,7 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     // Choose and deliver from one validated table. ESRCH grants no ownership
     // coverage: the next grace poll can select that branch's surviving owner.
     const selected = new Set([...gracefulRoots()].filter(pid => !covered.has(pid)));
-    const delivered = signalSnapshot(signal, selected);
+    const delivered = await signalSnapshot(signal, selected);
     for (const pid of delivered) {
       if (pid === root.pid) directGraceDelivered = true;
       covered.add(pid);
@@ -240,25 +277,36 @@ export async function stopOwnedProcessTree(
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   const deadline = Date.now() + gracefulMs;
   const phase: { gracefulSent: boolean; forcedDeadline?: number } = { gracefulSent: false };
+  // Under load a whole group can turn over between two inspections: its
+  // observed members exit and a member nobody saw start is left behind,
+  // reparented away from every owned anchor. Its identity is then unproven,
+  // so the owner refuses to signal anything. That state is usually brief (the
+  // straggler exits with its group), so wait within the same deadline for a
+  // later inspection to settle it, never signaling meanwhile. If it persists,
+  // the original error stands.
+  const settled = settleUncertainIdentity;
   try {
     if (process.platform === "win32") {
       await stopKnownDirectChild(child, phase, deadline, forcedMs, gracefulSignal);
       return;
     }
-    const stopped = async () => {
-      await owner.observe();
+    const stopped = async (until: () => number) => {
+      await settled(() => owner.observe(), until);
       return (child.exitCode !== null || child.signalCode !== null) && owner.liveGroups().length === 0;
     };
+    const graceDeadline = () => deadline;
+    const forcedDeadline = () => phase.forcedDeadline!;
     do {
-      await owner.signalGracefully(gracefulSignal);
+      await settled(() => owner.signalGracefully(gracefulSignal), graceDeadline);
       phase.gracefulSent ||= owner.directGraceDelivered();
-      if (await stopped()) return;
+      if (await stopped(graceDeadline)) return;
       await wait(50);
     } while (Date.now() < deadline);
-    await owner.signal("SIGKILL");
+    // One forced window covers the escalation retry, the stop check and any fallback.
     phase.forcedDeadline = Date.now() + forcedMs;
+    await settled(() => owner.signal("SIGKILL"), forcedDeadline);
     do {
-      if (await stopped()) return;
+      if (await stopped(forcedDeadline)) return;
       await wait(50);
     } while (Date.now() < phase.forcedDeadline);
     throw new Error("Observed launcher descendants remained after bounded cleanup");

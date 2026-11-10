@@ -1,7 +1,7 @@
 // Makes sure packages/paperclip-runner/dist is a current build before the
 // server build vendors it, rebuilding the Runner only when that is needed.
 //
-// The server build (and typecheck) used to run the Runner's full `build`
+// The server build used to run the Runner's full `build`
 // unconditionally here. That is what lets a standalone
 // `pnpm --filter @paperclipai/server build` produce a current vendored Runner
 // on its own, which the Dockerfile relies on. But inside `pnpm -r build` the

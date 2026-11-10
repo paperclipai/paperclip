@@ -1,8 +1,12 @@
+import providerPackCompatibility from "./provider-pack-contract.json" with { type: "json" };
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runnerBinaryTarget } from "./runner-binary.js";
+
+// Interface revisions change only when the runner/pack boundary changes incompatibly.
+export const PROVIDER_PACK_COMPATIBILITY = Object.freeze(providerPackCompatibility);
 
 /** Release-owned identity for the pack already installed in the Daytona image. */
 export type BundledRemoteProviderPackTarget = "linux-x64" | "linux-arm64";

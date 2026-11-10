@@ -1032,6 +1032,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     projects: {
+      async resolveGitCredential() {
+        requireCapability(manifest, capabilitySet, "projects.git-credentials");
+        throw new Error("Git credentials require a matching host project operation");
+      },
       async getInstanceSecrets(projectId, companyId) {
         requireCapability(manifest, capabilitySet, "projects.instance-secrets");
         requireCapability(manifest, capabilitySet, "events.subscribe");
