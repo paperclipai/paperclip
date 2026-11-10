@@ -4890,6 +4890,75 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ]);
   });
 
+  it.each([
+    { stage: "preparing", resumes: true },
+    { stage: "dispatching", resumes: false },
+  ])("resumes a legacy run that a graceful shutdown stopped before adapter dispatch (stage=$stage)", async ({ stage, resumes }) => {
+    const { agentId, runId, issueId } = await seedRunFixture({ adapterType: "process", agentStatus: "running" });
+    await db.update(heartbeatRuns).set({
+      controllerBootId: controllerLeases.legacyControllerBootId,
+      controllerLeaseExpiresAt: new Date(Date.now() + 60_000),
+      executionStage: stage,
+      startedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, runId));
+    // Setup had not reached the adapter: no adapter.invoke was recorded.
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+
+    const result = await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
+
+    expect(result.interruptedRunIds).toEqual([runId]);
+    const [interrupted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(interrupted).toMatchObject({ status: "interrupted", errorCode: "server_shutdown_interrupted" });
+    if (resumes) {
+      expect(interrupted!.resultJson?.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+      expect(result.retryRunIds).toHaveLength(1);
+      expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+      expect(await getExecutionBlocker(db, interrupted!.companyId, issueId)).toBeNull();
+      expect(await selectRecoveryRunsByAgent(agentId)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: result.retryRunIds[0], retryOfRunId: runId, status: "scheduled_retry" }),
+      ]));
+    } else {
+      expect(interrupted!.resultJson?.executionRecovery).toBeUndefined();
+      expect(result.retryRunIds).toEqual([]);
+      expect(await selectRecoveryActionsForIssue(issueId)).toEqual([
+        expect.objectContaining({ cause: "legacy_execution_requires_reconciliation" }),
+      ]);
+    }
+  });
+
+  it("lets Retry start a run for a pre-dispatch shutdown hold saved by an older server", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({ adapterType: "process", agentStatus: "idle" });
+    // The older server committed the interruption and its no-replay hold
+    // without the bootstrap certificate.
+    await db.update(heartbeatRuns).set({
+      status: "interrupted", errorCode: "server_shutdown_interrupted", error: "Interrupted by graceful server shutdown (SIGTERM)",
+      finishedAt: new Date(), startedAt: new Date(Date.now() - 1_000),
+      controllerBootId: randomUUID(), controllerLeaseExpiresAt: null, executionStage: "preparing",
+      resultJson: { stopReason: "interrupted", timeoutFired: false, timeoutSource: "default", timeoutConfigured: false, effectiveTimeoutSec: 0 },
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    await db.update(issues).set({ status: "blocked", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issueId));
+    await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: agentId,
+      cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${runId}`, status: "active",
+      evidence: { runId, originalFailureCode: "server_shutdown_interrupted", adapterRecovery: "unsupported_or_unknown", attempt: 1 },
+      nextAction: "Inspect the stopped provider and recorded actions, then reconcile their outcomes before continuing.",
+      attemptCount: 1, maxAttempts: 3,
+    });
+
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+    const heartbeat = heartbeatService(db);
+    const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "responsible-user",
+      idempotencyKey: randomUUID(), observedRunId: runId });
+    expect(receipt.accepted).toBe(true);
+    await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    expect(wake?.payload?.executionWait).toBeUndefined();
+    const runs = await selectRecoveryRunsByAgent(agentId);
+    expect(runs.filter(run => run.id !== runId)).toHaveLength(1);
+    await heartbeat.drainActiveRunExecutions();
+  });
+
   it("suspends native Paperclip Runner ownership on graceful restart without cancelling or creating a retry run", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       adapterType: "paperclip_runner",
