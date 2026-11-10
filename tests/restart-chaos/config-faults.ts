@@ -49,7 +49,7 @@ export const CONFIG_REFERENCES: Record<ConfigReferenceId, ConfigReference> = {
   provision_command: {
     id: "provision_command", owner: "project", field: "executionWorkspacePolicy.workspaceStrategy.provisionCommand",
     refersTo: "script", label: "Project workspace setup command points at a missing script",
-    names: () => /provision-worktree\.sh|setup command|provision command|workspace setup|provision/i,
+    names: () => /provision-worktree\.sh|(setup|provision) command/i,
   },
   ai_default: {
     id: "ai_default", owner: "agent", field: "runtimeConfig.aiConnection (responsible_user default)",
@@ -59,7 +59,7 @@ export const CONFIG_REFERENCES: Record<ConfigReferenceId, ConfigReference> = {
   agent_secret: {
     id: "agent_secret", owner: "agent", field: "adapterConfig.env.<provider key> (secret_ref)",
     refersTo: "credential", label: "Agent credential secret was deleted",
-    names: () => /secret|api[_ ]key|credential/i,
+    names: nonce => new RegExp(`\\bsecret\\b|[A-Z]+_API_KEY|_${nonce}\\b`, "i"),
   },
   workspace_cwd: {
     id: "workspace_cwd", owner: "project", field: "project workspace cwd",
@@ -74,7 +74,7 @@ export const CONFIG_REFERENCES: Record<ConfigReferenceId, ConfigReference> = {
   model_id: {
     id: "model_id", owner: "agent", field: "adapterConfig.model",
     refersTo: "model", label: "Agent model id no longer exists",
-    names: nonce => new RegExp(`\\bmodel\\b|chaos-missing-model-${nonce}|choose_model`, "i"),
+    names: nonce => new RegExp(`chaos-missing-model-${nonce}|choose_model|(unknown|unsupported|invalid|unavailable) model|model[^.]{0,40}(not found|unknown|unsupported|does not exist|not available|rejected)`, "i"),
   },
 };
 
@@ -240,14 +240,15 @@ export interface ConfigTaskRecord {
   launchedAt: number | null;
   /** The break was refused on write (validation): the product prevents the stale reference. */
   refusedOnWrite: string | null;
-  breakError: string | null;
   /** The harness itself could not set the task up (not a product verdict). */
   harnessError: string | null;
   brokenSnapshots: ConfigSnapshot[];
   parkedAt: number | null;
   parkReason: string | null;
   restart: { kind: ConfigRestartKind; faultId: string | null; firedAt: number; readyAt: number | null; error: string | null } | null;
-  afterRestart: ConfigSnapshot | null;
+  /** Every poll after the restart, while the setting is still broken. */
+  afterRestartSnapshots: ConfigSnapshot[];
+  /** The task rested again (or completed) after the restart. */
   afterRestartParked: boolean | null;
   /** Last snapshot after the repair (evidence when the task never completes). */
   afterRepair?: ConfigSnapshot | null;
@@ -256,6 +257,44 @@ export interface ConfigTaskRecord {
   finalStatus: string | null;
   /** A1 brief oracle result after repair. */
   brief: { ok: boolean; detail: string } | null;
+}
+
+/** Status codes that mean the server validated the request and refused the stale value. */
+export function isWriteRefusal(status: number | null): boolean {
+  return status === 400 || status === 422;
+}
+
+/**
+ * Restarts and harness writes must not overlap: a write sent while the server
+ * is down fails, and the task would be graded on a harness error. Writes share
+ * the gate; a restart waits for writes in flight and holds new ones.
+ */
+export class RestartGate {
+  private writers = 0;
+  private restarting: Promise<void> | null = null;
+  private idle: Array<() => void> = [];
+
+  async write<T>(work: () => Promise<T>): Promise<T> {
+    while (this.restarting) await this.restarting;
+    this.writers += 1;
+    try { return await work(); } finally {
+      this.writers -= 1;
+      if (!this.writers) for (const wake of this.idle.splice(0)) wake();
+    }
+  }
+
+  async restart<T>(work: () => Promise<T>): Promise<T> {
+    while (this.restarting) await this.restarting;
+    let release!: () => void;
+    this.restarting = new Promise<void>(resolve => { release = resolve; });
+    try {
+      while (this.writers) await new Promise<void>(resolve => this.idle.push(resolve));
+      return await work();
+    } finally {
+      this.restarting = null;
+      release();
+    }
+  }
 }
 
 export interface ConfigCheck { name: string; verdict: "pass" | "fail" | "n/a"; detail: string }
@@ -278,6 +317,10 @@ export function gradeConfigTask(record: ConfigTaskRecord, options: { parkBoundMs
   const reference = CONFIG_REFERENCES[record.plan.reference];
   const pattern = reference.names(record.plan.nonce);
   const last = record.brokenSnapshots.filter(snapshot => snapshot.reachable).at(-1) ?? null;
+  const afterRestart = record.afterRestartSnapshots.filter(snapshot => snapshot.reachable);
+  // Every sample while the setting was broken, before and after the restart.
+  const whileBroken = [...record.brokenSnapshots, ...afterRestart];
+  const lastBroken = afterRestart.at(-1) ?? last;
   const completedWhileBroken = last?.issueStatus === "done";
   const outcome: ConfigGrade["outcome"] = completedWhileBroken ? "completed" : record.parkedAt !== null ? "parked" : "never_rested";
 
@@ -300,15 +343,15 @@ export function gradeConfigTask(record: ConfigTaskRecord, options: { parkBoundMs
   }
 
   // 3. No retry loop over unchanged configuration.
-  const brokenRuns = new Set(record.brokenSnapshots.flatMap(snapshot => snapshot.runs.map(run => run.id)));
-  const lifecycleRetrying = record.brokenSnapshots.some(snapshot => snapshot.agent?.lifecycleError && /retry automatically/i.test(snapshot.agent.lifecycleError)
+  const brokenRuns = new Set(whileBroken.flatMap(snapshot => snapshot.runs.map(run => run.id)));
+  const lifecycleRetrying = whileBroken.some(snapshot => snapshot.agent?.lifecycleError && /retry automatically/i.test(snapshot.agent.lifecycleError)
     && snapshot.agent.retryRequired !== true);
   if (brokenRuns.size > MAX_BROKEN_RUNS) add("no_retry_loop", "fail", `retry_loop: ${brokenRuns.size} runs while the setting stayed broken`);
   else if (lifecycleRetrying && !completedWhileBroken) add("no_retry_loop", "fail", "lifecycle_retrying_unchanged_config: agent setup says it will retry automatically");
   else add("no_retry_loop", "pass", `${brokenRuns.size} run(s) while broken`);
 
   // 4. Nothing queued without a live owner.
-  const ownerless = last ? ownerlessQueuedRun(last, OWNERLESS_QUEUE_MS) : null;
+  const ownerless = lastBroken ? ownerlessQueuedRun(lastBroken, OWNERLESS_QUEUE_MS) : null;
   add("no_ownerless_queue", ownerless ? "fail" : "pass", ownerless ? `queued_without_live_owner: run ${ownerless} unstarted with no named wait` : "none");
 
   // 5. Parked state survives the restart.
@@ -316,8 +359,20 @@ export function gradeConfigTask(record: ConfigTaskRecord, options: { parkBoundMs
   else if (record.restart.error) add("survives_restart", "fail", `restart failed: ${record.restart.error}`);
   else if (completedWhileBroken) add("survives_restart", "n/a", "completed before the restart");
   else if (record.parkedAt === null) add("survives_restart", "n/a", "never parked");
-  else add("survives_restart", record.afterRestartParked ? "pass" : "fail",
-    record.afterRestartParked ? `${record.restart.kind} while parked; still parked` : `rest_lost_after_restart: ${record.restart.kind} while parked; then ${record.afterRestart ? stateLabel(parkState(record.afterRestart, record.afterRestart.at, 0)) : "unreachable"}`);
+  else if (!record.afterRestartParked) {
+    const final = afterRestart.at(-1);
+    add("survives_restart", "fail", `rest_lost_after_restart: ${record.restart.kind} while parked; then ${final ? stateLabel(parkState(final, final.at, 0)) : "unreachable"}`);
+  } else {
+    // The rest must still name the setting: a restart that leaves only a generic Retry fails.
+    const final = afterRestart.at(-1);
+    const named = final ? namingTexts(taskLevelTexts(final), pattern) : [];
+    const namedBefore = checks.find(check => check.name === "actionable_message")?.verdict === "pass";
+    if (final?.issueStatus === "done" || named.length || !namedBefore) {
+      add("survives_restart", "pass", `${record.restart.kind} while parked; parked again${named.length ? `: ${truncate(named[0]!)}` : ""}`);
+    } else {
+      add("survives_restart", "fail", `message_lost_after_restart: ${record.restart.kind}; user then saw: ${final ? taskLevelTexts(final).map(text => truncate(text)).join(" | ") || "nothing" : "nothing"}`);
+    }
+  }
 
   // 6. Repair plus the offered action completes the task.
   if (completedWhileBroken) add("repair_completes", "n/a", "completed while broken");

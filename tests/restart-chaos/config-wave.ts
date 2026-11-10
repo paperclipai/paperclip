@@ -22,7 +22,7 @@ import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { ChaosApi, ChaosApiError } from "./api.js";
 import {
   CONFIG_FAULT_KINDS, CONFIG_REFERENCE_IDS, CONFIG_REFERENCES, CONFIG_REFERENCES_NOT_BROKEN, CONFIG_RESTART_KINDS,
-  STALE_PROVISION_COMMAND, gradeConfigTask, parkState, planConfigWave, validateConfigPlan,
+  RestartGate, STALE_PROVISION_COMMAND, gradeConfigTask, isWriteRefusal, parkState, planConfigWave, validateConfigPlan,
   type ConfigGrade, type ConfigSnapshot, type ConfigTaskPlan, type ConfigTaskRecord, type ConfigWaveOptions,
 } from "./config-faults.js";
 import { CREDENTIAL_FOR_ADAPTER, waveIdFor } from "./config.js";
@@ -30,6 +30,7 @@ import { knownSecretValues, redactKnownSecrets } from "./evidence.js";
 import { seedChaosLab, waitForAgentsReady, type ChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { Timeline } from "./timeline.js";
+import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { ADAPTER_IDS } from "./types.js";
 import { workloadDefinitions } from "./workloads.js";
 
@@ -168,7 +169,8 @@ async function breakReference(api: ChaosApi, lab: ChaosLab, task: ConfigTaskPlan
         return null;
     }
   } catch (error) {
-    if (error instanceof ChaosApiError && error.status !== null && error.status >= 400 && error.status < 500) return error.message.slice(0, 400);
+    // Only a validation refusal proves the product rejects the stale value; a 403, 404 or 429 is a harness failure.
+    if (error instanceof ChaosApiError && isWriteRefusal(error.status)) return error.message.slice(0, 400);
     throw error;
   }
 }
@@ -269,27 +271,41 @@ async function offeredAction(api: ChaosApi, record: ConfigTaskRecord, resources:
   return "no offered action; waited";
 }
 
-async function runTask(input: { api: ChaosApi; lab: ChaosLab; task: ConfigTaskPlan; supervisor: ChaosSupervisor; timeline: Timeline;
-  options: ConfigWaveOptions; restartLock: { chain: Promise<unknown> } }): Promise<ConfigTaskRecord> {
-  const { api, lab, task, supervisor, timeline, options } = input;
-  const record: ConfigTaskRecord = { plan: task, issueId: null, agentId: null, projectId: null, launchedAt: null, refusedOnWrite: null, breakError: null,
-    harnessError: null, brokenSnapshots: [], parkedAt: null, parkReason: null, restart: null, afterRestart: null, afterRestartParked: null,
+/** Set by SIGINT/SIGTERM: tasks stop at their next step and the wave still reaches cleanup. */
+let interrupted = false;
+function checkInterrupted() {
+  if (interrupted) throw new Error("interrupted");
+}
+
+interface TaskInput {
+  api: ChaosApi; lab: ChaosLab; task: ConfigTaskPlan; supervisor: ChaosSupervisor; timeline: Timeline;
+  options: ConfigWaveOptions; gate: RestartGate; onRestart: (faultId: string) => void;
+}
+
+async function runTask(input: TaskInput): Promise<ConfigTaskRecord> {
+  const { api, lab, task, timeline, gate } = input;
+  const record: ConfigTaskRecord = { plan: task, issueId: null, agentId: null, projectId: null, launchedAt: null, refusedOnWrite: null,
+    harnessError: null, brokenSnapshots: [], parkedAt: null, parkReason: null, restart: null, afterRestartSnapshots: [], afterRestartParked: null,
     repair: null, doneAt: null, finalStatus: null, brief: null };
   const errors = new Map<string, string | null>();
   let resources: TaskResources;
   try {
-    resources = await createTaskResources(api, lab, task, timeline);
+    checkInterrupted();
+    resources = await gate.write(() => createTaskResources(api, lab, task, timeline));
     record.agentId = resources.agentId;
     record.projectId = resources.projectId;
     // A working agent first, so the only broken thing is the setting under test (CF2's agent cannot verify by design).
-    if (task.reference !== "ai_default") await waitForAgentsReady(api, { [task.taskId]: { id: resources.agentId } }, timeline);
-    record.refusedOnWrite = await breakReference(api, lab, task, resources);
+    if (task.reference !== "ai_default") {
+      await waitForAgentsReady(api, { [task.taskId]: { id: resources.agentId } }, timeline, undefined, 1_000, () => interrupted);
+    }
+    checkInterrupted();
+    record.refusedOnWrite = await gate.write(() => breakReference(api, lab, task, resources));
     timeline.add("cf_broken", { taskId: task.taskId, fault: task.fault, reference: task.reference, refusedOnWrite: record.refusedOnWrite });
     if (record.refusedOnWrite) return record;
     const a1 = workloadDefinitions.A1;
-    const issue = await api.post<Json>(`/api/companies/${lab.companyId}/issues`, {
+    const issue = await gate.write(() => api.post<Json>(`/api/companies/${lab.companyId}/issues`, {
       title: `Chaos ${task.fault} ${task.reference} ${task.nonce}`, description: a1.description(task.nonce), status: "todo", priority: "medium",
-      assigneeAgentId: resources.agentId, projectId: resources.projectId });
+      assigneeAgentId: resources.agentId, projectId: resources.projectId }));
     record.issueId = String(issue.id);
     record.launchedAt = Date.now();
     timeline.add("cf_launched", { taskId: task.taskId, issueId: issue.id, identifier: issue.identifier ?? null });
@@ -297,12 +313,23 @@ async function runTask(input: { api: ChaosApi; lab: ChaosLab; task: ConfigTaskPl
     record.harnessError = `setup: ${error instanceof Error ? error.message : String(error)}`.slice(0, 600);
     return record;
   }
+  try {
+    await observeTask(input, record, resources, errors);
+  } catch (error) {
+    record.harnessError = (error instanceof Error ? error.message : String(error)).slice(0, 600);
+  }
+  return record;
+}
+
+async function observeTask(input: TaskInput, record: ConfigTaskRecord, resources: TaskResources, errors: Map<string, string | null>): Promise<void> {
+  const { api, lab, task, supervisor, timeline, options, gate } = input;
   const issueId = record.issueId!;
 
   // Broken phase: until done, parked (stable across two polls) or the bound.
   let parkedCandidate: number | null = null;
   while (Date.now() - record.launchedAt! < options.parkBoundMs) {
     await delay(POLL_MS);
+    checkInterrupted();
     if (!supervisor.serverReady) continue;
     const current = await snapshot(api, issueId, resources.agentId, errors);
     record.brokenSnapshots.push(current);
@@ -319,30 +346,31 @@ async function runTask(input: { api: ChaosApi; lab: ChaosLab; task: ConfigTaskPl
 
   const completedWhileBroken = record.brokenSnapshots.at(-1)?.issueStatus === "done";
   if (!completedWhileBroken) {
-    // Restart while parked (or at the bound): serialized, since each restart hits every task.
-    const run = input.restartLock.chain.then(async () => {
-      const firedAt = Date.now();
-      record.restart = { kind: task.restart, faultId: null, firedAt, readyAt: null, error: null };
+    // Restart while parked (or at the bound). The gate holds every task's writes while the server is down.
+    checkInterrupted();
+    await gate.restart(async () => {
+      const restart: NonNullable<ConfigTaskRecord["restart"]> = { kind: task.restart, faultId: null, firedAt: Date.now(), readyAt: null, error: null };
+      record.restart = restart;
       try {
         const receipt = await supervisor.fault(task.restart, 0, task.taskId);
-        record.restart.faultId = receipt.faultId;
-        record.restart.readyAt = receipt.readyAt;
-        record.restart.error = receipt.error;
+        restart.faultId = receipt.faultId;
+        restart.readyAt = receipt.readyAt;
+        restart.error = receipt.error;
+        input.onRestart(receipt.faultId);
       } catch (error) {
-        record.restart.error = error instanceof Error ? error.message : String(error);
+        restart.error = error instanceof Error ? error.message : String(error);
       }
     });
-    input.restartLock.chain = run.catch(() => undefined);
-    await run;
-    // After the restart: the task must rest again with the same kind of message.
+    // After the restart: the task must rest again, still naming the setting.
     const repark = Date.now();
     let lastParked: number | null = null;
     while (Date.now() - repark < RESTART_REPARK_MS) {
       await delay(POLL_MS);
+      checkInterrupted();
       if (!supervisor.serverReady) continue;
       const current = await snapshot(api, issueId, resources.agentId, errors);
       if (!current.reachable) continue;
-      record.afterRestart = current;
+      record.afterRestartSnapshots.push(current);
       const state = parkState(current, current.at, SETTLE_MS);
       if (state.kind === "done") { record.afterRestartParked = true; break; }
       if (state.kind === "parked") {
@@ -354,12 +382,16 @@ async function runTask(input: { api: ChaosApi; lab: ChaosLab; task: ConfigTaskPl
     timeline.add("cf_after_restart", { taskId: task.taskId, restart: record.restart, parkedAgain: record.afterRestartParked });
 
     // Repair, then the offered action.
+    checkInterrupted();
     const repairAt = Date.now();
     try {
-      const detail = await repairReference(api, lab, task, resources);
-      await delay(3_000);
-      const current = await snapshot(api, issueId, resources.agentId, errors);
-      const action = current.issueStatus === "done" ? "none (already done)" : await offeredAction(api, record, resources, current);
+      const { detail, action } = await gate.write(async () => {
+        const detail = await repairReference(api, lab, task, resources);
+        await delay(3_000);
+        const current = await snapshot(api, issueId, resources.agentId, errors);
+        const action = current.issueStatus === "done" ? "none (already done)" : await offeredAction(api, record, resources, current);
+        return { detail, action };
+      });
       record.repair = { at: repairAt, action, detail, error: null };
     } catch (error) {
       record.repair = { at: repairAt, action: "repair", detail: "", error: error instanceof Error ? error.message.slice(0, 400) : String(error) };
@@ -370,6 +402,7 @@ async function runTask(input: { api: ChaosApi; lab: ChaosLab; task: ConfigTaskPl
   // Completion after repair, bounded.
   const deadline = Date.now() + options.repairBudgetMs;
   while (Date.now() < deadline) {
+    checkInterrupted();
     const current = await snapshot(api, issueId, resources.agentId, errors);
     if (current.reachable) {
       record.finalStatus = current.issueStatus;
@@ -381,7 +414,6 @@ async function runTask(input: { api: ChaosApi; lab: ChaosLab; task: ConfigTaskPl
   const brief = await api.get<Json>(`/api/issues/${issueId}/documents/brief`).then(row => typeof row?.body === "string" ? row.body : null).catch(() => null);
   const oracle = workloadDefinitions.A1.grade(task.nonce, { issueStatus: record.finalStatus, documents: { brief }, agentComments: [], files: {}, commands: {}, workspacePath: null });
   record.brief = { ok: oracle.verdict === "pass", detail: oracle.checks.filter(check => !check.ok).map(check => `${check.name}${check.detail ? ` (${check.detail})` : ""}`).join("; ") || "brief ok" };
-  return record;
 }
 
 export function configSummaryMarkdown(waveId: string, gitSha: string, rows: Array<{ record: ConfigTaskRecord; grade: ConfigGrade }>): string {
@@ -412,6 +444,18 @@ async function main(): Promise<number> {
   const gitSha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" }).stdout.trim();
   timeline.add("cf_wave_planned", { waveId, gitSha, tasks: tasks.map(task => `${task.taskId}:${task.adapter}/${task.fault}/${task.reference}/${task.restart}`) });
   preflight(tasks);
+  // Every restart re-runs the server from this checkout: a build or checkout change mid-wave would mix builds.
+  const guardedOutputs = guardedRunnerOutputs(repositoryRoot);
+  const startFingerprint = worktreeFingerprint(repositoryRoot, guardedOutputs);
+  let worktreeChangedAt: string | null = null;
+  const checkWorktree = (at: string) => {
+    if (worktreeChangedAt || worktreeFingerprint(repositoryRoot, guardedOutputs) === startFingerprint) return;
+    worktreeChangedAt = at;
+    timeline.add("worktree_changed_mid_wave", { at });
+  };
+  const onSignal = (signal: NodeJS.Signals) => { if (!interrupted) { interrupted = true; timeline.add("harness_interrupted", { signal }); } };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
   let stopFailed = false;
   let harnessError: unknown = null;
@@ -421,15 +465,18 @@ async function main(): Promise<number> {
     const api = new ChaosApi(supervisor.baseUrl);
     const lab = await seedChaosLab({ api, env: "local", waitForReadyAgents: true, adapters: [...new Set(tasks.map(task => task.adapter))],
       concurrency: options.concurrency, budgetCents: 3_000, fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), waveId, timeline });
-    const restartLock = { chain: Promise.resolve() as Promise<unknown> };
+    const gate = new RestartGate();
     const pending = [...tasks];
     const records: ConfigTaskRecord[] = [];
     await Promise.all(Array.from({ length: options.concurrency }, async () => {
-      while (pending.length) {
+      while (pending.length && !interrupted) {
         const task = pending.shift()!;
-        records.push(await runTask({ api, lab, task, supervisor, timeline, options, restartLock }));
+        records.push(await runTask({ api, lab, task, supervisor, timeline, options, gate, onRestart: checkWorktree }));
       }
     }));
+    checkWorktree("wave_end");
+    if (worktreeChangedAt) throw new Error(`The worktree changed during the wave (first seen after ${worktreeChangedAt}); later restarts may have run different code`);
+    if (interrupted) throw new Error("Harness interrupted before the wave finished");
     for (const record of records.sort((left, right) => left.plan.index - right.plan.index)) {
       const grade = gradeConfigTask(record, { parkBoundMs: options.parkBoundMs });
       rows.push({ record, grade });

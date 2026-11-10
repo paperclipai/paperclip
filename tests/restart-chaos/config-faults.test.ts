@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  CONFIG_REFERENCE_IDS, gradeConfigTask, parkState, planConfigWave, referencesFor, taskLevelTexts, validateConfigPlan,
+  CONFIG_REFERENCE_IDS, CONFIG_REFERENCES, RestartGate, gradeConfigTask, isWriteRefusal, parkState, planConfigWave, referencesFor, taskLevelTexts, validateConfigPlan,
   type ConfigSnapshot, type ConfigTaskPlan, type ConfigTaskRecord, type ConfigWaveOptions,
 } from "./config-faults.js";
 import { parseConfigWaveArgs } from "./config-wave.js";
@@ -15,8 +15,8 @@ function snapshot(at: number, patch: Partial<ConfigSnapshot> = {}): ConfigSnapsh
 function record(plan: Partial<ConfigTaskPlan>, patch: Partial<ConfigTaskRecord> = {}): ConfigTaskRecord {
   return {
     plan: { taskId: "t01", index: 0, fault: "CF1", reference: "provision_command", adapter: "codex", restart: "K1", nonce: "abcd1234", ...plan },
-    issueId: "issue", agentId: "agent", projectId: "project", launchedAt: 0, refusedOnWrite: null, breakError: null, harnessError: null,
-    brokenSnapshots: [], parkedAt: null, parkReason: null, restart: null, afterRestart: null, afterRestartParked: null, repair: null,
+    issueId: "issue", agentId: "agent", projectId: "project", launchedAt: 0, refusedOnWrite: null, harnessError: null,
+    brokenSnapshots: [], parkedAt: null, parkReason: null, restart: null, afterRestartSnapshots: [], afterRestartParked: null, repair: null,
     doneAt: null, finalStatus: null, brief: { ok: true, detail: "brief ok" }, ...patch,
   };
 }
@@ -44,6 +44,27 @@ describe("planConfigWave", () => {
 
   it("refuses a second account-default task in one wave", () => {
     expect(() => validateConfigPlan(planConfigWave({ ...base, faults: ["CF2"], tasks: 2 }))).toThrow(/Only one ai_default/);
+  });
+});
+
+describe("write refusals and the restart gate", () => {
+  it("treats only validation statuses as a product refusal", () => {
+    expect([400, 422].every(isWriteRefusal)).toBe(true);
+    expect([403, 404, 409, 429, null].some(isWriteRefusal)).toBe(false);
+  });
+
+  it("holds writes while a restart runs and waits for writes in flight", async () => {
+    const gate = new RestartGate();
+    const events: string[] = [];
+    let finishWrite!: () => void;
+    const first = gate.write(() => new Promise<void>(resolve => { finishWrite = () => { events.push("write1-end"); resolve(); }; }));
+    const restart = gate.restart(async () => { events.push("restart"); await Promise.resolve(); events.push("restart-end"); });
+    const second = gate.write(async () => { events.push("write2"); });
+    await Promise.resolve();
+    expect(events).toEqual([]);
+    finishWrite();
+    await Promise.all([first, restart, second]);
+    expect(events).toEqual(["write1-end", "restart", "restart-end", "write2"]);
   });
 });
 
@@ -77,7 +98,7 @@ describe("gradeConfigTask", () => {
   it("fails CF1 when the command is named only on the run page (master today)", () => {
     const parked = snapshot(90_000, { runs: [failedRun("r1", 10_000, 'Execution workspace provision command "bash ./scripts/provision-worktree.sh" failed')], interruption: generic });
     const grade = gradeConfigTask(record({}, { brokenSnapshots: [parked], parkedAt: 90_000, parkReason: "interruption",
-      restart: { kind: "K1", faultId: "f00", firedAt: 95_000, readyAt: 120_000, error: null }, afterRestart: parked, afterRestartParked: true,
+      restart: { kind: "K1", faultId: "f00", firedAt: 95_000, readyAt: 120_000, error: null }, afterRestartSnapshots: [parked], afterRestartParked: true,
       repair: { at: 200_000, action: "clicked Retry", detail: "", error: null }, finalStatus: "done", doneAt: 400_000 }), options);
     expect(grade.pass).toBe(false);
     expect(grade.checks.find(check => check.name === "actionable_message")?.detail).toMatch(/^message_only_in_run_detail/);
@@ -88,7 +109,7 @@ describe("gradeConfigTask", () => {
     const parked = snapshot(90_000, { runs: [failedRun("r1", 10_000, "x")],
       interruption: { ...generic, workspaceFailure: "The project workspace path is not available" } });
     const grade = gradeConfigTask(record({ fault: "CF3", reference: "workspace_cwd" }, { brokenSnapshots: [parked], parkedAt: 90_000, parkReason: "interruption",
-      restart: { kind: "K2", faultId: "f00", firedAt: 95_000, readyAt: 120_000, error: null }, afterRestart: parked, afterRestartParked: true,
+      restart: { kind: "K2", faultId: "f00", firedAt: 95_000, readyAt: 120_000, error: null }, afterRestartSnapshots: [parked], afterRestartParked: true,
       repair: { at: 200_000, action: "clicked Retry", detail: "", error: null }, finalStatus: "done", doneAt: 400_000 }), options);
     expect(grade).toMatchObject({ pass: true, outcome: "parked", signature: null });
   });
@@ -99,7 +120,7 @@ describe("gradeConfigTask", () => {
       agent: { lifecycleState: "verifying", retryRequired: false,
         lifecycleError: "Execution configuration check failed. Paperclip could not complete this step. It will retry automatically." } });
     const grade = gradeConfigTask(record({ fault: "CF2", reference: "ai_default", adapter: "opencode" }, { brokenSnapshots: [stuck],
-      restart: { kind: "K1", faultId: "f00", firedAt: 420_000, readyAt: 450_000, error: null }, afterRestart: stuck, afterRestartParked: false,
+      restart: { kind: "K1", faultId: "f00", firedAt: 420_000, readyAt: 450_000, error: null }, afterRestartSnapshots: [stuck], afterRestartParked: false,
       repair: { at: 600_000, action: "agent setup Retry", detail: "", error: null }, finalStatus: "done", doneAt: 700_000 }), options);
     expect(grade.pass).toBe(false);
     expect(grade.outcome).toBe("never_rested");
@@ -113,7 +134,7 @@ describe("gradeConfigTask", () => {
         lifecycleError: "Connect an AI account and choose the responsible user's personal default for this provider. Automatic verification is paused." } });
     expect(taskLevelTexts(parked)).toContain("Connect openrouter (agent setup)");
     const grade = gradeConfigTask(record({ fault: "CF2", reference: "ai_default", adapter: "opencode" }, { brokenSnapshots: [parked], parkedAt: 60_000,
-      parkReason: "queued_with_card", restart: { kind: "K1", faultId: "f00", firedAt: 70_000, readyAt: 90_000, error: null }, afterRestart: parked,
+      parkReason: "queued_with_card", restart: { kind: "K1", faultId: "f00", firedAt: 70_000, readyAt: 90_000, error: null }, afterRestartSnapshots: [parked],
       afterRestartParked: true, repair: { at: 100_000, action: "completed connection card c1", detail: "", error: null }, finalStatus: "done", doneAt: 200_000 }), options);
     expect(grade.pass).toBe(true);
   });
@@ -123,6 +144,32 @@ describe("gradeConfigTask", () => {
     const grade = gradeConfigTask(record({}, { brokenSnapshots: [snapshot(400_000, { runs, interruption: { ...generic, workspaceFailure: "provision command failed" } })],
       parkedAt: 400_000, repair: { at: 500_000, action: "clicked Retry", detail: "", error: null }, finalStatus: "done", doneAt: 600_000 }), options);
     expect(grade.checks.find(check => check.name === "no_retry_loop")?.verdict).toBe("fail");
+  });
+
+  it("fails when a restart replaces the named message with a generic Retry", () => {
+    const named = snapshot(90_000, { runs: [failedRun("r1", 10_000, "x")],
+      interruption: { ...generic, workspaceFailure: "The project workspace path is not available" } });
+    const generic2 = snapshot(200_000, { runs: [failedRun("r1", 10_000, "x"), failedRun("r2", 130_000, "x")], interruption: { ...generic, observedRunId: "r2" } });
+    const grade = gradeConfigTask(record({ fault: "CF3", reference: "workspace_cwd" }, { brokenSnapshots: [named], parkedAt: 90_000, parkReason: "interruption",
+      restart: { kind: "K1", faultId: "f00", firedAt: 95_000, readyAt: 120_000, error: null }, afterRestartSnapshots: [generic2], afterRestartParked: true,
+      repair: { at: 300_000, action: "clicked Retry", detail: "", error: null }, finalStatus: "done", doneAt: 400_000 }), options);
+    expect(grade.signature).toBe("CF3/workspace_cwd:message_lost_after_restart");
+  });
+
+  it("counts runs started after the restart toward the retry loop", () => {
+    const parked = snapshot(90_000, { runs: [failedRun("r1", 10_000, "x")], interruption: { ...generic, workspaceFailure: "provision command failed" } });
+    const looping = snapshot(300_000, { runs: [1, 2, 3, 4].map(index => failedRun(`r${index}`, index * 10_000, "x")),
+      interruption: { ...generic, workspaceFailure: "provision command failed" } });
+    const grade = gradeConfigTask(record({}, { brokenSnapshots: [parked], parkedAt: 90_000, restart: { kind: "K2", faultId: "f00", firedAt: 95_000, readyAt: 120_000, error: null },
+      afterRestartSnapshots: [looping], afterRestartParked: true, repair: { at: 400_000, action: "clicked Retry", detail: "", error: null }, finalStatus: "done", doneAt: 500_000 }), options);
+    expect(grade.checks.find(check => check.name === "no_retry_loop")?.verdict).toBe("fail");
+  });
+
+  it("does not take generic credential or model failures as naming the setting", () => {
+    expect(CONFIG_REFERENCES.agent_secret.names("abcd1234").test("Invalid credentials")).toBe(false);
+    expect(CONFIG_REFERENCES.agent_secret.names("abcd1234").test('Secret "OPENAI_API_KEY" was deleted')).toBe(true);
+    expect(CONFIG_REFERENCES.model_id.names("abcd1234").test("Model request failed")).toBe(false);
+    expect(CONFIG_REFERENCES.model_id.names("abcd1234").test("userAction:choose_model")).toBe(true);
   });
 
   it("counts a write-time refusal as a pass", () => {
