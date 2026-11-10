@@ -4,7 +4,7 @@ import { crossingFaults } from "./grader.js";
 import { planMatrixWave } from "./journey-matrix.js";
 import { createRng, observedFaultSchedule, planTasks, taskFaultSchedule } from "./scheduler.js";
 import {
-  RR3_KILL_RANGE, RR_GAP_RANGE_MS, planRestartSteps, runRepeatedRestarts, type RepeatedRestartRecord, type RestartStep,
+  RR3_KILL_RANGE, RR_GAP_RANGE_MS, newRepeatedRestartRecord, planRestartSteps, recordFirstRestart, runRepeatedRestarts, type RepeatedRestartRecord, type RestartStep,
 } from "./repeated-restarts.js";
 import type { FaultReceipt, TaskRecord } from "./types.js";
 
@@ -128,6 +128,36 @@ function fakeHooks(options: { bootMs?: number; stopMs?: number; exitDuringGap?: 
 function record(kind: "RR1" | "RR2" | "RR3", planned: RestartStep[]): RepeatedRestartRecord {
   return { kind, planned, restarts: [] };
 }
+
+describe("the record built before the first kill", () => {
+  const planned: RestartStep[] = [{ signal: "SIGKILL", gapMs: 12_000 }, { signal: "SIGKILL", gapMs: 25_000 }];
+  const build = (steps: RestartStep[] | undefined) => newRepeatedRestartRecord({ kind: "RR3", planned: steps, firstPid: 41, startedAt: 5_000,
+    evidencePath: "/wave/repeated-restarts/f01.json", int: createRng(9).int });
+
+  it("keeps the planned steps when the first replacement never becomes healthy", () => {
+    const rr = build(planned);
+    // The first restart failed: the server stopped and a replacement was spawned, but it never reported healthy.
+    recordFirstRestart(rr, { stoppedAt: 5_400, restartedAt: 5_400, healthyAt: null }, null);
+    expect(rr.planned).toEqual(planned);
+    expect(rr.planned).not.toBe(planned);
+    expect(rr.restarts).toEqual([{ index: 0, signal: "SIGKILL", gapMs: null, pid: 41, phaseAtStop: "ready", stopAt: 5_000,
+      stoppedAt: 5_400, restartedAt: 5_400, replacementPid: null, healthyAt: null }]);
+    // A replay of the failed fault fires the same gaps.
+    expect(observedFaultSchedule(1_000, ["f01"], [{ faultId: "f01", kind: "RR3", holdMs: 0, startedAt: 5_000, repeatedRestart: rr }])[0]!.restartSteps)
+      .toEqual(planned);
+  });
+
+  it("draws a sequence of its kind when no steps were planned", () => {
+    expect(build(undefined).planned).toEqual(planRestartSteps("RR3", createRng(9).int));
+  });
+
+  it("does not overwrite first-kill times already recorded", () => {
+    const rr = build(planned);
+    recordFirstRestart(rr, { stoppedAt: 5_400, restartedAt: 5_400, healthyAt: 13_000 }, 77);
+    recordFirstRestart(rr, { stoppedAt: 9_999, restartedAt: 9_999, healthyAt: 99_999 }, null);
+    expect(rr.restarts[0]).toMatchObject({ stoppedAt: 5_400, restartedAt: 5_400, healthyAt: 13_000, replacementPid: 77 });
+  });
+});
 
 describe("runRepeatedRestarts", () => {
   it("stops each replacement its gap after it reported healthy, then starts the next", async () => {

@@ -35,7 +35,7 @@ import { runnerE2ETypeScriptProcessArgs } from "../runner-e2e/web-server-command
 import type { MatrixExecution } from "../runner-e2e/types.js";
 import { DEFAULT_TIME_AGE_MS, ProcessFreezer, ageWaveDatabase, databaseUrlFromConfig, runFreezeFault, type AgingShift, type TimeFaultRecord } from "./time-faults.js";
 import type { Timeline } from "./timeline.js";
-import { isRepeatedRestartFault, planRestartSteps, runRepeatedRestarts, type RepeatedRestartKind,
+import { isRepeatedRestartFault, newRepeatedRestartRecord, recordFirstRestart, runRepeatedRestarts, type RepeatedRestartKind,
   type RepeatedRestartRecord, type RestartStep } from "./repeated-restarts.js";
 import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 
@@ -542,11 +542,9 @@ export class ChaosSupervisor {
   /** RR1–RR3: the planned steps and the first kill (as K1), recorded before that kill. */
   private repeatedRestartRecord(kind: RepeatedRestartKind, receipt: FaultReceipt, planned: readonly RestartStep[] | undefined,
     firstPid: number | null): RepeatedRestartRecord {
-    // A fault fired outside a planned task (none today) still gets a sequence of its kind.
-    const steps = planned?.length ? planned : planRestartSteps(kind, (min, max) => min + Math.floor(Math.random() * (max - min + 1)));
-    return { kind, planned: steps.map(step => ({ ...step })), restarts: [{ index: 0, signal: "SIGKILL", gapMs: null, pid: firstPid,
-      phaseAtStop: "ready", stopAt: receipt.startedAt, stoppedAt: null, restartedAt: null, replacementPid: null, healthyAt: null }],
-      evidencePath: path.join(path.dirname(this.paths.serverLogPath), "repeated-restarts", `${receipt.faultId}.json`) };
+    return newRepeatedRestartRecord({ kind, planned, firstPid, startedAt: receipt.startedAt,
+      evidencePath: path.join(path.dirname(this.paths.serverLogPath), "repeated-restarts", `${receipt.faultId}.json`),
+      int: (min, max) => min + Math.floor(Math.random() * (max - min + 1)) });
   }
 
   /**
@@ -555,8 +553,7 @@ export class ChaosSupervisor {
    */
   private async repeatedRestarts(record: RepeatedRestartRecord, receipt: FaultReceipt): Promise<number> {
     const first = this.child;
-    Object.assign(record.restarts[0]!, { stoppedAt: receipt.stoppedAt, restartedAt: receipt.restartedAt,
-      replacementPid: first?.pid ?? null, healthyAt: receipt.healthyAt });
+    recordFirstRestart(record, receipt, first?.pid ?? null);
     if (!first || receipt.healthyAt === null) throw new Error(`${record.kind} has no healthy replacement after its first kill`);
     const result = await runRepeatedRestarts({ record, steps: record.planned, server: first, healthyAt: receipt.healthyAt, hooks: {
       now: () => Date.now(),
@@ -591,10 +588,7 @@ export class ChaosSupervisor {
   private async writeRepeatedRestartEvidence(receipt: FaultReceipt): Promise<void> {
     const record = receipt.repeatedRestart!;
     // A first kill that failed before its replacement was healthy still records the times it reached.
-    const first = record.restarts[0]!;
-    first.stoppedAt ??= receipt.stoppedAt;
-    first.restartedAt ??= receipt.restartedAt;
-    first.healthyAt ??= receipt.healthyAt;
+    recordFirstRestart(record, receipt, null);
     try {
       await mkdir(path.dirname(record.evidencePath!), { recursive: true });
       await writeFile(record.evidencePath!, `${JSON.stringify({ faultId: receipt.faultId, requestedBy: receipt.requestedBy, error: receipt.error, ...record }, null, 2)}\n`, { mode: 0o600 });

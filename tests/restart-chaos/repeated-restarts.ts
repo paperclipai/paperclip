@@ -92,6 +92,29 @@ export interface RepeatedRestartRecord {
   evidencePath?: string;
 }
 
+/**
+ * The record of an RR fault, built before its first kill: the planned steps and the first (K1) kill. A
+ * first restart that fails still leaves them in the receipt, so a replay reuses the same gaps.
+ * Absent planned steps (a fault fired outside a planned task) are drawn with `int`.
+ */
+export function newRepeatedRestartRecord(input: { kind: RepeatedRestartKind; planned: readonly RestartStep[] | undefined;
+  firstPid: number | null; startedAt: number; evidencePath: string; int: (min: number, max: number) => number }): RepeatedRestartRecord {
+  const steps = input.planned?.length ? input.planned : planRestartSteps(input.kind, input.int);
+  return { kind: input.kind, planned: steps.map(step => ({ ...step })), restarts: [{ index: 0, signal: "SIGKILL", gapMs: null,
+    pid: input.firstPid, phaseAtStop: "ready", stopAt: input.startedAt, stoppedAt: null, restartedAt: null, replacementPid: null, healthyAt: null }],
+    evidencePath: input.evidencePath };
+}
+
+/** Fills the first kill's times from the receipt, whether its replacement became healthy or the fault failed. */
+export function recordFirstRestart(record: RepeatedRestartRecord, receipt: { stoppedAt: number | null; restartedAt: number | null;
+  healthyAt: number | null }, replacementPid: number | null): void {
+  const first = record.restarts[0]!;
+  first.stoppedAt ??= receipt.stoppedAt;
+  first.restartedAt ??= receipt.restartedAt;
+  first.healthyAt ??= receipt.healthyAt;
+  first.replacementPid ??= replacementPid;
+}
+
 export interface RepeatedRestartHooks<P> {
   now(): number;
   sleep(ms: number): Promise<void>;
