@@ -1188,7 +1188,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(source.resultJson).toEqual(resultJson);
   });
 
-  // PAP-3797: rows saved by earlier releases carry operator-facing text. The task
+  // Rows saved by earlier releases carry operator-facing text. The task
   // notice shows plain wording instead; nothing asks an administrator to act.
   it("shows plain wording for a cleanup refusal saved with the earlier operator text", async () => {
     const f = await seed();

@@ -455,7 +455,7 @@ describe("setup command failure evidence", () => {
   });
 });
 
-// PAP-3797 (staging run 6a0df8d1): the provider turn completed and its work was
+// Remote native run shape: the provider turn completed and its work was
 // saved, then a same-run recovery was refused by the cleanup gate. The task
 // showed "Couldn't finish this attempt" with a Retry the server refuses (409).
 describe("native cleanup quarantine presentation", () => {

@@ -188,14 +188,14 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect((await taskInterruptionPresentation(db, task))?.retryWait?.reason).toBe("budget.blocked");
   });
 
-  // PAP-3797 / staging run 6a0df8d1, saved by the previous release: the provider
+  // Shape saved by the previous release for a remote native run: the provider
   // turn completed (checkpoint terminal), a same-run recovery was then refused by
   // the cleanup gate. No migration rewrites it; the projection reads it as is.
   it("reads a quarantine saved after a completed turn as settled work, not a failed attempt", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), otherRunId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Completed turn", issuePrefix: `K${companyId.slice(0, 7)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Codie", adapterType: "paperclip_runner" });
-    const [task] = await db.insert(issues).values({ companyId, title: "Set up Storie", identifier: "PAP-3797",
+    const [task] = await db.insert(issues).values({ companyId, title: "Set up Storie", identifier: "CMP-7",
       status: "blocked", assigneeAgentId: agentId }).returning();
     const staged = (id: string, turnTerminalState: string) => ({ id, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue",
       status: "failed", runtimeMode: "native", errorCode: "native_session_cleanup_quarantined",

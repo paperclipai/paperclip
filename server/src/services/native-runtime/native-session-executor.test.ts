@@ -14053,7 +14053,7 @@ describe("native session bounded recovery", () => {
     }
   });
 
-  // PAP-3797 / staging run 6a0df8d1: the provider turn completed and its work was
+  // Remote native run shape: the provider turn completed and its work was
   // saved; a same-run recovery was then refused by the cleanup gate. That is not
   // a failed attempt and it never needs an administrator.
   it("settles a cleanup refusal after a completed turn without blocking the task or asking an operator", async () => {
