@@ -823,6 +823,56 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       error: STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE });
   });
 
+  it.each(["execution", "setup"] as const)("names the nested cause of a generic %s failure and keeps SQL text off the board", async phase => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driver = Object.assign(new Error("could not serialize access due to concurrent update"), { code: "40001" });
+    const query = new Error('Failed query: update "heartbeat_runs" set "usage_json" = $1 where "id" = $2\nparams: {"apiKey":"sk-live-secret"},run-1',
+      { cause: new Error("transaction aborted", { cause: driver }) });
+    const error = new Error(`Usage write failed: ${query.message}`, { cause: query });
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(error));
+    else await f.completion.failRun(f.failure(error));
+    const run = await read(f.run.id);
+    expect(run).toMatchObject({ status: "failed", errorCode: phase === "setup" ? "setup_failed" : "adapter_failed",
+      error: "Usage write failed: Database query failed (40001)", resultJson: { failureCause: "40001" } });
+    expect(JSON.stringify(run.resultJson)).not.toMatch(/heartbeat_runs|sk-live-secret|params/);
+    expect(logged).toHaveBeenCalledWith(expect.objectContaining({ runId: f.run.id, failureCause: "40001" }), expect.any(String));
+  });
+
+  it("bounds the failure cause to a closed-shape token and falls back to the error class", async () => {
+    const f = await fixture();
+    class QueryTimeoutError extends Error { override name = "QueryTimeoutError"; }
+    const unsafe = Object.assign(new QueryTimeoutError("timed out"), { code: `${"X".repeat(81)}` },
+      { cause: { code: "select * from users" } });
+    await f.completion.failRun(f.failure(unsafe));
+    expect((await read(f.run.id)).resultJson).toMatchObject({ failureCause: "QueryTimeoutError" });
+  });
+
+  it("names why an adapter result failed without a code", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 137, signal: null, errorMessage: null } });
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: "Adapter failed",
+      resultJson: { stopReason: "adapter_failed", failureCause: "exit_code_137" } });
+  });
+
+  it("keeps SQL text out of a cancelled adapter result's error", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1,
+      errorMessage: 'Failed query: select "secret_value" from x where id = $1\nparams: sk-secret', resultJson: { status: "cancelled" } } });
+    const run = await read(f.run.id);
+    expect(run.status).toBe("cancelled");
+    expect(run.error).toBe("Database query failed");
+  });
+
+  it("records no failure cause when the failure already has a named code", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1, errorCode: "provider_quota", errorMessage: "quota" } });
+    const run = await read(f.run.id);
+    expect(run.errorCode).toBe("provider_quota");
+    expect(run.resultJson).not.toHaveProperty("failureCause");
+  });
+
   it("keeps an ordinary adapter failure on the normal recovery path", async () => {
     const f = await fixture();
     await f.completion.failRun(f.failure(new Error("adapter crashed")));

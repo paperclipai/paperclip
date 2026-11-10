@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childSpeedTasksInTurn, childrenPending, listWorkspaceFiles } from "./observer.js";
+import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childSpeedTasksInTurn, childrenPending, listWorkspaceFiles, toRunSample } from "./observer.js";
 import { gradeTask } from "./grader.js";
 import { createFixtureRepository, type ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
@@ -395,3 +395,11 @@ describe("childSpeedTasksInTurn", () => {
   });
 });
 
+describe("run samples", () => {
+  it("keeps the board's failure cause for U3 and omits it for older servers", () => {
+    const base = { runId: "r1", status: "failed", errorCode: "adapter_failed" };
+    expect(toRunSample({ ...base, failureCause: "40001" }).failureCause).toBe("40001");
+    expect(toRunSample(base)).not.toHaveProperty("failureCause");
+    expect(toRunSample({ ...base, failureCause: null })).not.toHaveProperty("failureCause");
+  });
+});
