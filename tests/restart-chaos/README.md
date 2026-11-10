@@ -789,7 +789,7 @@ deploy loop. RR faults do not combine with `--storm-minutes`, whose faults carry
 **Evidence.** Each stop and replacement (the first kill included) is recorded with its signal, planned
 gap, stopped PID, the `/api/ready` status just before the stop (`recovering` means it landed inside
 recovery), and the stopped, restarted and healthy times:
-- in `<wave>/repeated-restarts/<faultId>.json`, also written when the sequence fails part way;
+- in `<wave>/repeated-restarts/<faultId>.json`, also written when the sequence fails part way (the planned steps are recorded before the first kill, so a replay of a failed sequence keeps its gaps);
 - in the fault receipt (`repeatedRestart` in `faults.json`, and in each failure's `startup-phases.json`);
 - in the timeline (`repeated_restart_stop`, `repeated_restart_healthy`).
 

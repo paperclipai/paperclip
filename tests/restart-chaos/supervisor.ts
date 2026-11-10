@@ -421,6 +421,8 @@ export class ChaosSupervisor {
       requestedAt, startedAt: Date.now(), stoppedAt: null, restartedAt: null, healthyAt: null, readyAt: null,
       phases: [], serverLogOffsetAtStart: this.serverLogOffset(), serverLogOffsetAtReady: null, error: null,
     };
+    // RR: the planned steps and the first kill are recorded before it, so a failed first restart keeps them for replay.
+    if (isRepeatedRestartFault(kind)) receipt.repeatedRestart = this.repeatedRestartRecord(kind, receipt, restartSteps, previous?.pid ?? null);
     this.faultInProgress = true;
     this.serverReady = false;
     this.timeline.add("fault_started", { faultId: receipt.faultId, fault: kind, signal: receipt.signal, loadAvg1m: receipt.loadAvg1m, holdMs, requestedBy, previousPid: previous?.pid });
@@ -466,7 +468,7 @@ export class ChaosSupervisor {
         if (!this.child) throw new Error("K6 crash loop has no replacement server to kill");
         receipt.healthyAt = await this.waitForHealth(await this.crashLoop(this.child, receipt), receipt.phases);
       }
-      if (isRepeatedRestartFault(kind)) receipt.healthyAt = await this.repeatedRestarts(kind, receipt, restartSteps, previous.pid);
+      if (receipt.repeatedRestart) receipt.healthyAt = await this.repeatedRestarts(receipt.repeatedRestart, receipt);
       receipt.readyAt = await this.waitForReadyPhase(receipt.phases);
       receipt.serverLogOffsetAtReady = this.serverLogOffset();
       this.timeline.add("fault_ready", { faultId: receipt.faultId, replacementPid: this.child?.pid ?? outage?.replacementPid,
@@ -476,6 +478,7 @@ export class ChaosSupervisor {
       this.timeline.add("fault_failed", { faultId: receipt.faultId, error: receipt.error });
       throw Object.assign(new Error(`Fault ${receipt.faultId} failed: ${receipt.error}`), { receipt });
     } finally {
+      if (receipt.repeatedRestart) await this.writeRepeatedRestartEvidence(receipt);
       this.faultInProgress = false;
     }
     return receipt;
@@ -536,56 +539,67 @@ export class ChaosSupervisor {
     return upgrade;
   }
 
-  /**
-   * RR1–RR3: the first kill (as K1) has a healthy replacement. Stop it again after each planned gap,
-   * while it is still recovering, and start another. The sequence is one receipt: one fault window.
-   * Each stop and replacement is written to `<wave>/repeated-restarts/<faultId>.json`.
-   */
-  private async repeatedRestarts(kind: RepeatedRestartKind, receipt: FaultReceipt, planned: readonly RestartStep[] | undefined,
-    firstPid: number): Promise<number> {
+  /** RR1–RR3: the planned steps and the first kill (as K1), recorded before that kill. */
+  private repeatedRestartRecord(kind: RepeatedRestartKind, receipt: FaultReceipt, planned: readonly RestartStep[] | undefined,
+    firstPid: number | null): RepeatedRestartRecord {
     // A fault fired outside a planned task (none today) still gets a sequence of its kind.
-    const steps = planned?.length ? [...planned] : planRestartSteps(kind, (min, max) => min + Math.floor(Math.random() * (max - min + 1)));
-    const record: RepeatedRestartRecord = { kind, planned: steps.map(step => ({ ...step })), restarts: [{
-      index: 0, signal: "SIGKILL", gapMs: null, pid: firstPid, phaseAtStop: "ready", stopAt: receipt.startedAt, stoppedAt: receipt.stoppedAt,
-      restartedAt: receipt.restartedAt, replacementPid: this.child?.pid ?? null, healthyAt: receipt.healthyAt }] };
-    receipt.repeatedRestart = record;
-    const evidenceDir = path.join(path.dirname(this.paths.serverLogPath), "repeated-restarts");
-    record.evidencePath = path.join(evidenceDir, `${receipt.faultId}.json`);
+    const steps = planned?.length ? planned : planRestartSteps(kind, (min, max) => min + Math.floor(Math.random() * (max - min + 1)));
+    return { kind, planned: steps.map(step => ({ ...step })), restarts: [{ index: 0, signal: "SIGKILL", gapMs: null, pid: firstPid,
+      phaseAtStop: "ready", stopAt: receipt.startedAt, stoppedAt: null, restartedAt: null, replacementPid: null, healthyAt: null }],
+      evidencePath: path.join(path.dirname(this.paths.serverLogPath), "repeated-restarts", `${receipt.faultId}.json`) };
+  }
+
+  /**
+   * RR1–RR3: the first kill has a healthy replacement. Stop it again after each planned gap, while it
+   * is still recovering, and start another. The sequence is one receipt: one fault window.
+   */
+  private async repeatedRestarts(record: RepeatedRestartRecord, receipt: FaultReceipt): Promise<number> {
     const first = this.child;
+    Object.assign(record.restarts[0]!, { stoppedAt: receipt.stoppedAt, restartedAt: receipt.restartedAt,
+      replacementPid: first?.pid ?? null, healthyAt: receipt.healthyAt });
+    if (!first || receipt.healthyAt === null) throw new Error(`${record.kind} has no healthy replacement after its first kill`);
+    const result = await runRepeatedRestarts({ record, steps: record.planned, server: first, healthyAt: receipt.healthyAt, hooks: {
+      now: () => Date.now(),
+      sleep: ms => delay(ms),
+      cancelled: () => this.shuttingDown,
+      pidOf: server => server.pid ?? null,
+      exitStatus: server => this.exited(server) ? { code: server.exitCode, signal: server.signalCode } : null,
+      readPhase: () => this.readPhase(),
+      stop: async (server, signal) => {
+        if (signal === "SIGKILL") await this.stopper.crashForRestart(server);
+        else await this.stopper(server, "SIGTERM");
+        if (this.child === server) this.child = null;
+        await this.waitForHealthToStop();
+      },
+      start: () => this.spawnServer(),
+      waitHealthy: server => this.waitForHealth(server, receipt.phases),
+      onEntry: (entry, stage) => {
+        if (stage === "stopping") {
+          this.timeline.add("repeated_restart_stop", { faultId: receipt.faultId, index: entry.index, signal: entry.signal, gapMs: entry.gapMs,
+            pid: entry.pid, phaseAtStop: entry.phaseAtStop });
+          this.log.write(`\n[restart-chaos] ${receipt.faultId} ${record.kind} restart ${entry.index} ${entry.signal} pid=${entry.pid} phase=${entry.phaseAtStop} gap=${entry.gapMs}ms\n`);
+        } else {
+          this.timeline.add("repeated_restart_healthy", { faultId: receipt.faultId, index: entry.index, replacementPid: entry.replacementPid,
+            downMs: (entry.healthyAt ?? 0) - entry.stopAt });
+        }
+      },
+    } });
+    return result.healthyAt;
+  }
+
+  /** `<wave>/repeated-restarts/<faultId>.json`, written whether the sequence passed or failed; faults.json carries the same record. */
+  private async writeRepeatedRestartEvidence(receipt: FaultReceipt): Promise<void> {
+    const record = receipt.repeatedRestart!;
+    // A first kill that failed before its replacement was healthy still records the times it reached.
+    const first = record.restarts[0]!;
+    first.stoppedAt ??= receipt.stoppedAt;
+    first.restartedAt ??= receipt.restartedAt;
+    first.healthyAt ??= receipt.healthyAt;
     try {
-      if (!first || receipt.healthyAt === null) throw new Error(`${kind} has no healthy replacement after its first kill`);
-      const result = await runRepeatedRestarts({ record, steps, server: first, healthyAt: receipt.healthyAt, hooks: {
-        now: () => Date.now(),
-        sleep: ms => delay(ms),
-        cancelled: () => this.shuttingDown,
-        pidOf: server => server.pid ?? null,
-        exitStatus: server => this.exited(server) ? { code: server.exitCode, signal: server.signalCode } : null,
-        readPhase: () => this.readPhase(),
-        stop: async (server, signal) => {
-          if (signal === "SIGKILL") await this.stopper.crashForRestart(server);
-          else await this.stopper(server, "SIGTERM");
-          if (this.child === server) this.child = null;
-          await this.waitForHealthToStop();
-        },
-        start: () => this.spawnServer(),
-        waitHealthy: server => this.waitForHealth(server, receipt.phases),
-        onEntry: (entry, stage) => {
-          if (stage === "stopping") {
-            this.timeline.add("repeated_restart_stop", { faultId: receipt.faultId, index: entry.index, signal: entry.signal, gapMs: entry.gapMs,
-              pid: entry.pid, phaseAtStop: entry.phaseAtStop });
-            this.log.write(`\n[restart-chaos] ${receipt.faultId} ${kind} restart ${entry.index} ${entry.signal} pid=${entry.pid} phase=${entry.phaseAtStop} gap=${entry.gapMs}ms\n`);
-          } else {
-            this.timeline.add("repeated_restart_healthy", { faultId: receipt.faultId, index: entry.index, replacementPid: entry.replacementPid,
-              downMs: (entry.healthyAt ?? 0) - entry.stopAt });
-          }
-        },
-      } });
-      return result.healthyAt;
-    } finally {
-      // Written on failure too: the receipt in faults.json carries the same record.
-      await mkdir(evidenceDir, { recursive: true })
-        .then(() => writeFile(record.evidencePath!, `${JSON.stringify({ faultId: receipt.faultId, requestedBy: receipt.requestedBy, ...record }, null, 2)}\n`, { mode: 0o600 }))
-        .catch(error => { this.log.write(`[restart-chaos] ${receipt.faultId} could not write repeated-restart evidence: ${error instanceof Error ? error.message : String(error)}\n`); });
+      await mkdir(path.dirname(record.evidencePath!), { recursive: true });
+      await writeFile(record.evidencePath!, `${JSON.stringify({ faultId: receipt.faultId, requestedBy: receipt.requestedBy, error: receipt.error, ...record }, null, 2)}\n`, { mode: 0o600 });
+    } catch (error) {
+      this.log.write(`[restart-chaos] ${receipt.faultId} could not write repeated-restart evidence: ${error instanceof Error ? error.message : String(error)}\n`);
     }
   }
 
