@@ -44,6 +44,7 @@ import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkin
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
 import { createRunLogWriterAuthority } from "./heartbeat/run-log-authority.js";
+import { watchShutdownHandoff } from "./heartbeat/shutdown-handoff.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
 import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
@@ -2025,6 +2026,7 @@ export function heartbeatService(
     let githubLauncherLocation:
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
+    const shutdownHandedOff = watchShutdownHandoff(run.id);
     let nativeOwnershipHeld = false;
     let nativeStartupCleanupScheduled = false;
     let nativeStartupCleanupError: NativeStartupCleanupPendingError | undefined;
@@ -2041,6 +2043,21 @@ export function heartbeatService(
     };
     let instructionWorkingCopy: ReturnType<typeof createHeartbeatInstructionWorkingCopy> | null = null;
     let nativeDispatchStarted = false;
+    const leaveToNextController = async (error: unknown) => {
+      if (!shutdownHandedOff() || legacyAdapterEntered || nativeDispatchStarted) return false;
+      nativeSessionResumeScheduled = true;
+      const reason = error instanceof Error ? error.message : String(error);
+      const errorCode = /^[a-z][a-z0-9_]{0,80}$/.test(reason) ? reason : null;
+      logger.info({ runId: run.id, err: reason }, "run preparation stopped after a graceful shutdown handed the run to the next controller");
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Run preparation stopped; a graceful shutdown handed the run to the next controller",
+        payload: { disposition: "left_to_next_controller", errorCode, processPid: process.pid },
+      }).catch(() => undefined);
+      return true;
+    };
     let nativeWorkspaceFinalizeScheduled = false;
     let nativeWorkspaceSync: Awaited<
       ReturnType<typeof prepareNativeWorkspaceSync>
@@ -3795,6 +3812,7 @@ export function heartbeatService(
           }
           return;
         }
+        if (await leaveToNextController(err)) return;
         if (!(await preserveNativeWorkspaceOnFailure())) return;
         await runCompletion.failRun({
           run, agent, issueId, issueRef, signal: executionControl.controller.signal,
@@ -3852,7 +3870,7 @@ export function heartbeatService(
             );
           },
         );
-      } else {
+      } else if (!(await leaveToNextController(outerErr))) {
         await preserveNativeWorkspaceOnFailure();
         if (!nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {
           await runCompletion.failRunSetup({
