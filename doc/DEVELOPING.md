@@ -1121,10 +1121,12 @@ pnpm exec vitest run server/src/services/heartbeat/agent-status.test.ts server/s
 
 ## Task document bodies
 
-The native `write_document` and `write_task_document` tools preserve the supplied
-Markdown body exactly, as the REST document PUT does. Leading whitespace,
-Markdown hard-break spaces, line endings, and final newlines are content.
-`write_document` still requires a nonblank body and normalizes key/title fields.
+The native `write_document` tool preserves the supplied Markdown body, including
+leading whitespace, hard-break spaces, line endings, and final newlines. It still
+requires a nonblank body and normalizes key/title fields. `write_task_document`
+and REST document PUT also retain surrounding whitespace. Those REST-backed
+paths keep their existing escaped-line-break normalization: a body with no real
+line breaks can have literal `\n` sequences converted to newlines.
 
 ## Test Commands
 

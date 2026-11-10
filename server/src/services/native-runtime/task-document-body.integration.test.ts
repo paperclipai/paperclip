@@ -31,7 +31,6 @@ it.each(["write_document", "write_task_document", "rest"] as const)(
     const token = createLocalAgentJwt(fixture.agentId, fixture.companyId, "paperclip_runner", fixture.runId);
     const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
     for (const [index, body] of bodies.entries()) {
-      // Each body is exercised both as a create and as an update.
       const key = `exact-body-${index}`;
       let baseRevisionId: string | null = null;
       for (const phase of ["create", "update"] as const) {
@@ -49,7 +48,6 @@ it.each(["write_document", "write_task_document", "rest"] as const)(
           const result = await fixture.authority.execute(call);
           expect(result).toMatchObject(surface === "write_document"
             ? { document: { body: supplied, title: "Exact body" } } : { ok: true, status: phase === "create" ? 201 : 200 });
-          // A replay must not add a revision or change the exact string.
           expect(await fixture.authority.execute({ ...call, callId: surface === "write_document" ? randomUUID() : call.callId })).toEqual(result);
         }
         const saved = await service.getIssueDocumentByKey(issueId, key);
