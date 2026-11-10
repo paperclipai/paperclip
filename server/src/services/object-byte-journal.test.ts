@@ -277,6 +277,44 @@ describe("object byte journal", () => {
     expect(hidden).toBe(0);
     expect(await journal.readRange(next.head, 0, 100)).toEqual(Buffer.from("kept"));
   });
+  function hideHead(s: ReturnType<typeof storage>, onRead: () => void = () => undefined) {
+    const original = s.provider.getObject;
+    let reads = 0;
+    s.provider.getObject = async (input) => {
+      if (input.objectKey.endsWith("/head.json")) {
+        reads++;
+        onRead();
+        throw Object.assign(new Error("not yet visible"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
+      }
+      return original(input);
+    };
+    return { reads: () => reads };
+  }
+  it("stops waiting for an unreadable head at the deadline and makes no further storage calls", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    await journal.claim({ assertAuthority: authority });
+    const hidden = hideHead(s, () => vi.setSystemTime(Date.now() + 15_000));
+    await expect(journal.claim({ assertAuthority: authority })).rejects.toBeInstanceOf(ObjectJournalConflictError);
+    const reads = hidden.reads(), puts = s.calls.put;
+    expect(reads).toBeGreaterThan(1);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect([hidden.reads(), s.calls.put]).toEqual([reads, puts]);
+  });
+  it("stops a claim that waits for an unreadable head when its caller aborts", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    await journal.claim({ assertAuthority: authority });
+    const hidden = hideHead(s);
+    const controller = new AbortController();
+    const claiming = journal.claim({ assertAuthority: authority, signal: controller.signal });
+    setTimeout(() => controller.abort(new Error("caller stopped")), 100);
+    await expect(claiming).rejects.toMatchObject({ name: "AbortError" });
+    const reads = hidden.reads(), puts = s.calls.put;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect([hidden.reads(), s.calls.put]).toEqual([reads, puts]);
+  });
   it("does not accept a provider's 409 response as proof of conditional enforcement", async () => {
     const s = storage(),
       original = s.provider.putObjectConditional!;
