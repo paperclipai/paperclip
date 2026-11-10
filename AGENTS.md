@@ -63,6 +63,7 @@ Greptile setup.
 - `cli/`: `paperclipai` CLI package (published bin, agent-facing commands)
 - `skills/`: Paperclip runtime/operational skills (not part of the app catalog)
 - `doc/`: operational and product docs
+- `doc/plans/`: dated repo plan docs, named `YYYY-MM-DD-slug.md`. A plan for a Paperclip issue goes in the issue's `plan` document instead.
 - `rules/`: scoped repository rules (see section 2)
 
 ## 4. Dev Setup
@@ -78,49 +79,22 @@ preflight", "Start Dev", "Quick Health Checks", and "Database in Dev" in
 
 ## 5. Core Engineering Rules
 
-1. Keep changes company-scoped.
-Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
+1. **Keep changes company-scoped.**
+   Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services. The few instance-wide exceptions are listed in [`rules/company-scope-exceptions.mdc`](rules/company-scope-exceptions.mdc). Do not add another without adding it to that list.
 
-Explicit exception: announcement dismissals are instance-wide user preferences,
-keyed by user and announcement so they persist across companies. Their audit
-context must still validate company membership. The announcement publication-ID
-registry is instance-level feed metadata; it contains no company or user data.
-Personal workspace presentation preferences are also instance-wide by user, with
-validated company membership supplying audit context. They never grant execution
-authority, change company capabilities or agent configuration, or rewrite canonical
-work records. Optional conversation guidance must retain the same action permissions.
+2. **Keep contracts synchronized.**
+   If you change schema/API behavior, update all impacted layers:
+   - `packages/db` schema and exports
+   - `packages/shared` types/constants/validators
+   - `server` routes/services
+   - `ui` API clients and pages
 
-2. Keep contracts synchronized.
-If you change schema/API behavior, update all impacted layers:
-- `packages/db` schema and exports
-- `packages/shared` types/constants/validators
-- `server` routes/services
-- `ui` API clients and pages
-
-3. Preserve control-plane invariants.
-- Single-assignee task model
-- Atomic issue checkout semantics
-- Approval gates for governed actions
-- Budget hard-stop auto-pause behavior
-- Activity logging for mutating actions
-
-4. Do not replace strategic docs wholesale unless asked.
-Prefer additive updates.
-
-5. Keep repo plan docs dated and centralized.
-When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
-
-6. Attach inspectable generated artifacts.
-When your task produces a user-inspectable deliverable file, follow the Paperclip skill's "Generated Artifacts and Work Products" workflow before final disposition. In this repo, prefer the self-contained skill helper at `skills/paperclip/scripts/paperclip-upload-artifact.sh` so the file is available through the Paperclip API, create/update an artifact work product when the file is the deliverable, link the uploaded artifact in the final issue comment, and then set status. Do not rely on local filesystem paths as the only access path. If an important file intentionally remains workspace-only, create/update a work product with `metadata.resourceRef.kind: "workspace_file"` and a workspace-relative path, then name that work product and path in the final comment. Treat browse/search as a fallback for recovering workspace files, not the preferred deliverable path. See `doc/AGENT-ARTIFACTS.md` for details and `.mp4`/`.webm` examples.
-
-7. Name the three data paths correctly.
-This repo has three separate data paths. Do not confuse them. Match a change to a path by its file path, not by the word "observability" or "telemetry" alone.
-
-- **Telemetry** is the Paperclip first-party event system under `packages/shared/src/telemetry/`. It sends data to a Paperclip endpoint by default, so a change needs strict review: generated contract first, README update, privacy review.
-- **Observability** is the OpenTelemetry trace path. It is a no-operation until an operator sets an OTLP endpoint. A change needs lighter review while it keeps that gate and stays inside the span-attribute allowlist.
-- **The run log** holds rows in the local `heartbeat_run_events` table. The data stays in the instance database, so a change needs no extra review.
-
-Before you change any of these paths or add a Telemetry caller, read [`rules/data-paths.mdc`](rules/data-paths.mdc) for the exact file paths and review requirements.
+3. **Preserve control-plane invariants.**
+   - Single-assignee task model
+   - Atomic issue checkout semantics
+   - Approval gates for governed actions
+   - Budget hard-stop auto-pause behavior
+   - Activity logging for mutating actions
 
 ## 6. Database Changes
 
@@ -167,6 +141,9 @@ Follow these rules:
   interrupted attempts are never passes.
 - **Report gaps.** If anything cannot be run, explicitly report what was not run
   and why.
+- **Attach deliverables.** When you work a Paperclip issue and produce a file for
+  the user to inspect, attach it as the `paperclip` skill and
+  `doc/AGENT-ARTIFACTS.md` describe. A local filesystem path is not enough.
 
 Broad local checks:
 

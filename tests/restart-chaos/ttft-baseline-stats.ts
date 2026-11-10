@@ -2,7 +2,7 @@
  * Pure statistics for the Phase 0 time-to-first-token baseline
  * (doc/plans/2026-11-07-ttft-baseline.md). Input is the run log only:
  * `run.performance.span`, `run.startup.reuse` and `native.recovery.transition`
- * rows from `heartbeat_run_events`. Never Telemetry (AGENTS.md §5.7).
+ * rows from `heartbeat_run_events`. Never Telemetry (rules/data-paths.mdc).
  */
 
 export interface BaselineEvent {

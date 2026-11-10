@@ -8,7 +8,7 @@
  *   - restart: a task in a provider tool call when the control plane is killed
  *     (K1, SIGKILL) or stopped gracefully (K2, SIGTERM).
  * It then writes every run's run log to `<out>/baseline-data.json`. All timing
- * comes from the run log, never from Telemetry (AGENTS.md §5.7).
+ * comes from the run log, never from Telemetry (rules/data-paths.mdc).
  *
  *   set -a; source ~/.secrets; set +a
  *   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/ttft-baseline.ts \
