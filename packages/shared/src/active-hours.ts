@@ -8,13 +8,21 @@ export interface ActiveHoursWindow {
   timezone: string;
 }
 
+const timeZoneValidity = new Map<string, boolean>();
+
 export function isValidTimeZone(timezone: string) {
+  const known = timeZoneValidity.get(timezone);
+  if (known !== undefined) return known;
+  let valid: boolean;
   try {
-    new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
-    return true;
+    localTimeFormatter(timezone);
+    valid = true;
   } catch {
-    return false;
+    valid = false;
   }
+  if (timeZoneValidity.size >= MAX_CACHED_FORMATTERS) timeZoneValidity.clear();
+  timeZoneValidity.set(timezone, valid);
+  return valid;
 }
 
 export function parseHmToMinutes(value: string): number | null {
