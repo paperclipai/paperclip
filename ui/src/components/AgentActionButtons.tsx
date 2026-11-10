@@ -216,7 +216,6 @@ export function AgentActionButtons({
    * omitted, failures surface as toasts (used by the list view).
    */
   onActionError?: (message: string | null) => void;
-  /** Called after termination succeeds so callers can leave now-hidden detail routes. */
   onTerminateSuccess?: (agent: Agent) => void;
   /** Extra content rendered just before the overflow menu (e.g. live-run link). */
   children?: React.ReactNode;
@@ -293,8 +292,6 @@ export function AgentActionButtons({
       onActionError?.(null);
       invalidateAgent();
       if (action === "terminate") {
-        const state = (data as Agent).lifecycleState;
-        if (state === "terminating" || state === "cleaning_up") return;
         if (!confirmLateNavigationChanges(agentActionStartedDirtyRef)) return;
         onTerminateSuccess?.(data as Agent);
       }
