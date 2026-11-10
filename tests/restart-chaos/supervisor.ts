@@ -38,6 +38,7 @@ import type { Timeline } from "./timeline.js";
 import { isRepeatedRestartFault, newRepeatedRestartRecord, recordFirstRestart, runRepeatedRestarts, stopPhaseWatcher, type RepeatedRestartKind, type RepeatedRestartStopOn,
   type RepeatedRestartRecord, type RestartStep } from "./repeated-restarts.js";
 import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
+import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type MultiServerRecord, type ServerProcessWindow } from "./multi-server.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
 const HEALTH_TIMEOUT_MS = (() => {
@@ -47,8 +48,10 @@ const HEALTH_TIMEOUT_MS = (() => {
 const READY_TIMEOUT_MS = 300_000;
 const STOP_TIMEOUT_MS = 30_000;
 
-export const FAULT_SIGNAL: Record<FaultKind, "SIGKILL" | "SIGTERM" | "SIGSTOP"> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL", K6: "SIGKILL", K14: "SIGTERM",
-  TM1: "SIGSTOP", TM2: "SIGSTOP", TM3: "SIGKILL", RR1: "SIGKILL", RR2: "SIGKILL", RR3: "SIGKILL" };
+export const FAULT_SIGNAL: Record<FaultKind, FaultReceipt["signal"]> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL", K6: "SIGKILL", K14: "SIGTERM",
+  TM1: "SIGSTOP", TM2: "SIGSTOP", TM3: "SIGKILL", RR1: "SIGKILL", RR2: "SIGKILL", RR3: "SIGKILL",
+  // MS1 leaves the primary alone; MS2 freezes it; MS3 stops it gracefully (multi-server.ts).
+  MS1: "none", MS2: "SIGSTOP", MS3: "SIGTERM" };
 
 /** The checkout's commit, for the K14 receipt. */
 function checkoutSha(root: string): string | null {
@@ -140,6 +143,10 @@ export class ChaosSupervisor {
   timeAgeMs = DEFAULT_TIME_AGE_MS;
   /** RR1–RR3 (`--rr-stop-on`): stop each replacement on this `/api/ready` status instead of after its gap. */
   rrStopOn: RepeatedRestartStopOn | null = null;
+  /** Every server process this wave started, with its lifetime and freezes (MS cross-server invariant). */
+  readonly serverWindows: ServerProcessWindow[] = [];
+  /** MS1–MS3: the second server, while one is running. */
+  private secondary: { child: ChildProcess; port: number; log: WriteStream } | null = null;
   /** Every aging shift so far, in order; the grader's API reads times through them (time-faults.ts). */
   readonly agingShifts: AgingShift[] = [];
   private readonly createdAt = Date.now();
@@ -253,11 +260,13 @@ export class ChaosSupervisor {
     const child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(root, entry, ["onboard", "--yes", "--run"]),
       { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], detached: runnerE2EServerDetached });
     this.child = child;
+    const window = this.trackWindow(child, "primary");
 
     child.stdout?.on("data", chunk => this.log.write(chunk));
     child.stderr?.on("data", chunk => this.log.write(chunk));
     child.once("error", error => { this.spawnErrors.set(child, error); });
     child.once("exit", (code, signal) => {
+      if (window) window.exitedAt = Date.now();
       this.log.write(`\n[restart-chaos] server pid=${child.pid} exited code=${code} signal=${signal}\n`);
       if (control && signal === "SIGKILL" && !this.expectedStops.has(child) && !this.shuttingDown) {
         const hit = readCrashPointReceipt(control.receiptPath, child.pid);
@@ -274,26 +283,41 @@ export class ChaosSupervisor {
     return child;
   }
 
+  private trackWindow(child: ChildProcess, role: ServerProcessWindow["role"]): ServerProcessWindow | null {
+    if (!child.pid) return null;
+    const window: ServerProcessWindow = { pid: child.pid, role, spawnedAt: Date.now(), exitedAt: null, frozen: [] };
+    this.serverWindows.push(window);
+    return window;
+  }
+
+  /** Records a freeze or thaw of a server process for the MS invariant (TM1/TM2 and MS2). */
+  private markFrozen(pid: number | undefined, at: number, frozen: boolean): void {
+    const window = [...this.serverWindows].reverse().find(candidate => candidate.pid === pid && candidate.exitedAt === null);
+    if (!window) return;
+    if (frozen) window.frozen.push({ from: at, to: null });
+    else { const open = window.frozen.find(span => span.to === null); if (open) open.to = at; }
+  }
+
   private exited(child: ChildProcess) { return child.exitCode !== null || child.signalCode !== null || this.spawnErrors.has(child); }
 
-  private async readPhase(): Promise<string> {
+  private async readPhase(baseUrl = this.baseUrl): Promise<string> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/ready`, { signal: AbortSignal.timeout(1_000), cache: "no-store" });
+      const response = await fetch(`${baseUrl}/api/ready`, { signal: AbortSignal.timeout(1_000), cache: "no-store" });
       return String(((await response.json()) as { status?: string }).status ?? response.status);
     } catch { return "unreachable"; }
   }
 
-  private async waitForHealth(child: ChildProcess, phases?: FaultReceipt["phases"]): Promise<number> {
+  private async waitForHealth(child: ChildProcess, phases?: FaultReceipt["phases"], baseUrl = this.baseUrl): Promise<number> {
     const deadline = Date.now() + HEALTH_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (this.shuttingDown) throw new Error("Harness shutdown interrupted startup");
       if (this.exited(child)) throw new Error(`Paperclip server exited during startup (code=${child.exitCode} signal=${child.signalCode})`);
       if (phases) {
-        const phase = await this.readPhase();
+        const phase = await this.readPhase(baseUrl);
         if (phase !== phases[phases.length - 1]?.phase) phases.push({ phase, at: Date.now() });
       }
       try {
-        const response = await fetch(`${this.baseUrl}/api/health`, { signal: AbortSignal.timeout(1_000) });
+        const response = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(1_000) });
         await response.body?.cancel();
         if (response.ok) return Date.now();
       } catch { /* still booting */ }
@@ -433,6 +457,7 @@ export class ChaosSupervisor {
       if (!previous?.pid || this.exited(previous)) throw new Error("No live Paperclip server to fault");
       let outage: ControllerOutageReceipt | undefined;
       if (kind === "TM1" || kind === "TM2") await this.freeze(kind, previous, holdMs, receipt);
+      else if (isMultiServerFault(kind)) await this.multiServer(kind, previous, holdMs, receipt);
       else outage = await replaceController({
         requestId: `chaos-${receipt.faultId}-${requestedBy}`,
         previousPid: previous.pid,
@@ -516,8 +541,8 @@ export class ChaosSupervisor {
     const times = await runFreezeFault({ kind, rootPid: server.pid!, holdMs, record: timeFault, freezer: new ProcessFreezer(),
       ...(kind === "TM2" ? { age: (onLockTimeout: () => Promise<void>) => this.age(receipt.faultId, onLockTimeout) } : {}),
       cancelled: () => this.shuttingDown,
-      onFrozen: pids => this.timeline.add("fault_server_frozen", { faultId: receipt.faultId, pids, holdMs }),
-      onThawed: frozenMs => this.timeline.add("fault_server_thawed", { faultId: receipt.faultId, frozenMs }),
+      onFrozen: pids => { this.markFrozen(server.pid, Date.now(), true); this.timeline.add("fault_server_frozen", { faultId: receipt.faultId, pids, holdMs }); },
+      onThawed: frozenMs => { this.markFrozen(server.pid, Date.now(), false); this.timeline.add("fault_server_thawed", { faultId: receipt.faultId, frozenMs }); },
       waitHealthy: () => this.waitForHealth(server, receipt.phases),
       exitStatus: () => this.exited(server) ? { code: server.exitCode, signal: server.signalCode } : null,
       replaceExited: async () => {
@@ -530,6 +555,111 @@ export class ChaosSupervisor {
     receipt.stoppedAt = times.stoppedAt;
     receipt.restartedAt = times.restartedAt;
     receipt.healthyAt = times.healthyAt;
+  }
+
+  /**
+   * MS1–MS3 (multi-server.ts): a second server B on its own port, with the primary's database, instance
+   * directory, storage and secrets. The primary keeps its port, so tasks and agents keep using it.
+   */
+  private async multiServer(kind: MultiServerKind, primary: ChildProcess, holdMs: number, receipt: FaultReceipt): Promise<void> {
+    const record: MultiServerRecord = { kind, secondary: null, steps: [] };
+    receipt.multiServer = record;
+    await runMultiServerFault(kind, holdMs, record, {
+      now: () => Date.now(),
+      sleep: ms => delay(ms),
+      cancelled: () => this.shuttingDown,
+      startSecondary: async current => {
+        const child = await this.spawnSecondary(current);
+        current.secondary!.readyAt = await this.waitForSecondaryReady(child, current.secondary!.port);
+        this.timeline.add("multi_server_secondary_ready", { faultId: receipt.faultId, pid: child.pid, port: current.secondary!.port });
+      },
+      stopSecondary: async current => {
+        const secondary = this.secondary;
+        if (!secondary) return;
+        try { await this.stopper(secondary.child, "SIGTERM"); }
+        finally {
+          this.secondary = null;
+          await new Promise<void>(resolve => secondary.log.end(resolve));
+          if (current.secondary) current.secondary.stoppedAt = Date.now();
+          this.timeline.add("multi_server_secondary_stopped", { faultId: receipt.faultId, pid: secondary.child.pid });
+        }
+      },
+      freezePrimary: async (freezeMs, current) => {
+        // TM2's tree freeze without aging: the primary and its runners stop; the time passes for real.
+        const timeFault: TimeFaultRecord = { kind: "TM2" };
+        current.primaryFreeze = timeFault;
+        const times = await runFreezeFault({ kind: "TM2", rootPid: primary.pid!, holdMs: freezeMs, record: timeFault, freezer: new ProcessFreezer(),
+          cancelled: () => this.shuttingDown,
+          onFrozen: pids => { this.markFrozen(primary.pid, Date.now(), true); this.timeline.add("fault_server_frozen", { faultId: receipt.faultId, pids, holdMs: freezeMs }); },
+          onThawed: frozenMs => { this.markFrozen(primary.pid, Date.now(), false); this.timeline.add("fault_server_thawed", { faultId: receipt.faultId, frozenMs }); },
+          waitHealthy: () => this.waitForHealth(primary, receipt.phases),
+          exitStatus: () => this.exited(primary) ? { code: primary.exitCode, signal: primary.signalCode } : null,
+          replaceExited: async () => {
+            this.timeline.add("time_fault_server_exited_after_thaw", { faultId: receipt.faultId, ...timeFault.serverExitedAfterThaw });
+            try { await this.stopper.crashForRestart(primary); } finally { if (this.child === primary) this.child = null; }
+          },
+          startReplacement: async () => this.waitForHealth(await this.spawnServer(), receipt.phases),
+        });
+        receipt.stoppedAt = times.stoppedAt;
+        receipt.restartedAt = times.restartedAt;
+        receipt.healthyAt = times.healthyAt;
+      },
+      restartPrimary: async current => {
+        const restart: NonNullable<MultiServerRecord["primaryRestart"]> = { stoppedAt: null, restartedAt: null, readyAt: null, replacementPid: null };
+        current.primaryRestart = restart;
+        await this.stopper(primary, "SIGTERM");
+        if (this.child === primary) this.child = null;
+        await this.waitForHealthToStop();
+        receipt.stoppedAt = restart.stoppedAt = Date.now();
+        this.timeline.add("fault_server_down", { faultId: receipt.faultId });
+        receipt.restartedAt = restart.restartedAt = Date.now();
+        const replacement = await this.spawnServer();
+        restart.replacementPid = replacement.pid ?? null;
+        receipt.healthyAt = await this.waitForHealth(replacement, receipt.phases);
+        restart.readyAt = await this.waitForReadyPhase(receipt.phases);
+      },
+    });
+  }
+
+  private async spawnSecondary(record: MultiServerRecord): Promise<ChildProcess> {
+    if (this.shuttingDown) throw new Error("Refusing to start a second server during harness shutdown");
+    if (this.secondary) throw new Error("A second server is already running");
+    const port = await reserveRunnerE2EServerPort();
+    const log = createWriteStream(path.join(path.dirname(this.paths.serverLogPath), "server-b.log"), { flags: "a", mode: 0o600 });
+    const root = this.serverRoot;
+    const entry = path.join(root, "tests/runner-e2e/server-entry.ts");
+    // Same database, instance directory, storage and secrets as the primary; its own port and API URL.
+    const env = { ...this.environment, PORT: String(port), ...waveServerUrlEnvironment(port) };
+    const child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(root, entry, ["onboard", "--yes", "--run"]),
+      { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], detached: runnerE2EServerDetached });
+    const window = this.trackWindow(child, "secondary");
+    record.secondary = { pid: child.pid ?? null, port, spawnedAt: Date.now(), readyAt: null, stoppedAt: null };
+    this.secondary = { child, port, log };
+    child.stdout?.on("data", chunk => log.write(chunk));
+    child.stderr?.on("data", chunk => log.write(chunk));
+    child.once("error", error => { this.spawnErrors.set(child, error); });
+    child.once("exit", (code, signal) => {
+      if (window) window.exitedAt = Date.now();
+      log.write(`\n[restart-chaos] second server pid=${child.pid} exited code=${code} signal=${signal}\n`);
+      if (!this.expectedStops.has(child) && !this.shuttingDown) this.timeline.add("multi_server_secondary_exited", { pid: child.pid, code, signal });
+    });
+    await this.stopper.watch(child);
+    this.timeline.add("multi_server_secondary_spawned", { pid: child.pid, port });
+    return child;
+  }
+
+  /** B is ready when its own /api/ready says so; it never changes the primary's readiness. */
+  private async waitForSecondaryReady(child: ChildProcess, port: number): Promise<number> {
+    const baseUrl = `http://127.0.0.1:${port}`;
+    await this.waitForHealth(child, undefined, baseUrl);
+    const deadline = Date.now() + READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (this.shuttingDown) throw new Error("Harness shutdown interrupted the second server's start");
+      if (this.exited(child)) throw new Error(`Second server exited during startup (code=${child.exitCode} signal=${child.signalCode})`);
+      if (await this.readPhase(baseUrl) === "ready") return Date.now();
+      await delay(250);
+    }
+    throw new Error(`Second server did not report ready within ${READY_TIMEOUT_MS}ms`);
   }
 
   /**

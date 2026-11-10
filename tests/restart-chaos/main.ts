@@ -44,6 +44,7 @@ import { TimeShiftedApi } from "./time-faults.js";
 import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
+import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -626,6 +627,18 @@ async function main(): Promise<number> {
       timeline.add("task_graded", { taskId: observer.plan.taskId, pass: grade.pass, crossed: grade.crossed, signature: grade.signature,
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict,
         universal: Object.fromEntries(Object.entries(grade.universal ?? {}).map(([id, rule]) => [id, `${rule.verdict}${rule.enforced ? "" : " (warning)"}`])) });
+    }
+    // MS1–MS3: the cross-server invariant over the whole wave (multi-server.ts).
+    if (faults.some(receipt => receipt.multiServer)) {
+      const crossServer = await readCrossServerEvidence(evidenceDb, lab.companyId)
+        .then(evidence => checkCrossServer({ ...evidence, windows: supervisor.serverWindows }))
+        .catch(error => { harnessError ??= new Error(`Cross-server invariant check failed: ${String(error)}`); return null; });
+      if (crossServer) {
+        await writeFile(path.join(waveDir, "cross-server.json"), `${JSON.stringify(crossServer, null, 2)}\n`, { mode: 0o600 });
+        timeline.add("cross_server_invariant", { violations: crossServer.violations.map(violation => ({ rule: violation.rule, runId: violation.runId,
+          issueId: violation.issueId, detail: violation.detail })), unattributed: crossServer.unattributed.length });
+        if (crossServer.violations.length) anyFailure = true;
+      }
     }
     if (storageAuditor) {
       storageChaos?.stop();

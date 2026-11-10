@@ -8,8 +8,9 @@ import type { TimeFaultRecord } from "./time-faults.js";
  * K14 (upgrade mid-run): a graceful stop, then the replacement starts from the current build (`--upgrade-from`).
  * TM1–TM3 (time faults, time-faults.ts): freeze the server, sleep with aged rows, or an aged outage.
  * RR1–RR3 (repeated restarts, repeated-restarts.ts): a K1, then more restarts while the replacement recovers.
+ * MS1–MS3 (two servers, one database, multi-server.ts): a second server beside the first.
  */
-export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3"] as const;
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 /**
  * A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them.
@@ -250,7 +251,8 @@ export interface FaultReceipt {
   kind: FaultKind;
   /** Task that scheduled the fault; every other running task is also exposed. */
   requestedBy: string;
-  signal: "SIGKILL" | "SIGTERM" | "SIGSTOP";
+  /** "none": MS1 sends no signal to the primary server. */
+  signal: "SIGKILL" | "SIGTERM" | "SIGSTOP" | "none";
   holdMs: number;
   requestedAt: number;
   startedAt: number;
@@ -271,6 +273,8 @@ export interface FaultReceipt {
   timeFault?: TimeFaultRecord;
   /** RR1–RR3: every stop and replacement of the sequence, the first kill included. */
   repeatedRestart?: RepeatedRestartRecord;
+  /** MS1–MS3: the second server and what happened to the first. */
+  multiServer?: import("./multi-server.js").MultiServerRecord;
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;
