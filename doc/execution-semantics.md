@@ -3008,6 +3008,15 @@ A restore failure, sync descriptor, copyback owner, unfinished operation, or pen
 lease cleanup still blocks the change. This applies to next-admission selections
 and legacy binding updates. Historical failure records remain unchanged.
 
+Older releases stored the no-session evidence in the terminal coordinator's failure
+detail instead of an execution-recovery receipt. That shape is eligible only when
+all three saved flags explicitly deny a provider session, provider events and a
+checkpoint. Admission also verifies the database has no result or Runner checkpoint,
+no remote lease, and a server-authored local stop after the latest launch or process
+identity. Saved controller or session checkpoints remain holds. The same ownership,
+copyback and cleanup guards apply. This read-only compatibility check keeps the old
+run and failed workspace operation intact; it does not replay or mark either successful.
+
 When a same-run retry acquires a replacement plugin task lease, the executor
 reloads the prior task's durable Runner checkpoint before checking local
 lifecycle evidence. This includes retries after a provider turn omitted its

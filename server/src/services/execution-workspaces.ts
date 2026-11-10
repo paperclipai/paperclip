@@ -64,6 +64,9 @@ import {
   agents,
   heartbeatRuns,
   nativeRunFinalizations,
+  nativeRunResults,
+  nativeRunnerCheckpoints,
+  heartbeatRunEvents,
   environmentLeases,
   workspaceOperations,
   issueComments,
@@ -1481,19 +1484,42 @@ async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
   for (const operation of operations) {
     if (operation.runId && !latest.has(operation.runId)) latest.set(operation.runId, operation.status);
   }
+  const legacyBootstrapIds = new Set<string>();
   const bootstrapRunIds = rows.filter(({ finalization, run }) => {
     const recovery = parseObject(run.resultJson?.executionRecovery);
+    const failure = parseObject(finalization.failureDetail);
+    const legacyBootstrap = recovery.kind == null && failure.providerSessionEstablished === false
+      && failure.providerEventsExist === false && failure.checkpointExists === false
+      && run.runnerProfileJson?.sessionCheckpoint == null && run.runnerProfileJson?.nativeControllerRecovery == null;
+    if (legacyBootstrap) legacyBootstrapIds.add(run.id);
     return run.runtimeMode === "native" && run.status === "failed" && run.finishedAt !== null
       && finalization.phase === "terminal_failure" && finalization.resultId === null
       && run.processPid === null && run.processGroupId === null
-      && recovery.kind === "bootstrap" && recovery.providerWorkStarted === false
+      && ((recovery.kind === "bootstrap" && recovery.providerWorkStarted === false) || legacyBootstrap)
       && !hasWorkspaceRestoreFailure(run.resultJson)
       && run.runnerProfileJson?.nativeWorkspaceSync == null
       && run.runnerProfileJson?.nativeWorkspaceFinalizationOwner == null
       && latest.get(run.id) === "failed";
   }).map(({ run }) => run.id);
   const providerEvidence = await nativeSessionProviderEvidence(tx, bootstrapRunIds);
-  const noWorkFailures = new Set(bootstrapRunIds.filter(id => !providerEvidence.has(id)));
+  const legacyCandidates = bootstrapRunIds.filter(id => legacyBootstrapIds.has(id) && !providerEvidence.has(id));
+  const stoppedLegacyRuns = legacyCandidates.length ? await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, legacyCandidates),
+    sql`not exists (select 1 from ${nativeRunnerCheckpoints} where ${nativeRunnerCheckpoints.companyId} = ${heartbeatRuns.companyId}
+      and ${nativeRunnerCheckpoints.runId} = ${heartbeatRuns.id})`,
+    sql`not exists (select 1 from ${nativeRunResults} where ${nativeRunResults.companyId} = ${heartbeatRuns.companyId}
+      and ${nativeRunResults.runId} = ${heartbeatRuns.id})`,
+    sql`not exists (select 1 from ${environmentLeases} where ${environmentLeases.companyId} = ${heartbeatRuns.companyId}
+      and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id} and ${environmentLeases.provider} <> 'local')`,
+    sql`(select ${heartbeatRunEvents.eventType} from ${heartbeatRunEvents}
+      where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId} and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
+        and ${heartbeatRunEvents.sourceEventId} is null
+        and ${heartbeatRunEvents.eventType} in ('native.process_start_requested', 'native.process_identity_recorded', 'native.local_process_stopped')
+      order by ${heartbeatRunEvents.seq} desc limit 1) = 'native.local_process_stopped'`,
+  )) : [];
+  const verifiedLegacyIds = new Set(stoppedLegacyRuns.map(run => run.id));
+  const noWorkFailures = new Set(bootstrapRunIds.filter(id => !providerEvidence.has(id)
+    && (!legacyBootstrapIds.has(id) || verifiedLegacyIds.has(id))));
   return rows.some(({ finalization, run }) => {
     const status = latest.get(run.id);
     if (status !== undefined) return status !== "succeeded" && !noWorkFailures.has(run.id);
