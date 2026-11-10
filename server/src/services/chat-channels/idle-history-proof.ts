@@ -136,9 +136,10 @@ export const idleChatHistoryChecks = [
 export function idleChatHistoryChecksForOwner(completedActionIds: readonly string[] = []): readonly { reason: string; query: string | SQL }[] {
   if (!completedActionIds.length) return idleChatHistoryChecks;
   const ids = [...new Set(completedActionIds)];
-  if (ids.length > 1000 || ids.some(id => !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id))) throw new Error("Invalid completed chat action identity");
+  if (ids.some(id => !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id))) throw new Error("Invalid completed chat action identity");
   const normal = completedAction("a");
-  const completed = sql`(${sql.raw(normal)}) OR (${sql.raw(actionGraph("a"))} AND a.id IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)}))`;
+  // One bound UUID array; no retained-history-sized SQL literal/parameter list.
+  const completed = sql`(${sql.raw(normal)}) OR (${sql.raw(actionGraph("a"))} AND a.id IN (SELECT completed.id FROM unnest(${sql.param(ids)}::uuid[]) AS completed(id)))`;
   return idleChatHistoryChecks.map(check => {
     if (check.reason !== "chat_actions" && check.reason !== "chat_deliveries") return check;
     const pieces = check.query.split(normal);

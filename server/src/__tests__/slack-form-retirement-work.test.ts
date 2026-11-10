@@ -1,3 +1,9 @@
+import { readSlackIdleIncomingProof } from "../services/chat-channels/slack/idle-incoming.js";
+import { idleChatHistoryChecksForOwner } from "../services/chat-channels/idle-history-proof.js";
+import { registerConnectionEventWake, hasConnectionEventWakeReceiver } from "../services/connection-event-wake.js";
+import { slackConfiguredBindingsFingerprint } from "../services/chat-channels/slack/configured-coverage.js";
+import { verifyCloudControlAssertion, CLOUD_CONTROL_AUDIENCE, CLOUD_CONTROL_JWS_TYPE } from "../services/cloud-runtime-identity.js";
+import type { VerifiedIdleCapabilities } from "../services/idle-incoming-wake-capability.js";
 import { retainSlackFormOpeningProof } from "../services/chat-channels/slack/form-opening-proof.js";
 import { readSlackFormRetainedConsumer } from "../services/chat-channels/slack/cloud-consumer.js";
 import { parseSlackFormAckWork, transferSlackFormAckReceipt } from "../services/chat-channels/slack/form-ack-work.js";
@@ -92,8 +98,106 @@ if (process.env.SLACK_GATE_EXPECT_PRELOAD === "1" && !external) throw new Error(
     const errors = closed.flatMap(value => value.status === "rejected" ? [value.reason] : []);
     if (errors.length) throw new AggregateError(errors, "retirement auxiliary closure failure");
   });
+  function signedRetainedHistoryCapabilities(): VerifiedIdleCapabilities {
+    const key=generateKeyPairSync("ed25519"),kid="retained-history-current",now=Math.floor(Date.now()/1000),generation="e".repeat(64);
+    const capabilities={incomingWake:{version:1,ownerId:randomUUID(),generation,routes:["slack-broker-events-v1"],
+      slackBroker:{version:1,instanceId:identity.instanceId,generation,bindingsFingerprint:slackConfiguredBindingsFingerprint([]),entries:[]}}};
+    const encode=(value:unknown)=>Buffer.from(JSON.stringify(value)).toString("base64url");
+    const body=encode({alg:"EdDSA",typ:CLOUD_CONTROL_JWS_TYPE,kid})+"."+encode({v:1,iss:"paperclip-cloud",aud:CLOUD_CONTROL_AUDIENCE,
+      sub:identity.instanceId,action:"task-drain:read",requestId:randomUUID(),iat:now,exp:now+60,idleCapabilities:capabilities});
+    const claims=verifyCloudControlAssertion({compactJws:body+"."+sign(null,Buffer.from(body),key.privateKey).toString("base64url"),expectedAction:"task-drain:read",
+      env:{PAPERCLIP_CLOUD_STACK_ID:identity.instanceId,PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS:JSON.stringify({keys:[{...key.publicKey.export({format:"jwk"}),kid,use:"sig",alg:"EdDSA"}]})}});
+    if(!claims.idleCapabilities)throw new Error("Actual signed retained-history capability absent");
+    return claims.idleCapabilities as VerifiedIdleCapabilities;
+  }
+  async function finishedHistory(ownerAlreadyTransferred=false) {
+    // The original owner reaches its real normal transferred state. Additional
+    // rows explicitly represent already-committed historical custody, not live
+    // provider calls or a fabricated provider result in this tested journey.
+    if(!ownerAlreadyTransferred)await acceptSlackFormRetirementLocally(db,await row(),identity,compactJws);
+    const receipt=slackFormRetirementReceipt(binding,identity.environment,actorId);
+    const protocol=async(input:{operation:Record<string,unknown>})=>input.operation.refreshRetirementReceipt?{retirementReceiptJws:compactJws}
+      :input.operation.acceptedRetirementReceipt?{acceptedRetirementDigest:receipt.receiptId}:{releasedRetirementDigest:receipt.receiptId};
+    if(!ownerAlreadyTransferred){await transferSlackFormRetirement(db,await row(),identity,protocol);await transferSlackFormRetirement(db,await row(),identity,protocol);}
+    expect(slackFormRetirementHistoryReceipt(await row())).not.toBeNull();
+    const history=Array.from({length:1005},(_,index)=>({id:`b1000000-0000-4000-8000-${String(index).padStart(12,"0")}`,companyId,endpointId,
+      kind:"slack_form_grant",providerActionId:"slack-form-grant-history:"+index,status:"cancelled",
+      payload:{binding,environment:identity.environment,subject:actorId},result:{phase:"transferred",nextAttemptAt:null,
+        retirement:{version:1,binding,instanceId:identity.instanceId,environment:identity.environment,subject:actorId,receiptDigest:receipt.receiptId,receipt}}}));
+    for(const entry of history)expect(slackFormRetirementHistoryReceipt(entry)).not.toBeNull();
+    await db.insert(chatActions).values(history);
+    return{history,receipt};
+  }
+  async function inspectHistory(abortBeforeRead?:number) {
+    const capabilities=signedRetainedHistoryCapabilities(),unregister=registerConnectionEventWake(db,()=>{});
+    let reads=0,selects=0;
+    try {
+      return await db.transaction(async tx=>{
+        const select=vi.spyOn(tx,"select");
+        const started=performance.now(),remaining=()=>{
+          const left=2000-(performance.now()-started);if(left<=0)throw new Error("Incoming wake inspection budget exhausted");return Math.max(1,Math.floor(left));
+        };
+        const beforeRead=async()=>{
+          reads++;if(reads===abortBeforeRead)throw new Error("Controlled existing inspection budget exhausted before next page");
+          if(reads*2>64)throw new Error("Incoming wake query budget exhausted");
+          await tx.execute(sql`SELECT set_config('statement_timeout', ${`${remaining()}ms`}, true)`);remaining();
+        };
+        try {
+          const proof=await readSlackIdleIncomingProof(tx,{capabilities,identity,receiverBound:hasConnectionEventWakeReceiver(db),registeredOptions:()=>false,beforeRead,remaining});
+          const check=idleChatHistoryChecksForOwner(proof?.completedActionIds).find(value=>value.reason==="chat_actions");
+          if(!check)throw new Error("Actual chat action owner query absent");
+          await beforeRead();const query=typeof check.query==="string"?sql.raw(check.query):check.query;
+          const blockers=await tx.execute<{count:number}>(sql`SELECT count(*)::int AS count FROM (${query}) retained_history_blockers`);
+          return{proof,blockers:blockers[0]!.count,reads};
+        }finally{selects=select.mock.calls.length;select.mockRestore();}
+      });
+    }finally{unregister();if(abortBeforeRead!==undefined){expect(reads).toBe(abortBeforeRead);expect(selects).toBe(abortBeforeRead-1);}}
+  }
+  it("more than one page of valid finished Slack custody remains provable by the real incoming and action owners",async()=>{
+    const{history}=await finishedHistory();const result=await inspectHistory();
+    expect(result.proof?.completedActionIds).toEqual([actionId,...history.map(entry=>entry.id)].sort());
+    expect(result.proof?.endpointIds).toEqual([]);expect(result.proof?.connectionIds).toEqual([]);
+    expect(result.blockers).toBe(0);expect(result.reads).toBeGreaterThanOrEqual(5);
+  },15000);
+  for(const fault of ["unfinished","malformed","foreign_company"] as const)it(`a ${fault} receipt after the first completed history page still blocks the actual action owner`,async()=>{
+    const{history,receipt}=await finishedHistory(),id="ffffffff-ffff-4fff-bfff-ffffffffffff",last=history.at(-1)!;
+    const payload=fault==="foreign_company"?{...last.payload,binding:{...binding,companyId:randomUUID()}}:last.payload;
+    const result=fault==="unfinished"?{phase:"issued",nextAttemptAt:null}:fault==="malformed"
+      ?{...last.result,retirement:{...last.result.retirement,receipt:{...receipt,receiptId:"not-a-retirement-digest"}}}:last.result;
+    await db.insert(chatActions).values({...last,id,providerActionId:"slack-form-grant-history:last",status:fault==="unfinished"?"issued":last.status,payload,result});
+    const inspected=await inspectHistory();expect(inspected.proof?.completedActionIds).toHaveLength(1006);
+    expect(inspected.proof?.completedActionIds).not.toContain(id);expect(inspected.blockers).toBe(1);
+  },15000);
+  it("a deadline before the next history page refuses proof without issuing that read",async()=>{
+    await finishedHistory();await expect(inspectHistory(4)).rejects.toThrow("Controlled existing inspection budget exhausted before next page");
+  },15000);
+
+  it("a finished session on a later page certifies only its exact earlier open and submit actions",async()=>{
+    const ack=await acceptedAckForRefresh("ffffffff-ffff-4fff-bfff-fffffffffffe");
+    const readAck=async()=>(await db.select().from(chatActions).where(eq(chatActions.id,ack.id)))[0]!;
+    const work=parseSlackFormAckWork((await readAck()).result?.formAck);
+    if(!work.receipt)throw new Error("Normal retained ACK fixture lost its receipt");
+    const digest=slackFormFinalizedReceiptDigest(work.receipt);
+    const protocol=async(input:{operation:Record<string,unknown>})=>input.operation.refreshAckReceipt?{ackReceiptJws:ack.currentJws}
+      :input.operation.acceptedAckReceipt?{acceptedReceiptDigest:digest,needsTerminalOriginal:false}:{releasedAckDigest:digest};
+    await transferSlackFormAckReceipt(db,{companyId,actionId:ack.id,instanceId:identity.instanceId,protocol});
+    await transferSlackFormAckReceipt(db,{companyId,actionId:ack.id,instanceId:identity.instanceId,protocol});
+    const finished=await readAck();expect(parseSlackFormAckWork(finished.result?.formAck).phase).toBe("transferred");
+    const openId="00000000-0000-4000-8000-000000000001",submitId="00000000-0000-4000-8000-000000000002";
+    const payload={interactionId:finished.payload.interactionId,publicationId:finished.payload.publicationId};
+    await db.insert(chatActions).values([
+      {id:openId,companyId,endpointId,kind:"question_form_open",status:"processed",providerActionId:"slack-history-linked-open",payload},
+      {id:submitId,companyId,endpointId,kind:"question_form_submit",status:"processed",providerActionId:"slack-history-linked-submit",payload}]);
+    await db.update(chatActions).set({payload:{...finished.payload,openActionRowId:openId,submitActionRowId:submitId}}).where(eq(chatActions.id,ack.id));
+    await finishedHistory(true);
+    const proof=await inspectHistory();expect(proof.proof?.completedActionIds).toHaveLength(1009);expect(proof.blockers).toBe(0);
+    expect(proof.proof?.completedActionIds).toEqual(expect.arrayContaining([ack.id,openId,submitId]));
+    await db.update(chatActions).set({payload:{...payload,publicationId:"changed-retained-publication"}}).where(eq(chatActions.id,openId));
+    const changed=await inspectHistory();expect(changed.proof?.completedActionIds).not.toContain(openId);expect(changed.blockers).toBe(1);
+  },15000);
+
   // Seed retained accepted ACK custody, as in the existing GC controls; this is not a provider-delivery proof.
-  async function acceptedAckForRefresh() {
+  async function acceptedAckForRefresh(appReceiptId=randomUUID()) {
     await acceptSlackFormRetirementLocally(db, await row(), identity, compactJws);
     const digest = slackFormRetirementReceipt(binding, identity.environment, actorId).receiptId;
     const retire = async (input: { operation: Record<string, unknown> }) => input.operation.refreshRetirementReceipt
@@ -101,7 +205,7 @@ if (process.env.SLACK_GATE_EXPECT_PRELOAD === "1" && !external) throw new Error(
         ? { acceptedRetirementDigest: digest } : { releasedRetirementDigest: digest };
     await transferSlackFormRetirement(db, await row(), identity, retire);
     await transferSlackFormRetirement(db, await row(), identity, retire);
-    const id = randomUUID(), operationId = "e".repeat(64), deliveryId = `slack_form_${operationId}`, now = new Date().toISOString();
+    const id = appReceiptId, operationId = "e".repeat(64), deliveryId = `slack_form_${operationId}`, now = new Date().toISOString();
     const originalBody = JSON.stringify({ type: "block_actions", user: { id: "UTEST" } });
     const timestamp = String(Math.floor(Date.now() / 1000));
     const original = { rawBody: Buffer.from(originalBody).toString("base64"), timestamp,

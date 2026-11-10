@@ -1,3 +1,4 @@
+import { slackFormRetirementReceipt } from "./ack-retirement-receipt.js";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
@@ -44,8 +45,20 @@ it("genuinely signed forms-events-only coverage keeps default commands and gener
   const result = projectSlackIdleIncomingRows({ ...rows(), capabilities: verifiedPartial(), identity: { instanceId: binding.instanceId, environment: "test" }, registeredOptions: () => false });
   expect(result).toEqual({ endpointIds: [], connectionIds: [], completedActionIds: [] });
 });
-it("foreign company and1001 rows never become current Slack completion authority", () => {
+it("foreign company and duplicate current owners never become current Slack completion authority", () => {
   const current = rows(), capabilities = verifiedPartial(), common = { capabilities, identity: { instanceId: binding.instanceId, environment: "test" as const }, registeredOptions: () => false };
   expect(projectSlackIdleIncomingRows({ ...current, ...common, endpoints: [{ ...current.endpoints[0]!, connection: { ...current.endpoints[0]!.connection, companyId: "foreign" } }] })).toBeUndefined();
   expect(projectSlackIdleIncomingRows({ ...current, ...common, actions: Array.from({ length: 1001 }, () => current.actions[0]!) })).toBeUndefined();
+});
+
+it("retained completed receipts exceed one history page without enlarging the current endpoint cap", () => {
+  const current=rows(),receipt=slackFormRetirementReceipt(binding,"test","actor");
+  const history:SlackFormHistoryRow[]=Array.from({length:1005},()=>({id:randomUUID(),companyId:binding.companyId,endpointId:binding.endpointId,
+    kind:"slack_form_grant",principalId:null,conversationId:null,status:"cancelled",providerActionId:"slack-form-grant:"+randomUUID(),
+    payload:{binding,subject:"actor",environment:"test"},result:{phase:"transferred",nextAttemptAt:null,
+      retirement:{version:1,binding,instanceId:binding.instanceId,environment:"test",subject:"actor",receiptDigest:receipt.receiptId,receipt}}}));
+  const common={capabilities:verifiedPartial(),identity:{instanceId:binding.instanceId,environment:"test" as const},registeredOptions:()=>false};
+  const result=projectSlackIdleIncomingRows({...current,...common,actions:[...current.actions,...history]});
+  expect(result?.completedActionIds).toEqual(history.map(row=>row.id).sort());
+  expect(projectSlackIdleIncomingRows({...current,...common,endpoints:Array.from({length:1001},()=>current.endpoints[0]!)})).toBeUndefined();
 });
