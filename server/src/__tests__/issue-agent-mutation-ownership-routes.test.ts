@@ -3036,16 +3036,29 @@ describe("agent issue mutation checkout ownership", () => {
       },
     );
 
-    it.each(["agent", "unassigned"])("still stops the outgoing run before an %s handoff", async target => {
+    it("still stops the outgoing run before it unassigns its own task", async () => {
       const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
-        .patch(`/api/issues/${issueId}`).send({
-          assigneeAgentId: target === "agent" ? peerAgentId : null,
-          assigneeUserId: null,
-        });
+        .patch(`/api/issues/${issueId}`).send({ assigneeAgentId: null, assigneeUserId: null });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockHeartbeatService.cancelRun).toHaveBeenCalledTimes(1);
       expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
         .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+    });
+
+    it("persists an agent handoff from its own run without waiting for its own slow shutdown", async () => {
+      mockHeartbeatService.cancelRun.mockRejectedValue(new Error("Execution is still stopping; termination has not been verified."));
+      const agentHandoff = { assigneeAgentId: peerAgentId, assigneeUserId: null, status: "todo" };
+
+      const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
+        .patch(`/api/issues/${issueId}`).send(agentHandoff);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
+        ...agentHandoff,
+        actorRunId: ownerRunId,
+        actorRunStopId: null,
+      });
     });
   });
 
