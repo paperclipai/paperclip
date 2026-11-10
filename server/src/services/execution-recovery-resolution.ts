@@ -35,6 +35,7 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
 import { alias } from "drizzle-orm/pg-core";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -583,6 +584,7 @@ export async function settleUnrecoverableExecutions(
   for (const { action: candidate } of candidates) {
     const runId = candidate.evidence.runId;
     if (typeof runId !== "string") continue;
+    const goneControllerBootId = await provenGoneLegacyControllerBootId(db, candidate.companyId, runId).catch(() => null);
     try {
       await db.transaction(async (tx) => {
         await tx.execute(
@@ -660,8 +662,16 @@ export async function settleUnrecoverableExecutions(
           return;
         }
         // A legacy executor still holding its controller lease may be unwinding
-        // a Stop and can prove that no adapter started. Let it settle first.
-        if (run.runtimeMode === "legacy" && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) return;
+        // a Stop and can prove that no adapter started. Let it settle first,
+        // unless its recorded process is proven gone (a drained server): then
+        // expire that exact lease so every later preparation check sees it.
+        if (run.runtimeMode === "legacy" && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) {
+          if (goneControllerBootId === null || run.controllerBootId !== goneControllerBootId) return;
+          await tx.update(heartbeatRuns).set({ controllerLeaseExpiresAt: now }).where(and(
+            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.controllerBootId, goneControllerBootId)));
+          run.controllerLeaseExpiresAt = now;
+        }
         // Adoption transfers maintenance to the retained-workspace owner.
         // This compatibility resolver must not close its hold or relabel it
         // as a user repair merely because old return-owner metadata is absent.
