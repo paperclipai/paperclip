@@ -20,7 +20,7 @@ export const NATIVE_CLEANUP_SETTLING_MESSAGE =
 
 /** Shown for a quarantined run whose provider turn had already completed. */
 export const NATIVE_COMPLETED_TURN_CLEANUP_MESSAGE =
-  "This run finished its work. Paperclip is finishing cleanup of its session automatically; nothing needs to be retried.";
+  "This run finished its work and saved it. Paperclip finishes the session cleanup automatically. Send a message to continue; it starts once the previous session has stopped.";
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};

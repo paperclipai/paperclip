@@ -212,6 +212,13 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     await db.insert(heartbeatRuns).values(staged(runId, "completed"));
     await db.insert(nativeRunFinalizations).values({ companyId, issueId: task.id, runId, phase: "terminal_failure",
       attempt: 2, failureCode: "native_session_cleanup_quarantined" });
+    // Without its own wait, a missing task disposition stays visible, with no Retry.
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: false,
+      retryWait: { reason: "cleanup_quarantined" } });
+    // The task waits on an active child: it shows that wait, not a failed attempt.
+    const [child] = await db.insert(issues).values({ companyId, title: "Verify review", identifier: "CMP-8",
+      status: "in_progress", assigneeAgentId: agentId }).returning();
+    await db.insert(issueRelations).values({ companyId, issueId: child.id, relatedIssueId: task.id, type: "blocks" });
     expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "resolved", canRetry: false });
     // A quarantine whose turn did not complete is still unfinished, but it never
     // offers the Retry that the retry route refuses.

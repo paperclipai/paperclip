@@ -1730,10 +1730,10 @@ The cleanup gate (`native_session_cleanup_quarantined`) never asks a person to
 act. Release of the run's environment settles it: remote lease termination
 receipts, or the local stop proof above, retire the quarantined owner. When the
 run's own saved checkpoint records a completed provider turn (for example, a
-same-run disposition recovery that the gate refused), the work is saved and the
-run is not a failed attempt. The task keeps its own status, such as a blocker,
-the recovery action returns to the assignee, and the task view shows no failure
-banner. Every quarantined run keeps Retry hidden, because the retry route refuses
+same-run disposition recovery that the gate refused), the work is saved. If the
+task waits on unresolved blocker tasks, the task view shows that wait and no
+failure banner. Otherwise the missing task disposition stays visible with plain
+wording. Every quarantined run keeps Retry hidden, because the retry route refuses
 it; a new message continues once the previous session has stopped. These rules
 read only `errorCode` and `runnerProfileJson.sessionCheckpoint`, so runs that
 earlier releases quarantined are shown the same way without a migration.

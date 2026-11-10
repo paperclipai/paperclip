@@ -14054,9 +14054,10 @@ describe("native session bounded recovery", () => {
   });
 
   // Remote native run shape: the provider turn completed and its work was
-  // saved; a same-run recovery was then refused by the cleanup gate. That is not
-  // a failed attempt and it never needs an administrator.
-  it("settles a cleanup refusal after a completed turn without blocking the task or asking an operator", async () => {
+  // saved; a same-run recovery was then refused by the cleanup gate. The task
+  // disposition can still be missing, so the hold stays; the wording names the
+  // saved work and a message, never an administrator.
+  it("explains a cleanup refusal after a completed turn without asking an operator", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const failure = new NativeSessionCleanupQuarantinedError();
     state.execute.mockReset().mockRejectedValueOnce(failure);
@@ -14080,11 +14081,11 @@ describe("native session bounded recovery", () => {
       // Still a permanent, named refusal: no provider work is replayed.
       expect(terminal).toMatchObject({ failureCode: "native_session_cleanup_quarantined", nextAttemptAt: null });
       const nextAction = String((terminal?.failureDetail as Record<string, unknown>).nextAction);
+      expect(nextAction).toMatch(/finished its work and saved it/);
       expect(nextAction).not.toMatch(/operator|admin|Clearing a task session/i);
-      expect(updateIssue).not.toHaveBeenCalledWith(execution.binding.issueId, { status: "blocked" }, expect.anything());
       expect(state.upsertRecoveryAction).toHaveBeenCalledWith(expect.objectContaining({
-        cause: "native_session_cleanup_quarantined", ownerType: "agent", ownerAgentId: execution.binding.agentId,
-        wakePolicy: null, nextAction: expect.not.stringMatching(/operator|admin|Clearing a task session/i),
+        cause: "native_session_cleanup_quarantined", wakePolicy: null,
+        nextAction: expect.stringMatching(/finished its work and saved it/),
       }));
     } finally {
       service.mockRestore();

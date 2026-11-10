@@ -8089,27 +8089,22 @@ export function nativeSessionRecoveryProjection(input: {
   phase: "retryable_failure" | "terminal_failure";
   failureCode: string;
   agentId: string;
-  /** The run's own provider turn completed before the cleanup gate refused it. */
-  completedTurnCleanup?: boolean;
 }) {
   const exhausted = input.phase === "terminal_failure";
-  // Saved work of a completed turn needs no person: the task keeps its own
-  // status and its agent continues on the next wake once cleanup settles.
-  const boardOwned = exhausted && !input.completedTurnCleanup;
   return {
     exhausted,
     issueStatus:
-      boardOwned &&
+      exhausted &&
       input.failureCode !== NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT
         ? ("blocked" as const)
         : null,
-    recoveryOwner: boardOwned
+    recoveryOwner: exhausted
       ? { kind: "board" as const }
       : { kind: "agent" as const, agentId: input.agentId },
-    recoveryActionOwnerType: boardOwned
+    recoveryActionOwnerType: exhausted
       ? ("board" as const)
       : ("agent" as const),
-    recoveryActionOwnerAgentId: boardOwned ? null : input.agentId,
+    recoveryActionOwnerAgentId: exhausted ? null : input.agentId,
     recoveryActionCause: input.failureCode,
     supersedeOnIdentityChange: true as const,
   };
@@ -11916,7 +11911,8 @@ async function executePaperclipNativeSessionAttempt(
             ? startupRetry.nextAttemptAt
             : disposition.nextAttemptAt;
       // A cleanup-gate refusal after this run's own turn completed (for example
-      // a same-run disposition recovery) leaves saved work, not a failed attempt.
+      // a same-run disposition recovery) leaves saved work; say so plainly. The
+      // task disposition may still be missing, so ownership is unchanged.
       const completedTurnCleanup = sourceFailureCode === NATIVE_SESSION_CLEANUP_QUARANTINED
         && phase === "terminal_failure" && await input.db
           .select({ id: heartbeatRuns.id, runnerProfileJson: heartbeatRuns.runnerProfileJson })
@@ -11927,7 +11923,6 @@ async function executePaperclipNativeSessionAttempt(
         phase,
         failureCode,
         agentId: input.execution.binding.agentId,
-        completedTurnCleanup,
       });
       const { exhausted } = recoveryProjection;
       const integrityFailure =

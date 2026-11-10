@@ -463,9 +463,15 @@ describe("native cleanup quarantine presentation", () => {
     error: "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
     resultJson: null, finishedAt: new Date("2026-11-10T14:39:31.873Z") };
 
-  it("shows the task's real state, not a failed attempt, after a completed turn", () => {
+  it("shows the task's blocker wait, not a failed attempt, after a completed turn", () => {
     expect(projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup: true }, agent,
-      paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
+      waitingOnBlockers: true, paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
+  });
+
+  it("keeps a missing disposition visible when the task has no wait of its own", () => {
+    expect(projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: false,
+      retryWait: { reason: "cleanup_quarantined" } });
   });
 
   it("never offers a Retry that the retry route refuses", () => {

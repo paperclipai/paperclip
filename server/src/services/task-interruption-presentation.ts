@@ -75,6 +75,8 @@ type ProjectionState = {
   /** The latest wake for a task with no run yet, when admission refused it. */
   admissionWait?: { id: string; status: string; reason: string | null; agentId: string };
   retryDependencies?: RetryDependencies;
+  /** The task waits on unresolved blocker tasks, a wait that does not depend on its last run. */
+  waitingOnBlockers?: boolean;
 };
 
 // A task read reports the change that made a task fail, not every later read of
@@ -313,9 +315,10 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
     return { ...base, state: "working" };
   if (run.errorCode === NATIVE_SESSION_CLEANUP_QUARANTINED) {
     // The provider turn completed and its work is saved; only shutdown of the
-    // old session is unproven, and that settles by itself. The task shows its
-    // own state (for example its blocker) instead of a failed attempt.
-    if (run.completedTurnCleanup) return base;
+    // old session is unproven, and that settles by itself. A task that waits on
+    // its blockers shows that wait, not a failed attempt. Without such a wait a
+    // missing task disposition stays visible.
+    if (run.completedTurnCleanup && input.waitingOnBlockers) return base;
     return { ...base, state: "failed", canRetry: false,
       retryWait: { reason: "cleanup_quarantined", message: NATIVE_CLEANUP_SETTLING_MESSAGE } };
   }
@@ -550,6 +553,16 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         savingFilesOnly: ids.every(id => saving.has(id)) });
     }
   }
+  // A completed turn refused only by the cleanup gate shows the task's own
+  // blocker wait. Read readiness for those tasks only.
+  const settledIssueIds = [...runMap.values()].filter(run => run.completedTurnCleanup).map(run => run.issueId);
+  const waitingOnBlockers = new Set<string>();
+  if (settledIssueIds.length) {
+    const { issueService } = await import("./issues.js");
+    const readiness = await issueService(db).listDependencyReadiness(companyId, settledIssueIds);
+    for (const [waitingIssueId, row] of readiness)
+      if (row.unresolvedBlockerIssueIds.length) waitingOnBlockers.add(waitingIssueId);
+  }
   for (const wait of currentWaits) {
     const current = waitMap.get(wait.issueId);
     if (!current || wait.requestedAt > current.requestedAt ||
@@ -611,6 +624,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       unidentifiedLaunchConfirmable: confirmableLaunches.has(issue.id),
       admissionWait: admissionWaitMap.get(issue.id),
       retryDependencies: retryDependencyMap.get(issue.id),
+      waitingOnBlockers: waitingOnBlockers.has(issue.id),
     }, now);
     result.set(issue.id, presentation);
     const run = facts.run;
