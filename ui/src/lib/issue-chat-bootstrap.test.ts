@@ -5,7 +5,6 @@ import type { Issue, IssueRecentComments } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "./issue-detail-preload-events";
 import {
-  CHAT_BOOTSTRAP_FRESH_MS,
   loadIssueChatBootstraps,
   readFromIssueChatBootstrap,
   resetIssueChatBootstrapsForTest,
@@ -13,6 +12,7 @@ import {
   type ChatBootstrapItem,
 } from "./issue-chat-bootstrap";
 import { queryKeys } from "./queryKeys";
+import { ISSUE_CHAT_BOOTSTRAP_FRESH_MS } from "./issueChatBootstrapCache";
 
 const chatBootstrap = vi.hoisted(() => vi.fn());
 vi.mock("@/api/issues", () => ({ issuesApi: { chatBootstrap } }));
@@ -83,7 +83,7 @@ describe("loadIssueChatBootstraps", () => {
     await loadIssueChatBootstraps(client, "company-1", ["ABC-1", "ABC-2"]);
     await loadIssueChatBootstraps(client, "company-1", ["ABC-2", "ABC-3"]);
     expect(requestedRefs()).toEqual(["ABC-1,ABC-2", "ABC-3"]);
-    vi.setSystemTime(Date.now() + CHAT_BOOTSTRAP_FRESH_MS + 1);
+    vi.setSystemTime(Date.now() + ISSUE_CHAT_BOOTSTRAP_FRESH_MS + 1);
     await loadIssueChatBootstraps(client, "company-1", ["ABC-1"]);
     expect(requestedRefs()).toEqual(["ABC-1,ABC-2", "ABC-3", "ABC-1"]);
   });

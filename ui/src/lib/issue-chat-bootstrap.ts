@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS } from "@paperclipai/shared";
+import { api } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "@/lib/issue-detail-preload-events";
 import { queryKeys } from "@/lib/queryKeys";
@@ -25,8 +26,6 @@ import {
 
 export type ChatBootstrapItem = IssueChatBootstrapEntry;
 
-/** How long a loaded bootstrap counts as fresh enough to skip reloading the task. */
-export const CHAT_BOOTSTRAP_FRESH_MS = ISSUE_CHAT_BOOTSTRAP_FRESH_MS;
 /**
  * How many top rows of a task list are preloaded: one request. Each task
  * costs the server about fifty queries, and a resting hover warms any other
@@ -44,7 +43,7 @@ function refKey(ref: string) {
 }
 
 function isCurrent(entry: Entry | undefined, now = Date.now()) {
-  return !!entry && (entry.settledAt === undefined || now - entry.settledAt < CHAT_BOOTSTRAP_FRESH_MS);
+  return !!entry && (entry.settledAt === undefined || now - entry.settledAt < ISSUE_CHAT_BOOTSTRAP_FRESH_MS);
 }
 
 /**
@@ -98,7 +97,7 @@ export type ChatBootstrapTarget = string | { id: string; identifier: string | nu
 /**
  * Load the bootstrap for these tasks in requests of at most ten, one request
  * at a time, and seed the cache as each one arrives. Tasks loading, loaded
- * within `CHAT_BOOTSTRAP_FRESH_MS`, or whose first frame is already cached
+ * within `ISSUE_CHAT_BOOTSTRAP_FRESH_MS`, or whose first frame is already cached
  * and fresh are skipped.
  *
  * `signal` stops later requests, never one in flight: a click that unmounts
@@ -149,13 +148,42 @@ function adoptEarlyChatBootstrap(queryClient: QueryClient, companyId: string | n
   return true;
 }
 
-/** Start a single-task bootstrap for a cold open, unless one is fresh or loading. */
-export function startIssueChatBootstrap(queryClient: QueryClient, companyId: string | null | undefined, ref: string | null | undefined) {
-  if (!ref) return;
-  if (isCurrent(entries.get(refKey(ref)))) return;
-  if (adoptEarlyChatBootstrap(queryClient, companyId, ref)) return;
-  if (!companyId) return;
-  void loadIssueChatBootstraps(queryClient, companyId, [ref]);
+/**
+ * The single-task route, for a task whose company the caller does not know
+ * (a link's open intent). The task's own company owns the answer.
+ */
+function startSingle(queryClient: QueryClient, ref: string) {
+  const requestedAt = Date.now();
+  const userId = sessionUserId(queryClient);
+  const path = `/issues/${encodeURIComponent(ref)}/chat-bootstrap`;
+  track(ref, requestedAt, Promise.resolve().then(() => api.get<ChatBootstrapItem>(path, { cache: "no-store" })).then((item) => {
+    if (!item?.issue || sessionUserId(queryClient) !== userId) return undefined;
+    return seedIssueChatBootstrap(queryClient, item, { companyId: item.issue.companyId, requestedAt }) ? item : undefined;
+  }, () => undefined));
+}
+
+/**
+ * Start a single-task bootstrap for a cold open or an open intent, unless one
+ * is loading, loaded recently, or the task's first frame is cached and fresh.
+ * Without a company it uses the single-task route. Resolves when the task's
+ * bootstrap (new or already loading) settles; it never rejects.
+ */
+export function startIssueChatBootstrap(
+  queryClient: QueryClient,
+  companyId: string | null | undefined,
+  ref: string | null | undefined,
+): Promise<unknown> {
+  if (!ref) return Promise.resolve();
+  const settled = () => entries.get(refKey(ref))?.promise ?? Promise.resolve();
+  if (isCurrent(entries.get(refKey(ref)))) return settled();
+  if (adoptEarlyChatBootstrap(queryClient, companyId, ref)) return settled();
+  if (companyId) {
+    void loadIssueChatBootstraps(queryClient, companyId, [ref]);
+    return settled();
+  }
+  if (hasFreshIssueChatFirstFrame(queryClient, [ref])) return Promise.resolve();
+  startSingle(queryClient, ref);
+  return settled();
 }
 
 /**
