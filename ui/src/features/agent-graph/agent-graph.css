@@ -28,6 +28,10 @@
   stroke: var(--status-agent-running);
 }
 
+.agent-graph .react-flow__edge.agent-graph-edge-draft .react-flow__edge-path {
+  stroke-dasharray: 6 4;
+}
+
 .agent-graph .react-flow__node:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;

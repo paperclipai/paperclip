@@ -1,4 +1,4 @@
-import { ArrowDownUp, ArrowLeftRight, Eye, Keyboard, LayoutGrid } from "lucide-react";
+import { ArrowDownUp, ArrowLeftRight, Eye, Keyboard, LayoutGrid, Redo2, StickyNote, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { UiLayoutSaveState } from "@/hooks/useUiLayout";
@@ -9,6 +9,11 @@ export const AGENT_GRAPH_SHORTCUTS: ReadonlyArray<{ keys: string; action: string
   { keys: "Shift + drag", action: "Select with a box" },
   { keys: "Ctrl/⌘ + click", action: "Add to the selection" },
   { keys: "Ctrl/⌘ + A", action: "Select everything" },
+  { keys: "Ctrl/⌘ + C / V", action: "Copy and paste. Agents paste as hire drafts" },
+  { keys: "Ctrl/⌘ + D", action: "Duplicate the selection" },
+  { keys: "Ctrl/⌘ + Z", action: "Undo" },
+  { keys: "Ctrl/⌘ + Shift + Z", action: "Redo" },
+  { keys: "Delete", action: "Remove selected notes and drafts, or a reporting line" },
   { keys: "Arrow keys", action: "Move the focused node" },
   { keys: "Tab", action: "Move focus between nodes" },
   { keys: "Escape", action: "Clear the selection" },
@@ -26,20 +31,30 @@ export function AgentGraphToolbar({
   direction,
   keepManual,
   hiddenCount,
+  canUndo,
+  canRedo,
   saveState,
+  onAddSticky,
   onTidy,
   onDirectionChange,
   onKeepManualChange,
   onShowHidden,
+  onUndo,
+  onRedo,
 }: {
   direction: LayoutDirection;
   keepManual: boolean;
   hiddenCount: number;
+  canUndo: boolean;
+  canRedo: boolean;
   saveState: UiLayoutSaveState;
+  onAddSticky: () => void;
   onTidy: () => void;
   onDirectionChange: (direction: LayoutDirection) => void;
   onKeepManualChange: (keep: boolean) => void;
   onShowHidden: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
 }) {
   return (
     <div
@@ -47,6 +62,10 @@ export function AgentGraphToolbar({
       aria-label="Agent graph tools"
       className="flex max-w-full flex-wrap items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-sm"
     >
+      <Button variant="ghost" size="sm" onClick={onAddSticky}>
+        <StickyNote aria-hidden />
+        Add note
+      </Button>
       <Button variant="ghost" size="sm" onClick={onTidy}>
         <LayoutGrid aria-hidden />
         Tidy up
@@ -69,6 +88,12 @@ export function AgentGraphToolbar({
         />
         Keep manual positions
       </label>
+      <Button variant="ghost" size="icon-sm" aria-label="Undo" disabled={!canUndo} onClick={onUndo}>
+        <Undo2 aria-hidden />
+      </Button>
+      <Button variant="ghost" size="icon-sm" aria-label="Redo" disabled={!canRedo} onClick={onRedo}>
+        <Redo2 aria-hidden />
+      </Button>
       {hiddenCount > 0 ? (
         <Button variant="ghost" size="sm" onClick={onShowHidden}>
           <Eye aria-hidden />

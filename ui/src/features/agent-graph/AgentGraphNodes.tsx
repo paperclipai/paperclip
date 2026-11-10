@@ -1,11 +1,13 @@
-import { memo } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { AGENT_ROLE_LABELS, type AgentAppearance } from "@paperclipai/shared";
+import { memo, useEffect, useState } from "react";
+import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
+import { AGENT_ROLE_LABELS, AGENT_GRAPH_STICKY_TEXT_MAX, type AgentAppearance } from "@paperclipai/shared";
+import { UserPlus, X } from "lucide-react";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AgentStatusCapsule } from "@/components/StatusBadge";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { cn, formatCents } from "@/lib/utils";
-import type { AgentFlowNode } from "./lib/graph-nodes";
+import { useAgentGraphActions } from "./AgentGraphActions";
+import type { AgentFlowNode, DraftFlowNode, StickyFlowNode } from "./lib/graph-nodes";
 
 const ROLE_LABELS = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -51,7 +53,7 @@ export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<A
         (agent.status === "paused" || agent.status === "terminated") && "opacity-70",
       )}
     >
-      <Handle type="target" position={horizontal ? Position.Left : Position.Top} />
+      <Handle type="target" position={horizontal ? Position.Left : Position.Top} aria-label={`Set who ${agent.name} reports to`} />
       <div className="flex min-w-0 items-center gap-2">
         <AgentAvatar agent={{ id: agent.id, name: agent.name, appearance: agent.appearance as AgentAppearance | null | undefined }} size={32} />
         <div className="min-w-0 flex-1">
@@ -70,9 +72,102 @@ export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<A
         </div>
         <BudgetMeter spent={agent.spentMonthlyCents} budget={agent.budgetMonthlyCents} />
       </div>
-      <Handle type="source" position={horizontal ? Position.Right : Position.Bottom} />
+      <Handle type="source" position={horizontal ? Position.Right : Position.Bottom} aria-label={`Add a report to ${agent.name}`} />
     </div>
   );
 });
 
-export const AGENT_GRAPH_NODE_TYPES = { agent: AgentNode } as const;
+const STICKY_COLOR_CLASSES: Record<string, string> = {
+  yellow: "border-amber-300 bg-amber-50 text-amber-950 dark:border-amber-500/30 dark:bg-amber-950/60 dark:text-amber-50",
+  blue: "border-sky-300 bg-sky-50 text-sky-950 dark:border-sky-500/30 dark:bg-sky-950/60 dark:text-sky-50",
+  green: "border-emerald-300 bg-emerald-50 text-emerald-950 dark:border-emerald-500/30 dark:bg-emerald-950/60 dark:text-emerald-50",
+  pink: "border-pink-300 bg-pink-50 text-pink-950 dark:border-pink-500/30 dark:bg-pink-950/60 dark:text-pink-50",
+  gray: "border-border bg-muted text-foreground",
+};
+
+export const StickyNode = memo(function StickyNode({ data, selected }: NodeProps<StickyFlowNode>) {
+  const { sticky } = data;
+  const actions = useAgentGraphActions();
+  const [text, setText] = useState(sticky.text);
+  useEffect(() => setText(sticky.text), [sticky.text]);
+  return (
+    <div
+      data-testid="agent-graph-sticky"
+      className={cn("h-full w-full rounded-md border p-2 shadow-sm", STICKY_COLOR_CLASSES[sticky.color], selected && "ring-1 ring-primary")}
+    >
+      <NodeResizer
+        isVisible={selected}
+        minWidth={120}
+        minHeight={80}
+        maxWidth={1_200}
+        maxHeight={1_200}
+        onResizeEnd={(_event, params) =>
+          actions.updateSticky(sticky.id, { x: params.x, y: params.y, width: params.width, height: params.height })}
+      />
+      <textarea
+        aria-label="Sticky note text"
+        className="nodrag nowheel h-full w-full resize-none bg-transparent text-sm leading-5 outline-none placeholder:text-current placeholder:opacity-50"
+        placeholder="Write a note…"
+        maxLength={AGENT_GRAPH_STICKY_TEXT_MAX}
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={() => {
+          if (text !== sticky.text) actions.updateSticky(sticky.id, { text });
+        }}
+      />
+    </div>
+  );
+});
+
+export const DraftNode = memo(function DraftNode({ data, selected }: NodeProps<DraftFlowNode>) {
+  const { draft, direction, managerName } = data;
+  const actions = useAgentGraphActions();
+  const horizontal = direction === "LR";
+  return (
+    <div
+      data-testid="agent-graph-draft"
+      aria-label={`Hire draft ${draft.name}. Not an agent yet.`}
+      className={cn(
+        "flex h-24 w-56 flex-col justify-between rounded-lg border border-dashed bg-card px-3 py-2 text-card-foreground",
+        selected ? "border-primary ring-1 ring-primary" : "border-muted-foreground",
+      )}
+    >
+      <Handle type="target" position={horizontal ? Position.Left : Position.Top} isConnectable={false} />
+      <div className="flex min-w-0 items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium leading-5" title={draft.name}>{draft.name}</div>
+          <div className="truncate text-xs text-muted-foreground">
+            {draft.title ?? roleLabel(draft.role)}
+            {managerName ? ` · reports to ${managerName}` : ""}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="nodrag rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+          aria-label={`Discard hire draft ${draft.name}`}
+          onClick={() => actions.removeDraft(draft.id)}
+        >
+          <X className="size-3.5" aria-hidden />
+        </button>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <span
+          className="shrink-0 whitespace-nowrap rounded-full border border-dashed border-muted-foreground px-2 py-0.5 text-xs text-muted-foreground"
+          title="This draft is not an agent yet"
+        >
+          Draft
+        </span>
+        <button
+          type="button"
+          className="nodrag inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:opacity-90"
+          onClick={() => actions.requestHire(draft.id)}
+        >
+          <UserPlus className="size-3.5" aria-hidden />
+          Request hire
+        </button>
+      </div>
+    </div>
+  );
+});
+
+export const AGENT_GRAPH_NODE_TYPES = { agent: AgentNode, sticky: StickyNode, draft: DraftNode } as const;

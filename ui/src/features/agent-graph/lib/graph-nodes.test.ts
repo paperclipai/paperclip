@@ -82,6 +82,22 @@ describe("syncNodes with 250 agents", () => {
     expect(syncNodes(nodes, { ...base, layout: hiddenLayout })).toHaveLength(249);
     expect(syncEdges(edges, { ...base, layout: hiddenLayout })).toHaveLength(249 - 1 - 6);
   });
+
+  it("adds stickies and drafts as their own node types with a dashed reporting edge", () => {
+    const withExtras = {
+      ...layout,
+      stickies: [{ id: "s1", x: 0, y: 0, width: 200, height: 120, text: "note", color: "yellow" as const }],
+      drafts: [{
+        id: "d1", x: 10, y: 10, name: "Copy", role: "engineer", title: null, capabilities: null,
+        adapterType: "claude_local", model: null, reportsTo: roster[0]!.id, sourceAgentId: roster[3]!.id,
+      }],
+    };
+    const next = syncNodes(nodes, { ...base, layout: withExtras });
+    expect(next.map((node) => node.type).filter((type) => type !== "agent")).toEqual(["sticky", "draft"]);
+    expect(changedCount(nodes, next)).toBe(2);
+    expect(next.at(-1)?.data).toMatchObject({ managerName: "Agent 0" });
+    expect(syncEdges(edges, { ...base, layout: withExtras })).toHaveLength(250);
+  });
 });
 
 describe("pruneLayout", () => {

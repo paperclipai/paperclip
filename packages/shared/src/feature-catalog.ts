@@ -262,7 +262,7 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableAgentGraph: {
     title: "Agent Graph",
     description:
-      "Replace the static org chart with a graph canvas: pan, zoom, drag, multi-select, auto-layout, live status and a layout saved for each user.",
+      "Replace the static org chart with an editable graph canvas: drag, multi-select, auto-layout, sticky notes, copy and paste as hire drafts, and reporting-line changes.",
     tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { EyeOff, ExternalLink, X } from "lucide-react";
+import { Copy, EyeOff, ExternalLink, X } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { describeError } from "@/api/errors";
@@ -23,6 +23,7 @@ export function AgentGraphSidePanel({
   reportCount,
   onClose,
   onHide,
+  onDuplicate,
 }: {
   agent: Agent;
   companyId: string;
@@ -30,6 +31,7 @@ export function AgentGraphSidePanel({
   reportCount: number;
   onClose: () => void;
   onHide: () => void;
+  onDuplicate: () => void;
 }) {
   const runsQuery = useQuery({
     queryKey: [...queryKeys.heartbeats(companyId, agent.id), "agent-graph", RECENT_RUN_LIMIT] as const,
@@ -105,6 +107,10 @@ export function AgentGraphSidePanel({
             <ExternalLink aria-hidden />
             Open agent
           </Link>
+        </Button>
+        <Button variant="outline" size="sm" onClick={onDuplicate}>
+          <Copy aria-hidden />
+          Duplicate as draft
         </Button>
         <Button variant="outline" size="sm" onClick={onHide}>
           <EyeOff aria-hidden />

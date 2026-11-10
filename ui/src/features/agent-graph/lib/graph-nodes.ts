@@ -1,5 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
-import type { AgentGraphLayout } from "@paperclipai/shared";
+import type { AgentGraphDraft, AgentGraphLayout, AgentGraphSticky } from "@paperclipai/shared";
 import type { LayoutDirection, LayoutPoint } from "./auto-layout";
 
 export interface GraphAgent {
@@ -21,12 +21,20 @@ export type AgentNodeData = {
   live: boolean;
   direction: LayoutDirection;
 };
+export type StickyNodeData = { sticky: AgentGraphSticky };
+export type DraftNodeData = { draft: AgentGraphDraft; direction: LayoutDirection; managerName: string | null };
 
 export type AgentFlowNode = Node<AgentNodeData, "agent">;
-export type GraphFlowNode = AgentFlowNode;
+export type StickyFlowNode = Node<StickyNodeData, "sticky">;
+export type DraftFlowNode = Node<DraftNodeData, "draft">;
+export type GraphFlowNode = AgentFlowNode | StickyFlowNode | DraftFlowNode;
 
+export const STICKY_NODE_PREFIX = "sticky:";
+export const DRAFT_NODE_PREFIX = "draft:";
 export const HIERARCHY_EDGE_PREFIX = "reports:";
 
+export const stickyNodeId = (id: string) => `${STICKY_NODE_PREFIX}${id}`;
+export const draftNodeId = (id: string) => `${DRAFT_NODE_PREFIX}${id}`;
 export const hierarchyEdgeId = (agentId: string) => `${HIERARCHY_EDGE_PREFIX}${agentId}`;
 
 function sameAgent(a: GraphAgent, b: GraphAgent): boolean {
@@ -54,6 +62,7 @@ export interface SyncNodesInput {
   layout: AgentGraphLayout;
   autoPositions: ReadonlyMap<string, LayoutPoint>;
   liveAgentIds: ReadonlySet<string>;
+  managerNames?: ReadonlyMap<string, string>;
 }
 
 export function syncNodes(previous: readonly GraphFlowNode[], input: SyncNodesInput): GraphFlowNode[] {
@@ -61,7 +70,37 @@ export function syncNodes(previous: readonly GraphFlowNode[], input: SyncNodesIn
   const previousById = new Map<string, GraphFlowNode>();
   for (const node of previous) previousById.set(node.id, node);
   const hidden = new Set(layout.hiddenAgentIds);
+  let agentNames = input.managerNames;
+  if (!agentNames) {
+    const names = new Map<string, string>();
+    for (const agent of agents) names.set(agent.id, agent.name);
+    agentNames = names;
+  }
   const next: GraphFlowNode[] = [];
+
+  for (const sticky of layout.stickies) {
+    const id = stickyNodeId(sticky.id);
+    const prev = previousById.get(id);
+    const position = { x: sticky.x, y: sticky.y };
+    if (
+      prev?.type === "sticky"
+      && prev.data.sticky === sticky
+      && samePosition(prev, position)
+    ) {
+      next.push(prev);
+      continue;
+    }
+    next.push({
+      ...(prev?.type === "sticky" ? prev : {}),
+      id,
+      type: "sticky",
+      position,
+      width: sticky.width,
+      height: sticky.height,
+      zIndex: -1,
+      data: { sticky },
+    });
+  }
 
   for (const agent of agents) {
     if (hidden.has(agent.id)) continue;
@@ -85,6 +124,30 @@ export function syncNodes(previous: readonly GraphFlowNode[], input: SyncNodesIn
       ? prev.data
       : { agent, live, direction: layout.direction };
     next.push({ ...(prev?.type === "agent" ? prev : {}), id: agent.id, type: "agent", position, data });
+  }
+
+  for (const draft of layout.drafts) {
+    const id = draftNodeId(draft.id);
+    const prev = previousById.get(id);
+    const position = { x: draft.x, y: draft.y };
+    const managerName = draft.reportsTo ? agentNames.get(draft.reportsTo) ?? null : null;
+    if (
+      prev?.type === "draft"
+      && prev.data.draft === draft
+      && prev.data.direction === layout.direction
+      && prev.data.managerName === managerName
+      && samePosition(prev, position)
+    ) {
+      next.push(prev);
+      continue;
+    }
+    next.push({
+      ...(prev?.type === "draft" ? prev : {}),
+      id,
+      type: "draft",
+      position,
+      data: { draft, direction: layout.direction, managerName },
+    });
   }
 
   if (next.length === previous.length && next.every((node, index) => node === previous[index])) {
@@ -118,7 +181,29 @@ export function syncEdges(previous: readonly Edge[], input: SyncNodesInput): Edg
       target: agent.id,
       type: "smoothstep",
       animated,
+      reconnectable: "source",
       className: "agent-graph-edge",
+    });
+  }
+
+  for (const draft of layout.drafts) {
+    if (!draft.reportsTo || !visible.has(draft.reportsTo)) continue;
+    const id = `${HIERARCHY_EDGE_PREFIX}${draftNodeId(draft.id)}`;
+    const target = draftNodeId(draft.id);
+    const prev = previousById.get(id);
+    if (prev && prev.source === draft.reportsTo && prev.target === target) {
+      next.push(prev);
+      continue;
+    }
+    next.push({
+      id,
+      source: draft.reportsTo,
+      target,
+      type: "smoothstep",
+      selectable: false,
+      reconnectable: false,
+      deletable: false,
+      className: "agent-graph-edge agent-graph-edge-draft",
     });
   }
 
@@ -156,13 +241,25 @@ export function commitNodePositions(
   companyAgentIds: ReadonlySet<string>,
 ): AgentGraphLayout {
   let positions = layout.positions;
+  let stickies = layout.stickies;
+  let drafts = layout.drafts;
   for (const node of nodes) {
     const { x, y } = node.position;
-    const known = layout.positions[node.id] ?? autoPositions.get(node.id);
-    if (known && known.x === x && known.y === y) continue;
-    if (positions === layout.positions) positions = { ...positions };
-    positions[node.id] = { x, y };
+    if (node.type === "agent") {
+      const known = layout.positions[node.id] ?? autoPositions.get(node.id);
+      if (known && known.x === x && known.y === y) continue;
+      if (positions === layout.positions) positions = { ...positions };
+      positions[node.id] = { x, y };
+    } else if (node.type === "sticky") {
+      const sticky = node.data.sticky;
+      if (sticky.x === x && sticky.y === y) continue;
+      stickies = stickies.map((item) => (item.id === sticky.id ? { ...item, x, y } : item));
+    } else {
+      const draft = node.data.draft;
+      if (draft.x === x && draft.y === y) continue;
+      drafts = drafts.map((item) => (item.id === draft.id ? { ...item, x, y } : item));
+    }
   }
-  if (positions === layout.positions) return layout;
-  return pruneLayout({ ...layout, positions }, companyAgentIds);
+  if (positions === layout.positions && stickies === layout.stickies && drafts === layout.drafts) return layout;
+  return pruneLayout({ ...layout, positions, stickies, drafts }, companyAgentIds);
 }
