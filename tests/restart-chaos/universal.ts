@@ -5,7 +5,7 @@
  *
  *   U1 liveness        every non-terminal task has a live owner or a visible, actionable item
  *   U2 retry loop      the same failure does not repeat without the task changing state
- *   U3 diagnosable     every failed run names a specific cause
+ *   U3 diagnosable     every failed run names a specific cause (its code, or a recorded failureCause)
  *   U4 stale notices   no failure or Retry notice outlives later successful work
  *
  * Each rule is either `enforced` (a violation fails the task) or a warning
@@ -78,6 +78,11 @@ const ready = (sample: TaskSample) => sample.reachable && sample.serverReady;
  * shows it as "adapter failed".
  */
 export const GENERIC_FAILURE_CODES: ReadonlySet<string> = new Set(["", "error", "unknown", "unknown_error", "failed", "adapter_failed", "internal_error"]);
+/** A recorded failureCause that still names nothing: empty, or a bare class or `unknown_error`. */
+export function diagnosableFailureCause(cause: string | null | undefined): boolean {
+  const text = (cause ?? "").trim();
+  return text !== "" && !GENERIC_FAILURE_CODES.has(text.toLowerCase()) && !bareCauseMessage(text);
+}
 const FAILED_RUN = new Set(["failed", "timed_out"]);
 
 /** A message whose only cause is a bare exception class or "unknown" (the #20385 "last cause: Error" class). */
@@ -241,8 +246,11 @@ export function gradeU3(record: TaskRecord, db?: UniversalDbEvidence): Omit<Univ
   }
   for (const run of failed) {
     const code = run.errorCode ?? "";
-    if (GENERIC_FAILURE_CODES.has(code.trim().toLowerCase())) vague.push(`${run.id}:code=${code || "none"}`);
-    else if (messages?.has(run.id) && bareCauseMessage(messages.get(run.id))) {
+    // A generic code with a recorded cause (for example `adapter_failed` + `40001`) names what failed.
+    if (diagnosableFailureCause(run.failureCause)) continue;
+    if (GENERIC_FAILURE_CODES.has(code.trim().toLowerCase())) {
+      vague.push(`${run.id}:code=${code || "none"}${run.failureCause ? ` cause=${run.failureCause.slice(0, 80)}` : ""}`);
+    } else if (messages?.has(run.id) && bareCauseMessage(messages.get(run.id))) {
       vague.push(`${run.id}:${code} message=${JSON.stringify((messages.get(run.id) ?? "").slice(0, 120))}`);
     }
   }

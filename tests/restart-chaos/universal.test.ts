@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { gradeTask } from "./grader.js";
 import type { OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
-import { bareCauseMessage, DEFAULT_UNIVERSAL_BOUNDS as BOUNDS, gradeU1, gradeU2, gradeU3, gradeU4, gradeUniversal, universalBounds } from "./universal.js";
+import { bareCauseMessage, DEFAULT_UNIVERSAL_BOUNDS as BOUNDS, diagnosableFailureCause, gradeU1, gradeU2, gradeU3, gradeU4, gradeUniversal, universalBounds } from "./universal.js";
 import { workloadDefinitions } from "./workloads.js";
 
 const T0 = Date.parse("2026-11-09T12:00:00Z");
@@ -127,6 +127,27 @@ describe("U3 diagnosable failures", () => {
     expect(gradeU3(record(replay), { runMessages: new Map([["r2", stalled]]), recoveryActions: [] }).verdict).toBe("fail");
     const coded = stalled.replace("last cause: Error", "last cause: 40001");
     expect(gradeU3(record(replay), { runMessages: new Map([["r2", coded]]), recoveryActions: [] }).verdict).toBe("pass");
+  });
+  it("treats a generic code with a recorded failure cause as diagnosable, and stays a warning", () => {
+    const failed = (failureCause?: string) => [sample(10 * SEC, "done", [run("r1", "failed", 0, 5 * SEC,
+      { errorCode: "adapter_failed", ...(failureCause === undefined ? {} : { failureCause }) })])];
+    for (const cause of ["40001", "ECONNRESET", "provider_http_429", "exit_code_137", "TypeError"]) {
+      expect(gradeU3(record(failed(cause))).verdict).toBe("pass");
+    }
+    // An old row without the field, or a cause that is itself bare, still names nothing.
+    for (const cause of [undefined, "", "Error", "unknown_error"]) {
+      const result = gradeU3(record(failed(cause)));
+      expect(result.verdict).toBe("fail");
+      expect(result.detail).toContain("r1:code=adapter_failed");
+    }
+    expect(gradeUniversal(record(failed("Error"))).U3).toMatchObject({ verdict: "fail", enforced: false });
+    // The cause also excuses a bare stored message: "Adapter failed (40001)" names what went wrong.
+    expect(gradeU3(record(failed("40001")), { runMessages: new Map([["r1", "Error"]]), recoveryActions: [] }).verdict).toBe("pass");
+  });
+  it("recognizes diagnosable failure causes", () => {
+    expect(diagnosableFailureCause("40001")).toBe(true);
+    expect(diagnosableFailureCause("signal_SIGKILL")).toBe(true);
+    for (const cause of [null, undefined, "", " ", "Error", "unknown", "adapter_failed"]) expect(diagnosableFailureCause(cause)).toBe(false);
   });
   it("flags a recovery action with an empty or bare cause", () => {
     const db = { runMessages: new Map(), recoveryActions: [{ id: "a1", kind: "stalled_issue", cause: "Error", nextAction: "Retry the task" }] };

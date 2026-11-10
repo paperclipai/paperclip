@@ -82,7 +82,9 @@ export function toRunSample(run: Json): RunSample {
   const wake = new Set([...list(run.wakeCommentIds), ...(typeof run.wakeCommentId === "string" ? [run.wakeCommentId] : [])]);
   return {
     id: String(run.runId ?? run.id), status: String(run.status), createdAt: run.createdAt ?? null, startedAt: run.startedAt ?? null,
-    finishedAt: run.finishedAt ?? null, errorCode: run.errorCode ?? null, retryOfRunId: run.retryOfRunId ?? null,
+    finishedAt: run.finishedAt ?? null, errorCode: run.errorCode ?? null,
+    ...(typeof run.failureCause === "string" && run.failureCause ? { failureCause: run.failureCause } : {}),
+    retryOfRunId: run.retryOfRunId ?? null,
     wakeCommentIds: [...wake], livenessState: run.livenessState ?? null,
     lastEvidenceAt: latestIso([run.startedAt, run.lastUsefulActionAt, run.execution?.lastConfirmedActivityAt]),
   };
