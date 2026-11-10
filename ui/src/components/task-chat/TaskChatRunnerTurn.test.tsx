@@ -57,7 +57,7 @@ describe("TaskChatRunnerTurn", () => {
               status={status}
               execution={execution}
               preparationLabel={preparationLabel}
-              startedAtMs={Date.now() - 2_000}
+              startedAtMs={runId ? Date.now() - 2_000 : null}
               awaitingContinuation={awaitingContinuation}
               continuedAfterSteering={continuedAfterSteering}
               onRuntimeRequestDecision={onRuntimeRequestDecision}
@@ -78,6 +78,9 @@ describe("TaskChatRunnerTurn", () => {
         predecessorRunId: null, successorRunId: null,
       } : undefined);
       expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Working");
+      if (!runId) {
+        expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toBe("Working");
+      }
       const activity = container.querySelector('[data-testid="task-chat-current-activity-label"]');
       expect(activity?.textContent).toBe("Thinking");
       expect(activity?.classList.contains("shimmer-text")).toBe(true);
