@@ -147,3 +147,26 @@ fn starts_no_boot_verification_without_a_launch_profile() {
     let artifacts = AcpxLaunchArtifacts::verify_in_background(None);
     assert!(matches!(&*artifacts.state.lock().unwrap(), State::Idle));
 }
+
+#[test]
+fn dropping_the_owner_waits_for_boot_verification() {
+    let fixture = Fixture::new("drop", true);
+    let artifacts = AcpxLaunchArtifacts::verify_in_background(Some(&fixture.profile));
+    let cancelled = Arc::clone(&artifacts.cancelled);
+
+    drop(artifacts);
+
+    assert!(cancelled.load(Ordering::Acquire));
+    assert_eq!(Arc::strong_count(&cancelled), 1);
+}
+
+#[test]
+fn cancelled_verification_stops_before_the_next_artifact() {
+    let fixture = Fixture::new("cancelled", true);
+
+    let error = verify(&fixture.profile, &AtomicBool::new(true))
+        .err()
+        .unwrap();
+
+    assert!(error.to_string().contains("stopped with its runner"));
+}

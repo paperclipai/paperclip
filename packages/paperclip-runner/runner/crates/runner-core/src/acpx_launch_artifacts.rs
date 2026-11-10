@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 
 use crate::durable::{AcpxLaunchProfile, DurableRunnerError, QualifiedLaunchArtifact};
@@ -29,12 +30,24 @@ enum State {
 
 pub struct AcpxLaunchArtifacts {
     state: Mutex<State>,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl Default for AcpxLaunchArtifacts {
     fn default() -> Self {
         Self {
             state: Mutex::new(State::Idle),
+            cancelled: Arc::default(),
+        }
+    }
+}
+
+impl Drop for AcpxLaunchArtifacts {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if let State::Verifying(handle) = std::mem::replace(state, State::Idle) {
+            let _ = handle.join();
         }
     }
 }
@@ -44,12 +57,15 @@ impl AcpxLaunchArtifacts {
         let Some(profile) = profile.cloned() else {
             return Self::default();
         };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
         let state = thread::Builder::new()
             .name("acpx-launch-artifacts".to_owned())
-            .spawn(move || verify(&profile))
+            .spawn(move || verify(&profile, &worker_cancelled))
             .map_or(State::Idle, State::Verifying);
         Self {
             state: Mutex::new(state),
+            cancelled,
         }
     }
 
@@ -70,16 +86,24 @@ impl AcpxLaunchArtifacts {
                 return Ok(verified.snapshots.clone());
             }
         }
-        let verified = verify(profile)?;
+        let verified = verify(profile, &self.cancelled)?;
         let snapshots = verified.snapshots.clone();
         *state = State::Ready(verified);
         Ok(snapshots)
     }
 }
 
-fn verify(profile: &AcpxLaunchProfile) -> Result<Verified, DurableRunnerError> {
+fn verify(
+    profile: &AcpxLaunchProfile,
+    cancelled: &AtomicBool,
+) -> Result<Verified, DurableRunnerError> {
     let mut snapshots = HashMap::new();
     for artifact in &profile.artifacts {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(DurableRunnerError::invalid(
+                "ACPX launch artifact verification stopped with its runner",
+            ));
+        }
         if snapshots.contains_key(&artifact.path) {
             return Err(DurableRunnerError::invalid(
                 "ACPX runner launch profile repeats an artifact path",
