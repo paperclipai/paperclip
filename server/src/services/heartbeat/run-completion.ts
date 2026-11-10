@@ -1,6 +1,8 @@
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
+import { GENERIC_RUN_FAILURE_CODES, failureCauseFromAdapterResult, failureCauseFromError } from "./run-failure-cause.js";
+import { withoutSqlStatementText } from "@paperclipai/shared";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
@@ -68,6 +70,7 @@ import type { getRunLogStore, RunLogHandle } from "../run-log-store.js";
 import type { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import type { Db, agents } from "@paperclipai/db";
+import { setupCommandFailureResultJson } from "../workspace-setup-command-failure.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -477,12 +480,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const normalizedUsage = sessionUsageResolution.normalizedUsage;
     const runErrorMessage =
       outcome === "cancelled"
-        ? redactCurrentUserText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled", currentUserRedactionOptions)
+        ? redactCurrentUserText(withoutSqlStatementText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled"), currentUserRedactionOptions)
         : outcome === "succeeded"
           ? null
           : redactCurrentUserText(
-              adapterResult.errorMessage ??
-                (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+              withoutSqlStatementText(adapterResult.errorMessage ??
+                (outcome === "timed_out" ? "Timed out" : "Adapter failed")),
               currentUserRedactionOptions,
             );
     const recordedResponsibleUserDenialCode =
@@ -497,6 +500,13 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               recordedResponsibleUserDenialCode ??
               "adapter_failed")
             : null;
+    // A generic code alone does not say what failed; record a bounded cause.
+    const failureCause = outcome === "failed" && runErrorCode && GENERIC_RUN_FAILURE_CODES.has(runErrorCode)
+      ? failureCauseFromAdapterResult(adapterResult, { processCancellationFailed: Boolean(processCancellation?.failed) })
+      : null;
+    if (failureCause) {
+      logger.warn({ runId: run.id, errorCode: runErrorCode, failureCause }, "heartbeat run failed");
+    }
 
     async function persistSessionState(finalizedRun: Run) {
       await updateRuntimeState(
@@ -650,6 +660,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               ? { executionRecovery: adapterResult.executionRecovery }
               : {}),
             ...(outcome === "cancelled" ? controllerLeaseLossResultJson(signal) : {}),
+            ...(failureCause ? { failureCause } : {}),
             configFreshness: configFreshnessResultMetadata,
           },
           errorFamily: adapterResult.errorFamily ?? null,
@@ -1097,7 +1108,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const redactFailureText = (text: string) =>
       redactCurrentUserText(identityRedactor.redact(text), currentUserRedactionOptions);
-    const thrownMessage = redactFailureText(err instanceof Error ? err.message : "Unknown adapter failure");
+    // Bounded code from the error or its first three causes; never message text.
+    const thrownFailureCause = failureCauseFromError(err, providerFailure);
+    const thrownMessage = withoutSqlStatementText(
+      redactFailureText(err instanceof Error ? err.message : "Unknown adapter failure"), thrownFailureCause);
     const workspaceValidationFailure = isWorkspaceValidationFailure(err)
       ? err
       : null;
@@ -1155,7 +1169,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       nativeTerminalFailureCode ??
       (isStorageUnavailableError(err) ? STORAGE_UNAVAILABLE_CODE : null) ??
       "adapter_failed";
-    logger.error({ err: identityRedactor.redact({ message: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined }), runId }, "heartbeat execution failed");
+    const failureCause = GENERIC_RUN_FAILURE_CODES.has(failureErrorCode) ? thrownFailureCause : null;
+    logger.error({ err: identityRedactor.redact({ message: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined }), runId,
+      errorCode: failureErrorCode, failureCause: thrownFailureCause }, "heartbeat execution failed");
 
     let logSummary: {
       bytes: number | null;
@@ -1195,6 +1211,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         errorMessage: thrownMessage,
         resultJson: {
           ...parseObject(stopSnapshot?.resultJson),
+          ...(failureCause && !stoppedDuringFailure ? { failureCause } : {}),
           ...(providerFailure ? { providerFailure: { ...providerFailure,
             message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
           ...(interruptedExactResume ? { nativeExactResumeRefusal: {
@@ -1381,12 +1398,14 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const providerFailure = providerFailureFromError(outerErr);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const storageUnavailable = isStorageUnavailableError(outerErr);
-    const message = storageUnavailable ? storageUnavailableMessage(outerErr) : redactCurrentUserText(
+    // Bounded code from the error or its first three causes; never message text.
+    const thrownFailureCause = failureCauseFromError(outerErr, providerFailure);
+    const message = storageUnavailable ? storageUnavailableMessage(outerErr) : withoutSqlStatementText(redactCurrentUserText(
       identityRedactor.redact(outerErr instanceof Error
         ? outerErr.message
         : "Unknown setup failure"),
       currentUserRedactionOptions,
-    );
+    ), thrownFailureCause);
     // A missing secret/env binding is a known pre-dispatch configuration gap,
     // not an opaque setup crash. Surface it with its own errorCode so the
     // recovery path routes it to a human owner instead of looping retries.
@@ -1469,6 +1488,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       recordedResponsibleUserDenialCode ??
       nonRetryablePreflightCode ??
       "setup_failed";
+    const failureCause = GENERIC_RUN_FAILURE_CODES.has(setupFailureErrorCode) ? thrownFailureCause : null;
     // Bounded kind and reason only: a workspace provider's own text never crosses into Core.
     const workspaceProviderFailure = findWorkspaceProviderFailure(outerErr)?.summary() ?? null;
     // A wrapped query error hides its driver cause (for example
@@ -1477,7 +1497,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const setupFailureCauseCode = typeof causeCode === "string" && /^[A-Z0-9_]{1,64}$/.test(causeCode) ? causeCode : null;
     logger.error(
       { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId,
-        errorCode: setupFailureErrorCode, ...(setupFailureCauseCode ? { causeCode: setupFailureCauseCode } : {}),
+        errorCode: setupFailureErrorCode, failureCause: thrownFailureCause, ...(setupFailureCauseCode ? { causeCode: setupFailureCauseCode } : {}),
         ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
       "heartbeat execution setup failed",
     );
@@ -1512,6 +1532,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const connectionFailure = readGitConnectionFailure(outerErr);
     const setupFailureResultJson = {
       ...setupFailureDetails,
+      ...(failureCause ? { failureCause } : {}),
       ...(repositoryCatalogUnavailable ? { errorFamily: "transient_upstream",
         ...(repositoryCatalogUnavailable.retryAt ? { retryNotBefore: new Date(repositoryCatalogUnavailable.retryAt).toISOString() } : {}),
       } : {}),
@@ -1519,6 +1540,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
       ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}),
+      // Names the configured setup command that exited non-zero, for the task page.
+      ...setupCommandFailureResultJson(outerErr, readFailureReportSecrets()),
       // A lease lost during setup surfaces as the thrown abort reason, or as
       // the signal's reason when a setup step threw a different error after it.
       ...controllerLeaseLossEvidence(outerErr),

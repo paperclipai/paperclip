@@ -17,6 +17,7 @@ import { BoardUi } from "./board-ui.js";
 import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
 import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
+import { exposedAfterLaunch, StorageTrigger, storageTriggerMarkdown, storageTriggerShortfall } from "./storage-trigger.js";
 import { needsCredentialRotation, startCredentialRotation, type CredentialRotation } from "./storage-credentials.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { installAcpxSidecarSeam, withAcpxSidecarHook, type AcpxSidecarSeam } from "./acpx-provider-faults.js";
@@ -39,6 +40,7 @@ import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurr
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { TimeShiftedApi } from "./time-faults.js";
+import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
@@ -249,11 +251,13 @@ async function main(): Promise<number> {
   let board: BoardUi | null = null;
   let objectStore: ObjectStore | null = null;
   let storageChaos: StorageChaos | null = null;
+  let storageTrigger: StorageTrigger | null = null;
   let storageProxy: Awaited<ReturnType<typeof startStorageFaultProxy>> | null = null;
   let credentialRotation: CredentialRotation | null = null;
   let providerFaults: ProviderFaultSeam | null = null;
   let acpxSidecarSeam: AcpxSidecarSeam | null = null;
   let speedSection: string | null = null;
+  let storageSection: string | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
@@ -355,9 +359,9 @@ async function main(): Promise<number> {
     if (storm) timeline.add("storm_started", { durationMs: storm.plan.durationMs, plannedFaults: storm.plan.faults.length });
     // Faults are serialized; each one hits every task in flight when it starts.
     const fireFault = (kind: FaultKind, holdMs: number, requestedBy: string, exposed: readonly TaskObserver[],
-      trigger?: { trigger: TriggerId; delayMs: number }, onSettled?: () => void) => {
+      trigger?: { trigger: TriggerId; delayMs: number }, onSettled?: () => void, restartSteps?: RestartStep[]) => {
       faultsQueued += 1;
-      faultWork.push(supervisor.fault(kind, holdMs, requestedBy, trigger).finally(() => { faultsQueued -= 1; onSettled?.(); }).then(receipt => {
+      faultWork.push(supervisor.fault(kind, holdMs, requestedBy, trigger, restartSteps).finally(() => { faultsQueued -= 1; onSettled?.(); }).then(receipt => {
         faults.push(receipt);
         checkWorktree(receipt.faultId);
         for (const candidate of exposed) {
@@ -383,6 +387,28 @@ async function main(): Promise<number> {
         timeline.add("fault_error", { taskId: requestedBy, error: error.message });
       }));
     };
+
+    let launching: Promise<void> | null = null;
+    if (storageProxy && plan.options.storageTrigger) {
+      storageTrigger = new StorageTrigger(plan.options.storageTrigger, {
+        canFire: () => !interrupted && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady,
+        isOpen: taskId => observers.some(observer => observer.plan.taskId === taskId && !observer.done && observer.record.restAt === null),
+        record: (kind, data) => timeline.add(kind, data),
+        fire: armed => {
+          faultsQueued += 1;
+          const work = (async () => {
+            const exposed = await exposedAfterLaunch(launching, launched);
+            await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
+            const queued = faultWork.length;
+            fireFault(armed.kind, armed.holdMs, armed.taskId, exposed, undefined, undefined, armed.restartSteps);
+            await faultWork[queued];
+          })().finally(() => { faultsQueued -= 1; });
+          faultWork.push(work);
+          return work;
+        },
+      });
+      storageProxy.observe(storageTrigger.listener);
+    }
 
     supervisor.onCrashPoint = receipt => {
       const owner = pointResults.find(result => result.token === receipt.crashPoint?.token);
@@ -436,7 +462,7 @@ async function main(): Promise<number> {
         errors: check.errors.map(error => redactKnownSecrets(error, knownSecretValues())) });
     };
 
-    while (!interrupted && (pending.length || active.length)) {
+    while (!interrupted && (pending.length || active.length || storageTrigger?.busy)) {
       const now = Date.now();
       if (storm?.endIfDue(now)) {
         // Unlaunched pool tasks are not part of the wave; the in-flight ones drain without new faults.
@@ -454,13 +480,14 @@ async function main(): Promise<number> {
         }
       }
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
-      while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress
+      while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress && !storageTrigger?.busy
         && (!storm || storm.mayLaunch(Date.now()))
         // `--matrix`: no-fault baselines never share the server with a fault cell.
         && (!plan.options.matrix || matrixMayLaunch(pending[0]!.plan, active.filter(observer => !observer.done).map(observer => observer.plan)))) {
         const next = pending.shift()!;
         launched.push(next);
-        await next.launch();
+        launching = next.launch().finally(() => { launching = null; });
+        await launching;
         if (plan.options.storageWindows && storageChaos && launched.length === 1) storageChaos.start();
         if (!next.done) active.push(next);
       }
@@ -487,6 +514,7 @@ async function main(): Promise<number> {
         const due = observer.faultDue(Date.now());
         if (!due) continue;
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
+        if (storageTrigger) { storageTrigger.arm({ taskId: observer.plan.taskId, kind: due.kind, holdMs: due.holdMs, armedAt: Date.now(), ...(due.restartSteps ? { restartSteps: due.restartSteps } : {}) }); continue; }
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
         if (!(await observer.confirmTrigger(due, Date.now()))) continue;
@@ -498,7 +526,7 @@ async function main(): Promise<number> {
         const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
         if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, fault: due.kind, ...trigger });
         // Inside a storm a triggered fault is a restart too: the next storm gap runs from its settle.
-        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger, storm ? () => storm.settled(Date.now()) : undefined);
+        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger, storm ? () => storm.settled(Date.now()) : undefined, due.restartSteps);
       }
       if (storm && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady) {
         const due = storm.due(Date.now());
@@ -518,6 +546,12 @@ async function main(): Promise<number> {
       await delay(1_000);
     }
     await Promise.all(faultWork);
+    if (storageTrigger) {
+      const shortfall = storageTriggerShortfall(storageTrigger.finish(faults));
+      storageSection = storageTriggerMarkdown(storageTrigger.receipts);
+      timeline.add("storage_trigger_settled", { shortfall, receipts: storageTrigger.receipts.length });
+      if (shortfall) harnessError ??= new Error(shortfall);
+    }
     await stopPressure();
     checkWorktree("wave_end");
     if (worktreeChanged) harnessError ??= new Error("The worktree changed during the wave (build, install or branch switch); later restarts may have run different code");
@@ -594,7 +628,7 @@ async function main(): Promise<number> {
     const speed = await (async () => {
       const childTasks = await childSpeedTasksInTurn(launched);
       return collectWaveSpeed(api, plan.options.env, [...launched.flatMap(observer => observer.record.issueId
-        ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), ...childTasks], faults);
+        ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), ...childTasks], faults, storageChaos?.receipts ?? []);
     })().catch(error => { timeline.add("wave_speed_failed", { error: String(error) }); anyFailure = true; return null; });
     if (speed) {
       speedSection = speedMarkdown(speed);
@@ -683,6 +717,8 @@ async function main(): Promise<number> {
     await credentialRotation?.settled();
     if (credentialRotation?.failures.length) harnessError ??= new Error(`ST5R credential rotation failed: ${credentialRotation.failures.join("; ")}`);
     if (storageProxy) {
+      storageProxy.observe(null);
+      if (storageTrigger) await writeFile(path.join(waveDir, "storage-trigger.json"), `${JSON.stringify(storageTrigger.finish(faults), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       if (storageChaos) await writeFile(path.join(waveDir, "storage-faults.json"), `${JSON.stringify(storageChaos.receipts, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await writeFile(path.join(waveDir, "storage-proxy.json"), `${JSON.stringify(storageProxy.counts(), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await storageProxy.close().catch(() => undefined);
@@ -695,7 +731,7 @@ async function main(): Promise<number> {
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), speedSection ? `${summary}\n${speedSection}` : summary, { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), [summary, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
       console.info(`\n${summary}`);
     }
   }

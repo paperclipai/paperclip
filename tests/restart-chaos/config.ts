@@ -5,6 +5,8 @@ import { applyJourneyOptions } from "./journey-matrix.js";
 import { takesJourneyTriggers } from "./journeys.js";
 import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
+import { parseStorageTrigger } from "./storage-trigger.js";
+import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
 import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessage, type ProviderFaultKind } from "./provider-faults.js";
 import { PROVIDER_FAULT_ADAPTERS, parseProviderFaultRestart } from "./acpx-provider-faults.js";
 import {
@@ -108,6 +110,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       storage: { type: "string" },
       "storage-faults": { type: "string" },
       "storage-fault-seconds": { type: "string" },
+      "storage-trigger": { type: "string" },
       "provider-fault-message": { type: "string" },
       "provider-fault-delays": { type: "string" },
       "db-pressure": { type: "string" },
@@ -116,13 +119,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "time-age-hours": { type: "string" },
       "provider-fault-restart": { type: "string" },
       "provider-fault-restart-after-seconds": { type: "string" },
+      "rr-gap-seconds": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -220,6 +224,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");
   }
   Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"]));
+  Object.assign(options, parseRepeatedRestartOptions(options, values["rr-gap-seconds"]));
   const upgradeFrom = values["upgrade-from"];
   if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
     throw new Error("K14 (upgrade mid-run) and --upgrade-from <older checkout> go together: pass both or neither");
@@ -283,6 +288,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (!match || min < 5 || max < min || max > 900) throw new Error("--storage-fault-seconds takes <min>-<max> seconds, 5 to 900, min not above max");
     options.storageFaultMs = [min * 1000, max * 1000];
   }
+  if (values["storage-trigger"] !== undefined) options.storageTrigger = parseStorageTrigger(values["storage-trigger"], options);
   return { mode: "wave", options, keep };
 }
 
