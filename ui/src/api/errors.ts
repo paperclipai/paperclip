@@ -81,6 +81,23 @@ const CODE_COPY: Record<string, { title: string; body: string }> = {
     title: "Request timed out",
     body: "This took too long to respond. Please try again in a moment.",
   },
+  // Queued message edits. The editor keeps the person's text in every case.
+  queued_comment_revision_conflict: {
+    title: "Queue changed",
+    body: "The queue changed in another session. Your edit is still here; save again to apply it to the latest queue.",
+  },
+  queued_comment_stale_queue: {
+    title: "Queue changed",
+    body: "The queue changed in another session. Your edit is still here; save again to apply it to the latest queue.",
+  },
+  queued_comment_stale_target: {
+    title: "Queued message changed",
+    body: "This queued message was already sent or removed. Your text is still here; you can queue it as a new message.",
+  },
+  queued_comment_not_pending: {
+    title: "Queued message changed",
+    body: "This queued message was already sent or removed. Your text is still here; you can queue it as a new message.",
+  },
   // Issue-thread interaction resolution (moved from lib/interaction-resolution-error.ts).
   interaction_audience_denied: {
     title: "You can’t respond to this card",

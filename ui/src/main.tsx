@@ -9,6 +9,7 @@ import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { SentryGate } from "./components/SentryGate";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
+import { LinkPreviewProvider } from "./context/LinkPreviewContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
@@ -110,6 +111,12 @@ function CompanyVoiceCalls({ children }: { children: React.ReactNode }) {
   return <VoiceCallProvider companyId={selectedCompanyId} userId={userId}>{children}</VoiceCallProvider>;
 }
 
+function CompanyLinkPreviews({ children }: { children: React.ReactNode }) {
+  const { selectedCompanyId } = useCompany();
+  const { userId, settled } = useAccountIdentity();
+  return <LinkPreviewProvider companyId={settled ? selectedCompanyId : null} userId={userId}>{children}</LinkPreviewProvider>;
+}
+
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Paperclip root element is missing");
 
@@ -132,7 +139,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                           <PanelProvider>
                             <PluginLauncherProvider>
                               <DialogProvider>
-                                <DesignSandboxProvider><CompanyVoiceCalls><App /></CompanyVoiceCalls></DesignSandboxProvider>
+                                <DesignSandboxProvider><CompanyVoiceCalls><CompanyLinkPreviews><App /></CompanyLinkPreviews></CompanyVoiceCalls></DesignSandboxProvider>
                               </DialogProvider>
                             </PluginLauncherProvider>
                           </PanelProvider>

@@ -77,8 +77,7 @@ describe("current Notion catalog setup choices", () => {
   it("rejects missing prerequisites, wrong setup, lost task and premature connection", () => {
     for (const mutate of [
       (o: ReturnType<typeof valid>) => {
-        o.state.choiceExplanation.body =
-          "Notion sign-in and Vercel Connect both work immediately.";
+        o.state.choiceExplanation.body = "   ";
       },
       (o: ReturnType<typeof valid>) => {
         o.state.choiceExplanation.body =
@@ -104,6 +103,12 @@ describe("current Notion catalog setup choices", () => {
         "Vercel Connect needs workload OIDC or PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN.",
       ),
     ).toBe(true);
+    // The question asks only for the easiest way; naming the unavailable method is not required.
+    expect(
+      truthfulNotionChoices(
+        "Easiest path is Notion's OAuth connector; finish the sign-in here: [Connect Notion](/COM/apps/connect?resume=x&source=notion). It isn't connected until you authenticate.",
+      ),
+    ).toBe(true);
     expect(gradeProviderChoice(undefined).passed).toBe(false);
   });
 });
@@ -118,8 +123,8 @@ describe("actual source attribution and supported choice lanes", () => {
     }
     const original = valid();
     original.reply = "";
-    original.state.choiceExplanation.body =
-      "I’ll check the available Notion connection flow and give you the shortest setup path.";
+    delete (original.state as { choiceExplanation?: unknown }).choiceExplanation;
+    original.state.choiceExplanationVisible = false;
     expect(gradeProviderChoice(original).passed).toBe(false);
   });
   it("rejects lost catalog, invisible explanation, wrong source run and unbound selection", () => {

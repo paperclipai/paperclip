@@ -6,7 +6,7 @@ Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
 
-`doc/SPEC-implementation.md` remains the V1 contract. This document is the detailed execution model behind that contract.
+The code and its tests are the source of truth. This document is the detailed execution model behind them.
 
 ## 1. Core Model
 
@@ -536,7 +536,7 @@ and the user need not certify infrastructure state in a reconciliation form.
 
 Repeated automatic signals for an unchanged gate share one durable skipped-wake diagnostic, scoped to company, agent, issue, gate code, and condition identity. The diagnostic retains the first request and counts later observations. This applies to execution reconciliation, dependencies, pause holds, company and agent availability, budget blocks, and disabled heartbeats. These diagnostics do not consume provider attempts and are never proof that a future wake was delivered. All current gates are checked again on the next wake, including the periodic dependency reconciliation sweep. Clearing one gate does not bypass another.
 
-Another run's unfinished accounting or cleanup never refuses new work (see `doc/SPEC-implementation.md`, "Admission is independent of cleanup and accounting"). A new task whose first assignment wake is refused by a temporary condition (an explicit pause) stays `todo`. Stranded-work recovery does not move a task with no run to `blocked` for such a condition. The task shows what it waits for, and the assigned-task liveness sweep admits it once the condition clears, through normal admission and with one run. A reached hard stop or blocked unpriced usage remains a board decision. Removed assignees and cancelled tasks still do not wake.
+Another run's unfinished accounting or cleanup never refuses new work. Only a hard stop (spend at the limit, or reported unpriced usage under a blocking policy), an explicit pause of the company, project or agent, or an inactive company refuses admission. A new task whose first assignment wake is refused by a temporary condition (an explicit pause) stays `todo`. Stranded-work recovery does not move a task with no run to `blocked` for such a condition. The task shows what it waits for, and the assigned-task liveness sweep admits it once the condition clears, through normal admission and with one run. A reached hard stop or blocked unpriced usage remains a board decision. Removed assignees and cancelled tasks still do not wake.
 
 A user's message refused by a pause (a paused agent, a paused company, or a budget pause that is not a reached hard stop) is saved as a deferred intent that names the refusal and its release trigger; it is never written as a terminal skip. The pause's own stop keeps it. Lifting the pause is the operator's explicit authorization to send what the pause refused, as Send is after a Stop: when the pause stopped the task's run, the lifted pause issues the task's next explicit wake, which adopts the saved message once. A task that never ran keeps the message in the task, and stranded-work recovery starts it.
 
@@ -1380,14 +1380,33 @@ identity, unknown failures, active leases, and incomplete cleanup still require
 their normal reconciliation and termination proof. Unknown historical setup errors remain
 outside this policy, and generic recovery cannot renew its exhausted budget.
 
-A preserved reusable sandbox that the provider refuses to resume before provider
-dispatch uses the same bounded bootstrap budget (`reusable_sandbox_resume_failed`).
-A common cause is a follow-up that arrives while the provider is auto-stopping an
-idle sandbox. The retry inherits the source wake, so a reply is delivered once,
-and it resumes the same recorded lease. A refusal is not proof that the sandbox is
-lost, so the retry never destroys it or creates a replacement. Only an explicit
-provider not-found or a workspace identity mismatch with a verified backup permits
-replacement. The run records the refusal by closed labels only (cause label, HTTP
+A preserved reusable sandbox is resumed within a bounded budget of 90 seconds per
+run (or the provider's configured start deadline when that is shorter), not the
+provider's whole start deadline. A stopped Daytona sandbox resumes in seconds and
+an archived one in under a minute. Inside that budget the run retries transient
+refusals with jittered backoff: HTTP 429 and 5xx, closed connections, timeouts,
+and a sandbox that is still changing state (for example "state change in
+progress", or still stopping or archiving at the provider's start deadline). A
+common cause is a follow-up that arrives while the provider is auto-stopping or
+archiving an idle sandbox.
+
+When the resume still fails, the run replaces the sandbox only when nothing lives
+solely on it: the lease is `released` or `retained` and no live run holds it, the
+task workspace is clean with a committed saved snapshot, and a native runner
+session has a verified, lease-bound harness backup. The run then moves the old
+lease to `pending_cleanup` (failure reason `resume_failed`) in one guarded write,
+so the cleanup sweep destroys the old sandbox later and no provider delete delays
+the first turn. It creates a new sandbox, records the acquisition as
+`replacement` with reason `resume_failed`, and workspace preparation restores the
+saved snapshot into it. Leases saved by older releases have the same fields and
+follow the same rule; one without a verified backup stays strict.
+
+Otherwise (unsaved work, a live owner, a workspace with no committed saved
+version, an access refusal, or an unavailable worker) the refusal keeps the strict
+behavior: the run fails with `reusable_sandbox_resume_failed` and uses the bounded
+bootstrap budget. The retry inherits the source wake, so a reply is delivered once,
+and it resumes the same recorded lease without destroying it. The run records the
+refusal by closed labels only (cause label such as `sandbox_state_transition`, HTTP
 status, errno-style code), never by provider text. On exhaustion, the task gets a
 specific recovery notice, and generic recovery does not grant another budget.
 
@@ -2217,11 +2236,10 @@ Automatic productivity reviews are retired. Run counts, missing comments, and el
 ### Issue-thread interaction resolution
 
 Every issue-thread interaction kind inherits resolver policy `anyone` when the
-creator omits a policy. `anyone` includes the creator agent and creating run.
-Callers opt into independent review with `not_creator` or human resolution with
-`human_only`; a named addressee and company cap may narrow the effective audience.
-The legacy input aliases `board_or_agents` and `board_only` normalize to `anyone`
-and `human_only` for new writes.
+creator omits a policy. Restrictions are opt-in; the canonical policies, addressee
+rules, and company caps are listed below. The legacy input aliases
+`board_or_agents` and `board_only` normalize to `anyone` and `human_only` for new
+writes.
 
 Resolver policy is snapshotted with explicit/inherited provenance and an effective
 source (`requested`, `company_cap`, or `governed_action`). Existing ambiguous
@@ -2235,6 +2253,51 @@ and task-bridge containment. Target freshness and supersession are checked befor
 the outcome commits. Resolution records an answer; every continuation, task
 creation, tool/provider call, execution-policy transition, spend, deployment, or
 other effect independently re-runs its own authorization and approval gates.
+
+Question, confirmation, checkbox confirmation, and item verdict cards stay pending
+when a user sends an ordinary task comment. Their `supersedeOnUserComment` flag
+defaults to `false`. A creator may set it to `true` when a comment should replace
+the pending request, as the opening onboarding question does.
+
+Canonical resolver policies are:
+
+- `anyone`: any authenticated actor in the interaction's company who can read the
+  issue and use the normal resolution route. For agents this includes the creator
+  agent and the creating/source run.
+- `not_creator`: the explicit independent-review policy. It excludes the creator
+  agent and creating/source run while otherwise using the ordinary agent resolver
+  path.
+- `human_only`: only an authorized human/board actor may resolve the interaction.
+
+An explicit named agent or user addressee and a company-configured cap may narrow
+the effective audience. Only the exact named addressee may resolve an addressed
+interaction; a human does not override a user addressee. Explicit user recipients
+must exist and be authorized to respond in the issue's company before creation.
+Ordinary Agent Chat questions derive their user recipient from the persisted
+conversation owner. A conflicting explicit user recipient is rejected; IDs are
+never guessed or repaired. Ordinary task questions keep optional addressing.
+A cap never widens the requested audience. Tool-action confirmations and
+other hard-governed action cards remain `human_only` (or move to the formal approval
+system) regardless of a requested open audience.
+
+Surfaces that offer a resolution must state the effective audience before the
+operator acts, from server metadata rather than a client-side policy inference.
+Issue-thread cards read it from the interaction snapshot; attention rows read it
+from the feed item's `resolverAudience` (canonical requested/effective policy,
+effective-policy source, provenance, and the addressee/creator identities the
+evaluator compares against), because a collapsed row carries decision verbs
+before the interaction itself is fetched. A failed resolution keeps the server's
+denial reason in visible, assertively announced feedback and names who may
+respond; an audience denial is permanent, so it must not degrade to a retry
+prompt. Neither surface may enable or disable a control on its own authority.
+
+An open audience is not an uncapped one: when an agent run resolves an interaction
+on an issue other than its own source issue, the resolution is a cross-issue
+mutation and consumes the per-run cross-issue influence budget in
+[shared default-open issue writes](agent-permission-defaults.md#shared-default-open-issue-writes), charged
+after audience authorization and before the interaction mutation, child tasks,
+continuation, tool action, or wake. Same-issue resolutions and board/user
+resolutions are outside that counter.
 
 A native continuation may replay the same plain confirmation or checkbox key
 after receiving its accepted response. Only the run's persisted, identity-bound
@@ -2296,7 +2359,7 @@ When the source issue is non-terminal and has no other live path, the product sh
 
 ### Watchdog authority during execution
 
-The watchdog agent acts in a scoped capacity, not as the original deliverable worker and not as the board. The server must enforce the authority contract in `doc/SPEC-implementation.md` from persisted watchdog context. Prompt text and custom instructions may guide the watchdog's judgment, but they cannot grant authority outside the watched subtree or widen an interaction's ordinary effective audience.
+The watchdog agent acts in a scoped capacity, not as the original deliverable worker and not as the board. The server must enforce the [authority contract](TASK-WATCHDOG.md#authority-contract) from persisted watchdog context. Prompt text and custom instructions may guide the watchdog's judgment, but they cannot grant authority outside the watched subtree or widen an interaction's ordinary effective audience.
 
 Watchdogs must not create visible probe issues, comments, or throwaway tasks to discover capability boundaries. They should rely on the wake capability metadata and explicit API denials, then record any denied operation as evidence in the reusable watchdog issue.
 
@@ -2723,6 +2786,21 @@ While a re-arm remains, the hold names the wait and says that Paperclip tries
 again automatically; after that it names Retry. Holds exhausted by earlier
 releases carry no marker and are re-armed on the worker's first pass after
 deploy, with no migration.
+
+An exhausted save whose last failure happened while preserving files
+(`export_interrupted`) under an older workspace capture
+policy is retried once under the current policy. The capture policy has a
+version (`REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION`); each recovery generation
+records the version it saves with, and generations written before the field
+existed count as version 1. A release that makes the capture accept workspaces
+an earlier release refused bumps the version. The recovery worker then re-arms
+each such hold with one new bounded generation, under the same run-over checks
+as the stop-proof re-arm, records the `capturePolicyRecovery` marker and
+`issue.workspace_recovery_rearmed` activity with reason
+`capture_policy_changed`, and settles the hold like any completed recovery.
+The new generation carries the current version, so the rule never re-arms it
+again; a later failure follows the normal exhausted handoff. Holds saved by
+earlier releases need no migration.
 
 An exhausted workspace export records the exact Blocked status version it
 creates, bound to its source run, result, contract and identity. Recovery may

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { issueRecoveryActions } from "@paperclipai/db";
-import { isExhaustedStopProofWait, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, STOP_PROOF_WAIT_CODE,
+import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
+import { CAPTURE_POLICY_REARM_CODES, isExhaustedStopProofWait, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, STOP_PROOF_WAIT_CODE,
   stopProofRearmsSpent, type SystemRecoveryState } from "./system-recovery-state.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 
@@ -84,7 +85,12 @@ export function stopProofRearmPendingCondition() {
 export function stopProofRearmDueAt() {
   return sql`greatest(case when ${stopProofMarker}->>'schema' = ${STOP_PROOF_RECOVERY_SCHEMA}
       and jsonb_typeof(${stopProofMarker}->'nextRearmAt') = 'number' then (${stopProofMarker}->>'nextRearmAt')::bigint else 0 end,
-    coalesce((select (extract(epoch from source.controller_lease_expires_at) * 1000)::bigint from heartbeat_runs source
+    ${sourceRunLeasesExpireAt()})`;
+}
+
+/** The latest expiry of a controller or finalizer lease the source run holds (0 = none). */
+function sourceRunLeasesExpireAt() {
+  return sql`greatest(coalesce((select (extract(epoch from source.controller_lease_expires_at) * 1000)::bigint from heartbeat_runs source
       where source.company_id = ${issueRecoveryActions.companyId} and source.id = ${sourceRunId}), 0),
     coalesce((select max((extract(epoch from finalizer.lease_expires_at) * 1000)::bigint) from native_run_finalizations finalizer
       where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id = ${sourceRunId}
@@ -96,6 +102,33 @@ export function stopProofRearmDueCondition(now: number) {
 }
 
 const list = (values: readonly string[]) => sql.join(values.map(value => sql`${value}`), sql`, `);
+const capturePolicyVersion = sql`case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,capturePolicyVersion}') = 'number'
+  then (${issueRecoveryActions.evidence}#>>'{systemRecovery,capturePolicyVersion}')::int else 1 end`;
+
+/** An exhausted save whose files a previous capture policy refused, not yet
+ * retried under the current policy (isCapturePolicyRearmable). Saves exhausted
+ * by older releases carry no version and are due at once, with no migration. */
+export function capturePolicyRearmPendingCondition() {
+  return sql`(${issueRecoveryActions.status} in ('active', 'escalated')
+    and ${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'exhausted'
+    and ${issueRecoveryActions.evidence}#>>'{systemRecovery,phase}' = 'preserve_files'
+    and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,code}' in (${list(CAPTURE_POLICY_REARM_CODES)})
+    and ${capturePolicyVersion} < ${REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION}
+    and not exists (select 1 from native_run_finalizations finalizer
+      where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id = ${sourceRunId}
+        and finalizer.lease_owner is not null and coalesce(finalizer.lease_expires_at <= now(), true))
+    and ${issueRecoveryActions.evidence}->'retainedSourceFallback' is null
+    and ${issueRecoveryActions.evidence}->'executionReconciliation' is null)`;
+}
+
+export function capturePolicyRearmDueAt() {
+  return sourceRunLeasesExpireAt();
+}
+
+export function capturePolicyRearmDueCondition(now: number) {
+  return sql`(${capturePolicyRearmPendingCondition()} and ${capturePolicyRearmDueAt()} <= ${now}::bigint)`;
+}
+
 const check = sql`${issueRecoveryActions.evidence}->${RETAINED_SOURCE_FALLBACK_CHECK_KEY}`;
 // New stop evidence (any change to an allocation of the source run, such as a
 // late provider stop receipt) after the last deferred check reconsiders the

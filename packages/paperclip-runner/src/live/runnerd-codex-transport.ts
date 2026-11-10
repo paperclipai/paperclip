@@ -117,6 +117,8 @@ const MAX_NOTIFICATION_COUNT = 2_048;
 const MAX_NOTIFICATION_BYTES = 4 * 1024 * 1024;
 const RUNNER_CLIENT_VERSION = "0.3.0";
 const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
+const RUNNER_RESTORE_STABLE_MS = 60_000;
+const MAX_UNSTABLE_RUNNER_RESTORES = 3;
 const RUNNERD_MAX_OUTBOX_BYTES = 16 * 1024 * 1024;
 const RUNNERD_P0_RESERVE_BYTES = 1024 * 1024;
 
@@ -4050,6 +4052,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #failureSignal: Promise<never>;
   #rejectFailureSignal!: (error: Error) => void;
   #runnerRecoveryInProgress = false;
+  #lastRunnerRestoreAt: number | null = null;
+  #unstableRunnerRestores = 0;
   #startupComplete = false;
   readonly #authorityRunId: () => string | undefined;
   #startupFailureCode = "native_runner_process_exited";
@@ -8489,7 +8493,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.runnerReconnectGraceMs !== undefined &&
           handle.restart
         ) {
-          void this.#recoverRunnerProcess(handle, detail);
+          this.#recoverOrFailRunnerProcess(handle, detail);
           return;
         }
         this.#failTransport(
@@ -8507,7 +8511,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.runnerReconnectGraceMs !== undefined &&
           handle.restart
         ) {
-          void this.#recoverRunnerProcess(
+          this.#recoverOrFailRunnerProcess(
             handle,
             error instanceof Error ? error.message : String(error),
           );
@@ -8526,6 +8530,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         );
       },
     );
+  }
+
+  #recoverOrFailRunnerProcess(handle: RunnerProcessHandle, detail: string): void {
+    this.#unstableRunnerRestores = unstableRunnerRestoreCount(
+      this.#unstableRunnerRestores,
+      this.#lastRunnerRestoreAt,
+      Date.now(),
+    );
+    if (this.#unstableRunnerRestores >= MAX_UNSTABLE_RUNNER_RESTORES) {
+      this.#failTransport(
+        new Error(
+          `native_runner_process_exited: runnerd exited ${this.#unstableRunnerRestores} times within ${RUNNER_RESTORE_STABLE_MS}ms of being restored${detail ? `: ${detail.slice(-1_000)}` : ""}`,
+        ),
+      );
+      return;
+    }
+    void this.#recoverRunnerProcess(handle, detail);
   }
 
   async #recoverRunnerProcess(
@@ -8622,6 +8643,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         })();
         if (await Promise.race([completion, authenticated])) {
           this.#diagnostic("runner process restored its durable PRP session");
+          this.#lastRunnerRestoreAt = Date.now();
           this.#watchRunner(recoveredHandle);
           return;
         }
@@ -9057,7 +9079,12 @@ export const runnerdLaunchProfileInternals = Object.freeze({
   p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
 });
 
+function unstableRunnerRestoreCount(previous: number, restoredAt: number | null, now: number): number {
+  return restoredAt !== null && now - restoredAt < RUNNER_RESTORE_STABLE_MS ? previous + 1 : 0;
+}
+
 export const runnerdRecoveryInternals = Object.freeze({
+  unstableRunnerRestoreCount,
   projectCopilotRunGrant,
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,

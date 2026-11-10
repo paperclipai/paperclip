@@ -37,7 +37,8 @@ export async function clickRetryOnPage(page: Page, url: string, issueRefs: reado
     return texts.map(text => text.trim()).filter(Boolean).join(" | ").slice(0, 500) || null;
   };
   try {
-    await page.getByRole("button", { name: "Retry", exact: true }).first().waitFor({ state: "visible", timeout: timeoutMs });
+    await page.getByRole("button", { name: "Retry", exact: true }).filter({ visible: true }).first()
+      .waitFor({ state: "visible", timeout: timeoutMs });
   } catch {
     return { clicked: false, httpStatus: null, accepted: null, error: UI_RETRY_BUTTON_MISSING, bannerText: await banner() };
   }

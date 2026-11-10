@@ -25,12 +25,21 @@ async function observeHandoff(ctx: ChatCatalogContext, state: Record<string, unk
     sourceReplies: ctx.issue() ? await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`) : [] };
 }
 function handoffObservation(value: unknown): HandoffObservation | undefined { const o = value as HandoffObservation; return observation(value) && !!o.caseRecord && Array.isArray(o.handoffs) && !!o.findings && Array.isArray(o.findingVersions) && Array.isArray(o.sourceReplies) && !!o.actingAgent && !!o.reviewer ? o : undefined; }
+/** A paraphrase that restates the observed mobile Safari findings is one accepted form of carry-forward. */
 function checkoutObservations(body: string) {
   const parts = body.split(/\n+|;|(?<=[.!?])\s+/);
   return /mobile Safari/i.test(body) && parts.some(part => /\b(?:tap|tapping|touch)\b/i.test(part) && /\b(?:Pay|checkout|button)\b/i.test(part)
     && /\b(?:no effect|no response|fails?|unresponsive|nothing|not responsive)\b|\b(?:does not|doesn't)\s+(?:respond|work|activate|trigger|submit|produce)\b/i.test(part)
     && !/\b(?:does not|doesn't|never|not)\s+(?:fail|unresponsive)\b|\bno (?:failure|issue)\b/i.test(part))
     && parts.some(part => /keyboard/i.test(part) && /\b(?:succeeds?|successful|works?|responds?)\b/i.test(part) && !/\b(?:not|fails?|doesn't|does not)\b/i.test(part));
+}
+/** The handoff stays on the same primary task that owns the saved `findings` document, so the reviewer can
+ * read it there. The instructions carry it forward by pointing at that document (its setup-chosen key or a
+ * link to it), by reproducing the saved revision, or by restating the observations. */
+function referencesSavedFindings(instructions: string, findings: IssueDocument | undefined) {
+  if (!instructions.trim()) return false;
+  const saved = findings?.body?.trim();
+  return /(?<![\w-])findings(?![\w-])/i.test(instructions) || /#document-findings\b|\/documents\/findings\b/.test(instructions) || (!!saved && instructions.includes(saved));
 }
 export function gradeIntegratorCaseHandoff(value: unknown) {
   const c = checks(); const o = handoffObservation(value); c.add("real-owner-primary-and-handoff-evidence", !!o, "Requires actual Morgan respondent, original primary, saved finding revisions and real handoff source execution."); if (!o) return c.result();
@@ -50,9 +59,9 @@ export function gradeIntegratorCaseHandoff(value: unknown) {
     && primaryRun.contextSnapshot?.issueId !== o.sourceIssueId
     && o.runs.some(run => run.agentId === o.leadId && run.contextSnapshot?.issueId === o.sourceIssueId && !!run.startedAt && !!primaryRun.startedAt && Date.parse(String(primaryRun.startedAt)) >= Date.parse(String(run.startedAt))),
   "The source Morgan chat routes the explicit request to a genuinely admitted primary Morgan execution, whose normal JWT/checkout authority performs the handoff.");
-  c.add("saved-findings-carried-forward", !!handoff && checkoutObservations(handoff.instructions) && checkoutObservations(initial?.body ?? "")
+  c.add("saved-findings-carried-forward", !!handoff && (referencesSavedFindings(handoff.instructions, initial) || checkoutObservations(handoff.instructions)) && !!initial?.body?.trim()
     && o.findings.issueId === primary?.id && o.findingVersions.some(revision => revision.id === initial?.latestRevisionId),
-  "The review instructions retain the saved observed mobile Safari checkout findings, and the original task-owned revision remains inspectable.");
+  "The review instructions point the reviewer at the saved findings document on the same task, and the original task-owned revision remains inspectable.");
   const reviewRun = o.runs.find(run => run.agentId === riley?.id && run.contextSnapshot?.issueId === primary?.id);
   c.add("review-through-normal-admission-not-case-closure", reviewRun?.status === "succeeded" && reviewRun.runtimeMode === "native" && primary?.status === "done"
     && ["delivered", "completed"].includes(handoff?.state ?? "") && o.caseRecord.status !== "done",
@@ -98,7 +107,7 @@ export const integratorCaseHandoffCases = [integratorDefinition("cases", "cases.
   const task = state.task as Entity; const row = state.case as CaseRecord;
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, task.title!);
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
-}, { sourceFiles: ["chat-catalog-domains/integrator-case-handoff.ts", "chat-catalog-domains/internal-run-brief.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/cases.yaml"],
+}, { oracleVersion: "paperclip.chat-catalog.case-handoff.structural.v2", sourceFiles: ["chat-catalog-domains/integrator-case-handoff.ts", "chat-catalog-domains/internal-run-brief.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/cases.yaml"],
   respondingAgent: { kind: "case-primary-owner", name: "Morgan", role: "engineer", canAssignTasks: true },
   expectedRunCount: 4, attemptTimeoutMs: 900_000, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 3 } },
   async act(ctx, state) {

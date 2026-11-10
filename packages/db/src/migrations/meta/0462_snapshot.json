@@ -1,5 +1,5 @@
 {
-  "id": "7d050002-c99b-4b2e-84f9-3b2cba9eac70",
+  "id": "0287d884-1fee-4e8d-9ae0-2be0aac45b71",
   "prevId": "f409684f-c629-4648-9123-a5e1064308ef",
   "version": "7",
   "dialect": "postgresql",
@@ -49107,6 +49107,93 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.plugin_lifecycle_resource_cursors": {
+      "name": "plugin_lifecycle_resource_cursors",
+      "schema": "",
+      "columns": {
+        "plugin_id": {
+          "name": "plugin_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource_type": {
+          "name": "resource_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource_id": {
+          "name": "resource_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "acknowledged_through_id": {
+          "name": "acknowledged_through_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "plugin_lifecycle_resource_cursors_plugin_id_plugins_id_fk": {
+          "name": "plugin_lifecycle_resource_cursors_plugin_id_plugins_id_fk",
+          "tableFrom": "plugin_lifecycle_resource_cursors",
+          "tableTo": "plugins",
+          "columnsFrom": [
+            "plugin_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plugin_lifecycle_resource_cursors_company_id_companies_id_fk": {
+          "name": "plugin_lifecycle_resource_cursors_company_id_companies_id_fk",
+          "tableFrom": "plugin_lifecycle_resource_cursors",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "plugin_lifecycle_resource_cursors_pk": {
+          "name": "plugin_lifecycle_resource_cursors_pk",
+          "columns": [
+            "plugin_id",
+            "company_id",
+            "resource_type",
+            "resource_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.plugin_logs": {
       "name": "plugin_logs",
       "schema": "",
@@ -59515,13 +59602,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "''"
-        },
-        "pending_reveal": {
-          "name": "pending_reveal",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "allowed_actions": {
           "name": "allowed_actions",

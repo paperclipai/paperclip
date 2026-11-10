@@ -60,11 +60,15 @@ export function gradeAccounting(value: unknown) {
     c.add("independent-scoped-week-ledger", o.state.receiptOrigin === "public-imported-synthetic-fixture" && totals?.length === 2 && totals[0]?.costCents === 137 && totals[1]?.costCents === 263
       && projects?.find(row => row.projectId === entity(o.state, "project").id)?.costCents === 400 && typeof o.state.weekFrom === "string" && typeof o.state.weekTo === "string",
       "Two explicitly imported synthetic USD API receipts total $4 in Launch's declared week, independently excluding the other-project and prior-week distractors; these are not live campaign/provider charges.");
+    // Requested facts (the per-agent dollars, the Launch total and the supporting receipt links) are
+    // graded from the reply; incomplete accounting is graded structurally: the reply must point at the
+    // record whose cost is unresolved (its task link or identifier, or the run) and must not give that
+    // record a zero dollar amount. Words such as "subscription" or "incomplete" are not required.
     c.add("actual-agent-breakdown-and-incomplete-total", /Morgan[\s\S]{0,120}(?:\$|USD\s*)?1\.37/i.test(o.reply) && /Riley[\s\S]{0,120}(?:\$|USD\s*)?2\.63/i.test(o.reply)
-      && /(?:\$|USD\s*)4\.00/.test(o.reply) && /week/i.test(o.reply) && /API|metered/i.test(o.reply) && /subscription|monthly fee/i.test(o.reply)
-      && /incomplete|unresolved|pending|not.*(?:complete|final)|missing.*cost/i.test(o.reply) && !/\b(?:unresolved|pending|missing)\b[^.\n]{0,50}\b(?:free|no charge|zero cost)\b/i.test(o.reply)
+      && /(?:\$|USD\s*)4\.00/.test(o.reply)
+      && unresolvedRecordIdentifiedNotFree(o.reply, o.state.preflightTask as Entity | undefined, String(o.state.originalRunId ?? ""))
       && hasLink(o, "issues", entity(o.state, "morganReceiptTask")) && hasLink(o, "issues", entity(o.state, "rileyReceiptTask")),
-      "The actual answer breaks down the recorded scoped API dollars by real agent with supporting records, keeps subscription fees separate and labels unresolved usage instead of counting it free.");
+      "The actual answer breaks down the recorded scoped API dollars by real agent with supporting records, and points at the unresolved usage record without giving it a $0 amount.");
   } else if (o.scenarioId === "budgets-costs.repair-cost-recording") {
     c.add("real-human-saved-cost-retry", quality?.runs.some(row => row.runId === before?.id && row.reason === "retryable") === true && o.state.agentRetryStatus === 403
       && o.state.humanRetryHttpStatus === 200 && typeof o.state.retryAccounted === "boolean" && o.state.retryReceiptVisible === true
@@ -146,7 +150,7 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
     }
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The requested reporting week is ${weekFrom} through ${weekTo} (UTC). Launch contains imported synthetic metered-API receipt tasks ${morganReceiptTask.identifier} (Morgan) and ${rileyReceiptTask.identifier} (Riley), plus actual completed native run ${state.originalRunId} with unresolved saved usage. Imported fixture receipts are not live provider/campaign billing. Other-project and earlier-week charges must be excluded; native subscription usage/fees are separate.` });
     return { ...state, riley, morganReceiptTask, rileyReceiptTask, weekFrom, weekTo, importedReceiptIds: receipts, receiptOrigin: "public-imported-synthetic-fixture" };
-  }, gradeAccounting, { authentication: "human-session", sourceFiles: sources, expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
+  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v3", sourceFiles: sources, expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] } }),
   identityDefinition("budgets-costs.repair-cost-recording", async ctx => {
     const state = await nativeUnresolvedContext(ctx, true);
@@ -187,3 +191,14 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
     },
   }),
 ];
+
+/** The reply identifies the record whose usage has no settled cost (its task by link or identifier,
+ * or its run id), and no line or sentence that names it states a zero amount for it. */
+export function unresolvedRecordIdentifiedNotFree(reply: string, record: Entity | undefined, runId: string): boolean {
+  const keys = [record?.identifier, record?.id, runId || undefined, runId ? runId.slice(0, 8) : undefined].filter((key): key is string => typeof key === "string" && key.length > 0);
+  if (!keys.length) return false;
+  const names = (segment: string) => keys.some(key => new RegExp(`(?<![\\w-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(segment));
+  const segments = reply.split(/\n|(?<=[.!?])\s+/).filter(segment => names(segment));
+  // Only a stated $0 amount for the record fails; words such as "free" are not graded.
+  return segments.length > 0 && !segments.some(segment => /(?:\$|USD\s*)0(?:\.0+)?(?![.\d]*[1-9])/i.test(segment));
+}

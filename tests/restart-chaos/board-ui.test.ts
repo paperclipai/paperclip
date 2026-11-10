@@ -11,6 +11,8 @@ const pages: Record<string, string> = {
   "/issues/CHA-4": `<section><p>Couldn’t load the subtasks.</p><button onclick="window.reloaded=true">Retry</button></section>
     <div role="status">Couldn’t finish this attempt. <button onclick="${retry("i4")}">Retry</button></div>`,
   "/issues/CHA-5": `<div role="status">Couldn’t finish this attempt. <button onclick="${retry("other")}">Retry</button></div>`,
+  "/issues/CHA-6": `<button style="width:0;height:0;padding:0;border:0;overflow:hidden">Retry</button>
+    <div role="status">Couldn’t finish this attempt. Your message is saved. <button onclick="${retry("i6")}">Retry</button></div>`,
 };
 let server: Server;
 let baseUrl: string;
@@ -63,6 +65,13 @@ describe("BoardUi.clickRetry", () => {
       expect(await board.clickRetry("CHA-4", "i4", 10_000, 500)).toMatchObject({ clicked: true, httpStatus: 202, accepted: true });
     });
     expect(posts).toContain("/api/issues/i4/retry");
+  }, 60_000);
+
+  it("finds the visible banner Retry when an earlier Retry match has no box", async () => {
+    await withBoard(async board => {
+      expect(await board.clickRetry("CHA-6", "i6", 3_000, 500)).toMatchObject({ clicked: true, httpStatus: 202, accepted: true, error: null });
+    });
+    expect(posts).toContain("/api/issues/i6/retry");
   }, 60_000);
 
   it("does not count a retry request for a different issue", async () => {
