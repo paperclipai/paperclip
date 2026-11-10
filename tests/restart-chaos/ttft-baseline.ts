@@ -31,7 +31,7 @@ import { DaytonaWaveSweeper } from "./daytona-sweep.js";
 import { Timeline } from "./timeline.js";
 import type { AdapterId, FaultKind } from "./types.js";
 import {
-  baselineRows, rankPreTurnSteps, recoverySamples, distribution, openShellExecutions, daytonaBaselineHolders, daytonaRetainsSandboxes, parseBaselineEnvironment,
+  baselineRows, rankPreTurnSteps, recoverySamples, distribution, openShellExecutions, daytonaBaselineHolders, daytonaRetainsSandboxes, parseBaselineEnvironment, parseBaselinePhases,
   type BaselineEvent, type BaselineFault, type BaselineRun,
 } from "./ttft-baseline-stats.js";
 
@@ -267,7 +267,7 @@ async function main() {
     process.stdout.write(report(data.runs, data.faults));
     return;
   }
-  const phases = new Set(values.phases!.split(",").map(value => value.trim()));
+  const phases = parseBaselinePhases(values.phases!);
   const requested = values.adapters!.split(",").map(value => value.trim()) as AdapterId[];
   const samples = Math.max(1, Number(values.samples));
   const restarts = Math.max(0, Number(values.restarts));

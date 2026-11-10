@@ -333,6 +333,19 @@ export function daytonaBaselineHolders(input: { adapters: number; samples: numbe
 }
 
 /** Validates the TTFT driver's environment options; returns the environment. */
+const BASELINE_PHASES = ["coldwarm", "midturn", "restart", "verify", "postfault"] as const;
+
+/** `--phases`: known phases only; postfault follows up on the coldwarm tasks, so it needs coldwarm. */
+export function parseBaselinePhases(value: string): Set<string> {
+  const phases = new Set(value.split(",").map(phase => phase.trim()).filter(Boolean));
+  const unknown = [...phases].filter(phase => !(BASELINE_PHASES as readonly string[]).includes(phase));
+  if (unknown.length || !phases.size) throw new Error(`--phases takes ${BASELINE_PHASES.join(", ")}; got ${unknown.join(", ") || "nothing"}`);
+  if (phases.has("postfault") && !phases.has("coldwarm")) {
+    throw new Error("--phases postfault follows up on the coldwarm tasks after an idle restart; add coldwarm");
+  }
+  return phases;
+}
+
 export function parseBaselineEnvironment(input: { env: string | undefined; image: string | undefined; cpu: string | undefined;
   warm: boolean; inherit: boolean }): { env: "local" | "daytona"; cpu: number } {
   const env = input.env ?? "local";

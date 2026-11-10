@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  baselineRows, daytonaBaselineHolders, daytonaRetainsSandboxes, distribution, parseBaselineEnvironment, openShellExecutions, percentile, rankPreTurnSteps, recoverySamples, runMetrics, runWarmth,
+  baselineRows, daytonaBaselineHolders, daytonaRetainsSandboxes, distribution, parseBaselineEnvironment, parseBaselinePhases, openShellExecutions, percentile, rankPreTurnSteps, recoverySamples, runMetrics, runWarmth,
   type BaselineEvent, type BaselineRun,
 } from "./ttft-baseline-stats.js";
 
@@ -98,6 +98,14 @@ describe("ttft baseline statistics", () => {
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "default" })).toBe(true);
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "warm" })).toBe(true);
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: false, lifecycle: "warm" })).toBe(false);
+  });
+
+  it("rejects unknown phases and a postfault phase without the coldwarm tasks it follows up on", () => {
+    expect([...parseBaselinePhases("coldwarm, postfault")]).toEqual(["coldwarm", "postfault"]);
+    expect([...parseBaselinePhases("verify")]).toEqual(["verify"]);
+    expect(() => parseBaselinePhases("postfault")).toThrow(/add coldwarm/);
+    expect(() => parseBaselinePhases("restart,postfualt")).toThrow(/got postfualt/);
+    expect(() => parseBaselinePhases(" , ")).toThrow(/got nothing/);
   });
 
   it("rejects contradictory or out-of-range environment options", () => {
