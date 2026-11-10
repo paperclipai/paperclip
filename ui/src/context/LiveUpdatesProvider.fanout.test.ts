@@ -145,6 +145,31 @@ describe("open-task request fan-out", () => {
   });
 });
 
+describe("task browser refresh", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("refreshes the open task's browsers on its browser activity only", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const live = liveWiring(client);
+    const task = mountOpenTask(client, true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(task.counters.taskBrowsers).toHaveBeenCalledTimes(1);
+    const activity = (entityId: string, action: string) => __liveUpdatesTestUtils.invalidateActivityQueries(live.client, COMPANY,
+      { entityType: "issue", entityId, action, actorType: "system", actorId: "browser-use-cloud" }, ACTOR);
+    activity(TASK_UUID, "browser.started");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(task.counters.taskBrowsers).toHaveBeenCalledTimes(2);
+    activity("other-1", "browser.started");
+    activity(TASK_UUID, "issue.comment_added");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(task.counters.taskBrowsers).toHaveBeenCalledTimes(2);
+    task.unmount();
+    live.dispose();
+    client.clear();
+  });
+});
+
 describe("ambient invalidation lane", () => {
   const { isAmbientCompanyQueryKey } = __liveUpdatesTestUtils;
 

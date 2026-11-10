@@ -516,12 +516,15 @@ reconcile missed events.
 
 Live events refresh company-wide lists and projections through a slower
 invalidation lane. These are task lists and summaries, the agent list, run
-lists, badges, the dashboard, costs and the company activity feed. A lone event
-refreshes them after the normal batch interval. A continuous stream refreshes
-them at most once every 5 seconds. Task detail, comments, runs, browsers and
-other per-entity queries keep the fast lane. A task's browser list stops
-interval polling while the live connection is open and no browser can still
-change state. Browser lifecycle activity on that task refreshes it.
+lists, badges, the dashboard, costs and the company activity feed. The lane
+flushes at most once every 5 seconds. After 5 quiet seconds, an event refreshes
+them after the normal batch interval. An event inside the 5-second window waits
+until the window ends. Task detail, comments, runs, browsers and other
+per-entity queries keep the fast lane. A task's browser list stops interval
+polling while the live connection is open and no browser can still change
+state. Browser lifecycle activity on that task refreshes it. If a browser read
+is in flight, one shared follow-up read runs after it settles. A list that no
+view observes becomes stale, so the next view reads it.
 
 Bundled skill release checks read the current stored version ID and a SHA-256
 fingerprint of its file inventory. A per-database memo keeps at most 64 verified

@@ -3,6 +3,7 @@ import { resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChang
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
+import { refreshTaskBrowsers } from "../lib/task-browsers-refresh";
 import {
   createContext,
   useCallback,
@@ -1582,6 +1583,8 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    // Browser lists stop polling while connected; this activity refreshes them.
+    if (entityId && action?.startsWith("browser.")) refreshTaskBrowsers(queryClient, entityId);
     const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
     const knownChat = entityId && queryClient.getQueryData<Issue[]>(chatListKey)?.some(chat => chat.id === entityId);
     const ownChatDelivery = readString(details?.conversationUserId) === (currentActor.userId ?? "local-board");
