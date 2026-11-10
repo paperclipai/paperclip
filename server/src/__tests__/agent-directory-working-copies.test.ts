@@ -14,9 +14,9 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
-import { agentFileStore, fileHash, inspectAgentFile, snapshotAgentFiles, MAX_AGENT_FILE_BYTES, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENTRIES } from "../services/agent-file-store.js";
-import { agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, environmentLeases, environments, agentInstructionWorkingCopies, agentInstructionRevisions, agentInstructionHeads, createDb } from "@paperclipai/db";
+import { eq, sql } from "drizzle-orm";
+import { agentFileStore, fileHash, inspectAgentFile, inspectAgentDirectory, snapshotAgentFiles, MAX_AGENT_FILE_BYTES, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENTRIES } from "../services/agent-file-store.js";
+import { agents, companies, issues, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, environmentLeases, environments, agentInstructionWorkingCopies, agentInstructionRevisions, agentInstructionHeads, createDb, fileStorageDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService, instructionWorkingCopyGuidance } from "../services/agent-instruction-working-copies.js";
@@ -24,9 +24,11 @@ import { resolveManagedInstructionsRoot } from "../services/agent-instructions.j
 import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-context.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { createReusableLeaseHandoff } from "../services/environment-lease-handoff.js";
 import { AgentDirectoryReuseInvalidatedError, agentDirectoryWorkingCopyService } from "../services/agent-directory-working-copies.js";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { heartbeatRunEvents } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_DIRECTORY_TEST_DATABASE_URL");
 
@@ -121,6 +123,44 @@ describe("persistent agent directories", () => {
         expect(worker.nextWakeAt()).toBeNull();
         for (const copy of [active, completed, transferred]) expect((await fs.stat(copy.localRoot)).isDirectory()).toBe(true);
       } finally { await worker.stop(); }
+    });
+    it("retires a stale retry on an already cleaned receipt after restart without filesystem work", async () => {
+      const copy = await run();
+      await db.update(agentInstructionWorkingCopies).set({ state: "unavailable", processStoppedAt: new Date(),
+        nextAttemptAt: new Date(), receipt: { schema: "paperclip.agent-files.v1", cleanupPending: false } })
+        .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      clock(); const worker = coordinator(), removes = vi.spyOn(fs, "rm");
+      try {
+        await agentInstructionWorkingCopyService(db).registerDirectoryCleanupWork(worker, () => true, async () => true).ready;
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(100);
+          expect((await copies.get(companyId, copy.runId))?.nextAttemptAt).toBeNull();
+        });
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        const reads = vi.spyOn(db, "select");
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(removes).not.toHaveBeenCalled();
+        expect(worker.nextWakeAt()).toBeNull();
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+      } finally { await worker.stop(); }
+    });
+    it("honors a cleanup obligation published before stale-deadline settlement", async () => {
+      const copy = await run(), dueAt = new Date(Date.now() + 30_000);
+      await db.update(agentInstructionWorkingCopies).set({ state: "unavailable", processStoppedAt: new Date(),
+        nextAttemptAt: dueAt, receipt: { schema: "paperclip.agent-files.v1", cleanupPending: false } })
+        .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      const transact = db.transaction.bind(db);
+      const race = vi.spyOn(db, "transaction").mockImplementationOnce(async (callback, config) => {
+        await db.update(agentInstructionWorkingCopies).set({ receipt: { ...copy.receipt, cleanupPending: true } })
+          .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+        return transact(callback, config);
+      });
+      try {
+        await copies.release(companyId, copy.runId);
+        expect(await copies.get(companyId, copy.runId)).toMatchObject({ receipt: { cleanupPending: false }, nextAttemptAt: null });
+        await expect(fs.stat(copy.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+      } finally { race.mockRestore(); }
     });
     it("reactivates from real collection, preserves saved files, retries failed cleanup, and becomes quiet", async () => {
       const copy = await run(); await fs.writeFile(path.join(copy.localRoot, "memory.txt"), "saved memory");
@@ -393,6 +433,105 @@ describe("persistent agent directories", () => {
       expect((await copies.get(companyId, first.runId))?.receipt?.retainedByRunId).toBeUndefined();
       await copies.collectStopped({ companyId, runId: first.runId });
     });
+    it("adopts unchanged ownership after collection retry metadata changes before claim", async () => {
+      const first = await run();
+      expect(await copies.hasChanges({ companyId, runId: first.runId })).toBe(false);
+      await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native" }).where(eq(heartbeatRuns.id, first.runId));
+      const secondId = await nextRun();
+      const fileDb = fileStorageDb(db);
+      const transaction = fileDb.transaction.bind(fileDb);
+      let injected = false;
+      const spy = vi.spyOn(fileDb, "transaction").mockImplementation((async (callback, options) => {
+        if (!injected) {
+          injected = true;
+          const before = (await copies.get(companyId, first.runId))!;
+          vi.useFakeTimers({ toFake: ["Date"] });
+          vi.setSystemTime(new Date(before.updatedAt.getTime() + 1000));
+          try { await copies.recoverStopped(); } finally { vi.useRealTimers(); }
+          const after = (await copies.get(companyId, first.runId))!;
+          expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+          expect(after.nextAttemptAt).toBeInstanceOf(Date);
+          for (const field of ["state", "baseHash", "localRoot", "executionRoot", "processStoppedAt", "receipt", "attempts"] as const)
+            expect(after[field]).toEqual(before[field]);
+        }
+        return transaction(callback, options);
+      }) as typeof db.transaction);
+      try {
+        const adopted = await copies.adopt({ companyId, agentId, runId: secondId, previousRunId: first.runId, cwd: home });
+        expect(injected).toBe(true);
+        expect(adopted).toMatchObject({ runId: secondId, localRoot: first.localRoot, executionRoot: first.executionRoot });
+        expect((await copies.get(companyId, first.runId))?.receipt?.retainedByRunId).toBe(secondId);
+      } finally { spy.mockRestore(); vi.useRealTimers(); expect(injected).toBe(true); }
+    });
+
+    it.each(["materialization", "checkpoint", "stopped", "state"])("rejects changed %s authority with the same baseline before adoption", async change => {
+      const first = await run();
+      expect(await copies.hasChanges({ companyId, runId: first.runId })).toBe(false);
+      const secondId = await nextRun();
+      const warning = vi.spyOn(logger, "warn");
+      const privateValue = "private-materialization-/tmp/untrusted-token-do-not-log";
+      const fileDb = fileStorageDb(db);
+      const transaction = fileDb.transaction.bind(fileDb);
+      let injected = false;
+      const spy = vi.spyOn(fileDb, "transaction").mockImplementation((async (callback, options) => {
+        if (!injected) {
+          injected = true;
+          const prior = (await copies.get(companyId, first.runId))!;
+          const values = change === "materialization" ? { receipt: { ...prior.receipt, materializationIdentity: privateValue } }
+            : change === "checkpoint" ? { receipt: { ...prior.receipt, checkpointState: "saved" } }
+              : change === "stopped" ? { processStoppedAt: new Date() } : { state: "pending_collection" };
+          await db.update(agentInstructionWorkingCopies).set({ ...values, updatedAt: new Date(Date.now() + 1000) })
+            .where(eq(agentInstructionWorkingCopies.runId, first.runId));
+          expect((await copies.get(companyId, first.runId))!.baseHash).toBe(prior.baseHash);
+        }
+        return transaction(callback, options);
+      }) as typeof db.transaction);
+      try {
+        await expect(copies.adopt({ companyId, agentId, runId: secondId, previousRunId: first.runId, cwd: home }))
+          .rejects.toMatchObject({ status: 409, details: { stage: "locked_adoption_authority", predecessorPresent: true,
+            observedAfterInitialRead: true, changedFields: expect.arrayContaining([change === "materialization" || change === "checkpoint" ? "receipt" : change === "stopped" ? "processStoppedAt" : "state"]) } });
+        expect(injected).toBe(true);
+        expect(warning).toHaveBeenCalledWith({ companyId, agentId, runId: secondId, previousRunId: first.runId,
+          adoptionConflict: { stage: "locked_adoption_authority", predecessorPresent: true, observedAfterInitialRead: true,
+            changedFields: [change === "materialization" || change === "checkpoint" ? "receipt" : change === "stopped" ? "processStoppedAt" : "state"] } },
+          "Agent directory adoption conflict");
+        expect(JSON.stringify(warning.mock.calls)).not.toContain(privateValue);
+        expect(await copies.get(companyId, secondId)).toBeNull();
+        expect((await copies.get(companyId, first.runId))?.receipt?.retainedByRunId).toBeUndefined();
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+      } finally { spy.mockRestore(); warning.mockRestore(); }
+    });
+
+    it("reports closed claim predicates when retirement wins before the final owner read", async () => {
+      const first = await run();
+      expect(await copies.hasChanges({ companyId, runId: first.runId })).toBe(false);
+      const secondId = await nextRun();
+      const warning = vi.spyOn(logger, "warn");
+      const transaction = db.transaction.bind(db);
+      let injected = false;
+      const spy = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
+        const result = await transaction(callback, options);
+        if (!injected) {
+          injected = true;
+          await db.update(agentInstructionWorkingCopies).set({ state: "pending_collection" })
+            .where(eq(agentInstructionWorkingCopies.runId, first.runId));
+        }
+        return result;
+      }) as typeof db.transaction);
+      try {
+        await expect(copies.adopt({ companyId, agentId, runId: secondId, previousRunId: first.runId, cwd: home }))
+          .rejects.toMatchObject({ status: 409, details: { stage: "adoption_claim", observedAfterClaim: true,
+            predecessorPresent: true, conditions: { unchangedTurn: false, timestampMatches: true, baselineMatches: true,
+              localRootMatches: true, unstopped: true, successorAbsent: true, receiptMatches: true } } });
+        expect(warning).toHaveBeenCalledWith({ companyId, agentId, runId: secondId, previousRunId: first.runId,
+          adoptionConflict: { stage: "adoption_claim", observedAfterClaim: true, predecessorPresent: true,
+            conditions: { unchangedTurn: false, timestampMatches: true, baselineMatches: true, localRootMatches: true,
+              unstopped: true, successorAbsent: true, receiptMatches: true } } }, "Agent directory adoption conflict");
+        expect(await copies.get(companyId, secondId)).toBeNull();
+        expect((await copies.get(companyId, first.runId))?.receipt?.retainedByRunId).toBeUndefined();
+      } finally { spy.mockRestore(); warning.mockRestore(); }
+    });
+
     it("allows only one stale concurrent adoption with identical updatedAt timestamps", async () => {
       const fixed = new Date("2030-01-01T00:00:00.000Z");
       vi.useFakeTimers({ toFake: ["Date"] });
@@ -769,10 +908,10 @@ describe("persistent agent directories", () => {
   it("cleans up a staging failure before any provider starts", async () => {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
-    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "fixture failure" });
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "fixture failure", pid: null, startedAt: null });
     try {
       await expect(copies.prepare({ ...target(), runId, cwd: home, target: { kind: "remote", transport: "ssh", environmentId: randomUUID(), remoteCwd: "/fixture/task",
-        spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd: "/fixture/task" } } })).rejects.toThrow("Could not exclude");
+        spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd: "/fixture/task", remoteWorkspacePath: "/fixture/task", privateKey: null, knownHosts: null, strictHostKeyChecking: true } } })).rejects.toThrow("Could not exclude");
       const row = (await copies.get(companyId, runId))!;
       expect(row.state).toBe("unavailable");
       expect(row.receipt?.baseline).toBeUndefined();
@@ -800,6 +939,87 @@ describe("persistent agent directories", () => {
     expect((await copies.get(companyId, interrupted.runId))?.state).toBe("unavailable");
     await expect(fs.stat(path.dirname(interrupted.localRoot))).rejects.toMatchObject({ code: "ENOENT" });
     expect((await fs.stat(active.localRoot)).isDirectory()).toBe(true);
+  });
+
+  it.each(["new-home", "same-path-empty", "foreign-lease", "other-controller", "missing-collector", "over-quota"] as const)("recovers remote agent files after controller cache loss: %s", async scenario => {
+    const copy = await run({ warm: true });
+    const environmentId = randomUUID(), leaseId = randomUUID(), remoteCwd = "/fixture/retained-task";
+    const executionRoot = path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, copy.runId);
+    await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: copy.runId,
+      provider: "daytona", providerLeaseId: "original-sandbox", status: "active", metadata: { remoteCwd } });
+    await db.update(agentInstructionWorkingCopies).set({ location: `remote:${environmentId}`, executionRoot,
+      receipt: { ...copy.receipt, cleanup: { leaseId, remoteCwd } } }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+    const saved = (await copies.get(companyId, copy.runId))!;
+    const replacementHome = path.join(home, `replacement-${randomUUID()}`);
+    const remoteFiles = await fs.mkdtemp(path.join(home, "remote-checkpoint-"));
+    await fs.mkdir(path.join(remoteFiles, "files", "policy"), { recursive: true });
+    await fs.writeFile(path.join(remoteFiles, "files", entryFile), "Remote instructions changed during the turn");
+    await fs.writeFile(path.join(remoteFiles, "files", "unsaved.txt"), "Only the running sandbox has this");
+    await fs.rm(path.dirname(copy.localRoot), { recursive: true, force: true });
+    if (scenario === "over-quota") {
+      const handle = await fs.open(path.join(remoteFiles, "files", "too-large.bin"), "w");
+      try { await handle.truncate(MAX_AGENT_FILE_BYTES + 1); } finally { await handle.close(); }
+    }
+    const transport = vi.spyOn(executionTargetTools, "prepareAdapterExecutionTargetRuntime").mockImplementation(async options => ({
+      target: options.target!, workspaceRemoteDir: options.workspaceRemoteDir!, runtimeRootDir: options.runtimeRootDir!,
+      assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null,
+      restoreWorkspace: async () => { await fs.cp(path.join(remoteFiles, "files"), options.workspaceLocalDir, { recursive: true }); },
+    }));
+    const ephemeralBefore = process.env.PAPERCLIP_EPHEMERAL_SERVER;
+    process.env.PAPERCLIP_EPHEMERAL_SERVER = "true";
+    if (scenario === "new-home") process.env.PAPERCLIP_HOME = replacementHome;
+    const remote = { kind: "remote" as const, transport: "sandbox" as const, environmentId,
+      leaseId: scenario === "foreign-lease" ? randomUUID() : leaseId, remoteCwd, runner: { execute: vi.fn() } };
+    try {
+      if (scenario === "missing-collector") {
+        const retained = await copies.collectStopped({ companyId, runId: copy.runId });
+        expect(retained).toMatchObject({ state: "pending_collection", errorCode: "INSTRUCTION_REMOTE_COLLECTOR_UNAVAILABLE", baseHash: saved.baseHash });
+        expect(retained?.receipt?.baseline).toEqual(saved.receipt?.baseline);
+        expect(retained?.nextAttemptAt).toBeInstanceOf(Date);
+        expect(transport).not.toHaveBeenCalled();
+        return;
+      }
+      if (scenario === "other-controller") {
+        await db.transaction(async tx => {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
+          await expect(copies.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true }))
+            .rejects.toThrow("Agent directory operation is already active");
+          expect(transport).not.toHaveBeenCalled();
+        });
+        return;
+      }
+      const preparing = copies.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true });
+      if (scenario === "foreign-lease") {
+        await expect(preparing).rejects.toThrow("Agent directory recovery lease changed");
+        expect(transport).not.toHaveBeenCalled();
+        return;
+      }
+      const recovered = (await preparing)!;
+      expect(recovered.executionRoot).toBe(executionRoot);
+      expect(recovered.baseHash).toBe(saved.baseHash);
+      expect(recovered.receipt).toEqual(saved.receipt);
+      if (scenario === "new-home") {
+        expect(recovered.localRoot.startsWith(replacementHome)).toBe(true);
+        await expect(fs.stat(copy.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      } else expect(recovered.localRoot).toBe(copy.localRoot);
+      expect(await fs.readFile(path.join(recovered.localRoot, "unsaved.txt"), "utf8")).toBe("Only the running sandbox has this");
+      expect(await fs.readFile(path.join(recovered.localRoot, entryFile), "utf8")).toBe("Remote instructions changed during the turn");
+      expect(transport).toHaveBeenNthCalledWith(1, expect.objectContaining({ adapterKey: "agent-files-recovery", workspaceRemoteDir: executionRoot,
+        workspaceBaseline: { exclude: [".paperclip-runtime"], entries: new Map() }, workspaceInboundMode: "adopt_remote" }));
+      if (scenario === "over-quota") {
+        expect((await fs.stat(path.join(recovered.localRoot, "too-large.bin"))).size).toBe(MAX_AGENT_FILE_BYTES + 1);
+        await expect(inspectAgentDirectory(recovered.localRoot)).rejects.toThrow();
+      }
+      expect(transport).toHaveBeenCalledWith(expect.objectContaining({ workspaceLocalDir: recovered.localRoot, workspaceInboundMode: "adopt_remote" }));
+      await copies.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true });
+      expect(transport).toHaveBeenCalledTimes(2);
+    } finally {
+      process.env.PAPERCLIP_HOME = home;
+      if (ephemeralBefore === undefined) delete process.env.PAPERCLIP_EPHEMERAL_SERVER;
+      else process.env.PAPERCLIP_EPHEMERAL_SERVER = ephemeralBefore;
+      transport.mockRestore();
+    }
   });
 
   it("retains remote cleanup across restart and failed retries until the original lease is cleaned", async () => {
@@ -1204,7 +1424,7 @@ describe("persistent agent directories", () => {
 
   it("stages SSH agent files at the registered root without a nested task workspace", async () => {
     const remoteCwd = path.join(home, "ssh-task");
-    const exclude = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" });
+    const exclude = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null });
     const stage = vi.spyOn(ssh, "syncDirectoryToSsh").mockImplementation(async input => {
       await fs.mkdir(path.dirname(input.remoteDir), { recursive: true });
       await fs.cp(input.localDir, input.remoteDir, { recursive: true });
@@ -1216,7 +1436,7 @@ describe("persistent agent directories", () => {
       const runId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
       const target = { kind: "remote" as const, transport: "ssh" as const, environmentId: randomUUID(), remoteCwd,
-        spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd } };
+        spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd, remoteWorkspacePath: remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
       await db.insert(environments).values({ id: target.environmentId, name: "Fixture SSH", driver: "ssh" });
       // Legacy no-ID receipt: only the unique run/environment lease authorizes retrieval.
       await db.insert(environmentLeases).values({ companyId, environmentId: target.environmentId, heartbeatRunId: runId, provider: "ssh", providerLeaseId: "fixture-host" });
@@ -1280,6 +1500,53 @@ describe("persistent agent directories", () => {
     return { copy: (await copies.get(companyId, copy.runId))!, lease, environmentId };
   }
 
+  it.each(["destroyed", "stopped", "broken_handoff", "extra_owner", "foreign_company"] as const)(
+    "recovers an earlier remote copy only from the exact destroyed successor chain (%s)", async scenario => {
+      const { copy, lease } = await unavailableRemote();
+      const issueId = randomUUID(), successorRunId = randomUUID(), successorId = randomUUID();
+      const acquiredAt = new Date(Date.now() - 2000), handoffAt = new Date(Date.now() - 1000);
+      await db.insert(issues).values({ id: issueId, companyId, title: "Completed retained workspace", status: "done" });
+      await db.insert(heartbeatRuns).values({ id: successorRunId, companyId, agentId, invocationSource: "on_demand", status: "succeeded" });
+      const [previous] = await db.update(environmentLeases).set({ status: "expired", leasePolicy: "reuse_by_environment",
+        issueId, acquiredAt, releasedAt: handoffAt, cleanupStatus: "success", metadata: { agentId } })
+        .where(eq(environmentLeases.id, lease.id)).returning();
+      const successor = { ...previous!, id: successorId, heartbeatRunId: successorRunId, acquiredAt: handoffAt,
+        releasedAt: new Date(), metadata: { agentId } };
+      if (scenario === "foreign_company") {
+        const foreignCompanyId = randomUUID();
+        await db.insert(companies).values({ id: foreignCompanyId, name: "Unrelated owner", issuePrefix: randomUUID().slice(0, 8) });
+        successor.companyId = foreignCompanyId;
+      }
+      const handoff = createReusableLeaseHandoff(previous!, successor);
+      const termination = remoteTerminationReceipt(successor, { providerLeaseId: lease.providerLeaseId,
+        state: scenario === "stopped" ? "stopped" : "destroyed" });
+      await db.update(environmentLeases).set({ metadata: { agentId, reusableLeaseSuccessor: handoff } })
+        .where(eq(environmentLeases.id, lease.id));
+      await db.insert(environmentLeases).values({ ...successor, metadata: { agentId, remoteExecutionTermination: termination,
+        reusableLeasePredecessor: scenario === "broken_handoff" ? { ...handoff, handoffId: randomUUID() } : handoff } });
+      if (scenario === "extra_owner") await db.insert(environmentLeases).values({ ...lease, id: randomUUID(), status: "active" });
+      await db.update(agentInstructionWorkingCopies).set({ state: "pending_collection", attempts: 0, candidateHash: null, candidateBase64: null })
+        .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockRejectedValue(new Error("must not execute"));
+      try {
+        await copies.recoverStopped();
+        const recovered = (await copies.get(companyId, copy.runId))!;
+        if (scenario === "destroyed") {
+          expect(recovered).toMatchObject({ state: "unavailable", errorCode: "INSTRUCTION_COLLECTION_UNAVAILABLE",
+            receipt: { cleanupPending: false }, nextAttemptAt: null });
+          expect(recovered.processStoppedAt).toBeInstanceOf(Date);
+          await expect(fs.stat(copy.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+        } else {
+          expect(recovered).toMatchObject({ state: "pending_collection", processStoppedAt: null });
+          expect(await fs.readFile(path.join(copy.localRoot, entryFile), "utf8")).toBe(initial);
+        }
+        expect(shell).not.toHaveBeenCalled();
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        const [historical] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+        expect(historical!.metadata).not.toHaveProperty("remoteExecutionTermination");
+      } finally { shell.mockRestore(); }
+    });
+
   it.each([undefined, "stopped", "companyId", "runId", "leaseId", "provider", "providerLeaseId"])(
     "defers unavailable cleanup without exact destruction proof (%s)", async proof => {
       const { copy } = await unavailableRemote({ state: proof === undefined ? undefined : proof === "stopped" ? "stopped" : "destroyed",
@@ -1339,8 +1606,8 @@ describe("persistent agent directories", () => {
     const { copy, lease } = await unavailableRemote({ state: "destroyed" });
     const remoteCwd = "/fixture/cleanup-task";
     const executionTarget = { kind: "remote" as const, transport: "ssh" as const, environmentId: lease.environmentId, leaseId: lease.id, remoteCwd,
-      spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd } };
-    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" });
+      spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd, remoteWorkspacePath: remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null });
     const stage = vi.spyOn(ssh, "syncDirectoryToSsh").mockResolvedValue(undefined);
     let stopCommitted!: () => void, finishCleanup!: () => void;
     const committed = new Promise<void>(resolve => { stopCommitted = resolve; });
@@ -1461,7 +1728,7 @@ describe("persistent agent directories", () => {
     await db.insert(environmentLeases).values(lease);
     const execute = vi.fn(), restoreWorkspace = vi.fn(), cleanupWorkspaceSnapshot = vi.fn().mockResolvedValue(undefined);
     const executionTarget = { kind: "remote" as const, transport: "sandbox" as const, environmentId, leaseId, remoteCwd, runner: { execute } };
-    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" });
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null });
     const stage = vi.spyOn(executionTargetTools, "prepareAdapterExecutionTargetRuntime").mockImplementation(async options => ({ target: executionTarget,
       workspaceRemoteDir: path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, runId), runtimeRootDir: options.runtimeRootDir ?? null,
       assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, restoreWorkspace, cleanupWorkspaceSnapshot }));

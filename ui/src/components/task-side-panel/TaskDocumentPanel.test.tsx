@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { TaskDocumentPanel } from "./TaskDocumentPanel";
+import { MemoryRouter } from "react-router-dom";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const mocks = vi.hoisted(() => ({ get: vi.fn(), revision: vi.fn() }));
@@ -15,16 +16,23 @@ vi.mock("@/components/IssueDocumentAnnotations", () => ({
   IssueDocumentAnnotations: ({ children, historicalPreview }: { children: React.ReactNode; historicalPreview: boolean }) => <div data-historical={historicalPreview}>{children}</div>,
 }));
 vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: React.ReactNode }) => <div>{children}</div> }));
+vi.mock("@/components/DocumentMarkdownBody", () => ({ DocumentMarkdownBody: ({ children, documentIssueId }: { children: React.ReactNode; documentIssueId?: string }) => <div data-gallery-owner={documentIssueId}>{children}</div> }));
 let root: Root | undefined;
 let container: HTMLDivElement;
 afterEach(async () => { if (root) await act(async () => root!.unmount()); container?.remove(); root = undefined; vi.clearAllMocks(); });
 async function render(issueId = "task") {
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () => { root!.render(<QueryClientProvider client={client}><TaskDocumentPanel issueId={issueId} documentKey="copy" revisionId="old" /></QueryClientProvider>); });
+  await act(async () => { root!.render(<MemoryRouter><QueryClientProvider client={client}><TaskDocumentPanel issueId={issueId} documentKey="copy" revisionId="old" documentIssueId={issueId === "task-b" ? issueId : undefined} /></QueryClientProvider></MemoryRouter>); });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 describe("exact reviewed revision panel", () => {
+  it("passes the saved tab owner when the URL names a local document", async () => {
+    mocks.get.mockResolvedValue({ id: "doc", key: "copy", body: "LATEST BODY", updatedAt: new Date() });
+    mocks.revision.mockResolvedValue({ id: "old", title: "Reviewed copy", body: "REVIEWED BODY", format: "markdown", revisionNumber: 2, createdAt: new Date() });
+    await render("task-b");
+    expect(container.querySelector("[data-gallery-owner]")?.getAttribute("data-gallery-owner")).toBe("task-b");
+  });
   it("renders the pinned body read-only even when the current document has advanced", async () => {
     mocks.get.mockResolvedValue({ id: "doc", key: "copy", title: "New copy", body: "LATEST BODY", latestRevisionId: "new", latestRevisionNumber: 4, updatedAt: new Date() });
     mocks.revision.mockResolvedValue({ id: "old", key: "copy", title: "Reviewed copy", body: "REVIEWED BODY", format: "markdown", revisionNumber: 2, createdAt: new Date() });

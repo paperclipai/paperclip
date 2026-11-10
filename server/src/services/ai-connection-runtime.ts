@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import type { PluginTaskCredentialWritebackBinding } from "./plugin-task-credential-writeback.js";
 import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
@@ -28,11 +27,24 @@ import { NativeEnvironmentProbeCleanupError, sanitizeAntigravityCredential } fro
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
-import { assertAiCredentialCleanupSettled, bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup, type RetainedAiCleanupScope } from "./retained-ai-credential-cleanup.js";
+import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
     (error.details as { code?: unknown } | undefined)?.code === "ai_connection_busy";
+}
+
+/** A real conflict between the agent's AI connection and its project or arguments. */
+export function isAiConnectionIncompatible(error: unknown): error is HttpError {
+  return error instanceof HttpError && error.status === 422 &&
+    (error.details as { code?: unknown } | undefined)?.code === "ai_connection_incompatible";
+}
+
+function projectAuthConflict(files: string[]) {
+  return unprocessable(
+    `This agent's managed AI connection conflicts with project authentication settings in ${files.join(" or ")}. Remove the API key, token or apiKeyHelper settings from that project file, or choose a different AI connection for this agent.`,
+    { code: "ai_connection_incompatible" },
+  );
 }
 
 // Blank values intentionally override inherited credentials in CLI child environments.
@@ -163,10 +175,11 @@ done`,
         onLog: async () => {},
       },
     );
+    if (result.exitCode === 42) throw projectAuthConflict(files);
+    // The check fails closed, but an unfinished check is not a found conflict.
     if (result.exitCode !== 0)
-      throw unprocessable(
-        "The environment's project authentication settings must be checked before using this AI connection",
-        { code: "ai_connection_incompatible" },
+      throw new Error(
+        `Paperclip could not check the environment's project authentication settings (${result.timedOut ? "timed out" : `exit ${result.exitCode ?? result.signal ?? "unknown"}`}). The run did not start; it can be retried.`,
       );
     return;
   }
@@ -181,10 +194,7 @@ done`,
             content,
           )
         ) {
-          throw unprocessable(
-            "Project authentication settings conflict with the selected AI connection",
-            { code: "ai_connection_incompatible" },
-          );
+          throw projectAuthConflict([relative]);
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -228,13 +238,6 @@ export function managedAiSessionFingerprintConfig(
     }
   }
   return { ...config, env, ...(managed?.sessionIdentity ? { managedAiConnection: { ...managed, identity: managed.sessionIdentity } } : {}) };
-}
-
-const managedProbeCredentialLocks = new AsyncLocalStorage<{ companyId: string; active: boolean }>();
-async function reconcileManagedCredentialCleanup(scope: RetainedAiCleanupScope): Promise<void> {
-  const ownership = managedProbeCredentialLocks.getStore();
-  if (ownership?.active && ownership.companyId === scope.companyId) assertAiCredentialCleanupSettled(scope);
-  else await reconcileRetainedAiCleanup(scope);
 }
 
 export async function prepareManagedAiRuntime(
@@ -282,7 +285,7 @@ export async function prepareManagedAiRuntime(
     acpxAgent: input.config.acpxAgent,
   });
   const retainedCleanupScope = { companyId: input.companyId, accountKey: selection.grant.id };
-  await reconcileManagedCredentialCleanup(retainedCleanupScope);
+  void reconcileRetainedAiCleanup(retainedCleanupScope).catch(() => undefined);
   const subscriptionFile =
     selection.attribution.method === "subscription" &&
     input.binding.provider !== "anthropic";
@@ -321,9 +324,7 @@ export async function prepareManagedAiRuntime(
       // against a concurrent reconnect or explicit rotation.
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const before = await readFreshness();
-        const ownership = managedProbeCredentialLocks.getStore();
-        const value = await service.runtimeCredential(selection,
-          ownership?.active && ownership.companyId === input.companyId ? { credentialLockHeld: true } : undefined);
+        const value = await service.runtimeCredential(selection);
         const after = await readFreshness();
         if (before && after && before.version === after.version && before.epoch === after.epoch) {
           return { value, freshness: after };
@@ -441,14 +442,12 @@ export async function prepareManagedAiRuntime(
       homeRemoved = true;
       releaseCredentialHome?.();
     };
-    const cleanupRuntime = async () => {
-      if (homeRemoved) return;
-      await reconcileManagedCredentialCleanup(retainedCleanupScope);
+    let cleanupRunning: Promise<void> | undefined;
+    const cleanupRuntime = (): Promise<void> => cleanupRunning ??= (async () => {
       if (homeRemoved) return;
       const cleanup = async () => {
         if (removalOnly) {
           await removeHome();
-          if (deferredWriteback) throw new RetiredCredentialRecoveryError(deferredWriteback.cause);
           return;
         }
         let googleRecovery: ReturnType<typeof quotaCredentialRecovery> | undefined;
@@ -465,7 +464,7 @@ export async function prepareManagedAiRuntime(
               if (prior && prior.value !== incoming && !ownsGoogleRecovery) {
                 // A previous retired owner keeps its first recoverable refresh.
                 // Settle it before this owner can stage another generation.
-                await aiConnectionService(db).runtimeCredential(selection, { credentialLockHeld: true });
+                await aiConnectionService(db).runtimeCredential(selection);
               }
               // Physical retirement is the caller's cleanup precondition. Save
               // before network verification or a database write can fail; only
@@ -600,10 +599,10 @@ export async function prepareManagedAiRuntime(
         return await (antigravitySubscription
           ? withAccountHomeSecretMutationLock(undefined, input.companyId, cleanup) : cleanup());
       } catch (error) {
-        if (retainedCleanupScope && !homeRemoved) retainAiCredentialCleanup({ scope: retainedCleanupScope, cleanup: cleanupRuntime });
+        if (retainedCleanupScope && !homeRemoved) retainAiCredentialCleanup({ scope: retainedCleanupScope, home: providerHome, cleanup: cleanupRuntime });
         throw error;
       }
-    };
+    })().finally(() => { cleanupRunning = undefined; });
     return {
       sessionIdentity,
       ...(retainedCleanupScope ? { retainedCleanupScope } : {}),
@@ -632,58 +631,36 @@ export async function prepareManagedAiRuntime(
   }
 }
 
-/** Manual tests/adoption have no heartbeat row for quota's active-run guard.
- * Hold the shared credential lock from resolution through the provider probe
- * and write-back. Nested credential writes reuse this lock's async ownership. */
 export async function withManagedAiProbe<T>(
   db: Db,
   input: Parameters<typeof prepareManagedAiRuntime>[1],
   probe: (runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>>) => Promise<T>,
 ): Promise<T> {
-  const run = async () => {
-    const runtime = await prepareManagedAiRuntime(db, input);
-    let retained = false;
-    try {
-      assertAiCredentialCleanupSettled(runtime.retainedCleanupScope!);
-      return await probe(runtime);
-    }
-    catch (error) {
-      if (error instanceof NativeEnvironmentProbeCleanupError) {
-        // Keep the selected credential generation until the native owner has
-        // retired and completed its refresh handoff. HTTP need not wait for it.
-        retained = true;
-        const retryCleanup = (error as { retryCleanup?: () => Promise<void> }).retryCleanup;
-        retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope!, cleanup: runtime.cleanup, retired: error.retired,
-          ...(typeof retryCleanup === "function" ? { retryRetirement: () => retryCleanup.call(error) } : {}) });
-        throw unprocessable("The native account test is still cleaning up. Retry after runtime cleanup completes.", { code: "native_probe_cleanup_pending" });
-      }
-      throw error;
-    } finally {
-      if (!retained) {
-        try { await runtime.cleanup(); }
-        catch (error) {
-          if (runtime.retainedCleanupScope && !(error instanceof RetiredCredentialRecoveryError)) {
-            retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope, cleanup: runtime.cleanup });
-          }
-          throw error;
-        }
-      }
-    }
-  };
-  if (input.binding.provider !== "openai") return run();
-  // A retirement callback may need the company lock. Join it before taking
-  // the probe's outer lock; preparation rechecks this scope synchronously.
-  const selected = await aiConnectionService(db).select({ ...input, userId: input.responsibleUserId,
-    model: input.config.model, runnerProvider: input.config.provider, acpxAgent: input.config.acpxAgent });
-  await reconcileRetainedAiCleanup({ companyId: input.companyId, accountKey: selected.grant.id });
-  return withAccountHomeSecretMutationLock(undefined, input.companyId, async () => {
-    const ownership = { companyId: input.companyId, active: true };
-    try { return await managedProbeCredentialLocks.run(ownership, run); }
-    finally { ownership.active = false; }
-  }).catch(error => {
-    if ((error as NodeJS.ErrnoException)?.code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) {
-      throw unprocessable("AI credentials are being updated. Retry shortly.", { code: "ai_connection_busy" });
+  const runtime = await prepareManagedAiRuntime(db, input);
+  let retained = false;
+  try {
+    return await probe(runtime);
+  }
+  catch (error) {
+    if (error instanceof NativeEnvironmentProbeCleanupError) {
+      // Keep the selected credential generation until the native owner has
+      // retired and completed its refresh handoff. HTTP need not wait for it.
+      retained = true;
+      const retryCleanup = (error as { retryCleanup?: () => Promise<void> }).retryCleanup;
+      retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope!, home: runtime.home && path.join(runtime.home, "provider"), cleanup: runtime.cleanup, retired: error.retired,
+        ...(typeof retryCleanup === "function" ? { retryRetirement: () => retryCleanup.call(error) } : {}) });
+      throw unprocessable("The native account test is still cleaning up. Retry after runtime cleanup completes.", { code: "native_probe_cleanup_pending" });
     }
     throw error;
-  });
+  } finally {
+    if (!retained) {
+      try { await runtime.cleanup(); }
+      catch (error) {
+        if (runtime.retainedCleanupScope && !(error instanceof RetiredCredentialRecoveryError)) {
+          retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope, home: runtime.home && path.join(runtime.home, "provider"), cleanup: runtime.cleanup });
+        }
+        throw error;
+      }
+    }
+  }
 }

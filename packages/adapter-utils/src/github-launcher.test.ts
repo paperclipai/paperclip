@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +11,54 @@ const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("managed GitHub launchers", () => {
+
+  it("uses a private interpreter without selecting Node from PATH", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-interpreter-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const managed = path.join(root, "managed"), real = path.join(root, "real");
+    await mkdir(managed); await mkdir(real);
+    const source = githubLauncherSource({ interpreterPath: process.execPath });
+    const defaultSource = githubLauncherSource();
+    expect(defaultSource.split("\n")[0]).toBe("#!/usr/bin/env node");
+    expect(source.split("\n")[0]).toBe(`#!${process.execPath}`);
+    expect(source.slice(source.indexOf("\n"))).toBe(defaultSource.slice(defaultSource.indexOf("\n")));
+    const launcher = path.join(managed, "git");
+    await writeFile(launcher, source, { mode: 0o700 });
+    await writeFile(path.join(real, "node"), "#!/bin/sh\nexit 126\n", { mode: 0o700 });
+    await writeFile(path.join(real, "git"), "#!/bin/sh\nprintf 'private interpreter works'\n", { mode: 0o700 });
+    const env = { ...githubBrokerEnvironment({}, { url: "", token: "" }), HOME: root,
+      GH_CONFIG_DIR: path.join(root, "config"), PATH: `${managed}${path.delimiter}${real}` };
+    expect((await exec(launcher, ["--version"], { env })).stdout).toBe("private interpreter works");
+  });
+
+  it.each(["", "relative/node", "/runtime/node --flag", "/runtime/node\nexit 1", "/runtime/node\0"])(
+    "rejects an invalid interpreter path %j", interpreterPath => {
+      expect(() => githubLauncherSource({ interpreterPath })).toThrow("absolute path without whitespace");
+    },
+  );
+  it.each([false, true])("rejects a PATH shim that re-enters the same helper before it can recurse (broker file: %s)", async brokerFile => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-recursion-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const managed = path.join(root, "managed"), shim = path.join(root, "shim"), calls = path.join(root, "calls");
+    await mkdir(managed); await mkdir(shim);
+    const launcher = path.join(managed, "git");
+    await writeFile(launcher, githubLauncherSource({ brokerFile }), { mode: 0o700 });
+    // Bound the pre-fix reproduction: the fixture stops at three invocations.
+    await writeFile(path.join(shim, "git"), `#!${process.execPath}
+const fs = require("node:fs"), {spawnSync} = require("node:child_process");
+fs.appendFileSync(${JSON.stringify(calls)}, "call\\n");
+if (fs.readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length >= 3) process.exit(99);
+const result = spawnSync(${JSON.stringify(launcher)}, process.argv.slice(2), {env: process.env, stdio: "inherit"});
+process.exit(result.status ?? 98);
+`, { mode: 0o700 });
+    const env = { ...process.env, ...githubBrokerEnvironment({}, {url: "", token: ""}),
+      PATH: `${managed}${path.delimiter}${shim}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}/usr/bin${path.delimiter}/bin` };
+    await expect(exec(launcher, ["--version"], {env, timeout: 5000})).rejects.toMatchObject({
+      code: 126, stderr: expect.stringContaining("launcher_recursion_rejected"),
+    });
+    expect((await readFile(calls, "utf8")).trim().split("\n")).toEqual(["call"]);
+  });
+
   it("snapshots a staged tree and reports unstaged files without capturing GitHub credentials", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-snapshot-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
@@ -140,6 +188,42 @@ describe("managed GitHub launchers", () => {
     expect(JSON.parse(result.stdout)).toEqual({token:null});
     expect(result.stderr).toContain("More than one managed GitHub identity matches this run");
     expect(result.stderr).not.toMatch(/host-token|must-not-be-used|run-capability/);
+  });
+  it("sends repository creation and forks to the connection's tools when a connection is in use", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-repository-tools-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real");
+    await mkdir(bin); await mkdir(realBin);
+    await writeFile(path.join(bin, "gh"), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(realBin, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),token:process.env.GH_TOKEN ?? null}));', { mode: 0o700 });
+    let status = "available";
+    const server = createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status, env: { GH_TOKEN: "managed-token" } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = { ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }),
+      PATH: `${bin}:${realBin}:${process.env.PATH}` };
+    const gh = (...args: string[]) => exec(path.join(bin, "gh"), args, { env });
+    for (const [args, tool] of [
+      [["repo", "create", "demo", "--private"], "create_repository"],
+      [["repo", "new", "demo"], "create_repository"],
+      [["repo", "fork", "octo-org/tools", "--org", "acme"], "fork_repository"],
+    ] as const) {
+      const failure = await gh(...args).catch((error: { code?: number; stdout?: string; stderr?: string }) => error);
+      expect(failure).toMatchObject({ code: 1, stdout: "" });
+      expect(failure.stderr).toContain(`GitHub connection's ${tool} tool`);
+      expect(failure.stderr).not.toContain("managed-token");
+    }
+    expect(JSON.parse((await gh("repo", "create", "--help")).stdout))
+      .toEqual({ args: ["repo", "create", "--help"], token: "managed-token" });
+    expect(JSON.parse((await gh("repo", "view", "octo-org/tools")).stdout))
+      .toEqual({ args: ["repo", "view", "octo-org/tools"], token: "managed-token" });
+    // Without a connection there are no connection tools; gh runs unchanged.
+    status = "absent";
+    expect(JSON.parse((await gh("repo", "create", "demo")).stdout)).toEqual({ args: ["repo", "create", "demo"], token: null });
   });
   it.each(["before-write", "partial-write"])("keeps Git and managed credentials available after a %s failure", async (failure) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-default-write-failure-"));

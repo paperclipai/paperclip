@@ -83,13 +83,12 @@ export function poolMemberRuntimeConfig(member: AiConnectionPoolMember, adapterT
   return { config, notes };
 }
 
-export function pinnedRoutedModelForHarness(metadata: AiConnectionMetadata, member: AiConnectionPoolMember, adapterType: string, runtimeConfig: Record<string, unknown>) {
+export function pinnedRoutedModelForHarness(metadata: AiConnectionMetadata, adapterType: string, selection: AiConnectionRouterSelection) {
   const routing = metadata.routing;
   if (!routing || (routing.kind !== "gateway" && routing.kind !== "local")) return;
-  const harness = aiRoutingHarness(adapterType, runtimeConfig.provider, runtimeConfig.acpxAgent);
-  const project = (raw: string) => aiRoutingModelFromRaw(routing, harness, raw);
-  const stored = typeof runtimeConfig.model === "string" ? runtimeConfig.model : "";
-  if (![project(member.profile.model), ...routing.models.map((hint) => project(hint.id))].includes(stored)) throw unprocessable("The pinned pool selection was saved for a different harness; switch back to the original harness or choose another AI connection");
+  const harness = aiRoutingHarness(adapterType, selection.runtimeConfig.provider, selection.runtimeConfig.acpxAgent);
+  if (!selection.modelHarness && routing.protocol === "chat") throw unprocessable("The pinned pool selection has no saved model harness; choose another AI connection");
+  if (selection.modelHarness && selection.modelHarness !== harness) throw unprocessable("The pinned pool selection was saved for a different harness; switch back to the original harness or choose another AI connection");
 }
 
 export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerManager) {
@@ -233,10 +232,10 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
 
   async function resolve(input: { companyId: string; poolId: string; agentId: string; userId: string | null; adapterType: string; taskKey: string; overrides?: Record<string, unknown>; existingGrantId?: string; requireExisting?: boolean; persisted?: AiConnectionRouterSelection; validateRuntime?: (config: Record<string, unknown>, metadata: AiConnectionMetadata, phase: "candidate" | "commit" | "persisted", client: Db) => Promise<void> }) {
     const pinWhere = and(eq(aiConnectionTaskPins.companyId, input.companyId), eq(aiConnectionTaskPins.poolId, input.poolId), eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey));
-    const validateSelection = async (selection: AiConnectionRouterSelection, client = db, member?: AiConnectionPoolMember) => {
+    const validateSelection = async (selection: AiConnectionRouterSelection, client = db) => {
       const account = await aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: input.adapterType, binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
       const metadata = aiConnectionMetadataSchema.parse(account.connection.config.ai);
-      if (member) pinnedRoutedModelForHarness(metadata, member, input.adapterType, selection.runtimeConfig);
+      pinnedRoutedModelForHarness(metadata, input.adapterType, selection);
       await input.validateRuntime?.(selection.runtimeConfig, metadata, input.persisted ? "persisted" : "commit", client);
       return account;
     };
@@ -246,7 +245,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       // Uninstall can remove the virtual connection. Server-owned native recovery
       // evidence still authorizes the original concrete selection, never a new one.
       if (pin && (pin.selection.memberId !== input.persisted.memberId || JSON.stringify(pin.selection.binding) !== JSON.stringify(input.persisted.binding))) throw unprocessable("Persisted pool allocation is inconsistent");
-      await validateSelection(input.persisted, db, pin?.member);
+      await validateSelection(input.persisted);
       return input.persisted;
     }
     await enabled();
@@ -271,7 +270,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
           const metadata = aiConnectionMetadataSchema.parse(account.connection.config.ai);
           const effective = pin ? { config: pin.selection.runtimeConfig, notes: pin.selection.notes } : poolMemberRuntimeConfig(member, input.adapterType, input.overrides, metadata);
           if (!isAiConnectionCompatible(metadata, input.adapterType, effective.config.model, effective.config.provider, effective.config.acpxAgent)) throw unprocessable("Pool member is incompatible with this harness");
-          if (pin) pinnedRoutedModelForHarness(metadata, member, input.adapterType, effective.config);
+          if (pin) pinnedRoutedModelForHarness(metadata, input.adapterType, pin.selection);
           await input.validateRuntime?.(effective.config, metadata, "candidate", db);
           candidates.push({ member, runtimeConfig: effective.config, notes: effective.notes });
         } catch (error) { if (pin) throw error; }
@@ -294,7 +293,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       if (result.kind !== "selected") throw unprocessable("No pool account is permitted and compatible for this task");
       const candidate = candidates.find((v) => v.member.id === result.memberId);
       if (!candidate || (pin && candidate.member.id !== pin.member.id)) throw unprocessable("The router returned an unauthorized member");
-      const selected: AiConnectionRouterSelection = { poolId: row.id, memberId: candidate.member.id, binding: candidate.member.binding, runtimeConfig: candidate.runtimeConfig, notes: candidate.notes };
+      const selected: AiConnectionRouterSelection = { poolId: row.id, memberId: candidate.member.id, binding: candidate.member.binding, runtimeConfig: candidate.runtimeConfig, modelHarness: aiRoutingHarness(input.adapterType, candidate.runtimeConfig.provider, candidate.runtimeConfig.acpxAgent), notes: candidate.notes };
       if (pin) return pin.selection;
       const committed = await db.transaction(async (tx) => {
         const [locked] = await tx.select().from(aiConnectionRouterCursors).where(and(eq(aiConnectionRouterCursors.poolId, row.id), eq(aiConnectionRouterCursors.companyId, input.companyId))).for("update");

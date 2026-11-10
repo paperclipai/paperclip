@@ -37,10 +37,14 @@ Pins snapshot the concrete binding, member profile and resolved settings. A
 pinned task keeps its stored model, effort and notes; removing or editing a
 member, or a later composer change, affects only future allocations. Each
 continuation still re-checks authorization and harness and runtime
-compatibility, and fails closed. A stored gateway/local model that is not a valid
-projection for the current harness fails closed; the pin survives session reset, so
-switch back to the original harness or choose another AI connection.
-Session reset and compaction retain the pin.
+compatibility, and fails closed. Gateway/local selections record the normalized
+producing harness rather than inferring it from current model hints. Switching
+between native and legacy OpenCode retains the pin; switching between OpenCode
+and Hermes fails closed even when their model strings collide. Switch back to
+the original harness or choose another AI connection. Older chat pins without a
+saved harness cannot establish their model identity and require another AI
+connection; they are never silently reinterpreted. Removed discovery hints do not
+change a saved model. Session reset and compaction retain the pin.
 Revocation requires operator repair.
 
 Gateway/local pool profiles store raw model IDs, up to 256 characters. OpenCode

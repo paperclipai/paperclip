@@ -275,6 +275,13 @@ export interface AttentionFeed {
   countsBySourceKind: Record<AttentionSourceKind, number>;
   items: AttentionItem[];
 }
+
+/** Canonical attention counts without downloading the decision cards. */
+export type AttentionSummary = Omit<AttentionFeed, "items" | "nextCursor">;
+/** Complete accessible task membership for Tasks → Needs attention. */
+export interface AttentionTaskIndex extends AttentionSummary {
+  taskIds: string[];
+}
 /** Read-only projection of canonical task decisions; never a second write store. */
 export interface DecisionHistoryItem {
   id: string;

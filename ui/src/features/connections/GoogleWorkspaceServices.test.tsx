@@ -32,6 +32,7 @@ describe("Workspace service consent", () => {
   }
   beforeEach(() => {
     vi.clearAllMocks();
+    listGrants.mockResolvedValue({ currentUserId: "me", grants: [] });
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -66,6 +67,36 @@ describe("Workspace service consent", () => {
     expect(document.querySelector("select")?.value).toBe("read");
     await click("Continue");
     expect(onContinue).toHaveBeenCalledWith({ gmail: "read" });
+  });
+
+  it("restores a cold draft's selected services after declined OAuth", async () => {
+    await render({ ...existing, companyId: "company-1", status: "draft", config: {
+      workspaceSetup: {
+        version: 1, companyId: "company-1", connectionId: existing.id,
+        actorType: "user", actorId: "me", grantKind: "user", subjectId: "me",
+        requestedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+      },
+      oauth: { scopes: ["https://www.googleapis.com/auth/documents"] },
+    } });
+    expect([...document.querySelectorAll('[role="switch"]')].map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
+    expect(document.querySelector("select")?.value).toBe("read");
+    await click("Continue");
+    expect(onContinue).toHaveBeenCalledWith({ gmail: "read" });
+  });
+
+  it.each([undefined, "another-user"])("requires a deliberate choice for an unbound draft (%s)", async (actorId) => {
+    await render({ ...existing, companyId: "company-1", status: "draft", config: {
+      ...(actorId ? { workspaceSetup: {
+        version: 1, companyId: "company-1", connectionId: existing.id,
+        actorType: "user", actorId, grantKind: "user", subjectId: "me",
+        requestedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+      } } : {}),
+      oauth: { scopes: ["https://www.googleapis.com/auth/documents"] },
+    } });
+    expect([...document.querySelectorAll('[role="switch"]')].map(item => item.getAttribute("aria-checked"))).toEqual(["false", "false", "false"]);
+    const proceed = [...document.querySelectorAll("button")].find(item => item.textContent === "Continue")!;
+    expect(proceed.disabled).toBe(true);
+    expect(onContinue).not.toHaveBeenCalled();
   });
 
   it("blocks on grant-load failure and retries without broadening the saved request", async () => {

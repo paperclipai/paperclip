@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addressedHumanOnlyDenialMessage,
   evaluateIssueThreadInteractionResolverAudience,
   issueThreadInteractionAttentionAgentAllowed,
 } from "./issue-thread-interaction-resolution.js";
@@ -171,5 +172,77 @@ describe("issue-thread interaction resolver audience", () => {
       agentId: "agent-2",
       interaction: interaction({ effectiveResolverPolicy: "human_only" }),
     })).toBe(false);
+  });
+
+  describe("human-only card addressed to someone else", () => {
+    const card = interaction({ createdByAgentId: null, createdByUserId: "alex", addresseeUserId: "riley", effectiveResolverPolicy: "human_only" });
+
+    it("tells the agent only the addressee resolves it and not to send the asker to the card", () => {
+      const decision = evaluateIssueThreadInteractionResolverAudience({ actor: { ...agent, relayedHumanUserId: "alex" }, interaction: card });
+      expect(decision).toMatchObject({ allowed: false, status: 403, code: "interaction_human_only", details: { addresseeUserId: "riley", askerIsNotAddressee: true } });
+      const message = decision.allowed ? "" : decision.message;
+      expect(message).toContain("This issue-thread interaction is human-only and addressed to");
+      expect(message).toContain("Only the addressee can accept or decline it");
+      expect(message).toContain("do not ask the person asking to accept or decline it");
+    });
+
+    it("names the addressee once the route knows their display name", () => {
+      const message = addressedHumanOnlyDenialMessage("Riley", true);
+      expect(message).toContain("addressed to Riley.");
+      expect(message).toContain("Only Riley can accept or decline it");
+      expect(message).toContain("the card waits on Riley");
+      expect(message).not.toContain("addresseeUserId");
+    });
+
+    it.each([
+      ["no verified replying user", agent],
+      ["the addressee as the replying user", { ...agent, relayedHumanUserId: "riley" }],
+    ])("keeps the advice neutral with %s", (_name, actor) => {
+      const decision = evaluateIssueThreadInteractionResolverAudience({ actor, interaction: card });
+      expect(decision).toMatchObject({ allowed: false, code: "interaction_human_only", details: { addresseeUserId: "riley", askerIsNotAddressee: false } });
+      const message = decision.allowed ? "" : decision.message;
+      expect(message).toContain("Only the addressee can accept or decline it");
+      expect(message).not.toContain("do not ask the person asking");
+    });
+
+    it("keeps the plain human-only denial when the card has no addressee", () => {
+      const decision = evaluateIssueThreadInteractionResolverAudience({ actor: agent,
+        interaction: interaction({ effectiveResolverPolicy: "human_only" }) });
+      expect(decision).toMatchObject({ allowed: false, code: "interaction_human_only", message: "This issue-thread interaction is human-only" });
+    });
+  });
+
+  describe("relayed human decision", () => {
+    const relay = { ...agent, relayedHumanUserId: "user-1" };
+    const humanOnly = (overrides: Record<string, unknown> = {}) =>
+      interaction({ effectiveResolverPolicy: "human_only", effectiveResolverPolicySource: "requested",
+        resolverPolicyProvenance: "explicit", ...overrides });
+
+    it("allows a verified reply on a card whose creator requested human_only", () => {
+      expect(evaluateIssueThreadInteractionResolverAudience({ actor: relay, interaction: humanOnly() }))
+        .toMatchObject({ allowed: true, effectiveResolverPolicy: "human_only", reason: "allow_relayed_human" });
+    });
+
+    it.each([
+      ["no relay", { actor: agent }],
+      ["a company cap", { interaction: humanOnly({ effectiveResolverPolicySource: "company_cap" }) }],
+      ["a governed-action source", { interaction: humanOnly({ effectiveResolverPolicySource: "governed_action" }) }],
+      ["an unknown legacy source", { interaction: humanOnly({ effectiveResolverPolicySource: null }) }],
+      ["a governed action", { governedAction: true }],
+      ["an issue-review restriction", { additionalRestriction: "human_only" as const }],
+      ["another addressed user", { interaction: humanOnly({ addresseeUserId: "user-2" }) }],
+      ["a human-created card", { interaction: humanOnly({ createdByAgentId: null, createdByUserId: "user-1" }) }],
+      ["another agent's card", { interaction: humanOnly({ createdByAgentId: "agent-2" }) }],
+      ["an inherited company default", { interaction: humanOnly({ resolverPolicyProvenance: "inherited" }) }],
+    ])("still denies %s", (_name, override) => {
+      const decision = evaluateIssueThreadInteractionResolverAudience({ actor: relay, interaction: humanOnly(), ...override });
+      expect(decision).toMatchObject({ allowed: false });
+    });
+
+    it("never widens a non-human-only card", () => {
+      expect(evaluateIssueThreadInteractionResolverAudience({ actor: relay,
+        interaction: interaction({ effectiveResolverPolicy: "not_creator" }) }))
+        .toMatchObject({ allowed: false, code: "interaction_creator_excluded" });
+    });
   });
 });

@@ -1,6 +1,8 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
+  agents,
   heartbeatRuns,
+  issues,
   dotAgentBindings,
   dotRunnerAssignments,
   museAgentBindings,
@@ -16,9 +18,14 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
+import { getStartupRecoveryState } from "../startup-recovery-state.js";
+import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
+const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
+  agentId: heartbeatRuns.agentId,
   driverKind: heartbeatRuns.driverKind,
   errorCode: heartbeatRuns.errorCode,
   executionControlDeadlineAt: heartbeatRuns.executionControlDeadlineAt,
@@ -37,6 +44,7 @@ const executionRunColumns = {
   status: heartbeatRuns.status,
   contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
     'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+    'wakeReason', ${heartbeatRuns.contextSnapshot}->'wakeReason',
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait')`,
 };
@@ -175,6 +183,61 @@ export async function executionProjectionsForRuns(
       )));
     for (const row of offered) waitingByRun.set(row.runId, "openai_dot");
   }
+  // A queued turn cannot start while its predecessor's cleanup is pending
+  // (for example a stopped run whose runner has not released yet). Name that
+  // wait instead of an unexplained "Queued". The predecessors are the ones
+  // admission checks: the task's execution owner, the run this one retries,
+  // and the agent's latest settled run on the same task, whose in-process
+  // executor the claim also waits for. Pending uses admission's own predicate.
+  const settlingPredecessorKeys = new Set<string>();
+  const queuedRuns = runs.filter(run => run.status === "queued");
+  const setupAgentIds = [...new Set(queuedRuns.filter(run => !run.startedAt).map(run => run.agentId))];
+  const setupAgents = setupAgentIds.length ? await read(async () => db
+    .select({ id: agents.id, lifecycleState: agents.lifecycleState,
+      lifecycleHolds: agents.lifecycleHolds,
+      retryRequired: sql<boolean>`coalesce(${agents.lifecycleOperation}->>'retryRequired', 'false') = 'true'` })
+    .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, setupAgentIds)))) : [];
+  const setupByAgent = new Map(setupAgents.map(agent => [agent.id, agent]));
+  const issueIdOf = (run: Run) => run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
+  const queuedIssueIds = [...new Set(queuedRuns.map(issueIdOf).filter((id): id is string => !!id))];
+  if (queuedIssueIds.length) {
+    const issueKey = sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`;
+    // Two set-based reads for the whole batch, then one bounded, parallel
+    // admission check per distinct predecessor.
+    const [owners, latestSettled] = await Promise.all([
+      read(async () => db
+        .select({ id: issues.id, executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, queuedIssueIds)))),
+      read(async () => db
+        .selectDistinctOn([heartbeatRuns.agentId, issueKey], { id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, issueId: issueKey })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.agentId, [...new Set(queuedRuns.map(run => run.agentId))]),
+          inArray(issueKey, queuedIssueIds),
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out"]),
+        ))
+        .orderBy(heartbeatRuns.agentId, issueKey, desc(heartbeatRuns.createdAt))),
+    ]);
+    const ownerByIssue = new Map(owners.map(row => [row.id, row.executionRunId]));
+    const latestByAgentIssue = new Map(latestSettled.map(row => [`${row.agentId}:${row.issueId}`, row.id]));
+    const candidatesByRun = new Map<string, string[]>();
+    for (const run of queuedRuns) {
+      const issueId = issueIdOf(run);
+      if (!issueId) continue;
+      candidatesByRun.set(run.id, [...new Set([ownerByIssue.get(issueId), run.retryOfRunId,
+        latestByAgentIssue.get(`${run.agentId}:${issueId}`)].filter((id): id is string => !!id && id !== run.id))]);
+    }
+    const distinct = [...new Set([...candidatesByRun.values()].flat())];
+    // A label is not worth an unbounded fan-out on large list reads.
+    if (distinct.length <= MAX_PREDECESSOR_CLEANUP_CHECKS) {
+      const pendingIds = new Set((await Promise.all(distinct.map(async id =>
+        (await read(() => hasPendingRunCleanup(db, companyId, id))) ? id : null))).filter((id): id is string => !!id));
+      for (const [runId, candidates] of candidatesByRun)
+        if (candidates.some(id => pendingIds.has(id))) settlingPredecessorKeys.add(runId);
+    }
+  }
   const coordinatorByRun = new Map(coordinators.map((row) => [row.runId, row]));
   for (const run of runs) {
     const issueId = run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
@@ -195,6 +258,8 @@ export async function executionProjectionsForRuns(
         action,
         now,
         waitingByRun.get(run.id),
+        settlingPredecessorKeys.has(run.id),
+        setupByAgent.get(run.agentId),
       ),
     );
   }
@@ -219,10 +284,18 @@ export function projectExecution(
   recoveryAction: Recovery | undefined,
   now = new Date(),
   waitingForProvider?: WaitingExternalProvider,
+  waitingForPredecessor = false,
+  setupAgent?: { lifecycleState: string; lifecycleHolds: readonly string[]; retryRequired?: boolean },
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
   const projection: ExecutionProjection = {
+    // A live run is always stoppable by the board (POST /heartbeat-runs/:id/cancel);
+    // a failed native run is stoppable only while its retry is still pending.
+    canStop: run.status === "running" || run.status === "queued" || (
+      run.runtimeMode === "native" && run.status === "failed" && run.driverKind !== "grok_bot_mcp" && !!run.nativeIssueId
+      && coordinator?.runId === run.id && coordinator.issueId === run.nativeIssueId && coordinator.resultId === null
+      && coordinator.phase === "retryable_failure"),
     phase: "queued",
     label: "Queued",
     cause: run.errorCode ?? coordinator?.failureCode ?? null,
@@ -272,6 +345,27 @@ export function projectExecution(
         "The task was closed or reassigned before delivery. Inspect the current task owner and status.";
       return set("failed", "Continuation cancelled");
     }
+    const reconciliation = recoveryAction.evidence.executionReconciliation;
+    if (recoveryAction.cause === "native_restart_recovery_blocked"
+      && recoveryAction.evidence.reason === "controller_process_space_unverified"
+      && recoveryAction.evidence.continuationDelivery === "not_requested"
+      && reconciliation && typeof reconciliation === "object" && !Array.isArray(reconciliation)
+      && "runId" in reconciliation && reconciliation.runId === run.id
+      && "controllerStopped" in reconciliation && reconciliation.controllerStopped === true
+      && "providerStopped" in reconciliation && reconciliation.providerStopped === true
+      && "controllerAuthorityDigest" in reconciliation && typeof reconciliation.controllerAuthorityDigest === "string" && /^[0-9a-f]{64}$/.test(reconciliation.controllerAuthorityDigest)) {
+      const continuation = recoveryAction.evidence.explicitUserContinuation as
+        { previousRunId?: unknown; runId?: unknown } | undefined;
+      const explicitSuccessor = text(continuation?.runId);
+      if (continuation?.previousRunId === run.id && explicitSuccessor && explicitSuccessor !== run.id) {
+        projection.successorRunId = explicitSuccessor;
+        projection.nextAction = null;
+        return set("completed", "Continued in another run");
+      }
+      projection.cause = null;
+      projection.nextAction = "The original execution was contained and its action outcomes reviewed. Use Retry to request another attempt.";
+      return set("failed", "Execution contained");
+    }
     const deliveredRunId = text(recoveryAction.evidence.continuationRunId);
     projection.successorRunId = deliveredRunId;
     projection.cause = null;
@@ -299,6 +393,12 @@ export function projectExecution(
     projection.nextAction = "Waiting for the AI subscription's current execution to finish; the scheduled check will revalidate access.";
     return set("retry_scheduled", "Waiting for AI subscription");
   }
+  if (run.status === "scheduled_retry" && run.scheduledRetryReason === "ai_connection_pool_wait"
+      && run.contextSnapshot?.wakeReason === "provider_limit_retry") {
+    const resetAt = run.scheduledRetryAt ? new Date(run.scheduledRetryAt).toISOString() : "its reported reset";
+    projection.nextAction = `Waiting for the agent's provider usage limit to reset; the work starts at ${resetAt}. To continue sooner, restore the provider allowance or change the agent's AI connection, then start a manual run.`;
+    return set("retry_scheduled", "Waiting for usage limit reset");
+  }
   if (run.status === "scheduled_retry" && run.scheduledRetryReason === "workspace_busy") {
     projection.nextAction = "Waiting for the live workspace holder to finish; the scheduled check will revalidate ownership.";
     return set("retry_scheduled", "Waiting for workspace");
@@ -313,6 +413,10 @@ export function projectExecution(
     run.status === "scheduled_retry"
   )) {
     projection.recoveryOwner = "agent";
+    if (coordinator?.failureCode === "native_governed_wait_settlement_pending") {
+      projection.nextAction = "The work and waiting state are saved. Paperclip is confirming shutdown before continuing.";
+      return set("finishing", "Finishing shutdown");
+    }
     return set(
       projection.retryAt && new Date(projection.retryAt) > now
         ? "retry_scheduled"
@@ -383,10 +487,34 @@ export function projectExecution(
       ? set("working", "Working")
       : set("reconnecting", "Confirming execution");
   }
+  if (run.status === "queued" && !run.startedAt && setupAgent
+    && isAgentAwaitingSetup(setupAgent)) {
+    const needsRepair = setupAgent.retryRequired === true;
+    projection.cause = needsRepair ? "agent_setup_failed" : "agent_setup_pending";
+    projection.nextAction = needsRepair
+      ? "Open the agent's Harness / Runtime settings to repair its configuration, then retry verification."
+      : "This turn starts automatically after the agent finishes setup and verification.";
+    return set("queued", needsRepair ? "Agent setup needs attention" : "Waiting for agent setup");
+  }
   if (run.status === "queued" && !run.startedAt && readTaskDrain(now)) {
     projection.cause = "task_drain";
     projection.nextAction = "This turn will start automatically when maintenance finishes.";
     return set("queued", "Waiting for maintenance");
+  }
+  // Process-local, like the drain: while this server starts, recovers, or
+  // shuts down, its full queued-run pass has not run (or no longer runs).
+  const serverPhase = getStartupRecoveryState().phase;
+  if (run.status === "queued" && serverPhase !== "ready") {
+    projection.cause = "server_restarting";
+    projection.nextAction = serverPhase === "draining"
+      ? "The server is restarting for an update. This turn starts automatically on the replacement server."
+      : "The server restarted and is finishing recovery. This turn starts automatically when recovery completes.";
+    return set("queued", "Waiting for server restart");
+  }
+  if (run.status === "queued" && waitingForPredecessor) {
+    projection.cause = "previous_run_settling";
+    projection.nextAction = "The previous run on this task is still releasing its runner. This turn starts automatically when it settles.";
+    return set("queued", "Waiting for previous run to stop");
   }
   return projection;
 }

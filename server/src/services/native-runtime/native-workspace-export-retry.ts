@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { randomUUID } from "node:crypto";
@@ -13,6 +14,8 @@ import { withNativeWorkspaceFinalizationOwnership } from "./native-workspace-fin
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import type { EnvironmentRuntimeService } from "../environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "../environment-execution-target.js";
+import { readSystemRecovery } from "../system-recovery-state.js";
+import { readWorkspaceRecovery } from "../workspace-recovery-receipt.js";
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const changed = () => conflict("The recorded export repair is no longer current. Refresh the task and inspect its run.", { code: "workspace_export_retry_stale" });
@@ -30,8 +33,12 @@ export async function retryNativeWorkspaceExport(input: {
     const coordinator = await one(db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.issueId, input.issueId))).limit(1));
     const run = await one(db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.nativeIssueId, input.issueId))).limit(1));
     const action = await one(db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId), eq(issueRecoveryActions.id, input.actionId))).limit(1));
+    const system = action && readSystemRecovery(action.evidence);
+    const recovery = action && readWorkspaceRecovery(action.evidence);
+    const repairOwner = action?.ownerType === "board" || (action?.ownerType === "system"
+      && system?.sourceRunId === run?.id && recovery?.runId === run?.id);
     if (!issue || !run || !coordinator || !action || action.evidence?.runId !== run.id
-      || action.kind !== "active_run_watchdog" || !isNativeWorkspaceExportRepairCause(action.cause) || action.ownerType !== "board"
+      || action.kind !== "active_run_watchdog" || !isNativeWorkspaceExportRepairCause(action.cause) || !repairOwner
       || !["active", "escalated"].includes(action.status) || run.runtimeMode !== "native"
       || !(issue.status === "blocked" || (issue.status === "in_review" && action.cause === "native_workspace_sync_out_retry_exhausted")) || issue.assigneeAgentId !== run.agentId
       || (issue.executionRunId && issue.executionRunId !== run.id)
@@ -141,6 +148,7 @@ export async function retryNativeWorkspaceExport(input: {
         await tx.update(heartbeatRuns).set({ status: "running", finishedAt: null, error: null, errorCode: null,
           nativePhase: "result_accepted", nativePhaseUpdatedAt: now,
           resultJson: { ...current.run.resultJson, workspaceExportRetry: retry, finalizationPhase: "result_accepted", failureCode: null, originalFailureCode: null, nextAttemptAt: null }, updatedAt: now }).where(eq(heartbeatRuns.id, current.run.id));
+        await notifyStatusCardIssueChange(tx, current.run.companyId);
         await tx.update(issues).set({ executionRunId: current.run.id, updatedAt: now }).where(eq(issues.id, current.issue.id));
         // Reclaim the same lease only for control-plane copyback. The normal
         // finalization settlement will stop/retain it again on success or failure.

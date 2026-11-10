@@ -65,6 +65,9 @@ export const issues = pgTable(
     originKind: text("origin_kind").notNull().default("manual"),
     originId: text("origin_id"),
     originRunId: text("origin_run_id"),
+    // Audit-only provenance: the task whose work created this one. Set by the
+    // harness, never by callers, and never read for hierarchy or authorization.
+    originIssueId: uuid("origin_issue_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
     originIdentityContextId: uuid("origin_identity_context_id"),
     continuationIdentityContextId: uuid("continuation_identity_context_id"),
     originFingerprint: text("origin_fingerprint").notNull().default("default"),
@@ -128,6 +131,7 @@ export const issues = pgTable(
     privacyRootIdx: index("issues_company_privacy_root_idx").on(table.companyId, table.privacyRootIssueId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
+    originIssueIdx: index("issues_company_origin_issue_idx").on(table.companyId, table.originIssueId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),

@@ -74,6 +74,7 @@ export interface AiConnectionRouterSelection {
   memberId: string;
   binding: AiConnectionBinding;
   runtimeConfig: Record<string, unknown>;
+  modelHarness?: string;
   notes: string[];
 }
 

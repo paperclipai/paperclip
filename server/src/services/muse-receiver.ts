@@ -1,3 +1,4 @@
+import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { museAgentBindings as bindings, museMailboxItems as mailbox, museRunnerAssignments as assignments, museReceiverContactBuckets as buckets, externalAgentHolds as holds, type Db } from "@paperclipai/db";
@@ -18,11 +19,13 @@ function createReceiver(db:Db) {
       const batch=[...pending.entries()];pending.clear();
       for(const [key,bucket]of batch) {
         try {
-          await db.transaction(async tx=>{
+          const current=await db.transaction(async tx=>{
+            const [current]=await tx.select().from(bindings).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.generation,bucket.bindingGeneration),isNull(bindings.revokedAt)));
+            if(current?.pairedAt&&!current.verifiedReplyAt&&!current.challengeHash)await notifyMuseContactVerification(tx,{companyId:current.companyId,bindingId:current.id,generation:current.generation},"contact-persist");
             await tx.insert(buckets).values({...bucket,replicaId}).onConflictDoUpdate({target:[buckets.bindingId,buckets.bindingGeneration,buckets.replicaId,buckets.bucketAt],set:{lastAt:bucket.lastAt,contacts:sql`${buckets.contacts}+${bucket.contacts}`,gapsAtMostSevenSeconds:sql`${buckets.gapsAtMostSevenSeconds}+${bucket.gapsAtMostSevenSeconds}`,maxGapMs:sql`greatest(${buckets.maxGapMs},${bucket.maxGapMs})`,timestamps:sql`${buckets.timestamps} || ${JSON.stringify(bucket.timestamps)}::jsonb`,incomplete:sql`${buckets.incomplete} or ${bucket.incomplete}`}});
             await tx.update(bindings).set({receiverContactAt:sql`greatest(${bindings.receiverContactAt},${bucket.lastAt.toISOString()}::timestamptz)`}).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.generation,bucket.bindingGeneration)));
+            return current;
           });
-          const [current]=await db.select().from(bindings).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.generation,bucket.bindingGeneration),isNull(bindings.revokedAt)));
           if(current?.pairedAt&&!current.verifiedReplyAt&&!current.challengeHash) {
             const {museRunnerBroker}=await import("./muse-runner-broker.js");
             await museRunnerBroker(db).verify(current.companyId,current.agentId,{bindingId:current.id,generation:current.generation,expectedRevision:current.revision}).catch(()=>{});

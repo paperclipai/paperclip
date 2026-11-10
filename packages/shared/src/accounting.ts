@@ -104,6 +104,7 @@ export interface CostAdjustment {
   correctedCents: string;
   previousStatus: string;
   previousPricing: Record<string, unknown>;
+  previousUsageJson?: Record<string, unknown> | null;
   pricing: Record<string, unknown>;
   reason: string;
   actorId: string;

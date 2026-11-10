@@ -517,9 +517,9 @@ describeEmbeddedPostgres(
     });
 
     it.each([
-      { kind: "suggest_tasks", payload: { version: 1, tasks: [{ clientKey: "docs", title: "Review the migration", description: "Verify preserved configuration" }] }, expected: "Review the migration" },
-      { kind: "request_item_verdicts", payload: { version: 1, prompt: "Review each change", items: [{ id: "docs", label: "Migration notes", description: "Verify preserved configuration" }] }, expected: "Migration notes" },
-    ] as const)("delivers and settles $kind reviews in Slack", async ({ kind, payload, expected }) => {
+      { kind: "suggest_tasks" as const, payload: { version: 1 as const, tasks: [{ clientKey: "docs", title: "Review the migration", description: "Verify preserved configuration" }] }, expected: "Review the migration" },
+      { kind: "request_item_verdicts" as const, payload: { version: 1 as const, prompt: "Review each change", items: [{ id: "docs", label: "Migration notes", description: "Verify preserved configuration" }] }, expected: "Migration notes" },
+    ])("delivers and settles $kind reviews in Slack", async ({ kind, payload, expected }) => {
       const fixture = await seedBoundIssue();
       const service = issueThreadInteractionService(db);
       const issue = { id: fixture.issueId, companyId: fixture.companyId };

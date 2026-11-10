@@ -50,13 +50,6 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
     queryFn: () => toolsApi.listGallery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const attentionQuery = useQuery({
-    queryKey: queryKeys.apps.attention(selectedCompanyId ?? "__none__"),
-    queryFn: () => toolsApi.listAppsAttention(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 30_000,
-  });
-
   const connection = connectionQuery.data;
   const application = props.kind === "application"
     ? (applicationsQuery.data?.applications ?? []).find((app) => app.id === props.applicationId)
@@ -72,12 +65,15 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
     application ?? undefined,
   );
   const reviewConnectionId = connection?.id ?? previousConnection?.id ?? null;
-  const attentionItem = reviewConnectionId
-    ? attentionQuery.data?.apps.find((app) => app.connection.id === reviewConnectionId)
-    : null;
+  const reviewCountsQuery = useQuery({
+    queryKey: queryKeys.apps.connectionReviewCounts(selectedCompanyId ?? "__none__", reviewConnectionId ?? "__none__"),
+    queryFn: () => toolsApi.getConnectionReviewCounts(reviewConnectionId!),
+    enabled: !!selectedCompanyId && !!reviewConnectionId,
+    refetchInterval: 30_000,
+  });
   const reviewCount =
-    (attentionItem?.pendingActionRequestCount ?? 0) +
-    ((attentionItem?.quarantinedCatalogEntryCount ?? 0) > 0 ? 1 : 0);
+    (reviewCountsQuery.data?.pendingActionRequestCount ?? 0) +
+    ((reviewCountsQuery.data?.quarantinedCatalogEntryCount ?? 0) > 0 ? 1 : 0);
 
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background">

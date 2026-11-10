@@ -2,8 +2,32 @@ import type { BrowserContext, Page } from "@playwright/test";
 import type { ConnectionApi } from "../connection-target.js";
 
 export type JourneyOutcome = "passed" | "failed" | "blocked" | "unsupported";
-export type JourneyId = "task-properties" | "task-create" | "ask-question" | "cloud-onboarding"
-  | "plan-revise-accept" | "build-revise" | "protected-actions" | "create-skill-studio" | "stop-redirect";
+export type JourneyId =
+  "task-edit-lifecycle"
+  | "task-properties"
+  | "task-create"
+  | "project-task-context"
+  | "task-dependency-resume"
+  | "task-document-persistence"
+  | "ask-question"
+  | "chat-continuity"
+  | "cloud-onboarding"
+  | "question-answer-resume"
+  | "task-search-filter"
+  | "followup-while-running"
+  | "plan-revise-accept"
+  | "build-revise"
+  | "protected-actions"
+  | "create-skill-studio"
+  | "stop-redirect"
+  | "hire-delegate-reuse"
+  | "agent-settings-persistence"
+  | "file-input-answer"
+  | "inbox-triage"
+  | "routine-scheduled-run"
+  | "repository-continuation"
+  | "company-access-isolation"
+  | "saved-skill-use";
 export type TargetMode = "managed-self-hosted" | "existing-cloud" | "new-cloud";
 export interface DeploymentIdentity {
   kind: "self-hosted" | "cloud";
@@ -84,6 +108,8 @@ export interface JourneyContext {
   agent?: { id: string; name: string; provider: string; model: string; runtimeMode: "native" | "legacy" };
   fixtures?: {
     backlogTask?: PreparedBacklogTask;
+    companyAccess?: import("./company-access-contract.js").CompanyAccessFixture;
+    inboxAuthor?: import("./inbox-author-contract.js").InboxAuthorFixture;
     reviewService?: { connectionId: string; name: string; marker: string; invocationCount(): number };
   };
 }
@@ -111,7 +137,9 @@ export interface TargetSession {
   /** Publish the observed finalization failure without releasing resources or leases. */
   checkpointEvidence?(input?: TargetLifecycleInput): Promise<void>;
   /** Durable intent before creation; receipt immediately after creation. */
-  own(resource: { kind: "issue" | "agent" | "connection" | "tool-connection" | "skill"; name: string; id?: string; journeyId?: JourneyId }): Promise<void>;
+  own(resource: { kind: "issue" | "project" | "agent" | "connection" | "tool-connection" | "skill" | "routine" | "label"; name: string; id?: string; journeyId?: JourneyId;
+    taskEdit?: { revisedTitle: string };
+    freshChat?: { companyId: string; userId: string; leadAgentId: string; absent: true } }): Promise<void>;
 }
 export interface TargetProvider {
   version: 1;

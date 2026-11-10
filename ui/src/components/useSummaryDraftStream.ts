@@ -9,6 +9,7 @@ import type { RunLogChunk } from "@/adapters";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { useCompanyLiveEvent, useTranscriptLiveStream } from "@/context/LiveUpdatesProvider";
 import { queryKeys } from "@/lib/queryKeys";
+import { retryTransientOnly } from "@/lib/query-client";
 import {
   mergeRunLogChunks,
   parsePersistedLogContent,
@@ -138,7 +139,7 @@ export function useSummaryDraftStream(
     queryKey: queryKeys.issues.activeRun(issueId ?? "__none__"),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled: visible && Boolean(companyId) && Boolean(issueId) && !runId,
-    retry: false,
+    retry: retryTransientOnly(0),
     refetchInterval: runId ? false : 4000,
   });
   const fallbackRunId = activeRunQuery.data?.id ?? null;

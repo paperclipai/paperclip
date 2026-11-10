@@ -70,9 +70,23 @@ describe("TaskChatPlanPreviewCard", () => {
     container.remove();
   });
 
-  it("extracts the Markdown H1 and the first three meaningful plan lines", () => {
+  it("extracts the Markdown H1 and the first three meaningful plan lines, skipping section headings", () => {
     expect(planPreviewContent("# Ship it\n\n---\n## Build\n- **First** step\n2. Use [the docs](https://example.com)\n```\nFourth"))
-      .toEqual({ title: "Ship it", preview: ["Build", "First step", "Use the docs"] });
+      .toEqual({ title: "Ship it", preview: ["First step", "Use the docs", "Fourth"] });
+  });
+
+  it("previews a streaming proposed-plan document from its markdown", () => {
+    const proposal: TaskChatProviderActivityItem = {
+      ...livePlan([]),
+      family: "plan_proposal",
+      eventType: "plan.proposed",
+      output: "# Stop duplicates\n\n## Steps\n1. Add a unique index",
+    };
+    act(() => root.render(<ThemeProvider><TaskChatPlanPreviewCard source={{ kind: "live", activity: proposal }} /></ThemeProvider>));
+    expect(container.textContent).toContain("Writing plan");
+    expect(container.textContent).toContain("Stop duplicates");
+    expect(container.textContent).toContain("Add a unique index");
+    expect(container.textContent).not.toContain("Steps");
   });
 
   it("renders a saved revision as a Plan-pane link", () => {

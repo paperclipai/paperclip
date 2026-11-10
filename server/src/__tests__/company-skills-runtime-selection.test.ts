@@ -83,7 +83,7 @@ describeDatabase("selected runtime skill reconciliation", () => {
     } finally { insert.mockRestore(); update.mockRestore(); }
   });
 
-  it("refreshes selected bundled paths after an installation moves even when the old directory remains", async () => {
+  it("uses the committed bundled version even when a legacy installation path contains different bytes", async () => {
     const service=companySkillService(db);
     const initial=await service.listRuntimeSkillEntries(companyId,{includeLegacy:true,snapshotLatest:true});
     const selected=initial[0]!;
@@ -94,9 +94,38 @@ describeDatabase("selected runtime skill reconciliation", () => {
     const current=await service.listRuntimeSkillEntries(companyId,{onlyKeys:new Set([selected.key]),snapshotLatest:true});
     expect(await fs.readFile(path.join(current[0]!.source,"SKILL.md"),"utf8")).toBe(await fs.readFile(path.join(selected.source,"SKILL.md"),"utf8"));
     const [row]=await db.select().from(companySkills).where(and(eq(companySkills.companyId,companyId),eq(companySkills.key,selected.key)));
-    expect(row!.sourceLocator).not.toBe(old);
+    expect(row!.currentVersionId).toBe(selected.versionId);
     expect(await fs.readFile(path.join(old,"SKILL.md"),"utf8")).toBe("Old installation content");
   });
+
+  it("does not re-authorize each delivered skill version after the selected rows were read", async () => {
+    const [agent] = await db.insert(agents).values({ companyId, name: "Versioned runtime reader", adapterType: "codex_local" }).returning();
+    await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: agent!.id, membershipRole: "member" });
+    const actor: AuthorizationActor = { type: "agent", agentId: agent!.id, companyId, source: "agent_jwt" };
+    const installed = await withSkillActor(actor, () => companySkillService(db).listRuntimeSkillEntries(companyId, {
+      selectionConfig: { paperclipSkillSync: { desiredSkills: [] } }, includeLegacy: true, snapshotLatest: true,
+    }));
+    const read = () => withSkillActor(actor, () => companySkillService(db).listRuntimeSkillEntries(companyId, {
+      onlyKeys: new Set(installed.map(entry => entry.key)), snapshotLatest: true,
+    }));
+    const sourceReads: unknown[] = [];
+    const select = db.select.bind(db);
+    const spy = vi.spyOn(db, "select").mockImplementation(((...args: Parameters<typeof db.select>) => {
+      const builder = select(...args);
+      const from = builder.from.bind(builder);
+      builder.from = ((table: unknown) => {
+        if (table === companySkillSources) sourceReads.push(table);
+        return from(table as never);
+      }) as typeof builder.from;
+      return builder;
+    }) as typeof db.select);
+    try {
+      const entries = await read();
+      expect(entries.length).toBeGreaterThan(2);
+      expect(entries.every(entry => entry.sourceStatus === "available" && entry.versionId)).toBe(true);
+      expect(sourceReads).toHaveLength(0);
+    } finally { spy.mockRestore(); }
+  }, 30_000);
 
   it("bounds project-source authorization work without caching changed permissions", async () => {
     const [agent] = await db.insert(agents).values({ companyId, name: "Selected runtime reader", adapterType: "codex_local" }).returning();

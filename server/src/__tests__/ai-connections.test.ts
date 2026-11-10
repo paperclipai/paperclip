@@ -9,14 +9,15 @@ vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConne
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
 import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -31,13 +32,15 @@ import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import * as runnerProbe from "../vendor/paperclip-runner/index.js";
 import * as nativeCodexRunner from "../services/native-runtime/native-codex-runner.js";
 import { testNativeRunnerAuthentication } from "../services/native-runtime/setup-readiness.js";
-import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, isAiConnectionIncompatible, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
 import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import { openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
@@ -133,7 +136,7 @@ describe("managed AI connections", () => {
         displayName: "Bootstrap", description: "Bootstrap fixture", author: "Test", categories: ["automation"],
         capabilities: ["environment.drivers.register"], entrypoints: { worker: "worker.js" },
         environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }] } });
-    const [environment] = await db.insert(environments).values({ companyId, name: "Agent computer", driver: "plugin",
+    const [environment] = await db.insert(environments).values({ name: "Agent computer", driver: "plugin",
       config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
     const token = "github_pat_fixture_plugin_bootstrap";
     const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: "Bootstrap", apiKey: token, agentIds: [], allAgents: false }, token);
@@ -297,7 +300,7 @@ describe("managed AI connections", () => {
     await db.insert(principalPermissionGrants).values([owner, audience].map(principalId => ({ companyId, principalId, principalType: "user", permissionKey: "agents:create" })));
     const token = "github_pat_fixture_shared_discovery";
     const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "shared", name: "Shared discovery", apiKey: token, agentIds: [], allAgents: false }, token);
-    await db.insert(connectionGrantMembers).values([owner, audience].map(subjectId => ({ companyId, grantId: account.grantId, subjectType: "user", subjectId })));
+    await db.insert(connectionGrantMembers).values([owner, audience].map(subjectId => ({ companyId, grantId: account.grantId, subjectType: "user" as const, subjectId })));
     const binding = { provider: "github", method: "api_key", mode: "shared", ...account };
     const probe = vi.spyOn(copilotProbe, "probeCopilotConnection").mockResolvedValue({ status: "verified", version: "1.0.88", profileDigest: "fixture-profile", promptSent: false, models: [{ id: "gpt-5.6-luna", label: "GPT" }] });
     const app = express(); app.use(express.json());
@@ -385,8 +388,8 @@ describe("managed AI connections", () => {
     await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_unavailable");
   });
 
-  it("persists first-time recovery directories before consuming a single-use token", async () => {
-    const owner = "quota-durable-path";
+  it("commits one exchanged token without writable credential recovery storage", async () => {
+    const owner = "quota-database-first";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { account_id: owner, access_token: "expired", refresh_token: "single-use" } });
     await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
@@ -394,35 +397,91 @@ describe("managed AI connections", () => {
     const file = quotaCredentialRecoveryPath(companyId, row.grant.id);
     const recoveryRoot = path.dirname(path.dirname(file));
     await expect(access(recoveryRoot)).rejects.toMatchObject({ code: "ENOENT" });
-    const synced: string[] = [];
-    let rejectRoot = true;
-    const realOpen = fs.open.bind(fs);
+    const writes: string[] = [];
+    const rejectRecoveryWrite = (target: unknown) => {
+      if (String(target).startsWith(recoveryRoot)) {
+        writes.push(String(target));
+        throw Object.assign(new Error("Fixture recovery storage is read-only"), { code: "EROFS" });
+      }
+    };
+    const realOpen = fs.open.bind(fs), realMkdir = fs.mkdir.bind(fs);
     const open = vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
-      const handle = await realOpen(...args);
-      const sync = handle.sync.bind(handle);
-      vi.spyOn(handle, "sync").mockImplementation(async () => {
-        if (rejectRoot && args[0] === recoveryRoot) throw new Error("Injected recovery directory flush failure");
-        await sync(); synced.push(String(args[0]));
-      });
-      return handle;
+      rejectRecoveryWrite(args[0]);
+      return realOpen(...args);
     });
-    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-      expect(synced).toContain(recoveryRoot);
-      expect(synced).toContain(path.dirname(recoveryRoot));
-      return Response.json({ access_token: "fresh-durable", refresh_token: "replacement-durable" });
+    const mkdir = vi.spyOn(fs, "mkdir").mockImplementation(async (...args: Parameters<typeof fs.mkdir>) => {
+      rejectRecoveryWrite(args[0]);
+      return realMkdir(...args);
     });
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: "fresh-direct", refresh_token: "replacement-direct" }));
     try {
-      await expect(service.refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow("Injected recovery directory flush failure");
-      expect(request).not.toHaveBeenCalled();
-      expect(await service.credential(row)).toBe(original);
-      rejectRoot = false;
-      await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      const refreshed = await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      expect(JSON.parse(refreshed)).toMatchObject({ tokens: { access_token: "fresh-direct", refresh_token: "replacement-direct" } });
+      expect(await service.credential(row)).toBe(refreshed);
       expect(request).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "fresh-durable", refresh_token: "replacement-durable" } });
-    } finally { open.mockRestore(); request.mockRestore(); }
+      expect(writes).toEqual([]);
+      await expect(access(file)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(recoveryRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { open.mockRestore(); mkdir.mockRestore(); request.mockRestore(); }
   });
 
-  it.each(["timeout", "unexpected"] as const)("classifies a manual probe's %s lock failure before starting the provider", async (kind) => {
+  it("starts a second run while the same account has unfinished credential cleanup", async () => {
+    const owner = "concurrent-retained-cleanup";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const scope = { companyId, accountKey: row.grant.id }, retired = deferredSignal(), cleanup = vi.fn(async () => {});
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: {} };
+    retainAiCredentialCleanup({ scope, retired: retired.promise, cleanup });
+    let runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    try {
+      runtime = await prepareManagedAiRuntime(db, input);
+      expect(await readFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth);
+      expect(cleanup).not.toHaveBeenCalled();
+      await runtime.cleanup();
+      expect(cleanup).not.toHaveBeenCalled();
+    } finally { retired.resolve(); await reconcileRetainedAiCleanup(scope); await runtime?.cleanup(); }
+  });
+
+  it("runs concurrent probes of the same account without holding the company credential mutex", async () => {
+    const owner = "concurrent-account-probes";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth);
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: {} };
+    const entered = deferredSignal(), release = deferredSignal(), secondEntered = vi.fn();
+    const first = withManagedAiProbe(db, input, async () => { entered.resolve(); await release.promise; });
+    let second: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      second = withManagedAiProbe(db, input, async () => { secondEntered(); });
+      await vi.waitFor(() => expect(secondEntered).toHaveBeenCalledOnce(), { timeout: 1000 });
+      await second;
+    } finally { release.resolve(); await Promise.allSettled([first, second]); }
+  });
+
+  it("prepares a run without waiting for another runtime's active cleanup", async () => {
+    const owner = "concurrent-active-cleanup";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const scope = { companyId, accountKey: row.grant.id }, entered = deferredSignal(), release = deferredSignal();
+    retainAiCredentialCleanup({ scope, retired: Promise.resolve(), cleanup: async () => { entered.resolve(); await release.promise; } });
+    await entered.promise;
+    let runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    const preparing = prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} }).then(value => { runtime = value; });
+    try {
+      await vi.waitFor(() => expect(runtime).toBeDefined(), { timeout: 1000 });
+      expect(await readFile(path.join(String(runtime!.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth);
+    } finally { release.resolve(); await preparing; await reconcileRetainedAiCleanup(scope); await runtime?.cleanup(); }
+  });
+
+  it.each(["timeout", "unexpected"] as const)("does not acquire a company credential lock for an ordinary probe (%s)", async (kind) => {
     const owner = `manual-probe-lock-${kind}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
@@ -434,20 +493,17 @@ describe("managed AI connections", () => {
     const failure = Object.assign(new Error("injected private lock diagnostic"), { code: kind === "timeout" ? WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE : "EACCES" });
     const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock").mockRejectedValueOnce(failure);
     try {
-      const error = await withManagedAiProbe(db, input, probe).then(() => { throw new Error("Probe must not start"); }, error => error);
-      if (kind === "timeout") {
-        expect(isAiConnectionBusy(error)).toBe(true);
-        expect(error).toMatchObject({ status: 422, message: "AI credentials are being updated. Retry shortly.", details: { code: "ai_connection_busy" } });
-      } else expect(error).toBe(failure);
-      expect(probe).not.toHaveBeenCalled();
+      expect(await withManagedAiProbe(db, input, probe)).toBe("ok");
+      expect(lock).not.toHaveBeenCalled();
+      expect(probe).toHaveBeenCalledOnce();
       expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("active");
     } finally { lock.mockRestore(); }
     expect(await withManagedAiProbe(db, input, probe)).toBe("ok");
-    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledTimes(2);
     expect(await service.credential(row)).toBe(auth);
   });
 
-  it("fences retained OpenAI credentials before reads, including callers holding the mutation lock", async () => {
+  it("reads OpenAI credentials independently of another runtime cleanup or mutation lock", async () => {
     const owner = "retained-openai-read-fence";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
@@ -456,9 +512,9 @@ describe("managed AI connections", () => {
     const scope = { companyId, accountKey: row.grant.id }, retired = deferredSignal(), cleanup = vi.fn(async () => {});
     retainAiCredentialCleanup({ scope, retired: retired.promise, cleanup });
     try {
-      await expect(service.runtimeCredential(row)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      await expect(service.runtimeCredential(row)).resolves.toBe(auth);
       await codexAdapter.withAccountHomeSecretMutationLock(undefined, companyId, async () => {
-        await expect(service.runtimeCredential(row, { credentialLockHeld: true })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+        await expect(service.runtimeCredential(row)).resolves.toBe(auth);
       });
       expect(cleanup).not.toHaveBeenCalled();
       retired.resolve(); await reconcileRetainedAiCleanup(scope);
@@ -467,7 +523,7 @@ describe("managed AI connections", () => {
     } finally { retired.resolve(); await reconcileRetainedAiCleanup(scope).catch(() => {}); }
   });
 
-  it("retries retired Codex probe cleanup before the same account can launch again", async () => {
+  it("allows the same account to run while retired Codex probe cleanup is pending or fails", async () => {
     const owner = "retired-probe-retry", otherOwner = "retired-probe-other";
     const auth = (user: string, hour: string) => JSON.stringify({ tokens: { account_id: user, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
     for (const user of [owner, otherOwner]) {
@@ -487,29 +543,30 @@ describe("managed AI connections", () => {
         await writeFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), auth(owner, "11"));
         throw new runnerProbe.NativeEnvironmentProbeCleanupError(stopped.promise, new Error("fixture probe interruption"), []);
       })).rejects.toMatchObject({ details: { code: "native_probe_cleanup_pending" } });
-      await expect(withManagedAiProbe(db, input, provider)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
-      expect(provider).not.toHaveBeenCalled(); expect(merge).not.toHaveBeenCalled();
+      await expect(withManagedAiProbe(db, input, provider)).resolves.toBe(auth(owner, "10"));
+      expect(provider).toHaveBeenCalledOnce(); expect(merge).not.toHaveBeenCalled();
       stopped.resolve();
       await vi.waitFor(() => expect(merge).toHaveBeenCalledOnce());
-      await expect(withManagedAiProbe(db, input, provider)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
-      expect(provider).not.toHaveBeenCalled(); expect(merge).toHaveBeenCalledTimes(2);
+      await expect(withManagedAiProbe(db, input, provider)).resolves.toBe(auth(owner, "10"));
+      await vi.waitFor(() => expect(merge).toHaveBeenCalledTimes(2));
       await expect(withManagedAiProbe(db, { ...input, responsibleUserId: otherOwner }, provider)).resolves.toBe(auth(otherOwner, "10"));
       expect(await readFile(path.join(String(retained!.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth(owner, "11"));
       merge.mockRestore();
+      await reconcileRetainedAiCleanup({ companyId, accountKey: row.grant.id });
       await expect(withManagedAiProbe(db, input, provider)).resolves.toBe(auth(owner, "11"));
       expect(await service.credential(row)).toBe(auth(owner, "11"));
       await expect(access(retained!.home!)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { stopped.resolve(); merge.mockRestore(); await retained?.cleanup().catch(() => {}); }
   });
 
-  it("keeps quota refresh outside a manual probe until its rotated credential is saved", async () => {
+  it("allows quota refresh alongside a manual probe and keeps the freshest saved credential", async () => {
     const owner = "manual-probe-race";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const auth = (hour: string) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
     await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("10"));
     const [row] = await service.quotaAccounts(companyId, owner);
     const entered = deferredSignal(), release = deferredSignal();
-    const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Quota must not exchange the probe's token"));
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: "quota-access", refresh_token: "quota-refresh" }));
     const probing = withManagedAiProbe(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
       binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} }, async runtime => {
       entered.resolve(); await release.promise;
@@ -522,12 +579,12 @@ describe("managed AI connections", () => {
       lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock");
       // Start outside the probe's async scope; it is a separate HTTP request.
       refreshing = service.refreshQuotaCredential(row, auth("10"), new AbortController().signal);
-      await vi.waitFor(() => expect(lock).toHaveBeenCalled());
-      expect(request).not.toHaveBeenCalled();
+      const refreshed = await refreshing;
+      expect(request).toHaveBeenCalledOnce();
+      expect(JSON.parse(refreshed)).toMatchObject({ tokens: { access_token: "quota-access", refresh_token: "quota-refresh" } });
       release.resolve(); await probing;
-      expect(await refreshing).toBe(auth("11"));
-      expect(await service.credential(row)).toBe(auth("11"));
-      expect(request).not.toHaveBeenCalled();
+      expect(await service.credential(row)).toBe(refreshed);
+      expect(request).toHaveBeenCalledOnce();
     } finally { release.resolve(); await Promise.allSettled([probing, refreshing]); lock?.mockRestore(); request.mockRestore(); }
   });
 
@@ -567,7 +624,7 @@ describe("managed AI connections", () => {
     } finally { probe.mockRestore(); resolveBinary.mockRestore(); }
   });
 
-  it("keeps the real Codex setup cleanup error and retries its original owner before another probe", async () => {
+  it("preserves the original Codex setup cleanup while another probe can run", async () => {
     const owner = "native-codex-setup-retirement-retry";
     const auth = (hour: string) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
@@ -593,7 +650,7 @@ describe("managed AI connections", () => {
       throw new runnerProbe.NativeEnvironmentProbeCleanupError(retired, new Error("fixture interrupted probe"), [], retry);
     }).mockImplementation(async options => {
       directories.push(options.runtimeDirectory);
-      expect(await readFile(path.join(options.transportOptions!.sourceCodexHome!, "auth.json"), "utf8")).toBe(auth("11"));
+      expect(await readFile(path.join(options.transportOptions!.sourceCodexHome!, "auth.json"), "utf8")).toBe(auth(physical ? "11" : "10"));
       await options.onCleanupConfirmed!();
       return { provider: "codex", providerDriver: "codex_app_server", effectiveModel: "gpt-5.6-sol", helloProbePassed: true };
     });
@@ -607,12 +664,13 @@ describe("managed AI connections", () => {
       await expect(access(retainedHome!)).resolves.toBeUndefined();
       rejectRetirement(new Error("fixture initial retirement proof failed"));
       await Promise.resolve();
-      await expect(invoke()).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
-      expect(probe).toHaveBeenCalledOnce(); expect(retry).toHaveBeenCalledOnce();
+      expect((await invoke()).status).toBe("pass");
+      expect(probe).toHaveBeenCalledTimes(2); expect(retry).toHaveBeenCalledOnce();
       await expect(access(retainedHome!)).resolves.toBeUndefined();
       physical = true;
+      await reconcileRetainedAiCleanup({ companyId, accountKey: row.grant.id });
       expect((await invoke()).status).toBe("pass");
-      expect(retry).toHaveBeenCalledTimes(2); expect(probe).toHaveBeenCalledTimes(2);
+      expect(retry).toHaveBeenCalledTimes(2); expect(probe).toHaveBeenCalledTimes(3);
       expect(await service.credential(row)).toBe(auth("11"));
       await expect(access(retainedHome!)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
@@ -633,11 +691,11 @@ describe("managed AI connections", () => {
     const replacement = await secretService(db).createCurrentUserSecretValue(companyId, owner, { definitionId: definition.id, value: auth("new-account") }, { userId: owner });
     const prepare = () => prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
       binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
-    const original = codexAdapter.withAccountHomeSecretMutationLock;
-    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock").mockImplementationOnce(async (env, company, callback) => {
+    const original = localEncryptedProvider.resolveVersion;
+    const lock = vi.spyOn(localEncryptedProvider, "resolveVersion").mockImplementationOnce(async options => {
       await db.update(connectionGrants).set({ credentialSecretRefs: row.grant.credentialSecretRefs.map(ref => ref.configPath === "ai.credential" ? { ...ref, secretId: replacement.id } : ref) }).where(eq(connectionGrants.id, row.grant.id));
       await syncConnectionCredentialBindings(db, row.connection);
-      return original(env, company, callback);
+      return original(options);
     });
     try { await expect(prepare()).rejects.toThrow("AI credential changed during preparation"); }
     finally { lock.mockRestore(); }
@@ -703,7 +761,7 @@ describe("managed AI connections", () => {
     } finally { request.mockRestore(); }
   });
 
-  it.each(["rotation", "secret_metadata", "activity", "commit"] as const)("recovers exchanged OAuth tokens after %s persistence failure without another exchange", async (failure) => {
+  it.each(["rotation", "secret_metadata", "activity", "commit"] as const)("fails truthfully after %s persistence failure and permits sign-in recovery without a journal", async (failure) => {
     const owner = `quota-rollback-${failure}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { access_token: `expired-${failure}`, refresh_token: "single-use", account_id: owner } });
@@ -723,17 +781,25 @@ describe("managed AI connections", () => {
       await expect(service.refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow();
       expect(request).toHaveBeenCalledTimes(1);
       expect(await service.credential(row)).toBe(original);
-      const encrypted = await readFile(file, "utf8");
-      expect(encrypted).not.toContain(`fresh-${failure}`);
-      expect(encrypted).not.toContain(`replacement-${failure}`);
+      await expect(access(file)).rejects.toMatchObject({ code: "ENOENT" });
       await db.execute(sql.raw(`drop trigger quota_save_failure on ${table}; drop function quota_save_failure();`));
       triggerDropped = true;
-      // A new service instance recovers from disk, without an in-memory cache.
-      const recovered = aiConnectionService(db);
-      await recovered.refreshQuotaCredential(row, original, new AbortController().signal);
-      expect(JSON.parse(await recovered.credential(row))).toMatchObject({ tokens: { access_token: `fresh-${failure}`, refresh_token: `replacement-${failure}` } });
+      // A new receiver has no replacement to recover. A failed use routes to the
+      // existing sign-in flow, rather than claiming the failed save succeeded.
+      const receiver = aiConnectionService(db);
+      const generation = createHash("sha256").update(original).digest("hex").slice(0, 16);
+      await receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
+        provider: "openai", method: "subscription", connectionId: row.connection.id, grantId: row.grant.id,
+        mode: "responsible_user", responsibleUserId: owner, identity: `${row.grant.id}:${owner}:${generation}`,
+      } });
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("needs_reauthorization");
+      const signedIn = JSON.stringify({ tokens: { access_token: "signed-in", refresh_token: "new-login" } });
+      await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription",
+        ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, signedIn);
+      const [current] = await receiver.quotaAccounts(companyId, owner);
+      expect(current.grant.status).toBe("active");
+      expect(await receiver.runtimeCredential(current)).toBe(signedIn);
       expect(request).toHaveBeenCalledTimes(1);
-      await expect(access(file)).rejects.toThrow();
       expect((await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, ref.secretId))).map(version => version.version).sort()).toEqual([1, 2]);
     } finally {
       request.mockRestore();
@@ -741,7 +807,7 @@ describe("managed AI connections", () => {
     }
   });
 
-  it.each(["company_file", "grant_row", "secret_row"] as const)("defers runtime preparation on a contended %s lock and succeeds once it clears", async (kind) => {
+  it.each(["company_file", "grant_row"] as const)("reads runtime credentials without an execution lock while a %s writer is active", async (kind) => {
     const owner = `runtime-lock-${kind}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const auth = JSON.stringify({ tokens: { access_token: "valid-access", refresh_token: "valid-refresh", account_id: owner } });
@@ -760,9 +826,8 @@ describe("managed AI connections", () => {
     });
     try {
       if (kind !== "company_file") await held.promise;
-      const error = await prepare().then(() => { throw new Error("Runtime must defer"); }, error => error);
-      expect(isAiConnectionBusy(error)).toBe(true);
-      expect(error).toMatchObject({ status: 422, details: { code: "ai_connection_busy" } });
+      expect(await service.runtimeCredential(row)).toBe(auth);
+      expect(lock?.mock.calls ?? []).toHaveLength(0);
       expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("active");
     } finally { release.resolve(); await holding; lock?.mockRestore(); }
     const run = await prepare();
@@ -819,6 +884,112 @@ describe("managed AI connections", () => {
     } finally { request.mockRestore(); await oldRun.cleanup(); await nextRun?.cleanup(); await journal.clear(); }
   });
 
+  it("requires sign-in after the receiver process dies with an exchanged but unsaved token", async () => {
+    const owner = "quota-receiver-process-loss";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: "expired-process", refresh_token: "single-use-process" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    const held = deferredSignal(), release = deferredSignal();
+    const lockKey = 7192031;
+    const holder = db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(${lockKey})`);
+      held.resolve(); await release.promise;
+    });
+    await held.promise;
+    await db.execute(sql.raw(`create function hold_receiver_save() returns trigger language plpgsql as $$ begin
+      if new.secret_id = '${ref.secretId}'::uuid then perform pg_advisory_xact_lock(${lockKey}); end if; return new; end $$;
+      create trigger hold_receiver_save before insert on company_secret_versions for each row execute function hold_receiver_save();`));
+    let exchanges = 0;
+    const provider = createServer((req, res) => {
+      exchanges++; req.resume();
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ access_token: "unsaved-process", refresh_token: "replacement-process" }));
+    });
+    provider.listen(0, "127.0.0.1"); await once(provider, "listening");
+    const address = provider.address() as { port: number };
+    const child = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), new URL("./helpers/quota-credential-process.ts", import.meta.url).pathname], {
+      env: { ...process.env, CREDENTIAL_TEST_DATABASE_URL: database.connectionString,
+        CREDENTIAL_TEST_PROVIDER_URL: `http://127.0.0.1:${address.port}`, CREDENTIAL_TEST_COMPANY_ID: companyId, CREDENTIAL_TEST_OWNER: owner },
+      stdio: "ignore",
+    });
+    const exited = once(child, "exit");
+    try {
+      let blocked = false;
+      const deadline = Date.now() + 25_000;
+      while (!blocked && Date.now() < deadline && child.exitCode === null) {
+        const rows = await db.execute(sql`select pid from pg_stat_activity where datname = current_database()
+          and wait_event_type = 'Lock' and wait_event = 'advisory'`);
+        blocked = exchanges === 1 && rows.length > 0;
+        if (!blocked) await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      expect(blocked).toBe(true);
+      child.kill("SIGKILL"); await exited;
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
+      release.resolve(); await holder;
+      await db.execute(sql`drop trigger hold_receiver_save on company_secret_versions; drop function hold_receiver_save()`);
+      await new Promise<void>(resolve => provider.close(() => resolve()));
+    }
+    expect(exchanges).toBe(1);
+    expect(await service.credential(row)).toBe(original);
+    await expect(access(quotaCredentialRecoveryPath(companyId, row.grant.id))).rejects.toMatchObject({ code: "ENOENT" });
+    const receiver = aiConnectionService(db);
+    const generation = createHash("sha256").update(original).digest("hex").slice(0, 16);
+    await receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
+      provider: "openai", method: "subscription", connectionId: row.connection.id, grantId: row.grant.id,
+      mode: "responsible_user", responsibleUserId: owner, identity: `${row.grant.id}:${owner}:${generation}`,
+    } });
+    expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("needs_reauthorization");
+    const signedIn = JSON.stringify({ tokens: { access_token: "process-sign-in", refresh_token: "process-new-login" } });
+    await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, signedIn);
+    const [current] = await receiver.quotaAccounts(companyId, owner);
+    expect(await receiver.runtimeCredential(current)).toBe(signedIn);
+  }, 40_000);
+
+  it("does not exchange a token when a required database transaction fails", async () => {
+    const owner = "quota-db-prerequisite";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: "expired", refresh_token: "single-use" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const request = vi.spyOn(globalThis, "fetch");
+    const unavailableUrl = new URL(database.connectionString);
+    unavailableUrl.port = "1";
+    const unavailable = createDb(unavailableUrl.toString());
+    try {
+      await expect(aiConnectionService(unavailable).refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow();
+      expect(request).not.toHaveBeenCalled();
+      await expect(access(quotaCredentialRecoveryPath(companyId, row.grant.id))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await unavailable.$client.end(); request.mockRestore(); }
+  });
+
+  it.each(["reconnect", "same_value_new_epoch", "revoked"] as const)("lets %s win after a returned token's save rolls back", async change => {
+    const owner = `quota-delayed-save-${change}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: "expired", refresh_token: "single-use" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    const transaction = db.transaction.bind(db);
+    const interrupted = vi.spyOn(db, "transaction").mockImplementationOnce(async (work, config) => {
+      await transaction(async tx => { await work(tx); throw new Error("fixture rollback"); }, config).catch(() => {});
+      if (change === "revoked") await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, row.grant.id));
+      else await secretService(db).rotate(ref.secretId, { value: change === "reconnect" ? "new-login" : original });
+      throw new Error("fixture lost response");
+    });
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: "late", refresh_token: "late-refresh" }));
+    try {
+      const refresh = service.refreshQuotaCredential(row, original, new AbortController().signal);
+      if (change === "revoked") await expect(refresh).rejects.toThrow("credentials_unavailable");
+      else expect(await refresh).toBe(change === "reconnect" ? "new-login" : original);
+      expect(await service.credential(row)).toBe(change === "reconnect" ? "new-login" : original);
+      expect(request).toHaveBeenCalledTimes(1);
+      await expect(access(quotaCredentialRecoveryPath(companyId, row.grant.id))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { interrupted.mockRestore(); request.mockRestore(); }
+  });
+
   it.each(["rollback", "lost_commit_reply"] as const)("automatically saves one exchanged token across %s", async (failure) => {
     const owner = `quota-once-${failure}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
@@ -863,7 +1034,10 @@ describe("managed AI connections", () => {
       triggerInstalled = true;
       await expect(service.refreshQuotaCredential(row, current, new AbortController().signal)).rejects.toThrow();
       expect(await service.credential(row)).toBe(current);
-      expect(JSON.parse((await journal.read())!.value).tokens.access_token).toBe("C");
+      expect(await journal.read()).toBeNull();
+      // Only observed records from the earlier release use the legacy reader.
+      await journal.write({ companyId, grantId: row.grant.id, connectionId: row.connection.id, secretId: ref.secretId,
+        baseHash: quotaCredentialHash(current), value: JSON.stringify({ tokens: { access_token: "C", refresh_token: "refresh-C" } }) });
       await db.execute(sql`drop trigger delayed_quota_commit_failure on company_secret_versions; drop function delayed_quota_commit_failure()`);
       triggerInstalled = false;
       const recovered = await service.refreshQuotaCredential(row, original, new AbortController().signal);
@@ -1080,7 +1254,7 @@ describe("managed AI connections", () => {
     await expect(access(run.home!)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("serializes quota exchange with a concurrent secret edit and runtime credential read", async () => {
+  it("rereads committed quota rotation without taking an account execution mutex", async () => {
     const owner = "quota-race-owner";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { access_token: "old-access", refresh_token: "single-use", id_token: "identity", account_id: "race-account" } });
@@ -1098,15 +1272,18 @@ describe("managed AI connections", () => {
     const refreshing = service.refreshQuotaCredential(row, original, new AbortController().signal);
     try {
       await exchangeStarted.promise;
-      const edit = secretService(db).update(secretId, { description: "Changed during refresh" });
       lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock");
       const preparing = prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local", binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
-      // Runtime reads now wait at the company file lock before touching the
-      // old credential. The returned home must contain the committed rotation.
       let prepared = false;
       void preparing.then(() => { prepared = true; });
-      await vi.waitFor(() => expect(lock).toHaveBeenCalled());
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query like '%company_secrets%'`);
+        expect(waiting.length).toBeGreaterThan(0);
+      });
       expect(prepared).toBe(false);
+      expect(lock).not.toHaveBeenCalled();
+      const edit = secretService(db).update(secretId, { description: "Changed during refresh" });
       releaseExchange.resolve();
       const results = await Promise.all([refreshing, edit, preparing]);
       runtime = results[2];
@@ -1161,7 +1338,7 @@ describe("managed AI connections", () => {
       agentIds: [], allAgents: true,
       routing: { kind: "local", protocol, baseUrl: "http://127.0.0.1:9000/v1", auth: "none", models: [] },
     }, "");
-    const binding = { provider, method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const;
+    const binding = { provider, method: "api_key", mode: "delegated", connectionId: account.connectionId, grantId: account.grantId } as const;
     const config = { model: "fixture-model", env: { OPENAI_API_KEY: "host-key", ANTHROPIC_API_KEY: "host-key" } };
     const first = await prepareManagedAiRuntime(db, { ...input, adapterType, responsibleUserId: "alice", binding, config });
     const second = await prepareManagedAiRuntime(db, { ...input, adapterType, responsibleUserId: "alice", binding, config });
@@ -1180,7 +1357,7 @@ describe("managed AI connections", () => {
     }, "fixture-grok-key");
     const taskKey = `grok-history-${randomUUID()}`;
     const runInput = { ...input, taskKey, adapterType: "grok_local", responsibleUserId: "alice", config: {},
-      binding: { provider: "xai", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const };
+      binding: { provider: "xai", method: "api_key", mode: "delegated", connectionId: account.connectionId, grantId: account.grantId } as const };
     const first = await prepareManagedAiRuntime(db, runInput);
     const scope = createHash("sha256").update(JSON.stringify([
       companyId, agentId, taskKey, first.sessionIdentity,
@@ -1376,16 +1553,56 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally { fetchSpy.mockRestore(); }
   });
 
+  it("reads provider identity only for an authorized credential and preserves connected state when profile access is denied", async () => {
+    const owner = "identity-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Identity account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "identity-selected-secret");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ account: { email: "avery@example.test", uuid: "private-account-id" }, organization: { name: "Example team", uuid: "private-org-id" } }));
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = req.header("x-test-anonymous") ? { type: "none" }
+        : req.header("x-agent") ? { type: "agent", agentId, companyId, companyIds: [companyId], onBehalfOfUserId: owner }
+          : { type: "board", source: "session", userId: req.header("x-test-user") ?? owner, companyIds: [companyId] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const url = `/api/companies/${companyId}/ai-connections/${account.connectionId}/identity?grantId=${account.grantId}`;
+    try {
+      const result = await request(app).get(url);
+      expect(result.status).toBe(200);
+      expect(result.headers["cache-control"]).toBe("no-store");
+      expect(result.body).toMatchObject({ ...account, status: "available", accountLabel: "avery@example.test", organizationLabel: "Example team" });
+      expect(fetchSpy).toHaveBeenCalledWith("https://api.anthropic.com/api/oauth/profile", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer identity-selected-secret" }) }));
+      for (const value of ["identity-selected-secret", "private-account-id", "private-org-id"]) expect(JSON.stringify(result.body)).not.toContain(value);
+      fetchSpy.mockReset();
+      expect((await request(app).get(url).set("x-test-user", "bob")).status).toBe(404);
+      expect((await request(app).get(url.replace(companyId, otherCompanyId))).status).toBe(403);
+      expect((await request(app).get(url.replace(account.grantId, randomUUID()))).status).toBe(404);
+      expect((await request(app).get(url).set("x-test-anonymous", "yes")).status).toBe(401);
+      expect((await request(app).get(url).set("x-agent", "yes")).status).toBe(403);
+      expect((await request(app).get(url.replace(account.connectionId, "invalid"))).status).toBe(404);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      fetchSpy.mockResolvedValue(Response.json({ error: "private-provider-error" }, { status: 403 }));
+      expect((await request(app).get(url)).body).toMatchObject({ status: "unavailable", errorCode: "permission_denied", accountLabel: null });
+      expect((await service.list(companyId, owner)).find(item => item.id === account.connectionId)?.status).toBe("connected");
+      fetchSpy.mockClear();
+      await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+      expect((await request(app).get(url)).body).toMatchObject({ status: "unavailable", errorCode: "connection_unavailable" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally { fetchSpy.mockRestore(); }
+  });
+
   it("uses the same usage probe for shared accounts across legacy and native runner selections", async () => {
     const account = await service.save(companyId, "alice", { provider: "anthropic", method: "subscription", ownership: "shared", name: "Shared usage account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "shared-usage-secret");
     const selected = { provider: "anthropic", method: "subscription", mode: "shared", ...account } as const;
     const tools = toolAccessService(db);
-    await tools.replaceConnectionGrantMembers(account.connectionId, account.grantId, ["alice"], { userId: "alice" });
+    await tools.replaceConnectionGrantMembers(account.connectionId, account.grantId, ["alice"], { actorType: "user", actorId: "alice" });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 100 }, extra_usage: { is_enabled: false } })));
     try {
       await expect(service.probeUsage(companyId, "bob", account.connectionId)).rejects.toThrow("not found");
       expect(fetchSpy).not.toHaveBeenCalled();
-      await tools.replaceConnectionGrantMembers(account.connectionId, account.grantId, ["bob"], { userId: "alice" });
+      await tools.replaceConnectionGrantMembers(account.connectionId, account.grantId, ["bob"], { actorType: "user", actorId: "alice" });
       for (const config of [{ adapterType: "claude_local" }, { adapterType: "paperclip_runner", runnerProvider: "acpx", acpxAgent: "claude" }]) {
         const row = await service.select({ companyId, userId: "bob", agentId, binding: selected, ...config });
         expect(await service.probeUsage(companyId, "bob", row.connection.id, row.grant.id)).toMatchObject({ status: "ok", overage: { available: false }, limits: [{ limitReached: true }, { allowed: false }] });
@@ -1456,7 +1673,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   it("reconnects JSONB routing without changing its identity or access", async () => {
     const routing = { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "gateway-model" }] } as const;
     const input = { provider: "openai", method: "api_key", name: "Reconnect gateway", ownership: "personal", allAgents: false, agentIds: [agentId], routing: { ...routing, models: [...routing.models] } } as const;
-    const saved = await service.save(companyId, "alice", { ...input, agentIds: [...input.agentIds] }, "old-gateway-credential");
+    const saved = await service.save(companyId, "alice", { ...input, agentIds: [...input.agentIds], routing: { ...routing, models: [...routing.models] } }, "old-gateway-credential");
     const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
     expect(stored!.config.ai).toMatchObject({ routing });
     expect(stored!.config.sourceTemplateKey).toBe("responses-api");
@@ -1571,7 +1788,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const runId = randomUUID();
     const vault = secretService(db);
     const definition = await vault.createUserSecretDefinition(companyId, {
-      key: `ANTHROPIC_API_KEY.${randomUUID()}`, name: "ANTHROPIC_API_KEY for onboarding",
+      key: `ANTHROPIC_API_KEY.${randomUUID()}`, name: "ANTHROPIC_API_KEY for onboarding", provider: "local_encrypted",
     }, { userId: "alice" });
     const ownerSecret = await vault.createCurrentUserSecretValue(companyId, "alice", {
       definitionId: definition.id, value: "fixture-original-owner-key",
@@ -1660,8 +1877,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       }
       expect(subEnv.HOME).not.toBe(apiEnvValues.HOME);
       expect(subRun.identity).not.toBe(apiRun.identity);
-      expect(subRun.config.model).toBe(bot.config.model);
-      expect(apiRun.config.model).toBe(bot.config.model);
+      expect((subRun.config as Record<string, unknown>).model).toBe(bot.config.model);
+      expect((apiRun.config as Record<string, unknown>).model).toBe(bot.config.model);
       expect(bot).toEqual(original);
       expect(aiConnectionBindingSchema.parse(bot.binding)).toEqual(bot.binding);
     } finally { await Promise.all([subRun.cleanup(), apiRun.cleanup()]); }
@@ -1732,6 +1949,26 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
     } finally { execute.mockRestore(); }
   });
+  it("reports only a found conflict as configuration, naming the files to fix", async () => {
+    const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace/project" } as Parameters<typeof assertManagedAiProjectAuth>[2];
+    const outcome = (exitCode: number | null, timedOut = false) =>
+      ({ exitCode, stdout: "", stderr: "", signal: null, timedOut }) as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>;
+    try {
+      execute.mockResolvedValue(outcome(42));
+      const conflict = await assertManagedAiProjectAuth({}, "anthropic", target).catch((error: unknown) => error);
+      expect(isAiConnectionIncompatible(conflict)).toBe(true);
+      expect(String((conflict as Error).message)).toContain(".claude/settings.json");
+      // A check that could not complete is not proof of a configuration conflict.
+      for (const failed of [outcome(43), outcome(null, true), outcome(127)]) {
+        execute.mockResolvedValue(failed);
+        const unavailable = await assertManagedAiProjectAuth({}, "anthropic", target).catch((error: unknown) => error);
+        expect(unavailable).toBeInstanceOf(Error);
+        expect(isAiConnectionIncompatible(unavailable)).toBe(false);
+      }
+      expect(isAiConnectionIncompatible(await assertManagedAiProjectAuth({ args: ["--settings=x"] }, "anthropic", target).catch((error: unknown) => error))).toBe(true);
+    } finally { execute.mockRestore(); }
+  });
   it("requires a typed project authentication capability for task-only environments", async () => {
     const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
     const description = { kind: "description", taskId: "task", projectAuthCheckVersion: 1,
@@ -1788,16 +2025,16 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const shared = await create("alice", "Engineering", "shared");
     const sharedBinding = { ...binding, mode: "shared" as const, ...shared };
     const tools = toolAccessService(db);
-    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["alice"], { userId: "alice" });
+    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["alice"], { actorType: "user", actorId: "alice" });
     const rejection = await service.select({ ...input, userId: "bob", binding: sharedBinding }).catch(error => error);
     expect(rejection).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
     expect(readAiConnectionConfigurationFailure(rejection)).toBe("ai_connection_credential_not_shared");
     expect((await service.list(companyId, "bob", agentId)).some(account => account.id === shared.connectionId)).toBe(false);
-    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["bob"], { userId: "alice" });
+    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["bob"], { actorType: "user", actorId: "alice" });
     expect((await service.select({ ...input, userId: "bob", binding: sharedBinding })).grant.id).toBe(shared.grantId);
     expect((await service.list(companyId, "bob", agentId)).some(account => account.id === shared.connectionId)).toBe(true);
     await expect(service.select({ ...input, userId: "alice", binding: sharedBinding })).rejects.toThrow("not shared");
-    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, [], { userId: "alice" });
+    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, [], { actorType: "user", actorId: "alice" });
     for (const userId of ["alice", "bob"]) {
       expect((await service.select({ ...input, userId, binding: sharedBinding })).grant.id).toBe(shared.grantId);
     }
@@ -1845,7 +2082,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const ae = a.config.env as Record<string,string>, be = b.config.env as Record<string,string>;
     expect(ae.ANTHROPIC_API_KEY).toBe("fixture-Alice second"); expect(be.ANTHROPIC_API_KEY).toBe("fixture-Bob first");
     expect(ae.HOME).not.toBe(be.HOME); expect(a.identity).not.toBe(b.identity);
-    expect(a.config.model).toBe("unchanged-model"); expect(config.env.ANTHROPIC_API_KEY).toBe("project-never-use");
+    expect((a.config as Record<string, unknown>).model).toBe("unchanged-model"); expect(config.env.ANTHROPIC_API_KEY).toBe("project-never-use");
     await Promise.all([a.cleanup(), b.cleanup()]); await expect(access(ae.HOME)).rejects.toThrow();
   });
   it("blocks missing identity, incompatible providers, and cross-company explicit selections", async () => {
@@ -1975,6 +2212,33 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(grant.credentialSecretRefs[0].secretId).toBe(secret.id);
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent.runtimeConfig.aiConnection).toBeUndefined();
+  });
+  it("keeps account summaries ordered across sequential scans and repeat migration", async () => {
+    const orderedCompanyId = randomUUID(), userId = "stable-list-owner";
+    await db.insert(companies).values({ id: orderedCompanyId, name: "Stable account list", issuePrefix: `O${orderedCompanyId.slice(0, 5)}` });
+    await db.insert(companyMemberships).values({ companyId: orderedCompanyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const accounts = [];
+    for (const name of ["First account", "Second account", "Third account"]) {
+      accounts.push(await service.save(orderedCompanyId, userId, { provider: "anthropic", method: "api_key", ownership: "personal", name, apiKey: "fixture-stable-list", agentIds: [], allAgents: false }, "fixture-stable-list"));
+    }
+    const expected = accounts.map(({ connectionId: id, grantId }) => ({ id, grantId }))
+      .sort((a, b) => a.id.localeCompare(b.id) || a.grantId.localeCompare(b.grantId));
+    await db.transaction(async tx => {
+      await tx.execute(sql`SET LOCAL enable_indexscan = off`);
+      await tx.execute(sql`SET LOCAL enable_bitmapscan = off`);
+      await tx.execute(sql`SET LOCAL enable_hashjoin = off`);
+      await tx.execute(sql`SET LOCAL enable_mergejoin = off`);
+      for (const account of [...expected].reverse()) {
+        await tx.update(toolConnections).set({ name: sql`${toolConnections.name}` }).where(eq(toolConnections.id, account.id));
+        await tx.update(connectionGrants).set({ status: sql`${connectionGrants.status}` }).where(eq(connectionGrants.id, account.grantId));
+      }
+      const transactionalService = aiConnectionService(tx as unknown as Db);
+      const before = await transactionalService.list(orderedCompanyId, userId);
+      expect(before.map(({ id, grantId }) => ({ id, grantId }))).toEqual(expected);
+      const migration = await readFile(new URL("../../../packages/db/src/migrations/0276_hard_mandroid.sql", import.meta.url), "utf8");
+      for (const statement of migration.split("--> statement-breakpoint").filter(value => value.trim())) await tx.execute(sql.raw(statement));
+      expect(await transactionalService.list(orderedCompanyId, userId)).toEqual(before);
+    });
   });
   it("runs two Claude subscription executions for the same grant at the same time", async () => {
     // Claude writes no auth file back to the grant, so two runs share no
@@ -2191,6 +2455,15 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
     const personal = await service.select({ ...input, userId: "alice" });
     const base = `/api/companies/${companyId}/ai-connections`;
+    const ownerList = await request(app).get(base);
+    expect(ownerList.status).toBe(200);
+    expect(ownerList.body.connections.find((account: { grantId: string }) => account.grantId === personal.grant.id)?.canSetDefault).toBe(true);
+    const viewerList = await request(app).get(base).set("x-test-role", "viewer");
+    expect(viewerList.status).toBe(200);
+    expect(viewerList.body.connections.every((account: { canSetDefault: boolean }) => account.canSetDefault === false)).toBe(true);
+    const otherUserList = await request(app).get(base).set("x-test-user", "bob");
+    expect(otherUserList.status).toBe(200);
+    expect(otherUserList.body.connections.some((account: { grantId: string; canSetDefault: boolean }) => account.grantId === personal.grant.id && account.canSetDefault)).toBe(false);
     expect((await request(app).get(`/api/companies/${otherCompanyId}/ai-connections`)).status).toBe(403);
     expect((await request(app).put(`${base}/default`).set("x-test-user", "bob").send({ grantId: personal.grant.id })).status).toBe(403);
     expect((await request(app).put(`${base}/default`).set("x-test-role", "viewer").send({ grantId: personal.grant.id })).status).toBe(403);
@@ -2203,6 +2476,60 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(network).not.toHaveBeenCalled();
     } finally { network.mockRestore(); }
   });
+  it("keeps personal-default list queries constant and other reads responsive with a blocked membership read", async () => {
+    const testCompany = randomUUID(), owner = "default-list-cost";
+    await db.insert(companies).values({ id: testCompany, name: "Default list cost", issuePrefix: "DLC" });
+    await db.insert(companyMemberships).values({ companyId: testCompany, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const first = await service.save(testCompany, owner, { provider: "openai", method: "api_key", ownership: "personal", name: "Default cost", agentIds: [], allAgents: false }, "fixture-cost");
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: owner, companyIds: [testCompany], memberships: [{ companyId: testCompany, membershipRole: "member", status: "active" }] };
+      next();
+    });
+    app.get("/probe", async (_req, res) => { await db.execute(sql`select 1`); res.sendStatus(200); });
+    app.use("/api", aiConnectionRoutes(db));
+    const url = `/api/companies/${testCompany}/ai-connections`;
+    const selects = vi.spyOn(db, "select");
+    let smallQueries: number, largeQueries: number;
+    try {
+      expect((await request(app).get(url)).status).toBe(200);
+      smallQueries = selects.mock.calls.length;
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId));
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, first.grantId));
+      const ids = Array.from({ length: 199 }, () => randomUUID());
+      await db.insert(toolConnections).values(ids.map(id => ({ ...connection, id, uid: id, name: `Cost ${id}` })));
+      await db.insert(connectionGrants).values(ids.map(connectionId => ({ ...grant, id: randomUUID(), connectionId })));
+      selects.mockClear();
+      const large = await request(app).get(url);
+      largeQueries = selects.mock.calls.length;
+      expect(large.status).toBe(200);
+      expect(large.body.connections).toHaveLength(200);
+      expect(large.body.connections.every((account: { canSetDefault: boolean }) => account.canSetDefault)).toBe(true);
+      expect(largeQueries).toBe(smallQueries);
+      expect(largeQueries).toBeLessThan(30);
+    } finally { selects.mockRestore(); }
+
+    const held = deferredSignal(), release = deferredSignal();
+    const holder = db.transaction(async tx => {
+      await tx.execute(sql`lock table company_memberships in access exclusive mode`);
+      held.resolve(); await release.promise;
+    });
+    await held.promise;
+    const pending = request(app).get(url).then(response => response);
+    try {
+      let blocked = false;
+      const deadline = Date.now() + 5_000;
+      while (!blocked && Date.now() < deadline) {
+        const rows = await db.execute(sql`select pid from pg_stat_activity where wait_event_type = 'Lock' and query like '%company_memberships%'`);
+        blocked = rows.length > 0;
+        if (!blocked) await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+      expect((await request(app).get("/probe").timeout(2_000)).status).toBe(200);
+    } finally { release.resolve(); await holder; }
+    expect((await pending).status).toBe(200);
+  });
+
   it.each(["anthropic", "openai"] as const)("reports a missing %s browser process after a server restart", async provider => {
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
     const id = randomUUID();
@@ -2368,7 +2695,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const selectionInput = { ...input, agentId: futureAgentId, userId: "alice", binding: selected };
     await expect(service.select(selectionInput)).rejects.toThrow("not permitted for this agent");
     const run = await prepareManagedAiRuntime(db, { companyId, agentId: futureAgentId, responsibleUserId: "alice", adapterType: "claude_local", binding: selected, config: { cwd: home, model: "same-model" }, allowUninstalledShared: true });
-    expect(run.config.model).toBe("same-model");
+    expect((run.config as Record<string, unknown>).model).toBe("same-model");
     await run.cleanup();
     await db.insert(connectionGrantMembers).values({ companyId, grantId: account.grantId, subjectType: "user", subjectId: "bob" });
     await expect(service.select({ ...selectionInput, allowUninstalledShared: true })).rejects.toThrow("not shared with the responsible user");
@@ -2378,7 +2705,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect((await service.select(selectionInput)).grant.id).toBe(account.grantId);
   });
 
-  it.each([false, true])("validates runner account adoption in the inherited sandbox (inline: %s)", async (inline) => {
+  it.each([false, true])("validates legacy or task account adoption in the inherited sandbox (inline: %s)", async (inline) => {
     const { agentRoutes } = await import("../routes/agents.js");
     const { instanceSettingsService } = await import("../services/instance-settings.js");
     const targetModule = await import("../services/environment-execution-target.js");
@@ -2392,6 +2719,11 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(agents).values({ id, companyId, name: "Runner adoption", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
     const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: "fixture-adoption-key", agentIds: inline ? [] : [id], allAgents: false }, "fixture-adoption-key");
     await service.setDefault(companyId, "alice", account.grantId);
+    if (!inline) {
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId));
+      await db.update(toolConnections).set({ healthStatus: "unknown", config: { ...connection.config, aiLegacyAdoption: true } })
+        .where(eq(toolConnections.id, account.connectionId));
+    }
     const tryDeliver = vi.fn(async (interactionId: string) => {
       // Dispatch observes committed adoption, never a partially saved choice.
       expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0].status).toBe("accepted");
@@ -2407,7 +2739,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: "alice", contextSnapshot: { issueId } });
       interactionId = (await connectionIntentService(db).requestForRunAuthFailure(runId))!.interactionId!;
     }
-    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false })) } } as const;
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn(async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "", timedOut: false, pid: null, startedAt: null })) } } as const;
     const resolveTarget = vi.spyOn(targetModule, "resolveEnvironmentExecutionTarget").mockResolvedValue(target);
     const release = vi.fn(async () => undefined);
     const acquire = vi.fn(async () => ({ lease: { id: randomUUID(), provider: "daytona", providerLeaseId: "test-sandbox", metadata: {} }, leaseContext: {} }));

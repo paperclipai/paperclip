@@ -7,7 +7,7 @@ import { isBlockedUnstartedWake, isTerminalUnstartedWake } from "../non-executio
 import { JourneyError, type JourneyContext, type OnboardingArtifactEvidence, type TargetSession } from "./types.js";
 import { retainOnboardingArtifact } from "./artifact-evidence.js";
 import { preAcceptanceTaskStatus, preAcceptanceViolations, type OnboardingPreAcceptanceEvidence } from "./onboarding-pre-acceptance.js";
-import { isProviderUnstartedWorkspaceDeferral } from "./workspace-deferral.js";
+import { isPendingNativeRecovery, isProviderUnstartedWorkspaceDeferral } from "./workspace-deferral.js";
 
 export interface OnboardingFirstTaskInput {
   context: JourneyContext;
@@ -41,7 +41,6 @@ function fail(code: string): never { throw new JourneyError("failed", code); }
 const runIssueId = (run: Row) => run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
 const isProposal = (row: Row) => ["request_confirmation", "request_checkbox_confirmation"].includes(row.kind);
 const isPlanningDocument = (row: Row) => /^(?:plan|proposal)$/.test(row.key);
-const isPendingRun = (run: Row) => activeRuns([run]).length > 0 || run.status === "scheduled_retry";
 
 function sameWorkspaceRetry(source: Row, successor: Row): boolean {
   const issueIds = (run: Row) => [run.nativeIssueId, run.issueId, run.contextSnapshot?.issueId].filter(value => value != null);
@@ -65,6 +64,8 @@ function unstartedScheduledWorkspaceRetry(run: Row): boolean {
 /** Exercise the ordinary onboarding conversation; APIs observe, never submit its actions. */
 export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Promise<OnboardingFirstTaskResult> {
   const { context: { api, page, company }, agent, campaignId, proof } = input;
+  const isPendingRun = (run: Row) => activeRuns([run]).length > 0 || run.status === "scheduled_retry" ||
+    isPendingNativeRecovery(run, input.deadlineAt);
   if (!Number.isSafeInteger(input.maxRuns) || input.maxRuns < 1) fail("invalid_onboarding_run_limit");
   const title = `Artifact ${campaignId}`;
   const seen = new Map<string, Row>();
@@ -136,6 +137,7 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
         workspacePending = true;
         continue;
       }
+      if (isPendingNativeRecovery(run, input.deadlineAt)) { workspacePending = true; continue; }
       if (activeRuns([run]).length || run.status === "succeeded" || isBlockedUnstartedWake(run) || isTerminalUnstartedWake(run, snapshot.tasks)) continue;
       fail("onboarding_first_task_failed");
     }
@@ -188,7 +190,10 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
   ].join("\n");
   await page.getByTestId("question-other-answer-composer").last().locator('[contenteditable="true"],textarea').first().fill([
     `I have one task in mind. Propose exactly one child task named "${title}" and wait for my approval before creating it or doing its work.`,
-    "After approval, assign it to yourself and let its own Paperclip execution produce the result. Then verify and link its saved document and downloadable file in this onboarding conversation and complete both tasks.",
+    'Save that proposal with request_human_input using interactionKind "confirmation" (or "checkbox" bound to the saved plan revision when plan mode applies) and continuationPolicy "wake_assignee". Check that the tool returned a saved pending card. Correct rejected arguments from its feedback; a failed call is not a pending proposal.',
+    "Do not resolve, accept, or record approval yourself. This opening answer supplies scope, not approval. Wait for my actual accepted card decision before calling create_task; a rejection does not authorize the work.",
+    "After approval, assign it to yourself and let its own Paperclip execution produce the result. After it finishes, verify its saved document and published attachment.",
+    "In your final reply in this onboarding conversation, include actual Markdown links to the child task, its saved document, and connection-proof.json. Copy the published attachment's returned contentPath or downloadPath into the file link URL, including its actual attachment ID. A backticked filename, document key, or path is not a clickable link. Obtain the real references from the child's saved results; do not invent IDs or URLs. Then complete both tasks.",
     "When you create the child, copy the entire brief between BEGIN CHILD BRIEF and END CHILD BRIEF VERBATIM into create_task.description. Preserve every step, tool name, parameter instruction, and exact encoded input. Do not summarize or paraphrase it.",
     "BEGIN CHILD BRIEF",
     childBrief,
@@ -238,8 +243,22 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
     if (childId && child?.id !== childId) fail("onboarding_approved_child_mismatch");
     const workspacePending = assertRuns(snapshot, [parent.id, ...(childId ? [childId] : [])]);
     if (snapshot.attachments.some(row => row.issueId !== childId)) fail("onboarding_artifact_created_by_parent");
+    const pending = workspacePending || [...seen.values()].some(isPendingRun);
+    if (child?.status === "blocked" && child.unblockDescriptor?.owner === "board" && !pending) {
+      const childRuns = [...seen.values()].filter(run => runIssueId(run) === child.id)
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      const latest = childRuns[0];
+      const createdAt = latest && typeof latest.createdAt === "string" ? Date.parse(latest.createdAt) : NaN;
+      const result = latest?.resultJson;
+      if (Number.isFinite(createdAt) && childRuns.slice(1).every(run => Date.parse(run.createdAt) < createdAt) &&
+        latest?.runtimeMode === "native" && latest.nativeIssueId === child.id && latest.contextSnapshot?.issueId === child.id &&
+        latest.status === "succeeded" && latest.nativePhase === "committed" && result?.finalizationPhase === "committed" &&
+        result.prpReportedWorkDisposition === "blocked" && result.finalizationReasonCode === "current_track_blocker_waiting" &&
+        result.authoritativeDecision === "blocked" && result.issueStatusAfter === "blocked" &&
+        Number.isSafeInteger(child.statusVersion) && result.statusVersionAfter === child.statusVersion) fail("onboarding_child_task_blocked");
+    }
     const settled = child && currentParent.status === "done" && firstTaskCompletionSettled(snapshot.tasks, [parent.id], parent.id) &&
-      !workspacePending && ![...seen.values()].some(isPendingRun);
+      !pending;
     if (settled) {
       const artifacts = snapshot.attachments.filter(row => row.issueId === child.id && row.originalFilename === "connection-proof.json");
       if (artifacts.length !== 1) fail("onboarding_child_artifact_missing");

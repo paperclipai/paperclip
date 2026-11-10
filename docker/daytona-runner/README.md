@@ -61,6 +61,7 @@ docker buildx build \
   --platform linux/amd64 \
   --build-arg PAPERCLIP_RUNNER_CONTENT_ID="${content_id}" \
   --build-arg PAPERCLIP_RUNNER_SOURCE_REVISION="$(git rev-parse HEAD)" \
+  --build-arg PAPERCLIP_RUNNER_LOCK_SHA256="$(shasum -a 256 pnpm-lock.yaml | cut -d ' ' -f 1)" \
   --tag "paperclip-daytona-runner:e2e-content-${content_id}" \
   --load \
   --file docker/daytona-runner/Dockerfile \
@@ -107,8 +108,9 @@ runner/pack boundary change, and qualify the new pack before publishing it.
 Bumping a revision also retires every older image pack.
 The pack build also records a `contractDigest`, computed by
 `scripts/contracts/contract-fingerprints.mjs` from the JSON contracts under
-`protocol/` and `generated/` and from Rust serde shapes, payload keys, match
-literals and env keys, rather than from source bytes. An image pack is reused
+`protocol/` and `generated/`, from Rust serde shapes, payload keys, match
+literals and env keys, and from the Runner's ACPX patch, rather than from
+source bytes. An image pack is reused
 only when its digest equals the controller's bundled pack; comments and
 refactors leave it unchanged, so a mismatch means a contract changed and the
 controller uploads its bundled pack. Packs without a digest are not reused.
@@ -149,9 +151,11 @@ with source dependency changes; registry-time resolution drift fails closed.
 The Product E2E workflow resolves one lockfile before the image build. It
 verifies the downloaded artifact, then passes that artifact's SHA-256 as the
 `PAPERCLIP_RUNNER_LOCK_SHA256` build argument. The Dockerfile checks the resolved
-lock against this value before installation. The fixed Dockerfile default is
-for standalone builds; it must not replace a campaign's verified lock digest.
-Refresh the default from the clean tracked lockfile using the exact
+lock against this value before installation. The Dockerfile has no default
+digest: standalone builds pass the SHA-256 of the lockfile in their build
+context, and a missing or malformed value fails before installation instead of
+surfacing as a checksum mismatch. When a source change needs a fresh lockfile,
+resolve it from the clean tracked lockfile using the exact
 `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile` command,
 and verify a second resolution preserves the digest. A lockfile left by a
 filtered or incremental install can retain stale importer patch identities.

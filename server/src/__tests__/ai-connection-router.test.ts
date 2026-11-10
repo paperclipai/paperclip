@@ -311,6 +311,49 @@ describe("durable, authorized connection routing", () => {
     await expect(resolve(pool.id, `harness-switch-${kind}`, { adapterType: "hermes_local" })).rejects.toThrow("saved for a different harness; switch back to the original harness or choose another AI connection");
     await expect(resolve(pool.id, `harness-switch-${kind}`, { adapterType: "hermes_local", persisted: pinned })).rejects.toThrow("saved for a different harness; switch back to the original harness or choose another AI connection");
   });
+  it.each(["gateway", "local"] as const)("binds colliding %s chat model pins to the producing harness", async (kind) => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const routing = { kind, protocol: "chat" as const, auth: "bearer" as const, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", models: [{ id: "custom/a" }, { id: "paperclip/custom/a" }] };
+    const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Colliding harness pins", apiKey: "fixture", allAgents: true, agentIds: [], routing }, "fixture");
+    const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...account }, profile: { provider: "opencode", model: "custom/a" } };
+    const pool = await makePool({ members: [member] });
+    for (const adapterType of ["paperclip_runner", "opencode_local", "hermes_local"]) {
+      const taskKey = `colliding-harness-${kind}-${adapterType}`;
+      const pinned = await resolve(pool.id, taskKey, { adapterType, overrides: { model: "paperclip/custom/a" } });
+      expect(pinned.runtimeConfig.model).toBe("paperclip/custom/a");
+      const pinsBefore = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id));
+      const cursorBefore = await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id));
+      const switched = adapterType === "hermes_local" ? "opencode_local" : "hermes_local";
+      for (const persisted of [undefined, pinned]) {
+        expect(await resolve(pool.id, taskKey, { adapterType, persisted })).toEqual(pinned);
+        await expect(resolve(pool.id, taskKey, { adapterType: switched, persisted })).rejects.toThrow("saved for a different harness");
+      }
+      expect(await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id))).toEqual(pinsBefore);
+      expect(await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id))).toEqual(cursorBefore);
+    }
+  });
+  it.each(["gateway", "local"] as const)("preserves %s pin provenance without discovery hints or a retained pin row", async (kind) => {
+    const routing = { kind, protocol: "chat" as const, auth: "bearer" as const, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", models: [{ id: "custom/override" }] };
+    const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Pin provenance", apiKey: "fixture", allAgents: true, agentIds: [], routing }, "fixture");
+    const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...account }, profile: { provider: "opencode", model: "custom/default" } };
+    const pool = await makePool({ members: [member] });
+    const taskKey = `pin-provenance-${kind}`;
+    const pinned = await resolve(pool.id, taskKey, { overrides: { model: "paperclip/custom/override" } });
+    expect(pinned.modelHarness).toBe("opencode_local");
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId));
+    const metadata = connection!.config.ai as AiConnectionMetadata;
+    await db.update(toolConnections).set({ config: { ...connection!.config, ai: { ...metadata, routing: { ...routing, models: [] } } } }).where(eq(toolConnections.id, account.connectionId));
+    expect(await resolve(pool.id, taskKey)).toEqual(pinned);
+    expect(await resolve(pool.id, taskKey, { persisted: pinned })).toEqual(pinned);
+    const { modelHarness: _harness, ...legacy } = pinned;
+    await db.update(aiConnectionTaskPins).set({ selection: legacy }).where(eq(aiConnectionTaskPins.poolId, pool.id));
+    await expect(resolve(pool.id, taskKey)).rejects.toThrow("no saved model harness; choose another AI connection");
+    await expect(resolve(pool.id, taskKey, { persisted: legacy })).rejects.toThrow("no saved model harness; choose another AI connection");
+    await db.delete(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id));
+    expect(await resolve(pool.id, taskKey, { adapterType: "opencode_local", persisted: pinned })).toEqual(pinned);
+    await expect(resolve(pool.id, taskKey, { adapterType: "hermes_local", persisted: pinned })).rejects.toThrow("saved for a different harness");
+    await expect(resolve(pool.id, taskKey, { persisted: legacy })).rejects.toThrow("no saved model harness; choose another AI connection");
+  });
   it("authorizes direct OpenRouter members before evaluating fresh and pinned model overrides", async () => {
     const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openrouter", method: "api_key", ownership: "personal", name: "OpenRouter", apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture");
     const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openrouter", method: "api_key", ...account }, profile: { provider: "opencode", model: "anthropic/claude-sonnet-4.5" } };

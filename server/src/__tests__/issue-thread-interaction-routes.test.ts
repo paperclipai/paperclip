@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TaskWatchdogMutationScope } from "../services/task-watchdog-scope.js";
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const UNRELATED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
@@ -50,7 +51,7 @@ const mockInteractionService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
+  wakeup: vi.fn(async (_agentId: string, _options: { payload?: unknown; contextSnapshot?: unknown }) => undefined),
   cancelRun: vi.fn(async () => null),
 }));
 const mockRequestNativeQuestionRunCancellation = vi.hoisted(() =>
@@ -65,7 +66,7 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
 const mockQuestionResponseDeliveries = vi.hoisted(() => ({
   deliver: vi.fn(async () => null),
 }));
-const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async () => ({ kind: "none" })));
+const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async (): Promise<TaskWatchdogMutationScope> => ({ kind: "none" })));
 const mockResolveCoreTrustPreset = vi.hoisted(() => vi.fn(() => ({ kind: "standard" })));
 const mockRunAttribution = vi.hoisted(() => ({
   value: {
@@ -74,7 +75,7 @@ const mockRunAttribution = vi.hoisted(() => ({
     responsibleUserId: null,
   } as Record<string, unknown> | null,
 }));
-const mockAccessDecide = vi.hoisted(() => vi.fn(async (input: { action?: string }) => ({
+const mockAccessDecide = vi.hoisted(() => vi.fn(async (input: { action?: string; resource?: { projectId?: string; assigneeAgentId?: string; issueId?: string } }) => ({
   allowed: true,
   action: input.action,
   reason: "allow_explicit_grant",
@@ -2752,6 +2753,44 @@ describe("issue thread interaction routes", () => {
     expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 
+  it("names the addressee as the only resolver when an agent tries another person's human-only card", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-for-riley",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: null,
+      createdByUserId: "user-alex",
+      addresseeUserId: "user-riley",
+      sourceRunId: null,
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Riley: approve?" },
+    });
+    const defaultWhere = mockDbSelectWhere.getMockImplementation()!;
+    // The addressee name lookup ends in .limit(1); the other reads keep their defaults.
+    mockDbSelectWhere.mockImplementation((() => ({
+      ...defaultWhere(),
+      limit: () => Promise.resolve([{ name: "Riley" }]),
+    })) as unknown as typeof defaultWhere);
+    const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: RUN_2 });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-for-riley/accept")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      code: "interaction_human_only",
+      details: { addresseeUserId: "user-riley", addresseeName: "Riley" },
+    });
+    expect(res.body.error).toContain("addressed to Riley.");
+    expect(res.body.error).toContain("Only Riley can accept or decline it");
+    // /accept carries no verified replying user, so the advice stays neutral.
+    expect(res.body.error).not.toContain("do not ask the person asking");
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+  });
+
   it("keeps a same-requester sibling confirmation human-only", async () => {
     mockReviewTransition.value = {
       actorType: "agent",
@@ -3422,7 +3461,7 @@ describe("issue thread interaction routes", () => {
       expect((await request(await createApp(owner)).post(path).send({})).status).toBe(200);
       const assignments = mockAccessDecide.mock.calls.filter(([input]) => input.action === "tasks:assign");
       expect(assignments).toHaveLength(3);
-      expect(assignments.every(([input]) => input.resource.projectId === projectId)).toBe(true);
+      expect(assignments.every(([input]) => input.resource?.projectId === projectId)).toBe(true);
       expect(mockInteractionService.acceptInteraction).toHaveBeenCalledOnce();
     });
 
@@ -3450,7 +3489,7 @@ describe("issue thread interaction routes", () => {
         action: input.action, reason: "test_policy", explanation: "Only the conversation agent may be assigned",
       }));
       expect((await request(await createApp(owner)).post(path).send({ selectedClientKeys: ["task-1"] })).status).toBe(200);
-      expect(mockAccessDecide.mock.calls.filter(([input]) => input.action === "tasks:assign").map(([input]) => input.resource.assigneeAgentId)).toEqual([ASSIGNEE_AGENT_ID]);
+      expect(mockAccessDecide.mock.calls.filter(([input]) => input.action === "tasks:assign").map(([input]) => input.resource?.assigneeAgentId)).toEqual([ASSIGNEE_AGENT_ID]);
     });
 
     it("denies an inaccessible explicit parent before creating an unassigned task", async () => {

@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FlaskConical, Loader2, Plus } from "lucide-react";
 
 import { statusCardsApi } from "@/api/statusCards";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useNavigate, useParams } from "@/lib/router";
@@ -41,6 +43,7 @@ export function StatusCards() {
     queryFn: () => statusCardsApi.list(selectedCompanyId!, false),
     enabled: Boolean(selectedCompanyId),
   });
+  const activeView = useQueryView(activeQuery);
   const archivedQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.statusCards.list(selectedCompanyId, true) : ["status-cards", "none", "archived"],
     queryFn: () => statusCardsApi.list(selectedCompanyId!, true),
@@ -75,25 +78,25 @@ export function StatusCards() {
     mutationFn: (id: string) => statusCardsApi.refresh(id),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not refresh the card."),
+    onError: (err) => setActionError(describeError(err, { action: "refresh the card" }).body),
   });
   const recompileMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.recompile(id),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not run the card."),
+    onError: (err) => setActionError(describeError(err, { action: "run the card" }).body),
   });
   const archiveMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.patch(id, { archived: true }),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not archive the card."),
+    onError: (err) => setActionError(describeError(err, { action: "archive the card" }).body),
   });
   const restoreMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.patch(id, { archived: false }),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not restore the card."),
+    onError: (err) => setActionError(describeError(err, { action: "restore the card" }).body),
   });
 
   const openDetail = (id: string, tab: string = "summary") => {
@@ -137,14 +140,17 @@ export function StatusCards() {
 
       {actionError ? <InlineBanner tone="warning" title="Heads up">{actionError}</InlineBanner> : null}
 
-      {activeQuery.isLoading ? (
+      {activeView.kind === "loading" || activeView.kind === "reconnecting" ? (
         <div className="flex items-center gap-2 py-12 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Loading cards…
         </div>
-      ) : activeQuery.isError ? (
-        <InlineBanner tone="danger" title="Could not load status cards">
-          {activeQuery.error instanceof Error ? activeQuery.error.message : "Try again."}
-        </InlineBanner>
+      ) : activeView.kind === "error" ? (
+        <QueryErrorState
+          error={activeView.error}
+          action="load status cards"
+          onRetry={activeView.retry}
+          retrying={activeView.isFetching}
+        />
       ) : activeCards.length === 0 ? (
         <EmptyState
           icon={FlaskConical}

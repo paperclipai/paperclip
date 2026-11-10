@@ -1,13 +1,13 @@
 import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
 import { vercelConnectHttpError, vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import { credentialScope, managedConnectorProfile } from "./client-settings.js";
-import { createOAuthClientRegistration } from "./client-registration.js";
+import { assertOAuthClientBindingUnchanged, createOAuthClientRegistration } from "./client-registration.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthEndpointPolicy } from "./endpoint-policy.js";
 import { createOAuthDiscovery } from "./discovery.js";
-import { oauthConfig, normalizeOauthScopes, originOf } from "./metadata.js";
+import { asRecord, oauthConfig, normalizeOauthScopes, originOf } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
-import { GOOGLE_WORKSPACE_DEFAULT_SELECTION, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { googleWorkspaceDraftRequestedScopes, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { and, eq, lt } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, agents, connectionGrants, issueThreadInteractions, toolConnections, toolOauthStates } from "@paperclipai/db";
@@ -72,17 +72,37 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
     const galleryMethod = galleryEntry
       ? connectionMethodForConnection(galleryEntry, connection)
       : null;
+    const starterBinding = actorBinding(input.actor);
+    const fixedPersonalIdentity = await fixedPersonalIdentityForReconnect(
+      connection,
+      input.subjectUserId,
+      input.actor,
+    );
+    const authorizationSubjectUserId =
+      fixedPersonalIdentity?.subjectUserId ?? input.subjectUserId;
+    const authorizationSubjectAgentId = input.subjectAgentId;
+    const workspaceDraftBinding = {
+      companyId, connectionId: connection.id,
+      actorType: starterBinding.actorType, actorId: starterBinding.actorId,
+      grantKind: connection.credentialPolicy === "per_user" ? "user" as const
+        : connection.credentialPolicy === "per_agent" ? "agent" as const : "organization" as const,
+      subjectId: connection.credentialPolicy === "per_user" ? authorizationSubjectUserId ?? null
+        : connection.credentialPolicy === "per_agent" ? authorizationSubjectAgentId ?? null : null,
+    };
     const requestedScopes = await (async () => {
       if (input.workspaceServices && sourceTemplateKey !== "google-workspace") throw badRequest("Service selection requires Google Workspace");
       if (sourceTemplateKey === "google-workspace") {
         if (input.workspaceServices && input.scopes) throw badRequest("Choose services or scopes, not both");
         const allowed = normalizeOauthScopes(galleryMethod?.defaults?.scopesHint);
         let scopes = input.scopes ?? (input.workspaceServices ? googleWorkspaceSelectedScopes(input.workspaceServices) : undefined);
-        if (!scopes && connection.status !== "draft") {
+        if (!scopes && connection.status === "draft") {
+          scopes = googleWorkspaceDraftRequestedScopes(connection.config.workspaceSetup, workspaceDraftBinding) ?? undefined;
+        }
+        if (!scopes && input.actor.managementContext?.actor.type === "agent") return null;
+        if (!scopes) {
           // Account-page reconnect has no new service choice. Never replace its
           // subject's saved request with the new-account write defaults.
-          const binding = actorBinding(input.actor);
-          const subjectUserId = input.subjectUserId ?? (binding.actorType === "user" ? binding.actorId : null);
+          const subjectUserId = authorizationSubjectUserId ?? (starterBinding.actorType === "user" ? starterBinding.actorId : null);
           const kind = connection.credentialPolicy === "per_user" ? "user"
             : connection.credentialPolicy === "per_agent" ? "agent" : "organization";
           const [grant] = await db.select().from(connectionGrants).where(and(
@@ -94,11 +114,12 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
                 : eq(connectionGrants.isDefault, true),
           )).limit(1);
           const saved = grant?.providerTenant?.oauth;
-          scopes = normalizeOauthScopes(saved?.requestedScopes ?? saved?.scopes)
+          scopes = normalizeOauthScopes(saved?.requestedScopes ?? (connection.status !== "draft" ? saved?.scopes : undefined))
             .filter(scope => allowed.includes(scope));
-          if (scopes.length === 0) throw badRequest("Choose your Google Workspace services before reconnecting");
+          if (scopes.length === 0) throw badRequest(connection.status === "draft"
+            ? "Choose your Google Workspace services before continuing setup"
+            : "Choose your Google Workspace services before reconnecting");
         }
-        scopes ??= googleWorkspaceSelectedScopes(GOOGLE_WORKSPACE_DEFAULT_SELECTION);
         if (!isGoogleWorkspaceScopeGrant(scopes) || scopes.some(scope => !allowed.includes(scope))) throw badRequest("Select at least one supported Google service");
         return scopes;
       }
@@ -118,15 +139,6 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       }
       return requested;
     })();
-    const starterBinding = actorBinding(input.actor);
-    const fixedPersonalIdentity = await fixedPersonalIdentityForReconnect(
-      connection,
-      input.subjectUserId,
-      input.actor,
-    );
-    const authorizationSubjectUserId =
-      fixedPersonalIdentity?.subjectUserId ?? input.subjectUserId;
-    const authorizationSubjectAgentId = input.subjectAgentId;
     if (authorizationSubjectAgentId) {
       const [subjectAgent] = await db
         .select({ id: agents.id })
@@ -208,6 +220,37 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       destination.hash = "";
       return { connectionId: connection.id, provider: sourceTemplateKey ?? "oauth",
         authorizationUrl: destination.toString(), expiresAt: null };
+    }
+    if (sourceTemplateKey === "google-workspace" && connection.status === "draft") {
+      const workspaceSetup = { version: 1, ...workspaceDraftBinding, requestedScopes };
+      const updated = await db.transaction(async tx => {
+        const [saved] = await tx.select().from(toolConnections).where(and(
+          eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId), eq(toolConnections.status, "draft"),
+        )).for("no key update");
+        if (!saved || (["credentialPolicy", "credentialSource", "authKind", "transport", "createdByUserId"] as const)
+          .some(key => saved[key] !== connection[key])
+          || ["sourceTemplateKey", "connectionMethodKey"].some(key => saved.config[key] !== connection.config[key]
+            || saved.transportConfig[key] !== connection.transportConfig[key])) {
+          throw conflict("Connection setup changed. Reload before continuing");
+        }
+        const config: Record<string, unknown> = { ...saved.config, workspaceSetup };
+        const transportConfig: Record<string, unknown> = { ...saved.transportConfig, workspaceSetup };
+        if (starterBinding.actorType === "user" && starterBinding.actorId) {
+          for (const target of [config, transportConfig]) {
+            const oauth = asRecord(target.oauth);
+            const pending = { ...asRecord(oauth.pendingWorkspaceServiceRequests) };
+            if (Object.hasOwn(pending, starterBinding.actorId)) {
+              delete pending[starterBinding.actorId];
+              target.oauth = { ...oauth, pendingWorkspaceServiceRequests: pending };
+            }
+          }
+        }
+        const [row] = await tx.update(toolConnections).set({ config, transportConfig, updatedAt: now() })
+          .where(and(eq(toolConnections.id, saved.id), eq(toolConnections.companyId, companyId), eq(toolConnections.status, "draft"))).returning();
+        return row;
+      });
+      if (!updated) throw conflict("Connection setup changed. Reload before continuing");
+      connection = updated;
     }
     if (connection.credentialSource === "vercel_connect") {
       if (!vercelConnect)
@@ -629,10 +672,13 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       });
     }
 
-    const nextConfig = {
-      ...connection.config,
-      oauth: {
-        ...oauthConfig(connection),
+    await db.transaction(async tx => {
+      const [saved] = await tx.select().from(toolConnections).where(and(
+        eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId),
+      )).for("no key update");
+      if (!saved) throw notFound("Tool connection not found");
+      assertOAuthClientBindingUnchanged(connection, saved, endpoints, input.redirectUri);
+      const oauth = {
         provider: endpoints.provider,
         authorizationUrl: endpoints.authorizationUrl,
         tokenUrl: endpoints.tokenUrl,
@@ -655,27 +701,29 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
         // Persist the issuer and resource this authorization run is bound to.
         // `iss` on the callback is validated against `expectedIssuer`, and
         // refresh/reconnect/revoke reuse the same pair rather than re-deriving it.
-        issuer: endpoints.issuer ?? oauthConfig(connection).issuer ?? null,
+        issuer: endpoints.issuer ?? oauthConfig(saved).issuer ?? null,
         expectedIssuer: endpoints.issuer ?? null,
         resource:
-          endpoints.resource ?? oauthConfig(connection).resource ?? null,
+          endpoints.resource ?? oauthConfig(saved).resource ?? null,
         clientIdMetadataDocumentSupported:
           endpoints.clientIdMetadataDocumentSupported === true,
-      },
-    };
-    await db
-      .update(toolConnections)
-      .set({
+      };
+      const nextConfig = { ...saved.config, oauth: { ...oauthConfig(saved), ...oauth } };
+      const nextTransportConfig = { ...saved.transportConfig, oauth: { ...asRecord(saved.transportConfig.oauth), ...oauth } };
+      await tx
+        .update(toolConnections)
+        .set({
         // A generic URL connection starts life as `authKind: none`. Once it has
         // completed OAuth discovery and client resolution it is an OAuth
         // connection, and refresh, reconnect, revoke and diagnostics must all
         // treat it as one.
-        authKind: "oauth",
-        config: nextConfig,
-        transportConfig: nextConfig,
-        updatedAt: new Date(),
-      })
-      .where(eq(toolConnections.id, connection.id));
+          authKind: "oauth",
+          config: nextConfig,
+          transportConfig: nextTransportConfig,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId)));
+    });
 
     return {
       connectionId: connection.id,

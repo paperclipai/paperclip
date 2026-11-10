@@ -3,6 +3,7 @@ export const CREDENTIAL_NAMES = [
   "ANTHROPIC_API_KEY",
   "OPENROUTER_API_KEY",
   "KIMI_MODEL_API_KEY",
+  "KIMI_API_KEY",
   "XAI_API_KEY",
   "GROK_AUTH_JSON",
   "CODEX_AUTH_JSON",
@@ -10,6 +11,7 @@ export const CREDENTIAL_NAMES = [
   "DAYTONA_API_KEY",
   "GITHUB_TOKEN",
   "CURSOR_AUTH_TOKEN",
+  "CURSOR_API_KEY",
   "COPILOT_GITHUB_TOKEN",
 ] as const;
 
@@ -48,9 +50,11 @@ export type RunnerTaskFlow =
   | "pi_native"
   | "pi_controls"
   | "native_active_stop"
+  | "kimi_native_lifecycle"
   | "copilot_protection"
   | "native_provider_loss"
-  | "cursor_native";
+  | "cursor_native"
+  | "cursor_cloud_stop";
 
 export interface SecretReference {
   type: "secret_ref";
@@ -92,7 +96,7 @@ export interface RunnerProfileFixture {
       | "openrouter_rankings_snapshot";
     qualificationId: string;
   };
-  qualificationCandidate?: "cursor" | "copilot" | "pi";
+  qualificationCandidate?: "cursor" | "copilot" | "pi" | "kimi";
   ranking?: {
     rank: number;
     canonicalModelId: string;
@@ -156,6 +160,12 @@ export interface RunnerTaskFixture {
   id: string;
   label: string;
   groups: readonly string[];
+  /**
+   * Opt-in group. When set, the task is selected only by naming this group
+   * (`--group`), the case (`--case`), or an exact execution ID. Suite, profile
+   * and environment selectors alone never select it.
+   */
+  explicitGroup?: string;
   workMode: RunnerTaskWorkMode;
   flow: RunnerTaskFlow;
   expectedRunCount: number;
@@ -208,6 +218,7 @@ export interface RunnerSuiteFixture {
   groups: readonly string[];
   profiles: readonly RunnerProfileFixture[];
   environments: readonly EnvironmentFixture[];
+  environmentOverrides?: Readonly<Record<string, Partial<Record<RunnerEnvironmentId, EnvironmentFixture>>>>;
   tasks: readonly RunnerTaskFixture[];
   excludedExecutionIds?: readonly string[];
   expectedMatrixSize: number;

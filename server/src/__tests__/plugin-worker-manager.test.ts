@@ -1,7 +1,8 @@
+import { currentPluginInteractionOrigin } from "../services/plugin-interaction-context.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { Company, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   createHostClientHandlers,
   JsonRpcCallError,
@@ -27,6 +28,7 @@ vi.mock("../middleware/logger.js", () => {
 });
 
 import { logger } from "../middleware/logger.js";
+import { PluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../services/plugin-worker-unavailable-error.js";
 import { withRunExecutionTiming } from "../services/execution-preparation-timing.js";
 import {
   appendStderrExcerpt,
@@ -77,6 +79,24 @@ describe("worker configuration completion", () => {
       await manager.call("test.plugin", "configChanged", { companyId: "company-1", config: {} });
       expect(applied).toHaveBeenCalledTimes(1);
     } finally { unsubscribe(); await manager.stopAll(); }
+  });
+});
+
+describe("plugin worker unavailable refusals", () => {
+  it("refuses calls to a stopped or missing worker with a typed, unsent error", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: DELAYED_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1, hostHandlers: {},
+    });
+    const settled = vi.fn();
+    const stopped = await handle.call("environmentExecute", {} as never, undefined, undefined, settled).catch(error => error);
+    expect(stopped).toBeInstanceOf(PluginWorkerUnavailableError);
+    expect(stopped).toMatchObject({ code: PLUGIN_WORKER_UNAVAILABLE_CODE, pluginId: "test.plugin", workerStatus: "stopped",
+      message: 'Cannot call "environmentExecute" — worker for "test.plugin" is stopped' });
+    expect(settled).toHaveBeenCalledTimes(1);
+    const missing = await createPluginWorkerManager().call("missing.plugin", "environmentExecute", {} as never).catch(error => error);
+    expect(missing).toBeInstanceOf(PluginWorkerUnavailableError);
+    expect(missing).toMatchObject({ workerStatus: null, message: 'No worker registered for plugin "missing.plugin"' });
   });
 });
 
@@ -293,7 +313,7 @@ describe("plugin-worker-manager stderr failure context", () => {
     const handle = createPluginWorkerHandle("test.plugin", {
       entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
       instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
-      hostHandlers: { "companies.get": (async (_params, context) => context?.invocationScope) as never },
+      hostHandlers: { "companies.get": (async (_params: unknown, context?: { invocationScope?: unknown }) => context?.invocationScope) as never },
     });
     const common = { companyId: "company-a", params: { mode: "echo", requestedCompanyId: "company-a" } };
     try {
@@ -361,15 +381,42 @@ describe("plugin-worker-manager stderr failure context", () => {
       });
       expect(companiesGet).toHaveBeenCalledWith(
         { companyId: "company-a" },
-        { invocationScope: { companyId: "company-a" }, traceparent: undefined, providerSpanBudget: { remaining: 256 } },
+        { invocationScope: { companyId: "company-a", agentOrigin: { agentId: "agent-1", runId: "run-1" } }, traceparent: undefined, providerSpanBudget: { remaining: 256 } },
       );
     } finally {
       await handle.stop().catch(() => undefined);
     }
   });
 
+  it("binds nested host operations to the initiating agent and refuses proactive fallback during its invocation", async () => {
+    const companiesGet = vi.fn(async () => {
+      await Promise.resolve();
+      return currentPluginInteractionOrigin();
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      proactiveCompanyScopes: ["company-a"], hostHandlers: { "companies.get": companiesGet as never },
+    });
+    try {
+      await handle.start();
+      const input = { toolName: "probe", parameters: { mode: "echo", requestedCompanyId: "company-a" },
+        runContext: { companyId: "company-a", agentId: "agent-a", runId: "run-a" } };
+      await expect(handle.call("executeTool", input as HostToWorkerMethods["executeTool"][0])).resolves.toEqual({
+        companyId: "company-a", agentId: "agent-a", runId: "run-a",
+      });
+      expect(currentPluginInteractionOrigin()).toBeUndefined();
+      const calls = companiesGet.mock.calls.length;
+      await expect(handle.call("executeTool", { ...input, parameters: { ...input.parameters, mode: "missing" } } as HostToWorkerMethods["executeTool"][0]))
+        .rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      await expect(handle.call("executeTool", { ...input, parameters: { ...input.parameters, mode: "unknown" } } as HostToWorkerMethods["executeTool"][0]))
+        .rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      expect(companiesGet).toHaveBeenCalledTimes(calls);
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
-    const companiesGet = vi.fn(async () => ({ id: "company-1" }));
+    const companiesGet = vi.fn(async () => ({ id: "company-1" }) as Company);
     const handle = createPluginWorkerHandle("test.plugin", {
       entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
       manifest: TEST_MANIFEST,
@@ -806,7 +853,7 @@ describe("plugin proactive events.subscribe: options-seeded scope + filter parit
   // Each case drives a real worker so the subscribe flows through the manager's
   // context resolution exactly as it does in production.
   function makeEventsHandle(seededCompanies: readonly string[]) {
-    const eventsSubscribe = vi.fn(async () => undefined);
+    const eventsSubscribe = vi.fn(async (_params: unknown) => undefined);
     const hostHandlers = createHostClientHandlers({
       pluginId: "test.plugin",
       capabilities: ["events.subscribe"],
@@ -1315,6 +1362,64 @@ describe("plugin worker manager setup-token pty route gate", () => {
     } finally {
       await handle.stop().catch(() => undefined);
     }
+  });
+
+  it("retains the opening company for scoped host calls during input, stop, and close", async () => {
+    const stages: string[] = [];
+    const handle = makeLoginPtyHandle({ hostHandlers: { "companies.get": async (
+      params: { companyId: string; stage: string }, context?: { invocationScope?: { companyId?: string } },
+    ) => {
+      if (context?.invocationScope?.companyId !== params.companyId || params.companyId !== "company-1") throw new Error("Host company scope denied");
+      stages.push(params.stage);
+      return { id: params.companyId };
+    } } });
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ probeLifecycle: true }));
+      session.write("browser-code");
+      await vi.waitFor(() => expect(stages).toEqual(["loginPtyInput"]));
+      session.kill();
+      await vi.waitFor(() => expect(stages).toEqual(["loginPtyInput", "loginPtyStop"]));
+      await session.close();
+      expect(stages).toEqual(["loginPtyInput", "loginPtyStop", "loginPtyClose"]);
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
+  it("fails the login when input delivery is unconfirmed", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ rejectInput: true }));
+      session.write("browser-code");
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      await session.close();
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
+  it("joins an in-flight close after input failure before releasing the login", async () => {
+    let releaseClose!: () => void;
+    const heldClose = new Promise<void>(resolve => { releaseClose = resolve; });
+    let closeCalls = 0;
+    const handle = makeLoginPtyHandle({ hostHandlers: { "companies.get": async (params: { stage: string }) => {
+      if (params.stage === "loginPtyClose") { closeCalls++; await heldClose; }
+      return { id: "company-1" };
+    } } });
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ rejectInput: true, probeLifecycle: true }));
+      session.write("browser-code");
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      await vi.waitFor(() => expect(closeCalls).toBe(1));
+      let completed = 0;
+      const first = session.close().then(() => { completed++; });
+      const second = session.close().then(() => { completed++; });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(completed).toBe(0);
+      releaseClose();
+      await Promise.all([first, second]);
+      expect(completed).toBe(2);
+      expect(closeCalls).toBe(1);
+    } finally { releaseClose(); await handle.stop().catch(() => undefined); }
   });
 
   it("terminalizes the route when the cumulative output passes the per-route bound", async () => {

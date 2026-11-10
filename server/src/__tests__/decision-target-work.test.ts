@@ -271,8 +271,33 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
 
   it("retains a first target change through drain without passive SQL", async () => {
     const row = await create(); await start(); await quiet(); draining = true; await change("cancelled");
-    const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(120_000);
-    expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(30_000); expect(idleWorkSnapshot().active).toBe(0); });
+    expect(recovery.hasDecisionTargetWork()).toBe(true);
+    expect(coordinator!.nextWakeAt()).not.toBeNull();
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update"), executes = vi.spyOn(db, "execute");
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); expect(executes).not.toHaveBeenCalled();
+    expect(idleWorkSnapshot().active).toBe(0);
+    reads.mockRestore(); writes.mockRestore(); executes.mockRestore();
+    draining = false; await expired(row.id); await quiet(); expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a real uncommitted target write held during drain and releases only after commit", async () => {
+    const row = await create(); await start(); await quiet(); draining = true;
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const writing = db.transaction(async tx => {
+      await issueService(db).update(targetId, { status: "cancelled", actorUserId: userId }, tx);
+      entered(); await gate;
+    });
+    try {
+      await ready; await vi.advanceTimersByTimeAsync(120_000);
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      expect((await service().get(row.id))?.status).toBe("open"); expect(wake).not.toHaveBeenCalled();
+    } finally { release(); await writing; }
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(30_000); expect(idleWorkSnapshot().active).toBe(0); });
+    expect(recovery.hasDecisionTargetWork()).toBe(true);
     draining = false; await expired(row.id); await quiet(); expect(wake).toHaveBeenCalledTimes(1);
   });
 
@@ -286,8 +311,14 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const row = await create(); await start(); await quiet(); await failExpiry(); await change("cancelled");
     await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(30_000); expect(errors.length).toBeGreaterThan(0); });
     draining = true;
-    const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(120_000);
-    expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(30_000); expect(idleWorkSnapshot().active).toBe(0); });
+    expect(recovery.hasDecisionTargetWork()).toBe(true);
+    expect(coordinator!.nextWakeAt()).not.toBeNull();
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update"), executes = vi.spyOn(db, "execute");
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); expect(executes).not.toHaveBeenCalled();
+    expect(idleWorkSnapshot().active).toBe(0);
+    reads.mockRestore(); writes.mockRestore(); executes.mockRestore();
     await db.execute(sql`drop trigger decision_target_expire_fail on decisions`);
     draining = false; await expired(row.id); await quiet(); expect(wake).toHaveBeenCalledTimes(1);
     for (const error of errors) expect(error).toMatchObject({ cause: { message: "expiry unavailable" } }); errors.length = 0;

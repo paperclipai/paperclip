@@ -1,11 +1,12 @@
 import path from "node:path";
-import { and, asc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import { companySkillRepositorySnapshots as snapshots, companySkillVersions as versions,
   skillPackageDeletions, type Db } from "@paperclipai/db";
 import { getStorageService, type StorageService } from "../storage/index.js";
 import { skillPackageStore, skillVersionFileMap, skillVersionMetadataColumns } from "./skill-package-store.js";
 import { packageSha256 } from "./skill-package-files.js";
 import { skillFileBytes, skillSnapshotHash } from "./skill-snapshot.js";
+import { runtimeSkillPackageUnreferencedSql } from "./native-runtime/runtime-skill-preservation-reference.js";
 
 type PageOptions = { id?: string; signal?: AbortSignal; companyId?: string; after?: string; limit?: number; apply?: boolean; clearLegacy?: boolean };
 const pageSize = (options: PageOptions) => Math.min(50, Math.max(1, options.limit ?? 10));
@@ -43,7 +44,8 @@ export function skillPackageMaintenance(db: Db, storage?: StorageService) {
     const rows = await db.select(skillVersionMetadataColumns).from(versions).where(and(
       options.companyId ? eq(versions.companyId, options.companyId) : undefined,
       options.id ? eq(versions.id, options.id) : undefined,
-      options.after ? gt(versions.id, options.after) : undefined, options.clearLegacy ? undefined : isNull(versions.packageSnapshotId), isNull(versions.releaseId)))
+      options.after ? gt(versions.id, options.after) : undefined,
+      options.clearLegacy ? undefined : or(isNull(versions.packageSnapshotId), isNull(versions.packageFileMap)), isNull(versions.releaseId)))
       .orderBy(asc(versions.id)).limit(pageSize(options));
     let migrated = 0;
     if (options.apply) for (const row of rows) {
@@ -51,6 +53,15 @@ export function skillPackageMaintenance(db: Db, storage?: StorageService) {
       const files = legacy?.files;
       options.signal?.throwIfAborted();
       if (!files?.length) {
+        if (row.packageSnapshotId && !row.packageFileMap) {
+          const manifest = await store.manifest(row.companyId, row.packageSnapshotId, options.signal);
+          const changed = await db.update(versions).set({ packageFileMap: skillVersionFileMap(manifest.files), migrationAt: null })
+            .where(and(eq(versions.companyId, row.companyId), eq(versions.id, row.id),
+              eq(versions.packageSnapshotId, row.packageSnapshotId), isNull(versions.packageFileMap)))
+            .returning({ id: versions.id });
+          migrated += changed.length;
+          continue;
+        }
         await db.update(versions).set({ migrationAt: null }).where(eq(versions.id, row.id));
         continue;
       }
@@ -71,7 +82,7 @@ export function skillPackageMaintenance(db: Db, storage?: StorageService) {
       packageId ??= await store.prepare(row.companyId, files, true, options.signal);
       const legacyMetadata = new Map(files.map(file => [file.path, file]));
       fileMap = fileMap ? fileMap.map(file => ({ ...file, kind: legacyMetadata.get(file.path)?.kind ?? file.kind,
-        encoding: legacyMetadata.get(file.path)?.encoding ?? "utf8" })) : skillVersionFileMap(files, await store.manifest(row.companyId, packageId, options.signal));
+        encoding: legacyMetadata.get(file.path)?.encoding ?? "utf8" })) : skillVersionFileMap(files);
       const receipt = await store.descriptor(row.companyId, packageId);
       if (!receipt.storage || !await store.verifyDurable(row.companyId, packageId, options.signal)) throw new Error(`Package must be migrated and verified first: ${packageId}`);
       await db.update(versions).set({ packageSnapshotId: packageId, packageFileMap: fileMap, ...(options.clearLegacy ? { fileInventory: [], migrationAt: null } : {}) })
@@ -82,7 +93,8 @@ export function skillPackageMaintenance(db: Db, storage?: StorageService) {
   }
 
   async function collectOrphans(options: PageOptions = {}) {
-    const unused = sql`not exists (select 1 from ${versions} where ${versions.repositorySnapshotId} = ${snapshots.id} or ${versions.packageSnapshotId} = ${snapshots.id})`;
+    const unused = sql`not exists (select 1 from ${versions} where ${versions.repositorySnapshotId} = ${snapshots.id} or ${versions.packageSnapshotId} = ${snapshots.id})
+      and ${runtimeSkillPackageUnreferencedSql()}`;
     const expired = sql`(${snapshots.upload} is null or (${snapshots.upload}->>'expiresAt')::timestamptz < now())`;
     const rows = await db.select({ id: snapshots.id }).from(snapshots).where(and(
       options.companyId ? eq(snapshots.companyId, options.companyId) : undefined,
@@ -93,10 +105,14 @@ export function skillPackageMaintenance(db: Db, storage?: StorageService) {
     )).orderBy(asc(snapshots.id)).limit(pageSize(options));
     let removed = 0;
     if (options.apply) for (const row of rows) {
-      // FK locking wins against a concurrent publication. The trigger persists
-      // deletion receipts in the same transaction, including company cascades.
-      const deleted = await db.delete(snapshots).where(and(eq(snapshots.id, row.id), expired, unused)).returning({ id: snapshots.id });
-      removed += deleted.length;
+      removed += await db.transaction(async tx => {
+        // JSON preservation references have no FK. Acquire the publisher's
+        // package row lock, then inspect references in a NEW READ COMMITTED
+        // statement so a just-committed receipt cannot be missed after waiting.
+        await tx.select({ id: snapshots.id }).from(snapshots).where(eq(snapshots.id, row.id)).for("update");
+        const deleted = await tx.delete(snapshots).where(and(eq(snapshots.id, row.id), expired, unused)).returning({ id: snapshots.id });
+        return deleted.length;
+      });
     }
     return { inspected: rows.length, removed, after: rows.at(-1)?.id ?? null };
   }

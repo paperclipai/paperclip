@@ -1,4 +1,6 @@
 import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
+import type { ProviderRateLimitSnapshot } from "../provider-rate-limits.js";
+import { workspaceRootsFor } from "../../tool-file-changes.js";
 import type {
   HarnessRuntimeRequest,
   HarnessSessionRecoveryOptions,
@@ -56,6 +58,11 @@ class AsyncQueue<T> implements AsyncIterable<T> {
       waiter.resolve({ value: undefined, done: true });
   }
 
+  reopen(): void {
+    if (this.#failure !== null) throw this.#failure;
+    this.#closed = false;
+  }
+
   fail(error: Error): void {
     this.#failure ??= error;
     this.#closed = true;
@@ -103,6 +110,7 @@ export class CodexSessionState {
   readonly goalReason: string | null;
   readonly skillInputs: NonNullable<CodexAppServerDriverOptions["skillInputs"]>;
   readonly reasoningEffort: string | undefined;
+  readonly diagnosticEnvironment: NodeJS.ProcessEnv;
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
   readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -111,6 +119,17 @@ export class CodexSessionState {
   activeTurnId: string | null;
   usageSnapshot: Record<string, unknown> | null = null;
   codexUsageBaseline: CodexUsageBaseline | null = null;
+  /** Latest provider-reported context occupancy, outside a compaction. */
+  lastContextUsedTokens: number | null = null;
+  /**
+   * Context sizes around an in-progress provider compaction. Codex reports the
+   * compacted size while its compaction item is still open, so the divider's
+   * "before → after" is captured here rather than from neighbouring events.
+   */
+  compactionContext: { preTokens: number | null; postTokens: number | null } | null = null;
+  /** Latest account rate-limit snapshot, merged across sparse updates. */
+  rateLimits: ProviderRateLimitSnapshot | null = null;
+  rateLimitNoticeSequence = 0;
   result: PrpStructuredRunResult | null = null;
   resultFingerprint: string | null = null;
   readonly normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];
@@ -134,10 +153,42 @@ export class CodexSessionState {
   dispositionOnlyRecoveryAvailable = false;
   dispositionOnlyRecoveryConsumed = false;
   dispositionOnlyRecoveryTurnId: string | null = null;
+  /**
+   * A restart continuation borrows the one-shot disposition marker so a
+   * crash during it can adopt the accepted turn. It is not the disposition
+   * request: if it completes without a result, the allowance is returned.
+   * In memory only; a checkpoint taken during the continuation keeps the
+   * stricter consumed marker.
+   */
+  restartContinuationTurnId: string | null = null;
   turnStarted = false;
   readonly terminalTurns = new Map<string, string>();
+  /**
+   * Turns already terminal in the checkpoint this session was restored from.
+   * A replacement runner can re-deliver their committed history as live
+   * notifications; those replays are not new provider activity.
+   */
+  readonly restoredTerminalTurns = new Set<string>();
+  /**
+   * Turns that an earlier session generation accepted: every turn this
+   * session restored from its checkpoint. With the turns settled in this
+   * generation they form the history set (see isHistoryTurn).
+   */
+  readonly priorGenerationTurns = new Set<string>();
+  /**
+   * A turn the runner accepted for an earlier generation that the restore did not find live.
+   * Its replayed start and items are history; only a restart-loss terminal confirms it lost.
+   * Any other outcome it reports (a terminal or a result) fails closed rather than being dropped.
+   */
+  readonly unconfirmedLostTurns = new Set<string>();
   readonly workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
   readonly emittedFileReferences = new Set<string>();
+  #workspaceRoots: string[] | null = null;
+  /** Working directory and its realpath, for making provider file paths relative. */
+  get workspaceRoots(): string[] {
+    this.#workspaceRoots ??= workspaceRootsFor(this.opened.context.workingDirectory);
+    return this.#workspaceRoots;
+  }
   readonly itemChannels = new Map<
     string,
     "progress" | "final" | "summary" | "detail" | "unknown"
@@ -166,6 +217,10 @@ export class CodexSessionState {
     codexUsageBaseline?: CodexUsageBaseline;
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
+    /** A recovered turn whose turn.accepted the previous controller never emitted. */
+    adoptedAcceptedTurnId?: string | null;
+    /** A turn the runner accepted for an earlier generation that the restore lost. */
+    lostAcceptedTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
     lineage?: HarnessThreadLineageEntry[];
     goal?: HarnessThreadGoal | null;
@@ -180,6 +235,7 @@ export class CodexSessionState {
     goalReason: string | null;
     skillInputs?: CodexAppServerDriverOptions["skillInputs"];
     reasoningEffort?: string;
+    diagnosticEnvironment?: NodeJS.ProcessEnv;
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
     completionFeedback?: CodexAppServerDriverOptions["completionFeedback"];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -205,6 +261,7 @@ export class CodexSessionState {
     this.goalReason = input.goalReason;
     this.skillInputs = structuredClone(input.skillInputs ?? []);
     this.reasoningEffort = input.reasoningEffort;
+    this.diagnosticEnvironment = input.diagnosticEnvironment ?? {};
     this.dynamicTools = input.dynamicTools;
     this.dynamicToolHandler = input.dynamicToolHandler;
     this.completionFeedback = input.completionFeedback;
@@ -247,6 +304,7 @@ export class CodexSessionState {
         );
       }
       this.terminalTurns.set(terminal.turnId, terminal.fingerprint);
+      this.restoredTerminalTurns.add(terminal.turnId);
     }
     if (this.activeTurnId && this.terminalTurns.has(this.activeTurnId)) {
       this.activeTurnId = null;
@@ -287,6 +345,18 @@ export class CodexSessionState {
     this.dispositionOnlyRecoveryConsumed =
       dispositionOnlyRecoveryPreviouslyConsumed;
     this.dispositionOnlyRecoveryTurnId = dispositionOnlyRecoveryTurnId;
+    for (const turnId of this.terminalTurns.keys()) this.priorGenerationTurns.add(turnId);
+    // The checkpoint's active turn (or one the previous controller's runner
+    // accepted) also belongs to an earlier generation. isHistoryTurn keeps it
+    // live while it stays active; once reconcile settles it, its late reports
+    // are history too.
+    if (input.lostAcceptedTurnId && input.lostAcceptedTurnId !== this.activeTurnId
+      && !this.terminalTurns.has(input.lostAcceptedTurnId))
+      this.unconfirmedLostTurns.add(input.lostAcceptedTurnId);
+    for (const turnId of [input.activeTurnId, input.adoptedAcceptedTurnId])
+      if (turnId) this.priorGenerationTurns.add(turnId);
+    if (dispositionOnlyRecoveryTurnId && dispositionOnlyRecoveryTurnId !== this.activeTurnId)
+      this.priorGenerationTurns.add(dispositionOnlyRecoveryTurnId);
   }
 
   requireActiveTurn(turnId: string, operation: string): void {
@@ -329,7 +399,53 @@ export class CodexSessionState {
     }
   }
 
+  /**
+   * True for a notification that only replays a turn restored as terminal.
+   * The caller drops it without emitting turn or item events; its terminal
+   * fingerprint was already committed, and turn/completed still checks it.
+   */
+  isRestoredTerminalReplay(turnId: string): boolean {
+    return this.restoredTerminalTurns.has(turnId) && this.isHistoryTurn(turnId);
+  }
+
+  /**
+   * The one stale-event rule (durable-ownership plan, section G). A provider
+   * event that names a turn which is not the active turn, and which an earlier
+   * session generation accepted (restored from the checkpoint, or reported
+   * lost on restore) or this generation already settled, is history: it is
+   * recorded and never fails the current turn. A turn this session never saw
+   * is not history and still fails closed.
+   */
+  isHistoryTurn(turnId: string): boolean {
+    return turnId.length > 0
+      && !this.protocolFailed
+      && turnId !== this.activeTurnId
+      && (this.priorGenerationTurns.has(turnId) || this.restoredTerminalTurns.has(turnId)
+        || this.terminalTurns.has(turnId) || this.unconfirmedLostTurns.has(turnId));
+  }
+
+  /** Every turn the history rule covers, for classifiers that take a set. */
+  historyTurnIds(): Set<string> {
+    return new Set([...this.priorGenerationTurns, ...this.restoredTerminalTurns, ...this.terminalTurns.keys()]);
+  }
+
+  recordHistoryEvent(kind: string, turnId: string): void {
+    if (this.notificationIdentityDiagnostics >= 32) return;
+    this.notificationIdentityDiagnostics += 1;
+    this.emit("harness.diagnostic", {
+      code: "provider_notification_identity",
+      classification: "stale_generation_event",
+      kind: kind.slice(0, 128),
+      expectedTurnId: this.activeTurnId,
+      receivedTurnId: turnId.slice(0, 256),
+    });
+  }
+
   notificationNamesActiveTurn(turnId: string, kind: string): boolean {
+    if (this.isHistoryTurn(turnId)) {
+      this.recordHistoryEvent(kind, turnId);
+      return false;
+    }
     if (
       this.protocolFailed ||
       this.terminal ||
@@ -579,6 +695,12 @@ export function initializeCodexSessionEvents(
     state.emitGoalEvent("session.goal.snapshot", state.currentGoal, {
       workingNow: state.activeTurnId !== null,
     });
+    // Recovery adopted a turn the runner accepted for the previous controller,
+    // which died before emitting turn.accepted. Emit it before any of that
+    // turn's notifications so its later terminal keeps the normal order.
+    if (input.adoptedAcceptedTurnId && input.adoptedAcceptedTurnId === state.activeTurnId) {
+      state.emit("turn.accepted", { turnId: input.adoptedAcceptedTurnId }, { turnId: input.adoptedAcceptedTurnId });
+    }
     for (const stale of input.stalePendingRuntimeRequests ?? []) {
       state.emit(
         "runtime_request.cancelled",

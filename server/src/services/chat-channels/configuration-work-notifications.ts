@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyGitHubWebhookRecovery } from "./github/webhook-recovery-notifications.js";
 import { notifyVoiceChange } from "../voice/voice-recovery-notifications.js";
 import { notifyChatReceiver, notifyChatConnectionReceiver, notifyChatCompanyReceivers } from "./runtime/receiver-work-notifications.js";
@@ -7,7 +8,10 @@ import { notifyDiscordCommandRegistration } from "./discord/command-work-notific
 export async function notifyChatEndpointConfiguration(transaction: object, endpoint: { id: string; provider: ChatProvider }) {
   if (endpoint.provider === "speko") await notifyVoiceChange(transaction, { kind: "endpoint", id: endpoint.id });
   await notifyChatReceiver(transaction, endpoint);
-  if (endpoint.provider === "github") await notifyGitHubWebhookRecovery(transaction, { kind: "endpoint", id: endpoint.id });
+  if (endpoint.provider === "github") {
+    await notifyDeliveryWork(transaction, DELIVERY_QUEUES.connectionEvents);
+    await notifyGitHubWebhookRecovery(transaction, { kind: "endpoint", id: endpoint.id });
+  }
   if (endpoint.provider === "discord") {
     await notifyDiscordCommandRegistration(transaction, { kind: "endpoint", id: endpoint.id });
   }

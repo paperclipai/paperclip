@@ -221,9 +221,18 @@ If `@cryppadotta` is not the right reviewer identity in the public repo, change 
 
 ## 8.1. Let the Lockfile Bot Merge Lockfile Refreshes
 
-`.github/workflows/refresh-lockfile.yml` regenerates `pnpm-lock.yaml` from the manifests on `master` and merges the result without CI or review. Contributors never commit the lockfile, so the bot is the only path for lockfile changes.
+`.github/workflows/refresh-lockfile.yml` regenerates `pnpm-lock.yaml` from the manifests on `master` and merges the result without CI or review. It also regenerates the sandbox provider lockfiles, `scripts/typecheck-sandbox-providers/pnpm-lock.yaml` and `packages/plugins/sandbox-providers/daytona/pnpm-lock.yaml`, in the same pull request. `LOCKFILES` in `.github/scripts/lockfile-trust.mjs` and in the workflow lists all three. Only trusted environments write lock content, and contributors never commit it. Two writers can change these lockfiles:
 
-Resolution keeps locked versions, but it picks the newest matching version for an added or widened dependency. A release-age gate (`.github/scripts/check-lockfile-release-age.mjs`) therefore checks every package version that the refresh adds. The bot merges only when each one has been on npm for at least 3 days. If any version is newer, or the gate cannot verify it, the bot leaves a comment on the PR and does not merge. A maintainer can review and merge it, or the daily scheduled refresh merges it after the versions are old enough. A held run saves its lockfile, and the hash of the `master` lockfile it started from, as an artifact. The next run resolves from that lockfile only while `master` still has the same lockfile. Held versions therefore stay put while their manifests are unchanged, even when newer releases appear, and a lockfile change on `master` replaces them. The gate also holds any added entry whose resolution is not a plain npm registry tarball. Change the age with `--min-age-days` in the workflow.
+- this workflow, on its `chore/refresh-lockfile` branch
+- Dependabot, but only when the lockfile in its pull request matches a verified Dependabot commit
+
+The reporting-lock proof (`tests/runner-e2e/report-lock.json` and `report-lock.patch`) controls the lock that paid evaluation jobs install, so it counts as lock content too. Only this workflow writes it.
+
+`.github/scripts/lockfile-trust.mjs` enforces these rules in the `pr-trusted.yml` policy job. The job runs the copy of the script from the current tip of the base branch, which is the first parent of GitHub's merge commit. A pull request therefore cannot change the check that judges it. The job does not use `pull_request.base.sha`, because GitHub does not update it on every push. To update a Dependabot pull request that is behind `master`, comment `@dependabot recreate`. Do not merge `master` into its branch, because a merged lockfile no longer matches Dependabot's commit.
+
+After a Dependabot lockfile merges, this workflow renews the proof. It first confirms three things: GitHub signed the merge commit, Dependabot opened the pull request, and the lockfile at the pull request head matches a verified Dependabot commit. It then records the merged lockfile in the proof and merges the refresh like any other. Paid evaluation jobs refuse the new lockfile until that refresh merges.
+
+Resolution keeps locked versions, but it picks the newest matching version for an added or widened dependency. A release-age gate (`.github/scripts/check-lockfile-release-age.mjs`) therefore checks every package version that the refresh adds to any of the lockfiles. The bot merges only when each one has been on npm for at least 3 days. If any version is newer, or the gate cannot verify it, the bot leaves a comment on the PR and does not merge. A maintainer can review and merge it, or the daily scheduled refresh merges it after the versions are old enough. A held run saves its lockfiles, and the hashes of the `master` lockfiles it started from, as an artifact. The next run resolves from those lockfiles only while `master` still has every one of them unchanged. Held versions therefore stay put while their manifests are unchanged, even when newer releases appear, and a lockfile change on `master` replaces them. The gate also holds any added entry whose resolution is not a plain npm registry tarball. Change the age with `--min-age-days` in the workflow.
 
 The merge uses a dedicated GitHub App. Do not reuse `commitperclip` or bypass the built-in `github-actions` app. Those identities are available to other workflows, including release jobs that run dependency install scripts, so a bypass for them would let any of those workflows land code on `master`.
 
@@ -368,7 +377,14 @@ readiness can succeed. A failed lane does not cancel the other lane.
 Both lanes restore Cargo dependencies with the pinned Rust Cache action. The
 compiler comes from the Runner package's `rust-toolchain.toml` before the action
 computes its key. Compiler and Cargo metadata changes select a new cache. The
-`release-runner-v2` shared key avoids separate copies for these lanes.
+`release-runner-v2` shared key avoids separate copies for these lanes. Its suffix
+hashes the virtual workspace's `runner/Cargo.toml` and ancestor Cargo configuration.
+Rust Cache discovers member manifests through Cargo metadata, which omits this
+virtual manifest. Without the suffix, changing `[profile.dev]` can restore an
+exact but obsolete dependency cache on every run. GitHub caches are immutable,
+so the successful rebuild cannot replace that old entry. The profile/configuration
+hash also partitions fallback restores. Every reader and writer uses the same
+inputs, including the separate typecheck and cross-target caches.
 Only the Rust lane saves this cache. After verification it also runs `build:rust`
 to warm the debug dependencies used by the protocol lane; its own tests already
 warm release dependencies. The cache writer is shorter than the protocol lane.
@@ -385,12 +401,35 @@ paths and the PR lanes can restore master's entry. The guard tests under
 Rust cache step in both workflows.
 
 Workspace crates and installed Cargo binaries are excluded from this entry.
-Every run runs all assigned checks, including on a cache hit. Only an
-own-repository master-push run verifying that push's exact SHA can restore the
-cache, and only a successful Rust lane saves it. PR, tag, and manual candidate
+Every run runs all assigned checks, including on a cache hit. In release
+verification, only an own-repository master-push run verifying that push's exact
+SHA can restore the cache, and only a successful Rust lane saves it. The PR
+workflow restores master's cache read only. Tag and manual candidate release
 verification compile without this cache. A miss or eviction costs compilation
 time but does not change the checks. To discard old dependency caches, increment
 the shared-key version and let the next successful master verification warm it.
+
+### Installed JavaScript dependencies
+
+`setup-ci-dependencies` can restore exact `node_modules` trees and separately
+certified shared/SDK build outputs. `scripts/ci-dependency-cache.mjs` hashes
+manifests, resolution, patches, install scripts, and the runtime/checkout layout.
+The root workspace-link hook and the server/Runner Copilot asset hooks are known
+postinstall commands. An exact dependency restore replays these hooks before
+validating workspace links and build outputs. Copilot defers installation in an
+unbuilt source checkout; its normal build installs and verifies the assets.
+Provider assets are not included in the dependency cache. Any unrecognized
+workspace lifecycle hook still disables materialized reuse. Only a frozen install
+from the canonical master push can publish the shared entries.
+
+For CI cache changes, the `profile-ci` label runs the paired setup benchmark
+and exercises restored dependencies with the shared-package tests. The longer
+server test comparison runs when its measured scripts or fixtures change;
+cache-only changes do not require unchanged test commands to run faster.
+It also builds Rust units on one GitHub-hosted runner and restores the dependency
+and workspace caches on a second runner with a fresh checkout. Both restores
+must be exact, and Cargo must report every unit as fresh. These qualification
+caches are scoped to the PR and run; they cannot populate master's caches.
 
 ### Runner release crate cache
 

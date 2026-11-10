@@ -40,6 +40,8 @@ const INTERACTION_SETTLED_CODES = [
   "interaction_superseded",
   "interaction_stale_target",
   "interaction_issue_closed",
+  "approved_tool_target_changed",
+  "approved_tool_managed_arguments_changed",
 ] as const;
 
 export type InteractionResolutionFailureKind = "audience_denied" | "settled" | "transient";

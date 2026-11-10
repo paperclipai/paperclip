@@ -25,7 +25,7 @@ export const listWorkspacesAction = {
   },
   "documentation": {
     "title": "List available workspaces",
-    "description": "List authorized reusable workspaces. A project is optional; choosing a workspace does not assign a project.",
+    "description": "List authorized reusable workspaces in ascending workspace-ID order. Returns workspaces, limit, returnedCount, hasMore and nextCursor. Follow nextCursor until null before treating the inventory as complete. Pages fit 128 KiB and may contain fewer than limit rows. An individually oversized summary includes truncatedFields and string previews; read its full record from GET /api/execution-workspaces/{id} under current access. Each page checks current access; concurrent changes require a fresh scan. Choosing a workspace does not assign a project.",
     "note": null
   },
   "examples": {
@@ -36,7 +36,7 @@ export const listWorkspacesAction = {
     "success": {
       "ok": true,
       "operationId": "list_workspaces",
-      "result": []
+      "result": { "workspaces": [], "limit": 50, "returnedCount": 0, "hasMore": false, "nextCursor": null }
     }
   },
   "live": {
@@ -46,7 +46,7 @@ export const listWorkspacesAction = {
       "operationId": "list_workspaces",
       "version": 1,
       "title": "List available workspaces",
-      "description": "List authorized reusable workspaces. A project is optional; choosing a workspace does not assign a project.",
+      "description": "List authorized reusable workspaces in ascending workspace-ID order. Returns workspaces, limit, returnedCount, hasMore and nextCursor. Follow nextCursor until null before treating the inventory as complete. Pages fit 128 KiB and may contain fewer than limit rows. An individually oversized summary includes truncatedFields and string previews; read its full record from GET /api/execution-workspaces/{id} under current access. Each page checks current access; concurrent changes require a fresh scan. Choosing a workspace does not assign a project.",
       "effect": "read",
       "requiredClaims": [],
       "allowedModes": [
@@ -57,16 +57,24 @@ export const listWorkspacesAction = {
       ],
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 },
+          "cursor": { "type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", "description": "The nextCursor from the previous page. Omit for the first page." }
+        },
         "required": [],
         "additionalProperties": false
       },
       "outputSchema": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "additionalProperties": true
-        }
+        "type": "object",
+        "properties": {
+          "workspaces": { "type": "array", "maxItems": 100, "items": { "type": "object", "additionalProperties": true } },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "returnedCount": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "hasMore": { "type": "boolean" },
+          "nextCursor": { "type": ["string", "null"], "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" }
+        },
+        "required": ["workspaces", "limit", "returnedCount", "hasMore", "nextCursor"],
+        "additionalProperties": false
       },
       "exposure": "optional"
     }

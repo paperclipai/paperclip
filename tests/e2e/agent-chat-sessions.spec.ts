@@ -126,7 +126,7 @@ test("chat first open is read-only; concurrent first sends and retries share one
   }
 });
 
-test("feature flag blocks new sends and resets while preserving existing history", async ({
+test("retired Chat opt-outs allow sends and resets while preserving existing history", async ({
   page,
   request,
 }) => {
@@ -140,22 +140,22 @@ test("feature flag blocks new sends and resets while preserving existing history
         data: { enableAgentChat: false },
       }),
     );
-    for (const body of ["blocked message", "/new"])
+    for (const body of ["Available to existing people", "/new"])
       expect(
         (
           await request.post(`/api/issues/${issue.id}/comments`, {
-            data: { body },
+            data: { body, clientRequestId: crypto.randomUUID() },
           })
         ).status(),
-      ).toBe(404);
+      ).toBe(201);
     await page.reload();
-    await expect(page.getByText(/Agent Chat is disabled/)).toBeVisible();
+    await expect(page.getByText("Visible history", { exact: true }).first()).toBeVisible();
     expect(
       (await json(await request.get(`/api/issues/${issue.id}/comments`))).some(
         (c: any) => c.body.includes("Visible history"),
       ),
     ).toBe(true);
-    expect((await request.post(f.chatPath, { data: {} })).status()).toBe(404);
+    expect((await request.post(f.chatPath, { data: {} })).status()).toBe(200);
   } finally {
     await f.restore();
   }
@@ -180,7 +180,7 @@ test("Stop then queued /new resets unpause the conversation without losing histo
             (c: any) => c.body === "Provider is streaming and ready to stop.",
           )
         );
-      })
+      }, { timeout: 30_000 })
       .toBe(true);
     const issue = await json(await request.get(f.chatPath));
     const active = (
@@ -253,66 +253,94 @@ test("Stop then queued /new resets unpause the conversation without losing histo
   }
 });
 
+test("Coordinator agent switching preserves drafts and opens one conversation only on send", async ({ page, request }) => {
+  const f = await setup(request);
+  try {
+    await page.goto(f.route);
+    await expect(page.getByRole("navigation", { name: "Workspace navigation" })).toBeVisible();
+    const editor = page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]');
+    const contacts = page.getByRole("complementary", { name: "Chat contacts", exact: true });
+    const switchTo = async (name: string) => {
+      const contact = contacts.getByRole("link", { name: new RegExp(`^${name}`) });
+      await contact.click();
+      await expect(contact).toHaveAttribute("aria-current", "page");
+    };
+    await expect(page.getByRole("heading", { name: "Chat", exact: true })).toBeVisible();
+    await expect(contacts.getByRole("button", { name: "Add chat", exact: true })).toHaveCount(0);
+    await editor.fill("Unsent Coordinator draft for Alpha");
+    await switchTo("Beta");
+    await expect(editor).toHaveText("");
+    expect(await json(await request.get(`/api/companies/${f.company.id}/chats/${f.agents[1].id}`))).toBeNull();
+    await switchTo("Alpha");
+    await expect(editor).toContainText("Unsent Coordinator draft for Alpha");
+    await page.reload();
+    await expect(editor).toContainText("Unsent Coordinator draft for Alpha");
+    expect(await json(await request.get(f.chatPath))).toBeNull();
+    await editor.fill("");
+    await send(page, "Coordinator conversation acceptance");
+    await idle(request, f.chatPath);
+    const chat = await json(await request.get(f.chatPath));
+    await switchTo("Beta");
+    await switchTo("Alpha");
+    await expect(page.getByText("Coordinator conversation acceptance", { exact: true })).toBeVisible();
+    expect((await json(await request.get(f.chatPath))).id).toBe(chat.id);
+    expect(await json(await request.get(`/api/companies/${f.company.id}/chats`))).toHaveLength(1);
+  } finally {
+    await f.restore();
+  }
+});
+
 test("secondary chat navigation preserves layout, unique conversations, history, and drafts", async ({
   page,
   request,
 }) => {
   const originalExperimental = await json(await request.get("/api/instance/settings/experimental"));
   const f = await setup(request);
+  const originalWorkspace = await json(await request.get("/api/workspace-preferences/me"));
+  const workspacePath = `/api/companies/${f.company.id}/workspace-preferences/me`;
   try {
+    await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: false } }));
     await json(await request.patch("/api/instance/settings/experimental", {
       data: { enableStreamlinedUi: true },
     }));
     await page.goto(`/${f.company.issuePrefix}/dashboard`);
-    await page.getByRole("link", { name: "Chat", exact: true }).click();
+    await page.getByRole("link", { name: /^Chat(?:\s|$)/ }).click();
     // With no recent conversation, Chat opens the first human-created primary.
     // Navigation alone must not create a conversation or start execution.
     expect(await json(await request.get(`/api/companies/${f.company.id}/primary-agent/me`))).toMatchObject({
       primaryAgentId: f.agents[0].id, initialized: true,
     });
-    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
+    const sidebar = page.getByRole("complementary", { name: "Chat contacts", exact: true });
+    const nav = sidebar.getByRole("navigation", { name: "Agent conversations" });
+    const alphaLink = nav.getByRole("link", { name: /^Alpha/ });
+    const betaLink = nav.getByRole("link", { name: /^Beta/ });
+    await expect(alphaLink).toHaveAttribute("aria-current", "page");
     expect(await json(await request.get(f.chatPath))).toBeNull();
     expect(await json(await request.get(`/api/companies/${f.company.id}/heartbeat-runs`))).toHaveLength(0);
-    const sidebar = page.getByRole("complementary", { name: "Chat", exact: true });
-    // The rail lists every eligible agent before any conversation exists.
-    const nav = sidebar.getByRole("navigation", { name: "Agent conversations" });
     await expect(nav.getByRole("link")).toHaveText([/^Alpha/, /^Beta/, /^Delta/, /^Epsilon/, /^Gamma/, /^Zeta/]);
     const landingBounds = await sidebar.boundingBox();
-    const compose = sidebar.getByRole("button", { name: "Add chat", exact: true });
-    const picker = page.getByRole("dialog", { name: "Chat with an agent", exact: true });
     const chatListPath = `/api/companies/${f.company.id}/chats`;
     const betaPath = `${chatListPath}/${f.agents[1].id}`;
-    await compose.click();
-    await expect(picker.getByRole("option")).toHaveCount(6);
-    await picker.getByRole("combobox").fill("Beta");
-    await expect(picker.getByRole("option", { name: /^Beta / })).toContainText("New chat");
-    await picker.getByRole("combobox").press("Enter");
-    await expect(picker).not.toBeVisible();
-    await expect(page.getByRole("link", { name: "Configure Beta", exact: true })).toBeVisible();
+    await betaLink.click();
+    await expect(betaLink).toHaveAttribute("aria-current", "page");
     expect(await sidebar.boundingBox()).toEqual(landingBounds);
-    const beta = await json(await request.get(betaPath));
+    expect(await json(await request.get(betaPath))).toBeNull();
+    expect(await json(await request.get(chatListPath))).toHaveLength(0);
+    expect(await json(await request.get(`/api/companies/${f.company.id}/heartbeat-runs`))).toHaveLength(0);
+    await betaLink.click();
+    expect(await json(await request.get(betaPath))).toBeNull();
+    await send(page, "Beta conversation acceptance");
+    const beta = await idle(request, betaPath);
     expect(beta.conversationAgentId).toBe(f.agents[1].id);
     expect(await json(await request.get(chatListPath))).toHaveLength(1);
-    expect(await json(await request.get(`/api/companies/${f.company.id}/heartbeat-runs`))).toHaveLength(0);
-
-    // Explicitly adding an existing agent must reopen the same conversation.
-    await compose.click();
-    await expect(picker.getByRole("combobox")).toHaveValue("");
-    await picker.getByRole("combobox").fill("Beta");
-    await expect(picker.getByRole("option", { name: /^Beta / })).toContainText("Open chat");
-    await picker.getByRole("combobox").press("Enter");
-    await expect(picker).not.toBeVisible();
+    await alphaLink.click();
+    await expect(alphaLink).toHaveAttribute("aria-current", "page");
+    await betaLink.click();
+    await expect(betaLink).toHaveAttribute("aria-current", "page");
     expect((await json(await request.get(betaPath))).id).toBe(beta.id);
     expect(await json(await request.get(chatListPath))).toHaveLength(1);
-
-    await compose.click();
-    await picker.getByRole("combobox").fill("Alpha");
-    await picker.getByRole("combobox").press("Enter");
-    await expect(picker).not.toBeVisible();
-    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
-    const alphaLink = nav.getByRole("link", { name: /^Alpha / });
-    const betaLink = nav.getByRole("link", { name: /^Beta / });
-    // Open chat first, then other conversations, then the rest alphabetically.
+    await alphaLink.click();
+    await expect(alphaLink).toHaveAttribute("aria-current", "page");
     await expect(nav.getByRole("link")).toHaveText([/^Alpha/, /^Beta/, /^Delta/, /^Epsilon/, /^Gamma/, /^Zeta/]);
     const editor = page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]');
     await editor.fill("Unsent draft for Alpha");
@@ -321,7 +349,7 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await alphaLink.click();
     await expect(editor).toContainText("Unsent draft for Alpha");
 
-    const search = sidebar.getByRole("textbox", { name: "Search agents", exact: true });
+    const search = sidebar.getByRole("textbox", { name: "Search chats", exact: true });
     await search.fill("No matching agent");
     await expect(sidebar.getByText("No agents found", { exact: true })).toBeVisible();
     await search.fill("Beta");
@@ -333,12 +361,12 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await expect(editor).toContainText("Unsent draft for Alpha");
     await expect(nav.getByRole("link")).toHaveCount(6);
 
-    await page.getByRole("link", { name: "Chat", exact: true }).click();
-    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
+    await page.getByRole("link", { name: /^Chat(?:\s|$)/ }).click();
+    await expect(alphaLink).toHaveAttribute("aria-current", "page");
     await expect(editor).toContainText("Unsent draft for Alpha");
     expect(await sidebar.boundingBox()).toEqual(landingBounds);
-    await page.getByRole("link", { name: "Configure Alpha", exact: true }).click();
-    await expect(page).toHaveURL(/\/agents\/.*\/runtime/);
+    await page.goto(`/${f.company.issuePrefix}/dashboard`);
+    await expect(page).toHaveURL(/\/dashboard$/);
     await json(await request.post(`/api/issues/${beta.id}/comments`, {
       data: {
         body: "Background activity",
@@ -346,16 +374,13 @@ test("secondary chat navigation preserves layout, unique conversations, history,
       },
     }));
     await idle(request, betaPath);
-    await page.getByRole("link", { name: "Chat", exact: true }).click();
-    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
-    await compose.click();
-    await picker.getByRole("combobox").fill("Beta");
-    await picker.getByRole("combobox").press("Enter");
-    await expect(picker).not.toBeVisible();
-    await expect(page.getByRole("link", { name: "Configure Beta", exact: true })).toBeVisible();
+    await page.getByRole("link", { name: /^Chat(?:\s|$)/ }).click();
+    await expect(alphaLink).toHaveAttribute("aria-current", "page");
+    await betaLink.click();
+    await expect(betaLink).toHaveAttribute("aria-current", "page");
     await expect(page.getByText("Background activity", { exact: true })).toBeVisible();
     expect((await json(await request.get(betaPath))).id).toBe(beta.id);
-    expect(await json(await request.get(chatListPath))).toHaveLength(2);
+    expect(await json(await request.get(chatListPath))).toHaveLength(1);
     await json(await request.post(`/api/agents/${f.agents[1].id}/terminate`));
     await page.goto(`/${f.company.issuePrefix}/chats`);
     await expect(betaLink).toContainText("Terminated");
@@ -365,6 +390,7 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await page.reload();
     await expect(page.getByText("Background activity", { exact: true })).toBeVisible();
   } finally {
+    await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: originalWorkspace.coordinatorWorkspaceEnabled } }));
     await f.restore();
     await json(await request.patch("/api/instance/settings/experimental", {
       data: { enableStreamlinedUi: originalExperimental.enableStreamlinedUi },

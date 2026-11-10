@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
 import { importBillingInvoiceSchema } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { computeObservedSpend } from "../services/budgets.js";
+import { computeObservedSpend, flushBudgetEvaluationWork } from "../services/budgets.js";
 import { accountRunCost } from "../services/run-cost-accounting.js";
 import { createRunUsageRecorder, replayUsageReceipts, spoolUsageReceipt, type UsageReceiptEnvelope } from "../services/usage-receipts.js";
 
@@ -130,6 +130,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(partial.usageJson).toMatchObject({ costUsdExact: "0.000000000", costStatus: "unpriced",
       accountingReceiptReady: false, budgetExposure: { costCents: "100.2000000" } });
     expect(await db.select().from(costEvents)).toHaveLength(0);
+    await flushBudgetEvaluationWork(db, { companyId: f.companyId });
     expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0].lifecycleHolds).toContain("budget");
 
     await f.recorder.capture({ ...f.partial, complete: true, costUsd: 0.8, costStatus: "reported" });
@@ -138,6 +139,8 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await accountRunCost(db, f.runId)).toBe(true);
     expect(await computeObservedSpend(db, f.policy)).toMatchObject({ liveObservedCents: "0.0000000", ledgerCents: "80.0000000" });
     expect(await db.select().from(costEvents)).toHaveLength(1);
+    await flushBudgetEvaluationWork(db, { companyId: f.companyId });
+    expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0].lifecycleHolds).not.toContain("budget");
   });
 
   it("replays the fsynced per-attempt exposure after a failed database write", async () => {
@@ -152,6 +155,7 @@ const support = await getEmbeddedPostgresTestSupport();
     f.offline(false);
     await replayUsageReceipts(f.proxy, f.directory);
     expect((await computeObservedSpend(db, f.policy)).liveObservedCents).toBe("100.2000000");
+    await flushBudgetEvaluationWork(db, { companyId: f.companyId });
     expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0].lifecycleHolds).toContain("budget");
     expect((await fs.readdir(f.directory)).filter(file => file.endsWith(".json"))).toEqual([]);
   });
@@ -165,6 +169,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.readRun()).usageJson).toMatchObject({ costUsdExact: "100.200000000",
       usageSource: "per_run", budgetExposure: { costCents: "20.0000000" } });
     expect((await computeObservedSpend(db, f.policy)).liveObservedCents).toBe("20.0000000");
+    await flushBudgetEvaluationWork(db, { companyId: f.companyId });
     expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0].lifecycleHolds).not.toContain("budget");
   });
 

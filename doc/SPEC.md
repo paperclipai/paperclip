@@ -2,6 +2,15 @@
 
 Target specification for the Paperclip control plane. Living document — updated incrementally during spec interviews.
 
+Proactive in-app updates let an active standard task or routine publish to its
+agent's persistent conversation with the run's responsible human. The server
+derives the destination, enforces current authority and company-visible chat
+privacy, and persists an attributed, idempotent comment with source-task provenance.
+Unread state belongs to the viewing human. Sending is independent of task
+completion and chat execution; future messages remain possible after `/new`.
+The V1 contract is specified under experimental task-backed agent chat in
+`doc/SPEC-implementation.md`.
+
 Experimental standalone cases provide persistent structured work records that can
 exist independently of execution. Prompt-driven handoffs move their primary
 ordinary task between agents while retaining case data and history. Existing task
@@ -150,6 +159,12 @@ Paperclip doesn't prescribe how an agent defines its identity or behavior. It pr
 ### Agent Configuration [DRAFT]
 
 Each agent has an **adapter type** and an **adapter-specific configuration blob**. The adapter defines what config fields exist.
+
+Configuration reads and changes have separate authority. `agents:read` permits
+redacted configuration and instruction reads; `agents:configure` includes reads
+and direct changes. Standard agents have read access by default. Company scope,
+explicit grant scopes, responsible-user authority and trust restrictions apply.
+See [agent permission defaults](agent-permission-defaults.md).
 
 #### Paperclip Protocol (What Paperclip Knows)
 
@@ -676,6 +691,10 @@ The `create_project` runtime tool uses the normal project API with durable idemp
 
 Confirmed project creation appears as a durable card in the shared task transcript, including selected repository links. Tasks are linked inline. Failed creation never produces a success card. Tool evals cover planning/handoff, project/repository selection, retries, permission and mode denials, and ordinary delegation regressions using the production chat directive.
 
+Task replies and new tasks submit with Enter by default; Shift+Enter adds a new
+line. The **Command/Ctrl+Enter to Submit** experiment restores the previous
+keyboard behavior.
+
 ### Paused task messages
 
 A paused task takes over the composer with an amber notice and a Resume action.
@@ -827,7 +846,7 @@ A company may configure a shared decision model for optional Paperclip features.
 
 Organizational projects, task files, personal agent home, and provider home are separate concepts. App and chat tasks share one workspace policy: preserve a binding or explicit configured folder, otherwise allocate a stable task directory. A repository is optional and can be prepared without creating a project. Optional connection and destination defaults feed the same task policy; they do not grant permissions or relocate existing conversations.
 
-Agents select authorized workspace/repository intent while the harness owns paths, preparation, persistence and safe transitions. Intentional simultaneous sharing of one physical local/SSH folder remains supported. Provider sessions keep their admitted root through completion and recovery. See [SPEC-implementation.md](SPEC-implementation.md) and [the layer architecture](plans/2026-10-09-task-workspaces.md) for the versioned contracts and rollout constraints.
+Agents select authorized workspace/repository intent while the harness owns paths, preparation, persistence and safe transitions. Intentional simultaneous sharing of one physical local/SSH folder remains supported. A subtask never shares its parent's realized workspace: it keeps the parent's project and workspace strategy and gets its own workspace from the project base, exactly as a top-level task in that project would (a project configured for one shared folder still shares that folder across all its tasks). Provider sessions keep their admitted root through completion and recovery. See [SPEC-implementation.md](SPEC-implementation.md) and [the layer architecture](plans/2026-10-09-task-workspaces.md) for the versioned contracts and rollout constraints.
 
 ### Fast responses
 

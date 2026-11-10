@@ -29,7 +29,7 @@ import {
   toolApplications,
   toolConnections,
 } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
@@ -73,7 +73,7 @@ describe("native same-conversation chat attachment reuse", () => {
   beforeAll(async () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CHAT_REUSE_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("native-chat-reuse-");
-    db = createDb(external ?? temporary!.connectionString);
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6 });
     const storageRoot = await mkdtemp(
       path.join(tmpdir(), "paperclip-chat-reuse-"),
     );
@@ -322,7 +322,7 @@ describe("native same-conversation chat attachment reuse", () => {
     const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpointId));
     const bulk = randomBytes(64 * 1024).toString("base64");
     const events: Array<Record<string, unknown>> = [];
-    let capture: ReturnType<typeof createDatabaseResponseCapture> | undefined;
+    let capture: ReturnType<typeof createFullDatabaseResponseCapture> | undefined;
     try {
       await db.update(chatEndpoints).set({ communicationInstructions: bulk,
         setup: { ...endpoint.setup, unusedContent: bulk } as typeof endpoint.setup,
@@ -335,7 +335,7 @@ describe("native same-conversation chat attachment reuse", () => {
           .where(eq(chatDeliveries.id, delivery.id));
       }
       const now = Date.now();
-      capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(db, { chatMessageLinks, chatDeliveries, chatConversations, chatEndpoints,
         chatEndpointResources, chatExternalPrincipals, chatIdentityLinks, companyMemberships }, capture);
       for (const lockMode of ["read", "blocking", "nonblocking"] as const) {
@@ -564,6 +564,9 @@ describe("native same-conversation chat attachment reuse", () => {
     });
     const preparedId = (first as { prepared: { attachmentId: string } })
       .prepared.attachmentId;
+    const [preparationComment] = await db.select().from(issueComments)
+      .where(eq(issueComments.id, (first as { prepared: { commentId: string } }).prepared.commentId));
+    expect(preparationComment.metadata).toMatchObject({ attachmentPreparation: { attachmentId: preparedId } });
     const attachments = await db
       .select({
         id: issueAttachments.id,

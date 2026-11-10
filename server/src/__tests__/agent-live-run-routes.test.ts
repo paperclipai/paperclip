@@ -157,6 +157,9 @@ function registerModuleMocks() {
   }));
 }
 
+let agentRoutes: typeof import("../routes/agents.js")["agentRoutes"];
+let errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+
 async function createApp(
   db: Record<string, unknown> = {},
   actor: Record<string, unknown> = {
@@ -168,15 +171,6 @@ async function createApp(
   },
   options: { chatRunRetries?: typeof mockChatRunRetries } = {},
 ) {
-  // Vitest tracks factory-mock resolution in one shared call stack. Importing
-  // these graphs concurrently can drop the services/index factory mock and
-  // accidentally run real DB-backed activity logging against this test stub.
-  const { agentRoutes } = await vi.importActual<
-    typeof import("../routes/agents.js")
-  >("../routes/agents.js");
-  const { errorHandler } = await vi.importActual<
-    typeof import("../middleware/index.js")
-  >("../middleware/index.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -291,7 +285,7 @@ describe("agent live run routes", () => {
       limit, { summary: query.includes("summary=true") });
     expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalled();
   });
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/heartbeat.js");
@@ -424,6 +418,17 @@ describe("agent live run routes", () => {
       skipped: 0,
       skipReasons: [],
     });
+
+    // Module loading is fixture setup; each behavioral case keeps its own timeout.
+    // Vitest tracks factory-mock resolution in one shared call stack. Importing
+    // these graphs concurrently can drop the services/index factory mock and
+    // accidentally run real DB-backed activity logging against this test stub.
+    ({ agentRoutes } = await vi.importActual<
+      typeof import("../routes/agents.js")
+    >("../routes/agents.js"));
+    ({ errorHandler } = await vi.importActual<
+      typeof import("../middleware/index.js")
+    >("../middleware/index.js"));
   });
 
   describe("heartbeat run ID validation", () => {
@@ -1933,6 +1938,28 @@ describe("agent live run routes", () => {
         details: expect.objectContaining({ providerActionsReplayed: 0 }),
       }),
     );
+  });
+
+  it("returns a retryable busy response for workspace-diff repair and permits a later retry", async () => {
+    const app = await createApp();
+    const { ObjectJournalBusyError } = await import("../services/object-byte-journal.js");
+    mockProviderTraceStore.getByRun.mockResolvedValue({
+      id: "trace-1", status: "complete", deletedAt: null,
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    });
+    mockProviderTraceStore.readExactEntries.mockRejectedValueOnce(new ObjectJournalBusyError());
+    const route = "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/reproject-workspace-diffs";
+    const busy = await requestApp(app, baseUrl => request(baseUrl).post(route));
+    expect(busy.status).toBe(503);
+    expect(busy.headers["retry-after"]).toBe("2");
+    expect(busy.body.code).toBe("object_journal_io_busy");
+    expect(mockWorkspaceDiffReprojection.project).not.toHaveBeenCalled();
+    expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+
+    const retried = await requestApp(app, baseUrl => request(baseUrl).post(route));
+    expect(retried.status).toBe(200);
+    expect(mockWorkspaceDiffReprojection.persist).toHaveBeenCalledOnce();
   });
 
   it.each([
