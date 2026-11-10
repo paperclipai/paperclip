@@ -54,10 +54,6 @@ export async function withOperationAccountingTransaction<T>(db: Db, companyId: s
   }
 }
 
-/** Run error code for an accounting write that lost every retry to concurrent
- * updates. Distinct from provider failures, so the board names the cause. */
-export const ACCOUNTING_CONTENTION_CODE = "accounting_contention";
-
 export const ACCOUNTING_CONTENTION_MESSAGE = "Paperclip could not save this run's budget or usage records because other "
   + "updates to the same run kept conflicting with them. Retry the run.";
 
@@ -66,7 +62,6 @@ export const ACCOUNTING_CONTENTION_MESSAGE = "Paperclip could not save this run'
  * the database error, with its statement text, stays only in `cause`. */
 export class AccountingContentionError extends HttpError {
   readonly code: string;
-  readonly errorCode = ACCOUNTING_CONTENTION_CODE;
   constructor(cause: unknown, readonly attempts: number) {
     super(503, ACCOUNTING_CONTENTION_MESSAGE);
     this.name = "AccountingContentionError";

@@ -16,11 +16,11 @@ import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, budgetPolicies, budgetReservations, companies, createDb, heartbeatRuns, runUsageReceipts, type Db,
+  agents, budgetEvaluationWork, budgetPolicies, budgetReservations, companies, createDb, heartbeatRuns, runUsageReceipts, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import {
-  ACCOUNTING_CONTENTION_CODE, AccountingContentionError, isAccountingContentionError, withOperationAccountingTransaction,
+  AccountingContentionError, isAccountingContentionError, withOperationAccountingTransaction,
 } from "./accounting-transaction.js";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { reserveRunBudget } from "./budget-reservations.js";
@@ -244,6 +244,29 @@ describe.skipIf(!support.supported)("run accounting writers under concurrent run
       } finally { await fs.rm(directory, { recursive: true, force: true }); }
     });
 
+    it("persists its capture-failure fence once when run events commit between its company check and its run lock", async () => {
+      const f = await fixture({ status: "running" });
+      const runId = await f.run();
+      const directory = await spool();
+      try {
+        const hooked = interleaveRunEvents(f, runId);
+        const recorder = await createRunUsageRecorder(hooked.db, { companyId: f.companyId, runId, adapterType: "process" }, directory);
+        // A checkpoint the schema rejects fails the capture; the recorder then
+        // fences the run as capture-failed in its own accounting transaction.
+        await expect(recorder.capture(null as never)).rejects.toThrow();
+        await recorder.persistFailure();
+        // Handoff, fence and the repeated fence call each saw one concurrent
+        // run-event append.
+        expect(hooked.interleavings()).toBe(3);
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        expect(run.usageJson).toMatchObject({ accountingCaptureFailed: true, accountingReceiptReady: false });
+        expect(run).toMatchObject({ costAccountingPending: true, accountingLastError: "usage_capture_failed", nextEventSeq: 4 });
+        // One evaluation input for the handoff and one for the fence; the
+        // repeated persistFailure call found the fence already committed.
+        expect(await db.select().from(budgetEvaluationWork).where(eq(budgetEvaluationWork.companyId, f.companyId))).toHaveLength(2);
+      } finally { await fs.rm(directory, { recursive: true, force: true }); }
+    });
+
     it("binds while back-to-back writers update the run row", async () => {
       const f = await fixture({ status: "running" });
       for (let i = 0; i < 6; i++) {
@@ -271,7 +294,7 @@ describe.skipIf(!support.supported)("run accounting writers under concurrent run
       expect(error).toBeInstanceOf(AccountingContentionError);
       expect(isAccountingContentionError(error)).toBe(true);
       const contention = error as AccountingContentionError;
-      expect(contention).toMatchObject({ code: "40001", errorCode: ACCOUNTING_CONTENTION_CODE, attempts: 4, status: 503 });
+      expect(contention).toMatchObject({ code: "40001", attempts: 4, status: 503 });
       expect(contention.message).not.toMatch(/select|heartbeat_runs|Failed query|params/i);
       // The database error stays attached for the server log only.
       expect(String((contention.cause as Error).message)).toMatch(/^Failed query: select/);

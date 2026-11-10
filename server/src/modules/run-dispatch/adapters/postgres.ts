@@ -227,6 +227,7 @@ export function createPostgresRunDispatchAdapter(
     onMissing: () => T,
     operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
     mode: "accounting" | "ownership",
+    isolation: "snapshot" | "read committed" = "snapshot",
   ): Promise<T> {
     // Queue editing and claiming already use issue -> wake -> run. Read the
     // immutable issue reference without a lock first, then acquire issue ->
@@ -281,13 +282,9 @@ export function createPostgresRunDispatchAdapter(
         if (lockedIssueId !== hintedIssueId) return { kind: "retry" as const };
         return { kind: "value" as const, value: await operation(typedTx, run, publications) };
       };
-      // READ COMMITTED, like the ownership phase below: every mutable read
-      // follows the admission fences and the issue/run row locks, and budget
-      // exposure is one statement. Run-log appends and output progress update
-      // the run row while it waits; a repeatable-read snapshot taken before
-      // the run lock went stale on each and could exhaust every retry.
       const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } = mode === "accounting"
-        ? await withOperationAccountingTransaction(db, input.companyId, locked, { isolationLevel: "read committed" })
+        ? await withOperationAccountingTransaction(db, input.companyId, locked,
+          isolation === "read committed" ? { isolationLevel: "read committed" } : {})
         : await db.transaction(tx => locked(tx as unknown as Db, []));
 
       if (result.kind === "missing") return onMissing();
@@ -299,12 +296,21 @@ export function createPostgresRunDispatchAdapter(
     );
   }
 
+  /** Accounting phase under issue -> run locks. Gate decisions that combine
+   * many facts (retry promotion, stale-run cancellation) keep one repeatable-
+   * read snapshot. The final dispatch gate passes READ COMMITTED: run-log
+   * appends and output progress update a running row while it waits, and a
+   * snapshot taken before the run lock went stale on each one until every
+   * retry was spent. Its mutable reads all follow the admission fences and the
+   * issue/run locks, budget exposure is one statement, and its ownership phase
+   * re-reads the staleness facts at READ COMMITTED under the same locks. */
   function withIssueThenRunLocks<T>(
     input: { runId: string; companyId: string; recoveryLeaseOwner?: string; enforceContinuationOwnership?: boolean },
     onMissing: () => T,
     operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
+    isolation: "snapshot" | "read committed" = "snapshot",
   ) {
-    return withRunOwnershipLocks(input, onMissing, operation, "accounting");
+    return withRunOwnershipLocks(input, onMissing, operation, "accounting", isolation);
   }
 
   async function loadGateFacts(
@@ -1479,6 +1485,7 @@ export function createPostgresRunDispatchAdapter(
         );
       },
       dispatchLockedRun,
+      "read committed",
     );
     if (!admission.dispatched) return admission;
     // Accounting has committed. Close the separate issue/run ownership race
