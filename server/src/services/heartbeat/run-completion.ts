@@ -1,7 +1,7 @@
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
-import { GENERIC_RUN_FAILURE_CODES, NATIVE_PRE_DISPATCH_FAILURE_KEY, NATIVE_PRE_DISPATCH_FAILURE_RECORD, failureCauseFromAdapterResult, failureCauseFromError,
+import { GENERIC_RUN_FAILURE_CODES, NATIVE_PRE_DISPATCH_FAILURE_CODE, NATIVE_PRE_DISPATCH_FAILURE_KEY, NATIVE_PRE_DISPATCH_FAILURE_RECORD, failureCauseFromAdapterResult, failureCauseFromError,
   isNativePreDispatchTransientFailure } from "./run-failure-cause.js";
 import { INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-attempt.js";
 import { withoutSqlStatementText } from "@paperclipai/shared";
@@ -37,7 +37,7 @@ import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
-import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
@@ -1117,12 +1117,20 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     if (dispatchMayHaveStarted !== false) return null;
     try {
       const [row] = await db.select({ companyId: heartbeatRuns.companyId, runtimeMode: heartbeatRuns.runtimeMode,
-        coordinatorRunId: nativeRunFinalizations.runId }).from(heartbeatRuns)
+        coordinator: { runId: nativeRunFinalizations.runId, phase: nativeRunFinalizations.phase,
+          attempt: nativeRunFinalizations.attempt, leaseOwner: nativeRunFinalizations.leaseOwner,
+          controllerBootId: nativeRunFinalizations.controllerBootId, resultId: nativeRunFinalizations.resultId } })
+        .from(heartbeatRuns)
         .leftJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, heartbeatRuns.id),
           eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId)))
         .where(eq(heartbeatRuns.id, runId)).limit(1);
-      // The executor claims its coordinator only after entering dispatch.
-      if (!row || row.runtimeMode !== "native" || row.coordinatorRunId) return null;
+      if (!row || row.runtimeMode !== "native") return null;
+      // Runtime selection creates the coordinator unclaimed ("observed",
+      // attempt 0). Only the executor, after entering dispatch, claims it with
+      // a lease owner and controller; any claim, in any generation, disqualifies.
+      const coordinator = row.coordinator;
+      if (coordinator?.runId && (coordinator.phase !== "observed" || coordinator.attempt !== 0
+        || coordinator.leaseOwner !== null || coordinator.controllerBootId !== null || coordinator.resultId !== null)) return null;
       // The executor records native.process_start_requested before any backend
       // may spawn a runner; runner events carry a source event ID. Any of them,
       // in this or an earlier controller generation, means work may have run.
@@ -1139,12 +1147,31 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
   }
 
   /**
+   * Runtime selection leaves an unclaimed coordinator ("observed", attempt 0).
+   * It counts as pending cleanup and would hold the re-queued successor, so a
+   * failure proven to start no provider work closes it as a terminal failure.
+   * The guard matches only an unclaimed row; a claimed one keeps its owner.
+   */
+  async function settleUnclaimedNativeCoordinator(run: Pick<Run, "id" | "companyId">) {
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: NATIVE_PRE_DISPATCH_FAILURE_CODE,
+      updatedAt: new Date() }).where(and(eq(nativeRunFinalizations.companyId, run.companyId),
+      eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.phase, "observed"), eq(nativeRunFinalizations.attempt, 0),
+      isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.controllerBootId), isNull(nativeRunFinalizations.resultId)));
+  }
+
+  /**
    * A native run that failed on a transient database fault before provider
    * work re-queues itself in the uncharged, bounded interrupted-preparation
    * lane. An answered interaction keeps its own continuation retry.
    */
   async function scheduleNativePreDispatchRetry(run: Run, agent: Agent) {
     if (!isNativePreDispatchTransientFailure(run) || isResolvedInteractionContinuationWakeContext(run.contextSnapshot)) return null;
+    try {
+      await settleUnclaimedNativeCoordinator(run);
+    } catch (error) {
+      logger.warn({ err: error, runId: run.id }, "could not close the unclaimed native coordinator; keeping the native hold");
+      return null;
+    }
     return scheduleBoundedRetryForRun(run, agent, { retryReason: INTERRUPTED_PREPARATION_RETRY_REASON }).catch((retryError) => {
       logger.warn({ err: retryError, runId: run.id }, "failed to re-queue a native run that failed before provider work");
       return null;

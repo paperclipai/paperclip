@@ -1523,10 +1523,23 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       const f = await nativeFixture();
       const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Claimed native run" }).returning();
       await db.update(heartbeatRuns).set({ nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, f.run.id));
-      await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id, phase: "observed" });
+      await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id, phase: "observed", attempt: 1, leaseOwner: "executor-lease" });
       await f.completion.failRun(f.preDispatch(contention(), false));
       expect((await read(f.run.id)).resultJson).not.toHaveProperty("nativePreDispatchFailure");
       expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
+
+    it("re-queues when runtime selection created the coordinator but no executor claimed it", async () => {
+      const f = await nativeFixture();
+      const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Unclaimed native run" }).returning();
+      await db.update(heartbeatRuns).set({ nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id, phase: "observed" });
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).toMatchObject({ nativePreDispatchFailure: { version: 1, providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+      // The unclaimed coordinator is closed so it cannot hold the successor as pending cleanup.
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id)))[0])
+        .toMatchObject({ phase: "terminal_failure", failureCode: "native_pre_dispatch_failure" });
     });
 
     it("records the proof but does not re-queue a failure that is not a transient database fault", async () => {

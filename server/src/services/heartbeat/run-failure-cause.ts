@@ -55,6 +55,8 @@ export function failureCauseFromAdapterResult(
  * Rows saved before this record existed have none and keep the native hold.
  */
 export const NATIVE_PRE_DISPATCH_FAILURE_KEY = "nativePreDispatchFailure";
+/** Failure code on the unclaimed native coordinator that such a failure closes. */
+export const NATIVE_PRE_DISPATCH_FAILURE_CODE = "native_pre_dispatch_failure";
 export const NATIVE_PRE_DISPATCH_FAILURE_RECORD = Object.freeze({ version: 1, providerWorkStarted: false } as const);
 
 export function hasNativePreDispatchFailureRecord(resultJson: unknown): boolean {
