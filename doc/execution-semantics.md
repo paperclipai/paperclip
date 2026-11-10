@@ -3099,8 +3099,33 @@ backup source when all of these are true: the lease is `released` with policy
 `retain_on_failure`, it has a `workspaceRestoreRecovery` marker for its own
 run, it has a confirmed stop-and-retain receipt with state `stopped`, and no
 unsaved writer or pending native workspace export is bound to it. The backup
-stamp, single-owner, and later-provider-work checks above still apply. A
-stopped lease that is still `reuse_by_environment` remains ambiguous and fails
+stamp, single-owner, and later-provider-work checks above still apply.
+
+Reuse also skips a warm sandbox while its previous run's workspace export is
+still saving. A run that starts in that window gets a new sandbox, waits for
+the export, and realizes the saved files there. By the time it prepares the
+harness, the warm source is idle. An idle warm source also counts as a retired
+backup source when all of these are true: the lease is `released` or
+`retained` with policy `reuse_by_environment`, its own run is terminal and is
+not the current run, no cleanup is in flight, and no unsaved writer or pending
+native workspace export is bound to the allocation. The backup stamp,
+single-owner, and later-provider-work checks above still apply. With no
+provider work after the backup, the idle sandbox holds exactly the checkpointed
+state, so the restore continues the same session and never runs two owners.
+Before restoring, Paperclip claims the idle source with a compare-and-swap on
+the checked row. The claim moves the source's reusable-lease scope into a
+`reusableSandboxLeaseSuperseded` receipt, so reuse never resumes that older
+state again. The next acquisition for the workspace treats the source as
+obsolete and destroys it. If a run resumed or changed the source first, the
+claim matches no row and the backup is not restored.
+
+The same proof covers a resumed lease that never held this session's harness
+state, for example the new sandbox of a run that failed before it restored the
+backup. When the resumed sandbox has no harness state at all and the backup
+came from a different allocation, Paperclip restores the backup into it. State
+saved by earlier releases recovers this way after deploy, with no migration. A
+resumed allocation whose own state is missing, a source whose run is still
+active, and a source with an export still pending remain ambiguous and fail
 closed.
 
 A Runner close can also fail to prove suspension after the control plane

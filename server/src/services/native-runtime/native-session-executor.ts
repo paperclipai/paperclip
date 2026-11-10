@@ -15685,9 +15685,10 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!updated) throw new Error("runner_harness_backup_lease_missing");
   };
 
-  // A created lease may restore the backup when Paperclip destroyed its
-  // source sandbox and no provider work followed the checkpoint.
-  // The verified backup is reused by the restore, so files are hashed once.
+  // A lease without this session's state may restore the backup when its
+  // source sandbox is retired or idle and no provider work followed the
+  // checkpoint. The verified backup is reused by the restore, so files are
+  // hashed once.
   let retiredSourceBackup: VerifiedHarnessBackup | null = null;
   const retiredSourceBackupAuthorized = async (): Promise<boolean> => {
     const backup = verifyNativeHarnessBackup({ root, execution: input.execution, runnerInstanceId: input.runnerInstanceId });
@@ -15698,6 +15699,7 @@ async function createRunnerdBackendWithinSessionClaim(
       companyId: input.execution.binding.companyId, currentRunId: input.execution.binding.runId,
       normalizedSessionId: sessionId, manifest: backup.manifest,
       manifestSha256: nativeHarnessBackupManifestSha256(readFileSync(resolve(backup.root, "manifest.json"))),
+      targetProviderLeaseId: sandboxLeaseAcquisition?.providerLeaseId ?? null,
     });
   };
 
@@ -15884,7 +15886,18 @@ async function createRunnerdBackendWithinSessionClaim(
                         && hasRemoteBootstrapRestartProof(input.execution.binding.runId)
                         && await moveInterruptedBootstrapSessionAside()
                         && takeRemoteBootstrapRestartProof(input.execution.binding.runId);
-                      if ((state.incompleteReason !== "unavailable" && !provenRestart) || backupAvailable ||
+                      // A resumed allocation that never held this session (for example
+                      // the created lease of a run that failed before restoring) takes
+                      // the backup under the same retired-or-idle source proof.
+                      const restoresRetiredSource = !provenRestart && state.incompleteReason === "unavailable"
+                        && backupAvailable && remoteTarget.reusableLeaseConfigured === true
+                        && await retiredSourceBackupAuthorized();
+                      if (restoresRetiredSource) {
+                        await measureNativeRunnerSpan(input.trace, "sandbox.lease.replacement", restoreVerifiedHarnessBackup, {
+                          attributes: { provider: remoteTarget.providerKey ?? "sandbox", harness: input.execution.session.driverKind,
+                            lifecycleMode: input.execution.session.lifecyclePolicy.mode, outcome: "resumed", reason: "state_absent" },
+                        });
+                      } else if ((state.incompleteReason !== "unavailable" && !provenRestart) || backupAvailable ||
                           !(await claimUntouchedRemoteSession())) {
                         throw new Error(`runner_harness_state_mismatch: resumed_${state.incompleteReason}`);
                       }
