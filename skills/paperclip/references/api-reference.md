@@ -779,7 +779,7 @@ PATCH /api/agents/{agentId}/instructions-path
 When a CEO/manager task asks you to "set up a new project" and wire local + GitHub context, use this sequence.
 
 For repository-based projects, prefer one atomic create with `repositoryIds` from
-`GET /api/companies/{companyId}/project-repositories`, or `repositoryUrls` for GitHub repositories in that catalog.
+`GET /api/companies/{companyId}/project-repositories`, or `repositoryUrls` for existing GitHub repositories.
 The catalog covers active GitHub and Azure DevOps connections. Both arrays support multiple repositories.
 URLs register project workspaces; they neither create remote repositories nor grant credentials. Use HTTPS URLs without credentials.
 Restore an unavailable connection before selecting or using its repositories.
