@@ -930,7 +930,7 @@ export async function migrateRemoteWorkspaceCohort(input: {
 
 
 export async function supersedeExpiredRemoteWorkspaceMigrationCohort(input: {
-  db: Db; companyId: string; cohort: unknown; expiredWorkspaceIds: readonly string[]; signal: AbortSignal;
+  db: Db; companyId: string; cohort: unknown; expiredWorkspaceIds: readonly string[]; signal: AbortSignal; sourceLockWaitMs?: number;
 }) {
   const companyId = z.string().uuid().parse(input.companyId).toLowerCase(), cohort = cohortSchema.parse(input.cohort);
   const expired = z.array(z.string().uuid()).min(1).max(8).parse(input.expiredWorkspaceIds).map(id => id.toLowerCase()).sort();
@@ -1038,7 +1038,7 @@ export async function supersedeExpiredRemoteWorkspaceMigrationCohort(input: {
       await notifyRemoteWorkspaceSnapshots(tx, `cohort:${cohort.id}`);
       input.signal.throwIfAborted();
     });
-  }, true);
+  }, true, input.sourceLockWaitMs === undefined ? undefined : { waitMs: input.sourceLockWaitMs, signal: input.signal });
   for (const publication of publications) publishActivity(publication);
   return receipt(supersessionId, false);
 }

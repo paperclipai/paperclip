@@ -175,6 +175,9 @@ protect one transaction that fails every old journal and removes only its matche
 active marker. It does not report migration success or change task state. The
 old cohort proof, operations, snapshots and object references remain unchanged.
 The failure receipt retains those objects through the existing failed-save hold.
+The optional `sourceLockWaitMs` uses the existing bounded source-lock queue.
+The default still refuses a busy source immediately. Cancellation targets this
+waiter only. All source and recovery checks run again after lock admission.
 
 New canonical imports use the current archived recipe or current online source.
 They record the old operation and supersession IDs and reserve a snapshot

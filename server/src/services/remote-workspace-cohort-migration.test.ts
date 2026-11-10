@@ -267,8 +267,9 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect(oldSnapshots.filter(row => row.status === "uploaded")).toHaveLength(4);
     const tasks = await db.select().from(issues), runs = await db.select().from(heartbeatRuns), leases = await db.select().from(environmentLeases);
     const finalizers = await db.select().from(nativeRunFinalizations);
-    const compensate = () => supersedeExpiredRemoteWorkspaceMigrationCohort({ db, companyId: f.companyId, cohort,
-      expiredWorkspaceIds, signal: AbortSignal.timeout(60_000) });
+    const compensate = (options: Partial<Parameters<typeof supersedeExpiredRemoteWorkspaceMigrationCohort>[0]> = {}) =>
+      supersedeExpiredRemoteWorkspaceMigrationCohort({ db, companyId: f.companyId, cohort,
+        expiredWorkspaceIds, signal: AbortSignal.timeout(60_000), ...options });
     const [authorityRow] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, cohort.members[2].workspaceId));
     await db.update(executionWorkspaces).set({ metadata: { ...authorityRow.metadata, remoteWorkspace: {
       schema: "paperclip.remote-workspace.v1", epoch: 1, source: initialOperations[0].metadata!.source,
@@ -283,11 +284,36 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect(await db.select().from(workspaceOperations)).toEqual(oldOperations); expect(await rows(f)).toEqual(beforeRows);
     await db.execute(sql`drop trigger cohort_commit_fault on workspace_operations`); await db.execute(sql`drop function cohort_commit_fault()`);
     const other = createDb(database.connectionString, { maxConnections: 1 });
-    try { await other.transaction(async tx => {
-      expect(await tryLockNativeWorkspaceFinalization(tx as unknown as Db, { companyId: f.companyId, runId: held.runId })).toBe(true);
-      await expect(compensate()).rejects.toThrow("remote_copyback_owned");
-    }); } finally { await other.$client.end({ timeout: 1 }); }
-    const receipt = await compensate(); expect(receipt).toMatchObject({ superseded: true, migrationCompleted: false, replayed: false });
+    let receipt!: Awaited<ReturnType<typeof compensate>>;
+    const queued = () => db.execute(sql`select exists(select 1 from pg_locks where locktype='advisory' and not granted
+      and database=(select oid from pg_database where datname=current_database())) as waiting`);
+    try {
+      await other.transaction(async tx => {
+        expect(await tryLockNativeWorkspaceFinalization(tx as unknown as Db, { companyId: f.companyId, runId: held.runId })).toBe(true);
+        await expect(compensate()).rejects.toThrow("remote_copyback_owned");
+      });
+      await withWorkspaceSourceLocks(other, { companyId: f.companyId, projectIds: [f.projectId] }, async holder => {
+        const abort = new AbortController(), pending = compensate({ sourceLockWaitMs: 10_000, signal: abort.signal });
+        const outcome = pending.then(value => ({ value, error: null }), error => ({ value: null, error }));
+        try {
+          await expect.poll(async () => (await queued())[0].waiting, { timeout: 8_000 }).toBe(true);
+          abort.abort(new Error("compensation_queue_cancelled"));
+          expect((await outcome).error?.message).toBe("compensation_queue_cancelled");
+          expect((await holder.execute(sql`select exists(select 1 from pg_locks where pid=pg_backend_pid()
+            and locktype='advisory' and granted) as held`))[0].held).toBe(true);
+          expect(await db.select().from(workspaceOperations)).toEqual(oldOperations);
+        } finally { abort.abort(); await outcome; }
+      });
+      let pending: ReturnType<typeof compensate> | undefined;
+      try {
+        await withWorkspaceSourceLocks(other, { companyId: f.companyId, projectIds: [f.projectId] }, async () => {
+          pending = compensate({ sourceLockWaitMs: 10_000 });
+          void pending.catch(() => undefined);
+          await expect.poll(async () => (await queued())[0].waiting, { timeout: 8_000 }).toBe(true);
+        });
+      } finally { if (pending) receipt = await pending; }
+    } finally { await other.$client.end({ timeout: 1 }); }
+    expect(receipt).toMatchObject({ superseded: true, migrationCompleted: false, replayed: false });
     await expect(compensate()).resolves.toMatchObject({ ...receipt, replayed: true });
     const failed = await db.select().from(workspaceOperations);
     for (const operation of failed) expect(operation).toMatchObject({ status: "failed", metadata: {
