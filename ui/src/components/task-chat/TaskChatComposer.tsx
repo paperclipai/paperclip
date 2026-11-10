@@ -1060,7 +1060,7 @@ export function TaskChatComposer({
           await onSaveQueuedEdit(queuedEdit.commentId, fullBody);
         } catch (error) {
           // A rejected edit keeps its text below; say why it was not saved.
-          if (mountedTaskKey.current === draftKey)
+          if (mountedTaskKey.current === draftKey && queuedEditRef.current?.commentId === queuedEdit.commentId)
             setActionError(describeError(error, { action: "save this queued message" }).body);
           throw error;
         }
