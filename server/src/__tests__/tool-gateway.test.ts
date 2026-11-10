@@ -6401,6 +6401,56 @@ rl.on("line", (line) => {
     ]);
   });
 
+  it("gives plugin tool calls a sixty-second default and keeps explicit deadlines", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run, project } = await createIssueAndRun(db, company.id, agent.id);
+    const dispatcher: PluginToolDispatcher = {
+      initialize: async () => {},
+      teardown: () => {},
+      listToolsForAgent: () => [{
+        name: "demo-plugin:read_index",
+        displayName: "Read index",
+        description: "Read a plugin index that can rebuild on a cold start.",
+        parametersSchema: { type: "object" },
+        pluginId: "demo-plugin",
+      }],
+      getTool: () => null,
+      executeTool: async (_tool, parameters) => {
+        const delayMs = (parameters as { delayMs: number }).delayMs;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        return { pluginId: "demo-plugin", toolName: "read_index", result: { content: "index ready" } };
+      },
+      registerPluginTools: () => {},
+      unregisterPluginTools: () => {},
+      toolCount: () => 1,
+      getRegistry: () => {
+        throw new Error("not used");
+      },
+    };
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    await allowToolsForAgent(db, company.id, agent.id, ["demo-plugin:read_index"]);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, projectId: project.id });
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "demo-plugin:read_index",
+      parameters: { delayMs: 10_500 },
+    })).resolves.toMatchObject({ status: "completed" });
+
+    await gateway.executeTool({
+      sessionToken: session.token,
+      tool: "demo-plugin:read_index",
+      parameters: { delayMs: 1_000 },
+      timeoutMs: 50,
+    }).then(
+      () => {
+        throw new Error("Expected the explicit caller deadline to apply");
+      },
+      (error) => expectGatewayError(error, 504, "tool_timeout"),
+    );
+  }, 30_000);
+
   it("rejects caller-supplied issue context outside the run company", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

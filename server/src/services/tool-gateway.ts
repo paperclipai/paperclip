@@ -250,6 +250,7 @@ export function isConnectionGrantAudienceAllowed(
 // the full permitted headroom instead.
 const APPROVED_EXECUTION_TIMEOUT_MS = 60_000;
 const GITHUB_BOT_TOOL_TIMEOUT_MS = 60_000;
+const PLUGIN_TOOL_TIMEOUT_MS = 60_000;
 const ACTION_REQUEST_EXECUTION_POLL_MS = 25;
 // Approval execution performs live target, signature, managed-argument, and
 // issue-state checks before provider dispatch. Give that preparation a
@@ -847,7 +848,9 @@ function gatewaySessionFromRow(
 function timeoutMs(value: number | undefined, tool?: ToolGatewayDescriptor) {
   if (!Number.isFinite(value)) return tool?.providerType === "paperclip_github_chat"
     ? GITHUB_BOT_TOOL_TIMEOUT_MS
-    : DEFAULT_TOOL_TIMEOUT_MS;
+    : tool?.providerType === "paperclip_plugin"
+      ? PLUGIN_TOOL_TIMEOUT_MS
+      : DEFAULT_TOOL_TIMEOUT_MS;
   return Math.max(
     1,
     Math.min(60_000, Math.floor(value ?? DEFAULT_TOOL_TIMEOUT_MS)),
