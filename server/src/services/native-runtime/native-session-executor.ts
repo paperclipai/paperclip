@@ -9,6 +9,8 @@ import { nativePostResultFailureCategory, type NativePostResultFailureCategory }
 import { logger } from "../../middleware/logger.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES, nativeHarnessBackupManifestSha256, retiredSourceAuthorizesNativeBackupRestore } from "./native-retired-backup-source.js";
+import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_COMPLETED_TURN_CLEANUP_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED,
+  nativeCheckpointRecordsCompletedTurn } from "./completed-turn-cleanup.js";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
 import { LocalRuntimeApiListenerClosedError, resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
@@ -8087,22 +8089,27 @@ export function nativeSessionRecoveryProjection(input: {
   phase: "retryable_failure" | "terminal_failure";
   failureCode: string;
   agentId: string;
+  /** The run's own provider turn completed before the cleanup gate refused it. */
+  completedTurnCleanup?: boolean;
 }) {
   const exhausted = input.phase === "terminal_failure";
+  // Saved work of a completed turn needs no person: the task keeps its own
+  // status and its agent continues on the next wake once cleanup settles.
+  const boardOwned = exhausted && !input.completedTurnCleanup;
   return {
     exhausted,
     issueStatus:
-      exhausted &&
+      boardOwned &&
       input.failureCode !== NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT
         ? ("blocked" as const)
         : null,
-    recoveryOwner: exhausted
+    recoveryOwner: boardOwned
       ? { kind: "board" as const }
       : { kind: "agent" as const, agentId: input.agentId },
-    recoveryActionOwnerType: exhausted
+    recoveryActionOwnerType: boardOwned
       ? ("board" as const)
       : ("agent" as const),
-    recoveryActionOwnerAgentId: exhausted ? null : input.agentId,
+    recoveryActionOwnerAgentId: boardOwned ? null : input.agentId,
     recoveryActionCause: input.failureCode,
     supersedeOnIdentityChange: true as const,
   };
@@ -8287,8 +8294,11 @@ const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
 const NATIVE_TURN_MODEL_REJECTED_ACTION =
   "The provider rejected the selected model. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
 
-const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
-  "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
+// The cleanup gate needs no person: environment release proves the old
+// runner, provider and tools stopped, and the agent continues on its next wake.
+const nativeCleanupRefusalAction = (completedTurnCleanup: boolean) => completedTurnCleanup
+  ? NATIVE_COMPLETED_TURN_CLEANUP_MESSAGE
+  : `${NATIVE_CLEANUP_SETTLING_MESSAGE} Send a message to continue; it starts once the previous session has stopped.`;
 
 const PROVIDER_DURABLE_EVENT_TYPES = NATIVE_PROVIDER_DURABLE_EVENT_TYPES;
 
@@ -11905,10 +11915,19 @@ async function executePaperclipNativeSessionAttempt(
           : startupRetry
             ? startupRetry.nextAttemptAt
             : disposition.nextAttemptAt;
+      // A cleanup-gate refusal after this run's own turn completed (for example
+      // a same-run disposition recovery) leaves saved work, not a failed attempt.
+      const completedTurnCleanup = sourceFailureCode === NATIVE_SESSION_CLEANUP_QUARANTINED
+        && phase === "terminal_failure" && await input.db
+          .select({ id: heartbeatRuns.id, runnerProfileJson: heartbeatRuns.runnerProfileJson })
+          .from(heartbeatRuns).where(eq(heartbeatRuns.id, input.execution.binding.runId))
+          .then(rows => rows.some(row => nativeCheckpointRecordsCompletedTurn(row.runnerProfileJson, input.execution.binding.runId)))
+          .catch(() => false);
       const recoveryProjection = nativeSessionRecoveryProjection({
         phase,
         failureCode,
         agentId: input.execution.binding.agentId,
+        completedTurnCleanup,
       });
       const { exhausted } = recoveryProjection;
       const integrityFailure =
@@ -11979,7 +11998,7 @@ async function executePaperclipNativeSessionAttempt(
                   : sourceFailureCode === "native_provider_approval_required"
                   ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
                   : sourceFailureCode === "native_session_cleanup_quarantined"
-                  ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
+                  ? nativeCleanupRefusalAction(completedTurnCleanup)
                   : sourceFailureCode === "runner_remote_provider_verification_unavailable"
                     ? "Provider files could not be verified after two read attempts. Inspect the retained workspace and command transport before retrying the original run."
                   : sourceFailureCode === "runner_ingress_access_rejected"
@@ -12242,7 +12261,7 @@ async function executePaperclipNativeSessionAttempt(
               : sourceFailureCode === "native_provider_approval_required"
               ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
               : sourceFailureCode === "native_session_cleanup_quarantined"
-              ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
+              ? nativeCleanupRefusalAction(completedTurnCleanup)
               : sourceFailureCode === "runner_ingress_access_rejected"
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
               : sourceFailureCode === "native_provider_terminal_failed"

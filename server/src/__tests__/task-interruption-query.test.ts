@@ -188,6 +188,39 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect((await taskInterruptionPresentation(db, task))?.retryWait?.reason).toBe("budget.blocked");
   });
 
+  // PAP-3797 / staging run 6a0df8d1, saved by the previous release: the provider
+  // turn completed (checkpoint terminal), a same-run recovery was then refused by
+  // the cleanup gate. No migration rewrites it; the projection reads it as is.
+  it("reads a quarantine saved after a completed turn as settled work, not a failed attempt", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), otherRunId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Completed turn", issuePrefix: `K${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Codie", adapterType: "paperclip_runner" });
+    const [task] = await db.insert(issues).values({ companyId, title: "Set up Storie", identifier: "PAP-3797",
+      status: "blocked", assigneeAgentId: agentId }).returning();
+    const staged = (id: string, turnTerminalState: string) => ({ id, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue",
+      status: "failed", runtimeMode: "native", errorCode: "native_session_cleanup_quarantined",
+      error: "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+      finishedAt: new Date(Date.now() - 60_000),
+      resultJson: { apiToolReceipts: { receipt: { state: "completed" } }, semanticToolReceipts: { doc: { state: "completed" } } },
+      runnerProfileJson: { mode: "native", backend: "codex_app_server", sessionCheckpoint: {
+        cursor: "818", activeTurnId: null, semanticResult: null, driverKind: "codex_app_server", backendKind: "runner",
+        identity: { runId: id, agentId, issueId: task.id, companyId, sessionId: randomUUID() },
+        terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState,
+          reportedWorkDisposition: "yielded" },
+        terminalTurns: [{ turnId: randomUUID(), fingerprint: "{}" }],
+      } } }) as typeof heartbeatRuns.$inferInsert;
+    await db.insert(heartbeatRuns).values(staged(runId, "completed"));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: task.id, runId, phase: "terminal_failure",
+      attempt: 2, failureCode: "native_session_cleanup_quarantined" });
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "resolved", canRetry: false });
+    // A quarantine whose turn did not complete is still unfinished, but it never
+    // offers the Retry that the retry route refuses.
+    await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 120_000) }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values(staged(otherRunId, "interrupted"));
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: false,
+      observedRunId: otherRunId, retryWait: { reason: "cleanup_quarantined" } });
+  });
+
   it("shows a queued-message Interrupt as handing off, not as a failed attempt", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), userId = "board-user";
     await db.insert(companies).values({ id: companyId, name: "Interrupted task", issuePrefix: `Q${companyId.slice(0, 7)}` });

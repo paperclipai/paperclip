@@ -13997,7 +13997,7 @@ describe("native session bounded recovery", () => {
     }
   });
 
-  it("persists actionable operator recovery without an automatic cleanup wake", async () => {
+  it("persists plain cleanup recovery without an automatic cleanup wake", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> =
       [];
     const failure = new NativeSessionCleanupQuarantinedError();
@@ -14028,7 +14028,7 @@ describe("native session bounded recovery", () => {
         nextAttemptAt: null,
         failureDetail: {
           nextAction: expect.stringContaining(
-            "Clearing a task session does not resolve this quarantine",
+            "it starts once the previous session has stopped",
           ),
         },
       });
@@ -14039,7 +14039,7 @@ describe("native session bounded recovery", () => {
           ownerType: "board",
           wakePolicy: null,
           nextAction: expect.stringContaining(
-            "Clearing a task session does not resolve this quarantine",
+            "it starts once the previous session has stopped",
           ),
         }),
       );
@@ -14048,6 +14048,44 @@ describe("native session bounded recovery", () => {
         { status: "blocked" },
         expect.anything(),
       );
+    } finally {
+      service.mockRestore();
+    }
+  });
+
+  // PAP-3797 / staging run 6a0df8d1: the provider turn completed and its work was
+  // saved; a same-run recovery was then refused by the cleanup gate. That is not
+  // a failed attempt and it never needs an administrator.
+  it("settles a cleanup refusal after a completed turn without blocking the task or asking an operator", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const failure = new NativeSessionCleanupQuarantinedError();
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const updateIssue = vi.fn(async () => ({ status: "blocked", statusVersion: 7 }));
+    const service = vi.spyOn(issueServiceModule, "issueService")
+      .mockReturnValue({ update: updateIssue } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    const completedCheckpoint = { sessionCheckpoint: {
+      activeTurnId: null, semanticResult: null, cursor: "818",
+      identity: { runId: execution.binding.runId, agentId: execution.binding.agentId,
+        issueId: execution.binding.issueId, companyId: execution.binding.companyId, sessionId: "session" },
+      terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded",
+        turnTerminalState: "completed", reportedWorkDisposition: "yielded" },
+    } };
+    try {
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, updates, completedCheckpoint), execution, runnerInstanceId: "runner",
+      })).rejects.toBe(failure);
+      const terminal = updates.find(entry => entry.table === nativeRunFinalizations
+        && entry.values.phase === "terminal_failure")?.values;
+      // Still a permanent, named refusal: no provider work is replayed.
+      expect(terminal).toMatchObject({ failureCode: "native_session_cleanup_quarantined", nextAttemptAt: null });
+      const nextAction = String((terminal?.failureDetail as Record<string, unknown>).nextAction);
+      expect(nextAction).not.toMatch(/operator|admin|Clearing a task session/i);
+      expect(updateIssue).not.toHaveBeenCalledWith(execution.binding.issueId, { status: "blocked" }, expect.anything());
+      expect(state.upsertRecoveryAction).toHaveBeenCalledWith(expect.objectContaining({
+        cause: "native_session_cleanup_quarantined", ownerType: "agent", ownerAgentId: execution.binding.agentId,
+        wakePolicy: null, nextAction: expect.not.stringMatching(/operator|admin|Clearing a task session/i),
+      }));
     } finally {
       service.mockRestore();
     }

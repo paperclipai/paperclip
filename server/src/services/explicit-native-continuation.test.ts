@@ -1188,6 +1188,19 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(source.resultJson).toEqual(resultJson);
   });
 
+  // PAP-3797: rows saved by earlier releases carry operator-facing text. The task
+  // notice shows plain wording instead; nothing asks an administrator to act.
+  it("shows plain wording for a cleanup refusal saved with the earlier operator text", async () => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ errorCode: "native_session_cleanup_quarantined",
+      error: "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine." })
+      .where(eq(heartbeatRuns.id, f.sourceRunId));
+    const notice = await getExecutionBlocker(db, f.companyId, f.issueId);
+    expect(notice).toMatchObject({ runId: f.sourceRunId, canRetry: false });
+    expect(notice?.runError).toMatch(/still shutting down/);
+    expect(notice?.runError).not.toMatch(/operator|admin|controlled restart/i);
+  });
+
   it.each(["verified", "unproven", "changed", "dry_run", "retry", "duplicate"])(
     "requires exact local cleanup for a new turn after worker loss (%s)", async mode => {
       const f = await seed();

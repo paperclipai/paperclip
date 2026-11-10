@@ -19,6 +19,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { logger } from "../middleware/logger.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { chatActionDeadline } from "./chat-action-work.js";
+import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
 import { isQueuedDependencyWait } from "./run-cancellation.js";
 import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
@@ -46,6 +47,8 @@ type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   nativeFailedAt?: Date | null;
   /** The configured model id the provider rejected (native_provider_model_rejected only). */
   rejectedModel?: string | null;
+  /** A cleanup-gate refusal after this run's own provider turn completed; its work is saved. */
+  completedTurnCleanup?: boolean;
 };
 type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
   preparationStatus?: string | null; preparationRetryAt?: number | string | null; preparationUpdatedAt?: Date | null;
@@ -133,7 +136,7 @@ const retryWaitMessages: Record<string, string> = {
   saved_work_recovery_refused: "Paperclip refused to recover the saved files because a safety check on them cannot pass. "
     + "Retry runs the same check again and succeeds only after Paperclip is updated. The agent's result is saved, and the agent will not repeat its work.",
   workspace_owner_stop_required: "Retry is waiting until Paperclip confirms that the previous server stopped saving files. The agent's result and your Retry are saved.",
-  cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
+  cleanup_quarantined: NATIVE_CLEANUP_SETTLING_MESSAGE,
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
   // A new click replaces a Retry declined for its requester's access with a
   // fresh attempt under the clicker's access, so Retry stays available.
@@ -172,8 +175,16 @@ function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | 
 }
 
 /** Presentation never grants authority. Dispatch repeats all gates under its
- * locks. The same projection is used in detail, lists and attention surfaces. */
+ * locks. The same projection is used in detail, lists and attention surfaces.
+ * It never offers a Retry that the retry route refuses: a native run refused
+ * by the cleanup gate cannot be retried (routes/agents.ts, canRetryStoppedRun). */
 export function projectTaskInterruption(issue: ProjectionIssue, input: ProjectionState, now = Date.now()): TaskInterruptionPresentation | null {
+  const presentation = projectTaskInterruptionState(issue, input, now);
+  if (!presentation?.canRetry || input.run?.errorCode !== NATIVE_SESSION_CLEANUP_QUARANTINED) return presentation;
+  return { ...presentation, canRetry: false };
+}
+
+function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionState, now: number): TaskInterruptionPresentation | null {
   const { run, wait, action, agent, project, company } = input;
   const retryWait = input.retryWait ?? wait;
   if (!run) {
@@ -300,6 +311,14 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
     return { ...base, state: "working" };
+  if (run.errorCode === NATIVE_SESSION_CLEANUP_QUARANTINED) {
+    // The provider turn completed and its work is saved; only shutdown of the
+    // old session is unproven, and that settles by itself. The task shows its
+    // own state (for example its blocker) instead of a failed attempt.
+    if (run.completedTurnCleanup) return base;
+    return { ...base, state: "failed", canRetry: false,
+      retryWait: { reason: "cleanup_quarantined", message: NATIVE_CLEANUP_SETTLING_MESSAGE } };
+  }
   return { ...base, state: "failed", canRetry: true, ...(projectAccess ? { projectAccess } : {}) };
 }
 
@@ -347,6 +366,12 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       // The model this run asked the provider for; configuration, not provider text.
+      // Saved fields only, so quarantines written by earlier releases read the same.
+      completedTurnCleanup: sql<boolean>`coalesce(${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
+        and ${heartbeatRuns.errorCode} = ${NATIVE_SESSION_CLEANUP_QUARANTINED}
+        and ${heartbeatRuns.runnerProfileJson}#>>'{sessionCheckpoint,identity,runId}' = ${heartbeatRuns.id}::text
+        and ${heartbeatRuns.runnerProfileJson}#>>'{sessionCheckpoint,terminal,turnTerminalState}' = 'completed'
+        and coalesce(jsonb_typeof(${heartbeatRuns.runnerProfileJson}#>'{sessionCheckpoint,activeTurnId}'), 'null') = 'null', false)`,
       rejectedModel: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'native_provider_model_rejected'
         then ${boundedJsonString(sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'provider'->'model'`, 200)} end`,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
