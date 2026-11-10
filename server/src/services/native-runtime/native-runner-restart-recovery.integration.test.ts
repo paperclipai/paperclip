@@ -2588,18 +2588,20 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     attempt?: number;
     mutate?: (core: DurablePrpControlPlane) => void;
     checkpoint?: boolean;
+    /** False: the controller saved its checkpoint, but no remote runner was launched yet. */
+    launched?: boolean;
   } = {}) {
     const fixture = await seedRun(`REMOTE-CLAIMED-${label}`);
     const { runId, issueId, native } = fixture;
     const remote = remotePreparedWorkspace();
     await fixture.db.update(heartbeatRuns).set({
       runnerProfileJson: { ...fixture.preparedProfile, nativeWorkspaceSync: remote },
-      processPid: 443, processStartedAt: new Date(Date.now() - 30_000),
+      ...(options.launched === false ? {} : { processPid: 443, processStartedAt: new Date(Date.now() - 30_000) }),
     }).where(eq(heartbeatRuns.id, runId));
     await fixture.db.insert(heartbeatRunEvents).values([
       { companyId, runId, agentId, seq: 900, stream: "system", level: "info", eventType: "native.process_start_requested" },
-      { companyId, runId, agentId, seq: 901, stream: "system", level: "info", eventType: "native.process_identity_recorded",
-        payload: { targetKind: "remote", processPid: 443 } },
+      ...(options.launched === false ? [] : [{ companyId, runId, agentId, seq: 901, stream: "system", level: "info",
+        eventType: "native.process_identity_recorded", payload: { targetKind: "remote", processPid: 443 } }]),
     ]);
     const bootId = randomUUID();
     const leaseOwner = `${bootId}:1:${randomUUID()}`;
@@ -2924,6 +2926,86 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
       .where(eq(nativeRunFinalizations.runId, fixture.runId));
     expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_runner_never_received_commands" });
+  });
+
+  // Daytona waves s9202 t02 (B1) and s9205 t04 (B2): a follow-up run on a
+  // continued session was killed after native.process_start_requested but
+  // before its remote runner launched. Admission rebinds the previous turn's
+  // checkpoint to the new run: its identity names this run and it keeps the
+  // provider session ID, but it records no cursor, turn, result or request.
+  // That carried session is not this run's provider work.
+  async function reboundFollowUpCheckpoint(fixture: Awaited<ReturnType<typeof seedRun>>, extra: Record<string, unknown> = {},
+    predecessor = true) {
+    const [seeded] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    // The settled previous turn of the same session saved the provider session.
+    if (predecessor) await fixture.db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", runtimeMode: "native",
+      nativeIssueId: fixture.issueId, nativeSessionId: seeded.nativeSessionId, runnerInstanceId: seeded.runnerInstanceId,
+      createdAt: new Date(seeded.createdAt.getTime() - 120_000), finishedAt: new Date(seeded.createdAt.getTime() - 10_000),
+      contextSnapshot: { issueId: fixture.issueId }, runnerProfileJson: { sessionCheckpoint: { providerSessionId: "inherited-thread" } } });
+    await fixture.db.update(heartbeatRuns).set({ sessionIdBefore: "inherited-thread", runnerProfileJson: {
+      ...seeded.runnerProfileJson, sessionCheckpoint: {
+        driverKind: "codex_app_server", backendKind: "runner", sessionId: "inherited-thread", cursor: null,
+        identity: { companyId, issueId: fixture.issueId, runId: fixture.runId, agentId, sessionId: fixture.native.normalizedSessionId },
+        providerSessionId: "inherited-thread", activeTurnId: null, terminal: null, terminalTurns: [], semanticResult: null,
+        pendingRuntimeRequests: [], lineage: [], ...extra,
+      } } }).where(eq(heartbeatRuns.id, fixture.runId));
+  }
+
+  it.each([
+    { label: "restarts", mode: "unlaunched" },
+    { label: "restarts with its predecessor's remote runner identity", mode: "inherited_process" },
+    { label: "keeps its own recorded runner held", mode: "identity_recorded" },
+    { label: "keeps a carried active turn held", mode: "active_turn" },
+  ] as const)("$label a follow-up whose controller never saved a checkpoint (s9205 t04)", async ({ mode }) => {
+    const fixture = await seedUnlaunchedRemoteClaim(`FOLLOW-UP-UNCOMMANDED-${mode}`,
+      { event: { eventType: "native.process_start_requested" } });
+    await reboundFollowUpCheckpoint(fixture, mode === "active_turn" ? { activeTurnId: "turn-in-flight" } : {});
+    if (mode === "inherited_process") {
+      const processStartedAt = new Date(Date.now() - 120_000);
+      const [current] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      await fixture.db.update(heartbeatRuns).set({ processPid: 596, processGroupId: null, processStartedAt, processHostHash: "remote" })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      await fixture.db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", runtimeMode: "native",
+        nativeIssueId: fixture.issueId, nativeSessionId: current.nativeSessionId, runnerInstanceId: current.runnerInstanceId,
+        createdAt: new Date(current.createdAt.getTime() - 60_000), finishedAt: new Date(current.createdAt.getTime() - 5_000),
+        processPid: 596, processGroupId: null, processStartedAt, processHostHash: "remote",
+        contextSnapshot: { issueId: fixture.issueId } });
+    }
+    if (mode === "identity_recorded") await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId,
+      seq: 901, stream: "system", level: "info", eventType: "native.process_identity_recorded" });
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    if (mode === "identity_recorded" || mode === "active_turn") {
+      expect(claim).not.toMatchObject({ kind: "bootstrap_incomplete" });
+      return;
+    }
+    expect(claim).toMatchObject({ kind: "bootstrap_incomplete", runId: fixture.runId, controllerGeneration: 2 });
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_runner_never_received_commands" });
+  });
+
+  it.each([
+    { label: "restarts", mode: "bootstrap" },
+    { label: "keeps a provider session no settled earlier run saved held in", mode: "no_predecessor" },
+    { label: "keeps a turn command held", mode: "turn_command" },
+    { label: "keeps a projected provider turn event held", mode: "turn_event" },
+  ] as const)("$label a follow-up whose saved controller checkpoint proves no provider turn (s9202 t02)", async ({ mode }) => {
+    const fixture = await seedClaimedRemoteBootstrap(`FOLLOW-UP-CLAIMED-${mode}`, {
+      launched: false,
+      mutate: mode === "turn_command" ? core => { openSession(core);
+        core.queueCommand("turn.start", { prompt: "Prior work must stay held." }); } : undefined,
+    });
+    await reboundFollowUpCheckpoint(fixture, {}, mode !== "no_predecessor");
+    if (mode === "turn_event") await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId,
+      seq: 902, stream: "system", level: "info", eventType: "turn.started" });
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    if (mode !== "bootstrap") {
+      expect(claim).not.toMatchObject({ kind: "bootstrap_incomplete" });
+      return;
+    }
+    expect(claim).toMatchObject({ kind: "bootstrap_incomplete", runId: fixture.runId, providerAttempt: 1, controllerGeneration: 2 });
   });
 
   it.each([
