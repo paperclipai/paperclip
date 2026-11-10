@@ -377,7 +377,8 @@ fn decode_rich_event(value: &Value) -> Result<AcpxEventPayload, LocalRunnerError
             value => value.clone(),
         }
     }
-    let payload = sanitize_display(payload);
+    let mut payload = sanitize_display(payload);
+    fit_redacted_display_to_length_bounds(event_type, &mut payload);
     if !validator.is_valid(&payload) {
         return Err(LocalRunnerError::invalid(
             "ACPX rich event redaction exceeded its schema bounds",
@@ -411,10 +412,7 @@ pub(crate) fn has_bounded_rich_display_shape(event_type: &str, payload: &Value) 
         })
 }
 
-pub(crate) fn rich_display_length_overflows(
-    event_type: &str,
-    payload: &Value,
-) -> Vec<(String, usize)> {
+fn rich_display_length_overflows(event_type: &str, payload: &Value) -> Vec<(String, usize)> {
     let Some(schema) = rich_event_schema(event_type) else {
         return Vec::new();
     };
@@ -433,6 +431,24 @@ pub(crate) fn rich_display_length_overflows(
             _ => None,
         })
         .collect()
+}
+
+pub(crate) fn fit_redacted_display_to_length_bounds(event_type: &str, payload: &mut Value) {
+    let mut output_truncated = false;
+    for (pointer, limit) in rich_display_length_overflows(event_type, payload) {
+        if let Some(Value::String(text)) = payload.pointer_mut(&pointer) {
+            let excess = text.chars().count().saturating_sub(limit);
+            *text = if pointer == "/output" {
+                output_truncated = true;
+                text.chars().skip(excess).collect()
+            } else {
+                text.chars().take(limit).collect()
+            };
+        }
+    }
+    if output_truncated && event_type.starts_with("tool.execution.") {
+        payload["outputTruncated"] = Value::Bool(true);
+    }
 }
 
 fn sanitize_question_set(mut value: Value) -> Result<Value, LocalRunnerError> {

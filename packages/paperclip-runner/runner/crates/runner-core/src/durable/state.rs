@@ -1948,7 +1948,8 @@ fn preserve_bounded_display_content(
     mut sanitized: Value,
 ) -> Result<Value, DurableRunnerError> {
     use crate::acpx_event_payload::{
-        has_bounded_rich_display_shape, rich_display_length_overflows, validate_question_set,
+        fit_redacted_display_to_length_bounds, has_bounded_rich_display_shape,
+        validate_question_set,
     };
 
     // Rich display payloads are already closed and byte-bounded by their exact
@@ -1956,21 +1957,7 @@ fn preserve_bounded_display_content(
     // change complete output into a truncated artifact without its metadata.
     if has_bounded_rich_display_shape(event_type, original) {
         let mut preserved = sanitize_bounded_display_value(original);
-        let mut output_truncated = false;
-        for (pointer, limit) in rich_display_length_overflows(event_type, &preserved) {
-            if let Some(Value::String(text)) = preserved.pointer_mut(&pointer) {
-                let excess = text.chars().count().saturating_sub(limit);
-                *text = if pointer == "/output" {
-                    output_truncated = true;
-                    text.chars().skip(excess).collect()
-                } else {
-                    text.chars().take(limit).collect()
-                };
-            }
-        }
-        if output_truncated && event_type.starts_with("tool.execution.") {
-            preserved["outputTruncated"] = Value::Bool(true);
-        }
+        fit_redacted_display_to_length_bounds(event_type, &mut preserved);
         if !has_bounded_rich_display_shape(event_type, &preserved) {
             return Err(DurableRunnerError::invalid(
                 "redacted display activity exceeds its schema bounds",
