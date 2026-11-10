@@ -1,5 +1,5 @@
 import { AGENT_OBSERVABILITY_ENV_KEYS } from "../drivers/agent-observability.js";
-import { configuredEnvironment } from "../configured-environment.js";
+import { CERTIFICATE_ENVIRONMENT_KEYS, configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
 import {
   createCipheriv,
@@ -4501,6 +4501,7 @@ export class DurablePrpControlPlane {
 }
 
 const runnerPlatformEnvironmentKeys = [
+  ...CERTIFICATE_ENVIRONMENT_KEYS,
   "PATH",
   "HOME",
   "CODEX_HOME",

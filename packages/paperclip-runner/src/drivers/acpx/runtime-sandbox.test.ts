@@ -50,7 +50,7 @@ describe("ACPX runtime sandbox", () => {
     } });
     const config = await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8");
     const keys = JSON.parse(config.split("\n").find(line => line.startsWith("include_only = "))?.slice("include_only = ".length) ?? "[]");
-    expect(keys).toEqual(expect.arrayContaining(Object.keys(pages)));
+    expect(keys).toEqual(expect.arrayContaining([...Object.keys(pages), "SSL_CERT_FILE", "GIT_SSL_CAINFO", "CURL_CA_BUNDLE"]));
     expect(keys).not.toContain("OPENAI_API_KEY");
     expect(keys).not.toContain("HOST_SECRET");
     expect(keys).not.toContain("PAPERCLIP_OBSERVABILITY_CODEX_CONFIG");

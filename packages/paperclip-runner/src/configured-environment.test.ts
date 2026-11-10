@@ -1,4 +1,4 @@
-import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentProjection } from './configured-environment.js';
+import { CERTIFICATE_ENVIRONMENT_KEYS, CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentProjection } from './configured-environment.js';
 import { describe, expect, it, vi } from 'vitest';
 import { createSanitizedCodexEnvironment } from './drivers/codex/app-server-transport.js';
 import { createIsolatedCodexAppServerArgs } from './drivers/codex/codex-security-config.js';
@@ -131,4 +131,17 @@ describe("configured environment authority", () => {
       }
     } finally { vi.unstubAllEnvs(); }
   });
+});
+
+it.each([false, true])("preserves sandbox certificate trust injected after policy construction (identity %s)", async identity => {
+  const environment = identity ? { PAPERCLIP_AGENT_KEY_ID: "agent-key" } : {};
+  const args = createIsolatedCodexAppServerArgs(environment);
+  const keys = JSON.parse(args.find(arg => arg.startsWith("shell_environment_policy.include_only="))!.split("=", 2)[1]!);
+  expect(keys).toEqual(expect.arrayContaining([...CERTIFICATE_ENVIRONMENT_KEYS]));
+  const injected = Object.fromEntries(CERTIFICATE_ENVIRONMENT_KEYS.map(key => [key, `/sandbox/${key}`]));
+  const { createSanitizedAcpxSpawnInput } = await import("./drivers/acpx/environment.js");
+  for (const env of [createSanitizedCodexEnvironment(injected), createSanitizedAcpxSpawnInput(injected, "codex").env]) {
+    expect(env).toMatchObject(injected);
+  }
+  for (const value of Object.values(injected)) expect(args.join("\n")).not.toContain(value);
 });

@@ -25,6 +25,7 @@ export function codexShellEnvironmentKeys(
       && SECRET_NAME.test(key) && !PROVIDER_ONLY_KEYS.has(key.toUpperCase()))
     .map(([key]) => key));
   return [...new Set([
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO", "NODE_EXTRA_CA_CERTS", "DENO_CERT", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
     "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
     ...Object.keys(environment).filter(key => ENVIRONMENT_NAME.test(key) && !PROVIDER_ONLY_KEYS.has(key.toUpperCase())
       && (key === "PAPERCLIP_API_KEY" || configuredSecrets.has(key) || !SECRET_NAME.test(key))),
