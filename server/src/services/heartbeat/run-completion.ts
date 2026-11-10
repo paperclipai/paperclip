@@ -39,7 +39,7 @@ import { isConversation, settleConversationTurn } from "../agent-conversations.j
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
@@ -1118,6 +1118,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     if (dispatchMayHaveStarted !== false) return null;
     try {
       const [row] = await db.select({ companyId: heartbeatRuns.companyId, runtimeMode: heartbeatRuns.runtimeMode,
+        processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
+        processStartedAt: heartbeatRuns.processStartedAt, sessionIdAfter: heartbeatRuns.sessionIdAfter,
         coordinator: { runId: nativeRunFinalizations.runId, phase: nativeRunFinalizations.phase,
           attempt: nativeRunFinalizations.attempt, leaseOwner: nativeRunFinalizations.leaseOwner,
           controllerBootId: nativeRunFinalizations.controllerBootId, resultId: nativeRunFinalizations.resultId } })
@@ -1126,6 +1128,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId)))
         .where(eq(heartbeatRuns.id, runId)).limit(1);
       if (!row || row.runtimeMode !== "native") return null;
+      // A recorded process or provider session also means work may have run.
+      if (row.processPid !== null || row.processGroupId !== null || row.processStartedAt !== null
+        || row.sessionIdAfter !== null) return null;
       // Runtime selection creates the coordinator unclaimed ("observed",
       // attempt 0). Only the executor, after entering dispatch, claims it with
       // a lease owner and controller; any claim, in any generation, disqualifies.
@@ -1137,6 +1142,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       // in this or an earlier controller generation, means work may have run.
       // Restart recovery uses the same canonical proof.
       if (await hasNativeExecutionStartEvidence(db, { companyId: row.companyId, id: runId })) return null;
+      const [result] = await db.select({ id: nativeRunResults.id }).from(nativeRunResults)
+        .where(and(eq(nativeRunResults.companyId, row.companyId), eq(nativeRunResults.runId, runId))).limit(1);
+      if (result) return null;
       return { [NATIVE_PRE_DISPATCH_FAILURE_KEY]: NATIVE_PRE_DISPATCH_FAILURE_RECORD };
     } catch (error) {
       logger.warn({ err: error, runId }, "could not prove a native failure started no provider work; keeping the native hold");

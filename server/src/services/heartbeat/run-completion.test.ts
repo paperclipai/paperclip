@@ -1542,6 +1542,17 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
         .toMatchObject({ phase: "terminal_failure", failureCode: "native_pre_dispatch_failure" });
     });
 
+    it.each([
+      ["a recorded process", { processPid: 4242 }],
+      ["a provider session", { sessionIdAfter: "provider-session" }],
+    ] as const)("keeps the hold when the run carries %s", async (_label, patch) => {
+      const f = await nativeFixture();
+      await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.run.id));
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).not.toHaveProperty("nativePreDispatchFailure");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
+
     it("records the proof but does not re-queue a failure that is not a transient database fault", async () => {
       const f = await nativeFixture();
       await f.completion.failRun(f.preDispatch(new Error("adapter crashed"), false));
