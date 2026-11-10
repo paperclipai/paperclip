@@ -19285,13 +19285,22 @@ describeEmbeddedPostgres("tool access service", () => {
       db,
       company.id,
       permittedActor.userId!,
-      ["agents:configure", "tools:manage_profiles"],
+      ["tools:manage_profiles"],
       "operator",
     );
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: permittedActor.userId!,
+      permissionKey: "agents:configure",
+      scope: { targetAgentIds: [agent.id] },
+      grantedByUserId: "owner",
+    });
     const service = createTestToolAccessService(db);
     const profile = await service.createProfile(company.id, {
       profileKey: `agent-binding-auth-${randomUUID()}`,
       name: "Agent binding auth",
+      status: "active",
       defaultAction: "deny",
     });
     const bindPath =

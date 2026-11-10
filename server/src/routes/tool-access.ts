@@ -566,6 +566,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       actor: req.actor,
       action: "agent_config:update",
       resource: { type: "agent", companyId, agentId },
+      scope: { targetAgentId: agentId },
     });
     if (!decision.allowed) {
       throw forbidden(`You cannot edit agent ${agentId}, so you cannot change ${denialContext}`);
