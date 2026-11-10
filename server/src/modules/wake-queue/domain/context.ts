@@ -12,7 +12,7 @@ const PAPERCLIP_WAKE_COMMENT_KEY = "paperclipWakeComment";
 const PAPERCLIP_TASK_MARKDOWN_KEY = "paperclipTaskMarkdown";
 const PAPERCLIP_TASK_MARKDOWN_COMPACT_KEY = "paperclipTaskMarkdownCompact";
 
-const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
+export const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "interactionId",
   "interactionKind",
   "interactionStatus",
@@ -67,6 +67,46 @@ function mergeWakeCommentIds(...values: Array<unknown>): string[] {
 
 export function hasInteractionContinuationWakeContext(contextSnapshot: Record<string, unknown>): boolean {
   return INTERACTION_CONTINUATION_CONTEXT_KEYS.some((key) => readNonEmptyString(contextSnapshot[key]));
+}
+
+export const RUN_LIVENESS_CONTINUATION_WAKE_REASON = "run_liveness_continuation";
+
+/**
+ * Whether a wake carries a system run liveness continuation, by the context
+ * its source saves (it survives a later merge that replaces the reason). Its
+ * conditions are not judged here.
+ */
+export function carriesRunLivenessContinuation(seed: Record<string, unknown>) {
+  return readNonEmptyString(seed.wakeReason) === RUN_LIVENESS_CONTINUATION_WAKE_REASON ||
+    readNonEmptyString(seed.livenessContinuationSourceRunId) !== null;
+}
+
+const COMMENT_ONLY_WAKE_REASONS = ["issue_commented", "issue_reopened_via_comment", "issue_comment_mentioned"];
+
+/** Whether a wake reason only announces queued comments. */
+export function isCommentOnlyWakeReason(reason: string | null) {
+  return reason === null || COMMENT_ONLY_WAKE_REASONS.includes(reason);
+}
+
+/**
+ * How a deferred wake row says it carries work besides its queued comments:
+ * an interaction or its continuation, a resume intent, or a wake reason that
+ * is not a comment reason. It reads the reason as stored, so a wake merged
+ * into another reports the reason of the wake merged last. The release drain
+ * adds a saved stage it judges current under the issue lock, and a carried
+ * run liveness continuation (see `carriesCurrentExecutionStage` and
+ * `carriesRunLivenessContinuation`).
+ */
+export function deferredWakePreservesIndependentContinuation(input: {
+  rowReason: string | null;
+  deferredContextSeed: Record<string, unknown>;
+}) {
+  const queuedReason = readNonEmptyString(input.deferredContextSeed.wakeReason) ?? readNonEmptyString(input.rowReason);
+  return (
+    hasInteractionContinuationWakeContext(input.deferredContextSeed) ||
+    input.deferredContextSeed.resumeIntent === true ||
+    !isCommentOnlyWakeReason(queuedReason)
+  );
 }
 
 /**

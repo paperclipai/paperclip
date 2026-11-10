@@ -28,7 +28,17 @@ export type {
   RunSummary,
 } from "./application/types.js";
 export { WakeQueueApplicationError } from "./application/types.js";
-export { hasRetainedExternalChatRetry } from "./domain/context.js";
+export { hasRetainedExternalChatRetry, INTERACTION_CONTINUATION_CONTEXT_KEYS } from "./domain/context.js";
+export {
+  carriesWorkBeyondQueuedComments,
+  decideExecutionWakeFreshness,
+  decideParkedStageScan,
+  EXECUTION_STAGE_WAKE_REASONS,
+  settleWakeAfterDeliveredComments,
+  STALE_EXECUTION_WAKE_REASON,
+  withoutStaleStageOnResumedReceipt,
+} from "./domain/execution-wake-freshness.js";
+export type { ExecutionWakeFreshness, ExecutionWakeFreshnessFacts } from "./domain/execution-wake-freshness.js";
 export type {
   IssueSnapshot,
   RunSnapshot,

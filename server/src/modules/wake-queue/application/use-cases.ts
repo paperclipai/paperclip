@@ -7,6 +7,14 @@ import {
   decideWakeOutcome,
   deriveImmediateRecoveryContextLabels,
 } from "../domain/policy.js";
+import { carriesRunLivenessContinuation } from "../domain/context.js";
+import {
+  carriesCurrentExecutionStage,
+  decideExecutionWakeFreshness,
+  STALE_EXECUTION_WAKE_REASON,
+  withExecutionWakeReasonRestored,
+  withoutStaleExecutionContext,
+} from "../domain/execution-wake-freshness.js";
 import {
   EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
   isConfigurationIncompleteFailedRun,
@@ -174,6 +182,22 @@ async function runReleaseDrain(
       continue;
     }
 
+    // A wake that carries an execution stage is checked against the issue row read under this lock. Every candidate
+    // is checked, not only the one a caller asked to resume, so a stale one is
+    // never promoted ahead of, or instead of, a current one. A stale part that
+    // shares the wake with other work is removed before promotion (below).
+    const stageFreshness = decideExecutionWakeFreshness({ wake: candidate, issue });
+    if (stageFreshness === "stale") {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: candidate.id,
+        agentId: candidate.agentId,
+        reason: STALE_EXECUTION_WAKE_REASON,
+        now: input.now,
+      });
+      continue;
+    }
+
     // A lead can post its closing comment before committing Done. Check
     // again when the source run releases its queue, using every original
     // comment ID so coalesced human or unrelated input is never hidden.
@@ -259,7 +283,14 @@ async function runReleaseDrain(
       liveNonSelfCommentIdsLength: liveness.liveNonSelfCommentIds.length,
       liveCommentIdsDiffer,
       containedSelfAuthoredComment: liveness.containedSelfAuthoredComment,
-      preservesIndependentContinuation: candidate.preservesIndependentContinuation,
+      // The row's flag reads the merged wake reason, which a comment merged
+      // last turns into a comment reason. A stage the issue still expects, or
+      // a carried run liveness continuation (not judged, as unmerged it would
+      // not be), is independent work all the same, so a deleted or
+      // already-delivered comment only drops the comment, not that work.
+      preservesIndependentContinuation: candidate.preservesIndependentContinuation ||
+        carriesCurrentExecutionStage({ wake: candidate, issue }) ||
+        carriesRunLivenessContinuation(candidate.deferredContextSeed),
     });
 
     if (commentAction.kind === "cancel_empty") {
@@ -280,6 +311,9 @@ async function runReleaseDrain(
     }
 
     let workingCandidate = candidate;
+    // The payload as stored on the row, to tell an in-memory rewrite below
+    // from what the stranded-queue scan will read if the wake stays deferred.
+    let storedPayload = candidate.payload;
     if (commentAction.kind === "normalize") {
       const normalized = await ports.transaction.normalizeDeferredWakeCommentIds({
         companyId: run.companyId,
@@ -290,7 +324,25 @@ async function runReleaseDrain(
       });
       if (!normalized) continue;
       workingCandidate = normalized;
+      storedPayload = normalized.payload;
     }
+
+    if (stageFreshness === "stale_part") {
+      // Judge again after the comment rewrite: if nothing but the stale part
+      // is left, the wake is cancelled like any other stale wake.
+      if (decideExecutionWakeFreshness({ wake: workingCandidate, issue }) === "stale") {
+        await ports.transaction.cancelDeferredWake({
+          companyId: run.companyId,
+          wakeId: workingCandidate.id,
+          agentId: workingCandidate.agentId,
+          reason: STALE_EXECUTION_WAKE_REASON,
+          now: input.now,
+        });
+        continue;
+      }
+      workingCandidate = withoutStaleExecutionContext(workingCandidate, issue);
+    }
+    workingCandidate = withExecutionWakeReasonRestored(workingCandidate, issue);
 
     // A comment-id rewrite cannot change the agent or pause-hold facts already fetched above, so one decision covers both the rewritten and un-rewritten cases.
     const wakeOutcome = decideWakeOutcome({
@@ -304,6 +356,20 @@ async function runReleaseDrain(
     }
 
     if (wakeOutcome.kind === "defer_agent_pause") {
+      // The wake stays deferred until the agent resumes. Store the context
+      // rewritten above (stale stage removed, reason given back), so the
+      // stranded-queue scan selects it by what it now carries: a wake left
+      // under a comment reason with no comments would never be revisited.
+      if (workingCandidate.payload !== storedPayload) {
+        const stored = await ports.transaction.normalizeDeferredWakeCommentIds({
+          companyId: run.companyId,
+          wakeId: workingCandidate.id,
+          payload: workingCandidate.payload,
+          liveCommentIds: workingCandidate.queuedCommentIds,
+          now: input.now,
+        });
+        if (!stored) continue;
+      }
       preservedWakeIds.push(workingCandidate.id);
       continue;
     }

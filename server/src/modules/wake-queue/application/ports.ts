@@ -142,7 +142,12 @@ export interface WakeQueueTransaction {
   normalizeDeferredWakeCommentIds(input: {
     companyId: string;
     wakeId: string;
-    /** The wake's current payload, as already read by `findNextDeferredWake`, used as the rewrite base. */
+    /**
+     * The rewrite base: the wake's payload as read by `findNextDeferredWake`,
+     * or the drain's rewrite of it (stale stage removed, reason given back)
+     * when it keeps the wake deferred. Written back with `liveCommentIds` as
+     * its queued comment ids.
+     */
     payload: Record<string, unknown>;
     liveCommentIds: string[];
     now: Date;

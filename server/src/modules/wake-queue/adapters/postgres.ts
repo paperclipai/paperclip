@@ -56,7 +56,7 @@ import {
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
 import { CHAT_CONVERSATION_ID_KEY, extractWakeCommentIds } from "../../run-dispatch/index.js";
-import { hasInteractionContinuationWakeContext } from "../domain/context.js";
+import { deferredWakePreservesIndependentContinuation } from "../domain/context.js";
 import { decidePreDrain, type PreDrainFacts } from "../domain/policy.js";
 import {
   EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
@@ -172,16 +172,10 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
   const deferredContextSeed = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
   const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
   const wakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-  const queuedReason = wakeReason ?? readNonEmptyString(row.reason);
-  const queuedWakeIsCommentOnly =
-    !queuedReason ||
-    queuedReason === "issue_commented" ||
-    queuedReason === "issue_reopened_via_comment" ||
-    queuedReason === "issue_comment_mentioned";
-  const preservesIndependentContinuation =
-    hasInteractionContinuationWakeContext(deferredContextSeed) ||
-    deferredContextSeed.resumeIntent === true ||
-    !queuedWakeIsCommentOnly;
+  const preservesIndependentContinuation = deferredWakePreservesIndependentContinuation({
+    rowReason: row.reason,
+    deferredContextSeed,
+  });
 
   return {
     id: row.id,

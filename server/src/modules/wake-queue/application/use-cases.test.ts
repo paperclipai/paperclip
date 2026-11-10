@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./use-cases.js";
+import { mergeCoalescedContextSnapshot } from "../../../services/heartbeat/run-preparation.js";
+import { queuedCommentIdsFromWakePayload, withQueuedCommentIdsInWakePayload } from "../../../services/issue-queued-comment-queue.js";
+import { extractWakeCommentIds } from "../../run-dispatch/index.js";
+import { deferredWakePreservesIndependentContinuation, hasInteractionContinuationWakeContext } from "../domain/context.js";
+import { EXECUTION_STAGE_WAKE_REASONS } from "../domain/execution-wake-freshness.js";
 import type { AdmitWakeBehindIssueExecutionInput } from "./use-cases.js";
 import { WakeQueueApplicationError } from "./types.js";
 import type {
@@ -859,6 +864,464 @@ function createFakeAdmissionHelpers(
     ...overrides,
   };
 }
+
+// Reads a deferred wake row the way the Postgres adapter's toDeferredWakeCandidate
+// does, with the same helpers, so the drain sees the flags a real row gives.
+function asAdapterReads(row: Pick<DeferredWakeCandidate, "id" | "reason" | "source" | "requestedByActorType"> & {
+  payload: Record<string, unknown>;
+}): DeferredWakeCandidate {
+  const seed = (row.payload._paperclipWakeContext ?? {}) as Record<string, unknown>;
+  return wakeCandidate({
+    ...row,
+    queuedCommentIds: queuedCommentIdsFromWakePayload(row.payload),
+    deferredContextSeed: seed,
+    deferredCommentIds: extractWakeCommentIds(seed),
+    wakeReason: typeof seed.wakeReason === "string" && seed.wakeReason ? seed.wakeReason : null,
+    preservesIndependentContinuation: deferredWakePreservesIndependentContinuation({ rowReason: row.reason, deferredContextSeed: seed }),
+  });
+}
+
+describe("releaseIssueExecution: execution-stage wake freshness under the issue lock", () => {
+  const REVIEW_ISSUE: IssueSnapshot = {
+    ...ISSUE,
+    status: "in_review",
+    assigneeAgentId: "deferred-agent",
+    executionState: {
+      status: "pending",
+      currentStageId: "stage-current",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: "deferred-agent" },
+      returnAssignee: { type: "agent", agentId: "finishing-agent" },
+    },
+  };
+
+  function stageWake(id: string, stageId: string, extra: Record<string, unknown> = {}): DeferredWakeCandidate {
+    const executionStage = { stageId, stageType: "review", wakeRole: "reviewer" };
+    const seed = { issueId: "issue-1", wakeReason: "execution_review_requested", executionStage, ...extra };
+    return asAdapterReads({
+      id,
+      reason: "issue_execution_deferred",
+      source: "assignment",
+      requestedByActorType: "agent",
+      payload: { issueId: "issue-1", mutation: "update", executionStage, _paperclipWakeContext: seed },
+    });
+  }
+
+  function drain(queue: DeferredWakeCandidate[], issue: IssueSnapshot, opts: { agentPaused?: boolean } = {}) {
+    const byId = new Map(queue.map(wake => [wake.id, wake]));
+    const findNextDeferredWake = vi.fn(async () => queue.shift() ?? null);
+    // Rewrites the row like the adapter does and reads it back the same way.
+    const normalizeDeferredWakeCommentIds = vi.fn(async (input: { wakeId: string; payload: Record<string, unknown>; liveCommentIds: string[] }) =>
+      asAdapterReads({ ...byId.get(input.wakeId)!, payload: withQueuedCommentIdsInWakePayload(input.payload, input.liveCommentIds) }));
+    const findInvokableAgent = vi.fn(async () => opts.agentPaused ? { ...AGENT, invokable: false, paused: true } : AGENT);
+    const transaction = createFakeTransaction({ findNextDeferredWake, normalizeDeferredWakeCommentIds, findInvokableAgent });
+    const host = createFakeHost();
+    const releaseIssueExecution = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(host, transaction, issue), recovery: createFakeRecovery(),
+    });
+    return { transaction, run: () => releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date(), resumeStrandedQueue: true }) };
+  }
+
+  it("cancels a stale stage wake queued ahead of a current one and promotes only the current one", async () => {
+    const { transaction, run } = drain([stageWake("wake-stale", "stage-old"), stageWake("wake-current", "stage-current")], REVIEW_ISSUE);
+
+    const result = await run();
+
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      wakeId: "wake-stale", reason: "The stage or assignment this deferred wake was for has moved on",
+    }));
+    expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledTimes(1);
+    expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "wake-current" }));
+    expect(result.outcome.kind).toBe("promoted");
+    expect(result.postCommitEffects).toEqual([{ kind: "run_queued", run: runSummary("wake-current") }]);
+  });
+
+  it("uses the issue read under the lock when the stage moved after a scan picked the wake", async () => {
+    // The scan saw stage-current; by the time the lock is held the stage has moved on.
+    const moved: IssueSnapshot = { ...REVIEW_ISSUE, executionState: { ...(REVIEW_ISSUE.executionState as object), currentStageId: "stage-next" } };
+    const { transaction, run } = drain([stageWake("wake-picked", "stage-current")], moved);
+
+    const result = await run();
+
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wakeId: "wake-picked" }));
+    expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+    expect(result.postCommitEffects).not.toContainEqual(expect.objectContaining({ kind: "run_queued" }));
+  });
+
+  it("cancels a stage wake whose agent no longer owns the issue", async () => {
+    const reassigned: IssueSnapshot = { ...REVIEW_ISSUE, assigneeAgentId: "other-agent" };
+    const { transaction, run } = drain([stageWake("wake-reassigned", "stage-current")], reassigned);
+
+    await run();
+
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wakeId: "wake-reassigned" }));
+    expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+  });
+
+  function promotedContext(transaction: WakeQueueTransaction) {
+    const call = vi.mocked(transaction.finalizePromotedWake).mock.calls[0]![0];
+    return { context: call.contextSnapshot, payload: call.payload };
+  }
+
+  it("delivers the queued comments of a mixed wake but not its stale stage", async () => {
+    const mixed = { ...stageWake("wake-mixed", "stage-old", { wakeCommentIds: ["c1"] }), queuedCommentIds: ["c1"], deferredCommentIds: ["c1"] };
+    const { transaction, run } = drain([mixed], REVIEW_ISSUE);
+    vi.mocked(transaction.getQueuedCommentLiveness).mockResolvedValue({ liveNonSelfCommentIds: ["c1"], containedSelfAuthoredComment: false });
+
+    await run();
+
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "wake-mixed" }));
+    const { context, payload } = promotedContext(transaction);
+    expect(context).not.toHaveProperty("executionStage");
+    expect(payload).not.toHaveProperty("executionStage");
+    expect(context).toMatchObject({ wakeReason: "issue_commented", wakeCommentIds: ["c1"] });
+  });
+
+  it("keeps the stage of a mixed wake whose stage is still current", async () => {
+    const mixed = { ...stageWake("wake-mixed-current", "stage-current", { wakeCommentIds: ["c1"] }), queuedCommentIds: ["c1"], deferredCommentIds: ["c1"] };
+    const { transaction, run } = drain([mixed], REVIEW_ISSUE);
+    vi.mocked(transaction.getQueuedCommentLiveness).mockResolvedValue({ liveNonSelfCommentIds: ["c1"], containedSelfAuthoredComment: false });
+
+    await run();
+
+    const { context } = promotedContext(transaction);
+    expect(context).toMatchObject({ wakeReason: "execution_review_requested", executionStage: { stageId: "stage-current" } });
+  });
+
+  it("delivers an interaction carried with a stale stage, without the stage", async () => {
+    const base = stageWake("wake-interaction", "stage-old", { interactionId: "interaction-1", interactionKind: "ask_user_questions" });
+    const mixed = { ...base, payload: { ...base.payload, mutation: "interaction" } };
+    const { transaction, run } = drain([mixed], REVIEW_ISSUE);
+
+    await run();
+
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    const { context } = promotedContext(transaction);
+    expect(context).not.toHaveProperty("executionStage");
+    expect(context.wakeReason).not.toBe("execution_review_requested");
+    expect(context).toMatchObject({ interactionId: "interaction-1" });
+  });
+
+  it("cancels a mixed wake with a stale stage once its queued comments are gone", async () => {
+    const mixed = { ...stageWake("wake-mixed-empty", "stage-old", { wakeCommentIds: ["c1"] }), queuedCommentIds: ["c1"], deferredCommentIds: ["c1"] };
+    const { transaction, run } = drain([mixed], REVIEW_ISSUE);
+    vi.mocked(transaction.normalizeDeferredWakeCommentIds).mockImplementation(async (input) => {
+      const seed = { ...(mixed.deferredContextSeed as Record<string, unknown>), wakeCommentIds: input.liveCommentIds };
+      return { ...mixed, queuedCommentIds: input.liveCommentIds, deferredCommentIds: input.liveCommentIds,
+        deferredContextSeed: seed, payload: { ...mixed.payload, _paperclipWakeContext: seed } };
+    });
+
+    await run();
+
+    expect(transaction.normalizeDeferredWakeCommentIds).toHaveBeenCalledWith(expect.objectContaining({ liveCommentIds: [] }));
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      wakeId: "wake-mixed-empty", reason: "The stage or assignment this deferred wake was for has moved on",
+    }));
+    expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+  });
+
+  function livenessWake(id: string, extraSeed: Record<string, unknown> = {}): DeferredWakeCandidate {
+    const seed = { issueId: "issue-1", wakeReason: "run_liveness_continuation", livenessContinuationSourceRunId: "run-0",
+      livenessContinuationAttempt: 1, ...extraSeed };
+    const payload = { issueId: "issue-1", sourceRunId: "run-0", livenessState: "plan_only", continuationAttempt: 1,
+      instruction: "Take the next step.", _paperclipWakeContext: seed };
+    return asAdapterReads({ id, reason: "run_liveness_continuation", source: "automation", requestedByActorType: "system", payload });
+  }
+  const OPEN_ISSUE: IssueSnapshot = { ...REVIEW_ISSUE, status: "in_progress", assigneeAgentId: "deferred-agent", executionState: null };
+
+  // System continuations are out of scope: the drain does not judge them,
+  // as on master. A liveness continuation is promoted whatever the issue state.
+  it.each([
+    ["open, owned, with no execution policy state", OPEN_ISSUE],
+    ["blocked", { ...OPEN_ISSUE, status: "blocked" }],
+    ["under an execution policy state", { ...OPEN_ISSUE, executionState: REVIEW_ISSUE.executionState }],
+  ])("does not judge a run liveness continuation when the issue is %s", async (_label, issue) => {
+    const { transaction, run } = drain([livenessWake("wake-liveness")], issue as IssueSnapshot);
+
+    await run();
+
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(promotedContext(transaction).context).toMatchObject({ wakeReason: "run_liveness_continuation", livenessContinuationSourceRunId: "run-0" });
+  });
+
+  it("keeps a liveness continuation merged with a live comment, whatever the issue state", async () => {
+    const merged = livenessWake("wake-liveness-comment", { wakeReason: "issue_commented", wakeCommentIds: ["c1"] });
+    const { transaction, run } = drain([merged], { ...OPEN_ISSUE, status: "blocked" });
+    vi.mocked(transaction.getQueuedCommentLiveness).mockResolvedValue({ liveNonSelfCommentIds: ["c1"], containedSelfAuthoredComment: false });
+
+    await run();
+
+    const { context, payload } = promotedContext(transaction);
+    expect(context).toMatchObject({ wakeReason: "issue_commented", wakeCommentIds: ["c1"], livenessContinuationSourceRunId: "run-0" });
+    expect(payload).toMatchObject({ instruction: "Take the next step." });
+  });
+
+  it("leaves other system continuations to the existing handling", async () => {
+    const seed = { issueId: "issue-1", wakeReason: "issue_continuation_needed" };
+    const continuation = asAdapterReads({ id: "wake-continuation", reason: "issue_execution_deferred", source: "automation",
+      requestedByActorType: "system", payload: { issueId: "issue-1", _paperclipWakeContext: seed } });
+    const { transaction, run } = drain([continuation], { ...OPEN_ISSUE, status: "blocked" });
+
+    await run();
+
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "wake-continuation" }));
+  });
+
+  // Merge two wakes through the real admission use case and the real context
+  // merge, read the merged row the way the adapter does, then drain it.
+  describe("merged into one deferred wake, then drained under the lock", () => {
+    const STAGE_OLD = { stageId: "stage-old", stageType: "review", wakeRole: "reviewer" };
+    const STAGE_CURRENT = { stageId: "stage-current", stageType: "review", wakeRole: "reviewer" };
+    type Arrival = {
+      source: "assignment" | "automation"; triggerDetail: "system" | null;
+      payload: Record<string, unknown>; contextSnapshot: Record<string, unknown>;
+    };
+    const stageArrival = (stage: Record<string, unknown>): Arrival => ({
+      source: "assignment", triggerDetail: "system",
+      payload: { issueId: "issue-1", mutation: "update", executionStage: stage },
+      contextSnapshot: { issueId: "issue-1", wakeReason: "execution_review_requested", source: "issue.execution_stage", executionStage: stage },
+    });
+    const livenessArrival: Arrival = {
+      source: "automation", triggerDetail: "system",
+      payload: { issueId: "issue-1", sourceRunId: "run-0", livenessState: "plan_only", continuationAttempt: 1, instruction: "Take the next step." },
+      contextSnapshot: { issueId: "issue-1", wakeReason: "run_liveness_continuation", livenessContinuationSourceRunId: "run-0",
+        livenessContinuationAttempt: 1 },
+    };
+    const commentArrival: Arrival = {
+      source: "automation", triggerDetail: null,
+      payload: { issueId: "issue-1", commentId: "c1", mutation: "comment" },
+      contextSnapshot: { issueId: "issue-1", wakeReason: "issue_commented", source: "issue.comment", commentId: "c1", wakeCommentIds: ["c1"] },
+    };
+    // What the comment-liveness read reports for the queued comment.
+    const COMMENT: Record<"live" | "deleted" | "delivered",
+      { liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean; deliveredCommentIds?: string[] }> = {
+      live: { liveNonSelfCommentIds: ["c1"], containedSelfAuthoredComment: false },
+      deleted: { liveNonSelfCommentIds: [], containedSelfAuthoredComment: false },
+      delivered: { liveNonSelfCommentIds: [], containedSelfAuthoredComment: false, deliveredCommentIds: ["c1"] },
+    };
+    const LIVENESS_ISSUE: IssueSnapshot = { ...REVIEW_ISSUE, status: "in_progress", executionState: null };
+
+    async function mergeThenDrain(first: Arrival, second: Arrival, opts: { issue?: IssueSnapshot; comment?: keyof typeof COMMENT } = {}) {
+      const writer = createFakeAdmissionWriter();
+      const admit = createAdmitWakeBehindIssueExecution({
+        reader: createFakeAdmissionReader({
+          isSameExecutionAgent: vi.fn(async () => false),
+          findExistingDeferredWake: vi.fn(async () => ({
+            id: "wake-merged", payload: { ...first.payload, _paperclipWakeContext: first.contextSnapshot },
+            deferredContext: first.contextSnapshot, coalescedCount: 0,
+          })),
+        }),
+        writer,
+        // The real merge helper the heartbeat service passes in.
+        helpers: createFakeAdmissionHelpers({ mergeCoalescedContextSnapshot }),
+      });
+      await admit(SCOPE, admissionInput({ agentId: "deferred-agent", source: second.source, triggerDetail: second.triggerDetail,
+        payload: second.payload, contextSnapshot: second.contextSnapshot,
+        requestedByActorType: "agent", requestedByActorId: "finishing-agent" }));
+      expect(writer.mergeIntoExistingDeferredWake).toHaveBeenCalledOnce();
+      const mergedPayload = vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0]![1].mergedPayload as Record<string, unknown>;
+      const mergedSeed = mergedPayload._paperclipWakeContext as Record<string, unknown>;
+      // The row keeps the first wake's source.
+      const candidate = asAdapterReads({ id: "wake-merged", reason: "issue_execution_deferred", source: first.source,
+        requestedByActorType: "agent", payload: mergedPayload });
+      const drained = drain([candidate], opts.issue ?? REVIEW_ISSUE);
+      vi.mocked(drained.transaction.getQueuedCommentLiveness).mockResolvedValue(COMMENT[opts.comment ?? "live"]);
+      await drained.run();
+      return { transaction: drained.transaction, mergedSeed, candidate };
+    }
+
+    const bothOrders = (work: () => Arrival) => [
+      ["work first, comment second", () => [work(), commentArrival] as const],
+      ["comment first, work second", () => [commentArrival, work()] as const],
+    ] as const;
+
+    it.each(bothOrders(() => stageArrival(STAGE_OLD)))("drops a stale stage and keeps a live comment (%s)", async (_label, order) => {
+      const [first, second] = order();
+      const { transaction, mergedSeed } = await mergeThenDrain(first, second);
+
+      expect(mergedSeed).toMatchObject({ executionStage: STAGE_OLD, wakeCommentIds: ["c1"] });
+      expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+      const { context, payload } = promotedContext(transaction);
+      expect(context).not.toHaveProperty("executionStage");
+      expect(payload).not.toHaveProperty("executionStage");
+      expect(context).toMatchObject({ wakeReason: "issue_commented", wakeCommentIds: ["c1"] });
+    });
+
+    it.each(bothOrders(() => stageArrival(STAGE_CURRENT)))("keeps a current stage and a live comment (%s)", async (_label, order) => {
+      const [first, second] = order();
+      const { transaction } = await mergeThenDrain(first, second);
+
+      expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+      const { context } = promotedContext(transaction);
+      expect(context).toMatchObject({ executionStage: STAGE_CURRENT, wakeCommentIds: ["c1"] });
+    });
+
+    describe.each(["deleted", "delivered"] as const)("once the comment is %s", (comment) => {
+      it.each(bothOrders(() => stageArrival(STAGE_CURRENT)))("still promotes the current stage, under its own reason (%s)", async (_label, order) => {
+        const [first, second] = order();
+        const { transaction, candidate } = await mergeThenDrain(first, second, { comment });
+
+        if (first === commentArrival) expect(candidate.preservesIndependentContinuation).toBe(true);
+        else expect(candidate.preservesIndependentContinuation).toBe(false); // the row reads as a comment wake
+        expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+        expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "wake-merged" }));
+        const { context } = promotedContext(transaction);
+        expect(context).toMatchObject({ executionStage: STAGE_CURRENT, wakeReason: "execution_review_requested", source: "issue.execution_stage" });
+        expect(context).not.toHaveProperty("wakeCommentIds");
+      });
+
+      it.each(bothOrders(() => stageArrival(STAGE_OLD)))("cancels the stale stage, with nothing left to deliver (%s)", async (_label, order) => {
+        const [first, second] = order();
+        const { transaction } = await mergeThenDrain(first, second, { comment });
+
+        expect(transaction.cancelDeferredWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wakeId: "wake-merged" }));
+        expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+      });
+
+      // Not judged (out of scope), but independent work: the dead comment
+      // does not take it down, whichever wake was merged last.
+      it.each(bothOrders(() => livenessArrival))("still promotes a carried liveness continuation, under its own reason (%s)", async (_label, order) => {
+        const [first, second] = order();
+        for (const issue of [LIVENESS_ISSUE, { ...LIVENESS_ISSUE, status: "blocked" }]) {
+          const { transaction } = await mergeThenDrain(first, second, { issue, comment });
+
+          expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+          const { context, payload } = promotedContext(transaction);
+          expect(context).toMatchObject({ wakeReason: "run_liveness_continuation", livenessContinuationSourceRunId: "run-0" });
+          expect(context).not.toHaveProperty("wakeCommentIds");
+          // The restored reason drops the comment source; with the comment first,
+          // the merge already gave the continuation reason and the drain leaves it.
+          if (first === livenessArrival) expect(context).not.toHaveProperty("source");
+          expect(payload).toMatchObject({ instruction: "Take the next step." });
+        }
+      });
+    });
+
+    it.each(bothOrders(() => livenessArrival))("keeps a liveness continuation and a live comment, whatever the issue state (%s)", async (_label, order) => {
+      const [first, second] = order();
+      for (const issue of [LIVENESS_ISSUE, { ...LIVENESS_ISSUE, status: "blocked" }]) {
+        const { transaction } = await mergeThenDrain(first, second, { issue });
+
+        expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+        const { context } = promotedContext(transaction);
+        expect(context).toMatchObject({ livenessContinuationSourceRunId: "run-0", wakeCommentIds: ["c1"] });
+      }
+    });
+
+    // The scan's selection of a deferred wake, as parkedExecutionWakePayloadSql
+    // and the queued-comment and interaction branches beside it read the row.
+    function strandedScanSelects(payload: Record<string, unknown>) {
+      const seed = (payload._paperclipWakeContext ?? {}) as Record<string, unknown>;
+      const comments = Array.isArray(seed.wakeCommentIds) ? seed.wakeCommentIds : [];
+      if (comments.length > 0 || payload.mutation === "interaction") return true;
+      const stage = (payload.executionStage ?? seed.executionStage ?? {}) as Record<string, unknown>;
+      return (EXECUTION_STAGE_WAKE_REASONS as readonly unknown[]).includes(seed.wakeReason) && typeof stage.stageId === "string" &&
+        seed.resumeIntent !== true && !hasInteractionContinuationWakeContext(seed);
+    }
+
+    // The agent is paused when the lock holder finishes: the drain keeps the
+    // wake deferred. What it stores must bring the wake back once the agent
+    // resumes, with only the work that is still due.
+    describe("kept deferred for a paused agent, then drained again", () => {
+      async function pauseThenResume(first: Arrival, second: Arrival, comment: keyof typeof COMMENT, issue = REVIEW_ISSUE) {
+        const writer = createFakeAdmissionWriter();
+        const admit = createAdmitWakeBehindIssueExecution({
+          reader: createFakeAdmissionReader({
+            isSameExecutionAgent: vi.fn(async () => false),
+            findExistingDeferredWake: vi.fn(async () => ({
+              id: "wake-merged", payload: { ...first.payload, _paperclipWakeContext: first.contextSnapshot },
+              deferredContext: first.contextSnapshot, coalescedCount: 0,
+            })),
+          }),
+          writer,
+          helpers: createFakeAdmissionHelpers({ mergeCoalescedContextSnapshot }),
+        });
+        await admit(SCOPE, admissionInput({ agentId: "deferred-agent", source: second.source, triggerDetail: second.triggerDetail,
+          payload: second.payload, contextSnapshot: second.contextSnapshot,
+          requestedByActorType: "agent", requestedByActorId: "finishing-agent" }));
+        const mergedPayload = vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0]![1].mergedPayload as Record<string, unknown>;
+        const row = (payload: Record<string, unknown>) => asAdapterReads({ id: "wake-merged", reason: "issue_execution_deferred",
+          source: first.source, requestedByActorType: "agent", payload });
+
+        const paused = drain([row(mergedPayload)], issue, { agentPaused: true });
+        vi.mocked(paused.transaction.getQueuedCommentLiveness).mockResolvedValue(COMMENT[comment]);
+        const pausedResult = await paused.run();
+        // Every write to the row, in order; the last one is what stays stored.
+        const writes = vi.mocked(paused.transaction.normalizeDeferredWakeCommentIds).mock.calls.map(([input]) =>
+          withQueuedCommentIdsInWakePayload(input.payload, input.liveCommentIds));
+        const stored = writes.at(-1) ?? mergedPayload;
+
+        const resumed = drain([row(stored)], issue);
+        vi.mocked(resumed.transaction.getQueuedCommentLiveness).mockResolvedValue(COMMENT[comment]);
+        await resumed.run();
+        return { paused: paused.transaction, pausedResult, stored, resumed: resumed.transaction };
+      }
+
+      describe.each(["deleted", "delivered"] as const)("once the comment is %s", (comment) => {
+        it.each(bothOrders(() => stageArrival(STAGE_CURRENT)))("stores the current stage under its own reason and promotes it on resume (%s)", async (_label, order) => {
+          const [first, second] = order();
+          const { paused, pausedResult, stored, resumed } = await pauseThenResume(first, second, comment);
+
+          expect(pausedResult.outcome.kind).not.toBe("promoted");
+          expect(paused.cancelDeferredWake).not.toHaveBeenCalled();
+          expect(paused.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+          const seed = stored._paperclipWakeContext as Record<string, unknown>;
+          expect(seed).toMatchObject({ wakeReason: "execution_review_requested", executionStage: STAGE_CURRENT, source: "issue.execution_stage" });
+          expect(seed).not.toHaveProperty("wakeCommentIds");
+          expect(strandedScanSelects(stored)).toBe(true);
+
+          expect(resumed.cancelDeferredWake).not.toHaveBeenCalled();
+          expect(resumed.claimDeferredWakeForPromotion).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "wake-merged" }));
+          expect(promotedContext(resumed).context).toMatchObject({ executionStage: STAGE_CURRENT, wakeReason: "execution_review_requested" });
+        });
+
+        it.each(bothOrders(() => stageArrival(STAGE_OLD)))("cancels a stale stage instead of keeping it (%s)", async (_label, order) => {
+          const [first, second] = order();
+          const { paused } = await pauseThenResume(first, second, comment);
+
+          expect(paused.cancelDeferredWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wakeId: "wake-merged" }));
+          expect(paused.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+        });
+      });
+
+      it.each(bothOrders(() => stageArrival(STAGE_OLD)))("stores a live comment without the stale stage and delivers it on resume (%s)", async (_label, order) => {
+        const [first, second] = order();
+        const { paused, stored, resumed } = await pauseThenResume(first, second, "live");
+
+        expect(paused.cancelDeferredWake).not.toHaveBeenCalled();
+        const seed = stored._paperclipWakeContext as Record<string, unknown>;
+        expect(seed).not.toHaveProperty("executionStage");
+        expect(stored).not.toHaveProperty("executionStage");
+        expect(seed).toMatchObject({ wakeReason: "issue_commented", wakeCommentIds: ["c1"] });
+        expect(strandedScanSelects(stored)).toBe(true);
+
+        const { context } = promotedContext(resumed);
+        expect(context).not.toHaveProperty("executionStage");
+        expect(context).toMatchObject({ wakeReason: "issue_commented", wakeCommentIds: ["c1"] });
+      });
+
+      it.each(bothOrders(() => stageArrival(STAGE_CURRENT)))("does not rewrite a wake whose context needs no change (%s)", async (_label, order) => {
+        const [first, second] = order();
+        const { paused, resumed } = await pauseThenResume(first, second, "live");
+
+        expect(paused.normalizeDeferredWakeCommentIds).not.toHaveBeenCalled();
+        expect(promotedContext(resumed).context).toMatchObject({ executionStage: STAGE_CURRENT, wakeCommentIds: ["c1"] });
+      });
+    });
+  });
+
+  it("does not touch ordinary comment wakes", async () => {
+    const { transaction, run } = drain([wakeCandidate({ id: "wake-plain", queuedCommentIds: ["c1"] })], REVIEW_ISSUE);
+    vi.mocked(transaction.getQueuedCommentLiveness).mockResolvedValue({ liveNonSelfCommentIds: ["c1"], containedSelfAuthoredComment: false });
+
+    await run();
+
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "wake-plain" }));
+  });
+});
 
 describe("admitWakeBehindIssueExecution", () => {
   it.each(["running", "queued"])(

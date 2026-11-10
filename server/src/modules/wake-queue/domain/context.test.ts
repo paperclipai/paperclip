@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { enrichPromotedWakeContext } from "./context.js";
+import { carriesRunLivenessContinuation, deferredWakePreservesIndependentContinuation, enrichPromotedWakeContext } from "./context.js";
 
 describe("enrichPromotedWakeContext", () => {
   it("clears stale derived comment projections when the canonical id list is empty, but keeps an independent interaction continuation", () => {
@@ -153,5 +153,45 @@ describe("context compaction wakes", () => {
     expect(wakeMustNotJoinActiveRun(compaction, comment, false)).toBe(true);
     expect(wakeMustNotJoinActiveRun(comment, compaction, false)).toBe(true);
     expect(wakeMustNotJoinActiveRun(comment, { issueId: "issue-1", wakeCommentId: "comment-2" }, false)).toBe(false);
+  });
+});
+
+describe("deferredWakePreservesIndependentContinuation", () => {
+  const preserves = (rowReason: string | null, deferredContextSeed: Record<string, unknown>) =>
+    deferredWakePreservesIndependentContinuation({ rowReason, deferredContextSeed });
+
+  it.each(["issue_commented", "issue_reopened_via_comment", "issue_comment_mentioned"])("is false for a %s wake", reason => {
+    expect(preserves(null, { wakeReason: reason, wakeCommentIds: ["c1"] })).toBe(false);
+  });
+
+  it("falls back to the row reason when the context has none", () => {
+    expect(preserves("issue_commented", {})).toBe(false);
+    expect(preserves(null, {})).toBe(false);
+    expect(preserves("execution_review_requested", {})).toBe(true);
+  });
+
+  it("is true for an interaction, a resume intent, or any other reason", () => {
+    expect(preserves(null, { wakeReason: "issue_commented", interactionId: "i1" })).toBe(true);
+    expect(preserves(null, { wakeReason: "issue_commented", resumeIntent: true })).toBe(true);
+    expect(preserves(null, { wakeReason: "execution_review_requested" })).toBe(true);
+  });
+
+  // The row reads the reason merged last, so a stage wake with a comment
+  // merged after it reads as a comment wake here; the release drain adds the
+  // stage when it is still current (see carriesCurrentExecutionStage).
+  it("reads a stage wake with a comment merged last as a comment wake", () => {
+    expect(preserves(null, { wakeReason: "issue_commented", wakeCommentIds: ["c1"], executionStage: { stageId: "s1" } })).toBe(false);
+  });
+});
+
+describe("carriesRunLivenessContinuation", () => {
+  it("recognizes a continuation by its reason or by the source run its context saves", () => {
+    expect(carriesRunLivenessContinuation({ wakeReason: "run_liveness_continuation" })).toBe(true);
+    expect(carriesRunLivenessContinuation({ wakeReason: "issue_commented", livenessContinuationSourceRunId: "run-0" })).toBe(true);
+  });
+
+  it("is false for other wakes, including other system continuations", () => {
+    expect(carriesRunLivenessContinuation({ wakeReason: "issue_commented", wakeCommentIds: ["c1"] })).toBe(false);
+    expect(carriesRunLivenessContinuation({ wakeReason: "issue_continuation_needed" })).toBe(false);
   });
 });

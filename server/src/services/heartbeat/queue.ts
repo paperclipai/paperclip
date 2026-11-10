@@ -159,6 +159,14 @@ import {
   isDependencyResolvedWakePayload,
   dependencyResolvedWakePayloadSql,
 } from "../issue-dependency-wakeups.js";
+import {
+  cancelStaleParkedWake,
+  parkedExecutionWakePayloadSql,
+  parkedWakeRowVersionSql,
+  adoptableAsQueuedCommentsOnly,
+  settleSavedWakesAfterDelivery,
+  storeParkedWakePayload,
+} from "../parked-execution-wakes.js";
 import { resumeIfPauseAlreadyReleased } from "../issue-tree-resume.js";
 import {
   ISSUE_PAUSED_ERROR_CODE,
@@ -199,7 +207,7 @@ import type { budgetService } from "../budgets.js";
 import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import type { instanceSettingsService } from "../instance-settings.js";
 import type { createRunDispatch } from "../../modules/run-dispatch/index.js";
-import { hasRetainedExternalChatRetry, type PostCommitEffect as WakeQueuePostCommitEffect, type createWakeQueue } from "../../modules/wake-queue/index.js";
+import { decideExecutionWakeFreshness, decideParkedStageScan, hasRetainedExternalChatRetry, withoutStaleStageOnResumedReceipt, type PostCommitEffect as WakeQueuePostCommitEffect, type createWakeQueue } from "../../modules/wake-queue/index.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -1907,23 +1915,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // Consumption is per comment. The wake adopts every saved message of
       // the task for this agent, so each receipt drops the comments a
       // completed run already received; a receipt left empty is consumed.
+      // Delivered comments take down only themselves, by the release drain's
+      // rules: a stage the issue still expects, a carried run liveness
+      // continuation or other independent work stays; a stale stage goes.
       const issueKeyId = String(wake.payload?.issueId);
-      const saved = await db.select().from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.companyId, wake.companyId), eq(agentWakeupRequests.agentId, wake.agentId),
-        eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
-        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueKeyId}`));
-      for (const receipt of saved) {
-        const commentIds = queuedCommentIdsFromWakePayload(receipt.payload);
-        const delivered = await deliveredQueuedCommentIds(db, { companyId: wake.companyId, issueId: issueKeyId,
-          agentId: wake.agentId, commentIds: commentIds.filter(isUuidLike) });
-        if (delivered.size === 0) continue;
-        const remaining = commentIds.filter(commentId => !delivered.has(commentId));
-        const now = new Date();
-        await db.update(agentWakeupRequests).set(remaining.length === 0
-          ? { status: "cancelled", finishedAt: now, updatedAt: now, error: "Queued messages were already delivered to a completed run" }
-          : { payload: withQueuedCommentIdsInWakePayload(parseObject(receipt.payload), remaining), updatedAt: now })
-          .where(and(eq(agentWakeupRequests.id, receipt.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
-      }
+      // A skipped write leaves received comments on a saved wake: leave the
+      // task to the next pass (the deferred-receipt worker reloads saved
+      // waits every 30 s).
+      if (!await settleSavedWakesAfterDelivery(db, { companyId: wake.companyId, agentId: wake.agentId, issueId: issueKeyId,
+        deliveredCommentIds: commentIds => deliveredQueuedCommentIds(db, { companyId: wake.companyId, issueId: issueKeyId,
+          agentId: wake.agentId, commentIds: commentIds.filter(isUuidLike) }) })) continue;
       const [current] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, wake.id),
         eq(agentWakeupRequests.status, "deferred_issue_execution")));
       if (!current) continue;
@@ -1945,12 +1946,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // A server restart or a message/cleanup race can leave a deferred wake
     // after its owner has released the issue lock. Revisit it through the same
     // release admission, so recovery holds and operator Stops still apply.
-    const strandedQueues = await db.select({ wake: agentWakeupRequests })
+    const strandedQueues = await db.select({ wake: agentWakeupRequests,
+      issue: { id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId, executionState: issues.executionState },
+      wakeVersion: parkedWakeRowVersionSql.wake, issueVersion: parkedWakeRowVersionSql.issue })
       .from(agentWakeupRequests)
+      // A parked stage wake whose agent no longer owns the issue is also
+      // selected, so the freshness check below can retire it.
       .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
         or(eq(issues.assigneeAgentId, agentWakeupRequests.agentId),
-          sql`${agentWakeupRequests.payload} #>> '{_paperclipWakeContext,wakeReason}' = 'issue_comment_mentioned'`)))
+          sql`${agentWakeupRequests.payload} #>> '{_paperclipWakeContext,wakeReason}' = 'issue_comment_mentioned'`,
+          parkedExecutionWakePayloadSql)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
       .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
         scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
@@ -1960,7 +1966,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           sql`jsonb_typeof(${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}') = 'array'`,
           sql`${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
         ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`,
-        dependencyResolvedWakePayloadSql),
+        dependencyResolvedWakePayloadSql, parkedExecutionWakePayloadSql),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
         sql`NOT EXISTS (SELECT 1 FROM heartbeat_runs live_issue_run
           WHERE live_issue_run.company_id = ${issues.companyId}
@@ -1970,10 +1976,23 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     const releasedNativeSources = new Set<string>();
-    for (const { wake } of strandedQueues) {
+    for (const { wake, issue, wakeVersion, issueVersion } of strandedQueues) {
       const dependencyWake = isDependencyResolvedWakePayload(wake.payload);
-      if (!dependencyWake && !queuedCommentIdsFromWakePayload(wake.payload).length &&
-          !await readQueuedInteractionResponse(db, wake.companyId, String(wake.payload?.issueId), wake.payload)) continue;
+      const currentStage = decideExecutionWakeFreshness({ wake, issue }) === "current";
+      const promotesOtherWork = dependencyWake || queuedCommentIdsFromWakePayload(wake.payload).length > 0 ||
+        (!currentStage && await readQueuedInteractionResponse(db, wake.companyId, String(wake.payload?.issueId), wake.payload));
+      // Only a pre-filter: the release drain checks every candidate again
+      // against the issue row it reads under the issue lock. A stale stage is
+      // never left in place to hold the head of the next pass: it is
+      // cancelled, or removed from work this pass does not promote.
+      const stageScan = decideParkedStageScan({ wake, issue }, Boolean(promotesOtherWork));
+      if (stageScan.kind !== "none") {
+        const guard = { wakeId: wake.id, wakeVersion, issueId: issue.id, issueVersion, now: new Date() };
+        if (stageScan.kind === "cancel") await cancelStaleParkedWake(db, guard);
+        else await storeParkedWakePayload(db, { ...guard, payload: stageScan.payload });
+        continue;
+      }
+      if (!currentStage && !promotesOtherWork) continue;
       const [latest] = await db.select({
         id: heartbeatRuns.id,
         companyId: heartbeatRuns.companyId,
@@ -3379,6 +3398,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
+              executionState: issues.executionState,
               createdAt: issues.createdAt,
             })
             .from(issues)
@@ -3407,6 +3427,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               finishedAt: new Date(),
             });
             return { kind: "skipped" as const };
+          }
+
+          if (executionWaitRequestId && payload) {
+            // A resumed saved receipt still carries the stage it was saved
+            // with. Judge it against the issue row locked above, as the release
+            // drain does: a stage that has moved on is removed, and the work
+            // that passed admission is delivered without the old instructions.
+            const resumed = withoutStaleStageOnResumedReceipt({ agentId, payload, contextSnapshot: enrichedContextSnapshot }, issue);
+            if (resumed.strippedStage) {
+              payload = resumed.payload;
+              for (const key of Object.keys(enrichedContextSnapshot)) delete enrichedContextSnapshot[key];
+              Object.assign(enrichedContextSnapshot, resumed.contextSnapshot);
+            }
           }
 
           // Completion can settle the conversation while admission is outside
@@ -4641,21 +4674,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           const adoptedComments = pendingComments.filter((wake) => {
             if (wake.id === executionWaitRequestId) return true;
             if (wake.id === opts.queuedCommentInterruptId || wake.id === opts.queuedCommentRequestId) return true;
-            const deferredPayload = parseObject(wake.payload);
-            const deferredContext = parseObject(
-              deferredPayload[DEFERRED_WAKE_CONTEXT_KEY],
-            );
-            // Dedicated interaction wakes carry their own source and session
-            // contract. ID-only adoption must not erase that continuation.
-            return (
-              // Durable chat work must keep its receipt, actor, source, and
-              // session contract through normal promotion and authorization.
-              !wake.idempotencyKey?.startsWith("chat-inbound:") &&
-              !isInteractionResolutionWakePayload(deferredPayload) &&
-              !hasInteractionContinuationWakeContext(deferredContext) &&
-              ["issue_commented", "issue_reopened_via_comment"].includes(String(deferredContext.wakeReason ?? wake.reason)) &&
-              queuedCommentIdsFromWakePayload(wake.payload).length > 0
-            );
+            return adoptableAsQueuedCommentsOnly(wake);
           });
           let adoptedCommentIds = [
             ...new Set([

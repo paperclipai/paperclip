@@ -10,6 +10,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "./run-admission.js";
+import { cancelDeliveredParkedWake, cancelStaleParkedWake, storeParkedWakePayload } from "../parked-execution-wakes.js";
 import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
 import { createWakeQueue } from "../../modules/wake-queue/index.js";
 import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
@@ -936,6 +937,162 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, pending.id)))[0])
       .toMatchObject({ status: "deferred_issue_execution", runId: null, payload });
     expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  function parkedReviewPayload(issueId: string, stageId = "review-stage") {
+    const executionStage = { stageId, stageType: "review", wakeRole: "reviewer" };
+    return { issueId, mutation: "update", executionStage,
+      _paperclipWakeContext: { issueId, wakeReason: "execution_review_requested", executionStage } };
+  }
+
+  async function parkedReviewWake() {
+    const seeded = await fixture("succeeded");
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", finishedAt: new Date() }).where(eq(heartbeatRuns.id, seeded.run.id));
+    const [reviewer] = await db.insert(agents).values({ companyId: seeded.company.id, name: "Stage reviewer", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    await db.update(issues).set({ status: "in_review", assigneeAgentId: reviewer.id, executionRunId: null, checkoutRunId: null,
+      executionState: { status: "pending", currentStageId: "review-stage", currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewer.id }, returnAssignee: { type: "agent", agentId: seeded.agent.id } },
+    }).where(eq(issues.id, seeded.issue.id));
+    const [pending] = await db.insert(agentWakeupRequests).values({ companyId: seeded.company.id, agentId: reviewer.id,
+      source: "assignment", triggerDetail: "system", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "agent", requestedByActorId: seeded.agent.id, payload: parkedReviewPayload(seeded.issue.id),
+    }).returning();
+    return { ...seeded, reviewer, pending };
+  }
+
+  async function readWake(id: string) {
+    return (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, id)))[0];
+  }
+
+  it("resumes a parked review wake that carries no comment", async () => {
+    const { run, pending } = await parkedReviewWake();
+    const deps = callbacks(db);
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: run.id }), { suppressImmediateRecovery: true, resumeStrandedQueue: true },
+    );
+    expect(await readWake(pending.id)).toMatchObject({ status: "deferred_issue_execution", runId: null });
+  });
+
+  it("cancels, without replaying, a parked review wake for a stage that has moved on", async () => {
+    const { issue, reviewer, pending } = await parkedReviewWake();
+    await db.update(issues).set({ executionState: { status: "pending", currentStageId: "approval-stage", currentStageType: "approval",
+      currentParticipant: { type: "agent", agentId: reviewer.id } } }).where(eq(issues.id, issue.id));
+    const deps = callbacks(db);
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+    expect(await readWake(pending.id)).toMatchObject({ status: "cancelled", runId: null,
+      error: "The stage or assignment this deferred wake was for has moved on" });
+  });
+
+  it("resumes a parked review wake even after another run of the same agent, reason and stage succeeded", async () => {
+    // Same agent, wake reason and stage, but a different wake: that run proves
+    // nothing about this wake, which was never promoted or merged.
+    const { company, issue, reviewer, pending } = await parkedReviewWake();
+    const startedAt = new Date(pending.requestedAt.getTime() + 1_000);
+    const [other] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: reviewer.id, status: "succeeded",
+      invocationSource: "assignment", runtimeMode: "legacy", startedAt, finishedAt: new Date(startedAt.getTime() + 1_000),
+      contextSnapshot: { issueId: issue.id, wakeReason: "execution_review_requested", source: "issue.execution_stage",
+        executionStage: { stageId: "review-stage", stageType: "review", wakeRole: "reviewer" } } }).returning();
+    const deps = callbacks(db);
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: other.id }), { suppressImmediateRecovery: true, resumeStrandedQueue: true },
+    );
+    expect(await readWake(pending.id)).toMatchObject({ status: "deferred_issue_execution", runId: null });
+  });
+
+  it("cancels a parked review wake whose agent no longer owns the issue, and leaves that agent's other wakes alone", async () => {
+    const { company, issue, agent, reviewer, pending } = await parkedReviewWake();
+    await db.update(issues).set({ assigneeAgentId: agent.id }).where(eq(issues.id, issue.id));
+    const [message] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: reviewer.id,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "board-user",
+      payload: { issueId: issue.id, _paperclipWakeContext: { issueId: issue.id, wakeReason: "issue_commented", wakeCommentIds: [randomUUID()] } },
+    }).returning();
+    const deps = callbacks(db);
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(await readWake(pending.id)).toMatchObject({ status: "cancelled", runId: null,
+      error: "The stage or assignment this deferred wake was for has moved on" });
+    expect(await readWake(message.id)).toMatchObject({ status: "deferred_issue_execution" });
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel a stale parked wake when the wake or issue changed after the scan read it", async () => {
+    const { issue, pending } = await parkedReviewWake();
+    const [{ version: wakeVersion }] = await db.select({ version: sql<string>`${agentWakeupRequests}.xmin::text` })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.id, pending.id));
+    const [{ version: issueVersion }] = await db.select({ version: sql<string>`${issues}.xmin::text` })
+      .from(issues).where(eq(issues.id, issue.id));
+    await db.update(issues).set({ title: "Touched after the scan" }).where(eq(issues.id, issue.id));
+    expect(await cancelStaleParkedWake(db, { wakeId: pending.id, wakeVersion, issueId: issue.id, issueVersion, now: new Date() }))
+      .toBe(false);
+    expect(await readWake(pending.id)).toMatchObject({ status: "deferred_issue_execution" });
+  });
+
+  it("does not cancel or rewrite a saved wake for delivered comments when a stage merged into it after the read", async () => {
+    // The pause-lifted pass reads a wake that only holds a delivered comment;
+    // a current stage then merges into it. Neither guarded write may land.
+    const { company, issue, reviewer } = await parkedReviewWake();
+    const commentId = randomUUID();
+    const [saved] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: reviewer.id,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "board-user",
+      payload: { issueId: issue.id, commentId, _paperclipWakeContext: { issueId: issue.id, wakeReason: "issue_commented", wakeCommentIds: [commentId] } },
+    }).returning();
+    const [{ version: wakeVersion }] = await db.select({ version: sql<string>`${agentWakeupRequests}.xmin::text` })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.id, saved.id));
+    const [{ version: issueVersion }] = await db.select({ version: sql<string>`${issues}.xmin::text` })
+      .from(issues).where(eq(issues.id, issue.id));
+    const mergedPayload = { ...parkedReviewPayload(issue.id), commentId,
+      _paperclipWakeContext: { ...parkedReviewPayload(issue.id)._paperclipWakeContext, wakeReason: "issue_commented", wakeCommentIds: [commentId] } };
+    await db.update(agentWakeupRequests).set({ payload: mergedPayload }).where(eq(agentWakeupRequests.id, saved.id));
+    const guard = { wakeId: saved.id, wakeVersion, issueId: issue.id, issueVersion, now: new Date() };
+    expect(await cancelDeliveredParkedWake(db, guard)).toBe(false);
+    expect(await storeParkedWakePayload(db, { ...guard, payload: { issueId: issue.id } })).toBe(false);
+    expect(await readWake(saved.id)).toMatchObject({ status: "deferred_issue_execution", payload: mergedPayload });
+  });
+
+  it.each(["in_progress", "blocked"] as const)(
+    "leaves a parked run liveness continuation for an %s issue to its existing handling", async (status) => {
+      const seeded = await fixture("succeeded");
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy", finishedAt: new Date() }).where(eq(heartbeatRuns.id, seeded.run.id));
+      await db.update(issues).set({ status, executionRunId: null, checkoutRunId: null }).where(eq(issues.id, seeded.issue.id));
+      const [pending] = await db.insert(agentWakeupRequests).values({ companyId: seeded.company.id, agentId: seeded.agent.id,
+        source: "automation", triggerDetail: "system", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+        requestedByActorType: "system", requestedByActorId: "heartbeat",
+        payload: { issueId: seeded.issue.id, sourceRunId: seeded.run.id, livenessState: "plan_only", continuationAttempt: 1,
+          _paperclipWakeContext: { issueId: seeded.issue.id, wakeReason: "run_liveness_continuation",
+            livenessContinuationSourceRunId: seeded.run.id, livenessContinuationAttempt: 1 } },
+      }).returning();
+      const deps = callbacks(db);
+      await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+      // Not selected by the scan and not judged: system continuations are out of scope.
+      expect(await readWake(pending.id)).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+    });
+
+  it("does not let more than a page of stale parked wakes hide a valid one", async () => {
+    const { company, issue, reviewer, agent, run, pending } = await parkedReviewWake();
+    const base = Date.now() - 600_000;
+    const stale = await db.insert(agentWakeupRequests).values(Array.from({ length: 55 }, (_, index) => ({
+      companyId: company.id, agentId: reviewer.id, source: "assignment", triggerDetail: "system",
+      reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedByActorType: "agent",
+      requestedByActorId: agent.id, payload: parkedReviewPayload(issue.id, `old-stage-${index}`),
+      requestedAt: new Date(base + index), updatedAt: new Date(base + index),
+    }))).returning({ id: agentWakeupRequests.id });
+    const deps = callbacks(db);
+    const queue = createHeartbeatQueue(db, deps);
+    await queue.resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+    await queue.resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: run.id }), { suppressImmediateRecovery: true, resumeStrandedQueue: true },
+    );
+    const staleRows = await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, stale.map(row => row.id)));
+    expect(staleRows).toHaveLength(55);
+    expect(staleRows.every(row => row.status === "cancelled" && row.runId === null)).toBe(true);
+    expect(await readWake(pending.id)).toMatchObject({ status: "deferred_issue_execution" });
   });
 
   it.each(["queued", "running", "scheduled_retry"])("does not replay a finishing owner while another agent has a %s turn", async status => {

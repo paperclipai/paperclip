@@ -6,6 +6,7 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { DeferredExecutionScope, DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { dependencyResolvedWakePayloadSql } from "../issue-dependency-wakeups.js";
+import { parkedExecutionWakePayloadSql } from "../parked-execution-wakes.js";
 
 type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean };
 type NativeIntentOptions = DeferredExecutionScope & {
@@ -76,6 +77,7 @@ export function registerDeferredReceiptWork(
                 and ${agentWakeupRequests.payload}#>'{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
               sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`,
               dependencyResolvedWakePayloadSql,
+              parkedExecutionWakePayloadSql,
               sql`exists (select 1 from heartbeat_runs r where r.company_id = ${agentWakeupRequests.companyId}
                 and r.runtime_mode = 'legacy' and r.status = 'cancelled'
                 and r.result_json->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text)`,

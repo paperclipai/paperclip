@@ -356,6 +356,82 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(later.id)).toHaveLength(1);
   }, 180_000);
 
+  /** A message posted while the company is paused, saved for the pause lift. */
+  async function savePausedMessage(f: Awaited<ReturnType<typeof seedHeldComment>>) {
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Posted during the pause." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    const [saved] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+      eq(agentWakeupRequests.status, "deferred_issue_execution"), sql`${agentWakeupRequests.payload}->>'commentId' = ${comment.id}`));
+    return { comment, saved };
+  }
+
+  async function liftPause(f: { companyId: string; issueId: string }) {
+    await db.update(companies).set({ status: "active", pauseReason: null, pausedAt: null }).where(eq(companies.id, f.companyId));
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
+    await settle(f); await settle(f);
+  }
+
+  const withStage = (payload: Record<string, unknown>, executionStage: Record<string, unknown>) => ({
+    ...payload, executionStage,
+    _paperclipWakeContext: { ...(payload._paperclipWakeContext as Record<string, unknown>), executionStage },
+  });
+
+  // The resumed receipt's saved stage is judged under the issue lock at
+  // admission: one that has moved on is not delivered with the message.
+  it.each([
+    ["has moved on", null, false],
+    ["is still current", "stage-1", true],
+  ] as const)("delivers a paused message merged with a stage that %s, with the stage only if current", async (_label, currentStageId, keeps) => {
+    const f = await seedHeldComment();
+    const { comment, saved } = await savePausedMessage(f);
+    const executionStage = { stageId: "stage-1", stageType: "review", wakeRole: "executor" };
+    await db.update(agentWakeupRequests).set({ payload: withStage(saved.payload as Record<string, unknown>, executionStage) })
+      .where(eq(agentWakeupRequests.id, saved.id));
+    await db.update(issues).set({ executionState: currentStageId ? { status: "changes_requested", currentStageId,
+      currentStageType: "review", returnAssignee: { type: "agent", agentId: f.agentId } } : null }).where(eq(issues.id, f.issueId));
+    await liftPause(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+    const context = deliveries(comment.id)[0].context;
+    if (keeps) expect(context).toMatchObject({ executionStage });
+    else {
+      expect(context).not.toHaveProperty("executionStage");
+      expect(context).toMatchObject({ wakeReason: "issue_commented" });
+    }
+  }, 180_000);
+
+  // Another saved wake that shows a comment reason but also carries a stage
+  // is not adopted by comment ID into the resumed message's run.
+  it("does not fold another saved wake's stage into a resumed paused message", async () => {
+    const f = await seedHeldComment();
+    const { comment } = await savePausedMessage(f);
+    const [other] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Merged into a stage wake." }).returning();
+    const executionStage = { stageId: "stage-1", stageType: "review", wakeRole: "executor" };
+    await db.update(issues).set({ executionState: { status: "changes_requested", currentStageId: "stage-1",
+      currentStageType: "review", returnAssignee: { type: "agent", agentId: f.agentId } } }).where(eq(issues.id, f.issueId));
+    const [mixed] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "assignment", triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "system", requestedByActorId: "execution-policy",
+      payload: { issueId: f.issueId, commentId: other.id, executionStage, _paperclipWakeContext: { issueId: f.issueId,
+        wakeReason: "issue_commented", source: "issue.comment", commentId: other.id, wakeCommentIds: [other.id], executionStage } },
+    }).returning();
+    await liftPause(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+    const first = deliveries(comment.id)[0];
+    expect(first.context.wakeCommentIds).not.toContain(other.id);
+    const after = await readWake(mixed.id);
+    expect(after.status === "coalesced" && after.runId === first.runId).toBe(false);
+    expect(deliveries(other.id).length).toBeLessThanOrEqual(1);
+  }, 180_000);
+
   // External chat input resumes only through its live inbound authorization,
   // never through the generic pause-lift wake.
   it("never replays a chat-inbound receipt through the pause-lift path", async () => {
