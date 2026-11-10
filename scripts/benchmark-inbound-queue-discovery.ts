@@ -9,6 +9,16 @@ import { captureInboundQuery, runQuery, seedInboundDiscovery, type QueueFactory,
 
 const ref = process.argv.find(arg => arg.startsWith("--baseline-ref="))?.slice(15);
 assert.ok(ref, "Pass an explicit pre-change --baseline-ref=<commit>");
+// `--endpoint-history=<rows>` adds one endpoint with a long processed history
+// and 4 KiB payloads, like a busy hosted bot. `--only=<name>` selects one fixture.
+const endpointHistoryArg = process.argv.find(arg => arg.startsWith("--endpoint-history="))?.slice(19);
+const endpointHistory = endpointHistoryArg === undefined ? 0 : Number(endpointHistoryArg);
+assert.ok(endpointHistoryArg === undefined || (Number.isSafeInteger(endpointHistory) && endpointHistory > 0), "--endpoint-history must be a positive integer");
+const only = process.argv.find(arg => arg.startsWith("--only="))?.slice(7) ?? (process.argv.includes("--retained-only") ? "retained-history" : undefined);
+const fixtures = [{ name: "small", history: 20, payloadBytes: 0 }, { name: "retained-history", history: 1500, payloadBytes: 32 * 1024 },
+  ...(endpointHistory > 0 ? [{ name: "endpoint-history", history: endpointHistory, payloadBytes: 4096 }] : [])];
+const selectedFixtures = fixtures.filter(value => !only || value.name === only);
+assert.ok(selectedFixtures.length > 0, `No fixture matches --only=${only}; endpoint-history also needs --endpoint-history=<rows>`);
 const baselineRevision = execFileSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], { encoding: "utf8" }).trim();
 const root = fileURLToPath(new URL("../", import.meta.url));
 const sources = ["server/src/services/chat-channels/inbound/delivery-ledger.ts", "server/src/services/chat-channels/inbound/conversation-queue.ts", "server/src/services/chat-channels.ts"];
@@ -43,13 +53,7 @@ try {
   const malformedReadyControls = [];
   let baselineExceedsWorkBudget = false;
   const budgetFailures: string[] = [];
-  // `--endpoint-history=<rows>` adds one endpoint with a long processed history
-  // and 4 KiB payloads, like a busy hosted bot. `--only=<name>` selects one fixture.
-  const endpointHistory = Number(process.argv.find(arg => arg.startsWith("--endpoint-history="))?.slice(19) ?? 0);
-  const only = process.argv.find(arg => arg.startsWith("--only="))?.slice(7) ?? (process.argv.includes("--retained-only") ? "retained-history" : undefined);
-  const fixtures = [{ name: "small", history: 20, payloadBytes: 0 }, { name: "retained-history", history: 1500, payloadBytes: 32 * 1024 },
-    ...(endpointHistory > 0 ? [{ name: "endpoint-history", history: endpointHistory, payloadBytes: 4096 }] : [])];
-  for (const fixture of fixtures.filter(value => !only || value.name === only)) {
+  for (const fixture of selectedFixtures) {
     const f = await seedInboundDiscovery(db, fixture.history, fixture.payloadBytes);
     await db.$client.unsafe("begin");
     if (process.argv.includes("--jit-off")) await db.$client.unsafe("set local jit = off");
