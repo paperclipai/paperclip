@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { issueRecoveryActions } from "@paperclipai/db";
 import { isExhaustedStopProofWait, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, STOP_PROOF_WAIT_CODE,
   stopProofRearmsSpent, type SystemRecoveryState } from "./system-recovery-state.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 
 /** Source refusals that repeat on every retry (see workspace-recovery-fallback). */
 export const UNVERIFIABLE_SOURCE_CODES = ["allocation_ownership_ambiguous", "source_binding_invalid", "source_unavailable", "historical_source_missing"] as const;
@@ -48,6 +49,12 @@ export function retainedHoldFallbackEligible(evidence: Record<string, unknown> |
   return isExhaustedStopProofWait(state) && stopProofRearmsSpent(evidence);
 }
 
+// The source run's id as a uuid, or null when the saved text is not the
+// canonical (lowercase) form. `run.id = sourceRunId` matches exactly the rows
+// `run.id::text = evidence->>'runId'` matched, and it uses the run's primary
+// key. The text comparison cannot, so each probe read every run (or
+// finalizer, or lease) of the company.
+const sourceRunId = canonicalExecutionUuid(sql`${issueRecoveryActions.evidence}->>'runId'`);
 const stopProofMarker = sql`${issueRecoveryActions.evidence}->${STOP_PROOF_RECOVERY_KEY}`;
 const stopProofRearms = sql`case when ${stopProofMarker}->>'schema' = ${STOP_PROOF_RECOVERY_SCHEMA}
   and jsonb_typeof(${stopProofMarker}->'rearms') = 'number' then (${stopProofMarker}->>'rearms')::int else 0 end`;
@@ -64,7 +71,7 @@ export function stopProofRearmPendingCondition() {
   return sql`(${issueRecoveryActions.status} in ('active', 'escalated')
     and ${exhaustedStopProofWait}
     and not exists (select 1 from native_run_finalizations finalizer
-      where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id::text = ${issueRecoveryActions.evidence}->>'runId'
+      where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id = ${sourceRunId}
         and finalizer.lease_owner is not null and coalesce(finalizer.lease_expires_at <= now(), true))
     and ${issueRecoveryActions.evidence}->'retainedSourceFallback' is null
     and ${issueRecoveryActions.evidence}->'executionReconciliation' is null
@@ -78,9 +85,9 @@ export function stopProofRearmDueAt() {
   return sql`greatest(case when ${stopProofMarker}->>'schema' = ${STOP_PROOF_RECOVERY_SCHEMA}
       and jsonb_typeof(${stopProofMarker}->'nextRearmAt') = 'number' then (${stopProofMarker}->>'nextRearmAt')::bigint else 0 end,
     coalesce((select (extract(epoch from source.controller_lease_expires_at) * 1000)::bigint from heartbeat_runs source
-      where source.company_id = ${issueRecoveryActions.companyId} and source.id::text = ${issueRecoveryActions.evidence}->>'runId'), 0),
+      where source.company_id = ${issueRecoveryActions.companyId} and source.id = ${sourceRunId}), 0),
     coalesce((select max((extract(epoch from finalizer.lease_expires_at) * 1000)::bigint) from native_run_finalizations finalizer
-      where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id::text = ${issueRecoveryActions.evidence}->>'runId'
+      where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id = ${sourceRunId}
         and finalizer.lease_owner is not null), 0))`;
 }
 
@@ -95,7 +102,7 @@ const check = sql`${issueRecoveryActions.evidence}->${RETAINED_SOURCE_FALLBACK_C
 // hold once, even after its bounded checks are spent.
 const leaseChangedSinceCheck = sql`(jsonb_typeof(${check}->'checkedAt') = 'number' and exists (
   select 1 from environment_leases lease where lease.company_id = ${issueRecoveryActions.companyId}
-    and lease.heartbeat_run_id::text = ${issueRecoveryActions.evidence}->>'runId'
+    and lease.heartbeat_run_id = ${sourceRunId}
     and lease.updated_at > to_timestamp((${check}->>'checkedAt')::bigint / 1000.0)))`;
 
 /**
@@ -114,11 +121,11 @@ export function retainedSourceFallbackPendingCondition() {
         and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,code}' in (${list(UNVERIFIABLE_SOURCE_CODES)})
         and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}' in (${list(PERMANENT_SOURCE_RETRY_CLASSES)})
         and exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
-          and source.id::text = ${issueRecoveryActions.evidence}->>'runId'
+          and source.id = ${sourceRunId}
           and source.runner_profile_json#>>'{remoteWorkspace,state}' = 'prepared'))
       or (${retainedFileHoldCondition()} and ${exhaustedStopProofWait} and ${stopProofRearms} >= ${STOP_PROOF_MAX_REARMS}
         and exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
-          and source.id::text = ${issueRecoveryActions.evidence}->>'runId'
+          and source.id = ${sourceRunId}
           and source.runner_profile_json#>>'{remoteWorkspace,state}' = 'prepared'))
       or (${issueRecoveryActions.status} in ('active', 'escalated') and exists (select 1 from issue_recovery_actions sibling
         where sibling.company_id = ${issueRecoveryActions.companyId} and sibling.source_issue_id = ${issueRecoveryActions.sourceIssueId}
