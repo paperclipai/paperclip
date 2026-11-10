@@ -2984,7 +2984,8 @@ describe("personal Muse control plane",()=>{
   });
 
   it.each(["enableMuse","enableNativeRunner"] as const)("delivers only feature-disabled stop control while %s is off",async flag=>{
-    const oauth=await oauthFixture(true),f=await active(oauth),app=transport();try {
+    const oauth=await oauthFixture(true),f=await active(oauth),app=transport(),httpServer=createServer(app);try {
+      const origin=await listenMuseHttp(httpServer);
       await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
       const state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
       await f.broker.verify(f.company.id,f.agent.id,{bindingId:f.binding.id,generation:1,expectedRevision:state.revision});
@@ -3000,10 +3001,10 @@ describe("personal Muse control plane",()=>{
       const [hold]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
       const [stop]=await db.select().from(mailbox).where(and(eq(mailbox.bindingId,f.binding.id),eq(mailbox.kind,"authority_revoked")));
       const authorization="Bearer "+oauth.tokens!.access_token;
-      const poll=()=>request(app).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id);
+      const poll=()=>request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id);
       const [signal,inbox,inspection]=await Promise.all([
-        poll(),request(app).post("/api/muse/v1/queries").set("Authorization",authorization).send({version:1,query:"mailbox",after:0}),
-        request(app).post("/api/muse/v1/cleanup").set("Authorization",authorization).send({version:1,command:"control.inspect"}),
+        poll(),request(origin).post("/api/muse/v1/queries").set("Authorization",authorization).send({version:1,query:"mailbox",after:0}),
+        request(origin).post("/api/muse/v1/cleanup").set("Authorization",authorization).send({version:1,command:"control.inspect"}),
       ]);
       expect({signal:!!signal.body.signal,mailbox:inbox.status,cleanup:inspection.status}).toEqual({signal:true,mailbox:200,cleanup:200});
       expect(signal.body.signal.reference).toMatch(/^sha256:/);expect((await poll()).body).toEqual(signal.body);
@@ -3014,20 +3015,20 @@ describe("personal Muse control plane",()=>{
       const workQueries=[{query:"identify"},{query:"assignment.read",assignmentId:f.assignment.id},{query:"input.pending",assignmentId:f.assignment.id,nativeRequestId},
         {query:"task.list"},{query:"task.search",text:"Muse"},{query:"task.read",issueId:f.issue.id},{query:"task.history",issueId:f.issue.id},
         {query:"task.document.read",issueId:f.issue.id,key:"memo"},{query:"operation.receipt",assignmentId:f.assignment.id,requestId:f.sent[0].requestId}];
-      for(const query of workQueries)expect((await request(app).post("/api/muse/v1/queries").set("Authorization",authorization).send({version:1,...query})).status).toBe(503);
+      for(const query of workQueries)expect((await request(origin).post("/api/muse/v1/queries").set("Authorization",authorization).send({version:1,...query})).status).toBe(503);
       const workCommands=[{command:"accept",assignmentId:f.assignment.id},{command:"progress",assignmentId:f.assignment.id,text:"no new effect"},
         {command:"tool",assignmentId:f.assignment.id,name:"read_task",input:{}},{command:"finish",assignmentId:f.assignment.id,result:{schema:"paperclip.run_result.v1"}},
         {command:"request_user_input",assignmentId:f.assignment.id,nativeRequestId:"new_question",questionSet:{schema:"paperclip.question_set.v1",questions:[{id:"answer",prompt:"No new question",required:true,answerMode:"text"}]}},
         {command:"consume_input",assignmentId:f.assignment.id,nativeRequestId,inputDigest,continuationReceiptId:randomUUID(),continuationPersisted:true},
         {command:"challenge.confirm",nonce:"unchanged-private-challenge"},{command:"work.request",issueId:f.issue.id},
         {command:"task.comment",issueId:f.issue.id,body:"No idle effect"},{command:"task.create",title:"No idle task"}];
-      for(const command of workCommands)expect((await request(app).post("/api/muse/v1/commands").set("Authorization",authorization).send({version:1,requestId:randomUUID(),...command})).status).toBe(503);
+      for(const command of workCommands)expect((await request(origin).post("/api/muse/v1/commands").set("Authorization",authorization).send({version:1,requestId:randomUUID(),...command})).status).toBe(503);
       await expect(f.broker.snapshot(f.company.id,f.agent.id,f.binding.id)).rejects.toThrow("disabled");
       await expect(f.broker.act(f.subject,{version:1,command:"task.comment",issueId:f.issue.id,requestId:randomUUID(),body:"No direct idle effect"})).rejects.toThrow();
       await expect(f.broker.assertRunAuthority({binding:{companyId:f.company.id,agentId:f.agent.id,runId:f.runId},provider:{binding:f.ref}} as Parameters<typeof f.broker.assertRunAuthority>[0])).rejects.toThrow();
       const report={version:1,command:"worker.quiescent",boundary:hold.stopBoundary,requestId:randomUUID()};
-      for(let retry=0;retry<2;retry++)expect((await request(app).post("/api/muse/v1/cleanup").set("Authorization",authorization).send(report)).body).toEqual({status:"worker_reported",externalStopConfirmed:false,nativeEffectsUnknown:true});
-      for(let retry=0;retry<2;retry++)expect((await request(app).post("/api/muse/v1/queries").set("Authorization",authorization).send({version:1,query:"mailbox",after:stop.id})).body).toMatchObject({items:[],nextCursor:stop.id});
+      for(let retry=0;retry<2;retry++)expect((await request(origin).post("/api/muse/v1/cleanup").set("Authorization",authorization).send(report)).body).toEqual({status:"worker_reported",externalStopConfirmed:false,nativeEffectsUnknown:true});
+      for(let retry=0;retry<2;retry++)expect((await request(origin).post("/api/muse/v1/queries").set("Authorization",authorization).send({version:1,query:"mailbox",after:stop.id})).body).toMatchObject({items:[],nextCursor:stop.id});
       expect((await poll()).body).toEqual({version:1,signal:null});
       await f.port.dispatch({sourceEventId:randomUUID(),payload:fence.payload});
       const [saved]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.id,hold.id));
@@ -3036,7 +3037,7 @@ describe("personal Muse control plane",()=>{
       const ordinary=await db.select().from(mailbox).where(eq(mailbox.bindingId,f.binding.id));
       expect(ordinary.filter(item=>item.kind!=="authority_revoked").every(item=>item.signalNotifiedAt===null)).toBe(true);
       expect((await db.select().from(activityLog).where(and(eq(activityLog.companyId,f.company.id),eq(activityLog.action,"muse.worker_quiescence_reported"))))).toHaveLength(1);
-    }finally{await instanceSettingsService(db).updateExperimental({enableMuse:true,enableNativeRunner:true});await f.detach();}
+    }finally{try {await instanceSettingsService(db).updateExperimental({enableMuse:true,enableNativeRunner:true});} finally {try {await f.detach();} finally {await closeMuseHttp(httpServer);}}}
   });
   it.each(["access_expired","grant_revoked","connection_revoked","refresh_expired","membership_lost","resource_changed","generation_changed","released","stop_window_expired"] as const)("disabled stop control retains current credential and boundary denial: %s",async fault=>{
     const oauth=await oauthFixture(true),f=await active(oauth),app=transport();try {
