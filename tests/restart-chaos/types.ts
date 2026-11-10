@@ -59,6 +59,10 @@ export interface WaveOptions {
   daytonaCpu?: number;
   /** `--daytona-reuse-lease`: the chaos environment keeps its sandboxes between turns (a per-turn run stops and keeps its sandbox). */
   daytonaReuseLease?: boolean;
+  /** `--daytona-warm`: the reusable warm Daytona environment fixture. */
+  daytonaWarm?: boolean;
+  /** `--daytona-inherit`: a Daytona environment that inherits the lifecycle and leaves lease reuse unset. */
+  daytonaInherit?: boolean;
   /** `--k4-hold-max-seconds`: upper end of the seeded K4 hold (default 300 s, cap 600 s). */
   k4HoldMaxMs?: number;
   faultAfterMs?: number;

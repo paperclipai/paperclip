@@ -118,9 +118,11 @@ recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
 
-A queued turn shows `Queued`, or `Waiting for maintenance` while the server holds
-admission. Reserve `Working` and `Thinking` for execution. A saved message that
-starts this queued turn stays in history, including when it reopens an older
+A queued turn shows the same `Working` header and shimmering `Thinking` activity
+as a running turn, starting at message submission. Keep specific server holds,
+such as `Waiting for maintenance` or agent setup, visible during admission.
+This is presentation only; queue and execution authority stay unchanged. A saved
+message that starts this queued turn stays in history, including when it reopens an older
 task. This placement is not a consumption receipt. Later follow-ups remain in
 the composer queue with their existing edit, order and discard controls.
 
@@ -895,7 +897,7 @@ paused. Agent execution is outside this visual sandbox.
 - Token layer is the single source (`ui/src/index.css`, per above) consumed via CSS variables / Tailwind theme — never values copied into components.
 - Lint/grep gates pass: zero hardcoded hex values, zero arbitrary spacing values, zero raw font-size declarations in `ui/src/components/**` and `ui/src/pages/**` outside the token layer and a documented allowlist (third-party overrides, intentional opt-outs commented inline).
 - `pnpm build`, `pnpm typecheck`, and `pnpm build-storybook` pass.
-- AGENTS.md links here and states the token-only rule.
+- AGENTS.md links here for the token-only rule.
 
 Aspirational (NOT gating this run): no duplicate components; every component has exactly one story covering its variants; all UI copy says "task".
 

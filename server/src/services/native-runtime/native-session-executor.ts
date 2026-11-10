@@ -9,6 +9,8 @@ import { nativePostResultFailureCategory, type NativePostResultFailureCategory }
 import { logger } from "../../middleware/logger.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES, nativeHarnessBackupManifestSha256, retiredSourceAuthorizesNativeBackupRestore } from "./native-retired-backup-source.js";
+import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_COMPLETED_TURN_CLEANUP_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED,
+  nativeCheckpointRecordsCompletedTurn } from "./completed-turn-cleanup.js";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
 import { LocalRuntimeApiListenerClosedError, resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
@@ -693,6 +695,7 @@ type WarmNativeSession = {
   environmentId: string | null;
   busy: boolean;
   released?: boolean;
+  controllerDetachedForRestart?: boolean;
   finishRelease?: () => Promise<void>;
   closeOnReleaseReason?: string;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -703,6 +706,7 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
   preserveInstructionsForRunId?: string;
   discardUnsettledSession?: boolean;
 }) {
+  if (entry.controllerDetachedForRestart) return detachReleasedWarmNativeSession(entry);
   // Revoke before awaiting process retirement/checkpoint IO.
   const stopping = entry.githubAccess?.stop();
   try {
@@ -726,6 +730,13 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
     if (entry.instructionCopy?.runId !== options?.preserveInstructionsForRunId) await entry.instructionCopy?.collectStopped();
   }
   finally { await stopping; }
+}
+
+async function detachReleasedWarmNativeSession(entry: WarmNativeSession) {
+  entry.controllerDetachedForRestart = true;
+  if (!entry.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
+  await entry.session.detachControllerForRestart();
+  await entry.githubAccess?.stop();
 }
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
@@ -895,7 +906,7 @@ export async function closeWarmNativeSessionsForEnvironment(input: {
   return closeIdleWarmNativeSessions(input);
 }
 
-/** Suspend idle owners and persist their remote backup before a controller
+/** Detach released owners and checkpoint unreleased owners before a controller
  * exits. Active turns keep their separate authenticated restart handoff. */
 export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
   closed: number; busy: number; failed: number;
@@ -903,6 +914,7 @@ export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
   return closeIdleWarmNativeSessions({
     reason: "controller restart",
     closeBusyOnRelease: true,
+    detachReleased: true,
   });
 }
 
@@ -916,6 +928,7 @@ async function closeIdleWarmNativeSessions(input: {
   environmentId?: string;
   reason: string;
   closeBusyOnRelease?: boolean;
+  detachReleased?: boolean;
   canRetire?: () => boolean;
 }): Promise<{ closed: number; busy: number; failed: number }> {
   let closed = 0;
@@ -937,13 +950,14 @@ async function closeIdleWarmNativeSessions(input: {
     }
     // The host owns retention after release; a quiet local handle needs no retirement for sleep.
     if (input.canRetire && entry.released && !entry.closeOnReleaseReason) continue;
+    const detach = input.detachReleased === true && entry.released === true && !entry.closeOnReleaseReason;
     if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
     // Keep a fenced owner until both retirement and stopped collection succeed.
     // Failure must not make a live directory eligible for a replacement owner.
     entry.busy = true;
-    entry.closeOnReleaseReason = input.reason;
+    if (!detach) entry.closeOnReleaseReason = input.reason;
     const closing = Promise.resolve().then(() =>
-      closeWarmNativeSession(entry, input.reason),
+      detach ? detachReleasedWarmNativeSession(entry) : closeWarmNativeSession(entry, input.reason),
     );
     closingWarmNativeSessions.set(sessionId, closing);
     try {
@@ -951,6 +965,7 @@ async function closeIdleWarmNativeSessions(input: {
       forgetWarmNativeSession(sessionId, entry);
       closed += 1;
     } catch {
+      if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
       failed += 1;
     } finally {
       entry.busy = false;
@@ -6972,8 +6987,9 @@ async function refreshFinishedPerTurnRunnerdProjection(
 }
 
 /** The controller checkpoint and Runner lifecycle have separate authorities.
- * Rehydrate a missing suspension receipt before choosing live warm adoption. */
-async function restoreRemoteSuspendedRunnerCheckpoint(input: {
+ * Rehydrate a missing suspension receipt before choosing live warm adoption.
+ * Exported for the provider-boundary regression only. */
+export async function restoreRemoteSuspendedRunnerCheckpoint(input: {
   db: Db; execution: NativeExecutionInput;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
 }, root: string): Promise<void> {
@@ -6986,6 +7002,9 @@ async function restoreRemoteSuspendedRunnerCheckpoint(input: {
     || !durableIdentityMatchesSession(prior, input.execution) || prior.runId === input.execution.binding.runId
     || runnerdAuthorityLifecycle(root, prior) !== "absent") return;
   let state: Record<string, unknown>;
+  // A Runner left in an abandoned allocation is never adopted live: the new
+  // execution restored the last save into its own root of the same sandbox.
+  let movedAllocation = false;
   if (target.runnerTask) {
     // The admitted task owner binds this read to the surviving physical task;
     // its suspended identity still belongs to the previous business turn.
@@ -6994,14 +7013,16 @@ async function restoreRemoteSuspendedRunnerCheckpoint(input: {
     state = result.state;
   } else {
     if (!target.runner) throw new Error("native_controller_recovery_dependency_unavailable:runner_state_reader");
-    await assertNativeRetainedSandboxBinding(input.db, { ...input.execution.binding, runId: prior.runId, target });
-    const stateDirectory = posix.join(target.remoteCwd, ".paperclip-runtime", "paperclip-runner", "sessions",
-      createHash("sha256").update(nativeSessionKey(input.execution)).digest("hex"), "runner");
-    state = await readRemoteRunnerState({ runner: target.runner, stateDirectory });
+    // The retained Runner wrote under its own lease's directory, which differs
+    // from this target when the workspace moved within the same sandbox.
+    const retained = await assertNativeRetainedSandboxBinding(input.db, { ...input.execution.binding, runId: prior.runId, target });
+    movedAllocation = retained.remoteCwd !== target.remoteCwd;
+    state = await readRemoteRunnerState({ runner: target.runner,
+      stateDirectory: remoteRunnerStateDirectory(retained.remoteCwd, nativeSessionKey(input.execution)) });
   }
   // A running warm source keeps the existing live-adoption identity, idle,
   // controller-fencing and physical-process checks. Only suspension is cached.
-  if (input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle !== "suspended") return;
+  if (!movedAllocation && input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle !== "suspended") return;
   if (state.lifecycle !== "suspended" || !Array.isArray(state.outbox) || state.outbox.length !== 0
     || state.pendingTerminalDelivery != null || state.pendingProviderCleanup != null || state.warmTransition != null) {
     throw new Error("native_controller_recovery_missing_evidence:runner_not_settled");
@@ -8014,11 +8035,7 @@ function armWarmNativeSessionIdleTimer(
     current.busy = true;
     const released = current.released === true;
     if (!released) current.closeOnReleaseReason = "warm native session idle timeout";
-    const closing = (released ? (async () => {
-      if (!current.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
-      await current.session.detachControllerForRestart();
-      await current.githubAccess?.stop();
-    })() : closeWarmNativeSession(current, current.closeOnReleaseReason!))
+    const closing = (released ? detachReleasedWarmNativeSession(current) : closeWarmNativeSession(current, current.closeOnReleaseReason!))
       .then(() => { forgetWarmNativeSession(sessionId, current); })
       .catch(() => {
         if (released) current.closeOnReleaseReason = "released Runner local detach is unconfirmed";
@@ -8287,8 +8304,11 @@ const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
 const NATIVE_TURN_MODEL_REJECTED_ACTION =
   "The provider rejected the selected model. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
 
-const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
-  "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
+// The cleanup gate needs no person: environment release proves the old
+// runner, provider and tools stopped, and the agent continues on its next wake.
+const nativeCleanupRefusalAction = (completedTurnCleanup: boolean) => completedTurnCleanup
+  ? NATIVE_COMPLETED_TURN_CLEANUP_MESSAGE
+  : `${NATIVE_CLEANUP_SETTLING_MESSAGE} Send a message to continue; it starts once the previous session has stopped.`;
 
 const PROVIDER_DURABLE_EVENT_TYPES = NATIVE_PROVIDER_DURABLE_EVENT_TYPES;
 
@@ -9892,10 +9912,8 @@ async function executePaperclipNativeSessionAttempt(
         const resumeFrom = await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
           leaseId: target.leaseId, priorIdentity: proof.source, inspectCheckpoint: true });
         if (resumeFrom !== proof.taskId) throw new Error("native_session_released_owner_scope_mismatch");
-        if (!cachedReleasedOwner.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
         try {
-          await cachedReleasedOwner.session.detachControllerForRestart();
-          await cachedReleasedOwner.githubAccess?.stop();
+          await detachReleasedWarmNativeSession(cachedReleasedOwner);
         } catch (error) {
           cachedReleasedOwner.closeOnReleaseReason = "released Runner local detach is unconfirmed";
           throw error;
@@ -11905,6 +11923,15 @@ async function executePaperclipNativeSessionAttempt(
           : startupRetry
             ? startupRetry.nextAttemptAt
             : disposition.nextAttemptAt;
+      // A cleanup-gate refusal after this run's own turn completed (for example
+      // a same-run disposition recovery) leaves saved work; say so plainly. The
+      // task disposition may still be missing, so ownership is unchanged.
+      const completedTurnCleanup = sourceFailureCode === NATIVE_SESSION_CLEANUP_QUARANTINED
+        && phase === "terminal_failure" && await input.db
+          .select({ id: heartbeatRuns.id, runnerProfileJson: heartbeatRuns.runnerProfileJson })
+          .from(heartbeatRuns).where(eq(heartbeatRuns.id, input.execution.binding.runId))
+          .then(rows => rows.some(row => nativeCheckpointRecordsCompletedTurn(row.runnerProfileJson, input.execution.binding.runId)))
+          .catch(() => false);
       const recoveryProjection = nativeSessionRecoveryProjection({
         phase,
         failureCode,
@@ -11979,7 +12006,7 @@ async function executePaperclipNativeSessionAttempt(
                   : sourceFailureCode === "native_provider_approval_required"
                   ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
                   : sourceFailureCode === "native_session_cleanup_quarantined"
-                  ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
+                  ? nativeCleanupRefusalAction(completedTurnCleanup)
                   : sourceFailureCode === "runner_remote_provider_verification_unavailable"
                     ? "Provider files could not be verified after two read attempts. Inspect the retained workspace and command transport before retrying the original run."
                   : sourceFailureCode === "runner_ingress_access_rejected"
@@ -12242,7 +12269,7 @@ async function executePaperclipNativeSessionAttempt(
               : sourceFailureCode === "native_provider_approval_required"
               ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
               : sourceFailureCode === "native_session_cleanup_quarantined"
-              ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
+              ? nativeCleanupRefusalAction(completedTurnCleanup)
               : sourceFailureCode === "runner_ingress_access_rejected"
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
               : sourceFailureCode === "native_provider_terminal_failed"

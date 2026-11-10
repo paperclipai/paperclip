@@ -3186,6 +3186,27 @@
       "when": 1794270045155,
       "tag": "0456_chat_review_lookup_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 457,
+      "version": "7",
+      "when": 1794323383634,
+      "tag": "0457_native_session_run_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 458,
+      "version": "7",
+      "when": 1794326875077,
+      "tag": "0458_chat_admission_issue_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 459,
+      "version": "7",
+      "when": 1794329161946,
+      "tag": "0459_environment_lease_backup_scope_index",
+      "breakpoints": true
     }
   ]
 }
