@@ -160,7 +160,8 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' in ('prepared', 'finalized')`,
   ));
   const legacyRecoverySources: LegacyWorkspaceRecoverySource[] = [];
-  const onlineRecoveryAllowed = Boolean(input.onlineSource) && !input.writersStopped;
+  const onlineRecoveryAllowed = !input.writersStopped
+    && Boolean(input.onlineSource || workspace.status === "archived" && archivedGitSource?.recipe);
   for (const run of referencedRuns.filter(run => object(run.reference).state === "prepared").sort((a, b) => a.id.localeCompare(b.id))) {
     if (onlineRecoveryAllowed) {
       const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace, runId: run.id });
@@ -414,11 +415,12 @@ type ReservedMigration = Awaited<ReturnType<typeof reserveMigration>>;
 type MigrationPlan = { input: MigrationInput; onlineSource?: OnlineWorkspaceSource; reserved: ReservedMigration };
 
 async function lockMigrationRecovery(lock: MigrationTransaction, plans: MigrationPlan[], cohort?: WorkspaceMigrationCohort) {
-  const online = plans.filter(plan => plan.onlineSource);
+  const online = plans.filter(plan => !plan.input.writersStopped
+    && (plan.onlineSource || plan.reserved.workspace.status === "archived" && plan.reserved.archivedGitSource?.recipe));
   if (!online.length) return;
   if (!await lockOnlineLegacyWorkspaceRecoverySources(lock as unknown as Db, { companyId: online[0].input.companyId,
-    sources: online.flatMap(({ reserved, onlineSource }) => [...reserved.legacyRecoverySources, ...onlineSource!.companions.flatMap(proof => proof.sources)]),
-    holds: online.flatMap(({ reserved, onlineSource }) => [...reserved.onlineRecoveryHolds, ...onlineSource!.companions.flatMap(proof => proof.holds)]) }))
+    sources: online.flatMap(({ reserved, onlineSource }) => [...reserved.legacyRecoverySources, ...(onlineSource?.companions.flatMap(proof => proof.sources) ?? [])]),
+    holds: online.flatMap(({ reserved, onlineSource }) => [...reserved.onlineRecoveryHolds, ...(onlineSource?.companions.flatMap(proof => proof.holds) ?? [])]) }))
     throw new Error("remote_workspace_migration_blocked:remote_copyback_owned");
   const readers = await Promise.allSettled(online.map(async ({ input, onlineSource, reserved }) => {
     const current = await inspect(input.db, { ...input, onlineSource, operationId: reserved.operation!.id }, cohort);
@@ -531,9 +533,9 @@ async function validateMigrationPublication(tx: MigrationTransaction, input: Mig
       || journal.issueId !== operation.issueId || journal.cwd !== operation.cwd
       || canonical(journal.metadata) !== canonical(operation.metadata)) throw new Error("workspace_cohort_journal_changed");
   }
-  await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId, onlineSource ? [
+  await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId, onlineSource || reserved.archivedGitSource?.recipe ? [
     ...reserved.legacyRecoverySources.map(source => source.issueId),
-    ...onlineSource.companions.flatMap(proof => proof.sources.map(source => source.issueId)),
+    ...(onlineSource?.companions.flatMap(proof => proof.sources.map(source => source.issueId)) ?? []),
   ] : []);
   for (const actionId of [...new Set([...reserved.finalizedRecoveryHolds, ...reserved.onlineRecoveryHolds].map(held => held.actionId))].sort()) {
     await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
