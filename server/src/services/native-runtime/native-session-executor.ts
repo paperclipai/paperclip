@@ -8210,6 +8210,11 @@ const NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION =
 const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
   "The provider could not start the selected model before any provider work began. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
 
+// The provider session opened, then the provider refused the selected model on
+// the turn. The task needs a model choice, not a reconciliation of session state.
+const NATIVE_TURN_MODEL_REJECTED_ACTION =
+  "The provider rejected the selected model. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
+
 const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
   "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
 
@@ -11913,6 +11918,8 @@ async function executePaperclipNativeSessionAttempt(
                     ? "The work and waiting state are saved. Confirm shutdown of the retained execution and settle that same handoff without repeating provider work."
                   : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
                     ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
+                  : sourceFailureCode === "native_provider_model_rejected"
+                    ? NATIVE_TURN_MODEL_REJECTED_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                     ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING
@@ -12170,6 +12177,8 @@ async function executePaperclipNativeSessionAttempt(
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
               : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
                 ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
+              : sourceFailureCode === "native_provider_model_rejected"
+                ? NATIVE_TURN_MODEL_REJECTED_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                 ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING
