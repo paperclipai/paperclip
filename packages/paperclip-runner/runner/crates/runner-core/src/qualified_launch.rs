@@ -141,13 +141,27 @@ fn immutable_exec_mount(file: &File) -> std::io::Result<bool> {
     Ok(matches!(filesystem, EROFS_SUPER_MAGIC_V1 | SQUASHFS_MAGIC))
 }
 
+/// Who chose an artifact. Only Runner-owned launch-profile artifacts may use
+/// the trusted launch root.
+#[derive(Clone, Copy)]
+enum ArtifactOwner {
+    Runner,
+    HostAssigned,
+}
+
 /// A Runner-owned artifact (provider runtime, sidecar or proxy) pinned by the
 /// launch profile. It may run in place from the trusted launch root.
 pub fn verify_launch_artifact(
     artifact: &QualifiedLaunchArtifact,
     label: &str,
 ) -> Result<VerifiedProcessArtifact, DurableRunnerError> {
-    verify_launch_artifact_with_role(artifact, label, false, TRUSTED_LAUNCH_ROOT.get())
+    verify_owned(
+        artifact,
+        label,
+        false,
+        ArtifactOwner::Runner,
+        TRUSTED_LAUNCH_ROOT.get(),
+    )
 }
 
 /// The executable counterpart of [`verify_launch_artifact`].
@@ -155,7 +169,13 @@ pub fn verify_executable_launch_artifact(
     artifact: &QualifiedLaunchArtifact,
     label: &str,
 ) -> Result<VerifiedProcessArtifact, DurableRunnerError> {
-    verify_launch_artifact_with_role(artifact, label, true, TRUSTED_LAUNCH_ROOT.get())
+    verify_owned(
+        artifact,
+        label,
+        true,
+        ArtifactOwner::Runner,
+        TRUSTED_LAUNCH_ROOT.get(),
+    )
 }
 
 /// A host-assigned executable, such as a stdio MCP server. It is always
@@ -164,7 +184,27 @@ pub fn verify_assigned_executable_launch_artifact(
     artifact: &QualifiedLaunchArtifact,
     label: &str,
 ) -> Result<VerifiedProcessArtifact, DurableRunnerError> {
-    verify_launch_artifact_with_role(artifact, label, true, None)
+    verify_owned(
+        artifact,
+        label,
+        true,
+        ArtifactOwner::HostAssigned,
+        TRUSTED_LAUNCH_ROOT.get(),
+    )
+}
+
+fn verify_owned(
+    artifact: &QualifiedLaunchArtifact,
+    label: &str,
+    executable: bool,
+    owner: ArtifactOwner,
+    configured_root: Option<&TrustedLaunchRoot>,
+) -> Result<VerifiedProcessArtifact, DurableRunnerError> {
+    let trusted_root = match owner {
+        ArtifactOwner::Runner => configured_root,
+        ArtifactOwner::HostAssigned => None,
+    };
+    verify_launch_artifact_with_role(artifact, label, executable, trusted_root)
 }
 
 fn verify_launch_artifact_with_role(
@@ -477,10 +517,33 @@ mod tests {
     #[test]
     fn host_assigned_executables_ignore_the_trusted_root() {
         let fixture = Fixture::new("assigned");
+        let root = TrustedLaunchRoot::open_with_mount_check(&fixture.rom(), immutable).unwrap();
         let artifact = fixture.artifact(fixture.rom().join("libexec/mcp"), b"mcp");
-        // `verify_assigned_executable_launch_artifact` passes no root even
-        // when one is configured; its sealed result is the same as this.
-        let verified = verify_assigned_executable_launch_artifact(&artifact, "test").unwrap();
-        assert!(sealed(&verified));
+
+        // The same configured root admits this file for a Runner-owned launch.
+        let runner =
+            verify_owned(&artifact, "test", true, ArtifactOwner::Runner, Some(&root)).unwrap();
+        assert!(!sealed(&runner));
+
+        // A host-assigned executable at the same path stays sealed and hashed.
+        let assigned = verify_owned(
+            &artifact,
+            "test",
+            true,
+            ArtifactOwner::HostAssigned,
+            Some(&root),
+        )
+        .unwrap();
+        assert!(sealed(&assigned));
+        let mut tampered = artifact;
+        tampered.sha256 = "sha256:wrong".to_owned();
+        assert!(verify_owned(
+            &tampered,
+            "test",
+            true,
+            ArtifactOwner::HostAssigned,
+            Some(&root),
+        )
+        .is_err());
     }
 }
