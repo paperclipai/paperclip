@@ -239,7 +239,6 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   const { data: availableSecrets = [] } = useQuery({
@@ -253,7 +252,6 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
       : ["user-secret-definitions", "none"],
     queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
-    retry: false,
   });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
@@ -721,13 +719,16 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
           {workspaceError && (
             <p className="text-xs text-destructive">{workspaceError}</p>
           )}
-          {createWorkspace.isError && (
+          {createWorkspace.isError && ( // query-error-ok: mutation result
+
             <p className="text-xs text-destructive">Failed to save workspace.</p>
           )}
-          {removeWorkspace.isError && (
+          {removeWorkspace.isError && ( // query-error-ok: mutation result
+
             <p className="text-xs text-destructive">Failed to delete workspace.</p>
           )}
-          {updateWorkspace.isError && (
+          {updateWorkspace.isError && ( // query-error-ok: mutation result
+
             <p className="text-xs text-destructive">Failed to update workspace.</p>
           )}
         </div>}
@@ -742,26 +743,26 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
               id="workspace-storage-provider"
               aria-label="Workspace storage provider"
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-              disabled={!onUpdate && !onFieldUpdate}
-              value={storedExecutionWorkspacePolicy?.storageProviderPluginId === null ? "core" : storedExecutionWorkspacePolicy?.storageProviderPluginId ?? "inherit"}
+              disabled={Boolean(storedExecutionWorkspacePolicy?.storageProviderPluginId) || (!onUpdate && !onFieldUpdate)}
+              value={storedExecutionWorkspacePolicy?.storageProviderPluginId ?? "core"}
               onChange={(event) => {
                 const policy = { enabled: true, ...storedExecutionWorkspacePolicy };
-                if (event.target.value === "inherit") delete policy.storageProviderPluginId;
-                else policy.storageProviderPluginId = event.target.value === "core" ? null : event.target.value;
+                policy.storageProviderPluginId = event.target.value === "core" ? null : event.target.value;
                 commitField("workspace_storage_provider", { executionWorkspacePolicy: policy });
               }}
             >
-              <option value="inherit">Inherit installed default</option>
               <option value="core">Core / local</option>
               {providerConfiguration.providers.map(provider => (
-                <option key={provider.id} value={provider.id}>{provider.displayName}{provider.isDefault ? " (default)" : ""}</option>
+                <option key={provider.id} value={provider.id}>{provider.displayName}</option>
               ))}
               {storedExecutionWorkspacePolicy?.storageProviderPluginId && !providerConfiguration.providers.some(provider => provider.id === storedExecutionWorkspacePolicy.storageProviderPluginId) ? (
                 <option value={storedExecutionWorkspacePolicy.storageProviderPluginId}>Unavailable provider</option>
               ) : null}
             </select>
             <p className="text-xs text-muted-foreground">
-              {providerConfiguration.source === "default" ? `Inherited default: ${providerConfiguration.displayName}` : `Selected: ${providerConfiguration.displayName}`}
+              {storedExecutionWorkspacePolicy?.storageProviderPluginId
+                ? `This project stays on ${providerConfiguration.displayName}.`
+                : "A project moved to a storage plugin stays on that plugin."}
             </p>
             {providerConfiguration.error ? <p role="alert" className="text-xs text-destructive">{providerConfiguration.error}</p> : null}
           </div>

@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 use paperclip_runner_core::acpx_sidecar_transport::{
     AcpxSidecarTransport, AcpxSidecarTransportConfig,
 };
+#[cfg(unix)]
+use paperclip_runner_core::generated_acpx_sidecar_contract::GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION;
 use paperclip_runner_core::generated_acpx_sidecar_contract::{
     GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
 };
@@ -248,6 +250,35 @@ fn preserves_closed_admission_categories_over_the_sidecar_pipe() {
 }
 
 #[test]
+fn session_ensure_rejection_carries_its_provider_cause_outside_the_error_text() {
+    let mut transport = transport("remote-error", Duration::from_secs(1));
+    let cause = |category: &str| {
+        json!({ "schema": "paperclip.provider-failure.v1", "provider": "anthropic", "phase": "startup",
+            "category": category, "message": "You've hit your limit [REDACTED] amber-cause-5512",
+            "retryability": "requires_action" })
+    };
+    for (category, classification) in [
+        ("quota_exhausted", "provider_quota_exhausted"),
+        ("unknown", "session_ensure_failed"),
+    ] {
+        let error = transport
+            .request(
+                GeneratedAcpxSidecarCommand::SessionOpen,
+                json!({ "errorCode": "ACPX_SESSION_ENSURE_FAILED", "providerFailure": cause(category) }),
+            )
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(&format!(
+            "retryable=false, classification={classification})"
+        )));
+        assert!(!message.contains("amber-cause-5512"));
+        assert!(!message.contains("violet-circuit-4821"));
+        assert_eq!(error.provider_failure(), Some(cause(category)));
+    }
+    transport.shutdown().unwrap();
+}
+
+#[test]
 fn redacts_sidecar_stderr_when_the_process_exits() {
     let mut transport = transport("exit-secret", Duration::from_secs(1));
     let error = transport
@@ -393,6 +424,78 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
 }
 
 #[test]
+fn antigravity_candidate_forwards_only_selected_credentials_and_binding() {
+    const CHILD: &str = "PAPERCLIP_TEST_ANTIGRAVITY_ENV_CHILD";
+    let selected = match std::env::var(CHILD) {
+        Ok(selected) => selected,
+        Err(_) => {
+            for selected in [
+                "GEMINI_API_KEY",
+                "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
+            ] {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "antigravity_candidate_forwards_only_selected_credentials_and_binding",
+                        "--nocapture",
+                    ])
+                    .env_clear()
+                    .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                    .env(CHILD, selected)
+                    .env(selected, "fixture-selected-credential")
+                    .env(
+                        "PAPERCLIP_ACPX_CREDENTIAL_BINDING",
+                        "fixture-controller-binding",
+                    )
+                    .envs(
+                        [
+                            "ANTHROPIC_API_KEY",
+                            "OPENAI_API_KEY",
+                            "COPILOT_GITHUB_TOKEN",
+                            "UNRELATED_EVAL_SECRET",
+                            "GEMINI_HOME",
+                            "GOOGLE_APPLICATION_CREDENTIALS",
+                            "GOOGLE_API_KEY",
+                            "GOOGLE_CLOUD_PROJECT",
+                            "AGY_ACP_FORCE_FILE_STORAGE",
+                            "PYTHONPATH",
+                            "PYTHONHOME",
+                        ]
+                        .into_iter()
+                        .map(|key| (key, "fixture-ambient-must-not-cross")),
+                    )
+                    .status()
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "isolated Antigravity environment test failed"
+                );
+            }
+            return;
+        }
+    };
+    let mut sidecar = AcpxSidecarTransport::start_for_agent(
+        &AcpxSidecarTransportConfig {
+            command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
+            args: vec!["--mode".into(), "mcp-environment".into()],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(2),
+            shutdown_grace: Duration::from_millis(50),
+        },
+        "antigravity",
+    )
+    .unwrap();
+    let response = sidecar
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .unwrap();
+    assert_eq!(response["credentialKeys"], json!([selected]));
+    assert_eq!(response["credentialBinding"], "fixture-controller-binding");
+    assert_eq!(response["hasUnrelatedSecret"], false);
+    assert_eq!(response["ambientAntigravityKeys"], json!([]));
+    sidecar.shutdown().unwrap();
+}
+
+#[test]
 fn pi_ordinary_request_timeout_still_retires_the_sidecar() {
     let mut sidecar = AcpxSidecarTransport::start_for_agent(
         &AcpxSidecarTransportConfig {
@@ -419,4 +522,94 @@ fn pi_ordinary_request_timeout_still_retires_the_sidecar() {
     sidecar
         .shutdown()
         .expect("timeout cleanup remains idempotent");
+}
+
+#[test]
+#[cfg(unix)]
+fn managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials() {
+    const CHILD: &str = "PAPERCLIP_TEST_MANAGED_BROKER_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for (agent, launcher) in [
+            ("claude", "/managed"),
+            ("claude", ""),
+            ("claude", "  "),
+            ("codex", "/managed"),
+            ("cursor", "/managed"),
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials",
+                ])
+                .env_clear()
+                .env(CHILD, agent)
+                .env("PATH", "/usr/bin:/bin")
+                .env("BASH_ENV", "/managed/.bashrc")
+                .env("ZDOTDIR", "/managed")
+                .env("GH_CONFIG_DIR", "/managed")
+                .env("PAPERCLIP_GITHUB_LAUNCHER_DIR", launcher)
+                .env("PAPERCLIP_GITHUB_BROKER_URL", "http://127.0.0.1:3210")
+                .env("PAPERCLIP_GITHUB_BROKER_TOKEN", "session-capability")
+                .env("PAPERCLIP_GITHUB_BRIDGE_TOKEN", "bridge-capability")
+                .env("GH_TOKEN", "unbound-secret")
+                .env("GITHUB_TOKEN", "unbound-secret")
+                .env("UNRELATED_SECRET", "unbound-secret")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "agent={agent}, launcher={launcher:?}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+        return;
+    }
+    let agent = std::env::var(CHILD).unwrap();
+    let names = [
+        "BASH_ENV",
+        "ZDOTDIR",
+        "GH_CONFIG_DIR",
+        "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+        "PAPERCLIP_GITHUB_BROKER_URL",
+        "PAPERCLIP_GITHUB_BROKER_TOKEN",
+        "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "UNRELATED_SECRET",
+    ];
+    let arguments = names.map(|name| format!("\"${name}\"")).join(" ");
+    let response = json!({
+        "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+        "id": 1, "ok": true, "result": { "environment": vec!["%s"; names.len()] },
+    });
+    let config = AcpxSidecarTransportConfig {
+        command: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".into(),
+            format!("IFS= read -r request; printf '{response}\\n' {arguments}; IFS= read -r next"),
+        ],
+        verified_launch: None,
+        request_timeout: Duration::from_secs(1),
+        shutdown_grace: Duration::from_millis(100),
+    };
+    let mut transport = AcpxSidecarTransport::start_for_agent(&config, &agent).unwrap();
+    let managed = agent == "claude"
+        && !std::env::var("PAPERCLIP_GITHUB_LAUNCHER_DIR")
+            .unwrap()
+            .trim()
+            .is_empty();
+    let response = transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect("sidecar should report its launch environment");
+    for (index, name) in names.iter().enumerate() {
+        let value = response["environment"][index].as_str().unwrap();
+        let expected = if (index < 4 && agent == "claude") || ((4..7).contains(&index) && managed) {
+            std::env::var(name).unwrap()
+        } else {
+            String::new()
+        };
+        assert_eq!(value, expected, "sidecar environment: {name}");
+    }
+    transport.shutdown().unwrap();
 }

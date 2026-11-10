@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 
@@ -29,11 +29,14 @@ export interface OpenCodeMcpBridgeOptions {
   /** Runner-owned operations callable only by a trusted harness extension and never advertised to the model. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
   handler: (call: OpenCodeMcpCall) => Promise<unknown>;
-  timeoutMs?: number;
+  onRejectedCall?: (call: Pick<OpenCodeMcpCall, "tool" | "callId" | "arguments">, error: string) => void;
+  /** Null leaves durable requests with the owning Runner lease and bridge close. */
+  timeoutMs?: number | null;
   /** Human-gated private operations may remain pending much longer than model tool calls. */
   privateToolTimeoutMs?: number;
   maxBodyBytes?: number;
   secret?: string;
+  onDiagnostic?: (message: string) => void;
 }
 
 export interface OpenCodeMcpBridge {
@@ -41,6 +44,12 @@ export interface OpenCodeMcpBridge {
   secret: string;
   close(): Promise<void>;
 }
+
+type FinishInputRejection = {
+  input: unknown;
+  callId: string;
+  validationCategory: "root" | "continuation" | "other";
+};
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
@@ -65,7 +74,26 @@ export async function startOpenCodeMcpBridge(
   const privateTools = normalizeTools(options.privateTools ?? [], false);
   const admittedTools = [...tools, ...privateTools.filter((candidate) => !tools.some((tool) => tool.name === candidate.name))];
   const validators = compileValidators(admittedTools);
-  const calls = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
+  const finishSchema = admittedTools.find(tool => tool.name === PRP_COMPLETION_TOOL_NAME)?.inputSchema;
+  const finishSchemaSha256 = finishSchema && options.onDiagnostic
+    ? createHash("sha256").update(JSON.stringify(finishSchema)).digest("hex") : undefined;
+  let rejectionDiagnostics = 0;
+  const diagnoseFinishInput = (rejection?: FinishInputRejection) => {
+    if (!finishSchemaSha256 || !options.onDiagnostic) return;
+    if (rejection && rejectionDiagnostics++ >= 8) return;
+    const diagnostic = {
+      schema: "paperclip.opencode.finish-input-diagnostic/v1",
+      stage: rejection ? "input_rejected" : "offered", schemaSha256: finishSchemaSha256,
+      ...(rejection ? {
+        callIdSha256: createHash("sha256").update(rejection.callId).digest("hex"),
+        validationCategory: rejection.validationCategory,
+        rootShape: inputShape(rejection.input),
+        continuationShape: inputShape(isRecord(rejection.input) ? rejection.input.continuation : undefined),
+      } : {}),
+    };
+    try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
+  };
+  const calls = new Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>();
   const controllers = new Map<string, AbortController>();
   const server = createServer((request, response) => {
     void handleRequest(request, response, {
@@ -76,7 +104,9 @@ export async function startOpenCodeMcpBridge(
       calls,
       controllers,
       handler: options.handler,
-      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      onRejectedCall: options.onRejectedCall,
+      diagnoseFinishInput,
+      timeoutMs: options.timeoutMs === null ? null : options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolTimeoutMs: options.privateToolTimeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolNames: new Set(privateTools.map((tool) => tool.name)),
       maxBodyBytes: options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
@@ -94,6 +124,7 @@ export async function startOpenCodeMcpBridge(
     await closeServer(server);
     throw new Error("OpenCode MCP bridge failed to bind a loopback port");
   }
+  diagnoseFinishInput();
   return {
     url: `http://127.0.0.1:${address.port}/mcp`,
     secret,
@@ -102,6 +133,17 @@ export async function startOpenCodeMcpBridge(
       await closeServer(server);
     },
   };
+}
+
+function inputShape(input: unknown): "omitted" | "null" | "array" | "object" | "string" | "number" | "boolean" | "other" {
+  if (input === undefined) return "omitted";
+  if (input === null) return "null";
+  if (Array.isArray(input)) return "array";
+  if (typeof input === "object") return "object";
+  if (typeof input === "string") return "string";
+  if (typeof input === "number") return "number";
+  if (typeof input === "boolean") return "boolean";
+  return "other";
 }
 
 function normalizeTools(
@@ -143,13 +185,15 @@ async function handleRequest(
     tools: OpenCodeMcpToolDefinition[];
     admittedTools: OpenCodeMcpToolDefinition[];
     validators: Map<string, ValidateFunction>;
-    calls: Map<string, { fingerprint: string; promise: Promise<unknown> }>;
+    calls: Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>;
     controllers: Map<string, AbortController>;
     handler: OpenCodeMcpBridgeOptions["handler"];
-    timeoutMs: number;
+    onRejectedCall: OpenCodeMcpBridgeOptions["onRejectedCall"];
+    timeoutMs: number | null;
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
     maxBodyBytes: number;
+    diagnoseFinishInput: (rejection?: FinishInputRejection) => void;
   },
 ): Promise<void> {
   setSecurityHeaders(response);
@@ -235,16 +279,25 @@ async function handleRequest(
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
   if (validator === undefined || !validator(args)) {
+    if (tool === PRP_COMPLETION_TOOL_NAME) {
+      const errors = validator?.errors ?? [];
+      const validationCategory = errors.some(error => error.instancePath === "/continuation" || error.instancePath.startsWith("/continuation/"))
+        ? "continuation" : errors.some(error => error.instancePath === "") ? "root" : "other";
+      context.diagnoseFinishInput({ input: params.arguments, callId, validationCategory });
+    }
     const detail = validator?.errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
+    const error = `Invalid tool input${detail ? `: ${detail}` : "."}`;
+    try { context.onRejectedCall?.({ tool, callId, arguments: args }, error); } catch {}
     writeRpc(response, id, {
       isError: true,
-      content: [{ type: "text", text: `Invalid tool input${detail ? `: ${detail}` : "."}` }],
+      content: [{ type: "text", text: error }],
     });
     return;
   }
   const fingerprint = canonicalJson({ tool, args });
   const existing = context.calls.get(callId);
   if (existing && existing.fingerprint !== fingerprint) {
+    try { context.onRejectedCall?.({ tool, callId, arguments: args }, "Duplicate call identity conflict."); } catch {}
     writeRpc(response, id, { isError: true, content: [{ type: "text", text: "Duplicate call identity conflict." }] });
     return;
   }
@@ -256,9 +309,22 @@ async function handleRequest(
   );
   if (!existing) {
     if (context.calls.size >= 2_048) context.calls.delete(context.calls.keys().next().value!);
-    context.calls.set(callId, { fingerprint, promise: execution });
+    context.calls.set(callId, { fingerprint, promise: execution, waiting: new Set() });
     context.controllers.set(callId, controller!);
     void execution.finally(() => context.controllers.delete(callId)).catch(() => undefined);
+  }
+  // A client that drops its connection has abandoned the call just like one
+  // that sends notifications/cancelled. Abort once no connection still waits
+  // on this call identity, so a call still waiting to be handed to the
+  // controller is never dispatched after every client gave up. A live retry
+  // of the same call keeps it alive.
+  const waiting = (existing ?? context.calls.get(callId))?.waiting;
+  if (waiting && context.controllers.has(callId)) {
+    waiting.add(response);
+    response.once("close", () => {
+      waiting.delete(response);
+      if (!response.writableFinished && waiting.size === 0) context.controllers.get(callId)?.abort();
+    });
   }
   try {
     const result = await execution;
@@ -321,23 +387,23 @@ function closeServer(server: Server): Promise<void> {
 function withCancellationAndTimeout<T>(
   promise: Promise<T>,
   controller: AbortController,
-  timeoutMs: number,
+  timeoutMs: number | null,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       controller.signal.removeEventListener("abort", onAbort);
       callback();
     };
     const onAbort = () => finish(() => reject(new Error("Paperclip tool call cancelled")));
-    const timer = setTimeout(() => {
+    const timer = timeoutMs === null ? undefined : setTimeout(() => {
       finish(() => reject(new Error("Paperclip tool call timed out")));
       controller.abort();
     }, timeoutMs);
-    timer.unref?.();
+    timer?.unref?.();
     controller.signal.addEventListener("abort", onAbort, { once: true });
     promise.then(
       (value) => finish(() => resolve(value)),

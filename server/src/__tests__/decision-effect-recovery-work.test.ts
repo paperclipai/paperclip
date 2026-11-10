@@ -73,7 +73,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   const claim = (id: string, updatedAt = new Date(), owner = db) => writeDecisionChange(owner, async tx => tx.update(decisions).set({
     status: "decided", executionStatus: "running", chosenOptionId: "yes", decidedByUserId: userId,
     updatedAt, inputValues: {}, metadata: { continuationPending: true },
-  }).where(eq(decisions.id, id)));
+  }).where(eq(decisions.id, id)), { companyId });
   async function start() {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
@@ -207,7 +207,15 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await service().recoverEffects(new Date(at.getTime() + 60_000))).toEqual({ resumed: 1 });
     vi.stubEnv("PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS", "0");
     const second = await create(); await claim(second.id, at);
-    expect(await service().recoverEffects(at)).toEqual({ resumed: 1 }); expect(await comments()).toHaveLength(2);
+    expect(await service().recoverEffects(at)).toEqual({ resumed: 1 });
+    const saved = await comments();
+    expect(saved).toHaveLength(2);
+    expect(saved.map(comment => comment.createdByRunId)).toEqual([runId, runId]);
+    expect(saved.map(comment => comment.clientRequestId).sort()).toEqual([
+      `decision-effect:${row.id}:0`, `decision-effect:${second.id}:0`,
+    ].sort());
+    expect(await service().recoverEffects(at)).toEqual({ resumed: 0 });
+    expect(await comments()).toHaveLength(2);
   });
 
   it("joins active foreground effects when their recovery deadline arrives", async () => {
@@ -467,7 +475,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     } else {
       await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "decided", executionStatus: "running",
         chosenOptionId: "archive", decidedByUserId: userId, updatedAt: new Date(Date.now() - 120_000),
-        metadata: { ...row.metadata, continuationPending: true } }).where(eq(decisions.id, row.id)));
+        metadata: { ...row.metadata, continuationPending: true } }).where(eq(decisions.id, row.id)), { companyId });
     }
     await start(); await settled(row.id, committed ? "failed" : "succeeded"); await quiet();
     const [retained] = await db.select().from(decisionRetention);

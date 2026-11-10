@@ -293,6 +293,33 @@ If you only have the club name, audience, and tone, that is enough to begin; I c
       [`/api/heartbeat-runs/${run.id}/events?afterSeq=1000&limit=1000`],
     ]);
   });
+  it("retains a superseded queued run's events without requesting a provider log that was never created", async () => {
+    const get = vi.fn().mockResolvedValue([{ seq: 1, eventType: "lifecycle" }]);
+    const suppressed = { ...run, status: "cancelled", errorCode: "issue_assignee_changed", startedAt: null,
+      resultJson: { stopReason: "issue_assignee_changed", timeoutSource: "stale_queued_run_gate", timeoutFired: false } };
+    expect(await collectChatRunEvidence({ get }, suppressed)).toMatchObject({
+      runId: run.id, log: null, logOmissionReason: "assignee_changed_before_start", events: [{ seq: 1, eventType: "lifecycle" }],
+    });
+    expect(get.mock.calls).toEqual([[`/api/heartbeat-runs/${run.id}/events?afterSeq=0&limit=1000`]]);
+    get.mockRejectedValue(new Error("Run log not found"));
+    for (const patch of [{ startedAt: "2026-10-26T10:00:15Z" }, { startedAt: undefined },
+      { errorCode: "cancelled" }, { resultJson: {} }, { nativeIssueId: "task" }]) {
+      await expect(collectChatRunEvidence({ get }, { ...suppressed, ...patch })).rejects.toThrow("Run log not found");
+    }
+  });
+  it("retains a wake retired by a terminal issue before admission without requesting a log it never had", async () => {
+    const get = vi.fn().mockResolvedValue([{ seq: 1, eventType: "lifecycle" }]);
+    const retired = { ...run, status: "cancelled", errorCode: "issue_terminal_status", startedAt: null, logStore: null, logRef: null };
+    expect(await collectChatRunEvidence({ get }, retired)).toMatchObject({
+      runId: run.id, log: null, logOmissionReason: "issue_terminal_before_start", events: [{ seq: 1, eventType: "lifecycle" }],
+    });
+    expect(get.mock.calls).toEqual([[`/api/heartbeat-runs/${run.id}/events?afterSeq=0&limit=1000`]]);
+    get.mockRejectedValue(new Error("Run log not found"));
+    for (const patch of [{ startedAt: "2026-10-26T10:00:15Z" }, { startedAt: undefined }, { status: "failed" },
+      { errorCode: "cancelled" }, { logStore: "local_file" }, { logRef: "recorded-log" }]) {
+      await expect(collectChatRunEvidence({ get }, { ...retired, ...patch })).rejects.toThrow("Run log not found");
+    }
+  });
   it("records legitimate pre-provider log absence only with explicit bootstrap and storage evidence", async () => {
     const stopped = { ...run, status: "interrupted", runtimeMode: "legacy", runtimeModeResolvedAt: null, logStore: null, logRef: null,
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };

@@ -1,4 +1,4 @@
-import { notifyChatCommandRegistration } from "./command-work-notifications.js";
+import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
 import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import { createTelegramCallbackNoticeAuthority } from "./telegram/callback-notices.js";
 
@@ -318,7 +318,7 @@ export function createProviderEffects(db: Db, options: ProviderEffectsOptions) {
           );
       }
       if (input.disposition.kind === "endpoint_attention" && currentEndpoint) {
-        await notifyChatCommandRegistration(tx, currentEndpoint);
+        await notifyChatEndpointConfiguration(tx, currentEndpoint);
         await tx
           .update(chatEndpoints)
           .set({

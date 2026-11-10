@@ -45,7 +45,7 @@ test("a failed lazy CSS preload recovers with one reload", async ({ page, reques
   expect(counts.documents).toBe(2);
 });
 
-test("a lazy CSS asset that stays broken reloads once, then shows the error", async ({ page, request }) => {
+test("a lazy CSS asset that stays broken reloads up to the retry limit, then shows the error", async ({ page, request }) => {
   const company = await json(await request.post("/api/companies", {
     data: { name: `Chunk recovery ${randomUUID()}` },
   }));
@@ -61,9 +61,10 @@ test("a lazy CSS asset that stays broken reloads once, then shows the error", as
 
   await page.goto(`/${company.issuePrefix}${environmentsPath}`);
 
-  await expect(page.getByText("This page hit an error")).toBeVisible();
+  // Three reloads wait 0 s, 2 s and 5 s before the error page shows.
+  await expect(page.getByText("This page hit an error")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(/Unable to preload CSS for .*CompanyEnvironments-/)).toBeVisible();
   await page.waitForTimeout(1_000);
-  expect(documents).toBe(2);
-  expect(failed).toBe(2);
+  expect(documents).toBe(4);
+  expect(failed).toBe(4);
 });

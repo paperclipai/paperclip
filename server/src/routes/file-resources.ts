@@ -14,7 +14,9 @@ import {
   type WorkspaceFileListResponse,
 } from "@paperclipai/shared";
 import { badRequest, HttpError, notFound, unprocessable } from "../errors.js";
-import { workspaceFileResourceService } from "../services/index.js";
+import { workspaceFileResourceService } from "../services/workspace-file-resources.js";
+import type { PreparedWorkspaceFileDownload } from "../services/workspace-file-resources.js";
+import type { RemoteWorkspaceFiles } from "../services/remote-workspace-files.js";
 import { assertBoard, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
 import {
@@ -23,6 +25,7 @@ import {
 } from "../services/workspace-git-operation-scheduler.js";
 
 export type WorkspaceFileResourceService = {
+  resolveIssueId(rawId: string): Promise<string>;
   getIssue(issueId: string): Promise<{ companyId: string }>;
   availability(
     issueId: string,
@@ -56,7 +59,7 @@ export type WorkspaceFileResourceService = {
     issueId: string,
     input: { path: string; workspace?: "auto" | "execution" | "project" | null; projectId?: string | null; workspaceId?: string | null },
     opts?: { issue?: Awaited<ReturnType<WorkspaceFileResourceService["getIssue"]>> },
-  ): Promise<{ resource: ResolvedWorkspaceResource; realPath: string }>;
+  ): Promise<PreparedWorkspaceFileDownload>;
 };
 
 type FileResourceLimiter = {
@@ -353,12 +356,29 @@ export function fileResourceRoutes(db: Db, opts: {
   limiter?: FileResourceLimiter;
   listLimiter?: FileResourceLimiter;
   availabilityLimiter?: FileResourceLimiter;
+  remoteFiles?: RemoteWorkspaceFiles;
 } = {}) {
   const router = Router();
-  const serviceFor = (req: Request) => opts.service ?? workspaceFileResourceService(db, req.actor);
+  const serviceFor = (req: Request) => opts.service ?? workspaceFileResourceService(db, req.actor, { remoteFiles: opts.remoteFiles });
   const limiter = opts.limiter ?? createFileResourceLimiter();
   const listLimiter = opts.listLimiter ?? createFileResourceListLimiter();
   const availabilityLimiter = opts.availabilityLimiter ?? createFileResourceAvailabilityLimiter();
+
+  // Resolve issue identifiers (e.g. "PAP-39") to UUIDs, matching the issues router.
+  // Only board actors can use these routes. Other actors keep the raw value so a
+  // denied request's activity row never records the UUID behind a guessed identifier.
+  router.param("issueId", async (req, _res, next, rawId) => {
+    if (req.actor.type !== "board") {
+      next();
+      return;
+    }
+    try {
+      req.params.issueId = await serviceFor(req).resolveIssueId(String(rawId));
+      next();
+    } catch (err) {
+      next(err);
+    }
+  });
 
   async function logAvailabilityAttempt(input: {
     companyId: string;
@@ -857,36 +877,39 @@ export function fileResourceRoutes(db: Db, opts: {
           throw error;
         }
 
-        await logActivity(db, {
-          companyId: issue.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          action: "issue.file_resource_download",
-          entityType: "issue",
-          entityId: req.params.issueId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          agentApiKeyId: actor.agentApiKeyId,
-          details: activityDetails({
-            outcome: "success",
-            workspaceKind: result.resource.workspaceKind,
-            workspaceId: result.resource.workspaceId,
-            projectId: result.resource.projectId ?? null,
-            projectName: result.resource.projectName ?? null,
-            displayPath: result.resource.displayPath,
-            byteSize: result.resource.byteSize ?? null,
-            contentType: result.resource.contentType ?? null,
-          }),
-        });
+        try {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            action: "issue.file_resource_download",
+            entityType: "issue",
+            entityId: req.params.issueId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            details: activityDetails({
+              outcome: "success",
+              workspaceKind: result.resource.workspaceKind,
+              workspaceId: result.resource.workspaceId,
+              projectId: result.resource.projectId ?? null,
+              projectName: result.resource.projectName ?? null,
+              displayPath: result.resource.displayPath,
+              byteSize: result.resource.byteSize ?? null,
+              contentType: result.resource.contentType ?? null,
+            }),
+          });
 
-        res.setHeader("Content-Type", result.resource.contentType ?? "application/octet-stream");
-        if (result.resource.byteSize != null) {
-          res.setHeader("Content-Length", String(result.resource.byteSize));
-        }
-        res.setHeader("Cache-Control", "private, max-age=60");
-        res.setHeader("X-Content-Type-Options", "nosniff");
-        res.setHeader("Content-Disposition", `attachment; filename="${safeAttachmentFilename(result.resource.title)}"`);
-        await pipeline(createReadStream(result.realPath), res);
+          res.setHeader("Content-Type", result.resource.contentType ?? "application/octet-stream");
+          if (result.resource.byteSize != null) {
+            res.setHeader("Content-Length", String(result.resource.byteSize));
+          }
+          res.setHeader("Cache-Control", "private, max-age=60");
+          res.setHeader("X-Content-Type-Options", "nosniff");
+          res.setHeader("Content-Disposition", `attachment; filename="${safeAttachmentFilename(result.resource.title)}"`);
+          if ("stream" in result) await pipeline(result.stream, res);
+          else await pipeline(createReadStream(result.realPath), res);
+        } finally { if ("stream" in result) await result.cleanup(); }
         return;
       }
 

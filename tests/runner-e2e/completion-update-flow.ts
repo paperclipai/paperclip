@@ -1,12 +1,13 @@
 import { expect, type Page } from "@playwright/test";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { resolveManagedProjectWorkspaceDir, resolveDefaultAgentWorkspaceDir } from "../../server/src/home-paths.js";
+import { resolvePaperclipInstanceRoot } from "../../server/src/home-paths.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { sendChatMessage, readChatOutputDocument, collectChatRunEvidence, type ChatFlowInput, type ChatRun } from "./chat-flow.js";
 import { arm as armDocumentGate, clear as clearDocumentGate, release as releaseDocumentGate, waitUntilHeld } from "./context-comment-gate.js";
-import { prepareChatBrief } from "./chat-stories.js";
-import { completionDelivery, completionOutputUsesReleasedBrief, type CompletionObservation } from "./completion-updates.js";
+import { publishChatBrief, workspaceChatBrief } from "./chat-stories.js";
+import { gotoAfterServerRestart } from "./chat-restart.js";
+import { completionDelivery, completionOutputUsesReleasedBrief, completionRestartGateSkipped, completionRestartGateTimeoutDetail, type CompletionObservation } from "./completion-updates.js";
 
 type Row = Record<string, any>;
 export async function observeCompletionUpdate(input: {
@@ -132,23 +133,35 @@ export async function runChatCompletionUpdate(context: {
   const restart = execution.task.id === "handoff-completion-restart";
   const taskCount = multiple ? 2 : 1;
   const userMessages: string[] = [];
-  const completionWait = restart ? await prepareChatBrief(resolveDefaultAgentWorkspaceDir(f.agent.id), `${input.nonce}-completion`, 240_000) : null;
+  // Native runs see only their own task directory: a chat in its isolated
+  // conversation directory and a task in a workspace-free project in its
+  // isolated task directory. Agent homes and unconfigured project roots are
+  // outside the provider sandbox, so each wait resolves from the run's cwd.
+  const taskDirectory = (issueId: string) => {
+    const directory = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", f.company.id, issueId);
+    const relative = path.relative(path.dirname(input.workspacePath), directory);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Completion fixture escaped isolated instance");
+    return directory;
+  };
+  const publishBrief = async (brief: ReturnType<typeof workspaceChatBrief>, issueId: string, content: string) => {
+    const directory = taskDirectory(issueId);
+    await mkdir(directory, { recursive: true });
+    await publishChatBrief(brief.at(directory).gate, content);
+  };
+  const runCwd = (runs: Row[], issueId: string) =>
+    runs.filter(r => r.contextSnapshot?.issueId === issueId).map(r => r.contextSnapshot?.paperclipWorkspace?.cwd ?? null);
+  const completionWait = restart ? workspaceChatBrief(`${input.nonce}-completion`, 240_000) : null;
   if (completionWait) {
-    const instruction = `For automatic delegated-work completion updates, first run node ${completionWait.scriptPath} and read the organizer's reference before posting your final reply. Do not run this script for the initial task handoff or other user messages. Reading this reference does not authorize additional tasks or changes to the completed work.`;
+    const instruction = `For automatic delegated-work completion updates, first run this exact command from your current working directory and read the organizer's reference before posting your final reply:\n\n${completionWait.command}\n\nDo not run this command for the initial task handoff or other user messages. Reading this reference does not authorize additional tasks or changes to the completed work.`;
     await api.saveAgentInstructions(f.agent.id, instruction);
   }
   const config = execution.profile.buildAgent({ environmentId: f.environment.id, environmentFixtureId: "local", workspacePath: input.workspacePath, secretRefs: f.secretRefs, executionId: input.nonce });
   const worker = await api.post<Row>(`${company}/agents`, { ...config, name: "Riley Writer", role: "engineer", reportsTo: f.agent.id });
   const project = await api.post<Row>(`${company}/projects`, { name: "Garden welcome", description: "A non-code neighborhood garden meetup. No repository needed." });
-  // A project task runs in its managed project workspace. The agent-home path
-  // used by projectless chats is outside the native Codex workspace projection.
-  const workspace = resolveManagedProjectWorkspaceDir({ companyId: f.company.id, projectId: project.id });
-  const relative = path.relative(path.dirname(input.workspacePath), workspace);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Completion fixture escaped isolated instance");
-  const wait = await prepareChatBrief(workspace, input.nonce, 240_000);
+  const wait = workspaceChatBrief(input.nonce, 240_000);
   const reference = marker;
   const brief = `The free Friday meetup starts at 10:30 in the community garden. The saved note must include RSVP code ${reference}.`;
-  const instructions = `For the welcome-note assignment, run node ${wait.scriptPath} to read the organizer's brief before writing the final note. Save a two-sentence welcome note as a Paperclip document on your assigned task using the brief's details and explicitly include its RSVP code in the note. Then complete your task. Do not edit or comment on another task.`;
+  const instructions = `For the welcome-note assignment, run this exact command from your task's working directory to read the organizer's brief before writing the final note:\n\n${wait.command}\n\nSave a two-sentence welcome note as a Paperclip document on your assigned task using the brief's details and explicitly include its RSVP code in the note. Then complete your task. Do not edit or comment on another task.`;
   await api.saveAgentInstructions(worker.id, instructions);
   expect(await api.get(`/api/agents/${worker.id}/instructions-bundle/file?path=AGENTS.md`)).toMatchObject({ content: instructions });
   const prompt = `Create ${multiple ? "two separate tasks titled Welcome note A and Welcome note B" : "one task"} in the Garden welcome project (${project.id}) assigned to Riley Writer to write a two-sentence welcome note for our free Friday garden meetup. Riley has the organizer's brief. Save the finished note on that task and include RSVP code ${marker} in the note so attendees know which code to give the organizer. Please tell me here when the work is finished and give me access to the result. You may start the handoff now; no further approval is needed. Let Riley write the note.`;
@@ -165,7 +178,8 @@ export async function runChatCompletionUpdate(context: {
         delegated = tasks.filter(t => t.assigneeAgentId === worker.id);
         task = delegated[0];
         const runs = await context.allRuns();
-        return { source, tasks, runs, ready: await readFile(wait.ready, "utf8").catch(() => "") };
+        const ready = task ? await readFile(wait.at(taskDirectory(task.id)).ready, "utf8").catch(() => "") : "";
+        return { source, tasks, runs, ready, workerCwds: task ? runCwd(runs, task.id) : [] };
       },
       accept: state => delegated.length === taskCount && state.ready === "waiting" && state.source.conversationState === "waiting" &&
         state.runs.some(r => r.contextSnapshot?.issueId === task!.id && r.status === "running") &&
@@ -190,7 +204,7 @@ export async function runChatCompletionUpdate(context: {
       expect(reference.body).toContain(`REFERENCE${marker}`);
       await input.evidence("completion-busy-document-gate.json", { sourceRun: busyRun, document: reference, responseHeld: true });
     }
-    await writeFile(wait.gate, brief);
+    for (const item of delegated) await publishBrief(wait, item.id, brief);
     await pollUntil({ label: "delegated welcome note completed", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
       load: () => api.get<Row>(`/api/issues/${task!.id}`), accept: t => t.status === "done" });
     if (busyRun) {
@@ -216,9 +230,18 @@ export async function runChatCompletionUpdate(context: {
     }
     if (restart) {
       const reportingRun = await pollUntil({ label: "completion reply is waiting at its reference gate before publication", deadlineAt: Date.now() + 120_000, intervalMs: 1000,
-        load: async () => ({ runs: await context.allRuns(), ready: await readFile(completionWait!.ready, "utf8").catch(() => "") }),
+        load: async () => {
+          const runs = await context.allRuns();
+          return { runs, ready: await readFile(completionWait!.at(taskDirectory(context.issue().id)).ready, "utf8").catch(() => ""),
+            comments: await api.get<Row[]>(`/api/issues/${context.issue().id}/comments?order=asc`),
+            sourceCwds: runCwd(runs, context.issue().id) };
+        },
         accept: state => state.ready === "waiting" && state.runs.some(r => r.contextSnapshot?.issueId === context.issue().id &&
-          r.contextSnapshot?.wakeReason === "chat_task_completed" && r.status === "running") });
+          r.contextSnapshot?.wakeReason === "chat_task_completed" && r.status === "running"),
+        // The gate depends on the agent running the instructed wait; name a
+        // skipped gate rather than timing out (see completionRestartGateSkipped).
+        reject: state => completionRestartGateSkipped({ sourceId: context.issue().id, workerId: task!.id, ...state }),
+        timeoutDetail: state => completionRestartGateTimeoutDetail(state && { sourceId: context.issue().id, workerId: task!.id, ...state }) });
       const beforeRestart = await api.get<Row[]>(`/api/issues/${context.issue().id}/comments?order=asc`);
       const workerState = await api.get<Row>(`/api/issues/${task!.id}`);
       expect(beforeRestart.filter(c => c.authorAgentId && c.createdAt >= workerState.completedAt), "restart must precede completion publication").toEqual([]);
@@ -227,8 +250,9 @@ export async function runChatCompletionUpdate(context: {
       // neither task records nor completion events are fabricated by the fixture.
       await input.evidence("completion-restart-boundary.json", { worker: await api.get(`/api/issues/${task!.id}`), runs: reportingRun.runs, sourceReferenceGateReady: true });
       await input.restart();
-      await writeFile(completionWait!.gate, "The organizer is ready to receive the saved result. Report the completed work now.");
-      await page.goto(`/${f.company.issuePrefix}/chats/${f.agent.id}`, { waitUntil: "commit" });
+      await publishBrief(completionWait!, context.issue().id, "The organizer is ready to receive the saved result. Report the completed work now.");
+      // The old document's Vite client can reload and abort this navigation.
+      await gotoAfterServerRestart(page, `/${f.company.issuePrefix}/chats/${f.agent.id}`, { deadlineAt: input.deadlineAt });
     }
     for (const [index, item] of delegated.entries()) {
       await pollUntil({ label: "delegated note completed", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
@@ -253,9 +277,12 @@ export async function runChatCompletionUpdate(context: {
       expect(replies, `one correlated completion reply for ${item.id}`).toHaveLength(1);
     }
   } finally {
-    await writeFile(wait.gate, `Reference: ${reference}`);
+    // Release every wait a failed attempt may have left running.
+    const release = (work: Promise<void>) => work.catch(() => {});
+    for (const item of delegated) await release(publishBrief(wait, item.id, `Reference: ${reference}`));
     if (busy) await releaseDocumentGate(context.issue().id);
-    if (completionWait) await writeFile(completionWait.gate, "The organizer is ready to receive the saved result.");
+    const sourceId = (context.issue() as { id: string } | undefined)?.id;
+    if (completionWait && sourceId) await release(publishBrief(completionWait, sourceId, "The organizer is ready to receive the saved result."));
     await context.refreshIssue();
   }
 }

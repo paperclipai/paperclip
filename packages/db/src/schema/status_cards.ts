@@ -56,6 +56,9 @@ export const statusCards = pgTable(
     lastModel: text("last_model"),
     generatingIssueId: uuid("generating_issue_id").references(() => issues.id, { onDelete: "set null" }),
     failureReason: text("failure_reason"),
+    // Internal deadline ownership; null denotes a row written before provenance
+    // was recorded. Membership may be rechecked at startup, retry/policy may not.
+    nextEvalReason: text("next_eval_reason").$type<"membership" | "policy" | "retry" | "refresh">(),
     nextEvalAt: timestamp("next_eval_at", { withTimezone: true }),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     archivedByUserId: text("archived_by_user_id"),

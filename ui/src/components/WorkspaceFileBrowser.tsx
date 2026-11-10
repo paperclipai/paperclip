@@ -11,9 +11,8 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, ChevronRight, Cloud, Download, FileCode2, FolderOpen, Loader2, RefreshCcw, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { cn, formatDateTime } from "@/lib/utils";
 import { fileResourcesApi } from "@/api/file-resources";
-import { projectsApi } from "@/api/projects";
 import { ApiError } from "@/api/client";
 import { describeError } from "@/api/errors";
 import { queryViewKind } from "@/components/QueryView";
@@ -27,6 +26,7 @@ import type {
   WorkspaceFileListMode,
   WorkspaceFileSelector,
 } from "@paperclipai/shared";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 type BrowserSource = "current" | "other";
 
@@ -539,8 +539,7 @@ export function WorkspaceFileBrowser({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const projectsQuery = useQuery({
-    queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "__none__"],
-    queryFn: () => projectsApi.list(companyId!),
+    ...companyProjectsQuery(companyId ?? ""),
     enabled: source === "other" && !!companyId,
     staleTime: 30_000,
   });
@@ -618,14 +617,22 @@ export function WorkspaceFileBrowser({
     ? { projectId: targetProjectId, workspaceId: targetWorkspaceId }
     : {};
 
+  const browseStateChangeRef = useRef(onBrowseStateChange);
   useEffect(() => {
-    onBrowseStateChange?.({
-      q: searchInput.trim() || null,
+    browseStateChangeRef.current = onBrowseStateChange;
+  }, [onBrowseStateChange]);
+
+  // Persisting browse state can give the parent a new inline callback. Notify
+  // for changed browse values, using the latest committed callback each time.
+  const liveBrowseQuery = searchInput.trim() || null;
+  useEffect(() => {
+    browseStateChangeRef.current?.({
+      q: liveBrowseQuery,
       folderPath,
       projectId: targetProjectId,
       workspaceId: targetWorkspaceId,
     });
-  }, [folderPath, onBrowseStateChange, searchInput, targetProjectId, targetWorkspaceId]);
+  }, [folderPath, liveBrowseQuery, targetProjectId, targetWorkspaceId]);
 
   const listQueryKey = useMemo(() => queryKeys.issues.fileResources(issueId, {
       workspace: effectiveWorkspace,
@@ -1135,6 +1142,14 @@ export function WorkspaceFileBrowser({
         folderPath={folderPath}
         onOpenFolder={openFolder}
       />
+
+      {data?.state === "available" && data.workspace?.source ? (
+        <p aria-label="Workspace file source" className="text-(length:--text-micro) text-muted-foreground">
+          {data.workspace.source.kind === "live" ? "Live workspace" : (
+            <>Saved copy{data.workspace.source.savedAt ? <> from <time dateTime={data.workspace.source.savedAt}>{formatDateTime(data.workspace.source.savedAt)}</time></> : null}</>
+          )}
+        </p>
+      ) : null}
 
       <div aria-live="polite" className="sr-only">
         {announcement}

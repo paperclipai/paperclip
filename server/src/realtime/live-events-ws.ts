@@ -7,7 +7,7 @@ import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, companyMemberships, instanceUserRoles, heartbeatRuns, projects } from "@paperclipai/db";
-import type { DeploymentMode, LiveEvent } from "@paperclipai/shared";
+import { issueActivityChangesTaskIdentity, type DeploymentMode, type LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { activityToastIdentity } from "./activity-toast-identity.js";
@@ -31,6 +31,7 @@ interface WsSocket {
 
 interface WsServer {
   clients: Set<WsSocket>;
+  close(): void;
   on(event: "connection", listener: (socket: WsSocket, req: IncomingMessage) => void): void;
   on(event: "close", listener: () => void): void;
   handleUpgrade(
@@ -248,6 +249,7 @@ export function setupLiveEventsWebSocketServer(
   db: Db,
   opts: {
     deploymentMode: DeploymentMode;
+    subscribeInvalidation?: (companyId: string, resync: () => void) => () => void;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
     /**
      * Resolves a Cloud-proxied browser's identity from the trusted
@@ -287,6 +289,7 @@ export function setupLiveEventsWebSocketServer(
       if (context!.actor.source === "local_implicit") {
         if (event.type === "activity.logged" && event.payload.entityType === "issue") {
           return { ...event, payload: { ...event.payload,
+            taskIdentityChanged: issueActivityChangesTaskIdentity(event.payload.action, event.payload.details),
             ...await activityToastIdentity(db, event.companyId, event.payload) } };
         }
         return event;
@@ -349,10 +352,16 @@ export function setupLiveEventsWebSocketServer(
         // A handoff can attach the first case to a task. Its already-authorized
         // task identity lets an empty cases panel refresh without exposing content.
         ...(payload.entityType === "case" && String(payload.action).startsWith("case.handoff_") && issueId ? { issueId } : {}),
+        // A closed boolean derived from details, so task pickers can tell a
+        // created, deleted, hidden or renamed task from routine progress.
+        ...(payload.entityType === "issue"
+          ? { taskIdentityChanged: issueActivityChangesTaskIdentity(payload.action, payload.details) }
+          : {}),
         // The task read check above authorizes attribution, but not arbitrary details.
         ...(issueId ? await activityToastIdentity(db, event.companyId, payload) : {}),
       } };
       if (event.type === "agent.status") return { ...event, payload: { agentId: payload.agentId, status: payload.status } };
+      if (event.type === "agent.runtime_state.updated") return { ...event, payload: { agentId: payload.agentId } };
       if (event.type === "external_object.updated") return { ...event, payload: { externalObjectId: payload.externalObjectId } };
       if (event.type.startsWith("plugin.")) return event;
       return null;
@@ -375,11 +384,12 @@ export function setupLiveEventsWebSocketServer(
       onError: err => logger.warn({ err, companyId: context.companyId }, "live event authorization failed"),
     });
     const unsubscribe = subscribeCompanyLiveEvents(context.companyId, event => delivery.enqueue(event));
+    const unsubscribeInvalidation = opts.subscribeInvalidation?.(context.companyId, delivery.requestResync);
     socket.on("message", (data, isBinary) => {
       if (isBinary) { socket.close(1003, "text messages required"); return; }
       delivery.receive(data.toString());
     });
-    cleanupByClient.set(socket, () => { unsubscribe(); delivery.dispose(); });
+    cleanupByClient.set(socket, () => { unsubscribe(); unsubscribeInvalidation?.(); delivery.dispose(); });
     aliveByClient.set(socket, true);
 
     socket.on("pong", () => {

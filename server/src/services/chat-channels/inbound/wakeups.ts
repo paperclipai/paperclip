@@ -1,5 +1,7 @@
+import { notifyChatInboundWakeNotices } from "../../chat-inbound-wake-notice-notifications.js";
 import { DELIVERY_PROCESSING_STALE_MS } from "./delivery-ledger.js";
 import type { EndpointRow, DbOrTransaction } from "../runtime-types.js";
+import { notifyChatRunMilestones } from "../../chat-run-milestone-notifications.js";
 import { notifyChatDeliveryWork } from "../../chat-work-notifications.js";
 import { enqueueFastResponse } from "../../fast-responses.js";
 import { and, eq, sql } from "drizzle-orm";
@@ -110,6 +112,11 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
           );
         }
         await notifyChatDeliveryWork(tx);
+        if (action.status === "processed") {
+          await notifyChatRunMilestones(tx, { companyId: action.companyId, issueId: String(action.payload.issueId) });
+        } else if (action.status === "failed") {
+          await notifyChatInboundWakeNotices(tx, { companyId: action.companyId, issueId: String(action.payload.issueId) });
+        }
         const acceptedAt = new Date();
         const accepted = await tx
           .update(chatDeliveries)
@@ -249,6 +256,11 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
     const settle = async (status: string, result: Record<string, unknown>) => {
       const changed = await db.transaction(async (tx) => {
         await notifyChatDeliveryWork(tx);
+        if (status === "processed") {
+          await notifyChatRunMilestones(tx, { companyId: claimed.companyId, issueId: request!.issueId });
+        } else if (status === "failed" && request) {
+          await notifyChatInboundWakeNotices(tx, { companyId: claimed.companyId, issueId: request.issueId });
+        }
         const changed = await tx
           .update(chatActions)
           .set({ status, result, updatedAt: new Date() })

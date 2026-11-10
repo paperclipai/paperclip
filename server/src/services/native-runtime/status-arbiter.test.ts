@@ -44,6 +44,35 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("completes a reviewer's done report from its own recorded final-stage approval", () => {
+    // Retained live failure: the reviewer approved its stage, then cited free-text
+    // evidence; the report was graded as incomplete and the task reopened.
+    const freeText = assessment({ objectiveSatisfied: false, allCriteriaSatisfied: false, verificationPassed: false });
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review" }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "completion_evidence_incomplete" });
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .toMatchObject({ toStatus: "done", reasonCode: "execution_stage_approved" });
+    // The decision authorizes completion only for a clean done report.
+    expect(arbitrate({ assessment: { ...freeText, hasBlockingRemainingWork: true }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ assessment: { ...freeText, hasFailedVerification: true }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ assessment: { ...freeText, reportedDisposition: "needs_review" }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    // A still-pending stage keeps governing the task.
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review", executionStageApprovedByRun: true, governanceGate: { kind: "execution_stage", id: "run" } }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "governed_gate_pending" });
+  });
+  it("cannot complete an explicitly required quality review from claims or file evidence", () => {
+    expect(arbitrate({ completionClaimPolicyAccepted: true, requiredQualityReviewSatisfied: false }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });
+    expect(arbitrate({ completionClaimPolicyAccepted: false, requiredQualityReviewSatisfied: false }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });
+    expect(arbitrate({ requiredQualityReviewSatisfied: true })).toMatchObject({ toStatus: "done" });
+    expect(arbitrate()).toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ requiredQualityReviewSatisfied: false, governanceGate: { kind: "interaction", id: "quality" } }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "governed_gate_pending" });
+  });
   it("waits on a published external review without creating human attention", () => {
     const wait = assessment({ reportedDisposition: "yielded",
       continuation: { kind: "response_wake", summary: "Wait for the PR update", idempotencyKey: "pr-wait" } });
@@ -65,6 +94,18 @@ describe("native status authority", () => {
       statusAction: "preserve", toStatus: "in_progress", reasonCode: "case_handoff_waiting_for_release",
       effects: [{ kind: "release_checkout" }],
     });
+  });
+
+  it("preserves the task status after a context compaction run", () => {
+    for (const priorIssueStatus of ["in_progress", "in_review", "blocked", "todo"] as const) {
+      expect(arbitrate({
+        contextCompactionRun: true,
+        priorIssueStatus,
+        assessment: assessment({ reportedDisposition: "yielded", objectiveSatisfied: false, allCriteriaSatisfied: false }),
+      })).toMatchObject({
+        statusAction: "preserve", toStatus: priorIssueStatus, reasonCode: "context_compaction_status_preserved", effects: [],
+      });
+    }
   });
 
   it("keeps workspace repair ahead of an accepted case handoff", () => {

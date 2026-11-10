@@ -1,3 +1,4 @@
+import { makeDirectoryTreeRemovable } from "./directory-cleanup.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, upgradeArtifactKey } from "./upgrade-artifacts.js";
 import { recoverWorkerTiming } from "./worker-timing.js";
 import { openEvalOperations, type EvalOperations } from "./operations.js";
@@ -5,13 +6,18 @@ import { readRecoveredFeedback } from "./feedback-recovery.js";
 import { readInterruptedAttemptTrace } from "./trace-recovery.js";
 import { EVAL_OBSERVABILITY_SECRET_NAMES, evalBraintrustConfig, finalizeEvalAttemptTrace } from "./braintrust.js";
 import { finalizeEvalAttemptThroughRelay } from "./eval-finalization-relay.js";
-import { runnerE2EPlaywrightInvocation, runnerE2EPlaywrightShutdownSignal } from "./web-server-command.js";
+import { runnerE2EPlaywrightCaseTimeoutMs, runnerE2EPlaywrightInvocation, runnerE2EPlaywrightShutdownSignal, runnerE2EPlaywrightWatchdogMs } from "./web-server-command.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { assertInstalledCliSelection, assertInstalledStartupOnly, verifyInstalledCli } from "./installed-cli.js";
 import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
-import { createRunnerE2ETemporaryRoot } from "./server-config.js";
+import { createRunnerE2ETemporaryRoot, keepInstance } from "./server-config.js";
+import { createExternalControllerDatabase } from "./external-controller-database.js";
 import { createHash, randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
+import {
+  AGENT_FILESYSTEM_SANDBOX_ENV, agentFilesystemSandboxApplies, agentFilesystemSandboxConfig, agentTemporaryParent,
+  defaultPlaywrightCacheDirectory, playwrightCacheDirectory,
+} from "./agent-filesystem-sandbox.js";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { createRequire } from "node:module";
@@ -19,7 +25,6 @@ import os from "node:os";
 import path from "node:path";
 import {
   access,
-  chmod,
   cp,
   lstat,
   mkdir,
@@ -32,8 +37,13 @@ import {
 } from "node:fs/promises";
 import { isImmutableDaytonaImage, runnerMatrix } from "./catalog.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
-import { packageEvidence } from "./evidence.js";
+import { packageEvidence, publishRunnerE2EAttemptEvidence } from "./evidence.js";
+import { prepareRunnerE2ECampaignDirectory, resolveRunnerE2EResultsRoot } from "./results-root.js";
+import { privateCellEvidenceOwner } from "./manual-private-report-assets.js";
+import { readManualPrivateHandoff, sealManualResultEvidence, preserveOriginalFrameworkResult, sealStandardOriginalEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
+import { requiresPrivateManualEvidence } from "./manual-private-retention.js";
 import { copySharedEvidence } from "./shared-evidence.js";
+import { dropDuplicatePlaywrightOutput } from "./private-report-copies.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { mustPreserveRecoveryState, shouldKeepFailedDiagnostics } from "./cleanup-verification.js";
 import { effectiveAutomaticRetryLimit, executeWithAutomaticRetry } from "./automatic-retry.js";
@@ -59,6 +69,7 @@ import {
   buildMatrixJobs,
   parseRunnerSelectors,
   RunnerSelectorError,
+  selectorArgumentsWithEnvironment,
   selectRunnerExecutions,
 } from "./selectors.js";
 import { resolveRunnerE2ESource } from "./source.js";
@@ -89,7 +100,9 @@ import {
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const localEnvPath = path.join(repositoryRoot, ".env.runner-e2e.local");
-const resultsRoot = path.join(repositoryRoot, "tests/runner-e2e/results");
+let resultsRoot = path.join(repositoryRoot, "tests/runner-e2e/results");
+const manualEvidenceSecrets = new Set<string>();
+let manualPrivateHandoff: ManualPrivateHandoff | undefined;
 const activeProcessGroups = new Set<number>();
 const activeProcessCleanup = new Map<number, Promise<string | null>>();
 const activeProcessTerminators = new Map<number, () => void>();
@@ -111,17 +124,6 @@ function secret(bytes = 32) {
   return randomBytes(bytes).toString("base64url");
 }
 
-async function makeDirectoryTreeRemovable(directory: string): Promise<void> {
-  await chmod(directory, 0o700);
-  const entries = await readdir(directory, { withFileTypes: true });
-  await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-      .map((entry) =>
-        makeDirectoryTreeRemovable(path.join(directory, entry.name)),
-      ),
-  );
-}
 
 function stopProcessGroup(pid: number, signal: NodeJS.Signals = "SIGTERM") {
   try {
@@ -478,6 +480,8 @@ async function runAttempt(input: {
       "One isolated runner E2E harness cannot mix profiles or environments",
     );
   }
+  if (process.env.GITHUB_ACTIONS === "true" && !input.operations && executions.some(candidate => requiresPrivateManualEvidence(candidate.id)) && !manualPrivateHandoff) throw new Error("Sensitive manual evidence requires verified restricted retention before setup");
+  await prepareRunnerE2ECampaignDirectory(resultsRoot, campaignId);
   const upgrades = await readUpgradeArtifacts(process.env[upgradeArtifactKey]);
   if (upgrades) {
     // All attempts and the browser use A's installed fixture admission. The
@@ -492,19 +496,21 @@ async function runAttempt(input: {
   const installedPlugin = await verifyInstalledDaytonaPlugin(process.env, executions);
   const startedAtMs = Date.now();
   const sharedMemoryBaseline = snapshotDarwinSharedMemory();
-  const temporaryParent = await realpath(os.tmpdir());
+  const sandboxedAgents = agentFilesystemSandboxApplies({ platform: process.platform, executions, installedRelease: Boolean(installedCli) });
+  const temporaryParent = agentTemporaryParent(sandboxedAgents);
   const temporaryRoot = await createRunnerE2ETemporaryRoot(temporaryParent);
+  const privateDir = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "capture") : path.join(temporaryRoot, "artifacts-private");
   const publishedResults: RunnerE2EResult[] = [];
   const publishedResultPaths = new Map<string, string>();
   let attemptSecrets: string[] = [];
   let processCleanupFailed = false;
   let startupReceiptPath: string | undefined;
+  let externalDatabase: Awaited<ReturnType<typeof createExternalControllerDatabase>> | undefined;
   let gateway: Awaited<ReturnType<EvalOperations["start"]>> | undefined;
   const rawCleanupResults: Array<{ cleanup: string; synthetic: boolean; status: string }> = [];
   try {
     const paperclipHome = path.join(temporaryRoot, "paperclip-home");
     const workspace = path.join(temporaryRoot, "workspace");
-    const privateDir = path.join(temporaryRoot, "artifacts-private");
     const instanceId = `runner-e2e-${randomBytes(8).toString("hex")}`;
     const configPath = path.join(
       paperclipHome,
@@ -513,6 +519,11 @@ async function runAttempt(input: {
       "config.json",
     );
     const port = await reserveRunnerE2EServerPort();
+    if (process.env.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL) {
+      externalDatabase = await createExternalControllerDatabase({
+        adminUrl: process.env.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL, temporaryRoot, configPath, serverPort: port,
+      });
+    }
     await Promise.all([
       mkdir(paperclipHome, { recursive: true }),
       mkdir(workspace, { recursive: true }),
@@ -541,12 +552,20 @@ async function runAttempt(input: {
     };
     const credentials = normalizedSecrets(Object.values(credentialSources));
     attemptSecrets = credentials;
+    if (manualPrivateHandoff) for (const credential of credentials) manualEvidenceSecrets.add(credential);
     if (installedCli) await writeFile(path.join(privateDir, "installed-cli-admission.json"), `${JSON.stringify(installedCli, null, 2)}\n`, { mode: 0o600 });
     if (installedPlugin) await writeFile(path.join(privateDir, "installed-daytona-plugin-admission.json"), `${JSON.stringify(installedPlugin, null, 2)}\n`, { mode: 0o600 });
     const runnerBinary = installedCli ? undefined : resolvePaperclipRunnerBinaryForHarness(
       executions,
       repositoryRoot,
     );
+    const agentFilesystemSandbox = agentFilesystemSandboxConfig({
+      platform: process.platform, env: process.env, executions, repositoryRoot, temporaryRoot, privateDir,
+      evidenceRoot: manualPrivateHandoff?.root, installedRelease: Boolean(installedCli),
+      instanceRoot: path.join(paperclipHome, "instances", instanceId),
+    });
+    // Playwright's default cache holds compiled graders in the shared /tmp.
+    if (sandboxedAgents) await rm(defaultPlaywrightCacheDirectory(), { recursive: true, force: true });
     const childEnv: NodeJS.ProcessEnv = {
       ...buildRunnerE2EProcessEnvironment(process.env, executions),
       PATH: providerPath,
@@ -561,6 +580,8 @@ async function runAttempt(input: {
       PAPERCLIP_RUNNER_E2E_PORT: String(port),
       PAPERCLIP_RUNNER_E2E_TEMP_ROOT: temporaryRoot,
       PAPERCLIP_RUNNER_E2E_PRIVATE_DIR: privateDir,
+      [AGENT_FILESYSTEM_SANDBOX_ENV]: agentFilesystemSandbox ? JSON.stringify(agentFilesystemSandbox) : undefined,
+      PWTEST_CACHE_DIR: playwrightCacheDirectory(temporaryRoot),
       PAPERCLIP_RUNNER_E2E_WORKSPACE: workspace,
       PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(privateDir, "server.log"),
       PAPERCLIP_RUNNER_BINARY: runnerBinary,
@@ -574,9 +595,9 @@ async function runAttempt(input: {
         Math.max(
           ...executions.map(
             (candidate) =>
-              candidate.task.attemptTimeoutMs[candidate.environment.id],
+              runnerE2EPlaywrightCaseTimeoutMs(candidate.task.flow, candidate.task.attemptTimeoutMs[candidate.environment.id]),
           ),
-        ) + 90_000,
+        ),
       ),
       PAPERCLIP_HOME: paperclipHome,
       PAPERCLIP_INSTANCE_ID: instanceId,
@@ -608,14 +629,7 @@ async function runAttempt(input: {
     const watchdog =
       options.ui || options.debug
         ? null
-        : executions.reduce(
-            (total, candidate) =>
-              total +
-              candidate.task.attemptTimeoutMs[candidate.environment.id] +
-              90_000,
-            0,
-          ) +
-          5 * 60_000;
+        : runnerE2EPlaywrightWatchdogMs(executions);
     const processResult = await runProcess(
       runnerE2EPlaywrightInvocation(repositoryRoot, playwrightArgs),
       childEnv,
@@ -740,7 +754,7 @@ async function runAttempt(input: {
       }
     }
     for (const [index, candidate] of executions.entries()) {
-      let result = {
+      let result: RunnerE2EResult = {
         ...results[index],
         accountingIdentity: { campaignId: accountingCampaignId, attemptId: accountingAttemptId },
       };
@@ -798,7 +812,6 @@ async function runAttempt(input: {
         }
       }
       const casePrivateDir = path.join(privateDir, "cases", candidate.task.id);
-      const resultPath = path.join(casePrivateDir, "result.json");
       const uploadDir = path.join(
         resultsRoot,
         campaignId,
@@ -820,40 +833,61 @@ async function runAttempt(input: {
           originalResult: { status: original.status, failureClass: original.failureClass, error: original.error },
         }, credentials), null, 2)}\n`, { mode: 0o600 });
       }
-      await writeFile(
-        resultPath,
-        `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
-        "utf8",
-      );
-      let evidence = await packageEvidence({
-        privateDir: casePrivateDir,
-        uploadDir,
-        secrets: credentials,
-        expectPassScreenshot: result.status === "passed",
-      });
-      if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
-        result = {
-          ...result,
-          status: "failed",
-          failureClass:
-            evidence.leaks.length > 0
-              ? "secret_leak"
-              : "permanent_infrastructure",
-          error:
-            evidence.leaks.length > 0
-              ? `Secret leak rejected from evidence: ${evidence.leaks.map((leak) => leak.file).join(", ")}`
-              : `Required evidence missing: ${evidence.missing.join(", ")}`,
-        };
+      const resultPath = path.join(casePrivateDir, "result.json");
+      if (manualPrivateHandoff) {
+        await preserveOriginalFrameworkResult(casePrivateDir);
         await writeFile(
           resultPath,
           `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
           "utf8",
         );
-        evidence = await packageEvidence({
+        // html-report/data already holds identical bytes of each failure trace
+        // and video; drop the playwright-output copies so failures fit the
+        // private evidence allowance with their HTML report still viewable.
+        await dropDuplicatePlaywrightOutput(casePrivateDir);
+        let evidence = await packageEvidence({
           privateDir: casePrivateDir,
           uploadDir,
           secrets: credentials,
-          expectPassScreenshot: false,
+          expectPassScreenshot: result.status === "passed",
+          privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
+        });
+        const originalEvidence = evidence, originalFeaturePassed = result.status === "passed";
+        if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
+          result = {
+            ...result,
+            status: "failed",
+            failureClass:
+              evidence.leaks.length > 0
+                ? "secret_leak"
+                : "permanent_infrastructure",
+            error:
+              evidence.leaks.length > 0
+                ? `Secret leak rejected from evidence: ${evidence.leaks.map((leak) => leak.file).join(", ")}`
+                : `Required evidence missing: ${evidence.missing.join(", ")}`,
+          };
+          await writeFile(
+            resultPath,
+            `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
+            "utf8",
+          );
+          evidence = await packageEvidence({
+            privateDir: casePrivateDir,
+            uploadDir,
+            secrets: credentials,
+            expectPassScreenshot: false,
+            privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
+          });
+        }
+        await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
+          executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
+      } else {
+        result = await publishRunnerE2EAttemptEvidence({
+          result,
+          resultsRoot,
+          privateDir: casePrivateDir,
+          uploadDir,
+          secrets: credentials,
         });
       }
       console.log(
@@ -871,12 +905,16 @@ async function runAttempt(input: {
     try { await gateway?.close(); } catch (error) { gatewayCleanupError = error; }
     if (!processCleanupFailed) reapNewDetachedDarwinSharedMemory(sharedMemoryBaseline);
     let cleanupError: unknown;
-    const resourceAdmissionStarted = await access(path.join(temporaryRoot, "artifacts-private", "resource-admission-started"))
+    const resourceAdmissionStarted = await access(path.join(privateDir, "resource-admission-started"))
       .then(() => true).catch((error: NodeJS.ErrnoException) => error.code !== "ENOENT");
-    if (mustPreserveRecoveryState({ processCleanupFailed, resourceAdmissionStarted, results: rawCleanupResults })) {
+    const preserveRecovery = mustPreserveRecoveryState({ processCleanupFailed, resourceAdmissionStarted, results: rawCleanupResults });
+    if (!preserveRecovery) {
+      try { await externalDatabase?.cleanup(); } catch (error) { cleanupError = error; }
+    }
+    if (preserveRecovery || cleanupError) {
       // Remote allocation cleanup is journaled in this instance's database.
       // Deleting it after the controller exits would strand uncertain creates.
-      await chmod(temporaryRoot, 0o700);
+      await keepInstance(temporaryRoot, { owner: "runner-e2e-launch", reason: "recovery_state" });
       cleanupError = new Error(`Preserving private recovery state after unconfirmed cleanup: ${temporaryRoot}`);
     } else if (shouldKeepFailedDiagnostics({
       enabled: process.env.PAPERCLIP_RUNNER_E2E_KEEP_FAILED_PRIVATE === "1",
@@ -885,7 +923,7 @@ async function runAttempt(input: {
     })) {
       // Explicit diagnosis only. Confirmed resource cleanup stays confirmed;
       // keep private traces for investigation without publishing provider data.
-      await chmod(temporaryRoot, 0o700);
+      await keepInstance(temporaryRoot, { owner: "runner-e2e-launch", reason: "keep" });
       console.warn(`Retained private failed-case diagnostics: ${temporaryRoot}`);
     } else if (
       temporaryRoot.startsWith(`${temporaryParent}${path.sep}paperclip-runner-e2e-`)
@@ -1032,20 +1070,22 @@ async function runWithConcurrency<T, R>(
 }
 
 async function main() {
-  const args = process.argv.slice(2);
+  const args = selectorArgumentsWithEnvironment(process.argv.slice(2));
   if (args.includes("--target-config") || args.includes("product-journeys")) {
     const { launchProductJourneys } = await import("./product-journeys/launch.js");
     return launchProductJourneys(args, repositoryRoot);
   }
   let options: ReturnType<typeof parseRunnerSelectors>;
   try {
-    options = parseRunnerSelectors(process.argv.slice(2));
+    options = parseRunnerSelectors(args);
   } catch (error) {
     if (error instanceof RunnerSelectorError)
       throw new Error(`${error.message}\nUse --list to inspect valid cells.`);
     throw error;
   }
   const executions = selectRunnerExecutions(options, runnerMatrix);
+  manualPrivateHandoff = await readManualPrivateHandoff(process.env, executions.map(execution => execution.id));
+  resultsRoot = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "results") : resolveRunnerE2EResultsRoot(repositoryRoot);
   if (options.installedStartupOnly) {
     assertInstalledStartupOnly(process.env, executions, options);
     assertRunnerE2EPrerequisites(executions);
@@ -1071,6 +1111,14 @@ async function main() {
   }
 
   if (process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST && executions.some(execution => execution.task.flow === "provider_connection")) throw new Error("Provider connection campaign has no budgeted routing qualification");
+  if (executions.some(execution => execution.task.flow === "antigravity_agent_journey")) {
+    if (options.connectionConfig || options.githubReviewConfig || options.provisionGitHubRepository) throw new Error("Use --antigravity-journey-config for the Antigravity journey.");
+    const { runAntigravityJourneyCampaign } = await import("./antigravity-journey-launch.js");
+    await runAntigravityJourneyCampaign({ executions, catalog: runnerMatrix, configFile: options.antigravityJourneyConfig, repositoryRoot,
+      preflight: options.antigravityJourneyPreflight, recoverFile: options.antigravityJourneyRecover });
+    return;
+  }
+  if (options.antigravityJourneyConfig || options.antigravityJourneyPreflight || options.antigravityJourneyRecover) throw new Error("Antigravity journey options require its explicit registered cell.");
   if (executions.some(execution => execution.task.flow === "github_review_journey")) {
     if (options.connectionConfig) throw new Error("Use --github-review-config for the GitHub journey.");
     const { runGitHubReviewCampaign } = await import("./github-review-launch.js");
@@ -1094,8 +1142,9 @@ async function main() {
     process.env.PAPERCLIP_E2E_CAMPAIGN_ID ??
       `local-${new Date().toISOString().replace(/[:.]/g, "-")}`,
   );
-  const summaryDir = path.join(resultsRoot, campaignId);
-  await mkdir(summaryDir, { recursive: true });
+  await loadLocalEnvironment(process.env);
+  resultsRoot = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "results") : resolveRunnerE2EResultsRoot(repositoryRoot);
+  const summaryDir = await prepareRunnerE2ECampaignDirectory(resultsRoot, campaignId);
   if (executions.some(execution => execution.suite.id === "native-completion")) {
     process.env[NATIVE_COMPLETION_PREFLIGHT_ENV] = prepareNativeCompletionPreflight(summaryDir);
   }
@@ -1106,7 +1155,6 @@ async function main() {
     process.env[STOCK_PREFLIGHT_ENV] = prepareStockHarnessPreflight(summaryDir);
   }
 
-  await loadLocalEnvironment(process.env);
   assertRemoteNativeEvidencePrerequisites(executions, process.env);
   const missingCredentials = process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST ? [] : [
     ...new Set(
@@ -1226,4 +1274,6 @@ async function main() {
 await main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
-});
+}).finally(async () => {
+  if (manualPrivateHandoff) await sealManualResultEvidence(manualPrivateHandoff, [...manualEvidenceSecrets]);
+}).catch(() => { process.stderr.write("Private evidence finalization failed; no public fallback\n"); process.exitCode = 1; });

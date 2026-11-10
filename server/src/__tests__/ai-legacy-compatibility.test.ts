@@ -52,7 +52,7 @@ it("reconnect detaches an indexed credential without changing unadopted legacy a
   const input = { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: { provider: "anthropic", method: "api_key", mode: "delegated", connectionId: connection.id, grantId: connection.grantId } as const, config: {}, allowLegacyValidation: true };
   const before = await prepareManagedAiRuntime(db, input);
   await before.cleanup();
-  const resolve = () => vault.resolveUserSecretValue(companyId, { definitionId: definition.id, responsibleUserId: owner, required: true, version: "latest" }, { companyId, responsibleUserId: owner, actorType: "system" });
+  const resolve = () => vault.resolveUserSecretValue(companyId, { definitionId: definition.id, responsibleUserId: owner, required: true, version: "latest" }, { consumerType: "agent", consumerId: agentId, responsibleUserId: owner, actorType: "system" });
   expect((await resolve())?.value).toBe("fixture-original");
   await service.save(companyId, owner, { provider: "anthropic", method: "api_key", name: connection.name, ownership: "personal", agentIds: [], allAgents: true, connectionId: connection.id, apiKey: "fixture-new-account" }, "fixture-new-account");
   expect((await resolve())?.value).toBe("fixture-original");
@@ -155,7 +155,7 @@ it("isolates sign-in and refresh from the host, survives restart, and completes 
   expect(await readFile(path.join(hostHome, "auth.json"), "utf8")).toBe(auth("legacy"));
   const next = await prepareManagedAiRuntime(db, input);
   expect(JSON.parse(await readFile(path.join(String(next.config.env.CODEX_HOME), "auth.json"), "utf8")).tokens.refresh_token).toBe("refresh-rotated-independent");
-  expect(next.config.model).toBe(input.config.model);
+  expect((next.config as Record<string, unknown>).model).toBe(input.config.model);
   await next.cleanup();
   // Cancellation after successful completion must not revoke the saved account.
   await login.cancel(companyId, owner, attempt.sessionId);

@@ -1,3 +1,4 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { decisionTargetService, notifyDecisionTargetWork } from "./decision-targets.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, gte, inArray, sql } from "drizzle-orm";
@@ -239,7 +240,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       ...(input.additionalTargetSnapshots ?? {}),
     };
     const id = randomUUID();
-    await notifyDecisionCreated(dbOrTx);
+    await notifyDecisionCreated(dbOrTx, { companyId: input.companyId, sourceId: id });
     await notifyDecisionTargetWork(dbOrTx, `decision:${id}`);
     const [created] = await dbOrTx.insert(decisions).values({ id, companyId: input.companyId, bundleId: input.bundleId ?? null,
       originAgentId: input.agentId, originIssueId: provenance.issueId, originRunId: input.runId, ruleKey: input.ruleKey ?? null,
@@ -475,6 +476,27 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const deniedOrigin = originAccess.find((access) => !access.allowed);
         if (!userAccess.allowed || deniedOrigin) return finish("failed", "deny_decision_intersection",
           { reason: "deny_decision_intersection", userReason: userAccess.reason, originReason: deniedOrigin?.reason ?? null });
+        const assignment = effect.type === "assign_issue" ? effect : effect.type === "create_issue" ? effect.draft : null;
+        await assertAgentInteraction(tx, {
+          companyId: decision.companyId, actorAgentId: decision.originAgentId,
+          operation: assignment ? "assign" : effect.type === "comment_on_issue" ? "comment" : "edit",
+          issueId: effect.type === "create_issue" ? undefined : target.id,
+          targetAgentId: assignment?.assigneeAgentId, assigneeUserId: assignment?.assigneeUserId,
+          parentIssueId: effect.type === "create_issue" ? effect.draft.parentId ?? target.id : undefined,
+          texts: [interpolate(JSON.stringify(effect), decision.inputValues ?? {})], lock: true,
+        });
+        const effectComment = effect.type === "cancel_issue_tree" ? effect.reasonComment
+          : "comment" in effect ? effect.comment : undefined;
+        if (effectComment) await assertAgentInteraction(tx, {
+          companyId: decision.companyId, actorAgentId: decision.originAgentId,
+          operation: "comment", issueId: target.id, texts: [interpolate(effectComment, decision.inputValues ?? {})], lock: true,
+        });
+        if (effect.type === "cancel_issue_tree") {
+          for (const child of referencedIssues.filter(item => item.id !== target.id)) {
+            await assertAgentInteraction(tx, { companyId: decision.companyId, actorAgentId: decision.originAgentId,
+              operation: "edit", issueId: child.id, lock: true });
+          }
+        }
         if (effect.staleness === "strict") {
           const staleReference = referencedIssues.some((item) => directReferencedIds.has(item.id) &&
             snapshots[item.id]?.updatedAt !== item.updatedAt.toISOString());
@@ -486,7 +508,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const values = decision.inputValues ?? {};
         let result: Record<string, unknown>;
         if (effect.type === "comment_on_issue") {
-          const comment = await svc.addComment(target.id, interpolate(effect.bodyMarkdown, values), { userId: decidedByUserId }, undefined, tx);
+          const comment = await svc.addComment(target.id, interpolate(effect.bodyMarkdown, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { commentId: comment.id };
         } else if (effect.type === "update_issue_status") {
           const updated = await svc.update(
@@ -496,7 +518,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             postCommitActivityPublications,
             postCommitIssueActions,
           );
-          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
+          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { issueId: updated?.id, status: updated?.status };
         } else if (effect.type === "assign_issue") {
           const updated = await svc.update(
@@ -510,7 +532,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             postCommitActivityPublications,
             postCommitIssueActions,
           );
-          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
+          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { issueId: updated?.id };
         } else if (effect.type === "resolve_blocker") {
           const current = await tx.select({ id: issueRelations.issueId }).from(issueRelations).where(and(eq(issueRelations.companyId, decision.companyId), eq(issueRelations.relatedIssueId, target.id), eq(issueRelations.type, "blocks")));
@@ -543,7 +565,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
               postCommitIssueActions,
             );
           }
-          await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId }, undefined, tx);
+          await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { cancelledIssueIds: cancelled };
         }
         const activity = await effectAudit(tx as unknown as Db, decision, execution.id, effect, "executed", decidedByUserId, originResponsibleUserId, result);
@@ -581,7 +603,8 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     return attempt;
   }
 
-  async function settleInvalidEffectOutcome(id: string) {
+  async function settleInvalidEffectOutcome(decision: typeof decisions.$inferSelect) {
+    const id = decision.id;
     const publications: ActivityPublication[] = [];
     await writeDecisionChange(db, async tx => {
       const [current] = await tx.select().from(decisions).where(eq(decisions.id, id)).for("update");
@@ -601,14 +624,14 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         action: "decision.recovery_failed", entityType: "decision", entityId: id,
         details: { reason, executionStatus, chosenOptionId: current.chosenOptionId, decidedByUserId: current.decidedByUserId },
       }, publications);
-    });
+    }, { companyId: decision.companyId, sourceId: id });
     for (const publication of publications) publishActivity(publication);
     return outcome(id);
   }
 
   async function executeDecisionEffects(decision: typeof decisions.$inferSelect, userActor: AuthorizationActor) {
     const option = decision.options.find((item) => item.id === decision.chosenOptionId);
-    if (!option || !decision.decidedByUserId) return settleInvalidEffectOutcome(decision.id);
+    if (!option || !decision.decidedByUserId) return settleInvalidEffectOutcome(decision);
     const run = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, decision.originRunId)).then((rows) => rows[0] ?? null);
     const metadata = decision.metadata as Record<string, unknown>;
     if (metadata.kind === "attention_archive_proposal") {
@@ -618,7 +641,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         targetSnapshots: decision.targetSnapshots as Record<string, Snapshot>,
       }), decision.signedSpec)) {
         await writeDecisionChange(db, async tx => tx.update(decisions).set({ executionStatus: "failed", updatedAt: new Date(), metadata: { ...metadata, archiveProposalError: "invalid_signature", ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } })
-          .where(and(eq(decisions.id, decision.id), eq(decisions.executionStatus, "running"))));
+          .where(and(eq(decisions.id, decision.id), eq(decisions.executionStatus, "running"))), { companyId: decision.companyId, sourceId: decision.id });
         return outcome(decision.id);
       }
       if (option.id === "archive") {
@@ -629,7 +652,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const manifestHash = manifest ? hashAttentionArchiveManifest(manifest) : null;
         if (!manifest || manifestHash !== metadata.manifestHash) {
           await writeDecisionChange(db, async tx => tx.update(decisions).set({ executionStatus: "failed", updatedAt: new Date(), metadata: { ...metadata, archiveProposalError: "manifest_mismatch", ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } })
-            .where(and(eq(decisions.id, decision.id), eq(decisions.executionStatus, "running"))));
+            .where(and(eq(decisions.id, decision.id), eq(decisions.executionStatus, "running"))), { companyId: decision.companyId, sourceId: decision.id });
           return outcome(decision.id);
         }
         const originActor: AuthorizationActor = {
@@ -651,7 +674,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         } catch (error) {
           const message = error instanceof Error ? error.message : "archive_proposal_failed";
           await writeDecisionChange(db, async tx => tx.update(decisions).set({ executionStatus: "failed", updatedAt: new Date(), metadata: { ...metadata, archiveProposalError: message, ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } })
-            .where(and(eq(decisions.id, decision.id), eq(decisions.executionStatus, "running"))));
+            .where(and(eq(decisions.id, decision.id), eq(decisions.executionStatus, "running"))), { companyId: decision.companyId, sourceId: decision.id });
           return outcome(decision.id);
         }
       }
@@ -659,7 +682,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         executionStatus: "succeeded",
         updatedAt: new Date(),
         metadata: { ...metadata, ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) },
-      }).where(and(eq(decisions.id, decision.id), eq(decisions.executionStatus, "running"))));
+      }).where(and(eq(decisions.id, decision.id), eq(decisions.executionStatus, "running"))), { companyId: decision.companyId, sourceId: decision.id });
       return outcome(decision.id);
     }
     for (let index = 0; index < option.effects.length; index += 1) await executeEffect(decision, option.effects[index]!, index, userActor, decision.decidedByUserId, run?.responsibleUserId ?? null);
@@ -667,7 +690,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const successful = rows.filter((row) => row.status === "executed").length;
     const status = rows.every((row) => row.status === "executed") ? "succeeded" : successful ? "partial" : "failed";
     await writeDecisionChange(db, async tx => tx.update(decisions).set({ executionStatus: status, updatedAt: new Date(), metadata: { ...decision.metadata,
-      ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, decision.id), eq(decisions.executionStatus, "running"))));
+      ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, decision.id), eq(decisions.executionStatus, "running"))), { companyId: decision.companyId, sourceId: decision.id });
     return outcome(decision.id);
   }
 
@@ -706,7 +729,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         decideIdempotencyKey: input.idempotencyKey ?? null,
         ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}),
         ...(input.dismissed ? { dismissed: true, dismissReason: input.dismissReason ?? null } : {}) } })
-      .where(and(eq(decisions.id, current.id), eq(decisions.status, "open"))).returning());
+      .where(and(eq(decisions.id, current.id), eq(decisions.status, "open"))).returning(), { companyId: current.companyId, sourceId: current.id });
     if (!claimed) throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
     const run = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, claimed.originRunId)).then((rows) => rows[0] ?? null);
     await logActivity(db, { companyId: claimed.companyId, actorType: "system", actorId: "decision-executor", agentId: claimed.originAgentId, runId: claimed.originRunId,
@@ -724,7 +747,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       return (await get(id))!;
     }
     const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "cancelled", updatedAt: new Date(), metadata: { ...current.metadata,
-      ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning());
+      ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning(), { companyId: current.companyId, sourceId: id });
     if (!updated) throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
     await logActivity(db, { companyId: updated.companyId, actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId, action: "decision.cancelled", entityType: "decision", entityId: id });
     await continuations.deliver(updated.id);
@@ -738,7 +761,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     if (empty) return decide({ id, optionId: empty.id, decidedByUserId: userId, userActor, dismissed: true, dismissReason: reason });
     const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "decided", executionStatus: "succeeded", chosenOptionId: "dismissed", decidedByUserId: userId,
       decidedAt: new Date(), updatedAt: new Date(), metadata: { ...current.metadata, dismissed: true, dismissReason: reason ?? null,
-        ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning());
+        ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning(), { companyId: current.companyId, sourceId: id });
     if (!updated) throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
     await logActivity(db, { companyId: updated.companyId, actorType: "system", actorId: "decision-executor", agentId: updated.originAgentId,
       runId: updated.originRunId, responsibleUserIdOverride: userId, action: "decision.dismissed", entityType: "decision", entityId: updated.id,

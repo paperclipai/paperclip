@@ -1,6 +1,10 @@
+import { voiceInboundRetention } from "./voice-inbound-retention.js";
+import { voiceInboundCleanup } from "./voice-inbound-cleanup.js";
+import { notifyVoiceInbound } from "./voice-inbound-notifications.js";
+import { notifyVoiceChange } from "./voice-recovery-notifications.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, lte, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { chatEndpointResources, chatConversations, chatActions, chatEndpoints, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, chatVoiceSessions, activityLog, type Db } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET, LOW_TRUST_REVIEW_PRESET_VERSION, LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION } from "@paperclipai/shared";
@@ -119,7 +123,9 @@ export function voiceInboundService(db: Db, options: {
         if (prior) return prior;
         const recent = await tx.select({state: chatVoiceInboundCalls.state, expiresAt: chatVoiceInboundCalls.expiresAt}).from(chatVoiceInboundCalls).where(and(eq(chatVoiceInboundCalls.companyId, row.companyId), eq(chatVoiceInboundCalls.endpointId, row.id), gte(chatVoiceInboundCalls.createdAt, new Date(Date.now() - 3_600_000)))).limit(60);
         if (recent.length >= 60 || recent.filter(call => ["guest_intake", "awaiting_approval", "approving"].includes(call.state) && call.expiresAt.getTime() > Date.now()).length >= 10) throw conflict("This phone line has reached its incoming call limit. Try again later.");
-        const [admission] = await tx.insert(chatVoiceInboundCalls).values({companyId: row.companyId, endpointId: row.id, providerSessionId, state: line.guestIntake ? "guest_intake" : "awaiting_approval", approvalCode: String(randomInt(100000, 1000000)), generation: context.generation, credentialFingerprint: context.fingerprint, toolTokenHash: voiceTokenHash(capability), requestFingerprint: fingerprint, callerAuthority: line.guestIntake ? "guest_intake" : null, expiresAt: new Date(Date.now() + (line.guestIntake ? 600_000 : 120_000))}).onConflictDoNothing().returning();
+        const admissionId = randomUUID();
+        await notifyVoiceInbound(tx, { kind: "admission", id: admissionId });
+        const [admission] = await tx.insert(chatVoiceInboundCalls).values({id: admissionId, companyId: row.companyId, endpointId: row.id, providerSessionId, providerAccountId: event.organization_id, state: line.guestIntake ? "guest_intake" : "awaiting_approval", approvalCode: String(randomInt(100000, 1000000)), generation: context.generation, credentialFingerprint: context.fingerprint, toolTokenHash: voiceTokenHash(capability), requestFingerprint: fingerprint, callerAuthority: line.guestIntake ? "guest_intake" : null, expiresAt: new Date(Date.now() + (line.guestIntake ? 600_000 : 120_000))}).onConflictDoNothing().returning();
         return admission;
       });
       if (!existing || existing.requestFingerprint !== fingerprint || existing.toolTokenHash !== voiceTokenHash(capability) || !["awaiting_approval", "guest_intake"].includes(existing.state) || existing.expiresAt.getTime() <= Date.now()) throw forbidden("Incoming call is no longer pending");
@@ -150,10 +156,14 @@ export function voiceInboundService(db: Db, options: {
       }
       if (event.type === "call.report" || event.status && ["ended", "failed"].includes(event.status)) {
         if (session) {
+          await notifyVoiceChange(tx, { kind: "session", id: session.id });
           await tx.update(chatVoiceSessions).set({state: event.status === "failed" ? "failed" : "ended", endedAt: session.endedAt ?? new Date(), updatedAt: new Date()}).where(eq(chatVoiceSessions.id, session.id));
           await tx.insert(chatVoiceReports).values({companyId: row.companyId, sessionId: session.id}).onConflictDoUpdate({target: chatVoiceReports.sessionId, set: {nextCheckAt: new Date()}});
         }
-        if (admission) await tx.update(chatVoiceInboundCalls).set({state: "ended", updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, admission.id));
+        if (admission) {
+          await notifyVoiceInbound(tx, { kind: "admission", id: admission.id });
+          await tx.update(chatVoiceInboundCalls).set({state: "ended", cleanupConfirmedAt: new Date(), cleanupNextAttemptAt: null, updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, admission.id));
+        }
         await tx.insert(activityLog).values({companyId: row.companyId, actorType: "system", actorId: "speko-lifecycle", action: "voice.call.ended", entityType: session ? "voice_session" : "voice_inbound_call", entityId: session?.id ?? admission!.id, details: {endpointId: row.id}});
       }
       return true;
@@ -172,7 +182,7 @@ export function voiceInboundService(db: Db, options: {
       const [call] = await tx.select().from(chatVoiceInboundCalls).where(and(eq(chatVoiceInboundCalls.companyId, row.companyId), eq(chatVoiceInboundCalls.endpointId, row.id), eq(chatVoiceInboundCalls.providerSessionId, envelope.session_id))).for("update");
       const hash = voiceTokenHash(capability);
       if (!call || !timingSafeEqual(Buffer.from(hash), Buffer.from(call.toolTokenHash)) || context.generation !== call.generation || context.fingerprint !== call.credentialFingerprint) throw forbidden("Invalid incoming call credential");
-      if (call.expiresAt.getTime() <= Date.now() && ["guest_intake", "awaiting_approval", "approving"].includes(call.state)) { await tx.update(chatVoiceInboundCalls).set({state: "expired", updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, call.id)); return {authorization: "expired", status: "unavailable", updates: [], cursor: 0}; }
+      if (call.expiresAt.getTime() <= Date.now() && ["guest_intake", "awaiting_approval", "approving"].includes(call.state)) { await notifyVoiceInbound(tx, { kind: "admission", id: call.id }); await tx.update(chatVoiceInboundCalls).set({state: "expired", cleanupNextAttemptAt: null, updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, call.id)); return {authorization: "expired", status: "unavailable", updates: [], cursor: 0}; }
       if (call.state === "guest_intake") {
         const [line] = await tx.select().from(chatVoicePhoneLines).where(and(eq(chatVoicePhoneLines.companyId, row.companyId), eq(chatVoicePhoneLines.endpointId, row.id), eq(chatVoicePhoneLines.enabled, true), eq(chatVoicePhoneLines.guestIntake, true))).for("share");
         if (!line) throw forbidden("Guest intake is no longer enabled");
@@ -184,7 +194,9 @@ export function voiceInboundService(db: Db, options: {
           const task = await issueSvc.create(row.companyId, {id: taskId, title: "Incoming phone conversation", description: "Conversation with an unverified phone caller. The agent runs under a task-scoped low-trust policy. You are on a live phone call and must attempt to answer as quickly as possible. Immediately post a brief, caller-safe task comment explaining what you are doing, then find the answer and post the result on this task so it can be spoken to the caller. Continue working after the initial update; do not treat it as the final answer. Preserve the task-scoped low-trust policy and ordinary permissions.", status: "todo", priority: "medium", assigneeAgentId: row.assignedAgentId, executionWorkspaceSettings: {mode: "isolated_workspace", workspaceStrategy: {type: "cloud_sandbox"}, ...(line.lowTrustEnvironmentId ? {environmentId: line.lowTrustEnvironmentId} : {})}, originKind: "chat_channel", originId: row.id, idempotencyKey: `guest-intake:${call.id}`, sourceTrust: {preset: LOW_TRUST_REVIEW_PRESET, disposition: "quarantined", sourceIssueId: taskId}, executionPolicy: {mode: "normal", commentRequired: true, stages: [], reviewPreset, authorizationPolicy: {trustPreset: LOW_TRUST_REVIEW_PRESET, reviewPreset, trustBoundary: {mode: LOW_TRUST_REVIEW_PRESET, companyId: row.companyId, rootIssueId: taskId, issueIds: [taskId], allowedAgentIds: [row.assignedAgentId], allowedToolClasses: [], allowedSecretBindingIds: []}}}}, tx);
           const [resource] = await tx.insert(chatEndpointResources).values({companyId: row.companyId, endpointId: row.id, type: "direct_message", providerResourceId: threadId, label: "Incoming phone conversation", enabled: true, availability: "available"}).returning();
           await tx.insert(chatConversations).values({id: conversationId, companyId: row.companyId, endpointId: row.id, resourceId: resource.id, issueId: task.id, externalConversationId: threadId, externalThreadId: threadId, externalLabel: "Incoming phone conversation", isDirectMessage: true, communicationGuidance: [buildChatCommunicationGuidance({ provider: "speko", isDirectMessage: true, communicationInstructions: row.communicationInstructions }), "This conversation is its own low-trust task. Ask clarifications as brief task comments; the caller answers through submit_request follow-ups. Do not use ask_user_questions or create a protected human-input wait. Use only context supplied in this conversation; do not browse other company tasks, secrets or private tools. Spoken consent does not grant governed authority."].join("\n\n")});
-          const [session] = await tx.insert(chatVoiceSessions).values({companyId: row.companyId, endpointId: row.id, conversationId, issueId: task.id, assignedAgentId: row.assignedAgentId, callerId: `guest:${call.id}`, callerAuthority: "guest_intake", mode: "inbound_phone", state: "active", generation: call.generation, credentialFingerprint: call.credentialFingerprint, providerSessionId: call.providerSessionId, toolTokenHash: call.toolTokenHash, idempotencyKey: `guest:${call.id}`, requestFingerprint: call.requestFingerprint, createdAt: call.createdAt, expiresAt: call.expiresAt}).returning({id: chatVoiceSessions.id});
+          const sessionId = randomUUID();
+          await notifyVoiceChange(tx, { kind: "session", id: sessionId });
+          const [session] = await tx.insert(chatVoiceSessions).values({id: sessionId, companyId: row.companyId, endpointId: row.id, conversationId, issueId: task.id, assignedAgentId: row.assignedAgentId, callerId: `guest:${call.id}`, callerAuthority: "guest_intake", mode: "inbound_phone", state: "active", generation: call.generation, credentialFingerprint: call.credentialFingerprint, providerSessionId: call.providerSessionId, toolTokenHash: call.toolTokenHash, idempotencyKey: `guest:${call.id}`, requestFingerprint: call.requestFingerprint, createdAt: call.createdAt, expiresAt: call.expiresAt}).returning({id: chatVoiceSessions.id});
           await tx.update(chatVoiceInboundCalls).set({intakeIssueId: task.id, sessionId: session.id, updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, call.id));
           await tx.insert(activityLog).values({companyId: row.companyId, actorType: "system", actorId: "speko-inbound", action: "voice.low_trust_call.started", entityType: "issue", entityId: task.id, details: {callId: call.id, sessionId: session.id}});
         }
@@ -226,18 +238,33 @@ export function voiceInboundService(db: Db, options: {
       if (!["guest_intake", "awaiting_approval", "approving"].includes(row.state)) throw conflict("This incoming call is no longer waiting for approval");
       if (row.state === "approving" && (!input.approve || row.requestedIssueId !== (input.issueId ?? row.intakeIssueId ?? null))) throw conflict("This call is already being approved");
       if (input.issueId) await store.authorizeTask(tx, companyId, input.issueId, caller);
+      await notifyVoiceInbound(tx, { kind: "admission", id: row.id });
       const [changed] = await tx.update(chatVoiceInboundCalls).set({state: input.approve ? "approving" : row.state === "guest_intake" ? "ended" : "denied", approvedByUserId: caller.id, callerAuthority: caller.authority, requestedIssueId: input.issueId ?? row.intakeIssueId ?? null, updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, row.id)).returning();
       await tx.insert(activityLog).values({companyId, actorType: "user", actorId: caller.id, action: input.approve ? "voice.inbound.approval_started" : row.state === "guest_intake" ? "voice.low_trust_call.ended" : "voice.inbound.denied", entityType: "voice_inbound_call", entityId: row.id});
-      if (!input.approve && row.state === "guest_intake" && row.sessionId) await tx.update(chatVoiceSessions).set({state: "ending", updatedAt: new Date()}).where(and(eq(chatVoiceSessions.companyId, companyId), eq(chatVoiceSessions.id, row.sessionId)));
+      if (!input.approve && row.state === "guest_intake" && row.sessionId) {
+        await notifyVoiceChange(tx, { kind: "session", id: row.sessionId });
+        await tx.update(chatVoiceSessions).set({state: "ending", updatedAt: new Date()}).where(and(eq(chatVoiceSessions.companyId, companyId), eq(chatVoiceSessions.id, row.sessionId)));
+      }
       return changed;
     });
     if (admission.state === "approved") return projection(admission);
+    if (!input.approve) {
+      // The committed admission signal owns cleanup. Return the saved denial
+      // without waiting for provider account verification or physical hangup.
+      // Bound calls have already been handed to live-session recovery.
+      return projection(admission);
+    }
     const row = await endpoint(companyId, endpointId), credentials = await options.credentials(row, admission.credentialFingerprint);
     const client = provider(credentials.apiKey);
-    if (!input.approve) { await client.endSession(admission.providerSessionId).catch(() => undefined); return projection(admission); }
-    if ((await client.inspectSession(admission.providerSessionId)).endedAt) { await db.update(chatVoiceInboundCalls).set({state: "ended", updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, callId)); throw conflict("The caller already hung up"); }
+    if ((await client.inspectSession(admission.providerSessionId)).endedAt) {
+      await db.transaction(async tx => {
+        await notifyVoiceInbound(tx, { kind: "admission", id: callId });
+        await tx.update(chatVoiceInboundCalls).set({state: "ended", cleanupConfirmedAt: new Date(), cleanupNextAttemptAt: null, updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, callId));
+      });
+      throw conflict("The caller already hung up");
+    }
     const result = await options.start({companyId, endpointId, issueId: admission.requestedIssueId ?? undefined, caller, idempotencyKey: `inbound:${admission.id}`, maxDurationSeconds: 600, mode: "inbound_phone", providerSessionId: admission.providerSessionId, toolToken: token(row, admission.providerSessionId, admission.generation, credentials.signingSecret)});
-    [admission] = await db.update(chatVoiceInboundCalls).set({state: "approved", sessionId: result.session.id, updatedAt: new Date()}).where(and(eq(chatVoiceInboundCalls.id, callId), eq(chatVoiceInboundCalls.state, "approving"))).returning();
+    [admission] = await db.select().from(chatVoiceInboundCalls).where(and(eq(chatVoiceInboundCalls.id, callId), eq(chatVoiceInboundCalls.state, "approved"), eq(chatVoiceInboundCalls.sessionId, result.session.id)));
     if (!admission) throw conflict("This call ended during approval");
     return projection(admission);
   }
@@ -247,17 +274,24 @@ export function voiceInboundService(db: Db, options: {
     try { await db.transaction(tx => store.authorizeSession(tx, session.companyId, sessionId)); return true; }
     catch (error) { if (error instanceof Error && "status" in error && [403, 404].includes(Number(error.status))) return false; throw error; }
   }
+  const cleanup = voiceInboundCleanup(db, async call => {
+    const row = await endpoint(call.companyId, call.endpointId);
+    // New admissions bind the signed provider account, allowing key rotation
+    // within that account. Older rows require the original credential version.
+    const credentials = await options.credentials(row, call.providerAccountId ? undefined : call.credentialFingerprint);
+    const client = provider(credentials.apiKey);
+    if (call.providerAccountId && (await client.verifyAgent(credentials.agentId)).organizationId !== call.providerAccountId)
+      throw conflict("Incoming call belongs to a different voice provider account");
+    if ((await client.inspectSession(call.providerSessionId)).endedAt) return true;
+    return (await client.endSession(call.providerSessionId)).confirmed;
+  });
+  const retention = voiceInboundRetention(db);
+  const pruneHistory = retention.prune;
+  /** Explicit one-shot compatibility path; never used by periodic maintenance. */
   async function reconcile(limit: number) {
-    await db.delete(chatVoiceInboundCalls).where(and(isNull(chatVoiceInboundCalls.sessionId), isNull(chatVoiceInboundCalls.intakeIssueId), inArray(chatVoiceInboundCalls.state, ["denied", "expired", "ended"]), lte(chatVoiceInboundCalls.expiresAt, new Date(Date.now() - 7 * 86_400_000)), lte(chatVoiceInboundCalls.updatedAt, new Date(Date.now() - 7 * 86_400_000))));
-    const rows = await db.select().from(chatVoiceInboundCalls).where(and(inArray(chatVoiceInboundCalls.state, ["guest_intake", "awaiting_approval", "approving", "denied", "expired"]), lte(chatVoiceInboundCalls.expiresAt, new Date()))).orderBy(asc(chatVoiceInboundCalls.updatedAt)).limit(limit);
-    for (const call of rows) {
-      try {
-        const row = await endpoint(call.companyId, call.endpointId), credentials = await options.credentials(row);
-        const client = provider(credentials.apiKey), state = await client.inspectSession(call.providerSessionId);
-        if (state.endedAt) await db.update(chatVoiceInboundCalls).set({state: "ended", updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, call.id));
-        else { await db.update(chatVoiceInboundCalls).set({state: "expired", updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, call.id)); await client.endSession(call.providerSessionId); }
-      } catch { await db.update(chatVoiceInboundCalls).set({updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, call.id)); }
-    }
+    const rows = (await cleanup.load()).filter(row => row.dueAt <= Date.now()).sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)).slice(0, limit);
+    for (const row of rows) await cleanup.check(row.id).catch(error => logger.warn({ err: error, callId: row.id }, "Incoming call cleanup remains pending"));
+    await pruneHistory();
   }
-  return {configuration, saveConfiguration, lifecycle, pendingTool, list, decide, reconcile, authorizeGuest, history};
+  return {configuration, saveConfiguration, lifecycle, pendingTool, list, decide, reconcile, pruneHistory, registerCleanupWork: cleanup.register, registerRetentionWork: retention.register, authorizeGuest, history};
 }

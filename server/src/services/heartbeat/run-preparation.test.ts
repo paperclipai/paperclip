@@ -14,6 +14,7 @@ import {
   ConfigurationIncompleteFailure,
   createHeartbeatRunPreparation,
   resolveExecutionRunAdapterConfig,
+  readHeartbeatWakeComments,
 } from "./run-preparation.js";
 
 // Existing integration suites exercise the real database and dispatch path.
@@ -36,6 +37,12 @@ function databaseWithResults(...results: unknown[][]) {
     return query;
   });
   return { db: { select } as unknown as Db, select, scopes };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(complete => { resolve = complete; });
+  return { promise, resolve };
 }
 
 const emptyRoutineContext = { routineId: null, env: null, responsibleUserId: null };
@@ -118,6 +125,42 @@ describe("heartbeat run preparation module", () => {
     expect(database.scopes[0]).toContain("company-one");
     expect(database.scopes[1]).toEqual(expect.arrayContaining(["company-one", "user", "active", "owner"]));
     expect(database.select).toHaveBeenCalledTimes(2);
+  });
+
+  it("scopes one selected-comment snapshot for both wake consumers", async () => {
+    const database = databaseWithResults([{ id: "comment-one", body: "selected wake" }]);
+    expect(await readHeartbeatWakeComments(database.db, "company-one", "issue-one", ["comment-one"]))
+      .toEqual([{ id: "comment-one", body: "selected wake" }]);
+    expect(database.scopes[0]).toEqual(expect.arrayContaining(["company-one", "issue-one", "comment-one"]));
+    expect(await readHeartbeatWakeComments(database.db, "company-one", "issue-one", [])).toEqual([]);
+    expect(database.select).toHaveBeenCalledOnce();
+  });
+
+  it("settles independent binding checks before surfacing a failure or resolving values", async () => {
+    const projectCheck = deferred<[]>();
+    const firstFailure = new Error("agent binding check failed");
+    const secretsSvc = {
+      resolveAdapterConfigForRuntime: vi.fn(), resolveEnvBindings: vi.fn(),
+      collectMissingRuntimeBindings: vi.fn(async (_company, _env, context) => {
+        if (context.consumerType === "agent") throw firstFailure;
+        return context.consumerType === "project" ? projectCheck.promise : [];
+      }),
+      collectMissingAdapterConfigRuntimeBindings: vi.fn(async () => []),
+    };
+    let settled = false;
+    const opening = resolveExecutionRunAdapterConfig({
+      companyId: "company-one", agentId: "agent-one", projectId: "project-one",
+      environmentId: "environment-one", environmentEnv: { SHARED: "environment" },
+      executionRunConfig: { env: { SHARED: "agent" } }, projectEnv: { SHARED: "project" }, secretsSvc,
+    });
+    void opening.then(() => { settled = true; }, () => { settled = true; });
+    await vi.waitFor(() => expect(secretsSvc.collectMissingRuntimeBindings).toHaveBeenCalledTimes(3));
+    expect(secretsSvc.collectMissingAdapterConfigRuntimeBindings).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    expect(secretsSvc.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+    expect(secretsSvc.resolveEnvBindings).not.toHaveBeenCalled();
+    projectCheck.resolve([]);
+    await expect(opening).rejects.toBe(firstFailure);
   });
 
   it("keeps missing scoped credentials as a pre-dispatch failure", async () => {

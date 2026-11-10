@@ -1,6 +1,10 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import type { ObsoletePolicyReviewScope } from "../obsolete-policy-review-notifications.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
+import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import {
-  approvals, issueApprovals, issueThreadInteractions, issues,
+  approvals, heartbeatRuns, issueApprovals, issueThreadInteractions, issues,
   nativeRunFinalizations, statusDecisionEffects, statusDecisions, workAssessments,
   type Db,
 } from "@paperclipai/db";
@@ -8,13 +12,14 @@ import { logger } from "../../middleware/logger.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { enqueueTerminalIssueInteractionChatPublications } from "../chat-interaction-publications.js";
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 
 const obsoletePrompt = "Review the superseding native policy assessment.";
 
 /** Retire only the old version-change gate, never a real completion review. */
-export async function dismissObsoleteNativePolicyReviews(db: Db, runIds?: string[]) {
-  const candidates = await db.select({
+function findObsoletePolicyReviews(db: Db, options: { runIds?: string[]; scope?: ObsoletePolicyReviewScope; id?: string; after?: string } = {}) {
+  return db.select({
     interaction: issueThreadInteractions,
     decision: statusDecisions,
     priorDecisionId: workAssessments.priorDecisionId,
@@ -32,6 +37,8 @@ export async function dismissObsoleteNativePolicyReviews(db: Db, runIds?: string
       eq(statusDecisions.issueId, issueThreadInteractions.issueId),
       eq(statusDecisions.runId, issueThreadInteractions.sourceRunId),
     ))
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, issueThreadInteractions.sourceRunId),
+      eq(heartbeatRuns.companyId, issueThreadInteractions.companyId)))
     .innerJoin(workAssessments, and(
       eq(workAssessments.id, statusDecisions.assessmentId),
       eq(workAssessments.companyId, statusDecisions.companyId),
@@ -40,7 +47,8 @@ export async function dismissObsoleteNativePolicyReviews(db: Db, runIds?: string
     .where(and(
       eq(issueThreadInteractions.status, "pending"),
       eq(issueThreadInteractions.kind, "request_confirmation"),
-      isNull(issueThreadInteractions.createdByAgentId),
+      or(isNull(issueThreadInteractions.createdByAgentId),
+        eq(issueThreadInteractions.createdByAgentId, heartbeatRuns.agentId)),
       isNull(issueThreadInteractions.createdByUserId),
       eq(statusDecisions.applicationState, "applied"),
       eq(statusDecisions.reasonCode, "completion_review_required"),
@@ -52,9 +60,18 @@ export async function dismissObsoleteNativePolicyReviews(db: Db, runIds?: string
         { kind: "bind_reviewer", prompt: obsoletePrompt, ownerUserId: null },
         { kind: "append_superseding_assessment" },
       ])}::jsonb`,
-      ...(runIds?.length ? [inArray(statusDecisions.runId, runIds)] : []),
-    )).limit(100);
+      ...(options.runIds?.length ? [inArray(statusDecisions.runId, options.runIds)] : []),
+      options.scope ? and(eq(issueThreadInteractions.companyId, options.scope.companyId), eq(issueThreadInteractions.issueId, options.scope.issueId)) : undefined,
+      options.id ? eq(issueThreadInteractions.id, options.id) : undefined,
+      options.after ? gt(issueThreadInteractions.id, options.after) : undefined,
+    )).orderBy(asc(issueThreadInteractions.id)).limit(100);
+}
 
+export async function dismissObsoleteNativePolicyReviews(db: Db, runIds?: string[]) {
+  await dismissCandidates(db, await findObsoletePolicyReviews(db, { runIds }));
+}
+
+async function dismissCandidates(db: Db, candidates: Awaited<ReturnType<typeof findObsoletePolicyReviews>>) {
   for (const { interaction, decision, priorDecisionId } of candidates) {
     const publications: ActivityPublication[] = [];
     try {
@@ -68,6 +85,7 @@ export async function dismissObsoleteNativePolicyReviews(db: Db, runIds?: string
           eq(issues.id, decision.issueId), eq(issues.companyId, decision.companyId),
         )).for("update").then((rows) => rows[0]);
         if (!issue) return;
+        await notifyChatRunMilestones(tx, interaction);
         const now = new Date();
         const [cancelled] = await tx.update(issueThreadInteractions).set({
           status: "cancelled",
@@ -78,6 +96,14 @@ export async function dismissObsoleteNativePolicyReviews(db: Db, runIds?: string
           eq(issueThreadInteractions.id, interaction.id),
           eq(issueThreadInteractions.companyId, decision.companyId),
           eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.payload, interaction.payload),
+          eq(issueThreadInteractions.kind, interaction.kind),
+          eq(issueThreadInteractions.sourceRunId, decision.runId),
+          eq(issueThreadInteractions.idempotencyKey, interaction.idempotencyKey!),
+          interaction.createdByAgentId
+            ? eq(issueThreadInteractions.createdByAgentId, interaction.createdByAgentId)
+            : isNull(issueThreadInteractions.createdByAgentId),
+          isNull(issueThreadInteractions.createdByUserId),
         )).returning({ id: issueThreadInteractions.id });
         if (!cancelled) return;
         const terminalInteraction = await issueThreadInteractionService(tx as unknown as Db).getById(cancelled.id);
@@ -147,4 +173,34 @@ export async function dismissObsoleteNativePolicyReviews(db: Db, runIds?: string
       }
     }
   }
+}
+
+export function registerObsoletePolicyReviewWork(db: Db, coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+  type Entry = { id: string; companyId: string; issueId: string; dueAt: number };
+  async function load(scope?: ObsoletePolicyReviewScope, signal?: AbortSignal): Promise<Entry[]> {
+    const entries = new Map<string, Entry>();
+    let after: string | undefined;
+    while (canRun() && !signal?.aborted) {
+      const rows = await findObsoletePolicyReviews(db, { scope, after });
+      for (const { interaction } of rows) entries.set(interaction.id, {
+        id: interaction.id, companyId: interaction.companyId, issueId: interaction.issueId, dueAt: 0,
+      });
+      if (rows.length < 100) return [...entries.values()];
+      after = rows[rows.length - 1].interaction.id;
+    }
+    throw new Error("Obsolete policy review discovery stopped");
+  }
+  return registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.obsoletePolicyReviews, batchSize: 20,
+    decodeScope: (hint: string): ObsoletePolicyReviewScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+    matches: (entry: Entry, scope?: ObsoletePolicyReviewScope) => !scope || entry.companyId === scope.companyId && entry.issueId === scope.issueId,
+    load,
+    check: async (entry: Entry, signal?: AbortSignal) => {
+      const candidates = await findObsoletePolicyReviews(db, { scope: entry, id: entry.id });
+      if (!canRun() || signal?.aborted) throw new Error("Obsolete policy review cleanup stopped");
+      await dismissCandidates(db, candidates);
+      const pending = await findObsoletePolicyReviews(db, { scope: entry, id: entry.id });
+      return pending.length ? { ...entry, dueAt: Date.now() + 30_000 } : null;
+    },
+  }, canRun);
 }

@@ -3,12 +3,9 @@ import { resolveRunnerProviderAssetsRoot } from "./provider-assets-root.js";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxInstallation } from "./installation-integrity.js";
 import { COPILOT_LAUNCH_ARGUMENTS, COPILOT_VERSION } from "./copilot-profile.js";
 import { QUALIFIED_ACPX_PROFILES, type AcpxReleaseProfile } from "./qualified-profiles.js";
+import { COPILOT_CLOSURE_SHA256 } from "./copilot-closure-pins.js";
 
-export const COPILOT_CLOSURE_SHA256 = Object.freeze({
-  "darwin-arm64": "362f2663e967fb9e34a814bac4619cbf89e6b23069c4051ab1f2f686852d0a32",
-  "darwin-x64": "c08b7c3dd4e7bcf9a3e16ec6eba29cfa10308e865d196c5f120a3a15f6b3116a",
-  "linux-x64": "a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07",
-});
+export { COPILOT_CLOSURE_SHA256 };
 
 /** Admission primitive only. Pending candidates remain gated by qualification. */
 export async function verifyCopilotInstallation(profile: AcpxReleaseProfile): Promise<VerifiedAcpxInstallation> {

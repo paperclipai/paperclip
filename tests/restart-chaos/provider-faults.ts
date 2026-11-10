@@ -1,0 +1,213 @@
+/**
+ * Provider message faults (PV1 delay, PV2 drop, PV3 duplicate): the third fault
+ * family, next to control-plane restarts (K*) and storage faults (ST*). The
+ * provider stays alive; one chosen protocol message on the real path between the
+ * Paperclip runner and the Codex app-server is late, missing or repeated.
+ *
+ * Seam: `provider-shim/codex-resolve-hook.mjs` is loaded into the wave's server
+ * through NODE_OPTIONS. It answers the server's lookup of
+ * `@openai/codex/package.json` (how product code finds the local Codex) with a
+ * stand-in package in the instance temp root whose `codex` bin is
+ * `provider-shim/codex-shim.mjs`. The shim runs the real Codex and relays its
+ * stdio, applying the rule armed for the task's nonce. No product code changes,
+ * so the same harness runs against older product commits.
+ *
+ * Codex only: Claude runs through the ACPX sidecar with a hash-verified provider
+ * pack, so the same seam would need a different shim (see README).
+ */
+import { chmod, copyFile, mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
+import { readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+import type { OracleResult, TaskPlan, WaveOptions, WorkloadId } from "./types.js";
+
+export const PROVIDER_FAULT_KINDS = ["PV1", "PV2", "PV3"] as const;
+export type ProviderFaultKind = (typeof PROVIDER_FAULT_KINDS)[number];
+export const PROVIDER_FAULT_ACTIONS: Record<ProviderFaultKind, "delay" | "drop" | "duplicate"> = { PV1: "delay", PV2: "drop", PV3: "duplicate" };
+
+/** `terminal`: the turn/completed that follows a turn/interrupt. `interrupt_ack`: the response to that turn/interrupt. */
+export const PROVIDER_MESSAGES = ["terminal", "interrupt_ack"] as const;
+export type ProviderMessage = (typeof PROVIDER_MESSAGES)[number];
+
+/** PV1 default: the late terminal of PR #20330 (the old 15 s governed-wait drain against Codex's 30 s command window). */
+export const DEFAULT_PROVIDER_DELAY_MS = 18_000;
+/** Bound on a PV1 delay: beyond 10 minutes a message is effectively dropped (PV2). */
+export const MAX_PROVIDER_DELAY_MS = 600_000;
+
+export interface ProviderFaultRule {
+  kind: ProviderFaultKind;
+  message: ProviderMessage;
+  /** PV1 only. */
+  delayMs?: number;
+}
+
+/** One shim log line (JSONL, `provider-faults.jsonl` in the wave directory). */
+export interface ProviderFaultEvent {
+  at: number;
+  pid: number;
+  event: "spawned" | "bound" | "interrupt_requested" | "applied" | "released" | "held_message_discarded" | "exited" | "spawn_failed";
+  nonce?: string | null;
+  kind?: ProviderFaultKind;
+  message?: ProviderMessage;
+  action?: "delay" | "drop" | "duplicate";
+  delayMs?: number;
+  turnStatus?: string | null;
+  [key: string]: unknown;
+}
+
+/** Workloads whose run sends turn/interrupt: a saved question (Q1), a board Stop (S1), an approval wait (G1). */
+export const PROVIDER_FAULT_WORKLOADS: readonly WorkloadId[] = ["Q1", "S1", "G1"];
+
+export function isProviderFault(value: string): value is ProviderFaultKind {
+  return (PROVIDER_FAULT_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * `--provider-fault-delays 5,14,18` (seconds) for PV1: task i gets the i-th delay, cycling, so a
+ * small wave sweeps the window around a deadline.
+ */
+export function parseProviderDelays(raw: string | undefined): number[] | undefined {
+  if (raw === undefined) return undefined;
+  const values = raw.split(",").map(value => value.trim()).filter(Boolean);
+  if (!values.length) throw new Error("--provider-fault-delays must not be empty");
+  return values.map(value => {
+    if (!/^[0-9]+(\.[0-9]+)?$/.test(value)) throw new Error(`--provider-fault-delays: "${value}" is not a number of seconds`);
+    const ms = Math.round(Number(value) * 1000);
+    if (ms > MAX_PROVIDER_DELAY_MS) throw new Error(`--provider-fault-delays: ${value}s exceeds ${MAX_PROVIDER_DELAY_MS / 1000}s; use PV2 to drop a message`);
+    return ms;
+  });
+}
+
+export function parseProviderMessage(raw: string | undefined): ProviderMessage | undefined {
+  if (raw === undefined) return undefined;
+  if (!(PROVIDER_MESSAGES as readonly string[]).includes(raw)) throw new Error(`--provider-fault-message must be one of ${PROVIDER_MESSAGES.join(", ")}`);
+  return raw as ProviderMessage;
+}
+
+/** Attach each provider-fault task's rule. Restart-fault tasks are unchanged. */
+export function withProviderFaultRules(tasks: TaskPlan[], options: Pick<WaveOptions, "providerFaultMessage" | "providerFaultDelaysMs">): TaskPlan[] {
+  const delays = options.providerFaultDelaysMs?.length ? options.providerFaultDelaysMs : [DEFAULT_PROVIDER_DELAY_MS];
+  let pv1 = 0;
+  return tasks.map(task => {
+    if (!isProviderFault(task.fault)) return task;
+    const rule: ProviderFaultRule = { kind: task.fault, message: options.providerFaultMessage ?? "terminal",
+      ...(task.fault === "PV1" ? { delayMs: delays[pv1++ % delays.length]! } : {}) };
+    return { ...task, providerFault: rule, fireAfterMs: 0, holdMs: 0 };
+  });
+}
+
+export function describeProviderFault(rule: ProviderFaultRule): string {
+  return `${rule.kind} ${PROVIDER_FAULT_ACTIONS[rule.kind]} ${rule.message}${rule.delayMs !== undefined ? ` ${rule.delayMs}ms` : ""}`;
+}
+
+/** The Codex executable product code would resolve for this checkout (mirrors codex-command.ts). */
+export function resolveRealCodex(repositoryRoot: string): { command: string; version: string; manifestPath: string } {
+  const runnerRequire = createRequire(path.join(repositoryRoot, "packages/paperclip-runner/package.json"));
+  let manifestPath: string;
+  try {
+    const bridge = runnerRequire.resolve("@agentclientprotocol/codex-acp/package.json");
+    manifestPath = createRequire(bridge).resolve("@openai/codex/package.json");
+  } catch {
+    try {
+      const adapter = runnerRequire.resolve("@paperclipai/adapter-codex-local/server");
+      manifestPath = createRequire(createRequire(adapter).resolve("@agentclientprotocol/codex-acp/package.json")).resolve("@openai/codex/package.json");
+    } catch {
+      manifestPath = runnerRequire.resolve("@openai/codex/package.json");
+    }
+  }
+  manifestPath = realpathSync(manifestPath);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version?: string; bin?: string | Record<string, string> };
+  const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.codex;
+  if (!bin) throw new Error(`Installed Codex at ${manifestPath} has no codex bin`);
+  return { command: realpathSync(path.resolve(path.dirname(manifestPath), bin)), version: String(manifest.version ?? "0.0.0"), manifestPath };
+}
+
+export interface ProviderFaultSeam {
+  /** Merge into the server environment before it starts (kept across restarts). */
+  serverEnvironment: Record<string, string>;
+  controlPath: string;
+  logPath: string;
+  realCommand: string;
+  /** Arm the rules of these tasks (idempotent; replaces the armed set). */
+  arm(tasks: readonly TaskPlan[]): Promise<void>;
+  /** The shim's log lines for one task. */
+  eventsFor(nonce: string): Promise<ProviderFaultEvent[]>;
+}
+
+const SHIM_SOURCE = path.join(import.meta.dirname, "provider-shim", "codex-shim.mjs");
+export const RESOLVE_HOOK = path.join(import.meta.dirname, "provider-shim", "codex-resolve-hook.mjs");
+
+/**
+ * Install the stand-in Codex package under `root` (the instance temp root) and return the server
+ * environment that routes product Codex launches through the shim.
+ */
+export async function installProviderFaultSeam(input: { root: string; logPath: string; realCommand: string; realVersion: string;
+  /** The real `@openai/codex/package.json`: its platform package stays reachable from the stand-in. */
+  realManifestPath?: string; inheritedNodeOptions?: string }): Promise<ProviderFaultSeam> {
+  const base = path.join(input.root, "provider-faults");
+  const packageRoot = path.join(base, "codex-package");
+  const stateDirectory = path.join(base, "state");
+  const controlPath = path.join(base, "control.json");
+  await mkdir(path.join(packageRoot, "bin"), { recursive: true, mode: 0o700 });
+  await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+  // "type": "module" makes the copied .js shim an ES module, like the real codex.js. The real
+  // package's platform dependency is linked in, so product code still grants Codex's own
+  // native executable to its sandbox (codexExecutableReadOnlyRoots).
+  const real = input.realManifestPath ? JSON.parse(await readFile(input.realManifestPath, "utf8")) as { optionalDependencies?: Record<string, string> } : {};
+  await writeFile(path.join(packageRoot, "package.json"), `${JSON.stringify({ name: "@openai/codex", version: input.realVersion,
+    type: "module", bin: { codex: "bin/codex.js" }, ...(real.optionalDependencies ? { optionalDependencies: real.optionalDependencies } : {}) }, null, 2)}\n`);
+  const platformPackage = `@openai/codex-${process.platform}-${process.arch}`;
+  if (input.realManifestPath && real.optionalDependencies?.[platformPackage]) {
+    try {
+      const platformRoot = path.dirname(createRequire(input.realManifestPath).resolve(`${platformPackage}/package.json`));
+      await mkdir(path.join(packageRoot, "node_modules", "@openai"), { recursive: true });
+      await symlink(platformRoot, path.join(packageRoot, "node_modules", platformPackage), "dir").catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      });
+    } catch { /* No platform package: Codex runs as a standalone executable. */ }
+  }
+  const shimPath = path.join(packageRoot, "bin", "codex.js");
+  await copyFile(SHIM_SOURCE, shimPath);
+  await chmod(shimPath, 0o755);
+  await writeFile(path.join(packageRoot, "shim-config.json"), `${JSON.stringify({ realCommand: input.realCommand,
+    controlPath, logPath: input.logPath, stateDirectory }, null, 2)}\n`);
+  await writeFile(controlPath, `${JSON.stringify({ rules: [] })}\n`);
+  await writeFile(input.logPath, "", { flag: "a", mode: 0o600 });
+  const nodeOptions = [input.inheritedNodeOptions, `--import=${RESOLVE_HOOK}`].filter(Boolean).join(" ");
+  return {
+    serverEnvironment: { NODE_OPTIONS: nodeOptions, RESTART_CHAOS_CODEX_PACKAGE_JSON: path.join(packageRoot, "package.json") },
+    controlPath, logPath: input.logPath, realCommand: input.realCommand,
+    async arm(tasks) {
+      const rules = tasks.flatMap(task => task.providerFault ? [{ nonce: task.nonce, ...task.providerFault }] : []);
+      const temporary = `${controlPath}.${process.pid}.tmp`;
+      await writeFile(temporary, `${JSON.stringify({ rules }, null, 2)}\n`);
+      await rename(temporary, controlPath);
+    },
+    eventsFor: nonce => readProviderFaultEvents(input.logPath, nonce),
+  };
+}
+
+export async function readProviderFaultEvents(logPath: string, nonce?: string): Promise<ProviderFaultEvent[]> {
+  const text = await readFile(logPath, "utf8").catch(() => "");
+  const events = text.split("\n").filter(Boolean).flatMap(line => { try { return [JSON.parse(line) as ProviderFaultEvent]; } catch { return []; } });
+  return nonce === undefined ? events : events.filter(event => event.nonce === nonce);
+}
+
+/**
+ * A provider-fault task passes only if its fault really happened: otherwise the scenario was not
+ * exercised (for example the turn ended before any interrupt), and a pass would prove nothing.
+ */
+export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, events: readonly ProviderFaultEvent[]): OracleResult {
+  if (!plan.providerFault) return oracle;
+  const rule = plan.providerFault;
+  const applied = events.filter(event => event.event === "applied" && event.kind === rule.kind && event.message === rule.message);
+  const released = events.filter(event => event.event === "released" && event.kind === rule.kind);
+  // A held message the provider took with it when it exited never reached the runner: that tested a
+  // drop (PV2), not a late message. It stays in the detail for diagnosis but does not count.
+  const discarded = events.filter(event => event.event === "held_message_discarded" && event.kind === rule.kind);
+  const exercised = applied.length === 1 && (rule.kind !== "PV1" || released.length === 1);
+  const checks = [...oracle.checks, { name: "provider_fault_applied", ok: exercised,
+    detail: `${describeProviderFault(rule)}: applied=${applied.length}${rule.kind === "PV1" ? ` released=${released.length} discarded=${discarded.length}` : ""}`
+      + (applied[0]?.turnStatus ? ` turnStatus=${applied[0].turnStatus}` : "") }];
+  return { verdict: checks.every(check => check.ok) ? "pass" : "fail", checks };
+}

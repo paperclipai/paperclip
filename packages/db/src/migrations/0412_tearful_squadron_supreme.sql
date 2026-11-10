@@ -1,0 +1,3 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_native_unpresented_response_idx" ON "heartbeat_runs" USING btree ("company_id","native_issue_id","id") WHERE "heartbeat_runs"."runtime_mode" = 'native' AND "heartbeat_runs"."status" in ('succeeded', 'failed', 'timed_out') AND "heartbeat_runs"."finished_at" is not null AND jsonb_typeof("heartbeat_runs"."result_json" #> '{presentationDecision,commentId}') is distinct from 'string';--> statement-breakpoint
+CREATE STATISTICS IF NOT EXISTS "heartbeat_runs_native_response_selection_stats" ON (jsonb_typeof("result_json" #> '{presentationDecision,commentId}')) FROM "heartbeat_runs";--> statement-breakpoint
+ANALYZE "heartbeat_runs";

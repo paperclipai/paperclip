@@ -34,6 +34,7 @@ fn tool_set() -> AuthorizedToolSet {
 
 fn config(mode: &str) -> AcpxProviderSessionConfig {
     AcpxProviderSessionConfig {
+        candidate_admission: None,
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), mode.to_owned()],

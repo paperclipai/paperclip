@@ -21,6 +21,7 @@ export {
   trackConnectionCreated,
   trackConnectionUpdated,
   trackConnectionInvoked,
+  trackServerStarted,
 } from "./events.js";
 export type {
   TelemetryConfig,
