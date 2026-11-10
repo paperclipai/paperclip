@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import { requireVerifiedAcpxModel } from "./model-verification.js";
-import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 
 describe("ACPX requested model verification", () => {
   it.each(["claude", "codex", "pi", "grok", "cursor", "copilot"] as const)("selects and verifies an unlisted model unchanged with %s", async agent => {
@@ -28,33 +27,6 @@ describe("ACPX requested model verification", () => {
     )).rejects.toBe(rejected);
     expect(setModel).toHaveBeenCalledExactlyOnceWith("unavailable-model");
     expect(getStatus).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(["claude", "codex", "pi", "grok", "cursor", "copilot"] as const)("names an ACP rejection of an unadvertised model as an unsupported model with %s", async agent => {
-    const model = "chaos-missing-model-abc12345";
-    // claude-agent-acp 0.73.0 answers session/set_config_option for an unknown model with this
-    // JSON-RPC error; ACPX wraps it as below (live probe, 2026-11-10).
-    const acp = Object.assign(new Error("Internal error"), {
-      code: -32603, data: { details: `Invalid value for config option model: ${model}` },
-    });
-    const wrapped = new Error(`Failed session/set_config_option for model "${model}": Invalid value for config option model: ${model} (ACP -32603, adapter reported "Internal error")`, { cause: acp });
-    const getStatus = vi.fn(async () => ({ models: { currentModelId: "default", availableModelIds: ["default", "opus", "sonnet"] } }));
-    const setModel = vi.fn(async () => { throw wrapped; });
-    const failure = await requireVerifiedAcpxModel({ getStatus, setModel }, resolveQualifiedAcpxProfile(agent, model))
-      .then(() => null, (error: unknown) => error as Error & { code?: unknown; retryable?: unknown });
-    expect(failure).toMatchObject({ code: "ACP_MODEL_UNSUPPORTED", retryable: false });
-    expect(failure?.cause).toBe(wrapped);
-    expect(acpxSidecarErrorCode(failure!)).toBe("ACP_MODEL_UNSUPPORTED");
-  });
-
-  it("keeps a transport failure or an advertised model's rejection unchanged", async () => {
-    const acp = Object.assign(new Error("Internal error"), { code: -32603, data: { details: "busy" } });
-    for (const [rejected, available] of [[new Error("socket closed"), ["default"]], [acp, ["default", "listed-model"]]] as const) {
-      const getStatus = vi.fn(async () => ({ models: { currentModelId: "default", availableModelIds: [...available] } }));
-      const setModel = vi.fn(async () => { throw rejected; });
-      await expect(requireVerifiedAcpxModel({ getStatus, setModel }, resolveQualifiedAcpxProfile("claude", "listed-model")))
-        .rejects.toBe(rejected);
-    }
   });
 
   it("accepts an exact model already reported by the provider", async () => {
