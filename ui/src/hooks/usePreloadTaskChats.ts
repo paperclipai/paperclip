@@ -17,7 +17,7 @@ export function usePreloadTaskChats(companyId: string | null | undefined, refs: 
     if (!ready || !companyId || !refsKey || typeof window.requestAnimationFrame !== "function") return;
     const controller = new AbortController();
     const cancel = whenPageSettles(queryClient, () => {
-      void loadIssueChatBootstraps(queryClient, companyId, refsKey.split(","), { signal: controller.signal });
+      void loadIssueChatBootstraps(queryClient, companyId, refsKey.split(","), { signal: controller.signal, background: true });
     });
     return () => {
       cancel();

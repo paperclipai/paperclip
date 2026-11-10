@@ -5,6 +5,7 @@ import type { Issue, IssueRecentComments } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "./issue-detail-preload-events";
 import {
+  CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS,
   CHAT_BOOTSTRAP_SHARE_DEADLINE_MS,
   issueChatBootstrapEntryCountForTest,
   loadIssueChatBootstraps,
@@ -212,6 +213,34 @@ describe("startIssueChatBootstrap", () => {
     await Promise.resolve();
     await expect(readFromIssueChatBootstrap(client, ["unread", "ABC-2"], "ABC-2", (bootstrap) => bootstrap.issue.identifier, vi.fn())).resolves.toBe("ABC-2");
     expect(requestedRefs()).toEqual(["ABC-2"]);
+  });
+});
+
+describe("background preloads", () => {
+  it("do not preload a task again for five minutes while a list stays open, but an open still loads it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    await loadIssueChatBootstraps(client, "company-1", ["ABC-1", "ABC-2"], { background: true });
+    // Past the 30-second freshness: the list re-renders after a live reorder.
+    vi.setSystemTime(Date.now() + ISSUE_CHAT_BOOTSTRAP_FRESH_MS + 1);
+    await loadIssueChatBootstraps(client, "company-1", ["ABC-2", "ABC-1", "ABC-3"], { background: true });
+    expect(requestedRefs()).toEqual(["ABC-1,ABC-2", "ABC-3"]);
+    // Open intent is not a background preload.
+    await loadIssueChatBootstraps(client, "company-1", ["ABC-1"]);
+    expect(requestedRefs()).toEqual(["ABC-1,ABC-2", "ABC-3", "ABC-1"]);
+    vi.setSystemTime(Date.now() + CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS);
+    await loadIssueChatBootstraps(client, "company-1", ["ABC-2"], { background: true });
+    expect(requestedRefs()).toEqual(["ABC-1,ABC-2", "ABC-3", "ABC-1", "ABC-2"]);
+  });
+
+  it("leave a seeded key that a live event invalidated to the page's own read", async () => {
+    await loadIssueChatBootstraps(client, "company-1", ["ABC-4"], { background: true });
+    const key = queryKeys.issues.interactions("ABC-4");
+    // An event for this task (the fast live lane) marks the seeded key stale.
+    await client.invalidateQueries({ queryKey: key });
+    expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    const read = vi.fn().mockResolvedValue([{ id: "new" }]);
+    await expect(readFromIssueChatBootstrap(client, key, "ABC-4", (bootstrap) => bootstrap.interactions, read)).resolves.toEqual([{ id: "new" }]);
+    expect(read).toHaveBeenCalledOnce();
   });
 });
 

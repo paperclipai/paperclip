@@ -167,6 +167,27 @@ function startChunk(queryClient: QueryClient, companyId: string, wanted: readonl
   return request.then(() => undefined, () => undefined);
 }
 
+/**
+ * How long a background preload (a task list) skips a task it already
+ * preloaded. A list that stays open re-renders as live events reorder it;
+ * events keep a preloaded task's cache current or mark it stale, so the list
+ * does not need to preload the same task again every 30 seconds.
+ */
+export const CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS = 5 * 60_000;
+const backgroundPreloadedAt = new Map<string, number>();
+
+function preloadedInBackgroundRecently(refs: readonly string[], now: number) {
+  return refs.some((ref) => {
+    const at = backgroundPreloadedAt.get(refKey(ref));
+    return at !== undefined && now - at < CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS;
+  });
+}
+
+function rememberBackgroundPreload(refs: readonly string[], now: number) {
+  for (const [key, at] of backgroundPreloadedAt) if (now - at >= CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS) backgroundPreloadedAt.delete(key);
+  for (const ref of refs) backgroundPreloadedAt.set(refKey(ref), now);
+}
+
 /** A task to preload: a ref, or its id with the identifier it may also be cached under. */
 export type ChatBootstrapTarget = string | { id: string; identifier: string | null };
 
@@ -178,12 +199,14 @@ export type ChatBootstrapTarget = string | { id: string; identifier: string | nu
  *
  * `signal` stops later requests, never one in flight: a click that unmounts
  * the list must still be able to use the answer for the task it opens.
+ * `background` (a list's preload) also skips tasks it preloaded within
+ * `CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS`.
  */
 export async function loadIssueChatBootstraps(
   queryClient: QueryClient,
   companyId: string,
   targets: readonly ChatBootstrapTarget[],
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; background?: boolean } = {},
 ) {
   const now = Date.now();
   // Keyed by the normalized ref; the request keeps the caller's spelling.
@@ -193,12 +216,15 @@ export async function loadIssueChatBootstraps(
     if (!refs.length || wanted.has(refKey(refs[0]!))) continue;
     if (refs.some((ref) => currentEntry(queryClient, ref, now))) continue;
     if (hasFreshIssueChatFirstFrame(queryClient, refs, now)) continue;
+    if (options.background && preloadedInBackgroundRecently(refs, now)) continue;
     wanted.set(refKey(refs[0]!), { ref: refs[0]!, refs });
   }
   const ordered = [...wanted.values()];
   for (let start = 0; start < ordered.length; start += ISSUE_CHAT_BOOTSTRAP_MAX_IDS) {
     if (options.signal?.aborted) return;
-    await startChunk(queryClient, companyId, ordered.slice(start, start + ISSUE_CHAT_BOOTSTRAP_MAX_IDS));
+    const chunk = ordered.slice(start, start + ISSUE_CHAT_BOOTSTRAP_MAX_IDS);
+    if (options.background) rememberBackgroundPreload(chunk.flatMap((target) => target.refs), Date.now());
+    await startChunk(queryClient, companyId, chunk);
   }
 }
 
@@ -310,6 +336,7 @@ export function sameIds(a: readonly string[], b: readonly string[]) {
 /** Test seam. */
 export function resetIssueChatBootstrapsForTest() {
   entries.clear();
+  backgroundPreloadedAt.clear();
   pendingOwners.clear();
   stopWatchingSession?.();
   stopWatchingSession = null;
