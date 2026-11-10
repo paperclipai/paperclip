@@ -618,7 +618,8 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0453_curious_ben_parker.sql",
   "0454_lumpy_ronan.sql",
   "0455_pending_budget_cancellation_index.sql",
-  "0456_heartbeat_runs_wakeup_request_index.sql",
+  "0456_chat_review_lookup_indexes.sql",
+  "0457_heartbeat_runs_wakeup_request_index.sql",
 
 
   "0384_funny_adam_warlock.sql",

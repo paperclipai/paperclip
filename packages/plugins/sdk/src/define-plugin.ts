@@ -94,6 +94,8 @@ import type {
   PluginLoginPtyOpenParams,
   PluginLoginPtyOpenResult,
   PluginLoginPtyInputParams,
+  PluginLoginPtyReadCredentialParams,
+  PluginLoginPtyReadCredentialResult,
   PluginLoginPtyStopParams,
   PluginLoginPtyCloseParams,
   PluginLoginPtyCloseResult,
@@ -522,6 +524,9 @@ export interface PluginDefinition {
 
   /** Called to write delayed input to an open login pseudo-terminal, keyed by the worker session identifier. */
   onLoginPtyInput?(params: PluginLoginPtyInputParams): Promise<void>;
+
+  /** Optional fixed credential read, advertised through supported-method discovery. */
+  onLoginPtyReadCredential?(params: PluginLoginPtyReadCredentialParams): Promise<PluginLoginPtyReadCredentialResult>;
 
   /** Called to stop an open login pseudo-terminal child, keyed by the worker session identifier. */
   onLoginPtyStop?(params: PluginLoginPtyStopParams): Promise<void>;

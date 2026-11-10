@@ -1,5 +1,5 @@
 {
-  "id": "9de6ee58-419c-437c-bfc0-911b0128dbf5",
+  "id": "a2606b41-36c2-4eb5-a59d-28cc730bc455",
   "prevId": "2be53987-902a-41b6-8cb4-6e89a768f8cf",
   "version": "7",
   "dialect": "postgresql",
@@ -10955,6 +10955,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "chat_deliveries_github_automatic_delivery_idx": {
+          "name": "chat_deliveries_github_automatic_delivery_idx",
+          "columns": [
+            {
+              "expression": "endpoint_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"normalized_event\"->'githubAutomatic'->'context'->>'deliveryId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "(\"chat_deliveries\".\"normalized_event\"->'githubAutomatic'->'context'->>'deliveryId') is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -12391,6 +12413,44 @@
           ],
           "isUnique": true,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_message_links_company_comment_idx": {
+          "name": "chat_message_links_company_comment_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "comment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_message_links\".\"comment_id\" is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_message_links_delivery_idx": {
+          "name": "chat_message_links_delivery_idx",
+          "columns": [
+            {
+              "expression": "delivery_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_message_links\".\"delivery_id\" is not null",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         }
@@ -35475,6 +35535,27 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_company_wake_comment_idx": {
+          "name": "heartbeat_runs_company_wake_comment_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"context_snapshot\"->>'wakeCommentId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_cost_accounting_pending_idx": {
           "name": "heartbeat_runs_cost_accounting_pending_idx",
           "columns": [
@@ -35904,21 +35985,6 @@
               "expression": "coalesce(\n        \"native_issue_id\"::text,\n        nullif(\"context_snapshot\"->>'issueId', ''),\n        nullif(\"context_snapshot\"->>'taskId', ''),\n        nullif(\"context_snapshot\"->>'taskKey', '')\n      )",
               "asc": true,
               "isExpression": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": true,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_wakeup_request_id_idx": {
-          "name": "heartbeat_runs_wakeup_request_id_idx",
-          "columns": [
-            {
-              "expression": "wakeup_request_id",
-              "isExpression": false,
-              "asc": true,
               "nulls": "last"
             }
           ],
