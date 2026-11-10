@@ -817,8 +817,8 @@ moment the replacement reports healthy, it stops that replacement and starts ano
 
 The gaps are seeded per task (`restartSteps` in `plan.json`), and drawn only for RR tasks, so the plans
 of existing seeds do not change. `--rr-gap-seconds <n>` or `<min>-<max>` (1–300) replaces every RR
-gap: for example `--rr-gap-seconds 5` for a stop that always lands in recovery, or `30-60` for a slow
-deploy loop. RR faults do not combine with `--storm-minutes`, whose faults carry no planned steps.
+gap: for example `--rr-gap-seconds 5` for a short deploy-loop gap, or `30-60` for a slow
+deploy loop. To stop inside recovery, use `--rr-stop-on recovering` (below). RR faults do not combine with `--storm-minutes`, whose faults carry no planned steps.
 
 `--rr-stop-on recovering` replaces the gap: each follow-up stop fires on the first `/api/ready` poll
 (every 50 ms, from the replacement's spawn) that reports `recovering`, the K6 phase poll. Use it to
