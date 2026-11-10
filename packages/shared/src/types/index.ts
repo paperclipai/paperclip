@@ -367,6 +367,7 @@ export type {
   ProjectRepository,
   ProjectRepositoryOptions,
   ProjectGitAuthorization,
+  ProjectProviderGitAuthorization,
   ProjectAccessMember,
   ProjectAccessSubjectType,
   ProjectDiscoverySummary,

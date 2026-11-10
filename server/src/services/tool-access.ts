@@ -100,6 +100,8 @@ import {
   emitConnectionUpdated,
 } from "./connector-telemetry.js";
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
+import { listAzureDevOpsProjectRepositories } from "./tool-access/azure-devops-catalog.js";
+import { listRegisteredRepositoryProviders } from "./tool-access/repository-provider-registry.js";
 
 import { measureRunPhase } from "./execution-preparation-timing.js";
 
@@ -4288,9 +4290,12 @@ export function toolAccessService(
 
     // Repository discovery uses credential audiences, not connection-management
     // visibility. An administrator cannot browse another user's private repos.
-    listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false,
-      options?: { requiredRepositoryIds: readonly string[] }) =>
-      toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted, options),
+    listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false, repositoryOptions?: { requiredRepositoryIds: readonly string[] }) => {
+      return listRegisteredRepositoryProviders([
+        { id: "github", list: () => toolAccessService(db, options).listGitHubRepositories(companyId, userId, localTrusted, repositoryOptions) },
+        { id: "azure-devops", list: () => listAzureDevOpsProjectRepositories(db, { resolveOAuthGrantSecret, refreshOAuthGrantCredentials, requestRemoteHttpEndpoint }, companyId, userId, localTrusted) },
+      ]);
+    },
 
     // Return identifiers, never credentials, so each attempted read can recheck its grant.
     githubReadConnectionIds: async (companyId: string, userId: string | null, localTrusted = false): Promise<string[]> => {

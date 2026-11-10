@@ -8,13 +8,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsApi } from "../api/projects";
 import { getLastProjectId } from "../lib/recent-projects";
 import { NewProjectForm } from "./NewProjectDialog";
+import { repositoryProviders } from "./repository-providers";
 
 vi.mock("../api/projects", () => ({ projectsApi: { create: vi.fn() } }));
 vi.mock("./ProjectRepositoryInput", () => ({
-  ProjectRepositoryInput: () => null,
+  ProjectRepositoryInput: ({ onConnect }: { onConnect: (provider: typeof repositoryProviders[number]) => void }) => <button type="button" onClick={() => onConnect(repositoryProviders[1])}>Connect Azure</button>,
   repositoryOptionsKey: (companyId: string) => ["repositories", companyId],
 }));
-vi.mock("@/features/connections/ConnectionSetupFlow", () => ({ ConnectionSetupFlow: () => null }));
+vi.mock("@/features/connections/ConnectionSetupFlow", () => ({ ConnectionSetupFlow: ({ serviceSlug, onCancel }: { serviceSlug: string; onCancel: () => void }) => <div>Setup {serviceSlug}<button onClick={onCancel}>Back</button></div> }));
 vi.mock("./ui/dialog", () => ({
   Dialog: ({ children }: { children: ReactNode }) => <>{children}</>,
   DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -41,6 +42,19 @@ async function settle() {
 }
 
 describe("new project colors", () => {
+  it("opens Azure setup in the project dialog and preserves the project name on return", () => {
+    act(() => root.render(<QueryClientProvider client={new QueryClient()}><NewProjectForm companyId="company-1" onClose={vi.fn()} /></QueryClientProvider>));
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Project name"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "My project");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const connect = [...container.querySelectorAll("button")].find((button) => button.textContent === "Connect Azure")!;
+    act(() => connect.click());
+    expect(container.textContent).toContain("Setup azure-devops");
+    act(() => [...container.querySelectorAll("button")].find((button) => button.textContent === "Back")!.click());
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Project name"]')?.value).toBe("My project");
+  });
   it("previews a palette color, keeps it through a retry, and remembers the created project", async () => {
     vi.mocked(projectsApi.create)
       .mockRejectedValueOnce(new Error("Try again"))

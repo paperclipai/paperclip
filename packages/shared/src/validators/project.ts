@@ -123,11 +123,23 @@ const projectFields = {
   archivedAt: z.string().datetime().optional().nullable(),
 };
 
+/** Provider-qualified repository IDs used by project repository selection APIs. */
+const projectRepositoryIdSchema = z.string().superRefine((id, ctx) => {
+  if (/^\d+$/.test(id)) return;
+  if (/^azure-devops:(?:[a-z0-9][a-z0-9-]{0,49}:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return;
+  // Preserve room for other providers while keeping their opaque IDs bounded
+  // and safe to pass through API and catalog lookups.
+  if (/^[a-z][a-z0-9-]{0,31}:[a-z0-9._~-]{1,128}$/i.test(id) && !/^azure-devops:/i.test(id)) return;
+  ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Invalid project repository ID" });
+});
+
+export const projectRepositoryIdsSchema = z.array(projectRepositoryIdSchema);
+
 export const createProjectSchema = z.object({
   idempotencyKey: z.string().trim().min(1).max(255).optional(),
   ...projectFields,
   workspace: createProjectWorkspaceSchema.optional(),
-  repositoryIds: z.array(z.string().regex(/^\d+$/)).optional(),
+  repositoryIds: projectRepositoryIdsSchema.optional(),
   repositoryUrls: z.array(z.string().url().max(2000)).max(100).optional(),
 });
 

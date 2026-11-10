@@ -8,6 +8,7 @@ import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
 import { ProjectGitAuthorization } from "./ProjectGitAuthorization";
+import { ProjectProviderGitAuthorization } from "./ProjectProviderGitAuthorization";
 import { ProjectRepositories } from "./ProjectRepositories";
 import { cn, formatDate } from "../lib/utils";
 import { environmentsApi } from "../api/environments";
@@ -272,7 +273,11 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   const workspaces = project.workspaces ?? [];
   const codebase = project.codebase;
   const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;
-  const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id && !workspace.metadata?.githubRepositoryId);
+  const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) =>
+    workspace.id !== primaryCodebaseWorkspace?.id &&
+    typeof workspace.metadata?.repositoryId !== "string" &&
+    typeof workspace.metadata?.githubRepositoryId !== "string",
+  );
   const storedExecutionWorkspacePolicy = project.executionWorkspacePolicy ?? null;
   const providerConfiguration = project.workspaceProvider;
   const executionWorkspacePolicy = providerConfiguration?.effectivePolicy ?? storedExecutionWorkspacePolicy;
@@ -510,6 +515,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
         </PropertyRow>
         {repositories ?? <ProjectRepositories key={project.id} project={project} />}
         <ProjectGitAuthorization key={`git-${project.id}`} project={project} />
+        <ProjectProviderGitAuthorization key={`provider-git-${project.id}`} project={project} />
         <PropertyRow
           label={<FieldLabel label="Env" state={fieldState("env")} />}
           alignStart
