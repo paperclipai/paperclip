@@ -43,6 +43,30 @@ export interface SkillSourceFilePreview {
   truncated: boolean;
   commitSha: string;
 }
+/** One file that differs between the installed and latest tracked source revisions. */
+export interface SkillSourceUpdateDiffFile {
+  path: string;
+  /** `not_compared`: the scan left this path out of at least one revision (too large, a symlink, or rejected by the audit). */
+  change: 'added' | 'removed' | 'modified' | 'not_compared';
+  binary: boolean;
+  /** The file's executable bit differs between the two revisions. */
+  executableChanged: boolean;
+  /** Unified line diff ("-" installed, "+" latest); "" when only the executable bit changed; null when unavailable. */
+  diff: string | null;
+  /** Why `diff` is null: binary content, a file too large to diff, a path left out of a snapshot, or the response budget ran out. */
+  diffUnavailable: 'binary' | 'too_large' | 'omitted' | 'budget' | null;
+}
+export interface SkillSourceUpdateDiff {
+  supported: boolean;
+  reason: string | null;
+  currentRef: string | null;
+  latestRef: string | null;
+  /** False when the installed revision is already the latest one. */
+  hasUpdate: boolean;
+  files: SkillSourceUpdateDiffFile[];
+  /** Some files were not listed or carry no diff because the response reached its size or work budget. */
+  truncated: boolean;
+}
 export interface SkillSourceEntry {
   id: string;
   sourceId: string;
@@ -78,6 +102,7 @@ export interface SkillSource {
   lastSuccessAt: Date | null;
   lastScanCommit: string | null;
   lastError: string | null;
+  repairAction?: 'connection' | 'branch' | 'retry' | null;
   entries: SkillSourceEntry[];
 }
 export interface SkillSourceSettingsRequest {
@@ -85,6 +110,15 @@ export interface SkillSourceSettingsRequest {
   automaticUpdates?: boolean;
   importNewSkills?: boolean;
   connectionId?: string | null;
+  /** Follow this branch/ref, or HEAD for the default branch. Version pins remain intact. */
+  trackingRef?: string;
+}
+export interface SkillSourceBranchesQuery { connectionId?: string }
+export interface SkillSourceBranches {
+  defaultBranch: string;
+  branches: Array<{ name: string; isDefault: boolean }>;
+  /** The bounded list may omit branches; an unlisted name can still be entered. */
+  truncated: boolean;
 }
 export interface ProjectSkillRepository {
   projectId: string;
@@ -96,6 +130,7 @@ export interface ProjectSkillRepository {
   bindingId: string | null;
   sourceId: string | null;
   status: 'available' | 'pending' | 'ready' | 'error';
+  importState?: 'queued' | 'importing';
   lastError: string | null;
 }
 export interface SkillSourceDiscoveryRequest {

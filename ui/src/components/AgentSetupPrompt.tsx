@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type Ref } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type Ref, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, Copy, Terminal, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -23,10 +23,10 @@ export interface AgentSetupPromptProps {
   initialCopyStatus?: "idle" | "copied" | "failed";
   onCopied?: () => void;
   /** Brand a handoff for one recipient; omit for the general agent logo stack. */
-  agent?: { name: string; src: string; className?: string };
+  agent?: { name: string; className?: string } & ({ src: string; icon?: never } | { icon: ReactNode; src?: never });
 }
 
-const defaultAgents = [
+const defaultAgents: NonNullable<AgentSetupPromptProps["agent"]>[] = [
   { name: "Codex", src: "/brands/codex-color.svg", className: "" },
   { name: "ChatGPT", src: "/brands/apps/openai.svg", className: "dark:invert" },
   { name: "Claude", src: "/brands/claude-color.svg", className: "" },
@@ -38,7 +38,7 @@ function AgentLogos({ ref, hidden, agents }: { ref: Ref<HTMLSpanElement>; hidden
       {agents.map((agent) => (
         <span key={agent.name} className="agent-setup-logo-slot">
           <span className="agent-setup-logo">
-            <img src={agent.src} alt="" className={cn("size-5", agent.className)} draggable={false} />
+            {agent.src ? <img src={agent.src} alt="" className={cn("size-5", agent.className)} draggable={false} /> : agent.icon}
           </span>
         </span>
       ))}
@@ -275,7 +275,7 @@ export function AgentSetupPrompt({
         <span ref={flyingLogos} className="agent-setup-flight-layer" aria-hidden="true">
           {agents.map((agent, index) => (
             <span key={agent.name} className="agent-setup-logo agent-setup-flying-logo" style={flight.origins[index]}>
-              <img src={agent.src} alt="" className={cn("size-5", agent.className)} draggable={false} />
+              {agent.src ? <img src={agent.src} alt="" className={cn("size-5", agent.className)} draggable={false} /> : agent.icon}
             </span>
           ))}
         </span>,

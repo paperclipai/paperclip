@@ -76,9 +76,14 @@ test("the script's path list and key inputs cover what the release build of the 
     `${RELEASE_DIR}/deps/paperclip_runnerd-*`,
     `${RELEASE_DIR}/paperclip-runnerd`,
     `${RELEASE_DIR}/paperclip-runnerd.d`,
+    `${RELEASE_DIR}/.fingerprint/paperclip-process-table-*`,
+    `${RELEASE_DIR}/deps/libpaperclip_process_table-*`,
+    `${RELEASE_DIR}/deps/paperclip_process_table-*.d`,
   ]);
   assert.deepEqual(HASHED_INPUTS, [
     `${RUNNER_PACKAGE}/rust-toolchain.toml`,
+    `${RUNNER_PACKAGE}/acpx-profiles.json`,
+    `${RUNNER_PACKAGE}/antigravity-distributions.json`,
     `${RUNNER_PACKAGE}/runner/Cargo.toml`,
     `${RUNNER_PACKAGE}/runner/Cargo.lock`,
     `${RUNNER_PACKAGE}/runner/crates/**`,
@@ -279,6 +284,51 @@ test("every file the crate includes by path sits under a hashed input, so an edi
   assert.deepEqual([...forms].sort(), ["concat-manifest-dir", "concat-metavariable", "literal"]);
 });
 
+test("isolated Docker Rust stages preserve the layout of embedded schema and identity inputs", () => {
+  const crateRoot = path.join(repoRoot, RUNNER_PACKAGE, "runner/crates");
+  const sources = [];
+  (function walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".rs")) sources.push(full);
+    }
+  })(crateRoot);
+  for (const [dockerfile, stage] of [["Dockerfile", "runner-build"], ["docker/daytona-runner/Dockerfile", "runnerd-build"]]) {
+    const docker = readFileSync(path.join(repoRoot, dockerfile), "utf8");
+    const body = docker.split(/^FROM .+ AS /m).find(part => part.startsWith(`${stage}\n`));
+    assert.ok(body, `${dockerfile}: missing ${stage}`);
+    const workdir = /^WORKDIR (.+)$/m.exec(body)?.[1];
+    assert.ok(workdir?.startsWith("/"), `${dockerfile}: an absolute stage working directory is required`);
+    const copies = [...body.matchAll(/^COPY (?!-)(.+)$/gm)].flatMap(([, instruction]) => {
+      const args = instruction.trim().split(/\s+/);
+      const destination = path.posix.resolve(workdir, args.pop());
+      return args.map(source => {
+        const absolute = path.join(repoRoot, source);
+        return { source: absolute, destination: statSync(absolute).isDirectory() ? destination : path.posix.join(destination, path.basename(source)) };
+      });
+    });
+    const copiedPath = source => {
+      const copy = copies.find(copy => source === copy.source || source.startsWith(`${copy.source}${path.sep}`));
+      return copy ? path.posix.join(copy.destination, path.relative(copy.source, source)) : null;
+    };
+    let checked = 0;
+    for (const source of sources) {
+      for (const { resolved } of crateIncludes(source, readFileSync(source, "utf8"))) {
+        // Cargo test-only fixture trees are intentionally absent from production
+        // Docker stages. Their cache coverage is checked by the preceding test.
+        if (/\/(?:test-fixtures|test\/fixtures|tests\/runner-e2e\/fixtures)(?:\/|$)/.test(resolved)) continue;
+        const stagedSource = copiedPath(source);
+        assert.ok(stagedSource, `${dockerfile}: crate source was not copied: ${path.relative(repoRoot, source)}`);
+        const expected = path.posix.resolve(path.posix.dirname(stagedSource), path.relative(path.dirname(source), resolved));
+        assert.equal(copiedPath(resolved), expected, `${dockerfile}: include input ${path.relative(repoRoot, resolved)} must retain its crate-relative path`);
+        checked++;
+      }
+    }
+    assert.ok(checked > 0, `${dockerfile}: the guard must see real Rust include paths`);
+  }
+});
+
 test("every PR reader restores the crate after the dependency cache and marks it before building", () => {
   for (const [name, buildCommand] of READERS) {
     const body = job(prWorkflow, name);
@@ -309,12 +359,15 @@ test("every PR reader restores the crate after the dependency cache and marks it
 
 test("the Verify Paperclip Runner job restores the crate only in the lanes that build it", () => {
   const body = job(prWorkflow, "verify_paperclip_runner");
-  const lanes = [...body.matchAll(/- lane_label: (.+)\n\s+command: (.+)\n(\s+release_crate: (true)\n)?/g)].map(([, label, , , flag]) => [label, flag === "true"]);
+  const lanes = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"))
+    .verify_paperclip_runner.map((entry) => [entry.lane_label, entry.release_crate === true]);
   assert.deepEqual(lanes, [
     ["static checks", false],
     ["rust", true],
-    ["vitest 1/2", false],
-    ["vitest 2/2", true],
+    ["vitest package (1/3)", false],
+    ["vitest package (2/3)", false],
+    ["vitest package (3/3)", false],
+    ["vitest native server", true],
   ]);
   for (const stepName of [KEY_STEP, RESTORE_STEP]) {
     assert.match(step(body, stepName), /if: \$\{\{ matrix\.release_crate == true \}\}/, stepName);
@@ -366,7 +419,7 @@ test("only the master Rust lane writes the crate, after a lookup, with the reade
 
   // The dependency cache's own writer gate is the same expression.
   assert.match(body, new RegExp(`save-if: \\$\\{\\{ ${WRITER_GATE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\}\\}`));
-  assert.equal((releaseWorkflow.match(/actions\/cache\/save@/g) ?? []).length, 1);
+  assert.equal((releaseWorkflow.match(/actions\/cache\/save@/g) ?? []).length, 2, "release and debug workspace caches have separate guarded writers");
 });
 
 test("the scope names the platform, the compiler and the checkout root, and survives a missing rustc", () => {
@@ -401,9 +454,11 @@ function layRestoredCrate(root) {
   const release = path.join(root, RELEASE_DIR);
   const lib = path.join(release, ".fingerprint/paperclip-runner-core-0b6c4654c2710743");
   const bin = path.join(release, ".fingerprint/paperclip-runner-core-46cce78dbc4840c2");
+  const table = path.join(release, ".fingerprint/paperclip-process-table-5a1b2c3d4e5f6071");
   mkdirSync(path.join(release, "deps"), { recursive: true });
   mkdirSync(lib, { recursive: true });
   mkdirSync(bin, { recursive: true });
+  mkdirSync(table, { recursive: true });
   const files = {
     [path.join(lib, "lib-paperclip_runner_core")]: "0123456789abcdef",
     [path.join(lib, "lib-paperclip_runner_core.json")]: "{}",
@@ -419,6 +474,12 @@ function layRestoredCrate(root) {
     [path.join(release, "deps/paperclip_runnerd-46cce78dbc4840c2.d")]: "d",
     [path.join(release, "paperclip-runnerd")]: "ELF",
     [path.join(release, "paperclip-runnerd.d")]: "d",
+    // The process-table workspace library's lib unit.
+    [path.join(table, "lib-paperclip_process_table")]: "1111222233334444",
+    [path.join(table, "dep-lib-paperclip_process_table")]: "dep",
+    [path.join(release, "deps/libpaperclip_process_table-5a1b2c3d4e5f6071.rlib")]: "rlib",
+    [path.join(release, "deps/libpaperclip_process_table-5a1b2c3d4e5f6071.rmeta")]: "rmeta",
+    [path.join(release, "deps/paperclip_process_table-5a1b2c3d4e5f6071.d")]: "d",
     // A dependency's artifacts sit beside the crate's and must not be touched.
     [path.join(release, "deps/libserde-1234567890abcdef.rlib")]: "dep rlib",
   };
@@ -427,7 +488,7 @@ function layRestoredCrate(root) {
     writeFileSync(file, content);
     utimesSync(file, old, old);
   }
-  for (const dir of [lib, bin, path.join(release, "deps"), path.join(release, ".fingerprint"), release]) utimesSync(dir, old, old);
+  for (const dir of [lib, bin, table, path.join(release, "deps"), path.join(release, ".fingerprint"), release]) utimesSync(dir, old, old);
   return { release, files: Object.keys(files), old };
 }
 
@@ -442,7 +503,7 @@ test("mark-current makes every restored artifact newer than the checkout and lea
 
     const result = markCurrent({ root, now: new Date(checkedOutAt + 5000) });
     assert.equal(result.action, "marked");
-    assert.equal(result.files, 14);
+    assert.equal(result.files, 19);
     assert.equal(result.bytes, files.filter((file) => !file.includes("libserde")).reduce((sum, file) => sum + statSync(file).size, 0));
 
     for (const file of files) {
@@ -459,7 +520,7 @@ test("mark-current makes every restored artifact newer than the checkout and lea
     const printed = JSON.parse(execFileSync(process.execPath, [script, "mark-current"], { encoding: "utf8", env: { ...process.env, GITHUB_WORKSPACE: root } }));
     assert.equal(printed.schema, "paperclip.runner-release-crate.v1");
     assert.equal(printed.action, "marked");
-    assert.equal(printed.files, 14);
+    assert.equal(printed.files, 19);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -478,6 +539,10 @@ const REQUIRED_FILES = {
   "the bin fingerprint hash": ".fingerprint/paperclip-runner-core-46cce78dbc4840c2/bin-paperclip-runnerd",
   "the bin dep-info": ".fingerprint/paperclip-runner-core-46cce78dbc4840c2/dep-bin-paperclip-runnerd",
   "the bin under deps": "deps/paperclip_runnerd-46cce78dbc4840c2",
+  "the process-table lib fingerprint hash": ".fingerprint/paperclip-process-table-5a1b2c3d4e5f6071/lib-paperclip_process_table",
+  "the process-table lib dep-info": ".fingerprint/paperclip-process-table-5a1b2c3d4e5f6071/dep-lib-paperclip_process_table",
+  "the process-table lib rlib": "deps/libpaperclip_process_table-5a1b2c3d4e5f6071.rlib",
+  "the process-table lib rmeta": "deps/libpaperclip_process_table-5a1b2c3d4e5f6071.rmeta",
 };
 const NOT_NEEDED = [
   ".fingerprint/paperclip-runner-core-0b6c4654c2710743/lib-paperclip_runner_core.json",
@@ -487,6 +552,7 @@ const NOT_NEEDED = [
   "deps/paperclip_runnerd-46cce78dbc4840c2.d",
   "paperclip-runnerd",
   "paperclip-runnerd.d",
+  "deps/paperclip_process_table-5a1b2c3d4e5f6071.d",
 ];
 
 test("mark-current discards a restore that lacks any file cargo needs for either unit, naming the file, so cargo sees a plain miss", () => {
@@ -529,7 +595,7 @@ test("mark-current discards a restore that lacks any file cargo needs for either
       rmSync(path.join(release, file));
       const result = markCurrent({ root: intact });
       assert.equal(result.action, "marked", `${file} missing must not discard the restore`);
-      assert.equal(result.files, 13, file);
+      assert.equal(result.files, 18, file);
     } finally {
       rmSync(intact, { recursive: true, force: true });
     }

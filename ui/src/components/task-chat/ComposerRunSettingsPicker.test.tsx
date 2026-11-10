@@ -8,6 +8,7 @@ import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentsApi } from "@/api/agents";
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
+import type { ComposerRunSettings } from "./composer-run-settings";
 import { getLastComposerEffort, rememberComposerEffort } from "@/lib/recent-composer-effort";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
@@ -47,6 +48,7 @@ function render(onAssigneeChange: (value: string) => void, onSettingsChange: () 
       modelOptionsOverride={useCatalog ? undefined : []} {...props} />
   </QueryClientProvider>;
   flushSync(() => root!.render(insideDialog ? <Dialog defaultOpen><DialogContent aria-describedby={undefined}><DialogTitle>New task</DialogTitle>{picker}</DialogContent></Dialog> : picker));
+  return queryClient;
 }
 
 beforeEach(() => localStorage.clear());
@@ -59,6 +61,21 @@ afterEach(() => {
 });
 
 describe("composer assignee picker", () => {
+  it.each([false, true])("allows model and effort changes with a fixed conversation agent (mobile: %s)", async (mobile) => {
+    const onAssigneeChange = vi.fn();
+    const onSettingsChange = vi.fn();
+    render(onAssigneeChange, onSettingsChange, false, { allowAssigneeChange: false, mobile,
+      modelOptionsOverride: [{ id: "gpt-6-astra", label: "GPT-6 Astra" }] });
+    expect(container!.querySelector('[aria-label="Select assignee"]')).toBeNull();
+    await click("Select model and effort");
+    expect(document.querySelector('[aria-label="Choose assignee"]')).toBeNull();
+    expect(document.querySelector('input[aria-label="Effort"]')).not.toBeNull();
+    await click("Choose exact model");
+    await click("GPT-6 Astra");
+    expect(onSettingsChange).toHaveBeenLastCalledWith({ model: "gpt-6-astra", effort: "high", fast: false });
+    expect(onAssigneeChange).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("keeps the trigger stable until the picker closes (mobile: %s)", async (mobile) => {
     function ControlledPicker() {
       const [settings, setSettings] = useState({ model: "gpt-6-sol", effort: "high", fast: false });
@@ -259,6 +276,67 @@ describe("composer assignee picker", () => {
     expect(choices.some((item) => item.includes("GPT-6 Sol"))).toBe(false);
   });
 
+  it.each(["copilot", "antigravity"])("keeps %s discovery passive during reconnect reconciliation and refreshes on opening", async acpxAgent => {
+    const copilot = { ...agent, adapterType: "paperclip_runner", defaultEnvironmentId: "daytona-1",
+      adapterConfig: { provider: "acpx", acpxAgent, model: "gpt-5.6-luna" } } as Agent;
+    const loadModels = vi.spyOn(agentsApi, "adapterModels")
+      .mockResolvedValueOnce([{ id: "gpt-5.6-luna", label: "Copilot Luna" }])
+      .mockResolvedValue([{ id: "gpt-5.6-luna", label: "Updated Copilot Luna" }]);
+    const client = render(vi.fn(), vi.fn(), true, { agents: new Map([[agent.id, copilot]]), settings: null });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(loadModels).not.toHaveBeenCalled();
+    await act(async () => { await client.invalidateQueries({ type: "active" }, { cancelRefetch: false }); });
+    expect(loadModels).not.toHaveBeenCalled();
+    await click("Select model and effort");
+    expect(loadModels).toHaveBeenCalledTimes(1);
+    await act(async () => { await client.invalidateQueries({ type: "active" }, { cancelRefetch: false }); });
+    expect(loadModels).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await click("Select model and effort");
+    expect(loadModels).toHaveBeenCalledTimes(2);
+    await click("Choose exact model");
+    expect(document.body.textContent).toContain("Updated Copilot Luna");
+  });
+
+  it.each([
+    { name: "Copilot", acpxAgent: "copilot", provider: "github", method: "api_key", model: "gpt-5.6-luna", label: "Copilot Luna" },
+    { name: "Antigravity", acpxAgent: "antigravity", provider: "google", method: "subscription", model: "gemini-exact", label: "Personal Gemini" },
+  ] as const)("discovers $name task models with the assignee connection and environment", async ({ acpxAgent, provider, method, model, label }) => {
+    const binding = { provider, method, mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" } as const;
+    const selectedAgent = { ...agent, adapterType: "paperclip_runner", defaultEnvironmentId: "daytona-1",
+      adapterConfig: { provider: "acpx", acpxAgent, model }, runtimeConfig: { aiConnection: binding } } as Agent;
+    const loadModels = vi.spyOn(agentsApi, "adapterModels").mockResolvedValueOnce([{ id: model, label }]);
+    render(vi.fn(), vi.fn(), true, { agents: new Map([[agent.id, selectedAgent]]), settings: null });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(loadModels).not.toHaveBeenCalled();
+    await click("Select model and effort");
+    expect(loadModels).toHaveBeenCalledWith("company-1", "paperclip_runner", {
+      environmentId: "daytona-1", provider: "acpx", poolId: undefined,
+      acpxAgent, agentId: agent.id, aiConnection: binding,
+    });
+    await click("Choose exact model");
+    expect(document.body.textContent).toContain(label);
+    expect(document.body.textContent).not.toContain("Claude Sonnet");
+  });
+
+  it.each(["subscription", "api_key"] as const)("allows an exact Antigravity model absent from its %s catalog", async method => {
+    const selectedAgent = { ...agent, adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-default" },
+      runtimeConfig: { aiConnection: { provider: "google", method, mode: "responsible_user" } } } as Agent;
+    vi.spyOn(agentsApi, "adapterModels").mockResolvedValue([{ id: "gemini-listed", label: "Listed native model" }]);
+    const onSettingsChange = vi.fn();
+    render(vi.fn(), onSettingsChange, true, { agents: new Map([[agent.id, selectedAgent]]), settings: null,
+      initialOpen: true, initialView: "models", initialModelSearch: "gemini-custom-exact" });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    const manual = [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Use exact ID"));
+    expect(manual?.disabled).toBe(false);
+    await act(async () => manual!.click());
+    expect(onSettingsChange).toHaveBeenLastCalledWith(expect.objectContaining({ model: "gemini-custom-exact" }));
+  });
+
   it("preserves settings when the selected assignee is chosen again", async () => {
     const onAssigneeChange = vi.fn();
     const onSettingsChange = vi.fn();
@@ -298,6 +376,55 @@ describe("composer assignee picker", () => {
     expect(document.querySelector('[aria-label="Choose exact model"]')).toBeNull();
     expect(document.body.textContent).not.toContain("Choose an agent");
     expect(loadModels).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("hides unsupported Muse settings without loading a catalog (mobile: %s)", async (mobile) => {
+    const loadModels = vi.spyOn(agentsApi, "adapterModels").mockResolvedValue([]);
+    const onSettingsChange = vi.fn();
+    const muse = { ...agent, adapterType: "paperclip_runner", adapterConfig: { provider: "muse", model: "old-model" } } as Agent;
+    rememberComposerEffort("company-1", "high");
+    render(vi.fn(), onSettingsChange, true, { mobile, settings: null, agents: new Map([[muse.id, muse]]) });
+    expect(container!.querySelector('[aria-label="Select model and effort"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="task-chat-composer-model-label"]')).toBeNull();
+    await click("Select assignee");
+    expect(document.querySelector('[aria-label="Search assignees"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Choose exact model"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Effort"]')).toBeNull();
+    expect(loadModels).not.toHaveBeenCalled();
+    expect(onSettingsChange).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("removes an open model menu when the same agent switches to Muse (mobile: %s)", async (mobile) => {
+    const onSettingsChange = vi.fn();
+    function ControlledPicker() {
+      const [muse, setMuse] = useState(false);
+      const [settings, setSettings] = useState<ComposerRunSettings | null>({ model: "gpt-6-sol", effort: "high", fast: true });
+      const selectedAgent = muse
+        ? { ...agent, adapterType: "paperclip_runner", adapterConfig: { provider: "muse" } } as Agent
+        : agent;
+      return <>
+        <button type="button" aria-label="Switch to Muse" onClick={() => setMuse(true)}>Switch to Muse</button>
+        <ComposerRunSettingsPicker companyId="company-1" assigneeValue="agent:a1" currentAssigneeValue="agent:a1"
+          options={options} agents={new Map([[agent.id, selectedAgent]])} settings={settings}
+          onSettingsChange={(next) => { onSettingsChange(next); setSettings(next); }} onAssigneeChange={vi.fn()} mobile={mobile}
+          modelOptionsOverride={[{ id: "gpt-6-sol", label: "GPT-6 Sol" }]} />
+      </>;
+    }
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    flushSync(() => root!.render(<QueryClientProvider client={new QueryClient()}><ControlledPicker /></QueryClientProvider>));
+    await click("Select model and effort");
+    await click("Choose exact model");
+    expect(document.querySelector('[aria-label="Search or paste a model ID"]')).not.toBeNull();
+    await click("Switch to Muse");
+    expect(container!.querySelector('[aria-label="Select model and effort"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Search or paste a model ID"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose exact model"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Effort"]')).toBeNull();
+    expect(document.querySelector('[data-testid="model-unavailable"]')?.textContent).toContain("Muse chooses its model and effort");
+    expect(onSettingsChange).toHaveBeenCalledOnce();
+    expect(onSettingsChange).toHaveBeenCalledWith(null);
   });
 
   it("opens the assignee list directly on mobile", async () => {

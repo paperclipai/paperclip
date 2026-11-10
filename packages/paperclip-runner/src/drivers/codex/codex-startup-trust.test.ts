@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert";
 import {
   mkdtempSync,
   mkdirSync,
@@ -96,6 +97,61 @@ describe.each([
         const refreshed = updated.replace(managed, managed.replace('/old', '/new'));
         expect((parse(refreshed).mcp_servers as Record<string, {url: string}>).fixture.url).toBe('https://example.invalid/new');
       } finally { rmSync(temp, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each(["missing", "untrusted", "trusted"])(
+    "preserves nested TOML values and sibling trust with target trust %s",
+    (trust) => {
+      const temp = realpathSync(mkdtempSync(join(tmpdir(), "codex-trust-values-")));
+      try {
+        const cwd = join(temp, "project");
+        const home = join(temp, "home");
+        mkdirSync(cwd);
+        mkdirSync(home);
+        const unrelated = [
+          'special = [nan, inf, -inf, -0.0]',
+          'created = 2026-10-12T19:04:14Z',
+          'local_date = 2026-10-12',
+          'local_time = 19:04:14',
+          '[projects."/unrelated"]',
+          'trust_level = "untrusted"',
+          'settings = { __proto__ = { keep = true }, constructor = { name = "unchanged" } }',
+          '[[mcp_servers.fixture.entries]]',
+          'name = "unchanged"',
+          '',
+        ].join("\n");
+        const target = trust === "missing" ? "" : [
+          `[projects.${JSON.stringify(cwd)}]`,
+          `trust_level = "${trust}" # retain target comment`,
+          `[projects.${JSON.stringify(cwd)}.settings]`,
+          'nested = { __proto__ = { keep = true }, values = [nan, -0.0] }',
+          '',
+        ].join("\n");
+        const original = unrelated + target;
+        writeFileSync(join(home, "config.toml"), original);
+
+        trustCodexStartupRoot(home, cwd);
+
+        const updated = readFileSync(join(home, "config.toml"), "utf8");
+        expect(updated.startsWith(unrelated)).toBe(true);
+        if (trust !== "missing") {
+          expect(updated).toBe(unrelated + target.replace(
+            'trust_level = "untrusted"', 'trust_level = "trusted"',
+          ));
+        }
+        const expected = parse(original);
+        const actual = parse(updated);
+        const projects = actual.projects as Record<string, Record<string, unknown>>;
+        expect(projects[cwd].trust_level).toBe("trusted");
+        if (trust === "missing") delete projects[cwd];
+        else projects[cwd].trust_level = trust;
+        deepStrictEqual(actual, expected);
+        trustCodexStartupRoot(home, cwd);
+        expect(readFileSync(join(home, "config.toml"), "utf8")).toBe(updated);
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
     },
   );
 

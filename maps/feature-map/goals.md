@@ -6,15 +6,17 @@ navigation: {"section":"Projects and execution","sectionOrder":40,"order":20}
 
 People define company and lower-level goals and connect projects and tasks to the outcome they serve.
 
+Feature ID: `goals`.
+
 Implementation: [goals](../../ui/src/pages/Goals.tsx), [goal detail](../../ui/src/pages/GoalDetail.tsx).
 
 Agent access: [companion](../agent-access-map/goals.md).
 
 ## Sub-features
 
-- `hierarchy`: create and inspect goal level, parent, owner, and status.
-- `alignment`: associate work with a valid goal in the same company.
-- `navigation`: follow goal/project/task context to understand why work exists.
+- `hierarchy`: `goals/hierarchy` — create and inspect goal level, parent, owner, and status.
+- `alignment`: `goals/alignment` — associate work with a valid goal in the same company.
+- `navigation`: `goals/navigation` — follow goal/project/task context to understand why work exists.
 
 ## How to get to it (user POV)
 
@@ -56,12 +58,16 @@ Manual: Compare a task with an explicit goal to one relying on project context. 
 
 #### `alignment`
 
+Capability ID: `goals/alignment`.
+
 Scope: ui
 Storybook: Project/task goal selection, explicit/inherited context and invalid association error.
 Production: Persist same-company valid association, reject invalid/cross-company reference, verify explicit versus inherited server context after reload.
 Sources: Source: [ProjectProperties.tsx](../../ui/src/components/ProjectProperties.tsx), [GoalDetail.tsx](../../ui/src/pages/GoalDetail.tsx). Tests: [project-goal-validation.test.ts](../../server/src/__tests__/project-goal-validation.test.ts), [issues-goal-context-routes.test.ts](../../server/src/__tests__/issues-goal-context-routes.test.ts), [issue-goal-fallback.test.ts](../../server/src/__tests__/issue-goal-fallback.test.ts), [project-goal.test.ts](../../cli/src/__tests__/project-goal.test.ts)
 
 #### `navigation`
+
+Capability ID: `goals/navigation`.
 
 Scope: ui
 Storybook: Parent/child goal and project/task context links, empty/unavailable context and permitted destination.

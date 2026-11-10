@@ -6,6 +6,7 @@ import { completionContracts } from "@paperclipai/db";
 import type { NativeCompletionSource, StrictCompletionContractInput } from "../../vendor/paperclip-runner/index.js";
 
 import { nativeSha256 } from "./canonical.js";
+import { isConversation, type ConversationIdentity } from "../agent-conversations.js";
 
 export const NATIVE_COMPLETION_CONTRACT_SCHEMA = "paperclip.completion-contract.v1";
 export const NATIVE_COMPLETION_POLICY_VERSION = "phase6-v4";
@@ -87,7 +88,7 @@ export function resolveNativeCompletionPolicy(issue: {
 }
 
 export function buildNativeCompletionContract(
-  issue: { title: string; description: string | null },
+  issue: { title: string; description: string | null } & ConversationIdentity,
   options: {
     readonly revision?: number;
     readonly immediateRequest?: string | null;
@@ -104,19 +105,26 @@ export function buildNativeCompletionContract(
     .filter((request) => request.length > 0);
   const humanResponseId = options.humanResponseId?.trim();
   const hasFollowUp = immediateRequests.length > 0 || Boolean(humanResponseId);
+  const conversation = isConversation(issue);
+  const requirement = (request: string) => conversation
+    ? `Address this request in the current authorized conversation response: ${request}`
+    : request;
   // Reference existing context rather than copying the brief/history into every
   // follow-up contract. Keep this guidance stable across comments and resumes.
   const followUpObjective = "Complete the current authorized stage using the task brief and current user direction in the supplied context. Later human direction replaces conflicting scope; preserve other requirements, assigned-skill instructions, and approval gates. Apply authenticated humanResponses only to their question or decision. Clarification is not approval. If acceptance is required, propose or save the requested plan and wait before executing.";
+  const conversationObjective = "Complete the current conversation response using the supplied context and current user direction. Carry out requested chat actions within current authority and verify their results before claiming success. For delegated work, verify the saved handoff and report it without waiting for or performing the worker's task. For an unavailable action, explain the specific limitation and supported handoff without claiming the action occurred. Finishing this response leaves underlying delegated or unavailable work incomplete until separately verified. Later human direction replaces conflicting scope; preserve other requirements, assigned-skill instructions, and approval gates. Apply authenticated humanResponses only to their question or decision. Clarification is not approval.";
   return {
     revision: String(options.revision ?? 1),
-    objective: hasFollowUp
-      ? followUpObjective
-      : issue.title,
+    objective: conversation
+      ? conversationObjective
+      : hasFollowUp
+        ? followUpObjective
+        : issue.title,
     criteria: hasFollowUp
       ? [
           ...immediateRequests.map((request, index) => ({
             id: immediateRequests.length === 1 ? "objective" : `pending_comment_${index + 1}`,
-            requirement: request,
+            requirement: requirement(request),
           })),
           ...(humanResponseId ? [{
             id: "human_response",
@@ -127,10 +135,26 @@ export function buildNativeCompletionContract(
           {
             id: "objective",
             requirement:
-              issue.description?.trim() || `Complete: ${issue.title}`,
+              requirement(issue.description?.trim() || (conversation ? "Respond to the current conversation context." : `Complete: ${issue.title}`)),
           },
         ],
   };
+}
+
+function nativeCompletionContractLockKey(companyId: string, issueId: string): string {
+  return `paperclip:native-completion-contract:${companyId}:${issueId}`;
+}
+
+export async function lockCurrentNativeCompletionContract(tx: Db, input: {
+  companyId: string; issueId: string; contractId: string;
+}): Promise<boolean> {
+  const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(
+    ${nativeCompletionContractLockKey(input.companyId, input.issueId)}, 0)) as acquired`) as unknown as Array<{ acquired: boolean }>;
+  if (!lock.acquired) return false;
+  const [latest] = await tx.select({ id: completionContracts.id }).from(completionContracts)
+    .where(and(eq(completionContracts.companyId, input.companyId), eq(completionContracts.issueId, input.issueId)))
+    .orderBy(desc(completionContracts.revision)).limit(1);
+  return latest?.id === input.contractId;
 }
 
 export async function ensureNativeCompletionContract(input: {
@@ -141,6 +165,8 @@ export async function ensureNativeCompletionContract(input: {
     title: string;
     description: string | null;
     reviewPolicy?: string | null;
+    conversationAgentId?: string | null;
+    conversationUserId?: string | null;
   };
   actorId: string;
   immediateRequest?: string | null;
@@ -151,11 +177,8 @@ export async function ensureNativeCompletionContract(input: {
   humanResponseId?: string | null;
 }) {
   return input.db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${[
-      "paperclip:native-completion-contract",
-      input.companyId,
-      input.issue.id,
-    ].join(":")}, 0))`);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
+      ${nativeCompletionContractLockKey(input.companyId, input.issue.id)}, 0))`);
     const policy = resolveNativeCompletionPolicy(input.issue);
     const latest = await tx
       .select()

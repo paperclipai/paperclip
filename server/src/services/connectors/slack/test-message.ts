@@ -1,3 +1,4 @@
+import { toolAccessPolicyService } from "../../tool-access-policy.js";
 import { and, eq, gte, inArray, ne } from "drizzle-orm";
 import { agents, chatActions, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, chatSlackManagerGrants, companyMemberships, toolConnections, type Db } from "@paperclipai/db";
 import { slackTestMessageSchema, type SlackTestMessageInput, type SlackTestMessageResult } from "@paperclipai/shared";
@@ -19,6 +20,7 @@ const human = (user: Record<string, unknown>, workspaceId: string) =>
 export function slackTestMessageService(db: Db, options: Options) {
   const api = createSlackSetupClient(options.fetch);
   return async (endpointId: string, actor: SlackSetupActor, rawInput: SlackTestMessageInput): Promise<SlackTestMessageResult> => {
+    await actor.managementContext?.reauthorize();
     const input = slackTestMessageSchema.parse(rawInput);
     if (!(await instanceSettingsService(db).getExperimental()).enableChatConnectors) throw forbidden("Chat connectors are disabled");
     return options.withLock(endpointId, async lease => {
@@ -34,6 +36,35 @@ export function slackTestMessageService(db: Db, options: Options) {
         eq(companyMemberships.principalId, actor.userId), eq(companyMemberships.status, "active"), ne(companyMemberships.membershipRole, "viewer"),
       ));
       if (!membership) throw forbidden("An active Paperclip account is required");
+      async function authorizeTestMessage() {
+        const context = actor.managementContext;
+        if (context?.actor.type !== "agent") return;
+        await context.reauthorize();
+        const policy = toolAccessPolicyService(db);
+        const request = {
+          companyId: endpoint.companyId,
+          actor: { actorType: "agent" as const, actorId: context.actor.agentId!, agentId: endpoint.assignedAgentId },
+          runContext: { heartbeatRunId: context.workContext.runId, issueId: context.workContext.issueId,
+            projectId: context.workContext.projectId, originatingAgentId: context.actor.agentId! },
+          consumeRateLimit: true,
+          request: { connectionId: endpoint.connectionId, providerType: "slack", applicationKey: "slack",
+            toolName: "slack.send_message", upstreamToolName: "chat.postMessage", riskLevel: "write" as const,
+            sideEffecting: true, arguments: { purpose: "setup_test", recipient: actor.userId } },
+        };
+        const callerRequest = context.actor.agentId !== endpoint.assignedAgentId
+          ? { ...request, actor: { ...request.actor, agentId: context.actor.agentId! } } : null;
+        const callerDecision = callerRequest ? await policy.decide(callerRequest) : null;
+        const targetDecision = await policy.decide(request, { sharedRateDecision: callerDecision ?? undefined });
+        // Either principal's denial or Ask first decision prevents dispatch.
+        // The evaluator shares an admission only for the identical rate bucket.
+        const decision = callerDecision && !callerDecision.allowed && callerDecision.decision !== "require_approval" ? callerDecision
+          : !targetDecision.allowed ? targetDecision
+            : callerDecision?.decision === "require_approval" ? callerDecision : targetDecision;
+        if (callerRequest && callerDecision) await policy.writeAudit(callerRequest, callerDecision);
+        await policy.writeAudit(request, targetDecision);
+        if (!decision.allowed) throw forbidden(decision.explanation, { reasonCode: decision.reasonCode,
+          requiredUserAction: decision.decision === "require_approval" ? { kind: "approve", reason: "Request this message through the normal Slack tool approval flow." } : undefined });
+      }
       const actionKey = `slack_test_message:${actor.userId}:${input.requestId}`;
       const [previous] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpointId), eq(chatActions.companyId, endpoint.companyId), eq(chatActions.providerActionId, actionKey)));
       if (previous) {
@@ -86,6 +117,7 @@ export function slackTestMessageService(db: Db, options: Options) {
           if (!expiresAt || new Date(expiresAt).getTime() <= Date.now()) throw conflict("The Slack invitation expired. Request a new test message.");
           return { status: "connection_pending", principalId, expiresAt };
         }
+        await authorizeTestMessage();
         // The account holder must follow the private Slack challenge and sign in.
         // Selecting a workspace member does not prove identity ownership.
         const intent = await options.createLinkIntent(endpointId, principalId, 600);
@@ -104,12 +136,13 @@ export function slackTestMessageService(db: Db, options: Options) {
           await db.update(chatActions).set({ status: "uncertain", result: { code: "slack_invitation_unconfirmed" }, updatedAt: new Date() }).where(eq(chatActions.id, pending!.id));
           throw unprocessable("Invitation delivery was not confirmed. Check Slack before requesting another.");
         }
-        try { await logActivity(db, { companyId: endpoint.companyId, actorType: "user", actorId: actor.userId, action: "chat_slack.test_message_invited", entityType: "tool_connection", entityId: endpoint.connectionId, details: { endpointId, slackUserId: userId } }); }
+        try { await logActivity(db, { companyId: endpoint.companyId, ...(actor.managementContext?.audit ?? { actorType: "user" as const, actorId: actor.userId }), action: "chat_slack.test_message_invited", entityType: "tool_connection", entityId: endpoint.connectionId, details: { endpointId, slackUserId: userId } }); }
         catch { logger.warn({ endpointId }, "Slack test invitation activity could not be recorded"); }
         return { status: "connection_pending", principalId, expiresAt: intent.expiresAt };
       }
+      await authorizeTestMessage();
       await options.linkInstaller(endpointId, user, actor, lease);
-      await logActivity(db, { companyId: endpoint.companyId, actorType: "user", actorId: actor.userId, action: "chat_slack.test_message_requested", entityType: "tool_connection", entityId: endpoint.connectionId, details: { endpointId, slackUserId: userId } });
+      await logActivity(db, { companyId: endpoint.companyId, ...(actor.managementContext?.audit ?? { actorType: "user" as const, actorId: actor.userId }), action: "chat_slack.test_message_requested", entityType: "tool_connection", entityId: endpoint.connectionId, details: { endpointId, slackUserId: userId } });
       await lease.assertOwned();
       // Persist before dispatch: a crash or ambiguous response must never replay the DM.
       const [action] = await db.insert(chatActions).values({ companyId: endpoint.companyId, endpointId, kind: "slack_test_message", providerActionId: actionKey,
@@ -126,7 +159,7 @@ export function slackTestMessageService(db: Db, options: Options) {
         await db.update(chatActions).set({ status: "uncertain", result: { code: "slack_test_message_unconfirmed" }, updatedAt: new Date() }).where(eq(chatActions.id, action!.id));
         throw unprocessable("Delivery was not confirmed. Check your Slack DMs before sending another test message.");
       }
-      try { await logActivity(db, { companyId: endpoint.companyId, actorType: "user", actorId: actor.userId, action: "chat_slack.test_message_sent", entityType: "tool_connection", entityId: endpoint.connectionId, details: { endpointId, slackUserId: userId } }); }
+      try { await logActivity(db, { companyId: endpoint.companyId, ...(actor.managementContext?.audit ?? { actorType: "user" as const, actorId: actor.userId }), action: "chat_slack.test_message_sent", entityType: "tool_connection", entityId: endpoint.connectionId, details: { endpointId, slackUserId: userId } }); }
       catch { logger.warn({ endpointId }, "Slack test message activity could not be recorded"); }
       return { status: "sent", slackUrl };
     });

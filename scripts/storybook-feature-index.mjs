@@ -8,7 +8,7 @@ export const generatedRoot = "ui/storybook/generated";
 export const generatedPreview = "ui/storybook/.storybook/preview.tsx";
 
 export function featureOrder(index) {
-  return ["Overview", ...index.sections.flatMap(section => [sidebarLabel(section.title),
+  return ["Overview", "Design proposals", ["Foundations", "Components", "Layouts", "Pages", "AI Generated Test Pages", "Patterns", "Guidelines"], ...index.sections.flatMap(section => [sidebarLabel(section.title),
     section.features.flatMap(feature => [sidebarLabel(feature.title), ["Overview", "*"]]),
   ]), "Foundations"];
 }

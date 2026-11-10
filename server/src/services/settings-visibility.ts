@@ -1,5 +1,6 @@
-import { parseHiddenSettingsList } from "@paperclipai/shared";
+import { experimentalSettingKey, INSTANCE_FEATURE_KEYS, parseHiddenSettingsList } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
+import { isCloudStagingExperimentalSetting, isCloudStagingInstance } from "./cloud-instance.js";
 
 /**
  * Operator-hidden settings, from the `PAPERCLIP_HIDDEN_SETTINGS` env var
@@ -11,20 +12,14 @@ export const HIDDEN_SETTINGS_ENV_KEY = "PAPERCLIP_HIDDEN_SETTINGS";
 
 export type HiddenSettingsEnv = Record<string, string | undefined>;
 
-let cache: { raw: string | undefined; hidden: ReadonlySet<string> } | null = null;
+let cache: { raw: string | undefined; staging: boolean; hidden: ReadonlySet<string> } | null = null;
 
-/**
- * Parse-once accessor keyed on the raw env value. Callers that pass a custom
- * env (tests) get a fresh parse whenever the raw value differs; process.env
- * callers share one parsed set for the process lifetime. Members are always
- * `HideableSettingKey`s; typed as strings so route code can probe with
- * computed `instance.*` keys.
- */
 export function getHiddenSettings(
   env: HiddenSettingsEnv = process.env,
 ): ReadonlySet<string> {
   const raw = env[HIDDEN_SETTINGS_ENV_KEY];
-  if (cache && cache.raw === raw) return cache.hidden;
+  const staging = isCloudStagingInstance(env);
+  if (cache && cache.raw === raw && cache.staging === staging) return cache.hidden;
   const { hidden, unknown } = parseHiddenSettingsList(raw);
   if (unknown.length > 0) {
     logger.warn(
@@ -32,6 +27,12 @@ export function getHiddenSettings(
       `${HIDDEN_SETTINGS_ENV_KEY} contains unknown keys; they are ignored`,
     );
   }
-  cache = { raw, hidden: new Set(hidden) };
+  const visibleOnStaging = (key: string) =>
+    key === "instance.experimental"
+    || (key.startsWith("instance.experimental.") && isCloudStagingExperimentalSetting(key.slice("instance.experimental.".length)));
+  const expanded = staging && hidden.includes("instance.experimental")
+    ? [...hidden, ...INSTANCE_FEATURE_KEYS.map(experimentalSettingKey)]
+    : hidden;
+  cache = { raw, staging, hidden: new Set(staging ? expanded.filter((key) => !visibleOnStaging(key)) : hidden) };
   return cache.hidden;
 }

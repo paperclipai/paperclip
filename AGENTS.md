@@ -2,29 +2,26 @@
 
 Guidance for human and AI contributors working in this repository.
 
+This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
+The invariants and rules below record what has been decided so far. If you think one of them is wrong, say so and propose the change; do not work around it.
+
 ## 1. Purpose
 
 Paperclip is a control plane for AI-agent companies.
-The current implementation target is V1 and is defined in `doc/SPEC-implementation.md`.
+The code and its tests are the source of truth for current behavior.
+`doc/SPEC-implementation.md` and `doc/SPEC.md` are background. They can be out of date, so do not treat them as requirements when they disagree with the code or with the task.
 
 ## 2. Read This First
 
-Before making changes, read in this order:
+Read the doc that matches your change before you start:
 
-1. `doc/GOAL.md`
-2. `doc/PRODUCT.md`
-3. `doc/SPEC-implementation.md`
-4. `doc/DEVELOPING.md`
-5. `doc/DATABASE.md`
-
-`doc/SPEC.md` is long-horizon product context.
-`doc/SPEC-implementation.md` is the concrete V1 build contract.
-
-When adding or changing an Apps catalog connection, also follow
-`doc/connections/CONNECTOR-PLAYBOOK.md`. It is the canonical connection
-authoring runbook for provider research, supported transport/auth patterns,
-credential handling, branding, implementation, testing, live proof, and PR
-submission.
+| Your change touches | Read |
+| --- | --- |
+| Product behavior or scope | `doc/GOAL.md`, `doc/PRODUCT.md` |
+| Setup, commands, testing, worktrees | `doc/DEVELOPING.md` |
+| Schema, migrations, DB clients | `doc/DATABASE.md` |
+| An Apps catalog connection | `doc/connections/CONNECTOR-PLAYBOOK.md` (the canonical connection authoring runbook) |
+| Anything under `ui/` | `DESIGN.md` |
 
 ### Scoped repository rules
 
@@ -35,13 +32,8 @@ means the rule applies throughout the repository. Read all rules whose scope
 matches the affected files. These rules supplement this file and any applicable
 nested `AGENTS.md` instructions.
 
-For `server/src/services/chat-channels.ts` and everything under
-`server/src/services/chat-channels/`, read
-[`rules/chat-channel-platform-boundaries.mdc`](rules/chat-channel-platform-boundaries.mdc).
-For `server/src/services/heartbeat.ts`, `server/src/services/heartbeat/`,
-heartbeat-prefixed sibling services, and heartbeat regression tests, read
-[`rules/heartbeat-execution-boundaries.mdc`](rules/heartbeat-execution-boundaries.mdc).
-See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
+The frontmatter is the source of truth for scope, so this file does not list the
+rules. See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
 
 ## 3. Repo Map
 
@@ -57,20 +49,30 @@ See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
 - `cli/`: `paperclipai` CLI package (published bin, agent-facing commands)
 - `skills/`: Paperclip runtime/operational skills (not part of the app catalog)
 - `doc/`: operational and product docs
+- `rules/`: scoped repository rules (see section 2)
 
 ## 4. Dev Setup (Auto DB)
 
-Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
+Prepare a new or updated worktree with one command:
 
 ```sh
-pnpm install
+node scripts/agent-preflight.mjs
+```
+
+Use it instead of running `pnpm install`, the Runner build, and `build:rust` by
+hand. It skips unchanged steps and reuses other worktrees' builds from a
+content-keyed cache in `~/.cache/paperclip/agent-build`. Do not share
+`CARGO_TARGET_DIR` between worktrees. See "Agent worktree preflight" in
+`doc/DEVELOPING.md`.
+
+Start the app. Leave `DATABASE_URL` unset to use embedded PGlite:
+
+```sh
 pnpm dev
 ```
 
-This starts:
-
-- API: `http://localhost:3100`
-- UI: `http://localhost:3100` (served by API server in dev middleware mode)
+This serves the API and the UI at `http://localhost:3100` (the API server serves
+the UI in dev middleware mode).
 
 Quick checks:
 
@@ -79,7 +81,7 @@ curl http://localhost:3100/api/health
 curl http://localhost:3100/api/companies
 ```
 
-Reset local dev DB:
+Reset the local dev DB. This deletes all local dev data:
 
 ```sh
 rm -rf data/pglite
@@ -95,6 +97,10 @@ Explicit exception: announcement dismissals are instance-wide user preferences,
 keyed by user and announcement so they persist across companies. Their audit
 context must still validate company membership. The announcement publication-ID
 registry is instance-level feed metadata; it contains no company or user data.
+Personal workspace presentation preferences are also instance-wide by user, with
+validated company membership supplying audit context. They never grant execution
+authority, change company capabilities or agent configuration, or rewrite canonical
+work records. Optional conversation guidance must retain the same action permissions.
 
 2. Keep contracts synchronized.
 If you change schema/API behavior, update all impacted layers:
@@ -111,7 +117,7 @@ If you change schema/API behavior, update all impacted layers:
 - Activity logging for mutating actions
 
 4. Do not replace strategic docs wholesale unless asked.
-Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
+Prefer additive updates.
 
 5. Keep repo plan docs dated and centralized.
 When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
@@ -122,28 +128,11 @@ When your task produces a user-inspectable deliverable file, follow the Papercli
 7. Name the three data paths correctly.
 This repo has three separate data paths. Do not confuse them. Match a change to a path by its file path, not by the word "observability" or "telemetry" alone.
 
-- **Telemetry** is the Paperclip first-party event system. It is opt-out and it sends data to a Paperclip endpoint by default. Its paths are:
-  - `packages/shared/src/telemetry/`
-  - the generated contract `packages/shared/src/telemetry/generated/paperclip-telemetry.ts`
-  - each caller of `packages/shared/src/telemetry/events.ts` or `packages/shared/src/telemetry/client.ts`
-- **Observability** is the OpenTelemetry trace path. An operator must set an OTLP endpoint. Until an operator sets the endpoint, the tracer is a no-operation. Its paths are:
-  - `server/src/instrumentation.ts`
-  - `doc/observability.md`
-  - `packages/adapter-utils/src/duplex-observability.ts`
-  - `server/src/services/duplex-observability-recorder.ts`
-  - the span attributes in `packages/adapter-utils/src/acpx-engine/startup-timing.ts`
-- **The run log** holds rows in the local `heartbeat_run_events` table. The data stays in the instance database. Its paths are:
-  - `doc/run-log-events.md`
-  - `packages/db/src/schema/heartbeat_run_events.ts`
-  - the append path `appendRunEvent` in `server/src/services/heartbeat.ts`
+- **Telemetry** is the Paperclip first-party event system under `packages/shared/src/telemetry/`. It sends data to a Paperclip endpoint by default, so a change needs strict review: generated contract first, README update, privacy review.
+- **Observability** is the OpenTelemetry trace path. It is a no-operation until an operator sets an OTLP endpoint. A change needs lighter review while it keeps that gate and stays inside the span-attribute allowlist.
+- **The run log** holds rows in the local `heartbeat_run_events` table. The data stays in the instance database, so a change needs no extra review.
 
-Apply a review level that matches the path:
-
-- **Telemetry change (strict review).** The author updates the generated contract first. The author updates `packages/shared/src/telemetry/README.md` in the same pull request. The author requests a privacy review. Reason: a Telemetry event goes to a Paperclip endpoint by default, so a mistake sends data immediately.
-- **Observability change (lighter review).** The operator endpoint gate stays in place. The no-operation behaviour stays when no endpoint is set. A privacy review is not necessary while the change stays inside the closed span-attribute allowlist.
-- **Run-log change (no extra review).** A run-log change needs neither review level above, because the data stays in the instance database.
-
-**Exclusion.** The word "observability" in a file such as `server/src/services/recovery-observability.ts` names a different concept. Apply this rule by path, not by word match.
+Before you change any of these paths or add a Telemetry caller, read [`rules/data-paths.mdc`](rules/data-paths.mdc) for the exact file paths and review requirements.
 
 ## 6. Database Change Workflow
 
@@ -169,42 +158,46 @@ Notes:
 
 ## 7. Verification Before Hand-off
 
-[maps/feature-map/README.md](maps/feature-map/README.md) is an optional reference for user
-entry points, verification recipes, and coverage gaps. The map records coverage
-scope, not proof that a live journey passed.
-
-The sibling [agent access map](maps/agent-access-map/README.md) records APIs,
-agent entry points and permission boundaries using the same capability IDs.
-Follow [the map contract](maps/README.md): update affected entries when mapped
-behavior or access changes, and run `node scripts/check-maps.mjs` after map edits.
-Its structural checks do not prove live behavior or authorization.
-
-Storybook has a downstream [feature catalog](maps/storybook-map/README.md).
-Use `maintain-storybook` for story/fixture drift and `review-storybook` for browser
-evidence. Keep the feature-map skills independent of this catalog. After story or recipe changes, update the affected source annotations or
-recipe and run `node scripts/storybook-catalog.mjs`. Indexes are generated and
-ignored; never commit aggregate catalogs, refresh review fingerprints, or append
-a shared review journal. Use Git diffs and keep review evidence in the PR or issue.
-Structural checks are not production acceptance.
-
-Default local/agent test path:
+Run the smallest check that proves the change. The default local and agent path is:
 
 ```sh
-pnpm test
+pnpm verify
 ```
 
-This is the cheap default and only runs the Vitest suite. Browser suites stay opt-in:
+This selects affected Vitest files with the same conservative dependency policy
+as CI. It includes committed, staged, unstaged, and untracked changes against the
+merge base with local `origin/master` (or `master`), and it reuses passing checks
+whose inputs are unchanged. Use `--base <ref>` for another base, `--explain` to
+inspect the selection, and `--no-cache` for fresh execution. See "Incremental
+local verification" in `doc/DEVELOPING.md` for how reuse and invalidation work.
 
-```sh
-pnpm test:e2e
-pnpm test:release-smoke
-```
+Follow these rules:
 
-Run the browser suites only when your change touches them or when you are explicitly verifying CI/release flows.
+- **Exit 2 means the change needs broader verification.** Run focused checks and
+  let required CI supply that coverage, or explicitly use `pnpm verify --full`
+  for the full local Vitest suite. Do not automatically follow exit 2 with a full
+  local run.
+- **Do not default to repo-wide checks.** Do not run repo-wide typecheck, build,
+  or test on every heartbeat when a narrower check is enough to prove the change.
+  Use the broad checks below only when they resolve an actual remaining gap, such
+  as a local platform fault or explicit full-suite qualification.
+- **Browser suites stay opt-in.** Run `pnpm test:e2e` and
+  `pnpm test:release-smoke` only when your change touches them or when you are
+  explicitly verifying CI/release flows.
+- **CI covers the final revision.** For a PR-ready handoff, run the relevant local
+  checks and require the applicable CI typecheck, build, and test checks to pass
+  for the final tested revision. Record their scope, revision, environment, and
+  result links. Fresh CI can supply broad coverage; do not duplicate a full local
+  run merely to prepare a PR, resume a chat, or repeat unchanged passing
+  verification. A selected local pass does not replace required CI, release
+  qualification, browser acceptance, or a local/platform-specific regression.
+- **Evidence expires.** After edits or a rebase, rerun affected checks and
+  invalidate evidence whose inputs or required coverage changed. Failed or
+  interrupted attempts are never passes.
+- **Report gaps.** If anything cannot be run, explicitly report what was not run
+  and why.
 
-For normal issue work, run the smallest relevant verification first. Do not default to repo-wide typecheck/build/test on every heartbeat when a narrower check is enough to prove the change.
-
-Run this full check before claiming repo work done in a PR-ready hand-off, or when the change scope is broad enough that targeted checks are not sufficient:
+Broad local checks:
 
 ```sh
 pnpm -r typecheck
@@ -212,7 +205,25 @@ pnpm test:run
 pnpm build
 ```
 
-If anything cannot be run, explicitly report what was not run and why.
+`pnpm test` and `pnpm test:run` run the full suite. If memory is limited, use
+`node scripts/typecheck-low-memory.mjs` instead of `pnpm -r typecheck`. See
+`doc/DEVELOPING.md`.
+
+### Maps and Storybook
+
+The [feature map](maps/feature-map/README.md) and the sibling
+[agent access map](maps/agent-access-map/README.md) are optional references for
+user entry points, agent entry points, permission boundaries, verification
+recipes, and coverage gaps. They record coverage scope, not proof that a live
+journey passed. Routine fixes, polish, refactors, and test changes do not require
+map updates. When you do edit a map, follow
+[the feature-map scope rule](rules/feature-map-scope.mdc) and
+[the map contract](maps/README.md), then run `node scripts/check-maps.mjs`.
+
+After story or recipe changes, update the affected source annotations or recipe
+and run `node scripts/storybook-catalog.mjs`. Indexes are generated and ignored;
+never commit them. See the [Storybook feature catalog](maps/storybook-map/README.md)
+for the full workflow. Structural checks are not production acceptance.
 
 ## 8. API and Auth Expectations
 
@@ -235,6 +246,10 @@ When adding endpoints:
 - Surface failures clearly; do not silently ignore API errors
 - Form and wizard footers: keep Save & exit (or Cancel/Back) left and the primary action right in the same vertically aligned row. Each step owns the entire footer; never append Save & exit as a separate row. See `DESIGN.md`.
 
+### Design system
+
+`DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.
+
 ## 10. Pull Request Requirements
 
 When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
@@ -250,12 +265,8 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 
 A change is done when all are true:
 
-1. Behavior matches `doc/SPEC-implementation.md`
-2. Typecheck, tests, and build pass
+1. Behavior matches what the task asked for and preserves the invariants in section 5
+2. Relevant local verification and required CI typecheck, test, and build checks pass for the final revision, with any acceptance or platform-specific gaps resolved (section 7)
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
-
-## Design system
-
-`DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.

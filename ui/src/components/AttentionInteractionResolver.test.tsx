@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, expect, it, vi } from "vitest";
 import { issuesApi } from "../api/issues";
-import { pendingRequestConfirmationInteraction } from "../fixtures/issueThreadInteractionFixtures";
+import { pendingRequestConfirmationInteraction, pendingRequestItemVerdictsInteraction } from "../fixtures/issueThreadInteractionFixtures";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
@@ -17,12 +17,34 @@ vi.mock("@/lib/router", () => ({
 }));
 
 vi.mock("../api/issues", () => ({
-  issuesApi: { listInteractions: vi.fn(), acceptInteraction: vi.fn() },
+  issuesApi: { listInteractions: vi.fn(), acceptInteraction: vi.fn(), submitInteractionVerdicts: vi.fn() },
 }));
 
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+});
+
+it("passes the canonical pending status back after a partial item review", async () => {
+  const interaction = pendingRequestItemVerdictsInteraction;
+  const partial = { ...interaction, status: "pending" as const, result: { version: 1 as const, outcome: "resolved" as const,
+    complete: false, items: [{ id: interaction.payload.items[0]!.id, verdict: "approve" as const, resolvedAt: new Date().toISOString() }] } };
+  vi.mocked(issuesApi.listInteractions).mockResolvedValue([interaction]);
+  vi.mocked(issuesApi.submitInteractionVerdicts).mockResolvedValue(partial);
+  const onResolved = vi.fn();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><TooltipProvider><ThemeProvider>
+      <AttentionInteractionResolver companyId={interaction.companyId} issueId={interaction.issueId} interactionId={interaction.id} onResolved={onResolved} />
+    </ThemeProvider></TooltipProvider></QueryClientProvider>));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    await act(async () => host.querySelector<HTMLButtonElement>('button[data-verdict="approve"]')!.click());
+    const apply = [...host.querySelectorAll("button")].find(button => button.textContent?.startsWith("Apply"));
+    expect(apply).toBeTruthy();
+    await act(async () => apply!.click());
+    expect(onResolved).toHaveBeenCalledWith(partial);
+  } finally { await act(async () => root.unmount()); host.remove(); client.clear(); }
 });
 
 it("refreshes a preparing approval automatically, then stops polling without accepting it", async () => {

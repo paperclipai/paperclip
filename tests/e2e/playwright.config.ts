@@ -95,5 +95,13 @@ export default defineConfig({
     },
   },
   outputDir: "./test-results",
-  reporter: [["list"], ["html", { open: "never", outputFolder: "./playwright-report" }]],
+  reporter: [
+    ["list"], ["html", { open: "never", outputFolder: "./playwright-report" }],
+    ...(process.env.GITHUB_ACTIONS === "true"
+      ? [[path.resolve(import.meta.dirname, "../../scripts/ci/oversized-test-files-playwright.mjs")] as [string]]
+      : []),
+    ...(process.env.PAPERCLIP_CI_PROFILE === "true"
+      ? [[path.resolve(import.meta.dirname, "../../scripts/ci-profile/playwright-reporter.mjs")] as [string]]
+      : []),
+  ],
 });

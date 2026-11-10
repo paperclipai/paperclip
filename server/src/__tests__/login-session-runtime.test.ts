@@ -1,3 +1,5 @@
+import { installDatabaseWorkSignals, databaseWorkPending } from "../../../packages/db/src/work-signals.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { AgentAdapterType } from "@paperclipai/shared";
@@ -7,6 +9,7 @@ import type { AgentAdapterType } from "@paperclipai/shared";
 // fake returns a fixed environment and records the lease-metadata tag write.
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listBoundCompanyIds: vi.fn(async () => []),
   updateLeaseMetadata: vi.fn(),
 }));
 
@@ -115,6 +118,7 @@ describe("createWorkerBoundLoginPtyOpener", () => {
 
 describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
   const acquireInput = {
+    expiresAt: new Date(Date.now() + 60_000),
     companyId: "company-1",
     environmentId: "env-1",
     adapterType: "codex_local" as AgentAdapterType,
@@ -154,15 +158,25 @@ describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
       driver: "sandbox",
       config: { provider: "daytona" },
     });
-    mockEnvironmentService.updateLeaseMetadata.mockResolvedValue(undefined);
-    const lease = { id: "lease-1", providerLeaseId: "provider-lease-1", metadata: {} };
+    const execute = vi.fn(async () => [{ xid: "42" }]);
+    const db = installDatabaseWorkSignals({
+      execute,
+      async transaction<T>(fn: (tx: object) => Promise<T>) { return fn({ execute }); },
+    });
+    const settled = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.adapterLoginCleanup, settled);
+    mockEnvironmentService.updateLeaseMetadata.mockImplementation(async () => {
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.adapterLoginCleanup)).toBe(true);
+      expect(settled).not.toHaveBeenCalled();
+    });
+    const lease = { id: "lease-1", providerLeaseId: "provider-lease-1", metadata: {}, expiresAt: acquireInput.expiresAt };
     const acquireRunLease = vi.fn(async () => ({
       lease,
       environment: { id: "env-1", driver: "sandbox" },
     }));
     const assertProviderSupportsLoginPty = vi.fn(async () => {});
     const runtime = createProductionLoginSessionRuntime({
-      db: {} as never,
+      db: db as never,
       environmentRuntime: { acquireRunLease, getDriver: vi.fn() } as never,
       assertProviderSupportsLoginPty,
     });
@@ -173,5 +187,63 @@ describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
     // The gate passed, so the runtime acquired the provider lease after it.
     expect(acquireRunLease).toHaveBeenCalledTimes(1);
     expect(acquired.providerLeaseId).toBe("provider-lease-1");
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(databaseWorkPending(db, DELIVERY_QUEUES.adapterLoginCleanup)).toBe(false);
+    unsubscribe();
+  });
+});
+
+describe("production device-login provider deadline", () => {
+  const deadline = new Date(Date.now() + 60_000);
+  const input = {
+    companyId: "company-1", environmentId: "env-1", adapterType: "codex_local" as AgentAdapterType,
+    startedByUserId: "user-a", expiresAt: deadline,
+  };
+
+  function fixture(expiresAt: Date | null | undefined) {
+    const environment = { id: "env-1", driver: "sandbox", config: { provider: "daytona" } };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    const tag = mockEnvironmentService.updateLeaseMetadata.mockReset().mockResolvedValue(undefined);
+    const execute = vi.fn(async () => [{ xid: "42" }]);
+    const db = installDatabaseWorkSignals({ execute, async transaction<T>(fn: (tx: object) => Promise<T>) { return fn({ execute }); } });
+    const lease = { id: "lease-1", providerLeaseId: "provider-lease-1", metadata: {}, expiresAt };
+    const acquireRunLease = vi.fn(async () => ({ lease, environment }));
+    const releaseRunLease = vi.fn(async () => ({ cleanupStatus: "success" }));
+    const openLivePtySession = vi.fn(async () => async () => fakeWorkerSession());
+    const runtime = createProductionLoginSessionRuntime({
+      db: db as never,
+      environmentRuntime: { acquireRunLease, getDriver: () => ({ releaseRunLease }) } as never,
+      assertProviderSupportsLoginPty: async () => {}, openLivePtySession,
+    });
+    return { runtime, tag, acquireRunLease, releaseRunLease, openLivePtySession };
+  }
+
+  it.each([
+    ["missing", undefined], ["null", null], ["invalid", new Date("not-a-date")], ["later", new Date(deadline.getTime() + 1)],
+  ] as const)("releases a %s provider expiry before opening the PTY", async (_label, expiresAt) => {
+    const f = fixture(expiresAt);
+    const sessionId = randomUUID();
+    await expect(f.runtime.acquireLoginLease({ ...input, sessionId })).rejects.toThrow("expiry does not bound the session deadline");
+    expect(f.releaseRunLease).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: "failed", lease: expect.objectContaining({ id: "lease-1" }) }));
+    expect(f.tag).toHaveBeenCalledWith("lease-1", { adapterLoginSessionId: sessionId });
+    expect(f.openLivePtySession).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1])("preserves the provider-attested expiry at deadline offset %s", async offset => {
+    const expiresAt = new Date(deadline.getTime() + offset);
+    const f = fixture(expiresAt);
+    await f.runtime.acquireLoginLease({ ...input, sessionId: randomUUID() });
+    expect(f.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({ requestedExpiresAt: deadline }));
+    expect(f.openLivePtySession).toHaveBeenCalledWith(expect.objectContaining({ expiresAt: expiresAt.toISOString() }));
+    expect(f.releaseRunLease).not.toHaveBeenCalled();
+  });
+
+  it("retains the tagged cleanup obligation when provider release fails", async () => {
+    const f = fixture(null);
+    f.releaseRunLease.mockRejectedValueOnce(new Error("provider unavailable"));
+    const sessionId = randomUUID();
+    await expect(f.runtime.acquireLoginLease({ ...input, sessionId })).rejects.toThrow("provider unavailable");
+    expect(f.tag).toHaveBeenCalledWith("lease-1", { adapterLoginSessionId: sessionId });
+    expect(f.openLivePtySession).not.toHaveBeenCalled();
   });
 });

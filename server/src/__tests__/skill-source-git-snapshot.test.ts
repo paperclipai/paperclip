@@ -25,7 +25,7 @@ vi.mock('node:child_process', async importOriginal => {
   } };
 });
 import { clearGitSkillSnapshotCache, openGitSkillSnapshot, parseGitDownloadProgress } from '../services/skill-source-git-snapshot.js';
-import { scanGitHubSkills, type GitHubRead } from '../services/github-skill-source.js';
+import { scanGitHubSkills, scanGitHubSkillsWithPackageFallback, type GitHubRead } from '../services/github-skill-source.js';
 const exec = promisify(execFile);
 let directory: string, commit: string, laterCommit: string;
 const git = (...args: string[]) => exec('git', ['-C', directory, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', ...args]);
@@ -51,6 +51,45 @@ afterEach(async () => { vi.useRealTimers(); interception.hang = false; intercept
 afterAll(async () => { await rm(directory, { recursive: true, force: true }); });
 
 describe('Git skill snapshots', () => {
+  it('uses real Git batches for transitive dependencies in an oversized repository', async () => {
+    const remote = await mkdtemp(path.join(os.tmpdir(), 'paperclip-dependency-blobs-'));
+    interception.remote = remote;
+    try {
+      await exec('git', ['-C', remote, 'init', '-b', 'main']);
+      await mkdir(path.join(remote, 'unrelated'));
+      await mkdir(path.join(remote, 'shared'));
+      const files: Record<string, string> = {
+        'shared/guide.md': '[Details](details.md)',
+        'shared/details.md': '[Guide](guide.md) [Data](data.json)',
+        'shared/data.json': '{"value":true}',
+      };
+      for (let i = 0; i < 64; i++) {
+        await mkdir(path.join(remote, `skills/skill-${i}`), { recursive: true });
+        files[`skills/skill-${i}/SKILL.md`] = `---\nname: skill-${i}\ndescription: Dependency fixture\n---\n[Guide](../../shared/guide.md)`;
+      }
+      for (const [file, content] of Object.entries(files)) await writeFile(path.join(remote, file), content);
+      const unrelated = Buffer.alloc(1024 * 1024, 'x');
+      for (let i = 0; i < 62; i++) await writeFile(path.join(remote, `unrelated/${i}.bin`), unrelated);
+      await exec('git', ['-C', remote, 'add', '.']);
+      await exec('git', ['-C', remote, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-m', 'Dependency fixture']);
+      const commitSha = (await exec('git', ['-C', remote, 'rev-parse', 'HEAD'])).stdout.trim();
+      const read = (async (url: string) => url.includes('/commits/') ? { sha: commitSha } : { id: 42, full_name: 'acme/skills', default_branch: 'main' }) as GitHubRead;
+      read.openSnapshot = (input, options) => openGitSkillSnapshot({ ...request(), ref: input.ref, commitSha: input.commitSha }, options);
+      const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository' }, read);
+      expect(scan.repositorySubset).toBe(true);
+      expect(scan.repositoryFiles?.map(file => file.path).sort()).toEqual(Object.keys(files).sort());
+      for (const file of scan.repositoryFiles!) {
+        const content = file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : Buffer.from(file.content);
+        expect(content.toString()).toBe(files[file.path]);
+      }
+      const reads = interception.commands.filter(command => command.args.includes('cat-file'));
+      expect(reads).toHaveLength(4);
+      expect(reads.every(command => command.args.includes('--batch'))).toBe(true);
+    } finally {
+      await rm(remote, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('reads many unrelated support files with one Git batch per scan, including cache hits', async () => {
     const remote = await mkdtemp(path.join(os.tmpdir(), 'paperclip-many-blobs-'));
     interception.remote = remote;

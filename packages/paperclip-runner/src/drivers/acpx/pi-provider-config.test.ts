@@ -69,3 +69,32 @@ describe("Pi caller-selected providers and models", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
+
+
+it("attributes Pi's default and custom OpenRouter providers including model overrides", () => {
+  const defaults = JSON.parse(piProviderConfiguration({})!.json);
+  expect(defaults.providers.openrouter.headers["HTTP-Referer"]).toBe("https://paperclip.ing");
+  expect(piProviderConfiguration({ PAPERCLIP_PI_PROVIDERS: "  " })?.json).toBe(piProviderConfiguration({})?.json);
+  const custom = JSON.parse(piProviderConfiguration({ PAPERCLIP_PI_PROVIDERS: JSON.stringify({
+    openrouter: { headers: { "http-referer": "https://pi.example", Authorization: "Bearer fixture" }, models: [{ id: "model", headers: { "X-Title": "Pi" } }], modelOverrides: { other: { headers: { "http-referer": "https://pi.example", "X-Route": "chosen" } } } },
+    alias: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "CUSTOM_MODEL_KEY" },
+    unrelated: { baseUrl: "https://other.example/v1", headers: { "X-Title": "Other" } },
+  }) })!.json);
+  expect(custom.providers.openrouter.headers).toMatchObject({ "HTTP-Referer": "https://paperclip.ing", Authorization: "Bearer fixture" });
+  expect(custom.providers.openrouter.headers).not.toHaveProperty("http-referer");
+  expect(custom.providers.openrouter.models[0].headers["X-Title"]).toBe("Paperclip");
+  expect(custom.providers.openrouter.modelOverrides.other.headers).toMatchObject({ "HTTP-Referer": "https://paperclip.ing", "X-Route": "chosen" });
+  expect(custom.providers.openrouter.modelOverrides.other.headers).not.toHaveProperty("http-referer");
+  expect(custom.providers.alias.headers["HTTP-Referer"]).toBe("https://paperclip.ing");
+  expect(custom.providers.unrelated.headers).toEqual({ "X-Title": "Other" });
+  const repointed = JSON.parse(piProviderConfiguration({ PAPERCLIP_PI_PROVIDERS: JSON.stringify({ openrouter: { baseUrl: "https://other.example/v1" } }) })!.json);
+  expect(repointed.providers.openrouter.headers).toBeUndefined();
+});
+
+it("preserves Claude attribution through the runner environment allowlist", () => {
+  const result = createSanitizedAcpxSpawnInput({ ANTHROPIC_BASE_URL: "https://openrouter.ai/api", ANTHROPIC_AUTH_TOKEN: "fixture-key", ANTHROPIC_CUSTOM_HEADERS: "http-referer: https://claude.example\nX-Route: selected" }, "claude").env;
+  expect(result.ANTHROPIC_CUSTOM_HEADERS).toContain("HTTP-Referer: https://paperclip.ing");
+  expect(result.ANTHROPIC_CUSTOM_HEADERS).toContain("X-Route: selected");
+  expect(result.ANTHROPIC_AUTH_TOKEN).toBe("fixture-key");
+  expect(createSanitizedAcpxSpawnInput({ ANTHROPIC_BASE_URL: "https://api.anthropic.com" }, "claude").env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+});

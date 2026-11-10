@@ -117,8 +117,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.id, [f.sourceRunId, f.currentRunId]))).toHaveLength(2);
   }
 
-  it.each(["reassigned", "conversation_reset", "unassigned"])("records board repair after %s without restarting or changing the current task", async scenario => {
+  it.each(["reassigned", "conversation_reset", "unassigned", "successful_source"])("records board repair after %s without restarting or changing the current task", async scenario => {
     const f = await seed({ conversationReset: scenario === "conversation_reset", noCurrentOwner: scenario === "unassigned" });
+    if (scenario === "successful_source") {
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    }
+    const [sourceBefore] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
     const { app, wake } = appFor();
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
     await request(app).post(`/api/issues/${f.issueId}/recovery-actions/resolve`).send(f.body).expect(200);
@@ -137,6 +141,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId))).toEqual(auditBefore);
     await assertSourceUnchanged(f);
     expect(wake).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0]).toEqual(sourceBefore);
   });
 
   it.each(["blocked", "done", "cancelled", "backlog"])("records repair without changing the current %s task", async status => {

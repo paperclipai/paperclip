@@ -72,6 +72,7 @@ vi.mock("@/api/chatEndpoints", () => ({
     get: vi.fn(),
     listResources: vi.fn(),
     setup: vi.fn(),
+    generateSetupSecret: vi.fn(),
   },
 }));
 vi.mock("@/api/projects", () => ({ projectsApi: { repositoryOptions: vi.fn() } }));
@@ -257,15 +258,183 @@ describe("GitHub App wizard", () => {
     expect(container.textContent).not.toContain("GitHub connected");
     expect(githubChatApi.registration).not.toHaveBeenCalled();
   });
+  it("completes a fresh credential-entry handoff through App import", async () => {
+    await render("resume=draft-1&stage=credentials");
+    expect(container.querySelector("#github-app-id")).not.toBeNull();
+    expect(container.querySelector("#github-webhook-secret")).not.toBeNull();
+    expect(githubChatApi.advance).not.toHaveBeenCalled();
+    expect(githubChatApi.registration).not.toHaveBeenCalled();
+    const privateKey = "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----";
+    for (const [selector, value] of [["#github-app-id", "1234"], ["#github-webhook-secret", "human-webhook-secret"]]) {
+      await act(async () => {
+        const input = container.querySelector<HTMLInputElement>(selector)!;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { getData: () => privateKey } });
+    await act(async () => container.querySelector("#github-private-key")!.dispatchEvent(paste));
+    const connect = container.querySelector<HTMLButtonElement>('[aria-label="Connect existing App"]')!;
+    expect(connect.disabled).toBe(false);
+    await act(async () => connect.click());
+    expect(githubChatApi.connectApp).toHaveBeenCalledWith("draft-1", { appId: "1234", privateKey, webhookSecret: "human-webhook-secret" });
+    expect(chatEndpointsApi.setup).not.toHaveBeenCalled();
+  });
+  it.each(["webhookSecret", "clientSecret"])("saves a configured %s handoff without replacing the private key", async (field) => {
+    fixture.endpoint.status = "active";
+    fixture.endpoint.botExternalId = "1234";
+    vi.mocked(chatEndpointsApi.setup).mockResolvedValue(fixture.endpoint);
+    await render(`resume=draft-1&stage=credentials&reconnect=1&credentialFields=${field}&credentialMode=all`);
+    const selector = field === "webhookSecret" ? "#github-webhook-secret" : "#github-client-secret";
+    const input = container.querySelector<HTMLInputElement>(selector);
+    expect(input).not.toBeNull();
+    expect(container.querySelector("#github-private-key")).toBeNull();
+    expect(chatEndpointsApi.setup).not.toHaveBeenCalled();
+    const submit = container.querySelector<HTMLButtonElement>('[aria-label="Verify and reconnect"]')!;
+    expect(submit.disabled).toBe(true);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "human-replacement");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(submit.disabled).toBe(false);
+    await act(async () => submit.click());
+    expect(chatEndpointsApi.setup).toHaveBeenCalledWith("draft-1", { action: "reconnect", credentials: { [field]: "human-replacement" } });
+    expect(githubChatApi.connectApp).not.toHaveBeenCalled();
+    expect(chatEndpointsApi.generateSetupSecret).not.toHaveBeenCalled();
+  });
+  it.each(["all", "any"])("honors %s completion for combined credential entry", async (mode) => {
+    fixture.endpoint.status = "active";
+    fixture.endpoint.botExternalId = "1234";
+    vi.mocked(chatEndpointsApi.setup).mockResolvedValue(fixture.endpoint);
+    await render(`resume=draft-1&stage=credentials&reconnect=1&credentialFields=privateKey,webhookSecret&credentialMode=${mode}`);
+    const input = container.querySelector<HTMLInputElement>("#github-webhook-secret")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "human-webhook");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const submit = container.querySelector<HTMLButtonElement>('[aria-label="Verify and reconnect"]')!;
+    expect(submit.disabled).toBe(mode === "all");
+    const privateKey = "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----";
+    if (mode === "all") {
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", { value: { getData: () => privateKey } });
+      await act(async () => container.querySelector("#github-private-key")!.dispatchEvent(paste));
+    }
+    expect(submit.disabled).toBe(false);
+    await act(async () => submit.click());
+    expect(chatEndpointsApi.setup).toHaveBeenCalledWith("draft-1", { action: "reconnect", credentials: {
+      webhookSecret: "human-webhook", ...(mode === "all" ? { appId: "1234", privateKey } : {}),
+    } });
+  });
+  it("keeps legacy credential-entry links usable with only a webhook replacement", async () => {
+    fixture.endpoint.status = "active";
+    fixture.endpoint.botExternalId = "1234";
+    vi.mocked(chatEndpointsApi.setup).mockResolvedValue(fixture.endpoint);
+    await render("resume=draft-1&stage=credentials&reconnect=1");
+    const input = container.querySelector<HTMLInputElement>("#github-webhook-secret")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "human-webhook");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Verify and reconnect"]')!.click());
+    expect(chatEndpointsApi.setup).toHaveBeenCalledWith("draft-1", { action: "reconnect", credentials: { webhookSecret: "human-webhook" } });
+  });
+  it("keeps a saved rotation handoff open through generation and reconnect failures", async () => {
+    fixture.endpoint.status = "active";
+    fixture.endpoint.botExternalId = "1234";
+    const secret = "a".repeat(64);
+    vi.mocked(githubChatApi.advance).mockResolvedValue({ endpointId: "draft-1", state: "connected" } as any);
+    vi.mocked(chatEndpointsApi.generateSetupSecret).mockRejectedValueOnce(new Error("Temporarily unavailable")).mockResolvedValue({ webhookSecret: secret });
+    vi.mocked(chatEndpointsApi.setup).mockRejectedValueOnce(new Error("Waiting for the new signed webhook")).mockResolvedValue(fixture.endpoint);
+    await render("resume=draft-1&stage=credentials&reconnect=1&rotateSecret=1");
+    const reconnect = () => [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Reconnect saved App")!;
+    const generate = () => [...container.querySelectorAll("button")].find(button => button.textContent === "Generate webhook secret")!;
+    expect(reconnect().disabled).toBe(true);
+    expect(chatEndpointsApi.generateSetupSecret).not.toHaveBeenCalled();
+    expect(githubChatApi.advance).not.toHaveBeenCalled();
+    await act(async () => generate().click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Temporarily unavailable");
+    expect(reconnect().disabled).toBe(true);
+    await act(async () => generate().click());
+    expect(chatEndpointsApi.generateSetupSecret).toHaveBeenLastCalledWith("draft-1");
+    expect((container.querySelector("#github-rotation-secret") as HTMLInputElement).value).toBe(secret);
+    expect((container.querySelector("#github-rotation-secret") as HTMLInputElement).type).toBe("password");
+    await act(async () => (container.querySelector('[aria-label="Copy webhook secret"]') as HTMLButtonElement).click());
+    expect(copyTextToClipboard).toHaveBeenLastCalledWith(secret);
+    await act(async () => reconnect().click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Waiting for the new signed webhook");
+    expect(reconnect().disabled).toBe(false);
+    await act(async () => reconnect().click());
+    expect(chatEndpointsApi.setup).toHaveBeenLastCalledWith("draft-1", { action: "reconnect" });
+    expect(githubChatApi.connectApp).not.toHaveBeenCalled();
+    expect(chatEndpointsApi.create).not.toHaveBeenCalled();
+  });
+  it.each(["unchanged", "changed", "unavailable"])("reconciles a failed replacement without using an uncertain secret (%s)", async (outcome) => {
+    const previous = "11111111-1111-4111-8111-111111111111";
+    const generated = "22222222-2222-4222-8222-222222222222";
+    const replacement = "33333333-3333-4333-8333-333333333333";
+    const secret = "b".repeat(64);
+    fixture.endpoint.status = "active";
+    fixture.endpoint.botExternalId = "1234";
+    fixture.endpoint.setup.credentialRotationId = previous;
+    vi.mocked(chatEndpointsApi.get).mockReset().mockImplementation(async () => fixture.endpoint);
+    vi.mocked(chatEndpointsApi.generateSetupSecret).mockReset().mockResolvedValueOnce({ webhookSecret: secret, credentialRotationId: generated }).mockRejectedValueOnce(new Error("Replacement request failed"));
+    await render(`resume=draft-1&stage=credentials&reconnect=1&rotateSecret=1&afterRotationId=${previous}`);
+    const button = (label: string) => [...container.querySelectorAll("button")].find(item => item.textContent === label)!;
+    const reconnect = () => [...container.querySelectorAll("button")].find(item => item.getAttribute("aria-label") === "Reconnect saved App")!;
+    await act(async () => button("Generate webhook secret").click());
+    const before = vi.mocked(chatEndpointsApi.get).mock.calls.length;
+    if (outcome === "unavailable") vi.mocked(chatEndpointsApi.get).mockRejectedValueOnce(new Error("Status unavailable"));
+    else vi.mocked(chatEndpointsApi.get).mockResolvedValueOnce({ ...fixture.endpoint, setup: { ...fixture.endpoint.setup, credentialRotationId: outcome === "unchanged" ? generated : replacement } });
+    await act(async () => button("Generate another secret").click());
+    expect(chatEndpointsApi.get).toHaveBeenCalledTimes(before + 1);
+    if (outcome === "unchanged") {
+      expect((container.querySelector("#github-rotation-secret") as HTMLInputElement).value).toBe(secret);
+      expect(reconnect().disabled).toBe(false);
+      await act(async () => (container.querySelector('[aria-label="Copy webhook secret"]') as HTMLButtonElement).click());
+      expect(copyTextToClipboard).toHaveBeenLastCalledWith(secret);
+    } else {
+      expect(container.querySelector('[aria-label="Copy webhook secret"]')).toBeNull();
+      expect(reconnect().disabled).toBe(true);
+      if (outcome === "unavailable") {
+        vi.mocked(chatEndpointsApi.get).mockResolvedValueOnce({ ...fixture.endpoint, setup: { ...fixture.endpoint.setup, credentialRotationId: generated } });
+        await act(async () => button("Check saved secret status").click());
+        expect((container.querySelector("#github-rotation-secret") as HTMLInputElement).value).toBe(secret);
+        expect(reconnect().disabled).toBe(false);
+      }
+    }
+  });
+  it.each([
+    { generation: "22222222-2222-4222-8222-222222222222", verified: true, canResume: true },
+    { generation: "22222222-2222-4222-8222-222222222222", verified: false, canResume: true },
+    { generation: "11111111-1111-4111-8111-111111111111", verified: true, canResume: false },
+  ])("resumes only the saved rotation generation without requiring its secret again ($verified, $canResume)", async ({ generation, verified, canResume }) => {
+    fixture.endpoint.status = "attention";
+    fixture.endpoint.botExternalId = "1234";
+    fixture.endpoint.setup.credentialRotationId = generation;
+    fixture.endpoint.setup.webhookVerifiedAt = verified ? new Date().toISOString() : null;
+    vi.mocked(chatEndpointsApi.setup).mockResolvedValue(fixture.endpoint);
+    await render("resume=draft-1&stage=credentials&reconnect=1&rotateSecret=1&afterRotationId=11111111-1111-4111-8111-111111111111");
+    const reconnect = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Reconnect saved App")!;
+    expect(reconnect.disabled).toBe(!canResume);
+    expect(container.querySelector("#github-rotation-secret")).toBeNull();
+    expect(chatEndpointsApi.generateSetupSecret).not.toHaveBeenCalled();
+    if (canResume) {
+      await act(async () => reconnect.click());
+      expect(chatEndpointsApi.setup).toHaveBeenCalledWith("draft-1", { action: "reconnect" });
+    }
+  });
   it("reconnects the same App using vaulted credentials without requiring another paste", async () => {
     fixture.endpoint.status = "attention";
     fixture.endpoint.botExternalId = "1234";
     vi.mocked(chatEndpointsApi.setup).mockResolvedValue(fixture.endpoint);
     await render("resume=draft-1&reconnect=1");
     const button = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Reconnect App",
+      (button) => button.getAttribute("aria-label") === "Reconnect saved App",
     )!;
     expect(button.disabled).toBe(false);
+    expect(container.querySelector("#github-private-key")).toBeNull();
     expect(container.querySelector("#github-webhook-secret")).toBeNull();
     await act(async () => {
       button.click();
@@ -274,6 +443,76 @@ describe("GitHub App wizard", () => {
       action: "reconnect",
     });
     expect(githubChatApi.connectApp).not.toHaveBeenCalled();
+  });
+  it("keeps a failed saved-App repair retryable and explains the credential fallback", async () => {
+    fixture.endpoint.status = "attention";
+    fixture.endpoint.botExternalId = "1234";
+    vi.mocked(chatEndpointsApi.setup).mockRejectedValue(new Error("GitHub could not verify the saved private key"));
+    await render("resume=draft-1&reconnect=1");
+    const button = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Reconnect saved App")!;
+    await act(async () => button.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not reconnect the saved App");
+    expect(button.disabled).toBe(false);
+    expect(container.querySelector("#github-private-key")).toBeNull();
+    const replace = [...container.querySelectorAll("button")].find(button => button.textContent === "Replace App credentials…")!;
+    await act(async () => replace.click());
+    expect((container.querySelector("#github-app-id") as HTMLInputElement).value).toBe("1234");
+    expect(container.textContent).toContain("Credentials → Key pairs → New key");
+    expect((container.querySelector("#github-private-key") as HTMLInputElement).type).toBe("password");
+    expect([...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Verify and reconnect")?.disabled).toBe(true);
+    expect(githubChatApi.advance).not.toHaveBeenCalled();
+  });
+  it("does not reuse an old connected result when fresh verification fails", async () => {
+    fixture.endpoint.status = "attention";
+    fixture.endpoint.botExternalId = "1234";
+    client.setQueryData(["github-wizard", "draft-1"], { endpointId: "draft-1", state: "connected" });
+    vi.mocked(chatEndpointsApi.setup).mockResolvedValue(fixture.endpoint);
+    vi.mocked(githubChatApi.advance).mockRejectedValue(new Error("Delivery verification is unavailable"));
+    await render("resume=draft-1&reconnect=1");
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Reconnect saved App")!.click());
+    expect(container.querySelector("output")?.textContent).toContain("/BOT/apps/chat/connect");
+    expect(container.textContent).toContain("Delivery verification is unavailable");
+    expect([...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Reconnect saved App")?.disabled).toBe(false);
+  });
+  it.each(["paste", "upload"])("preserves a multiline PEM from %s when replacing credentials", async (source) => {
+    fixture.endpoint.status = "attention";
+    fixture.endpoint.botExternalId = "1234";
+    vi.mocked(chatEndpointsApi.setup).mockResolvedValue(fixture.endpoint);
+    await render("resume=draft-1&reconnect=1");
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Replace App credentials…")!.click());
+    const key = "-----BEGIN RSA PRIVATE KEY-----\nfixture-only\n-----END RSA PRIVATE KEY-----";
+    if (source === "paste") {
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", { value: { getData: () => key } });
+      await act(async () => container.querySelector("#github-private-key")!.dispatchEvent(paste));
+    } else {
+      const upload = container.querySelector('input[type="file"]')!;
+      Object.defineProperty(upload, "files", { value: [{ text: async () => key }] });
+      await act(async () => upload.dispatchEvent(new Event("change", { bubbles: true })));
+    }
+    expect((container.querySelector("#github-private-key") as HTMLInputElement).value).toBe("");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Private key loaded");
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Verify and reconnect")!.click());
+    expect(chatEndpointsApi.setup).toHaveBeenCalledWith("draft-1", { action: "reconnect", credentials: { appId: "1234", privateKey: key } });
+  });
+  it("treats typing after loading a PEM as a new key instead of editing a flattened PEM", async () => {
+    fixture.endpoint.status = "attention";
+    fixture.endpoint.botExternalId = "1234";
+    await render("resume=draft-1&reconnect=1");
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Replace App credentials…")!.click());
+    const input = container.querySelector("#github-private-key") as HTMLInputElement;
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { getData: () => "-----BEGIN RSA PRIVATE KEY-----\nfixture-only\n-----END RSA PRIVATE KEY-----" } });
+    await act(async () => input.dispatchEvent(paste));
+    expect(input.value).toBe("");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "replacement");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(input.value).toBe("replacement");
+    expect(container.textContent).not.toContain("Private key loaded");
+    expect([...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Verify and reconnect")?.disabled).toBe(true);
+    expect(chatEndpointsApi.setup).not.toHaveBeenCalled();
   });
   async function render(query = "agentId=reviewer") {
     await act(async () =>

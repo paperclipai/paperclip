@@ -57,6 +57,7 @@ export function canEnterAppsConnect(
   searchParams: URLSearchParams,
   { chatConnectorsEnabled = false, githubReviewBotsEnabled = false }: { chatConnectorsEnabled?: boolean; githubReviewBotsEnabled?: boolean } = {},
 ): boolean {
+  if (searchParams.get("aiLogin")?.trim()) return true;
   if (searchParams.get("byo") === "1") {
     // The old BYO discovery page has moved to the Connectors list. Keep only
     // exact custom-connection reconnects using this legacy query contract.

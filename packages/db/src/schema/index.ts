@@ -5,6 +5,7 @@ export { companyTransferRuns } from "./company_transfer_runs.js";
 export { companyOnboardingSeeds } from "./company_onboarding_seeds.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceSettings } from "./instance_settings.js";
+export { controllerInstances } from "./controller_instances.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
 export { chatVoiceCallbacks } from "./chat_voice_callbacks.js";
 export { userSidebarPreferences } from "./user_sidebar_preferences.js";
@@ -21,6 +22,7 @@ export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";
+export { budgetResumeClaims } from "./budget_resume_claims.js";
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
@@ -32,8 +34,15 @@ export { projectAccessMembers } from "./project_access_members.js";
 export { documentMemberships } from "./document_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export { executionWorkspaceSnapshots } from "./execution_workspace_snapshots.js";
+export {
+  executionWorkspaceRestorePoints,
+  EXECUTION_WORKSPACE_RESTORE_POINT_STATUSES,
+  type ExecutionWorkspaceRestorePointStatus,
+} from "./execution_workspace_restore_points.js";
 export { executionWorkspaceRuntimeLeases } from "./execution_workspace_runtime_leases.js";
 export { environments } from "./environments.js";
+export { sandboxCreationOperations } from "./sandbox_creation_operations.js";
 export { environmentLeases } from "./environment_leases.js";
 export { environmentCustomImageTemplates } from "./environment_custom_image_templates.js";
 export { environmentCustomImageSetupSessions } from "./environment_custom_image_setup_sessions.js";
@@ -71,6 +80,8 @@ export { routines, routineRevisions, routineTriggers, routineWebhookTestReceipts
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
 export {
   cases,
+  caseHandoffs,
+  caseAccessSources,
   caseAttachments,
   caseDocuments,
   caseEvents,
@@ -130,12 +141,14 @@ export { routineDocuments } from "./routine_documents.js";
 export { documentAnnotationThreads } from "./document_annotation_threads.js";
 export { documentAnnotationComments } from "./document_annotation_comments.js";
 export { documentAnnotationAnchorSnapshots } from "./document_annotation_anchor_snapshots.js";
-export { heartbeatRuns } from "./heartbeat_runs.js";
+export { heartbeatRuns, workspaceRestoreFailureCodesSql } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { providerTraceRecords } from "./provider_trace_records.js";
 export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
+export { nativeRunnerCheckpoints } from "./native_runner_checkpoints.js";
+export { nativeHarnessBackups } from "./native_harness_backups.js";
 export { workAssessments } from "./work_assessments.js";
 export { statusDecisions } from "./status_decisions.js";
 export { statusDecisionEffects } from "./status_decision_effects.js";
@@ -185,13 +198,15 @@ export {
 } from "./tool_access.js";
 export {
   companySkills,
-  companySkillVersions, companySkillRepositorySnapshots,
+  companySkillMutationReceipts,
+  companySkillVersions, companySkillRepositorySnapshots, skillPackageDeletions,
   companySkillStars,
   companySkillComments,
   companySkillTestInputs,
   companySkillTestRunTemplates,
   companySkillTestRuns,
 } from "./company_skills.js";
+export type { SkillPackageStorageReceipt, SkillPackageUpload, SkillPackageRestoreRecipe, SkillPackageFileMapping } from "./company_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
@@ -221,12 +236,14 @@ export { announcementDismissals, announcementPublications } from "./announcement
 export { chatTaskHandoffs, chatCompletionDeliveries } from "./chat_completion_deliveries.js";
 
 export { agentInstructionRevisions, agentInstructionHeads, agentInstructionWorkingCopies } from "./agent_instruction_revisions.js";
+export { agentFileRoots, type DurableAgentFileEntry } from "./agent_file_roots.js";
 export { browserUseSettings, browserUseSessions, browserUseRuns, browserUseBrowsers } from "./browser_use.js";
 
 
 export * from "./company_skill_sources.js";
 export * from "./public_mcp.js";
 export * from "./dot_runner.js";
+export * from "./grok_bot.js";
 
 
 export * from "./accounting.js";
@@ -246,8 +263,21 @@ export { userCompanyPreferences } from "./user_company_preferences.js";
 
 export { chatSlackManagerGrants } from "./chat_slack_manager_grants.js";
 export { aiSubscriptions, aiSubscriptionPrices, aiSubscriptionConnections } from "./ai_subscriptions.js";
+export * from "./muse_runner.js";
 
 export { executionWorkspaceRepositories } from "./execution_workspace_repositories.js";
 export { executionWorkspaceRepositoryRoots } from "./execution_workspace_repository_roots.js";
 export { executionWorkspaceRepositoryAccess } from "./execution_workspace_repository_access.js";
 export * from "./fast_responses.js";
+export { companyObservability } from "./company_observability.js";
+
+export * from "./prompt_injection_prevention.js";
+export { workflows } from "./workflows.js";
+
+export { userWorkspacePreferences } from "./user_workspace_preferences.js";
+
+export { issueThreadInteractionIdempotencyKeys } from "./issue_thread_interaction_idempotency_keys.js";
+
+export { projectTaskExecutionPolicies, executionAdmissions, executionAdmissionProjectCharges } from "./execution_admissions.js";
+export { budgetEvaluationWork } from "./budget_evaluation_work.js";
+export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./native_provider_artifacts.js";

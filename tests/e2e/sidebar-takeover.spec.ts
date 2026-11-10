@@ -54,13 +54,16 @@ test.describe("Contextual sidebar companion", () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
+      userId: "local-board", coordinatorWorkspaceEnabled: false, updatedAt: null,
+    } }));
     await page.addInitScript((key) => {
       window.localStorage.removeItem(key);
       window.sessionStorage.clear();
     }, COLLAPSED_STORAGE_KEY);
   });
 
-  test("replaces global navigation with Settings navigation", async ({ page }) => {
+  test("renders contextual labels at full width", async ({ page }) => {
     await page.goto(`/${prefix}/company/settings`);
 
     const contextual = page.locator('[data-contextual-sidebar="settings"]');
@@ -75,14 +78,8 @@ test.describe("Contextual sidebar companion", () => {
 
     await expect(page.getByRole("link", { name: "Dashboard" })).toHaveCount(0);
     await expect(page.getByLabel(APP_SIDEBAR_EXPANDED_MARKER)).toHaveCount(0);
-  });
 
-  test("renders contextual labels at full width", async ({ page }) => {
-    await page.goto(`/${prefix}/company/settings`);
-
-    const contextual = page.locator('[data-contextual-sidebar="settings"]');
     const envLabel = contextual.getByText("Environments", { exact: true });
-    await expect(envLabel).toBeVisible();
     const labelBox = await envLabel.boundingBox();
     expect(labelBox).not.toBeNull();
     expect(labelBox!.width).toBeGreaterThan(20);

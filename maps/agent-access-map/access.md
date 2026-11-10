@@ -2,6 +2,8 @@
 
 Product map: [Login, invitations, and access](../feature-map/access.md).
 
+Feature ID: `access`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -12,6 +14,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `login`
+
+Capability ID: `access/login`.
 
 Review: `baseline`.
 
@@ -37,6 +41,8 @@ Gaps: An agent identity is not a board login or board claim; explicit delegation
 product-policy decision.
 
 ## `invitations`
+
+Capability ID: `access/invitations`.
 
 Review: `baseline`.
 
@@ -64,6 +70,8 @@ are different operations.
 
 ## `membership`
 
+Capability ID: `access/membership`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -90,6 +98,8 @@ board-only.
 
 ## `resources`
 
+Capability ID: `access/resources`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -114,6 +124,8 @@ Gaps: Company/resource authorization is implemented; a negative test must cover 
 resources and another company.
 
 ## `cli-auth`
+
+Capability ID: `access/cli-auth`.
 
 Review: `baseline`.
 

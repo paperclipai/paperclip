@@ -12,22 +12,25 @@ import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { notFound, unprocessable } from "../errors.js";
 
 /** One unfinished invitation per operator/company. Only non-secret references are persisted. */
-export function dotInvitationService(db: Db) {
+export function dotInvitationService(db: Db, provider: "openai_dot" | "grok_bot" = "openai_dot") {
+  const invitationKey = provider === "grok_bot" ? "grokInvitation" : "dotInvitation";
+  const source = provider === "grok_bot" ? "grok-invitation" : "dot-invitation";
+  const providerName = provider === "grok_bot" ? "Grok Bot" : "Dot";
   async function pending(database: Db, companyId: string, operatorId: string, recoverIncomplete = false) {
     const rows = await database.select({ agent: agents, binding: dotAgentBindings })
       .from(agents).leftJoin(dotAgentBindings, and(eq(dotAgentBindings.agentId, agents.id), isNull(dotAgentBindings.revokedAt)))
       .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated"),
-        eq(agents.adapterType, "paperclip_runner"), sql`${agents.adapterConfig}->>'provider' = 'openai_dot'`,
-        sql`((${recoverIncomplete} and ${agents.metadata}->'dotInvitation'->>'operatorId' = ${operatorId}
+        eq(agents.adapterType, "paperclip_runner"), sql`${agents.adapterConfig}->>'provider' = ${provider}`,
+        sql`((${recoverIncomplete} and ${agents.metadata}->${invitationKey}->>'operatorId' = ${operatorId}
           and ${agents.lifecycleOperation}->>'responsibleUserId' = ${operatorId}) or exists (select 1 from ${activityLog} where ${activityLog.companyId} = ${agents.companyId}
           and ${activityLog.entityId} = ${agents.id}::text and ${activityLog.entityType} = 'agent'
           and ${activityLog.actorType} = 'user' and ${activityLog.actorId} = ${operatorId}
-          and ${activityLog.action} = 'agent.hire_created' and ${activityLog.details}->>'source' = 'dot-invitation'))`)).orderBy(desc(agents.createdAt));
-    return rows.find(row => row.binding?.status !== "ready")?.agent ?? null;
+          and ${activityLog.action} = 'agent.hire_created' and ${activityLog.details}->>'source' = ${source}))`)).orderBy(desc(agents.createdAt));
+    return rows.find(row => row.binding?.status !== "ready" || row.agent.lifecycleState !== "ready")?.agent ?? null;
   }
-  async function describe(agent: Pick<typeof agents.$inferSelect, "id" | "name" | "companyId" | "status">, database: Db = db) {
+  async function describe(agent: Pick<typeof agents.$inferSelect, "id" | "name" | "companyId" | "status" | "role" | "reportsTo" | "metadata">, database: Db = db) {
     const approval = await approvalService(database).findOpenHireApprovalForAgent(agent.companyId, agent.id);
-    return { agent: { id: agent.id, name: agent.name, status: agent.status }, approvalId: approval?.id ?? null,
+    return { agent: { id: agent.id, name: agent.name, status: agent.status, ...(provider === "grok_bot" ? { role: agent.role, reportsTo: agent.reportsTo, botName: (agent.metadata?.[invitationKey] as { botName?: string } | undefined)?.botName ?? agent.name } : {}) }, approvalId: approval?.id ?? null,
       binding: await dotRunnerBroker(database).bindingForAgent(agent.companyId, agent.id) };
   }
   return {
@@ -35,32 +38,32 @@ export function dotInvitationService(db: Db) {
       const agent = await pending(db, companyId, operatorId);
       return agent ? describe(agent) : null;
     },
-    async create(companyId: string, operatorId: string) {
-      if (!await dotRunnerBroker(db).enabled()) throw unprocessable("Enable OpenAI Dot and Assistant connections (MCP) in experimental settings.");
+    async create(companyId: string, operatorId: string, details?: { name?: string; botName?: string; role?: typeof agents.$inferSelect.role; reportsTo?: string | null }) {
+      if (!await dotRunnerBroker(db).enabled(provider)) throw unprocessable(`Enable ${providerName} and Assistant connections (MCP) in experimental settings.`);
       const database = db;
-      const lockKey = `paperclip:dot-invitation:${companyId}:${operatorId}`;
+      const lockKey = `paperclip:${source}:${companyId}:${operatorId}`;
       return withDedicatedDbConnection(db, lockDb => lockDb.transaction(async lock => {
         await lock.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
         // SQL locking also serializes retries on different control-plane replicas.
         const [company] = await database.select().from(companies).where(eq(companies.id, companyId));
         if (!company) throw notFound("Company not found");
-        if (company.status !== "active") throw unprocessable("Activate this company before inviting Dot.");
+        if (company.status !== "active") throw unprocessable(`Activate this company before inviting ${providerName}.`);
         const existing = await pending(database, companyId, operatorId, true);
         if (existing) {
           const [completed] = await database.select({ id: activityLog.id }).from(activityLog).where(and(
             eq(activityLog.companyId, companyId), eq(activityLog.entityId, existing.id),
             eq(activityLog.action, "agent.hire_created"), eq(activityLog.actorId, operatorId),
-            sql`${activityLog.details}->>'source' = 'dot-invitation'`)).limit(1);
+            sql`${activityLog.details}->>'source' = ${source}`)).limit(1);
           if (completed) return describe(existing, database);
         }
         const svc = agentService(database);
         let created = existing ?? await createAgentLifecycle(database).requestHire(companyId, {
-          name: "Dot", role: "general", adapterType: "paperclip_runner",
-          adapterConfig: { provider: "openai_dot", lifecycleMode: "per_turn", allowUnmeteredProvider: true,
+          name: details?.name?.trim() || providerName, role: details?.role ?? "general", reportsTo: details?.reportsTo, adapterType: "paperclip_runner",
+          adapterConfig: { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: true,
             dotWorkspaceAccess: false, dotAttachmentAccess: false },
           runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
           status: company.requireBoardApprovalForNewAgents ? "pending_approval" : "idle",
-          metadata: { dotInvitation: { operatorId } },
+          metadata: { [invitationKey]: { operatorId, ...(provider === "grok_bot" ? { botName: details?.botName ?? details?.name ?? providerName } : {}) } },
         }, { createdByUserId: operatorId });
         const bundle = await agentInstructionsService(database).materializeManagedBundle(created,
           await loadDefaultAgentInstructionsBundle("default"), { entryFile: "AGENTS.md", replaceExisting: false });
@@ -80,7 +83,7 @@ export function dotInvitationService(db: Db) {
           }) : null);
           await logActivity(txDb, { companyId, actorType: "user", actorId: operatorId, action: "agent.hire_created",
             entityType: "agent", entityId: created.id, details: { name: created.name, role: created.role,
-              requiresApproval: !!approval, approvalId: approval?.id ?? null, source: "dot-invitation" } });
+              requiresApproval: !!approval, approvalId: approval?.id ?? null, source } });
           if (approval) await logActivity(txDb, { companyId, actorType: "user", actorId: operatorId, action: "approval.created",
             entityType: "approval", entityId: approval.id, details: { type: "hire_agent", agentId: created.id } });
         });

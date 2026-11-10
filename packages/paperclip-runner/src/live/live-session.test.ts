@@ -1,9 +1,10 @@
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { setTimeout as realDelay } from "node:timers/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,7 +24,7 @@ import {
   type CapabilityLiveTurnEvent,
 } from "./live-session.js";
 import { DurableCapabilityLiveSessionStore } from "./durable-live-session-store.js";
-import { defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
+import { defaultCapabilityRunnerdBinary, type CapabilityRunnerdProcessEvidence } from "./runnerd-codex-transport.js";
 import { persistedCursorUsageNotice } from "../drivers/acpx/usage-accounting.js";
 import { captureTurnRejection } from "../../test/capture-turn-rejection.js";
 import * as workspaceDiff from "./workspace-diff.js";
@@ -44,7 +45,7 @@ it("admits Pi live sessions without candidate opt-in while preserving the exact 
   const session = await service.create({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731" });
   try {
     expect(session.snapshot().config.acpxProfile).toMatchObject({
-      agent: "pi", ...resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731"),
+      ...resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731"), agent: "pi",
     });
     const custom = await service.create({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", requestedModel: "another-model" });
     expect(custom.snapshot().config.acpxProfile).toMatchObject({ qualificationModel: "another-model", reportedModelId: "another-model" });
@@ -321,10 +322,25 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
 
 function fakeTransportFactory(state: FakeProviderState): CapabilityLiveTransportFactory {
   return (options) => {
-    const evidence = {
+    const evidence: CapabilityRunnerdProcessEvidence = {
       runnerPid: 4100 + state.transports.length,
       runnerProcessGroupId: 4100 + state.transports.length,
+      providerPid: null,
+      providerProcessStartedAt: null,
       codexPid: 5100 + state.transports.length,
+      codexProcessStartedAt: null,
+      sidecarPid: null,
+      sidecarProcessStartedAt: null,
+      agentPid: null,
+      agentProcessStartedAt: null,
+      providerDriver: null,
+      providerVersion: null,
+      acpxAgent: null,
+      agentServerVersion: null,
+      agentRuntimeVersion: null,
+      acpProtocolVersion: null,
+      providerExecutionKind: null,
+      providerService: null,
       runnerExited: false,
       runnerExitCode: null,
       runnerSignal: null,
@@ -336,7 +352,7 @@ function fakeTransportFactory(state: FakeProviderState): CapabilityLiveTransport
       options.onEvidence?.(evidence);
     });
     options.onEvidence?.(evidence);
-    return { transport, evidence: () => ({ ...evidence, runnerExited: transport.processInfo().exited }) };
+    return { transport, evidence: () => ({ ...evidence, runnerExited: transport.processInfo().exited }), detachControllerForRestart: async () => {} };
   };
 }
 
@@ -393,7 +409,7 @@ class TransientFailureLiveSessionStore implements CapabilityLiveSessionStore {
       throw new Error("transient live-session store failure");
     }
     if (
-      snapshot.terminalTurns.length > 0 &&
+      snapshot.terminalTurns!.length > 0 &&
       (this.#rejectTerminalSaves || this.#terminalSaveFailuresRemaining > 0)
     ) {
       if (this.#terminalSaveFailuresRemaining > 0) {
@@ -646,7 +662,7 @@ describe("Capability live runnerd and Codex session", () => {
       outputTokens: 4,
     })).resolves.toBe("committed");
 
-    expect((await store.load(session.id))?.usageLedger.map((receipt) => receipt.receiptId)).toEqual([
+    expect((await store.load(session.id))?.usageLedger!.map((receipt) => receipt.receiptId)).toEqual([
       "usage-before-recovery",
       "usage-after-recovery",
     ]);
@@ -1158,7 +1174,7 @@ describe("Capability live runnerd and Codex session", () => {
     expect(first.snapshot.providerThreadId).toBe(second.snapshot.providerThreadId);
     expect(state.attachments).toHaveLength(1);
     expect(second.snapshot.providerRunBinding).toEqual(state.attachments[0]);
-    expect(second.snapshot.usageLedger.slice(-2)).toMatchObject([
+    expect(second.snapshot.usageLedger!.slice(-2)).toMatchObject([
       { providerRequests: 1, inputTokens: 100, outputTokens: 10 },
       { providerRequests: 1, inputTokens: 100, outputTokens: 10 },
     ]);
@@ -1496,7 +1512,7 @@ describe("Capability live runnerd and Codex session", () => {
     const result = await session.sendMessage("report overlapping usage");
 
     expect(result.snapshot.usageLedger).toHaveLength(1);
-    expect(result.snapshot.usageLedger[0]).toMatchObject({
+    expect(result.snapshot.usageLedger![0]).toMatchObject({
       providerRequests: 1,
       inputTokens: 100,
       outputTokens: 10,
@@ -1595,7 +1611,7 @@ describe("Capability live runnerd and Codex session", () => {
     const result = await session.sendMessage("report late usage");
 
     expect(result.snapshot.usageLedger).toHaveLength(1);
-    expect(result.snapshot.usageLedger[0]).toMatchObject({
+    expect(result.snapshot.usageLedger![0]).toMatchObject({
       providerRequests: 2,
       inputTokens: 100,
       outputTokens: 10,
@@ -1766,7 +1782,7 @@ describe("Capability live runnerd and Codex session", () => {
     expect((await store.load(replacement.id))?.status).toBe("suspended");
   });
 
-  it("durably resumes a distinct attempt, preserves partial usage, and deduplicates the semantic effect", async () => {
+  it.each([0, 650])("durably resumes a distinct attempt, preserves partial usage, and deduplicates the semantic effect (%i ms persistence delay)", async persistenceDelayMs => {
     const state = providerState();
     const directory = await mkdtemp(join(tmpdir(), "capability-live-durable-"));
     const binding = {
@@ -1786,13 +1802,68 @@ describe("Capability live runnerd and Codex session", () => {
       attemptId: "attempt-killed",
       turnTimeoutMs: 500,
     });
-    state.holdAfterTool = true;
-    const killedTurn = captureTurnRejection(first.sendMessage("Apply idempotent progress once."));
-    await vi.waitFor(async () => {
-      expect((await firstStore.load(binding.sessionId))?.mockState).toContain(
-        "Progress persisted through the live Codex tool loop.",
-      );
+    const save = firstStore.save.bind(firstStore);
+    let delayed = false;
+    const saveSpy = vi.spyOn(firstStore, "save").mockImplementation(async snapshot => {
+      if (!delayed && JSON.parse(snapshot.mockState).comments.length > 0) {
+        delayed = true;
+        await realDelay(persistenceDelayMs);
+      }
+      await save(snapshot);
     });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    onTestFinished(() => { vi.useRealTimers(); saveSpy.mockRestore(); });
+    state.holdAfterTool = true;
+    let turnSettled = false;
+    let turnFailure: unknown = null;
+    const killedTurn = captureTurnRejection(first.sendMessage("Apply idempotent progress once.")).then((error) => {
+      turnSettled = true;
+      turnFailure = error;
+      return error;
+    });
+    try {
+      const deadline = performance.now() + 5_000;
+      while (true) {
+        await vi.advanceTimersByTimeAsync(0);
+        const persisted = (await firstStore.load(binding.sessionId))?.mockState;
+        if (persisted?.includes("Progress persisted through the live Codex tool loop.")) break;
+        expect(performance.now(), "durable progress did not arrive").toBeLessThan(deadline);
+        await realDelay(10);
+      }
+    } catch (error) {
+      try {
+        const summarize = (snapshot: CapabilityLiveSessionSnapshot | null) => {
+          if (snapshot === null) return null;
+          const mock = JSON.parse(snapshot.mockState);
+          return {
+            revision: snapshot.revision,
+            status: snapshot.status,
+            activeTurnId: snapshot.activeTurnId,
+            mockRevision: mock.revision,
+            comments: mock.comments.length,
+            evidenceKinds: snapshot.evidence.slice(-8).map((entry) => entry.kind),
+          };
+        };
+        const stored = await firstStore.load(binding.sessionId).catch(() => null);
+        const diagnostics = {
+          turnSettled,
+          turnFailure: turnFailure instanceof Error
+            ? { name: turnFailure.name, message: turnFailure.message.slice(0, 240) }
+            : typeof turnFailure,
+          requests: state.transports[0]?.requests.slice(-16).map((request) => request.method),
+          memory: summarize(first.snapshot()),
+          stored: summarize(stored),
+        };
+        if (error instanceof Error) error.message += `\nDurable progress diagnostics: ${JSON.stringify(diagnostics)}`;
+      } catch (diagnosticError) {
+        const diagnosticUnavailable = diagnosticError instanceof Error
+          ? { name: diagnosticError.name, message: diagnosticError.message.slice(0, 240) }
+          : { name: typeof diagnosticError };
+        if (error instanceof Error) error.message += `\nDurable progress diagnostics unavailable: ${JSON.stringify(diagnosticUnavailable)}`;
+      }
+      throw error;
+    }
+    expect(turnSettled, "watchdog fired before durable progress was captured").toBe(false);
     await expect(first.recordUsage({
       receiptId: "provider-response-1",
       providerResponseId: "response-1",
@@ -1805,7 +1876,9 @@ describe("Capability live runnerd and Codex session", () => {
       costNanodollars: 1_500,
     })).resolves.toBe("committed");
     await state.transports[0]?.close();
+    await vi.advanceTimersByTimeAsync(500);
     await expect(killedTurn).resolves.toMatchObject({ message: expect.stringContaining("timed out") });
+    vi.useRealTimers();
 
     // A new service models worker termination: it owns no in-memory session.
     const resumedService = new CapabilityLiveSessionService({

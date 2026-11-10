@@ -33,15 +33,18 @@ export function queuedCommentIdsFromRunContext(contextValue: unknown): string[] 
 export function withQueuedCommentIdsInWakePayload(
   payloadValue: unknown,
   ids: string[],
+  options: { preserveSource?: boolean } = {},
 ): Record<string, unknown> {
   const payload = { ...record(payloadValue) };
   const context = { ...record(payload[QUEUE_CONTEXT_KEY]) };
   if (ids.length > 0) {
     const latestId = ids[ids.length - 1]!;
     context[QUEUE_IDS_KEY] = ids;
-    context.wakeCommentId = latestId;
-    context.commentId = latestId;
-    payload.commentId = latestId;
+    if (!options.preserveSource) {
+      context.wakeCommentId = latestId;
+      context.commentId = latestId;
+      payload.commentId = latestId;
+    }
   } else {
     delete context[QUEUE_IDS_KEY];
     delete context.wakeCommentId;
@@ -76,8 +79,15 @@ export function queuedCommentQueueRevision(input: {
 export function withQueuedCommentIdsInRunContext(
   contextValue: unknown,
   ids: string[],
+  sourceWakeIds?: string[],
 ): Record<string, unknown> {
   const context = { ...record(contextValue) };
+  if (sourceWakeIds) {
+    context.queuedCommentSourceWakeIds = uniqueIds([
+      ...uniqueIds(context.queuedCommentSourceWakeIds),
+      ...sourceWakeIds,
+    ]);
+  }
   if (ids.length > 0) {
     const latestId = ids[ids.length - 1]!;
     context[QUEUE_IDS_KEY] = ids;

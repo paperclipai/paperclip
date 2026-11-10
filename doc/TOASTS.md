@@ -6,12 +6,14 @@ mode (`local-board`). Access to a task does not subscribe someone to notificatio
 
 ## Which tasks qualify
 
-A task qualifies when the viewer created it, is its current human assignee,
-authored a comment, or performed a deliberate action included in the existing
+A task qualifies when the viewer creates an ordinary human task, is its current
+human assignee, comments directly in Paperclip, receives an open addressed request,
+or performs a deliberate action included in the existing
 Mine participation allowlist in
 [`issue-participation.ts`](../server/src/services/issue-participation.ts).
 Read receipts, denied requests, and automatic read-time recovery cleanup do not
-count. Comment authorship follows Mine's existing historical participation rule.
+count. Automatic creator attribution, synchronized comments, and manual routine
+runs also do not count. Comment source checks apply to historical imports.
 
 A task also qualifies when its current description or a non-deleted comment
 contains an explicit mention of the viewer: `[Name](user://USER_ID)`. The shared
@@ -61,6 +63,10 @@ never persisted or published on the shared company event bus.
 Authorized events still reach cache handling and component subscribers when
 eligibility is false. Lookup failure is logged but does not discard the authorized
 event. Existing task/run privacy checks and payload redaction remain in force.
+Task activity titles, fallback text, and links use the authorized task identifier.
+If the optional identifier lookup fails, the event still arrives and uses `Task`
+unless the browser already has the identifier. Permission-check failures do not
+use this fallback.
 When an authenticated comment event omits the comment ID, the visible task thread
 refreshes through its authorized HTTP read instead of trying to hydrate the comment.
 Closed sockets cannot deliver stale notifications after account/company changes.

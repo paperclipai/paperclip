@@ -566,5 +566,28 @@ export function createDiscordRootThreads(db: Db, options: DiscordRootThreadsOpti
       return false;
     }
   }
-  return { admitDiscordRootMention, discordRootThreadPending, reconcileDiscordRootThread };
+  async function promoteDiscordRootReceipt(candidateId: string, scheduledAt: number | null): Promise<DeliveryRow | undefined> {
+      const [promoted] = await db.transaction(async (tx) => {
+        await notifyChatDeliveryWork(tx);
+        return tx
+          .update(chatDeliveries)
+          .set({
+            state: "received",
+            normalizedEvent: sql`${chatDeliveries.normalizedEvent} - 'providerThreadPending'`,
+            nextAttemptAt: scheduledAt ? new Date(scheduledAt) : null,
+            redactedError: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatDeliveries.id, candidateId),
+              eq(chatDeliveries.state, "retry"),
+              sql`${chatDeliveries.normalizedEvent}->>'providerThreadPending' = 'true'`,
+            ),
+          )
+          .returning();
+      });
+    return promoted;
+  }
+  return { admitDiscordRootMention, discordRootThreadPending, reconcileDiscordRootThread, promoteDiscordRootReceipt };
 }

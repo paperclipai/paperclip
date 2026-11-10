@@ -48,10 +48,26 @@ test("every rust-cache restore in the PR workflow belongs to a guarded reader jo
 const keyInputs = [
   /uses: Swatinem\/rust-cache@([0-9a-f]{40}) # v[0-9.]+/,
   /workspaces: (\$\{\{ steps\.runner_rust_workspace\.outputs\.path \}\} -> target)/,
-  /shared-key: (release-runner-v2)/,
+  /shared-key: (release-runner-v2-.+)/,
   /cache-workspace-crates: (false)/,
   /cache-bin: (false)/,
 ];
+
+test("virtual workspace profiles and ancestor Cargo configuration partition every dependency cache", () => {
+  for (const [name, workflow] of [["PR", prWorkflow], ["release", releaseWorkflow]]) {
+    const keys = [...workflow.matchAll(/^\s+shared-key: (.+)$/gm)].map(([, key]) => key);
+    assert.ok(keys.length > 0);
+    for (const key of keys) {
+      assert.ok(key.includes("hashFiles('packages/paperclip-runner/runner/Cargo.toml'"), name);
+      for (const directory of ['.', 'packages', 'packages/paperclip-runner', 'packages/paperclip-runner/runner']) {
+        const prefix = directory === '.' ? '' : `${directory}/`;
+        for (const file of ['config', 'config.toml']) {
+          assert.ok(key.includes(`'${prefix}.cargo/${file}'`), `${name}: ${prefix}.cargo/${file}`);
+        }
+      }
+    }
+  }
+});
 
 test("every PR reader restores the Rust cache under the same key the master push writes", () => {
   for (const [name, pr] of readers) {

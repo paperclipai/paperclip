@@ -1,0 +1,103 @@
+{
+  "audit": {
+    "file": "ui/src/pages/apps/AppDetail.test.tsx",
+    "base": "81cd7ab0ca0bdc55ea0927bc44fcf6e764a530ed",
+    "originalSha256": "35c4d4828daa80d37b8319fa1dfd4c049c03e26a780c6ce3b1e64990f32be9c6",
+    "candidateSha256": "f41c56cc4bae6e496067c93b58419ed3acfc6938f7a1ea7169ac2b1fa9ae3e61",
+    "retired": "removes the separate always-installed controls from Permissions",
+    "keeper": "renders searchable action groups with three-way permission toggles",
+    "identicalInitialSetup": true,
+    "migratedExactAssertions": [
+      "expect(container.textContent).toContain(\"Which agents can use this connection?\");",
+      "expect(container.textContent).not.toContain(\"Always installed\");",
+      "expect(putConnectionInstallsMock).not.toHaveBeenCalled();"
+    ],
+    "allOtherSourceBytesUnchanged": true,
+    "allOtherProgramAstUnchanged": true,
+    "newHelpers": 0,
+    "registeredInvocationsRemoved": 1,
+    "completeRenderCallsRemoved": 1,
+    "netTestLinesRemoved": 7
+  },
+  "verifierSha256": "8252a8caeedbbbc3b6b630376b8207b4f78021b719ac601e061d394535ecea0e",
+  "runs": [
+    {
+      "kind": "baseline",
+      "jsonSha256": "74eb47f37400e2409108c4a88bbbd1f0c25d12d0e7f9c8576aad598758472ea3",
+      "total": 78,
+      "passed": 78,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "kind": "candidate",
+      "jsonSha256": "50a8a2e03f8521f125011f82c0ee816b55e1bd1d751e9d3fd2fe3fd71fad2314",
+      "total": 77,
+      "passed": 77,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "appdetail-old-install-copy",
+      "owner": "ui/src/pages/apps/app-detail/PermissionsPanel.tsx",
+      "title": "renders searchable action groups with three-way permission toggles",
+      "sourceSha": "b3b96c2e2fbafee17e0b01c9127c30bd4a0a787f2481a264001fd6c2bce8e379",
+      "replacements": 1,
+      "mutation": {
+        "before": ">Which agents can use this connection?</h2>",
+        "after": ">Which agents can use this connection?<span>Always installed</span></h2>"
+      },
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "caseStatus": "passed",
+        "jsonSha256": "a97f5dd88c5febcf4fe906f34ea7efd0672781b95b2757aeb9cbcb0bd9247edf",
+        "logSha256": "26c7c2d6e1c6edca6e56e0f21ecbe3897c28c3f7ad1300dd07886fe905d0c025"
+      },
+      "negative": {
+        "exit": 1,
+        "caseStatus": "failed",
+        "intendedAssertionFailure": "AssertionError: expected 'GitHubConnected2 actions availableUnv\u2026' not to contain 'Always installed'",
+        "jsonSha256": "a444c1fbc181dabecbcf67ce1ea7da5659d2bf3cc85a5983fc02fd49418ea66d",
+        "logSha256": "feef1c4c056f2bba80e2bda438edc27e099da834f11d3c5b1ccaf1e13da73b0d"
+      }
+    },
+    {
+      "slug": "appdetail-install-on-mount",
+      "owner": "ui/src/pages/apps/AppDetail.tsx",
+      "title": "renders searchable action groups with three-way permission toggles",
+      "sourceSha": "ee8ab6e844ce11bf5d13954f0a73de3e42de61a933deb01ad9e40cb76e3b93d1",
+      "replacements": 1,
+      "mutation": {
+        "before": "  const activeTab: AppTabKey | null = isAppTabKey(tab) ? tab : null;",
+        "after": "  useEffect(() => { void toolsApi.putConnectionInstalls(connectionId, []); }, [connectionId]);\n  const activeTab: AppTabKey | null = isAppTabKey(tab) ? tab : null;"
+      },
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "caseStatus": "passed",
+        "jsonSha256": "b87e88f3d6a624d21ce9795889d002fb0bb8a08ad7b27bd5cad6420b03ec6f04",
+        "logSha256": "0d0d9d88fd6da2c652fb4119fb2ed3cef7c624514e8b0501f3daf62578ec99ac"
+      },
+      "negative": {
+        "exit": 1,
+        "caseStatus": "failed",
+        "intendedAssertionFailure": "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 1 times",
+        "jsonSha256": "7d04f5db02f84793fe53914e4f8cfc98f7644766146861857afcf586809b6d16",
+        "logSha256": "cc98a64e983162d6330263ea4433cc6b17c4925b3b9806794996dafb9b7acd0c"
+      }
+    }
+  ],
+  "allProductionOwnersRestored": true,
+  "productionLinesChanged": 0,
+  "priorUiProofUnchanged": {
+    "commit": "81cd7ab0ca0bdc55ea0927bc44fcf6e764a530ed",
+    "reportSha256": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8",
+    "controlsSha256": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7"
+  },
+  "ciInclusion": "@paperclipai/ui project in general-workspaces-a; complete file remains included; no routing changes",
+  "netCombinedTestLinesRemoved": 371,
+  "combinedRegisteredInvocationsRemoved": 2
+}

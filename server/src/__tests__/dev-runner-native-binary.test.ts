@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { paperclipRunnerSupportsPlatform } from "@paperclipai/shared";
 
 import {
   paperclipRunnerBinaryNeedsBuild,
@@ -61,6 +62,13 @@ function nativeHeader(platform: string, architecture: string): Buffer {
 }
 
 describe("paperclip runner native dev prerequisite", () => {
+  it.each(["x64", "arm64"].flatMap(architecture => [[undefined, false], ["2.38", false], ["2.39", true], ["3.0", true]].map(([glibcVersionRuntime, native]) => ({ architecture, glibcVersionRuntime, native }))))("uses the measured libc prerequisite on Linux $architecture/$glibcVersionRuntime when no native run or flag requires it", ({ architecture, glibcVersionRuntime, native }) => {
+    Object.defineProperty(process, "platform", { ...initialPlatform, value: "linux" });
+    Object.defineProperty(process, "arch", { ...initialArchitecture, value: architecture });
+    const nativeRunnerRequired = paperclipRunnerSupportsPlatform("codex_local", "linux", architecture, glibcVersionRuntime ? "glibc" : "unknown", glibcVersionRuntime as string | undefined);
+    expect(nativeRunnerRequired).toBe(native);
+    expect(paperclipRunnerBinaryNeedsBuild({ repoRoot: "/checkout/without/a/staged/binary", nativeRunnerRequired, configuredBinary: undefined })).toBe(native);
+  });
   it("uses an explicit status response and fails safe when status is unknown", () => {
     expect(
       resolveNativeRunnerRequirement({
@@ -101,6 +109,7 @@ describe("paperclip runner native dev prerequisite", () => {
       paperclipRunnerBinaryNeedsBuild({
         repoRoot: checkout.root,
         nativeRunnerRequired: true,
+        configuredBinary: undefined,
       }),
     ).toBe(false);
 
@@ -109,6 +118,7 @@ describe("paperclip runner native dev prerequisite", () => {
       paperclipRunnerBinaryNeedsBuild({
         repoRoot: checkout.root,
         nativeRunnerRequired: true,
+        configuredBinary: undefined,
       }),
     ).toBe(true);
 
@@ -117,6 +127,7 @@ describe("paperclip runner native dev prerequisite", () => {
       paperclipRunnerBinaryNeedsBuild({
         repoRoot: checkout.root,
         nativeRunnerRequired: true,
+        configuredBinary: undefined,
       }),
     ).toBe(true);
   });
@@ -126,11 +137,29 @@ describe("paperclip runner native dev prerequisite", () => {
       paperclipRunnerBinaryNeedsBuild({
         repoRoot: "/checkout/without/a/staged/binary",
         nativeRunnerRequired: false,
+        configuredBinary: undefined,
       }),
     ).toBe(false);
   });
 
-  it.each(["arm64", "x64"])("uses the staged Mac %s target before the flat build output", architecture => {
+  it.each([
+    "antigravity-distributions.json", "rust-toolchain.toml", "protocol/provider-schemas/acpx-sidecar.schema.json",
+  ])("rebuilds an existing native binary after changing embedded input %s", input => {
+    const checkout = createRunnerCheckout();
+    const dependency = path.join(checkout.root, "packages/paperclip-runner", input);
+    fs.mkdirSync(path.dirname(dependency), { recursive: true });
+    fs.writeFileSync(dependency, "fixture compile input\n");
+    const now = Date.now(), old = new Date(now - 2_000), built = new Date(now + 2_000), changed = new Date(now + 4_000);
+    fs.utimesSync(dependency, old, old);
+    fs.utimesSync(checkout.binary, built, built);
+    const options = { repoRoot: checkout.root, nativeRunnerRequired: true, configuredBinary: undefined };
+    expect(paperclipRunnerBinaryNeedsBuild(options)).toBe(false);
+    fs.utimesSync(dependency, changed, changed);
+    expect(paperclipRunnerBinaryNeedsBuild(options)).toBe(true);
+    expect(paperclipRunnerBinaryNeedsBuild({ ...options, nativeRunnerRequired: false })).toBe(false);
+  });
+
+  it.each(["arm64", "x64"] as const)("uses the staged Mac %s target before the flat build output", architecture => {
     const checkout = createRunnerCheckout();
     const target = path.join(path.dirname(checkout.binary), `darwin-${architecture}`, "paperclip-runnerd");
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -138,7 +167,7 @@ describe("paperclip runner native dev prerequisite", () => {
     const old = new Date(Date.now() - 2000), current = new Date(Date.now() + 2000);
     fs.utimesSync(checkout.binary, old, old);
     fs.utimesSync(target, current, current);
-    const input = { repoRoot: checkout.root, nativeRunnerRequired: true, platform: "darwin", architecture };
+    const input = { repoRoot: checkout.root, nativeRunnerRequired: true, configuredBinary: undefined, platform: "darwin" as const, architecture };
     expect(paperclipRunnerBinaryNeedsBuild(input)).toBe(false);
     fs.writeFileSync(checkout.binary, nativeHeader("linux", "x64"));
     const wrongHostNewer = new Date(Date.now() + 4000);
@@ -153,7 +182,7 @@ describe("paperclip runner native dev prerequisite", () => {
     expect(paperclipRunnerBinaryNeedsBuild(input)).toBe(true);
   });
 
-  it.each(["arm64", "x64"])("uses only a newer matching Mac %s source build without changing release selection", architecture => {
+  it.each(["arm64", "x64"] as const)("uses only a newer matching Mac %s source build without changing release selection", architecture => {
     const checkout = createRunnerCheckout();
     const target = path.join(path.dirname(checkout.binary), `darwin-${architecture}`, "paperclip-runnerd");
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -161,7 +190,7 @@ describe("paperclip runner native dev prerequisite", () => {
     fs.writeFileSync(checkout.binary, nativeHeader("darwin", architecture));
     const old = new Date(Date.now() - 2000), fresh = new Date(Date.now() + 2000), changed = new Date(Date.now() + 4000);
     fs.utimesSync(target, old, old); fs.utimesSync(checkout.binary, fresh, fresh);
-    const input = { repoRoot: checkout.root, nativeRunnerRequired: true, platform: "darwin", architecture };
+    const input = { repoRoot: checkout.root, nativeRunnerRequired: true, configuredBinary: undefined, platform: "darwin" as const, architecture };
     expect(resolveNativeRunnerDevBinary(input)).toEqual({ binary: checkout.binary, sourceBuild: true });
     expect(paperclipRunnerBinaryNeedsBuild(input)).toBe(false);
     fs.utimesSync(checkout.source, changed, changed);

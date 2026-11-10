@@ -6,7 +6,8 @@ import { SpekoProviderSetup } from "@/components/voice/SpekoProviderSetup";
 import { VoiceControls } from "@/components/voice/VoiceControls";
 import { VoiceTranscript } from "@/components/voice/VoiceTranscript";
 import { AnimatedDialogContent } from "@/components/AnimatedDialogContent";
-import { ExternalAgentPresetPicker, DotConnectionChecks } from "@/components/new-agent/ExternalAgentInviteContent";
+import { MuseConnectionDetails } from "@/components/MuseRunnerConnection";
+import { ExternalAgentPresetPicker, DotConnectionChecks, MuseConnectionChecks } from "@/components/new-agent/ExternalAgentInviteContent";
 import { AgentMailApiKeyField } from "@/features/connections/AgentMailApiKeyField";
 import { TaskBrowserFooter } from "@/components/task-side-panel/TaskBrowserFooter";
 import { TaskBrowserActivity } from "@/components/task-side-panel/TaskBrowserActivity";
@@ -178,6 +179,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
+import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
 import { Identity } from "@/components/Identity";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
@@ -820,6 +822,10 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        <SubSection title="Monitoring task">
+          <StatusIcon status="in_progress" displayStatus="monitoring" showLabel />
+          <IssueStatusBadge status="in_progress" displayStatus="monitoring" />
+        </SubSection>
         <SubSection title="Idle Slack conversation">
           <StatusIcon status="in_review" externalConversationState="waiting" showLabel />
           <IssueStatusBadge status="in_review" externalConversationState="waiting" />
@@ -1901,6 +1907,16 @@ export function DesignGuide() {
             <PageSkeleton variant="detail" />
           </div>
         </SubSection>
+        <SubSection title="Task conversation loading">
+          <div className="grid gap-6 md:grid-cols-2">
+            <div className="relative h-96 overflow-hidden rounded-md border border-border">
+              <TaskChatLoadingShell mobile={false} streamlined coordinator={false} />
+            </div>
+            <div className="coordinator-workspace relative h-96 overflow-hidden rounded-md border border-border">
+              <TaskChatLoadingShell mobile streamlined coordinator />
+            </div>
+          </div>
+        </SubSection>
       </Section>
 
       {/* ============================================================ */}
@@ -2052,7 +2068,7 @@ export function DesignGuide() {
             ["[", "Toggle Sidebar"],
             ["]", "Toggle Properties Panel"],
 
-            ["Cmd+Enter / Ctrl+Enter", "Submit markdown comment"],
+            ["Enter / Shift+Enter", "Submit task message / add a new line (Command/Ctrl+Enter is available in Experimental settings)"],
           ].map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between px-4 py-2">
               <span className="text-muted-foreground">{desc}</span>
@@ -2299,6 +2315,12 @@ export function DesignGuide() {
           recovery. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
         </p>
+        <p className="text-sm text-muted-foreground">
+          When retained-file recovery needs another authorized request, the source task and
+          run inspector offer Recover saved files. This queues the existing file-preservation
+          worker. Work remains held until the server verifies the saved files; a queued
+          acknowledgement does not mean that recovery finished.
+        </p>
       </Section>
 
       <Section title="Cloud sign-in unavailable">
@@ -2338,6 +2360,11 @@ export function DesignGuide() {
         <p className="text-sm text-muted-foreground">Match the harness picker with provider cards. Connection checks reflect confirmed server evidence. AnimatedDialogContent resizes to its content using motion tokens and respects reduced motion.</p>
         <ExternalAgentPresetPicker onSelect={() => {}} />
         <DotConnectionChecks state={{ phase: "testing" }} />
+        <ExternalAgentPresetPicker museEnabled onSelect={() => {}} />
+        <MuseConnectionChecks state={{ paired: true, receiverDetected: true, backgroundReplyVerified: false, ready: false }} />
+        <MuseConnectionChecks state={{ paired: true, receiverDetected: true, backgroundReplyVerified: true, ready: false, problem: "agent_unavailable" }} />
+        <MuseConnectionChecks state={{ paired: true, receiverDetected: true, backgroundReplyVerified: true, ready: true }} />
+        <MuseConnectionDetails connection={{ enabled: false, publicOrigin: null, agentStatus: "idle", agentLifecycleState: "ready", canConfigureConnection: true, binding: null, usage: null, cost: null }} onTest={() => {}} onRepair={() => {}} onPause={() => {}} onDisconnect={() => {}} onRefresh={() => {}} onAttest={() => {}} />
         <Dialog><DialogTrigger asChild><Button variant="outline">Preview invitation modal</Button></DialogTrigger>
           <AnimatedDialogContent><div className="space-y-4 p-6"><DialogTitle>Invite an external agent</DialogTitle><DialogDescription>Choose an agent you already use.</DialogDescription><ExternalAgentPresetPicker onSelect={() => {}} /></div></AnimatedDialogContent>
         </Dialog>

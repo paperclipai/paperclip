@@ -22,9 +22,11 @@ import type {
 } from "@paperclipai/shared";
 import { checkOAuthEndpointUrl } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
+import { describeError } from "@/api/errors";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -93,6 +95,7 @@ export function ActionTestDialog({
     queryFn: () => toolsApi.listTestAgents(connectionId),
     enabled: open && !!connectionId,
   });
+  const testAgentsView = useQueryView(testAgentsQuery);
   const agents = useMemo(
     () => [...(testAgentsQuery.data?.agents ?? [])].sort(
       (a, b) => a.orgDepth - b.orgDepth || a.name.localeCompare(b.name),
@@ -112,6 +115,7 @@ export function ActionTestDialog({
     gcTime: TEST_ACCESS_GC_TIME_MS,
     refetchOnWindowFocus: false,
   });
+  const accessView = useQueryView(accessQuery);
   const selectedAgent = useMemo<TestAgentWithAccess | null>(() => (
     selectedAgentBase && accessQuery.data
       ? { ...selectedAgentBase, effectiveAccess: accessQuery.data.access }
@@ -135,22 +139,28 @@ export function ActionTestDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {testAgentsQuery.isLoading ? (
+        {testAgentsQuery.isLoading || testAgentsView.kind === "reconnecting" ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
             <Loader2 className="h-4 w-4 animate-spin" />
             Loading agents…
           </div>
-        ) : testAgentsQuery.isError ? (
-          <TestLoadError
-            message="We couldn't load the agents available for testing."
-            onRetry={() => { void testAgentsQuery.refetch(); }}
+        ) : testAgentsView.kind === "error" ? (
+          <QueryErrorState
+            className="my-6"
+            error={testAgentsQuery.error}
+            action="load the agents available for testing"
+            onRetry={testAgentsView.retry}
+            retrying={testAgentsView.isFetching}
           />
         ) : agents.length === 0 ? (
           <p className="py-6 text-sm text-muted-foreground">No agents are available to test as.</p>
-        ) : accessQuery.isError && !accessQuery.data ? (
-          <TestLoadError
-            message={`We couldn't load ${selectedAgentBase?.name ?? "this agent"}'s permissions.`}
-            onRetry={() => { void accessQuery.refetch(); }}
+        ) : accessView.kind === "error" ? (
+          <QueryErrorState
+            className="my-6"
+            error={accessQuery.error}
+            action={`load ${selectedAgentBase?.name ?? "this agent"}'s permissions`}
+            onRetry={accessView.retry}
+            retrying={accessView.isFetching}
           />
         ) : !selectedAgent ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
@@ -215,17 +225,6 @@ function DecisionBadge({ decision }: { decision: ToolConnectionTestDecision }) {
     >
       {meta.label}
     </span>
-  );
-}
-
-function TestLoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <div className="py-8 text-center">
-      <p className="text-sm font-medium text-foreground">{message}</p>
-      <Button className="mt-3" size="sm" variant="outline" onClick={onRetry}>
-        Try again
-      </Button>
-    </div>
   );
 }
 
@@ -568,9 +567,9 @@ function ActionTester({
         <RunningCard entry={entry} appName={appName} agentName={agent.name} elapsedMs={elapsedMs} onCancel={onCancelRunning} />
       )}
 
-      {run.isError && !running && (
+      {run.error && !running && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-          Couldn't reach {agent.name}. {run.error instanceof Error ? run.error.message : "Please try again."}
+          Couldn't reach {agent.name}. {describeError(run.error).body}
         </div>
       )}
 
@@ -641,9 +640,10 @@ function ResultPanel({
     return <AskFirstResult outcome={outcome} entry={entry} appName={appName} connectionId={connectionId} agent={agent} />;
   }
   if (result.decision === "off") {
+    const offMessage = result.error?.message ?? "This action is off and won't run."; // query-error-ok: the tool call's own result error, not a query or mutation error
     return (
       <div className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
-        {result.error?.message ?? "This action is off and won't run."}
+        {offMessage}
       </div>
     );
   }
@@ -661,11 +661,12 @@ function ProviderPendingResult({ pending, appName, connectionId, agent }: { pend
   const [resumed, setResumed] = useState<{ outcome: RunOutcome; entry: ToolCatalogEntry; action: "accept" | "decline" | "cancel" } | null>(null);
   const resumeError = resumed && (resumed.outcome.result.error ?? mcpToolError(resumed.outcome.result.result));
   const stoppedByUser = resumed && resumeError?.reasonCode === "tool_error" &&
-    ((resumed.action === "decline" && /request was declined by the user/i.test(resumeError.message)) ||
-      (resumed.action === "cancel" && /request was cancelled by the user/i.test(resumeError.message)));
+    ((resumed.action === "decline" && /request was declined by the user/i.test(resumeError.message)) || // query-error-ok: classifies the tool result, nothing is rendered here
+      (resumed.action === "cancel" && /request was cancelled by the user/i.test(resumeError.message))); // query-error-ok: classifies the tool result, nothing is rendered here
+  const resumeMessage = stoppedByUser ? resumeError.message : null; // query-error-ok: the tool call's own result error, not a query or mutation error
   if (stoppedByUser) return <div role="status" className="space-y-2 rounded-md border border-border bg-muted/40 p-4 text-sm">
     <p className="font-medium">{resumed.action === "decline" ? "Request declined" : "Request cancelled"}</p>
-    <p>{resumeError.message}</p>
+    <p>{resumeMessage}</p>
     <p className="text-muted-foreground">The original call was not repeated.</p>
     {pending.executionId && <p>Execution: <code className="break-all">{pending.executionId}</code></p>}
   </div>;
@@ -696,6 +697,7 @@ function ProviderResumeControls({ pending, connectionId, agent, onResult }: {
   onResult: (result: { outcome: RunOutcome; entry: ToolCatalogEntry; action: "accept" | "decline" | "cancel" }) => void;
 }) {
   const catalog = useQuery({ queryKey: queryKeys.tools.catalog(connectionId), queryFn: () => toolsApi.listCatalog(connectionId) });
+  const catalogView = useQueryView(catalog);
   const entry = catalog.data?.catalog.find((item) => item.toolName === pending.resumeTool && item.status === "active");
   const schema = (pending.requestedSchema ?? { type: "object", properties: {} }) as JsonSchemaNode;
   const [content, setContent] = useState<Record<string, unknown>>(() => getDefaultValues(schema));
@@ -726,8 +728,8 @@ function ProviderResumeControls({ pending, connectionId, agent, onResult }: {
     </div>
     {expired && <p>This provider approval expired. Check the provider before starting a new action.</p>}
     {permission === "off" && <p>Allow the resume action in Permissions before continuing.</p>}
-    {catalog.isError && <p role="alert">Could not load the resume action. Close this test and try again.</p>}
-    {resume.isError && <p role="alert">{resume.error instanceof Error ? resume.error.message : "Could not resume. Check the provider before trying again."}</p>}
+    {catalogView.kind === "error" && <QueryErrorState size="inline" error={catalog.error} action="load the resume action" onRetry={catalogView.retry} retrying={catalogView.isFetching} />}
+    {resume.error && <p role="alert">{describeError(resume.error).body}</p>}
   </div>;
 }
 
@@ -1055,7 +1057,8 @@ function ErrorResult({
   connectionId: string;
   error: { message: string; reasonCode: string | null };
 }) {
-  const hints = errorHints(error.message, error.reasonCode);
+  const toolErrorMessage = error.message; // query-error-ok: the tool call's own result error, not a query or mutation error
+  const hints = errorHints(toolErrorMessage, error.reasonCode);
   const needsReconnect = isReconnectError(error.reasonCode);
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
@@ -1069,7 +1072,7 @@ function ErrorResult({
       </p>
       <div className="mt-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">What {appName} said</p>
-        <p className="mt-1 break-words text-sm text-foreground">{error.message}</p>
+        <p className="mt-1 break-words text-sm text-foreground">{toolErrorMessage}</p>
         {error.reasonCode && <p className="mt-0.5 text-xs text-muted-foreground">code: {error.reasonCode}</p>}
       </div>
       <div className="mt-3">

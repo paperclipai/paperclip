@@ -263,7 +263,7 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
         handle: message.author.userName,
       },
       resource: {
-        type: providerResourceType(endpoint.provider, surfaceKind),
+        type: providerResourceType(endpoint.provider, surfaceKind, thread.isDM),
         providerResourceId: canonicalProviderResourceId(
           endpoint.provider,
           thread,
@@ -340,7 +340,7 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
           }
         : {}),
       resource: {
-        type: providerResourceType(endpoint.provider, surfaceKind),
+        type: providerResourceType(endpoint.provider, surfaceKind, thread.isDM),
         providerResourceId: canonicalProviderResourceId(
           endpoint.provider,
           thread,

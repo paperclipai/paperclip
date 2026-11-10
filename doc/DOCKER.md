@@ -32,6 +32,14 @@ docker build -t paperclip-local \
   --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
 ```
 
+The image starts the server from a runtime bundle, `server/dist-runtime/index.mjs`,
+with plain `node`. The build creates it from the server's `tsc` output with
+`pnpm --filter @paperclipai/server build:runtime` (`server/scripts/bundle-runtime.mjs`),
+compiling in the workspace packages that otherwise load as TypeScript source.
+This avoids transpiling them through the tsx loader on every boot. To check a
+build boots, run `scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs`;
+PR CI runs the same check after `pnpm build`.
+
 ## Standard images and downstream composition
 
 The Docker workflow publishes the standard `production` target for Linux AMD64
@@ -96,14 +104,27 @@ All persisted under your bind mount (`./data/docker-paperclip` in the example ab
 
 ## Docker Compose
 
+### Persistent signing secrets
+
+Before the first launch, generate two independent values with `openssl rand -hex 32`
+and save them in `docker/.env`. Keep any existing deployment's values unchanged:
+
+```dotenv
+BETTER_AUTH_SECRET=<session-signing-secret>
+PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=<tool-action-signing-secret>
+```
+
+Restrict this file to its owner (`chmod 600 docker/.env`) and keep it out of version
+control. Compose reads it for both commands below. Reuse the values on every
+restart. Rotate the tool-action secret only after outstanding approvals are
+resolved, because pending signatures use the previous value.
+
 ### Quickstart (embedded SQLite)
 
 Single container, no external database. Data persists via a bind mount.
 
 ```sh
-BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
-PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32) \
-  docker compose -f docker/docker-compose.quickstart.yml up --build
+docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
 Defaults:
@@ -129,11 +150,17 @@ Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
 Paperclip server + PostgreSQL 17. The database is health-checked before the server starts.
 
 ```sh
-BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
-  docker compose -f docker/docker-compose.yml up --build
+docker compose -f docker/docker-compose.yml up --build
 ```
 
 PostgreSQL data persists in a named Docker volume (`pgdata`). Paperclip data persists in `paperclip-data`.
+
+Both Compose files pass `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to the server.
+When configured, keep it independent from `BETTER_AUTH_SECRET`. When unset,
+the server derives a separate signing key from its persisted secrets master key.
+Keep that key with database backups, and share the signing key or master key
+across processes serving the same instance. Approvals fail closed if valid key
+material cannot be loaded; rotating it can invalidate approvals and retry matching.
 
 ### Untrusted PR review
 

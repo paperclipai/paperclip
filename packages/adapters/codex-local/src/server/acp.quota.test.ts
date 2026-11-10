@@ -130,3 +130,78 @@ it.each(["Usage limit reached", "Usage limit exceeded", "You’ve hit your usage
       .toEqual({ errorCode: "provider_quota", errorFamily: "provider_quota" });
   },
 );
+
+it.each([
+  "Selected model is at capacity. Please try a different model.",
+  "This model is at capacity right now",
+  "We're at capacity for this model. Try again soon.",
+  "codexErrorInfo: serverOverloaded",
+])("retries a typed Codex model capacity failure as transient upstream: %s", (title) => {
+  expect(classifyCodexTerminalSessionFailure({ category: "service", title }, now))
+    .toEqual({ errorCode: "codex_transient_upstream", errorFamily: "transient_upstream" });
+  expect(classifyCodexTerminalSessionFailure({ category: "service", title: "Codex turn failed", details: title }, now))
+    .toEqual({ errorCode: "codex_transient_upstream", errorFamily: "transient_upstream" });
+});
+
+it.each([
+  ["HTTP 500 internal server error", "service"],
+  ["Workspace storage capacity limit reached", "service"],
+  ["Selected model is at capacity. Please try a different model.", "limit"],
+  ["Selected model is at capacity. Please try a different model.", "request"],
+  ["Selected model is at capacity. Please try a different model.", "connection"],
+])("keeps other typed failures out of capacity retry: %s (%s)", (title, category) => {
+  expect(classifyCodexTerminalSessionFailure({ category, title }, now)).toBeNull();
+});
+
+it("keeps the historical generic terminal-service error unclassified", () => {
+  expect(classifyCodexTerminalSessionFailure({
+    category: "service",
+    title: "ACP agent reported a terminal service failure.",
+  }, now)).toBeNull();
+});
+
+it.each([
+  "unexpected status 401 Unauthorized: Incorrect API key provided: sk-test...abcd., auth error code: invalid_api_key",
+  "Incorrect API key provided",
+  "Invalid API key",
+  "auth error code: invalid_api_key",
+])("routes a typed Codex credential rejection to sign-in recovery: %s", (title) => {
+  expect(classifyCodexTerminalSessionFailure({ category: "access", title }, now))
+    .toEqual({ errorCode: "acpx_auth_required" });
+  expect(classifyCodexTerminalSessionFailure({ category: "access", title: "Codex turn failed", details: title }, now))
+    .toEqual({ errorCode: "acpx_auth_required" });
+});
+
+it.each([
+  ["ACP agent reported a terminal access failure.", "access"],
+  ["403 Forbidden: project does not have access to model gpt-5", "access"],
+  ["Permission denied for tool shell", "access"],
+  ["Incorrect API key provided", "request"],
+  ["Incorrect API key provided", "service"],
+  ["Incorrect API key provided", "connection"],
+])("keeps other typed failures out of sign-in recovery: %s (%s)", (title, category) => {
+  expect(classifyCodexTerminalSessionFailure({ category, title }, now)).toBeNull();
+});
+
+it("requires sign-in for a typed Codex credential rejection instead of a turn failure", async () => {
+  const title = "unexpected status 401 Unauthorized: Incorrect API key provided, auth error code: invalid_api_key";
+  const { result } = await executeFailure(title, "access");
+  expect(result).toMatchObject({
+    exitCode: 1,
+    errorCode: "acpx_auth_required",
+    resultJson: { terminalSessionFailure: { category: "access" } },
+  });
+  expect(result.errorFamily).toBeUndefined();
+});
+
+it("arms the bounded transient retry for a typed Codex model capacity failure", async () => {
+  const title = "Selected model is at capacity. Please try a different model.";
+  const { result } = await executeFailure(title, "service");
+  expect(result).toMatchObject({
+    exitCode: 1,
+    errorCode: "codex_transient_upstream",
+    errorFamily: "transient_upstream",
+    resultJson: { errorFamily: "transient_upstream", terminalSessionFailure: { category: "service" } },
+  });
+  expect(result.retryNotBefore).toBeUndefined();
+});

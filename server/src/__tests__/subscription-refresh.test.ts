@@ -6,7 +6,7 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const mocks = vi.hoisted(() => ({ accounts: vi.fn(), credential: vi.fn(), register: vi.fn(), probe: vi.fn() }));
 vi.mock("../services/ai-connections.js", () => ({ aiConnectionService: () => ({ subscriptionAccounts: mocks.accounts, credential: mocks.credential }) }));
-vi.mock("../services/subscriptions.js", () => ({ subscriptionService: () => ({ register: mocks.register }) }));
+vi.mock("../services/subscriptions.js", () => ({ subscriptionService: () => ({ register: mocks.register }), subscriptionSession: async () => null }));
 vi.mock("../services/subscription-identity.js", () => ({ probeSubscriptionIdentity: mocks.probe }));
 
 function deferred<T>() {

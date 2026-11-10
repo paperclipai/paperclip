@@ -1,5 +1,11 @@
-import { createAgentLifecycle } from "./agent-lifecycle.js";
-import { agentAppearanceSchema } from "@paperclipai/shared";
+import { publishActivity, type ActivityPublication } from "./activity-log.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { createAgentLifecycle, requestAgentHireInTransaction, initializeImportedAgentConfigurationInTransaction, scheduleAgentLifecycle } from "./agent-lifecycle.js";
+import { agentAppearanceSchema, agentHarnessType, paperclipRunnerProfileForHarness, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
+import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
@@ -7,6 +13,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { and, eq, inArray } from "drizzle-orm";
 import {
+  companies as companiesTable,
   builtInManagedResources,
   issueRelations,
   principalPermissionGrants,
@@ -112,8 +119,10 @@ import {
   PaperclipRunnerProviderProfileError,
   resolvePaperclipRunnerProviderProfile,
   validatePaperclipRunnerDotConfig,
+  validatePaperclipRunnerMuseConfig,
 } from "./native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
+import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial } from "../lib/agent-permissions.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
@@ -756,9 +765,15 @@ type ImportPlanInternal = {
 type ImportMode = "board_full" | "agent_safe";
 
 type ImportBehaviorOptions = {
+  actorAgentId?: string | null;
+  actorAgentCompanyId?: string | null;
+  interactionTransaction?: boolean;
+  interactionPublications?: ActivityPublication[];
   mode?: ImportMode;
   sourceCompanyId?: string | null;
   pauseAutomations?: boolean;
+  /** Runs before writes when the import would create agents; throws to refuse. */
+  assertCanCreateAgents?: () => Promise<void>;
 };
 
 type AgentLike = {
@@ -3235,6 +3250,12 @@ function buildManifestFromPackageFiles(
     const slug = asString(frontmatter.slug) ?? fallbackSlug;
     const extension = isPlainRecord(paperclipAgents[slug]) ? paperclipAgents[slug] : {};
     const extensionAdapter = isPlainRecord(extension.adapter) ? extension.adapter : null;
+    const runner = extensionAdapter?.runner;
+    if (runner !== undefined && (typeof runner !== "string" || !["auto", "paperclip", "legacy"].includes(runner))) {
+      throw unprocessable(`Invalid runner choice for agent ${slug}. Use auto, paperclip, or legacy.`, {
+        code: "agent_runner_choice_invalid", field: `agents.${slug}.adapter.runner`,
+      });
+    }
     const extensionRuntime = isPlainRecord(extension.runtime) ? extension.runtime : null;
     const extensionPermissions = isPlainRecord(extension.permissions) ? extension.permissions : null;
     const extensionPermissionGrants = normalizePortablePermissionGrants(extension.permissionGrants);
@@ -3258,6 +3279,7 @@ function buildManifestFromPackageFiles(
       reportsToSlug: asString(frontmatter.reportsTo) ?? asString(extension.reportsTo),
       reportsToExistingAgentId: asString(extension.reportsToExistingAgentId),
       reportsToExistingAgentSlug: asString(extension.reportsToExistingAgentSlug),
+      runner: runner as AgentRunnerChoice | undefined,
       adapterType: asString(extensionAdapter?.type) ?? "process",
       adapterConfig,
       runtimeConfig,
@@ -3561,7 +3583,7 @@ export function parseGitHubSourceUrl(rawUrl: string) {
 export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
   const agents = agentService(db);
-  const agentsLifecycle = createAgentLifecycle(db);
+  const agentsLifecycle = () => createAgentLifecycle(db);
   const assetRecords = assetService(db);
   const instructions = agentInstructionsService(db);
   const access = accessService(db);
@@ -3614,6 +3636,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (adapterType === "paperclip_runner") {
       let profile;
       try {
+        if (adapterConfig.provider === "muse") {
+          validatePaperclipRunnerMuseConfig(adapterConfig, false);
+          return;
+        }
         if (adapterConfig.provider === "openai_dot") {
           validatePaperclipRunnerDotConfig(adapterConfig, false);
           return;
@@ -3654,8 +3680,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     adapterConfig: Record<string, unknown>,
     desiredSkills: string[],
     mode: ImportMode,
+    runner?: AgentRunnerChoice,
+    defaultEnvironmentId?: string | null,
   ) {
-    const effectiveAdapterType = assertKnownImportAdapterType(adapterType);
+    const resolved = await resolveNewAgentRunnerForCompany(db, companyId, {
+      adapterType, adapterConfig, runner, defaultEnvironmentId,
+    });
+    adapterConfig = resolved.adapterConfig;
+    const effectiveAdapterType = assertKnownImportAdapterType(resolved.adapterType);
     if (mode === "agent_safe" && IMPORT_FORBIDDEN_ADAPTER_TYPES.has(effectiveAdapterType)) {
       throw forbidden(`Adapter type "${effectiveAdapterType}" is not allowed in safe imports`);
     }
@@ -4244,6 +4276,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           },
         ) as Record<string, unknown>;
         const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: true }) as Record<string, unknown>;
+        if (Object.hasOwn(agent.permissions ?? {}, "interactions")) {
+          delete portablePermissions.interactions;
+          warnings.push(`Agent ${slug} interaction restrictions are not copied by company packages; configure them through the interaction-permissions CLI after import.`);
+        }
+        // A CEO's recorded hiring denial is a board choice, so it survives the
+        // round trip even though export otherwise drops false values.
+        const exportedHiringDenial = agent.role === "ceo" ? ceoHiringDenial(agent.permissions) : null;
+        if (exportedHiringDenial) Object.assign(portablePermissions, { canCreateAgents: false, [CEO_HIRING_DENIAL_KEY]: exportedHiringDenial });
         const portablePermissionGrants = permissionGrantsByAgentId.get(agent.id) ?? [];
         const agentEnvInputs = dedupeEnvInputs(
           envInputs
@@ -4284,6 +4324,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           capabilities: agent.capabilities ?? null,
           adapter: {
             type: agent.adapterType,
+            runner: agentRunner(agent.adapterType),
             config: portableAdapterConfig,
           },
           runtime: portableRuntimeConfig,
@@ -5243,10 +5284,45 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     // the declared count is the only signal that distinguishes it from a
     // deliberately small bundle. Reject the fragment rather than importing it.
     assertInlineSourceComplete(input.source);
+    const origin = currentPluginInteractionOrigin();
+    const actorAgentId = origin?.agentId ?? options?.actorAgentId;
+    const actorAgentCompanyId = origin?.companyId ?? options?.actorAgentCompanyId ?? options?.sourceCompanyId;
+    if (actorAgentId && !options?.interactionTransaction) {
+      const publications: ActivityPublication[] = [];
+      const result = await db.transaction(async tx => {
+        const companyIds = [actorAgentCompanyId, input.target.mode === "existing_company" ? input.target.companyId : null]
+          .filter((id): id is string => Boolean(id));
+        await tx.select({ id: companiesTable.id }).from(companiesTable).where(inArray(companiesTable.id, companyIds)).orderBy(companiesTable.id).for("no key update");
+        return companyPortabilityService(tx as unknown as Db, storage).importBundle(input, actorUserId, {
+          ...options, actorAgentId, actorAgentCompanyId, interactionTransaction: true, interactionPublications: publications,
+        });
+      });
+      for (const publication of publications) publishActivity(publication);
+      for (const agent of result.agents) if (agent.action === "created" && agent.id) scheduleAgentLifecycle(db, agent.id);
+      return result;
+    }
+    // The importing board user brings a CEO's recorded hiring denial with the
+    // package; create and configuration writes never take one from input.
+    // Like the permissions toggle, the denial also removes an explicit
+    // agents:create grant, and the package's grants cannot restore one.
+    const applyImportedCeoHiringDenial = async <T extends { id: string; role: string }>(companyId: string, agent: T, permissions: unknown) => {
+      if (agent.role !== "ceo" || !ceoHiringDenial(permissions)) return null;
+      const updated = await agents.updatePermissions(agent.id, { canCreateAgents: false, [CEO_HIRING_DENIAL_KEY]: {
+        actorType: "user", actorId: actorUserId ?? null, at: new Date().toISOString(),
+      } }) as T | null;
+      await access.setPrincipalPermission(companyId, "agent", agent.id, "agents:create", false, null);
+      return updated;
+    };
+    const importedGrants = (agent: { role: string }, manifestAgent: { permissions?: unknown; permissionGrants?: PortableAgentPermissionGrant[] }) =>
+      (manifestAgent.permissionGrants ?? []).filter(grant =>
+        !(agent.role === "ceo" && grant.permissionKey === "agents:create" && ceoHiringDenial(manifestAgent.permissions)));
     const mode = resolveImportMode(options);
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {
       throw unprocessable(`Import preview has errors: ${plan.preview.errors.join("; ")}`);
+    }
+    if (options?.assertCanCreateAgents && plan.preview.plan.agentPlans.some((entry) => entry.action === "create")) {
+      await options.assertCanCreateAgents();
     }
     if (
       mode === "agent_safe"
@@ -5259,7 +5335,32 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       throw unprocessable("Safe import routes only allow create or skip actions.");
     }
 
+    const updateImportedAgent = (...args: Parameters<typeof agents.update>) => options?.interactionTransaction
+      ? initializeImportedAgentConfigurationInTransaction(db, options.interactionPublications ?? [], args[0], args[1])
+      : agents.update(...args);
     const sourceManifest = plan.source.manifest;
+    if (actorAgentId && actorAgentCompanyId) {
+      const texts: string[] = [];
+      const paths = new Set<string>();
+      if (plan.include.issues) for (const issue of sourceManifest.issues) {
+        texts.push(JSON.stringify(issue));
+        paths.add(issue.path);
+        for (const document of issue.documents ?? []) paths.add(document.path);
+      }
+      if (plan.include.agents) for (const entry of plan.preview.plan.agentPlans) {
+        if (entry.action === "skip") continue;
+        const agent = plan.selectedAgents.find(agent => agent.slug === entry.slug);
+        if (!agent) continue;
+        texts.push(JSON.stringify(agent), JSON.stringify(input.adapterOverrides?.[entry.slug] ?? {}));
+        paths.add(agent.path);
+        for (const path of Object.keys(plan.source.files)) if (path.startsWith(`agents/${entry.slug}/`)) paths.add(path);
+      }
+      for (const path of paths) {
+        const text = readPortableTextFile(plan.source.files, path);
+        if (text !== null) texts.push(text);
+      }
+      await assertAgentInteraction(db, { companyId: actorAgentCompanyId, actorAgentId, operation: "mention", texts, lock: "update" });
+    }
     const pauseAutomations = options?.pauseAutomations === true;
     const importedAutomationPausedAt = pauseAutomations ? new Date() : null;
     const warnings = [...plan.preview.warnings];
@@ -5280,12 +5381,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const experimental = await instanceSettingsService(db).getExperimental();
         for (const agent of runnerSelections) {
           const config = input.adapterOverrides?.[agent.slug]?.adapterConfig ?? agent.adapterConfig;
-          if (config.provider === "openai_dot") {
+          if (config.provider === "muse") {
+            if (experimental.enableMuse !== true || experimental.enableNativeRunner !== true) throw unprocessable("Muse and Paperclip Runner must be enabled before importing a Muse agent.", {code:"paperclip_runner_muse_disabled"});
+          } else if (config.provider === "openai_dot") {
             if (experimental.enableOpenAiDot !== true) throw unprocessable(
               "OpenAI Dot is experimental and disabled on this instance.",
               { code: "paperclip_runner_dot_disabled" },
             );
-          } else if (experimental.enableNativeRunner !== true) {
+          } else if (config.provider !== "codex" && config.provider !== "opencode" && config.provider !== undefined && !["claude_local", "pi_local", "grok_local"].includes(agentHarnessType("paperclip_runner", config)) && experimental.enableNativeRunner !== true) {
             throw unprocessable(
               "Paperclip Runner is experimental and disabled on this instance.",
               { code: "paperclip_runner_rollout_disabled" },
@@ -5615,12 +5718,38 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
 
           const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
+          const existingImportAgent = planAgent.action === "update" && planAgent.existingAgentId
+            ? await agents.getById(planAgent.existingAgentId) : null;
+          let selectedAdapterType = adapterOverride?.adapterType ?? manifestAgent.adapterType;
+          const selectedHarness = agentHarnessType(selectedAdapterType, baseAdapterConfig);
+          let runner = adapterOverride?.runner;
+          if (runner === undefined && adapterOverride?.adapterType !== "paperclip_runner") {
+            if (selectedHarness === agentHarnessType(manifestAgent.adapterType, manifestAgent.adapterConfig)) {
+              runner = manifestAgent.runner;
+            }
+            if (runner === undefined && existingImportAgent
+              && selectedHarness === agentHarnessType(existingImportAgent.adapterType, existingImportAgent.adapterConfig)) {
+              runner = agentRunner(existingImportAgent.adapterType);
+            }
+          }
+          const retainedNative = runner === "paperclip" && Boolean(paperclipRunnerProfileForHarness(selectedHarness))
+            ? [manifestAgent, existingImportAgent].find((agent) => agent?.adapterType === "paperclip_runner"
+              && agentHarnessType(agent.adapterType, agent.adapterConfig) === selectedHarness)
+            : undefined;
+          if (retainedNative) {
+            selectedAdapterType = "paperclip_runner";
+            for (const field of ["provider", "acpxAgent", "acpxMode"]) {
+              if (retainedNative.adapterConfig[field] !== undefined) baseAdapterConfig[field] = retainedNative.adapterConfig[field];
+            }
+          }
           const normalizedAdapter = await prepareImportedAgentAdapter(
             targetCompany.id,
-            adapterOverride?.adapterType ?? manifestAgent.adapterType,
+            selectedAdapterType,
             baseAdapterConfig,
             desiredSkills,
             mode,
+            runner,
+            existingImportAgent?.defaultEnvironmentId,
           );
           const patch = {
             name: planAgent.plannedName,
@@ -5650,10 +5779,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : {};
 
           if (planAgent.action === "update" && planAgent.existingAgentId) {
-            if (pauseAutomations) await agentsLifecycle.pauseAgent(planAgent.existingAgentId, "import");
-            let updated = await agents.update(planAgent.existingAgentId, {
+            if (pauseAutomations) await agentsLifecycle().pauseAgent(planAgent.existingAgentId, "import");
+            let updated = await updateImportedAgent(planAgent.existingAgentId, {
               ...patch,
             });
+            if (updated) updated = await applyImportedCeoHiringDenial(targetCompany.id, updated, manifestAgent.permissions) ?? updated;
             if (!updated) {
               warnings.push(`Skipped update for missing agent ${planAgent.existingAgentId}.`);
               resultAgents.push({
@@ -5670,14 +5800,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 clearLegacyPromptTemplate: true,
                 replaceExisting: true,
               });
-              updated = await agents.update(updated.id, { adapterConfig: materialized.adapterConfig }) ?? updated;
+              updated = await updateImportedAgent(updated.id, { adapterConfig: materialized.adapterConfig }) ?? updated;
             } catch (err) {
               warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
             }
             await applyImportedAgentPermissionGrants(
               targetCompany.id,
               updated.id,
-              manifestAgent.permissionGrants ?? [],
+              importedGrants(updated, manifestAgent),
               actorUserId ?? null,
             );
             agentStatusById.set(updated.id, updated.status ?? agentStatusById.get(updated.id) ?? null);
@@ -5698,11 +5828,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             continue;
           }
 
-          let created = await agentsLifecycle.requestHire(targetCompany.id, {
+          const requestHire = options?.interactionTransaction
+            ? (...args: Parameters<ReturnType<typeof createAgentLifecycle>["requestHire"]>) => requestAgentHireInTransaction(db, options.interactionPublications ?? [], ...args)
+            : (...args: Parameters<ReturnType<typeof createAgentLifecycle>["requestHire"]>) => agentsLifecycle().requestHire(...args);
+          let created = await requestHire(targetCompany.id, {
             ...patch,
+            runner: agentRunner(patch.adapterType),
             ...automationPausePatch,
             status: pauseAutomations ? "paused" : "idle",
-          }, { createdByUserId: actorUserId });
+          }, { createdByUserId: actorUserId, createdByAgentId: actorAgentId, createdByAgentCompanyId: actorAgentCompanyId ?? undefined });
+          created = await applyImportedCeoHiringDenial(targetCompany.id, created, manifestAgent.permissions) ?? created;
           await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
           await access.setPrincipalPermission(
             targetCompany.id,
@@ -5717,14 +5852,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               clearLegacyPromptTemplate: true,
               replaceExisting: true,
             });
-            created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+            created = await updateImportedAgent(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
           await applyImportedAgentPermissionGrants(
             targetCompany.id,
             created.id,
-            manifestAgent.permissionGrants ?? [],
+            importedGrants(created, manifestAgent),
             actorUserId ?? null,
           );
           agentStatusById.set(created.id, created.status ?? (pauseAutomations ? "paused" : "idle"));
@@ -5767,7 +5902,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : null);
           if (!managerId || managerId === agentId) continue;
           try {
-            await agents.update(agentId, { reportsTo: managerId });
+            await updateImportedAgent(agentId, { reportsTo: managerId });
           } catch {
             const managerRef =
               managerSlug
@@ -6037,7 +6172,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   : "skip_missed",
               variables: routineDefinition.variables ?? [],
             }, {
-              agentId: null,
+              agentId: actorAgentId ?? null,
+              agentCompanyId: actorAgentCompanyId ?? undefined,
               userId: actorUserId ?? null,
             });
             resultRoutines.push({
@@ -6059,7 +6195,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   cronExpression: trigger.cronExpression!,
                   timezone: trigger.timezone!,
                 }, {
-                  agentId: null,
+                  agentId: actorAgentId ?? null,
+                  agentCompanyId: actorAgentCompanyId ?? undefined,
                   userId: actorUserId ?? null,
                 });
                 continue;
@@ -6075,7 +6212,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                       : "bearer",
                   replayWindowSec: trigger.replayWindowSec ?? 300,
                 }, {
-                  agentId: null,
+                  agentId: actorAgentId ?? null,
+                  agentCompanyId: actorAgentCompanyId ?? undefined,
                   userId: actorUserId ?? null,
                 });
                 continue;
@@ -6085,7 +6223,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 label: trigger.label,
                 enabled: trigger.enabled,
               }, {
-                agentId: null,
+                agentId: actorAgentId ?? null,
+                agentCompanyId: actorAgentCompanyId ?? undefined,
                 userId: actorUserId ?? null,
               });
             }
@@ -6357,7 +6496,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         // statements, turning what used to be one round-trip per row into a
         // handful per table. Empty buffers are skipped so an issues-free import
         // (e.g. routines only) issues no writes at all.
-        if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows);
+        if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows, actorAgentId, actorAgentCompanyId);
         // Imported issues are historical work, not new inbox items. Seed a
         // per-user inbox archive for the importing board user so a large import
         // (a real 1,418-task company shipped every task to the inbox) does not
@@ -6371,9 +6510,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             actorUserId,
           );
         }
-        if (commentRows.length > 0) await issues.addImportedComments(commentRows);
+        if (commentRows.length > 0) await issues.addImportedComments(commentRows, actorAgentId, actorAgentCompanyId);
         if (documentRows.length > 0) await documentsSvc.createIssueDocumentsForImport(documentRows);
-        if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows);
+        if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows, actorAgentId, actorAgentCompanyId);
         if (attachmentRows.length > 0) await issues.addImportedAttachments(attachmentRows);
 
         if (blockedByBySlug.size > 0) {
@@ -6416,7 +6555,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           if (relationRows.length > 0) {
             const relationCompanyId = targetCompany.id;
-            await db
+            await db.transaction(async tx => {
+              await notifyAttentionRetentionWork(tx, { companyId: relationCompanyId });
+              await notifyIssueRecovery(tx, { companyId: relationCompanyId });
+              await tx
               .insert(issueRelations)
               .values(relationRows.map((row) => ({
                 companyId: relationCompanyId,
@@ -6427,6 +6569,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 createdByUserId: actorUserId ?? null,
               })))
               .onConflictDoNothing();
+            });
           }
         }
 

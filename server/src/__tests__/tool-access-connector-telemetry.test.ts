@@ -217,6 +217,12 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
       name: "GitHub fixture",
       transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp", sourceTemplateKey: "github" },
+      transportConfig: { url: "https://fixture.example/mcp", sourceTemplateKey: "github" },
+      connectionPurpose: "tool",
+      authKind: "none",
+      ownership: "customer",
+      connectionKind: "managed",
+      credentialSecretRefs: [],
       enabled: true,
       status: "active",
     });
@@ -238,6 +244,12 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
       name: "Custom fixture",
       transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
+      transportConfig: { url: "https://fixture.example/mcp" },
+      connectionPurpose: "tool",
+      authKind: "none",
+      ownership: "customer",
+      connectionKind: "managed",
+      credentialSecretRefs: [],
       enabled: true,
       status: "active",
     });
@@ -387,7 +399,7 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
     const svc = service();
     const [application] = await db
       .insert(toolApplications)
-      .values({ companyId: company.id, name: "Composio", type: "mcp_remote", status: "active" })
+      .values({ companyId: company.id, name: "Composio", type: "mcp_http", status: "active" })
       .returning();
     const [connection] = await db
       .insert(toolConnections)

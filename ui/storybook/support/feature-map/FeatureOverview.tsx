@@ -75,7 +75,9 @@ export function FeatureMapIndex() {
       ].join(" ").toLowerCase().includes(search);
     }),
   })).filter(section => section.features.length), [search]);
-  const foundations = examples.filter(entry => (entry.home === "foundations" || !entry.capabilities.length)
+  const proposals = examples.filter(entry => entry.home === "design-proposals"
+    && ["Design proposals", entry.file, entry.purpose, entry.notes].join(" ").toLowerCase().includes(search));
+  const foundations = examples.filter(entry => entry.home !== "design-proposals" && (entry.home === "foundations" || !entry.capabilities.length)
     && ["Shared foundations", entry.file, entry.purpose, entry.status, entry.implementation, entry.boundary].join(" ").toLowerCase().includes(search));
   return (
     <main className="paperclip-story__inner space-y-6 p-6">
@@ -86,7 +88,15 @@ export function FeatureMapIndex() {
         <a className="text-sm underline underline-offset-4" href={`${recipeRoot}README.md`} target="_blank" rel="noreferrer">Read the feature-map index</a>
         <Input aria-label="Find a feature or capability" placeholder="Find a feature, capability, or example…" value={query} onChange={event => setQuery(event.target.value)} />
       </header>
-      {sections.length === 0 && foundations.length === 0 ? <p>No matching features or examples.</p> : null}
+      {sections.length === 0 && foundations.length === 0 && proposals.length === 0 ? <p>No matching features or examples.</p> : null}
+      {proposals.length ? (
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold">Design proposals</h2>
+          <p className="text-sm text-muted-foreground">Design work awaiting review and app adoption. These examples do not count as current production coverage.</p>
+          {error ? <p role="alert">Example links could not load. Reload to try again.</p> : null}
+          <ul className="divide-y divide-border">{proposals.map(entry => <SuiteLink key={entry.file} entry={entry} links={links} />)}</ul>
+        </section>
+      ) : null}
       {sections.map(section => (
         <section key={section.title} className="space-y-3">
           <h2 className="text-lg font-semibold">{section.title}</h2>

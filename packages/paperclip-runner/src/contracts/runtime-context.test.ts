@@ -59,6 +59,7 @@ describe("persisted native execution prompts", () => {
   it("keeps the current prompt valid for new executions", () => {
     const current = savedContext(PAPERCLIP_EXECUTION_PROMPT_REVISION, PAPERCLIP_EXECUTION_PROMPT);
     expect(parseNativeRuntimeContext(current)).toEqual(current);
+    expect(PAPERCLIP_EXECUTION_PROMPT).not.toMatch(/\b(?:cases?|workflows?|Mermaid)\b|stateDiagram-v2|(?:create|read|handoff)_case|(?:list|read|create|update)_workflow/i);
   });
 
   it.each(["revision", "text"])("requires a non-empty prompt %s", (field) => {

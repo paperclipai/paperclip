@@ -374,3 +374,27 @@ and records a recovery action for the reviewer without an automatic retry loop.
 Both Codex and ACPX providers wait for server completion feedback before their
 terminal tool call succeeds. A rejected completion report stays correctable in
 the same provider turn. The runner does not latch it as an accepted result.
+
+## Completed runs with saved monitors
+
+A successful accepted result can report a monitor wait after the run has
+already released execution and checkout. Finalization can preserve that wait
+when the same agent still owns a valid ordinary task monitor and the completed
+run has a server-recorded `set_task_monitor` receipt for the task. The current
+monitor can have a later deadline; finalization does not restore an older timer.
+
+The server rechecks the accepted source, current monitor, empty execution and
+checkout slots, and governance under the coordinator and task locks. The
+`scheduled_monitor_preserved` decision keeps task status and has no task effects.
+It records the completed result without dispatching another provider turn.
+The existing monitor scheduler receives a transaction-aware notification when
+this finalization blocker clears. Replaying the committed decision sends no
+second notification.
+Live response selection and committed response repair retain the accepted
+monitor explanation under the existing reply and publication authorization rules.
+
+Missing receipts, changed ownership, cancellation intents, cleared or quota
+monitors, and unfinished workspace finalization retain their recovery paths.
+Due and exhausted monitors still belong to the scheduler. This does not change
+their deadlines or attempts, clear unrelated recovery holds, or relax the
+Cloud sleep and wake contract.

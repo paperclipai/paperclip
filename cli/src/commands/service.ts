@@ -5,6 +5,7 @@ import type { Command } from "commander";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
 import { detectServiceManager, type ServiceManager, type ServiceStatus } from "../services/service-manager.js";
+import { ensureServiceShim } from "../onboard-service.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
 
 type CommonOptions = { instance?: string; json?: boolean };
@@ -172,6 +173,16 @@ export function registerServiceCommands(program: Command): void {
     .option("--enable-linger", "Allow systemd startup without an active login session", false)
     .action(async (opts) => {
       const manager = await resolveManager(opts); if (!manager) return;
+      const shim = await ensureServiceShim({ installIfMissing: !opts.json });
+      if (!shim.ok) {
+        throw new Error(
+          `Background service not installed: ${shim.reason ?? "the managed install could not be completed"}. ` +
+            "Run `paperclipai install`, then `paperclipai service install`.",
+        );
+      }
+      if (shim.installedNow) {
+        p.log.success("Installed the managed paperclipai payload and command shim for the service.");
+      }
       const result = await manager.install({ startNow: opts.startNow, startOnLogin: opts.startOnLogin });
       let lingerEnabled = false;
       if (manager.enableLinger) {

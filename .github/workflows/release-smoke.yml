@@ -242,6 +242,13 @@ jobs:
           pattern: ${{ needs.qualification_daemons.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
+      - name: Download target-owned Linux provider-pack identities
+        if: needs.qualification_daemons.outputs.provider_pack_artifact_prefix != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ${{ needs.qualification_daemons.outputs.provider_pack_artifact_prefix }}-*
+          path: ${{ runner.temp }}/release-provider-pack-inputs
+          merge-multiple: true
       - name: Bind the immutable Linux producer source
         env:
           SOURCE_SHA: ${{ inputs.qualification_source_sha }}
@@ -259,9 +266,14 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.qualification_source_sha }}
         run: |
+          pack_args=()
+          if [[ -d "$RUNNER_TEMP/release-provider-pack-inputs" ]]; then pack_args=("$RUNNER_TEMP/release-provider-pack-inputs"); fi
           node packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs \
-            assemble-daemons "$RUNNER_TEMP/release-runner-inputs" "$SOURCE_SHA"
+            assemble-daemons "$RUNNER_TEMP/release-runner-inputs" "$SOURCE_SHA" "${pack_args[@]}"
           cp -R packages/paperclip-runner/dist/bin/. server/dist/vendor/paperclip-runner/bin/
+          if [[ -d packages/paperclip-runner/dist/remote-provider-packs ]]; then
+            cp -R packages/paperclip-runner/dist/remote-provider-packs server/dist/vendor/paperclip-runner/
+          fi
       - name: Verify clean public installation and retain the same package bytes
         env:
           PAPERCLIP_RUNNER_PUBLIC_PACKS_DIR: ${{ runner.temp }}/public-runner-packs

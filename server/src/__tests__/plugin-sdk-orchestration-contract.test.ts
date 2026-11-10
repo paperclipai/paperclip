@@ -20,13 +20,13 @@ function manifest(capabilities: PaperclipPluginManifestV1["capabilities"]): Pape
 function issue(input: Partial<Issue> & Pick<Issue, "id" | "companyId" | "title">): Issue {
   const now = new Date();
   return {
-    id: input.id,
-    companyId: input.companyId,
+    workMode: "standard",
+    reviewPolicy: null,
+    responsibleUserId: null,
     projectId: null,
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
-    title: input.title,
     description: null,
     status: "todo",
     priority: "medium",

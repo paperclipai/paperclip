@@ -2,19 +2,21 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { rethrowNativeCancellationLockConflict, nativeRetryCancellationCommitCondition, cancellationIntentId, claimCancellationRequest, startupCancellationFence } from "../services/native-runtime/native-cancellation-request.js";
 
 describe("atomic caller cancellation request ownership", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let cancelNativeSession: typeof import("../services/native-runtime/native-session-executor.js").cancelNativeSession;
   beforeAll(async () => {
     ({ cancelNativeSession } = await import("../services/native-runtime/native-session-executor.js"));
-    database = await startEmbeddedPostgresTestDatabase("caller-stop-");
-    db = createDb(database.connectionString);
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_CANCELLATION_TEST_DATABASE_URL");
+    if (!external) database = await startEmbeddedPostgresTestDatabase("caller-stop-");
+    db = createDb(external ?? database!.connectionString, { maxConnections: 6 });
   }, 90_000);
-  afterAll(async () => { await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
   async function fixture() {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Stop claims", issuePrefix: randomUUID().slice(0, 8) });

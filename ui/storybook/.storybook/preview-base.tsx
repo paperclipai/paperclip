@@ -29,6 +29,7 @@ import { SidebarProvider } from "@/context/SidebarContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { ToastProvider } from "@/context/ToastContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AvatarInitialProvider } from "@/components/ui/avatar-initials";
 import {
   storybookAgents,
   storybookApprovals,
@@ -162,6 +163,9 @@ function installStorybookApiFixtures() {
     });
     if (url.pathname === "/api/instance/settings/experimental") {
       return Response.json(experimentalSettings());
+    }
+    if (url.pathname === "/api/instance/settings/general") {
+      return Response.json(instanceGeneralSettingsSchema.parse({}));
     }
 
     if (url.pathname === "/api/health") {
@@ -483,9 +487,11 @@ function installStorybookApiFixtures() {
           type: "claude_local",
           label: "Claude Code",
           source: "builtin",
-          modelsCount: 2,
+          modelsCount: 4,
           loaded: true,
           disabled: false,
+          supportedRunners: ["paperclip", "legacy"],
+          defaultRunner: "legacy",
           capabilities: {
             supportsInstructionsBundle: true,
             supportsSkills: true,
@@ -511,6 +517,8 @@ function installStorybookApiFixtures() {
           modelsCount: 3,
           loaded: true,
           disabled: false,
+          supportedRunners: ["paperclip", "legacy"],
+          defaultRunner: "legacy",
           capabilities: {
             supportsInstructionsBundle: true,
             supportsSkills: true,
@@ -523,6 +531,16 @@ function installStorybookApiFixtures() {
             },
           },
         },
+        {
+          type: "paperclip_runner",
+          label: "Paperclip Runner",
+          source: "builtin",
+          modelsCount: 0,
+          loaded: true,
+          disabled: false,
+          supportedRunners: ["paperclip"],
+          defaultRunner: "paperclip",
+        },
       ]);
     }
 
@@ -533,6 +551,7 @@ function installStorybookApiFixtures() {
       const [, , resource] = adapterModelsMatch;
       if (resource === "models") {
         return Response.json([
+          { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
           { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
           { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
           { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
@@ -831,7 +850,7 @@ const preview: Preview = {
         ? Number.parseInt(width, 10) : undefined;
       return (
         <StorybookProviders key={`${context.id}:${theme}`} theme={theme} initialViewportWidth={initialViewportWidth} initialEntries={context.parameters.initialEntries}>
-          <Story />
+          {context.parameters.paperclip?.home === "design-proposals" && context.parameters.designProposalTheme !== false ? <AvatarInitialProvider><div className="design-proposal-theme"><Story /></div></AvatarInitialProvider> : <Story />}
         </StorybookProviders>
       );
     },

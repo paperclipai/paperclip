@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
+import { useQueryView } from "@/components/QueryView";
 import { authApi } from "@/api/auth";
 import { useCompany } from "@/context/CompanyContext";
 import {
@@ -38,6 +39,8 @@ function CompanyAgentChats({ companyId, userId }: { companyId: string | null; us
     queryFn: () => agentsApi.list(companyId!),
     enabled: !!companyId,
   });
+  // The picker keeps the last roster through an outage; it only reports a real failure.
+  const agentsView = useQueryView(agentsQuery);
   const agents = agentsQuery.data ?? [];
   const [pickerOpen, setPickerOpen] = useState(false);
   const navigate = useNavigate();
@@ -70,9 +73,9 @@ function CompanyAgentChats({ companyId, userId }: { companyId: string | null; us
         agents={agents}
         open={pickerOpen}
         onOpenChange={setPickerOpen}
-        loading={agentsQuery.isPending}
-        error={agentsQuery.error}
-        onRetry={() => { void agentsQuery.refetch(); }}
+        loading={agentsView.kind === "loading" || agentsView.kind === "reconnecting"}
+        error={agentsView.kind === "error" ? agentsQuery.error : null}
+        onRetry={agentsView.retry}
         onSelect={(agent) => {
           if (isMobile) setSidebarOpen(false);
           navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}`);

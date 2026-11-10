@@ -24,6 +24,7 @@ export type EvaluateScheduledRetryGateInput = {
 
 /** Read-only scheduled-retry operations exposed to application use cases. */
 export interface ScheduledRetryReader {
+  nextScheduledRetryAt(input: { cutoff: Date | null }): Promise<number | null>;
   evaluateScheduledRetryGate(input: EvaluateScheduledRetryGateInput): Promise<GateDecision>;
   listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]>;
 }
@@ -42,11 +43,15 @@ export type CancelStaleQueuedRunInput = {
 };
 
 export type DispatchResolvedInteractionInput<T> = CancelStaleQueuedRunInput & {
+  reservationId: string;
+  recoveryLeaseOwner?: string;
+  enforceContinuationOwnership?: boolean;
   dispatch: (markDispatchStarted: () => void) => Promise<T>;
 };
 
 export type DispatchResolvedInteractionOutcome<T> =
   | { dispatched: true; resultPromise: Promise<T> }
+  | { dispatched: false; admissionBlockReason: string }
   | { dispatched: false; cancellation: CancelStaleQueuedRunOutcome };
 
 /** Semantic database operations; persistence rows and transaction handles stay inside the adapter. */

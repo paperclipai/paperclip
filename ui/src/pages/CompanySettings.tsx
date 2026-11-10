@@ -1,4 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
+import { AgentObservabilitySettingsSection } from "../components/observability/AgentObservabilitySettings";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -14,6 +15,7 @@ import { cloudPortfolioManageUrl } from "../lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
+import { describeError } from "@/api/errors";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { SlidersHorizontal } from "lucide-react";
@@ -29,8 +31,6 @@ import {
   ToggleField,
 } from "../components/agent-config-primitives";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
-import { DecisionModelSettingsSection } from "../components/decision-models/DecisionModelSettings";
-import { useFastResponsesEnabled } from "../hooks/useFastResponsesEnabled";
 
 export function CompanySettings() {
   const {
@@ -44,7 +44,6 @@ export function CompanySettings() {
   const navigate = useNavigate();
   const toastActions = useOptionalToastActions();
   const cloud = useCloudInstance();
-  const fastResponses = useFastResponsesEnabled();
   // Managed instances derive the task ID prefix from the company name, so a
   // rename here also renumbers the existing task IDs.
   const isCloudManaged = Boolean(cloud);
@@ -295,17 +294,14 @@ export function CompanySettings() {
                       </Button>
                     </div>
                   )}
-                  {(logoUploadMutation.isError || logoUploadError) && (
+                  {(logoUploadMutation.error || logoUploadError) && (
                     <span className="text-xs text-destructive">
-                      {logoUploadError ??
-                        (logoUploadMutation.error instanceof Error
-                          ? logoUploadMutation.error.message
-                          : "Logo upload failed")}
+                      {logoUploadError ?? describeError(logoUploadMutation.error).body}
                     </span>
                   )}
-                  {clearLogoMutation.isError && (
+                  {clearLogoMutation.error && (
                     <span className="text-xs text-destructive">
-                      {clearLogoMutation.error.message}
+                      {describeError(clearLogoMutation.error).body}
                     </span>
                   )}
                   {logoUploadMutation.isPending && (
@@ -331,11 +327,9 @@ export function CompanySettings() {
           {generalMutation.isSuccess && (
             <span className="text-xs text-muted-foreground">Saved</span>
           )}
-          {generalMutation.isError && (
+          {generalMutation.error && (
             <span className="text-xs text-destructive">
-              {generalMutation.error instanceof Error
-                  ? generalMutation.error.message
-                  : "Failed to save"}
+              {describeError(generalMutation.error).body}
             </span>
           )}
         </div>
@@ -362,18 +356,10 @@ export function CompanySettings() {
         governance={governance}
         onChange={handleGovernanceChange}
         isPending={governanceMutation.isPending}
-        errorMessage={
-          governanceMutation.isError
-            ? governanceMutation.error instanceof Error
-              ? governanceMutation.error.message
-              : "Failed to save interaction governance"
-            : null
-        }
+        errorMessage={governanceMutation.error ? describeError(governanceMutation.error).body : null}
       />
 
-      {fastResponses.loaded && !fastResponses.enabled && (
-        <DecisionModelSettingsSection key={selectedCompanyId} companyId={selectedCompanyId!} />
-      )}
+      <AgentObservabilitySettingsSection companyId={selectedCompanyId!} />
 
       <InstanceGeneralSettings embedded />
 
@@ -410,11 +396,9 @@ export function CompanySettings() {
                 ? "Already archived"
                 : "Archive organization"}
             </Button>
-            {archiveMutation.isError && (
+            {archiveMutation.error && (
               <span className="text-xs text-destructive">
-                {archiveMutation.error instanceof Error
-                  ? archiveMutation.error.message
-                  : "Failed to archive organization"}
+                {describeError(archiveMutation.error).body}
               </span>
             )}
           </div>

@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { classifyCopilotFailure, copilotConfiguration, copilotSandboxEnvironment, COPILOT_LAUNCH_ARGUMENTS } from "./copilot-profile.js";
+import { classifyCopilotFailure, composeCopilotSystemInstructions, COPILOT_TASK_ORIENTATION_INSTRUCTIONS, copilotConfiguration, copilotSandboxEnvironment, COPILOT_LAUNCH_ARGUMENTS } from "./copilot-profile.js";
 
 describe("Copilot admission policy", () => {
+  it("bounds the complete native instruction file without retaining prior instructions", () => {
+    const suffix = `\n\n# Paperclip task orientation\n${COPILOT_TASK_ORIENTATION_INSTRUCTIONS}`;
+    expect(composeCopilotSystemInstructions("Current instructions.")).toBe(`Current instructions.${suffix}`);
+    expect(composeCopilotSystemInstructions("")).toBe(suffix);
+    const remaining = 32 * 1024 - Buffer.byteLength(`${suffix}\n`);
+    expect(Buffer.byteLength(`${composeCopilotSystemInstructions("x".repeat(remaining))}\n`)).toBe(32 * 1024);
+    expect(() => composeCopilotSystemInstructions("x".repeat(remaining + 1))).toThrow("bounded size");
+    expect(() => composeCopilotSystemInstructions("é".repeat(Math.floor(remaining / 2) + 1))).toThrow("bounded size");
+    expect(() => composeCopilotSystemInstructions("embedded\0instruction")).toThrow("bounded size");
+  });
   it("uses ACP directly without disabling questions or bypassing permissions", () => {
     expect(COPILOT_LAUNCH_ARGUMENTS.slice(0, 2)).toEqual(["--acp", "--stdio"]);
     expect(COPILOT_LAUNCH_ARGUMENTS).toContain("--no-auto-update");
