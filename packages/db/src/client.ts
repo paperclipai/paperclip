@@ -624,6 +624,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0459_environment_lease_backup_scope_index.sql",
   "0460_workspace_activity_context_index.sql",
   "0461_created_from_legacy_origin_run_index.sql",
+  "0464_heartbeat_runs_wakeup_request_index.sql",
 
 
   "0384_funny_adam_warlock.sql",
