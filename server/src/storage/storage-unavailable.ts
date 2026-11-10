@@ -104,7 +104,6 @@ async function retryWithin<T>(operation: OutageWaitOperation, send: () => Promis
       operation.firstFailureAt ??= now;
       if (stop?.aborted || now - operation.firstFailureAt + wait > policy.budgetMs) throw error;
       recordStorageBackoff(wait);
-      // The notice runs beside the wait: a slow or failed notice must not delay or end it.
       void Promise.resolve().then(() => onWait?.({ waitMs: wait, waitedMs: now - operation.firstFailureAt! })).catch(() => undefined);
       await delay(wait, undefined, { signal: stop }).catch((interrupted: unknown) => {
         throw signal?.aborted && signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? error : interrupted;
