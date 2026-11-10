@@ -32,6 +32,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     load(scope?: Scope, signal?: AbortSignal): Promise<Entry[] | { rows: Entry[] | null; complete: boolean }>;
     // Owners may retain pending queue priority while refreshing eligibility.
     mergeEntry?(pending: Entry, loaded: Entry): Entry;
+    priority?(entry: Entry): number;
     check(entry: Entry, signal?: AbortSignal): Promise<Entry | null>;
   },
   canRun: () => boolean,
@@ -134,7 +135,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
         const unavailable = dirtyScopes();
         const due = [...entries.values()].filter(entry => !unavailable.some(scope => options.matches(entry, scope))
           && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
-          .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
+          .sort((a, b) => (options.priority?.(b) ?? 0) - (options.priority?.(a) ?? 0)
+            || a.dueAt - b.dueAt || a.id.localeCompare(b.id));
         const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
         // An owner may share more than one resource (for example a task and an
         // endpoint). Merge intersecting keys before dispatch so waiting siblings

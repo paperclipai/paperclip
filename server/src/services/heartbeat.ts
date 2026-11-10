@@ -560,7 +560,8 @@ import { resolveAndRetainRunTrustPreset } from "./run-trust-preset.js";
 import { effectiveProjectWorkspacePolicy, sourcelessProjectWorkspacePolicy } from "./project-workspace-provider.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
-import { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain, readTaskDrain } from "./task-admission.js";
+import { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain, readTaskDrain, subscribeTaskDrainChanges,
+  subscribeTaskDrainExpiry } from "./task-admission.js";
 
 const execFile = promisify(execFileCallback);
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
@@ -4497,13 +4498,19 @@ export function heartbeatService(
       recovery.registerActiveRunSilenceWork(coordinator, () => canRun() && readTaskDrain(new Date()) === null,
         async scope => recovery.scanSilentActiveRuns({ ...scope, issueCreatedAtGte: await getWorktreeExecutionCutoff() }),
         async () => !(await getSchedulingSuppression(true)).suppressed),
-    registerDeferredReceiptWork: (coordinator: Parameters<typeof registerDeferredReceiptWork>[1], canRun: () => boolean) =>
-      registerDeferredReceiptWork(db, coordinator, {
+    registerDeferredReceiptWork: (coordinator: Parameters<typeof registerDeferredReceiptWork>[1], canRun: () => boolean) => {
+      const work = registerDeferredReceiptWork(db, coordinator, {
         resume: scope => heartbeatQueue.resumeDeferredExecutionReceipts(scope),
         settleTaskChat: scope => reconcileTaskChatRetryReceipts(db, { ...scope, settleOnly: true }),
         createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
-      }, () => canRun() && readTaskDrain(new Date()) === null),
+      }, () => canRun() && readTaskDrain(new Date()) === null);
+      const unsubscribe = [subscribeTaskDrainChanges(work.wake), subscribeTaskDrainExpiry(work.wake)];
+      return { ...work, async stop() {
+        for (const stop of unsubscribe) stop();
+        await work.stop();
+      } };
+    },
     readIdleWatchdogSchedule: taskWatchdogs.readIdleSchedule,
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
       registerIssueRecoveryWork(db, coordinator, {

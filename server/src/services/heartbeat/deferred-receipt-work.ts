@@ -7,7 +7,7 @@ import type { DeferredExecutionScope, DeferredReceiptRecoveryOptions } from "../
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { dependencyResolvedWakePayloadSql } from "../issue-dependency-wakeups.js";
 
-type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean };
+type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean; operatorRetry?: boolean };
 type NativeIntentOptions = DeferredExecutionScope & {
   onDeferredDeadline(at: number): void;
   onError(error: unknown): void;
@@ -45,6 +45,7 @@ export function registerDeferredReceiptWork(
       // receipts already checked; actual wait/claim deadlines still replace.
       mergeEntry: (pending, loaded) => pending.immediate && loaded.immediate
         ? { ...loaded, dueAt: Math.min(pending.dueAt, loaded.dueAt) } : loaded,
+      priority: entry => entry.operatorRetry ? 1 : 0,
       load: async scope => {
         const key = scope ? JSON.stringify({ companyId: scope.companyId, requestId: scope.requestId }) : "*";
         if (!enabled) { cursors.delete(key); return []; }
@@ -52,6 +53,8 @@ export function registerDeferredReceiptWork(
         const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
           status: agentWakeupRequests.status, updatedAt: agentWakeupRequests.updatedAt,
           claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
+          operatorRetry: sql<boolean>`${agentWakeupRequests.reason} = 'task_retry'
+            and ${agentWakeupRequests.requestedByActorType} = 'user'`,
           delayed: sql<boolean>`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null
             or ${agentWakeupRequests.payload}->'executionWait' is not null`,
           interruptedLegacy: sql<boolean>`exists (select 1 from heartbeat_runs r
@@ -90,7 +93,8 @@ export function registerDeferredReceiptWork(
             : kind === "deferred" && row.delayed && !row.interruptedLegacy ? row.updatedAt.getTime() + 30_000
             : null;
           const immediate = deadline === null || deadline <= now;
-          return { id: row.id, companyId: row.companyId, dueAt: immediate ? now : deadline, immediate };
+          return { id: row.id, companyId: row.companyId, dueAt: immediate ? now : deadline, immediate,
+            operatorRetry: kind === "deferred" && row.operatorRetry };
         }), complete };
       },
       check: async entry => {
