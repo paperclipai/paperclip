@@ -362,6 +362,15 @@ method and status are written to `storage-proxy.json`.
 | ST1 | outage: every request answers 503 `ServiceUnavailable` |
 | ST2 | slow store: 1–10 s added latency with jitter, and a 2–16 MiB/s bandwidth cap shared by every request in the window (each direction) |
 | ST3 | 30% of requests answer 503, half of them `SlowDown` |
+| ST5 | credentials rejected: every request answers 403 `ExpiredToken`, `InvalidAccessKeyId` or `SignatureDoesNotMatch` (seeded per window) |
+| ST5R | real key rotation: MinIO restarts with a new root key (old key revoked), and the server's credential source keeps serving the old key until the window ends |
+
+With ST5R the server gets no static key: `AWS_PROFILE` names a profile in a wave-owned `AWS_CONFIG_FILE`
+whose `credential_process` prints the key currently in `aws-credentials/current.json` under the instance
+temp root. Each ST5R window rotates the store's key at its start (requests are held up to 5 s while MinIO
+restarts on the same loopback port) and publishes the new key to that file when it ends, so only a server
+that re-resolves its credentials after a rejection keeps going. Rotations and publishes are logged as
+`storage_credentials_rotated` and `storage_credentials_published`. All keys are random and disposable.
 
 `--storage-fault-seconds 15-45` sets the window length range (5–900 s), for example to find how long
 an outage a run survives. The windows are logged in the timeline and written to `storage-faults.json`.

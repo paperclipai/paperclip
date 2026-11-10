@@ -17,6 +17,7 @@ import { BoardUi } from "./board-ui.js";
 import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
 import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
+import { needsCredentialRotation, startCredentialRotation, type CredentialRotation } from "./storage-credentials.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
@@ -248,6 +249,7 @@ async function main(): Promise<number> {
   let objectStore: ObjectStore | null = null;
   let storageChaos: StorageChaos | null = null;
   let storageProxy: Awaited<ReturnType<typeof startStorageFaultProxy>> | null = null;
+  let credentialRotation: CredentialRotation | null = null;
   let providerFaults: ProviderFaultSeam | null = null;
   let speedSection: string | null = null;
   let harnessError: unknown;
@@ -281,6 +283,11 @@ async function main(): Promise<number> {
       objectStore = await startMinio({ binary, root: supervisor.paths.temporaryRoot });
       storageProxy = await startStorageFaultProxy(objectStore.endpoint);
       Object.assign(serverEnvironment, objectStoreServerEnvironment(objectStore, storageProxy.endpoint, `chaos/${plan.waveId}/`));
+      if (needsCredentialRotation(plan.options)) {
+        const rotating = await startCredentialRotation({ store: objectStore, binary, root: supervisor.paths.temporaryRoot, record: (kind, data) => timeline.add(kind, data) });
+        credentialRotation = rotating.rotation;
+        Object.assign(serverEnvironment, rotating.environment);
+      }
       timeline.add("object_store_started", { release: MINIO_RELEASE, endpoint: objectStore.endpoint, proxy: storageProxy.endpoint, bucket: objectStore.bucket });
     }
     if (plan.tasks.some(task => task.providerFault)) {
@@ -329,7 +336,7 @@ async function main(): Promise<number> {
     if (storageProxy && (plan.options.storageWindows?.length || plan.options.storageFaults?.length)) {
       const windows = plan.options.storageWindows ?? planStorageFaults({ kinds: plan.options.storageFaults!, seed: plan.seed,
         spanMs: plan.storm?.durationMs ?? plan.tasks.length * 4 * 60_000, ...(plan.options.storageFaultMs ? { durationMs: plan.options.storageFaultMs } : {}) });
-      storageChaos = new StorageChaos(windows, Date.now(), storageProxy, (kind, data) => timeline.add(kind, data));
+      storageChaos = new StorageChaos(windows, Date.now(), credentialRotation?.wrap(storageProxy) ?? storageProxy, (kind, data) => timeline.add(kind, data));
       if (!plan.options.storageWindows) storageChaos.start();
       timeline.add("storage_faults_planned", { windows: windows.map(window => `${window.kind}@${window.startMs}ms+${window.durationMs}ms`) });
     }
@@ -650,6 +657,8 @@ async function main(): Promise<number> {
       }
     }
     storageChaos?.stop();
+    await credentialRotation?.settled();
+    if (credentialRotation?.failures.length) harnessError ??= new Error(`ST5R credential rotation failed: ${credentialRotation.failures.join("; ")}`);
     if (storageProxy) {
       if (storageChaos) await writeFile(path.join(waveDir, "storage-faults.json"), `${JSON.stringify(storageChaos.receipts, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await writeFile(path.join(waveDir, "storage-proxy.json"), `${JSON.stringify(storageProxy.counts(), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);

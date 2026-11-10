@@ -90,7 +90,7 @@ export interface WaveOptions {
   upgradeFrom?: string;
   workspaceRepo?: string;
   storage?: "s3";
-  storageFaults?: Array<"ST1" | "ST2" | "ST3">;
+  storageFaults?: Array<import("./storage-chaos.js").StorageFaultKind>;
   storageFaultMs?: [number, number];
   storageWindows?: import("./storage-chaos.js").StorageFaultWindow[];
   workspaceCommit?: string;

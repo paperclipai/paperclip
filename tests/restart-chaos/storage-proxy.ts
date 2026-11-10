@@ -9,7 +9,16 @@ export type StorageFault =
   | { kind: "latency"; ms: number; jitterMs?: number; bytesPerSecond?: number }
   | { kind: "errors"; rate: number; status?: number; slowDown?: boolean }
   | { kind: "reset" }
-  | { kind: "expired_credentials" };
+  | { kind: "expired_credentials"; code?: CredentialErrorCode }
+  | { kind: "credential_rotation" };
+
+export const CREDENTIAL_ERROR_CODES = ["ExpiredToken", "InvalidAccessKeyId", "SignatureDoesNotMatch"] as const;
+export type CredentialErrorCode = typeof CREDENTIAL_ERROR_CODES[number];
+const CREDENTIAL_ERROR_MESSAGES: Record<CredentialErrorCode, string> = {
+  ExpiredToken: "The provided token has expired.",
+  InvalidAccessKeyId: "The Access Key Id you provided does not exist in our records.",
+  SignatureDoesNotMatch: "The request signature we calculated does not match the signature you provided.",
+};
 
 export interface StorageFaultRule { fault: StorageFault; methods?: readonly string[]; pathIncludes?: string; remaining?: number }
 
@@ -23,7 +32,10 @@ function s3Error(code: string, message: string) {
 export function faultResponse(fault: StorageFault): { status: number; body: string } | "reset" | null {
   switch (fault.kind) {
     case "outage": return { status: fault.status ?? 503, body: s3Error("ServiceUnavailable", "Injected storage outage") };
-    case "expired_credentials": return { status: 403, body: s3Error("ExpiredToken", "The provided token has expired.") };
+    case "expired_credentials": {
+      const code = fault.code ?? "ExpiredToken";
+      return { status: 403, body: s3Error(code, CREDENTIAL_ERROR_MESSAGES[code]) };
+    }
     case "reset": return "reset";
     default: return null;
   }

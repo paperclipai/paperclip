@@ -3,7 +3,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { applyJourneyOptions } from "./journey-matrix.js";
 import { takesJourneyTriggers } from "./journeys.js";
-import { STORAGE_FAULT_KINDS } from "./storage-chaos.js";
+import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessage, type ProviderFaultKind } from "./provider-faults.js";
 import {
@@ -264,7 +264,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (storage === "s3") options.storage = "s3";
   if (values["storage-faults"] !== undefined) {
     if (storage !== "s3") throw new Error("--storage-faults needs --storage s3");
-    options.storageFaults = list<"ST1" | "ST2" | "ST3">(values["storage-faults"], STORAGE_FAULT_KINDS, "storage-faults", []);
+    options.storageFaults = list<StorageFaultKind>(values["storage-faults"], STORAGE_FAULT_KINDS, "storage-faults", []);
   }
   if (values["storage-fault-seconds"] !== undefined) {
     if (!options.storageFaults?.length) throw new Error("--storage-fault-seconds needs --storage-faults");

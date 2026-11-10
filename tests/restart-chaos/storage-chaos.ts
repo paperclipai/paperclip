@@ -1,7 +1,8 @@
+import { credentialFaultRules } from "./storage-credentials.js";
 import type { StorageFaultRule } from "./storage-proxy.js";
 import { bandwidthDraw } from "./storage-bandwidth.js";
 
-export const STORAGE_FAULT_KINDS = ["ST1", "ST2", "ST3"] as const;
+export const STORAGE_FAULT_KINDS = ["ST1", "ST2", "ST3", "ST5", "ST5R"] as const;
 export type StorageFaultKind = typeof STORAGE_FAULT_KINDS[number];
 
 export interface StorageFaultWindow { kind: StorageFaultKind; startMs: number; durationMs: number; rules: StorageFaultRule[] }
@@ -24,6 +25,7 @@ export function storageFaultRules(kind: StorageFaultKind, random: () => number):
       return [{ fault: { kind: "latency", ms, jitterMs: Math.round(ms / 4), bytesPerSecond: bandwidthDraw(random) } }];
     }
     case "ST3": return [{ fault: { kind: "errors", rate: 0.3, status: 503, slowDown: random() < 0.5 } }];
+    case "ST5": case "ST5R": return credentialFaultRules(kind, random);
   }
 }
 
