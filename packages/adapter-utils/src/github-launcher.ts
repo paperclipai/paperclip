@@ -80,7 +80,11 @@ function azureRemote(args, env) {
       const rewrites = spawnSync(executable, [...globalOptions, 'config', '--get-regexp', '^url\\..*\\.pushinsteadof$'], {
         env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true,
       });
-      if (rewrites.status !== 1) return 'paperclip:unresolved-git-remote';
+      if (rewrites.status !== 0 && rewrites.status !== 1) return 'paperclip:unresolved-git-remote';
+      if (rewrites.status === 0 && String(rewrites.stdout || '').trim().split(/\r?\n/).some(line => {
+        const match = /^url\..*\.pushinsteadof\s+(.+)$/i.exec(line);
+        return !match || explicitOther.startsWith(match[1]);
+      })) return 'paperclip:unresolved-git-remote';
     }
     const expanded = spawnSync(executable, [...globalOptions, 'ls-remote', '--get-url', '--', explicitOther], {
       env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true,
