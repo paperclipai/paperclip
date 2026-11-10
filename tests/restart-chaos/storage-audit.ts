@@ -15,7 +15,16 @@ export interface StorageAudit {
   incompleteUploads: IncompleteUpload[];
   committedSnapshots: number;
   snapshotProblems: SnapshotProblem[];
+  snapshotsChecked: boolean;
+  unexercisedFaults: string[];
   errors: string[];
+}
+
+export function unexercisedFaults(kinds: readonly string[], injectedBy: Record<string, number> = {}): string[] {
+  const hit = (prefixes: readonly string[]) => Object.entries(injectedBy).some(([cause, count]) => count > 0 && prefixes.some(prefix => cause.startsWith(prefix)));
+  return [...new Set(kinds)].filter(kind =>
+    (kind === "ST4" && !hit(["UploadPart:", "CompleteMultipartUpload:"]))
+    || (kind === "ST7" && !hit(["GetObject:read_after_write_lag", "HeadObject:read_after_write_lag"])));
 }
 
 export const AUDITED_STORAGE_FAULTS = ["ST4", "ST7"] as const;
@@ -88,6 +97,8 @@ export function storageAuditFailures(audit: StorageAudit): string[] {
   return [
     ...audit.incompleteUploads.map(upload => `orphaned multipart upload ${upload.key} (${upload.uploadId}, initiated ${upload.initiated ?? "unknown"})`),
     ...audit.snapshotProblems.map(problem => `committed snapshot ${problem.id} does not restore: ${problem.problem}`),
+    ...audit.unexercisedFaults.map(kind => `storage fault ${kind} never changed a request: the wave did not test it`),
+    ...(audit.snapshotsChecked ? [] : ["storage audit incomplete: committed snapshots were not checked"]),
     ...audit.errors.map(error => `storage audit incomplete: ${error}`),
   ];
 }
@@ -96,7 +107,9 @@ export function storageAuditMarkdown(audit: StorageAudit): string {
   const failures = storageAuditFailures(audit);
   return [`## Storage audit`, "",
     `Incomplete multipart uploads after the server stopped: ${audit.incompleteUploads.length}.`,
-    `Committed workspace snapshots read back: ${audit.committedSnapshots}, problems: ${audit.snapshotProblems.length}.`,
+    audit.snapshotsChecked ? `Committed workspace snapshots read back: ${audit.committedSnapshots}, problems: ${audit.snapshotProblems.length}.`
+      : "Committed workspace snapshots: not checked.",
+    `Storage faults that never changed a request: ${audit.unexercisedFaults.join(", ") || "none"}.`,
     ...(failures.length ? ["", ...failures.map(failure => `- ${failure}`)] : []), ""].join("\n");
 }
 
@@ -109,7 +122,7 @@ export async function readCommittedSnapshots(db: Db, companyId: string): Promise
 }
 
 export class StorageAuditor {
-  readonly audit: StorageAudit = { incompleteUploads: [], committedSnapshots: 0, snapshotProblems: [], errors: [] };
+  readonly audit: StorageAudit = { incompleteUploads: [], committedSnapshots: 0, snapshotProblems: [], snapshotsChecked: false, unexercisedFaults: [], errors: [] };
 
   constructor(private readonly store: StoreAccess, private readonly prefix: string) {}
 
@@ -118,10 +131,12 @@ export class StorageAuditor {
       const snapshots = await readCommittedSnapshots(db, companyId);
       this.audit.committedSnapshots = snapshots.length;
       this.audit.snapshotProblems = await checkCommittedSnapshots(this.store, this.prefix, snapshots);
+      this.audit.snapshotsChecked = true;
     } catch (error) { this.audit.errors.push(`snapshots: ${String(error)}`); }
   }
 
-  async finish(waveDir: string): Promise<string[]> {
+  async finish(waveDir: string, exercised: { kinds: readonly string[]; injectedBy?: Record<string, number> }): Promise<string[]> {
+    this.audit.unexercisedFaults = unexercisedFaults(exercised.kinds, exercised.injectedBy);
     try { this.audit.incompleteUploads = await listIncompleteUploads(this.store, this.prefix); }
     catch (error) { this.audit.errors.push(`multipart uploads: ${String(error)}`); }
     await writeFile(path.join(waveDir, "storage-audit.json"), `${JSON.stringify(this.audit, null, 2)}\n`, { mode: 0o600 });

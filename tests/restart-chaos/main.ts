@@ -693,7 +693,8 @@ async function main(): Promise<number> {
       await storageProxy.close().catch(() => undefined);
     }
     if (storageAuditor) {
-      const failures = await storageAuditor.finish(waveDir).catch(error => [`storage audit failed: ${String(error)}`]);
+      const failures = await storageAuditor.finish(waveDir, { kinds: storageChaos?.receipts.map(receipt => receipt.kind) ?? [],
+        injectedBy: storageProxy?.counts().injectedBy }).catch(error => [`storage audit failed: ${String(error)}`]);
       timeline.add("storage_audit", { ...storageAuditor.audit, failures });
       if (failures.length) anyFailure = true;
       speedSection = `${speedSection ?? ""}\n${storageAuditMarkdown(storageAuditor.audit)}`;

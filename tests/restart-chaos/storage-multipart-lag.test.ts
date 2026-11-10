@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { minioBinary, startMinio, type ObjectStore } from "./object-store.js";
-import { auditsStorage, checkCommittedSnapshots, listIncompleteUploads, storageAuditFailures, storedKey } from "./storage-audit.js";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { auditsStorage, checkCommittedSnapshots, listIncompleteUploads, storageAuditFailures, storedKey, unexercisedFaults } from "./storage-audit.js";
 import { planStorageFaults, storageFaultRules } from "./storage-chaos.js";
 import { LAG_MS_RANGE, ReadAfterWriteTracker, lagFaultRules } from "./storage-lag.js";
 import { SNAPSHOT_PATH, multipartFaultRules } from "./storage-multipart.js";
@@ -67,6 +69,35 @@ describe("ST4 and ST7 planning", () => {
     expect(auditsStorage({ storageFaults: ["ST4"] })).toBe(false);
   });
 
+  it("names each planned ST4 or ST7 fault that never changed a request", () => {
+    expect(unexercisedFaults(["ST4", "ST7", "ST4", "ST1"], { "PutObject:outage": 3 })).toEqual(["ST4", "ST7"]);
+    expect(unexercisedFaults(["ST4", "ST7"], { "UploadPart:truncate": 1, "HeadObject:read_after_write_lag": 2 })).toEqual([]);
+    expect(unexercisedFaults(["ST4"], { "CompleteMultipartUpload:errors": 1 })).toEqual([]);
+  });
+
+  it("forwards a truncated part's first bytes to the store before it cuts both connections", async () => {
+    let received = 0;
+    let closed!: () => void;
+    const upstreamClosed = new Promise<void>(resolve => { closed = resolve; });
+    const server = createServer(incoming => {
+      incoming.on("data", (chunk: Buffer) => { received += chunk.length; });
+      incoming.on("close", () => closed());
+    });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const proxy = await startStorageFaultProxy(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
+    try {
+      proxy.setRules([{ fault: { kind: "truncate", afterBytes: MIB }, operations: ["UploadPart"] }]);
+      await expect(fetch(`${proxy.endpoint}/b/k?partNumber=1&uploadId=u`, { method: "PUT", body: Buffer.alloc(4 * MIB) })).rejects.toThrow();
+      await upstreamClosed;
+      expect(received).toBeGreaterThan(0);
+      expect(received).toBeLessThan(4 * MIB);
+      expect(proxy.counts()).toMatchObject({ injected: 1, injectedBy: { "UploadPart:truncate": 1 } });
+    } finally {
+      await proxy.close();
+      server.closeAllConnections(); server.close();
+    }
+  });
+
   it("lags reads of a key only after a successful object write and only for the lag", () => {
     let now = 1_000;
     const tracker = new ReadAfterWriteTracker(() => now);
@@ -86,8 +117,11 @@ describe("ST4 and ST7 planning", () => {
 
   it("reports orphaned uploads and unrestorable committed snapshots as wave failures", () => {
     expect(storageAuditFailures({ incompleteUploads: [{ key: "k", uploadId: "u", initiated: null }], committedSnapshots: 1,
-      snapshotProblems: [{ id: "s", objectKey: "c/k", problem: "object_missing" }], errors: [] }))
+      snapshotProblems: [{ id: "s", objectKey: "c/k", problem: "object_missing" }], snapshotsChecked: true, unexercisedFaults: [], errors: [] }))
       .toEqual(["orphaned multipart upload k (u, initiated unknown)", "committed snapshot s does not restore: object_missing"]);
+    expect(storageAuditFailures({ incompleteUploads: [], committedSnapshots: 0, snapshotProblems: [], snapshotsChecked: false,
+      unexercisedFaults: ["ST4"], errors: [] })).toEqual(["storage fault ST4 never changed a request: the wave did not test it",
+      "storage audit incomplete: committed snapshots were not checked"]);
     expect(storedKey("chaos/w1/", "c/workspace-snapshots/x")).toBe("chaos/w1/c/workspace-snapshots/x");
   });
 });
@@ -137,7 +171,8 @@ describe.skipIf(!binary)("ST4 and ST7 against MinIO", () => {
     await complete();
     expect(tracker.lagging(`/${store.bucket}/${key}`, 1)).toBe(true);
     expect(await listIncompleteUploads(store, "chaos/w1/")).toEqual([]);
-    expect(proxy.counts()).toMatchObject({ injected: 3, byStatus: { 500: 2, reset: 1 } });
+    expect(proxy.counts()).toMatchObject({ injected: 3, byStatus: { 500: 2, reset: 1 },
+      injectedBy: { "UploadPart:errors": 1, "UploadPart:truncate": 1, "CompleteMultipartUpload:errors": 1 } });
   }, 60_000);
 
   it("answers NoSuchKey to reads of a just-written object until the lag passes, and verifies committed snapshots", async () => {

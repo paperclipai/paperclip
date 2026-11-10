@@ -27,7 +27,8 @@ const CREDENTIAL_ERROR_MESSAGES: Record<CredentialErrorCode, string> = {
 export interface StorageFaultRule { fault: StorageFault; methods?: readonly string[]; pathIncludes?: string; remaining?: number;
   operations?: readonly S3Operation[]; partNumbers?: readonly number[] }
 
-export interface StorageProxyCounts { requests: number; injected: number; byMethod: Record<string, number>; byStatus: Record<string, number> }
+export interface StorageProxyCounts { requests: number; injected: number; byMethod: Record<string, number>; byStatus: Record<string, number>;
+  injectedBy?: Record<string, number> }
 
 const XML = "application/xml";
 function s3Error(code: string, message: string) {
@@ -61,17 +62,18 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
     throw new Error("Storage fault injection requires a loopback store");
   }
   let rules: StorageFaultRule[] = [];
-  const counts: StorageProxyCounts = { requests: 0, injected: 0, byMethod: {}, byStatus: {} };
+  const counts: StorageProxyCounts = { requests: 0, injected: 0, byMethod: {}, byStatus: {}, injectedBy: {} };
   const sockets = new Set<Socket>();
   const delayed = new Set<ReturnType<typeof setTimeout>>();
   const agent = new Agent({ keepAlive: true });
   const links = new Map<StorageFaultRule, LinkRates>();
   const endLinks = () => { releaseLinks(links.values()); links.clear(); };
-  const note = (method: string, status: number | "reset", injected: boolean) => {
+  const note = (method: string, status: number | "reset", injected: boolean, cause?: string) => {
     counts.requests += 1;
     counts.byMethod[method] = (counts.byMethod[method] ?? 0) + 1;
     counts.byStatus[String(status)] = (counts.byStatus[String(status)] ?? 0) + 1;
     if (injected) counts.injected += 1;
+    if (cause) counts.injectedBy![cause] = (counts.injectedBy![cause] ?? 0) + 1;
   };
   const forward = (incoming: IncomingMessage, outgoing: ServerResponse, link?: LinkRates) => {
     const upstream = request(target, { method: incoming.method, path: incoming.url, headers: incoming.headers, agent }, response => {
@@ -82,6 +84,7 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
       (link ? response.pipe(paced(link.down)) : response).pipe(outgoing);
     });
     upstream.on("error", () => {
+      if (outgoing.destroyed) return;
       if (outgoing.headersSent) { outgoing.destroy(); return; }
       note(incoming.method ?? "GET", 502, false);
       outgoing.writeHead(502).end();
@@ -111,11 +114,13 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
     }
     if (fault.kind === "errors" && random() >= fault.rate) { forward(incoming, outgoing); return; }
     if (fault.kind === "read_after_write_lag" && !writes.lagging(incoming.url ?? "/", fault.lagMs)) { forward(incoming, outgoing); return; }
+    const cause = `${s3Operation(method, incoming.url ?? "/")}:${fault.kind}`;
     if (fault.kind === "truncate") {
       let seen = 0;
-      const cut = () => { if (incoming.socket.destroyed) return; note(method, "reset", true); incoming.socket.destroy(); };
+      const cut = () => { if (incoming.socket.destroyed) return; note(method, "reset", true, cause); incoming.socket.destroy(); };
       incoming.on("data", (chunk: Buffer) => { seen += chunk.length; if (seen >= fault.afterBytes) cut(); });
       incoming.on("end", cut);
+      forward(incoming, outgoing);
       return;
     }
     const injected = fault.kind === "errors"
@@ -124,8 +129,8 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
       : faultResponse(fault);
     if (!injected) { forward(incoming, outgoing); return; }
     incoming.resume();
-    if (injected === "reset") { note(method, "reset", true); incoming.socket.destroy(); return; }
-    note(method, injected.status, true);
+    if (injected === "reset") { note(method, "reset", true, cause); incoming.socket.destroy(); return; }
+    note(method, injected.status, true, cause);
     outgoing.writeHead(injected.status, { "content-type": XML, "content-length": Buffer.byteLength(injected.body) }).end(injected.body);
   });
   server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });

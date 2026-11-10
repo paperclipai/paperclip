@@ -370,7 +370,9 @@ method and status are written to `storage-proxy.json`.
 With ST4 or ST7 in the wave, the harness audits the store when the wave ends (`storage-audit.json` and a
 `Storage audit` section in `SUMMARY.md`). It reads every committed workspace snapshot back from MinIO and checks
 its size and SHA-256 against the snapshot row, and after the server stops it lists incomplete multipart uploads
-under the wave's prefix. An orphaned upload or a committed snapshot that does not read back fails the wave.
+under the wave's prefix. An orphaned upload, a committed snapshot that does not read back, a planned ST4 or ST7 fault
+that never changed a request, or a skipped snapshot check fails the wave. ST4 truncation forwards the first bytes
+of the part to MinIO before it cuts both connections.
 
 With ST5R the server gets no static key: `AWS_PROFILE` names a profile in a wave-owned `AWS_CONFIG_FILE`
 whose `credential_process` prints the key currently in `aws-credentials/current.json` under the instance
