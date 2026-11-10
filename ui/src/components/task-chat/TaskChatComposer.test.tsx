@@ -1232,6 +1232,35 @@ describe("TaskChatComposer", () => {
     expect(container.querySelector('[data-testid="task-chat-composer-mode"]')).toBeNull();
   });
 
+  it("keeps the chosen mode and message when an optimistic mode save rolls back", async () => {
+    const onAdd = vi.fn();
+    let rejectSave!: () => void;
+    function OptimisticModeHarness() {
+      const [workMode, setWorkMode] = useState<"standard" | "ask" | "planning">("standard");
+      return <TaskChatComposer onAdd={onAdd} workMode={workMode} onWorkModeChange={(mode) => {
+        setWorkMode(mode);
+        return new Promise<void>((_resolve, reject) => {
+          rejectSave = () => {
+            setWorkMode("standard");
+            reject(new Error("Mode save rejected"));
+          };
+        });
+      }} />;
+    }
+    render(<OptimisticModeHarness />);
+    pressKey("Tab", { shiftKey: true });
+    typeText("Keep this planning message");
+    pressKey("Enter");
+    await flushAsync();
+    await act(async () => rejectSave());
+    await flushAsync();
+
+    expect(editable().textContent).toBe("Keep this planning message");
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode"))
+      .toBe("planning");
+    expect(onAdd).not.toHaveBeenCalled();
+  });
+
   it("cycles the pending mode with Shift+Tab and applies it on submit", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
