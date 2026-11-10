@@ -103,6 +103,47 @@ describe("config integrity guard (KEWL-3955 / KEWL-3960)", () => {
     }
   });
 
+  it.each([
+    "/tmp/pv-xJU1sf",
+    "/private/tmp/pv-xJU1sf",
+  ])("throws when the canonical config contains paths under the runner's %s test root", async (testRoot) => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-integrity-guard-pv-"));
+    try {
+      const instanceDir = path.join(home, "instances", "default");
+      await fs.mkdir(instanceDir, { recursive: true });
+      const configPath = path.join(instanceDir, "config.json");
+      await fs.writeFile(configPath, JSON.stringify(buildPoisonedConfig(testRoot), null, 2), "utf8");
+
+      vi.stubEnv("PAPERCLIP_HOME", home);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      vi.stubEnv("PAPERCLIP_CONFIG", configPath);
+      vi.stubEnv("PAPERCLIP_IN_WORKTREE", "");
+
+      expect(() => loadConfig()).toThrow(/Config integrity check failed.*KEWL-3955/);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("does NOT throw when a canonical config uses a /tmp dir that only resembles the runner's prefix", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-integrity-guard-pv-lookalike-"));
+    try {
+      const instanceDir = path.join(home, "instances", "default");
+      await fs.mkdir(instanceDir, { recursive: true });
+      const configPath = path.join(instanceDir, "config.json");
+      await fs.writeFile(configPath, JSON.stringify(buildPoisonedConfig("/tmp/pv-shared-data"), null, 2), "utf8");
+
+      vi.stubEnv("PAPERCLIP_HOME", home);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      vi.stubEnv("PAPERCLIP_CONFIG", configPath);
+      vi.stubEnv("PAPERCLIP_IN_WORKTREE", "");
+
+      expect(() => loadConfig()).not.toThrow();
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("uses env-overridden effective paths before rejecting a canonical config", async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-integrity-guard-overrides-"));
     try {

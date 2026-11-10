@@ -430,7 +430,6 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
     PAPERCLIP_IN_WORKTREE: undefined,
-    PAPERCLIP_CONFIG: undefined,
     PAPERCLIP_CONTEXT: undefined,
     PAPERCLIP_WORKTREE_NAME: undefined,
     PAPERCLIP_WORKTREES_DIR: undefined,

@@ -172,15 +172,16 @@ function checkConfigIntegrity(
   const canonicalConfigPath = resolveDefaultConfigPath();
   if (resolvedConfigPath !== canonicalConfigPath) return;
 
-  // Narrow to the pcvt-* vitest temp dir pattern from scripts/run-vitest-stable.mjs
-  // (mkdtempSync with prefix `pcvt-${pid}-${invocationIndex}-`). Checking any /tmp path
-  // is too broad: Docker and CI configs may legitimately use /tmp for data dirs; those
-  // are not the scenario this guard prevents. /private/tmp is macOS's real path for /tmp.
-  const PCVT_TMP_RE = /^(?:\/tmp|\/private\/tmp)\/pcvt-\d+-/;
+  // Narrow to the vitest temp dir pattern from scripts/run-vitest-stable.mjs (mkdtempSync
+  // with prefix `pv-`, formerly `pcvt-${pid}-${invocationIndex}-`, which configs poisoned
+  // before the rename still carry). Checking any /tmp path is too broad: Docker and CI
+  // configs may legitimately use /tmp for data dirs; those are not the scenario this
+  // guard prevents. /private/tmp is macOS's real path for /tmp.
+  const VITEST_TMP_RE = /^(?:\/tmp|\/private\/tmp)\/(?:pcvt-\d+-|pv-[A-Za-z0-9]{6}(?:\/|$))/;
 
   function isVitestTmpPath(value: string | undefined | null): boolean {
     if (!value) return false;
-    return PCVT_TMP_RE.test(value);
+    return VITEST_TMP_RE.test(value);
   }
 
   const poisoned: string[] = [];
@@ -198,7 +199,7 @@ function checkConfigIntegrity(
   if (poisoned.length > 0) {
     const configPath = process.env.PAPERCLIP_CONFIG ?? "(default path)";
     const lines = [
-      "[KEWL-3955] FATAL: canonical Paperclip config contains pcvt-* vitest temp paths.",
+      "[KEWL-3955] FATAL: canonical Paperclip config contains vitest temp paths.",
       "This means a test run likely overwrote the production config.",
       `Config: ${configPath}`,
       "Poisoned fields:",
