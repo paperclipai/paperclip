@@ -89,7 +89,7 @@
       },
       "consoleLinks": {
         "docs": "https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens_rest/#mcp-tool",
-        "keys": "https://gitlab.com/-/user_settings/personal_access_tokens"
+        "keys": "https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens/"
       },
       "warnings": [
         "A token is a secret; do not place it in the server URL. The token cannot exceed its owner's GitLab project and group access.",
