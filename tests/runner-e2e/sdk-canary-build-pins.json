@@ -1,0 +1,28 @@
+{
+  "schema": "paperclip.sdk-canary-build-pins/v1",
+  "authenticatedMetadataSha256": "56e130cadb510a7bbbfc9aea2386a655d83ad7a13e84a326e1019ad856f2068c",
+  "frozenInputManifestSha256": "88980780c834e4bcc186eac46eb5cde8a63b77d36242f56192dffe0885d547aa",
+  "copiedInputManifestSha256": "19a20f8e78cd0d07fcb56390b5ac2cb8945e73b8659f4a98beeca83f6976373b",
+  "helperSha256": "4e8c21ea34550b5308009cbc4cebfebfa99d1c728b641600964bde5237f372ae",
+  "lockSha256": "c7f23021335b60da0cff1dd4c75cf8b948333ef3165d7d1703eb79a589edb798",
+  "compilerPackageSha256": "3722b30210616a13a3213ded11575ba6b2dbab10c32a5ef67afca8513e27017e",
+  "publicInputsFileSha256": "4330369fd34812273db11762c82ce4c427bae2353991eae354e7923e229b4a4a",
+  "inputFiles": 501,
+  "gitInputFiles": 500,
+  "compiledFiles": 1611,
+  "compiledManifestSha256": "49391ba801b596df6866325b7338a0945773312024c9bdc65537a3d47acce261",
+  "certificates": [
+    {
+      "target": "packages/shared/dist",
+      "sources": "45f45bba15a88e69ebf492592c92856af68ea08d8c6e242c002ab2568f4929fe",
+      "outputs": "b3f2c23d77d986eec5ff63d3f642fd55d0884426dd87fc14432a96f3ee3f9674",
+      "markerSha256": "a5324336d8bf33e86fb083cd505ea37f8d0c23b63fae3ce880b135e52c54475e"
+    },
+    {
+      "target": "packages/plugins/sdk/dist",
+      "sources": "913f4864e89451a84ceacf33f69b40eec174d0fbc5761cd833e49ae362a53fb6",
+      "outputs": "2dbee883799e3cef21744a9f45ec5ae1fa3b6bec6d1257ca240fe5612a12fe71",
+      "markerSha256": "f7e9a10281aa5bde04745ffd86c0b0ddba1c2687d2d104dbbc30e4db77532bb5"
+    }
+  ]
+}
