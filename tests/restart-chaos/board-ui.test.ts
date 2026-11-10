@@ -10,6 +10,7 @@ const retry = (issue: string) => `fetch('/api/issues/${issue}/retry',{method:'PO
 const pages: Record<string, string> = {
   "/issues/CHA-1": `<div role="status">Couldn’t finish this attempt. <button onclick="${retry("i1")}">Retry</button></div>`,
   "/issues/CHA-2": `<div role="status">Saving files from the previous attempt</div>`,
+  "/issues/CHA-7": `<div role="status">Couldn’t finish this attempt. <button style="display:none">Retry</button></div>`,
   "/issues/CHA-3": `<div role="status">Automatic recovery stopped. <button>Retry</button></div>`,
   "/issues/CHA-4": `<section><p>Couldn’t load the subtasks.</p><button onclick="window.reloaded=true">Retry</button></section>
     <div role="status">Couldn’t finish this attempt. <button onclick="${retry("i4")}">Retry</button></div>`,
@@ -68,6 +69,20 @@ describe("BoardUi.clickRetry", () => {
       const dom = JSON.parse(await readFile(result.diagnostics!.dom!, "utf8"));
       expect(dom).toMatchObject({ url: expect.stringContaining("/issues/CHA-2"), retryButtons: [],
         banners: [expect.stringContaining("Saving files from the previous attempt")] });
+    } finally {
+      await board.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("records a hidden Retry with its visibility and box", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "chaos-retry-hidden-"));
+    const board = new BoardUi(baseUrl, undefined, directory);
+    try {
+      const result = await board.clickRetry("CHA-7", "i7", 1_500);
+      expect(result).toMatchObject({ clicked: false, error: UI_RETRY_BUTTON_MISSING });
+      const dom = JSON.parse(await readFile(result.diagnostics!.dom!, "utf8"));
+      expect(dom.retryButtons).toEqual([expect.objectContaining({ visible: false, box: null, inBanner: true })]);
     } finally {
       await board.close();
       await rm(directory, { recursive: true, force: true });

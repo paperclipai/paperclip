@@ -11,13 +11,9 @@ export interface UiRetryClick {
   accepted: boolean | null;
   error: string | null;
   bannerText: string | null;
-  /** Files saved when the Retry button wait failed, for later diagnosis. */
   diagnostics?: { screenshot: string | null; dom: string | null } | null;
 }
 
-/** Save what the page showed when no visible Retry appeared: a full-page
- * screenshot, each banner's HTML, and every Retry-named button's visibility
- * and box. Diagnostics never change the click outcome. */
 export async function saveRetryMissingDiagnostics(page: Page, directory: string, label: string) {
   const stem = path.join(directory, `ui-retry-missing-${label.replace(/[^A-Za-z0-9_-]+/g, "_")}-${Date.now()}`);
   await mkdir(directory, { recursive: true });
@@ -26,7 +22,8 @@ export async function saveRetryMissingDiagnostics(page: Page, directory: string,
   const banners = await page.locator("[role=status], [role=alert]")
     .evaluateAll(nodes => nodes.map(node => (node as Element).outerHTML.slice(0, 20_000))).catch(() => []);
   const buttons = [];
-  for (const button of await page.getByRole("button", { name: "Retry", exact: true }).elementHandles().catch(() => [])) {
+  for (const button of await page.getByRole("button", { name: "Retry", exact: true, includeHidden: true })
+    .elementHandles().catch(() => [])) {
     buttons.push({
       visible: await button.isVisible().catch(() => null),
       box: await button.boundingBox().catch(() => null),
