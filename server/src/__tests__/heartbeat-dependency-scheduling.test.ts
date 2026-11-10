@@ -45,6 +45,7 @@ import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapte
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 import * as workspacePreparation from "../services/heartbeat/workspace-preparation.js";
 import { WorkspaceBusyDeferral } from "../services/heartbeat/retries.js";
+import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -1116,6 +1117,127 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .update(heartbeatRuns)
       .set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, activeRunId));
+  });
+
+  it("admits one issue_blockers_resolved wake when emitters race for the same ready state", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Finished prerequisite",
+        status: "done",
+        priority: "high",
+        responsibleUserId: "responsible-user",
+      },
+      {
+        id: dependentIssueId,
+        companyId,
+        title: "Dependent ready to run",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+
+    let finishRun!: () => void;
+    const runCanFinish = new Promise<void>((resolve) => {
+      finishRun = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await runCanFinish;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Dependency race run complete.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId,
+      blockerIssueIds: [blockerId],
+      blockedTransitionAt: null,
+    });
+    const wake = () =>
+      heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_blockers_resolved",
+        payload: { issueId: dependentIssueId, resolvedBlockerIssueId: blockerId, blockerIssueIds: [blockerId] },
+        idempotencyKey,
+        requestedByActorType: "system",
+        requestedByActorId: "dependency-race-test",
+        contextSnapshot: {
+          issueId: dependentIssueId,
+          taskId: dependentIssueId,
+          wakeReason: "issue_blockers_resolved",
+          resolvedBlockerIssueId: blockerId,
+          blockerIssueIds: [blockerId],
+        },
+      });
+
+    const raced = await Promise.all([wake(), wake()]);
+    const admitted = raced.filter((run) => run !== null);
+    expect(admitted).toHaveLength(1);
+
+    finishRun();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, admitted[0]!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const lateWake = await wake();
+    expect(lateWake).toBeNull();
+
+    const keyedWakes = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.idempotencyKey, idempotencyKey)));
+    expect(keyedWakes.filter((row) => row.status !== "skipped")).toHaveLength(1);
+    expect(keyedWakes.filter((row) => row.reason === "issue_blockers_resolved_already_covered")).toHaveLength(2);
   });
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {

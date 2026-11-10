@@ -156,6 +156,7 @@ import {
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  findIssueBlockersResolvedWakeForStateKey,
   isDependencyResolvedWakePayload,
   dependencyResolvedWakePayloadSql,
 } from "../issue-dependency-wakeups.js";
@@ -3460,6 +3461,40 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   actualStatus: issue.status,
                   expectedAssigneeAgentId: issueStateGuard.assigneeAgentId,
                   actualAssigneeAgentId: issue.assigneeAgentId,
+                },
+              },
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+            return { kind: "skipped" as const };
+          }
+
+          const coveringDependencyWake = reason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON
+            ? await findIssueBlockersResolvedWakeForStateKey(tx as unknown as Db, {
+                companyId: agent.companyId,
+                issueId: issue.id,
+                idempotencyKey: opts.idempotencyKey,
+                excludeWakeupRequestId: executionWaitRequestId ?? null,
+              })
+            : null;
+          if (coveringDependencyWake) {
+            await tx.insert(agentWakeupRequests).values({
+              ...durableReceiptFields,
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_blockers_resolved_already_covered",
+              payload: {
+                ...(payload ?? {}),
+                heartbeatSkip: {
+                  reason: "A wake for this dependency-ready state is already queued, running, or completed.",
+                  issueId: issue.id,
+                  coveringWakeupRequestId: coveringDependencyWake.id,
+                  coveringStatus: coveringDependencyWake.status,
                 },
               },
               status: "skipped",

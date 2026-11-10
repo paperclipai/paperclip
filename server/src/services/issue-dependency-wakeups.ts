@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests } from "@paperclipai/db";
@@ -282,4 +282,37 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
     }),
   );
   return covering ?? null;
+}
+
+export function isIssueBlockersResolvedWakeStateKey(idempotencyKey: string | null | undefined): idempotencyKey is string {
+  return typeof idempotencyKey === "string" && idempotencyKey.startsWith(`${ISSUE_BLOCKERS_RESOLVED_WAKE_REASON}:state:`);
+}
+
+export async function findIssueBlockersResolvedWakeForStateKey(
+  db: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    idempotencyKey: string | null | undefined;
+    excludeWakeupRequestId?: string | null;
+  },
+) {
+  if (!isIssueBlockersResolvedWakeStateKey(input.idempotencyKey)) return null;
+  const rows = await db
+    .select({
+      id: agentWakeupRequests.id,
+      status: agentWakeupRequests.status,
+      idempotencyKey: agentWakeupRequests.idempotencyKey,
+      requestedAt: agentWakeupRequests.requestedAt,
+    })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+        eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+        input.excludeWakeupRequestId ? ne(agentWakeupRequests.id, input.excludeWakeupRequestId) : undefined,
+      ),
+    );
+  return rows.find((row) => IDEMPOTENT_DEPENDENCY_WAKE_STATUS_SET.has(row.status)) ?? null;
 }
