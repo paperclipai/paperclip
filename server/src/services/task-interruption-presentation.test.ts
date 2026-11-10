@@ -454,3 +454,22 @@ describe("setup command failure evidence", () => {
     for (let index = 0; index + 8 <= secret.length; index += 1) expect(text).not.toContain(secret.slice(index, index + 8));
   });
 });
+
+describe("saved result that ran out of finalization retries", () => {
+  const review = { ...issue, status: "in_review" };
+  const succeeded = { ...run, status: "succeeded", runtimeMode: "native" as const, errorCode: null, resultJson: null };
+
+  it("offers Retry for a succeeded run whose accepted result could not be finalized", () => {
+    expect(projectTaskInterruption(review, { run: { ...succeeded, nativeFinalizationRetry: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true, observedRunId: "run" });
+  });
+
+  it("keeps ordinary succeeded and failed runs unchanged", () => {
+    expect(projectTaskInterruption(review, { run: succeeded, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "resolved", canRetry: false });
+    expect(projectTaskInterruption(review, { run: { ...succeeded, status: "failed", errorCode: "adapter_failed" }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption({ ...review, status: "done" }, { run: { ...succeeded, nativeFinalizationRetry: true },
+      agent, paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
+  });
+});
