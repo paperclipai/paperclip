@@ -899,6 +899,11 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   let persistedExecutionWorkspace: ExecutionWorkspace | null = null;
   let issueExecutionWorkspaceIdForRun =
     issueRef?.executionWorkspaceId ?? null;
+  const previousExecutionWorkspaceId =
+    previousProviderWorkspaceId ??
+    workspaceReuseRequest?.requestedExecutionWorkspaceId ??
+    issueExecutionWorkspaceIdForRun ??
+    null;
   let issueProjectWorkspaceIdForRun = issueRef?.projectWorkspaceId ?? null;
   let issueExecutionWorkspacePreferenceForRun =
     issueRef?.executionWorkspacePreference ?? null;
@@ -930,6 +935,22 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     const nextIssuePatch: TaskWorkspaceBindingPatch = {};
     if (issueExecutionWorkspaceIdForRun !== workspace.id) {
       nextIssuePatch.executionWorkspaceId = workspace.id;
+      if (previousExecutionWorkspaceId) {
+        try {
+          await appendRunEvent(run, {
+            eventType: "workspace.fallback_to_fresh",
+            stream: "system",
+            level: "warn",
+            message: "The earlier execution workspace could not be restored; bound task to a fresh workspace.",
+            payload: {
+              previousExecutionWorkspaceId,
+              nextExecutionWorkspaceId: workspace.id,
+              cwd: workspace.cwd,
+            },
+          });
+        } catch {
+        }
+      }
     }
     if (
       resolvedProjectWorkspaceId &&
@@ -1019,6 +1040,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const nextExecutionWorkspaceMetadata = {
     ...baseExecutionWorkspaceMetadata,
     ...(pluginPrepared?.metadata ?? {}),
+    ...(previousExecutionWorkspaceId ? { previousExecutionWorkspaceId } : {}),
     ...(taskWorkspaceOwner && !pluginPrepared ? { runnerTaskWorkspaceOwner: taskWorkspaceOwner } : {}),
     ...(providerFresh && pluginTaskWorkspace && !pluginPrepared ? { runnerTaskFreshWorkspace: providerFresh } : {}),
     ...(copyOnlyProvisioning ? { [CONTROLLER_PROVISION_COPY_ONLY]: true } : {}),
@@ -1130,6 +1152,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
                   ? "git_worktree"
                   : "local_fs",
               providerRef: executionWorkspace.worktreePath,
+              derivedFromExecutionWorkspaceId: previousExecutionWorkspaceId ?? null,
               lastUsedAt: new Date(),
               openedAt: new Date(),
               metadata: nextExecutionWorkspaceMetadata,
@@ -1218,6 +1241,11 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         cleanupReason: null,
       },
     ));
+  }
+  if (createdExecutionWorkspaceThisRun && previousExecutionWorkspaceId && previousExecutionWorkspaceId !== persistedExecutionWorkspace?.id) {
+    executionWorkspace.warnings.push(
+      "The earlier execution workspace could not be restored; bound task to a fresh workspace.",
+    );
   }
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const projectRepositoryPaths: string[] = [];

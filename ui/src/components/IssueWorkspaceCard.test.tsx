@@ -292,4 +292,36 @@ describe("IssueWorkspaceCard", () => {
       root.unmount();
     });
   });
+
+  it("renders a link to the previous workspace when derivedFromExecutionWorkspaceId is present", () => {
+    useQueryMock.mockImplementation((options: { queryKey: unknown[] }) => ({
+      data: options.queryKey[0] === "instance" ? { enableIsolatedWorkspaces: true } : [],
+    }));
+    const root = createRoot(container);
+
+    const workspace = createExecutionWorkspace({
+      derivedFromExecutionWorkspaceId: "workspace-parent-1",
+    });
+    const issue = createIssue({
+      currentExecutionWorkspace: workspace,
+    });
+
+    act(() => {
+      root.render(
+        <IssueWorkspaceCard
+          issue={issue}
+          project={{ id: "project-1", executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" } }}
+          onUpdate={vi.fn()}
+        />,
+      );
+    });
+
+    const previousLink = container.querySelector('a[to="/execution-workspaces/workspace-parent-1"]');
+    expect(previousLink).not.toBeNull();
+    expect(previousLink?.textContent).toContain("View previous workspace →");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

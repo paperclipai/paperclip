@@ -449,6 +449,16 @@ export function IssueWorkspaceCard({
               </Link>
             </div>
           )}
+          {workspace?.derivedFromExecutionWorkspaceId && (
+            <div className="pt-0.5">
+              <Link
+                to={`/execution-workspaces/${workspace.derivedFromExecutionWorkspaceId}`}
+                className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
+              >
+                View previous workspace →
+              </Link>
+            </div>
+          )}
         </div>
       )}
 
