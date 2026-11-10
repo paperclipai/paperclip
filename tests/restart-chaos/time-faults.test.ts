@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import { planTasks } from "./scheduler.js";
-import { TIME_FREEZE_HOLD_RANGE_MS } from "./time-faults-config.js";
+import { planMatrixWave } from "./journey-matrix.js";
+import { TIME_FREEZE_HOLD_RANGE_MS, isTimeFault } from "./time-faults-config.js";
 import { ProcessFreezer, agingStatements, descendantPids, parseProcessTable, runFreezeFault, unshiftJson, unshiftMs, type AgingResult, type TimeFaultRecord } from "./time-faults.js";
 
 const HOUR = 3_600_000;
@@ -41,6 +42,17 @@ describe("time fault options", () => {
     }
     // TM1 outlasts the 90 s controller-instance lease.
     expect(TIME_FREEZE_HOLD_RANGE_MS.TM1[0]).toBeGreaterThan(90_000);
+  });
+
+  it("gives matrix TM cells the same seeded freeze", () => {
+    const parsed = parseCommand(["--matrix", "--faults", "TM1,TM2,TM3", "--adapters", "codex", "--workloads", "A1", "--seed", "9"]);
+    if (parsed.mode !== "wave") throw new Error("expected a wave");
+    const tasks = planMatrixWave("w-20261110T000000-s9", parsed.options).tasks.filter(task => isTimeFault(task.fault));
+    expect(tasks.map(task => task.fault).sort()).toEqual(["TM1", "TM2", "TM3"]);
+    for (const task of tasks) {
+      if (task.fault === "TM3") expect(task.holdMs).toBe(0);
+      else expect(task.holdMs).toBeGreaterThanOrEqual(TIME_FREEZE_HOLD_RANGE_MS[task.fault as "TM1" | "TM2"][0]);
+    }
   });
 });
 
