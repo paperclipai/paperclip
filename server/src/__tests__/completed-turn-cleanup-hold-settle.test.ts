@@ -6,6 +6,7 @@ import {
   activityLog,
   agents,
   companies,
+  controllerInstances,
   createDb,
   heartbeatRuns,
   issueRecoveryActions,
@@ -16,6 +17,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { currentControllerBootId, currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../services/controller-instance-lease.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -65,7 +67,8 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
 
   afterAll(async () => { await temporary?.cleanup(); });
 
-  async function quarantinedRun(options: { controllerAlive?: boolean; turnCompleted?: boolean; filesSaved?: boolean } = {}) {
+  async function quarantinedRun(options: { controllerAlive?: boolean; turnCompleted?: boolean; filesSaved?: boolean;
+    controllerBootId?: string; hostHashUnrecorded?: boolean } = {}) {
     const issueId = randomUUID(), runId = randomUUID(), leaseId = randomUUID();
     const finishedAt = new Date(Date.now() - 60_000);
     await db.insert(issues).values({ id: issueId, companyId, title: "Set up visual reviews", status: "blocked",
@@ -83,7 +86,8 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
       ...(options.controllerAlive
         ? { controllerBootId: currentControllerBootId(), controllerPid: process.pid, controllerHostHash: currentProcessSpaceHash(),
           controllerProcessStartedAt: new Date(Date.now() - process.uptime() * 1_000) }
-        : { controllerBootId: randomUUID(), controllerPid: await exitedPid(), controllerHostHash: currentProcessSpaceHash(),
+        : { controllerBootId: options.controllerBootId ?? randomUUID(), controllerPid: await exitedPid(),
+          controllerHostHash: options.hostHashUnrecorded ? null : currentProcessSpaceHash(),
           controllerProcessStartedAt: new Date(finishedAt.getTime() - 20 * 60_000) }) });
     const noReplay = { runId, policy: "preserve_without_replay_v1", replay: "blocked",
       recordedAt: finishedAt.toISOString(), actionOutcome: "unknown" };
@@ -146,6 +150,22 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.recovery_action_resolved"))).toHaveLength(1);
     // Bounded: nothing is left to list.
     expect(await pass()).toMatchObject({ inProgress: 0 });
+  }, 60_000);
+
+  it("proves a controller saved before its PID space was recorded gone through its stopped server boot", async () => {
+    const bootId = randomUUID();
+    await db.insert(controllerInstances).values({ bootId, processSpace: "old-container", pid: 7,
+      leaseExpiresAt: new Date(Date.now() - 5 * 60_000), stoppedAt: new Date(Date.now() - 4 * 60_000) });
+    registerControllerInstanceDb(db);
+    try {
+      const f = await quarantinedRun({ controllerBootId: bootId, hostHashUnrecorded: true });
+      expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+      expect(await hold(f.quarantineHoldId)).toMatchObject({ outcome: "restored" });
+      expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    } finally {
+      resetControllerInstanceLeaseForTests();
+      await db.delete(controllerInstances);
+    }
   }, 60_000);
 
   it("keeps the holds while the controller that may still hold the gate is alive", async () => {
