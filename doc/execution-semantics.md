@@ -2724,6 +2724,21 @@ again automatically; after that it names Retry. Holds exhausted by earlier
 releases carry no marker and are re-armed on the worker's first pass after
 deploy, with no migration.
 
+An exhausted save whose last failure happened while preserving files
+(`export_interrupted`) under an older workspace capture
+policy is retried once under the current policy. The capture policy has a
+version (`REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION`); each recovery generation
+records the version it saves with, and generations written before the field
+existed count as version 1. A release that makes the capture accept workspaces
+an earlier release refused bumps the version. The recovery worker then re-arms
+each such hold with one new bounded generation, under the same run-over checks
+as the stop-proof re-arm, records the `capturePolicyRecovery` marker and
+`issue.workspace_recovery_rearmed` activity with reason
+`capture_policy_changed`, and settles the hold like any completed recovery.
+The new generation carries the current version, so the rule never re-arms it
+again; a later failure follows the normal exhausted handoff. Holds saved by
+earlier releases need no migration.
+
 An exhausted workspace export records the exact Blocked status version it
 creates, bound to its source run, result, contract and identity. Recovery may
 restore the accepted passive wait only while that receipt still owns the task
