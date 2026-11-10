@@ -3207,6 +3207,13 @@
       "when": 1794329161946,
       "tag": "0459_environment_lease_backup_scope_index",
       "breakpoints": true
+    },
+    {
+      "idx": 460,
+      "version": "7",
+      "when": 1794332809027,
+      "tag": "0460_gateway_token_pending_reveal",
+      "breakpoints": true
     }
   ]
 }

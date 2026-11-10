@@ -680,6 +680,14 @@ function generateGatewayToken(sessionId: string) {
   return `pcgt_${sessionId}.${randomBytes(32).toString("base64url")}`;
 }
 
+interface NamedGatewayTokenInput {
+  companyId: string;
+  gatewayId: string;
+  body: CreateToolMcpGatewayToken;
+  actor?: { agentId?: string | null; userId?: string | null };
+  managementContext?: ConnectionManagementContext;
+}
+
 function generateNamedGatewayToken(tokenId: string) {
   return `pcgw_${tokenId}.${randomBytes(32).toString("base64url")}`;
 }
@@ -7000,6 +7008,85 @@ export function createToolGatewayService(
     };
   }
 
+  async function insertNamedGatewayToken(input: NamedGatewayTokenInput, pendingReveal: boolean) {
+    await input.managementContext?.reauthorize();
+    const [gateway] = await db
+      .select()
+      .from(toolMcpGateways)
+      .where(
+        and(
+          eq(toolMcpGateways.companyId, input.companyId),
+          eq(toolMcpGateways.id, input.gatewayId),
+        ),
+      )
+      .limit(1);
+    if (!gateway)
+      throw new ToolGatewayHttpError(
+        404,
+        "MCP gateway not found",
+        "gateway_not_found",
+      );
+    if (input.actor?.agentId && !input.managementContext && input.body.subjectType !== "heartbeat_run") {
+      throw new ToolGatewayHttpError(403, "Agent client tokens require delegated authority", "gateway_token_run_context_invalid");
+    }
+    if (input.managementContext?.actor.type === "agent" && input.body.subjectType === "heartbeat_run" &&
+        (!input.managementContext.actor.runId || input.body.subjectId !== input.managementContext.actor.runId)) {
+      throw new ToolGatewayHttpError(403, "Heartbeat tokens must bind the authenticated run", "gateway_token_run_context_invalid");
+    }
+    const tokenId = randomUUID();
+    const token = generateNamedGatewayToken(tokenId);
+    const tokenPrefix = `pcgw_${tokenId.slice(0, 8)}`;
+    const now = new Date();
+    const [row] = await db.transaction(async tx => {
+      if (input.body.expiresAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
+      return tx
+        .insert(toolMcpGatewayTokens)
+        .values({
+          id: tokenId,
+          companyId: input.companyId,
+          gatewayId: input.gatewayId,
+          name: input.body.name,
+          // A pending token's stored hash is of a value nobody receives.
+          tokenHash: hashGatewayToken(token),
+          tokenPrefix,
+          pendingReveal,
+          subjectType: input.body.subjectType ?? "gateway_client",
+          subjectId: input.body.subjectId ?? null,
+          clientLabel: input.body.clientLabel,
+          ownerNote: input.body.ownerNote,
+          allowedActions: input.body.allowedActions ?? [
+            "tools/list",
+            "tools/call",
+            "resources/list",
+            "resources/read",
+            "prompts/list",
+            "prompts/get",
+          ],
+          expiresAt: input.body.expiresAt ?? null,
+          expiryOverrideReason: input.body.expiryOverrideReason ?? null,
+          expiryOverrideByAgentId:
+            input.actor?.agentId && input.body.expiryOverrideReason
+              ? input.actor.agentId
+              : null,
+          expiryOverrideByUserId:
+            input.actor?.userId && input.body.expiryOverrideReason
+              ? input.actor.userId
+              : null,
+          expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
+          responsibleUserId: input.managementContext?.actor.type === "agent" ? input.managementContext.responsibleUserId : null,
+          createdByAgentId: input.actor?.agentId ?? null,
+          createdByUserId: input.actor?.userId ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+    });
+    if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
+      action: "tool_gateway.token_created", entityType: "tool_mcp_gateway", entityId: input.gatewayId,
+      details: { tokenId: row.id, subjectType: row.subjectType, allowedActions: row.allowedActions, ...(pendingReveal ? { pendingReveal } : {}) } });
+  return { row, token };
+}
+
   function toGatewayToken(
     row: typeof toolMcpGatewayTokens.$inferSelect,
   ): ToolMcpGatewayToken {
@@ -7024,6 +7111,7 @@ export function createToolGatewayService(
       createdByAgentId: row.createdByAgentId,
       createdByUserId: row.createdByUserId,
       responsibleUserId: row.responsibleUserId,
+      pendingReveal: row.pendingReveal,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -7443,6 +7531,15 @@ export function createToolGatewayService(
         gatewayPublicId: input.gatewayPublicId,
         bearerToken,
         reasonCode: "gateway_token_revoked",
+        clientMetadata,
+      });
+    }
+    if (row.token.pendingReveal) {
+      await recordNamedGatewayAuthFailure({
+        gatewayId: input.gatewayId,
+        gatewayPublicId: input.gatewayPublicId,
+        bearerToken,
+        reasonCode: "gateway_token_invalid",
         clientMetadata,
       });
     }
@@ -9341,88 +9438,56 @@ export function createToolGatewayService(
       return getGatewayWithTokens(input.companyId, updated.id);
     },
 
-    async createNamedGatewayToken(input: {
+    async createNamedGatewayToken(input: NamedGatewayTokenInput): Promise<ToolMcpGatewayTokenCreated> {
+      const { row, token } = await insertNamedGatewayToken(input, false);
+      return { ...toGatewayToken(row), token };
+    },
+
+    /**
+     * Saves an agent-created client token without a usable value. The value is
+     * generated only when the responsible person reveals it, so the creating
+     * agent never receives it in a tool result.
+     */
+    async createPendingRevealGatewayToken(input: NamedGatewayTokenInput): Promise<ToolMcpGatewayToken> {
+      return toGatewayToken((await insertNamedGatewayToken(input, true)).row);
+    },
+
+    async revealNamedGatewayToken(input: {
       companyId: string;
-      gatewayId: string;
-      body: CreateToolMcpGatewayToken;
-      actor?: { agentId?: string | null; userId?: string | null };
+      tokenId: string;
+      userId: string;
       managementContext?: ConnectionManagementContext;
     }): Promise<ToolMcpGatewayTokenCreated> {
       await input.managementContext?.reauthorize();
-      const [gateway] = await db
-        .select()
-        .from(toolMcpGateways)
-        .where(
-          and(
-            eq(toolMcpGateways.companyId, input.companyId),
-            eq(toolMcpGateways.id, input.gatewayId),
-          ),
-        )
-        .limit(1);
-      if (!gateway)
-        throw new ToolGatewayHttpError(
-          404,
-          "MCP gateway not found",
-          "gateway_not_found",
-        );
-      if (input.actor?.agentId && !input.managementContext && input.body.subjectType !== "heartbeat_run") {
-        throw new ToolGatewayHttpError(403, "Agent client tokens require delegated authority", "gateway_token_run_context_invalid");
+      const [existing] = await db.select().from(toolMcpGatewayTokens).where(and(
+        eq(toolMcpGatewayTokens.companyId, input.companyId),
+        eq(toolMcpGatewayTokens.id, input.tokenId),
+      )).limit(1);
+      if (!existing) throw new ToolGatewayHttpError(404, "MCP gateway token not found", "gateway_token_not_found");
+      if (!existing.pendingReveal) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");
+      if (existing.revokedAt) throw new ToolGatewayHttpError(409, "This token was revoked before its value was revealed.", "gateway_token_revoked");
+      if (existing.responsibleUserId && existing.responsibleUserId !== input.userId) {
+        throw new ToolGatewayHttpError(403, "Only the person this agent-created token acts for can reveal its value.", "gateway_token_reveal_requires_responsible_person");
       }
-      if (input.managementContext?.actor.type === "agent" && input.body.subjectType === "heartbeat_run" &&
-          (!input.managementContext.actor.runId || input.body.subjectId !== input.managementContext.actor.runId)) {
-        throw new ToolGatewayHttpError(403, "Heartbeat tokens must bind the authenticated run", "gateway_token_run_context_invalid");
-      }
-      const tokenId = randomUUID();
-      const token = generateNamedGatewayToken(tokenId);
-      const tokenPrefix = `pcgw_${tokenId.slice(0, 8)}`;
+      const token = generateNamedGatewayToken(existing.id);
       const now = new Date();
-      const [row] = await db.transaction(async tx => {
-        if (input.body.expiresAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
-        return tx
-          .insert(toolMcpGatewayTokens)
-          .values({
-            id: tokenId,
-            companyId: input.companyId,
-            gatewayId: input.gatewayId,
-            name: input.body.name,
-            tokenHash: hashGatewayToken(token),
-            tokenPrefix,
-            subjectType: input.body.subjectType ?? "gateway_client",
-            subjectId: input.body.subjectId ?? null,
-            clientLabel: input.body.clientLabel,
-            ownerNote: input.body.ownerNote,
-            allowedActions: input.body.allowedActions ?? [
-              "tools/list",
-              "tools/call",
-              "resources/list",
-              "resources/read",
-              "prompts/list",
-              "prompts/get",
-            ],
-            expiresAt: input.body.expiresAt ?? null,
-            expiryOverrideReason: input.body.expiryOverrideReason ?? null,
-            expiryOverrideByAgentId:
-              input.actor?.agentId && input.body.expiryOverrideReason
-                ? input.actor.agentId
-                : null,
-            expiryOverrideByUserId:
-              input.actor?.userId && input.body.expiryOverrideReason
-                ? input.actor.userId
-                : null,
-            expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
-            responsibleUserId: input.managementContext?.actor.type === "agent" ? input.managementContext.responsibleUserId : null,
-            createdByAgentId: input.actor?.agentId ?? null,
-            createdByUserId: input.actor?.userId ?? null,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning();
-      });
+      // Conditional on pendingReveal so concurrent reveals produce one value.
+      const [row] = await db.update(toolMcpGatewayTokens)
+        .set({ tokenHash: hashGatewayToken(token), pendingReveal: false, updatedAt: now })
+        .where(and(
+          eq(toolMcpGatewayTokens.companyId, input.companyId),
+          eq(toolMcpGatewayTokens.id, input.tokenId),
+          eq(toolMcpGatewayTokens.pendingReveal, true),
+          isNull(toolMcpGatewayTokens.revokedAt),
+        ))
+        .returning();
+      if (!row) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");
       if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
-        action: "tool_gateway.token_created", entityType: "tool_mcp_gateway", entityId: input.gatewayId,
-        details: { tokenId: row.id, subjectType: row.subjectType, allowedActions: row.allowedActions } });
+        action: "tool_gateway.token_revealed", entityType: "tool_mcp_gateway", entityId: row.gatewayId,
+        details: { tokenId: row.id } });
       return { ...toGatewayToken(row), token };
     },
+
 
     async revokeNamedGatewayToken(input: {
       companyId: string;

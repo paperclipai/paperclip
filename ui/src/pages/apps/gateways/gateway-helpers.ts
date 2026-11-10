@@ -11,7 +11,7 @@ import { humanizeConnectionDisplayName, isToolConnectionAttentionHealth } from "
 /** Days before expiry at which we surface a token as "Expiring". */
 export const TOKEN_EXPIRING_WINDOW_DAYS = 14;
 
-export type TokenStatus = "active" | "expiring" | "expired" | "revoked";
+export type TokenStatus = "pending" | "active" | "expiring" | "expired" | "revoked";
 
 export function toDate(value: Date | string | null | undefined): Date | null {
   if (!value) return null;
@@ -25,10 +25,11 @@ export function maskedTokenLabel(token: Pick<ToolMcpGatewayToken, "tokenPrefix">
 }
 
 export function tokenStatus(
-  token: Pick<ToolMcpGatewayToken, "revokedAt" | "expiresAt">,
+  token: Pick<ToolMcpGatewayToken, "revokedAt" | "expiresAt" | "pendingReveal">,
   now: number = Date.now(),
 ): TokenStatus {
   if (token.revokedAt) return "revoked";
+  if (token.pendingReveal) return "pending";
   const expires = toDate(token.expiresAt);
   if (!expires) return "active";
   const diffMs = expires.getTime() - now;
@@ -38,6 +39,7 @@ export function tokenStatus(
 }
 
 export const TOKEN_STATUS_LABEL: Record<TokenStatus, string> = {
+  pending: "Not revealed",
   active: "Active",
   expiring: "Expiring",
   expired: "Expired",

@@ -10,12 +10,14 @@ import { TokensPanel } from "./TokensPanel";
 
 const createGatewayTokenMock = vi.hoisted(() => vi.fn());
 const revokeGatewayTokenMock = vi.hoisted(() => vi.fn());
+const revealGatewayTokenMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     createGatewayToken: (...args: unknown[]) => createGatewayTokenMock(...args),
     revokeGatewayToken: (...args: unknown[]) => revokeGatewayTokenMock(...args),
+    revealGatewayToken: (...args: unknown[]) => revealGatewayTokenMock(...args),
   },
 }));
 
@@ -207,6 +209,22 @@ describe("TokensPanel", () => {
 
     await clickButton("Copy");
     expect(writeText).toHaveBeenCalledWith("pcgw_live_FULLSECRETVALUE");
+  });
+
+  it("lets the person reveal an agent-created token value once, outside the folded history", async () => {
+    const pending = token({ id: "agent-token", name: "Replacement client", createdByAgentId: "agent-1", createdByUserId: null, responsibleUserId: "user-1", pendingReveal: true });
+    revealGatewayTokenMock.mockResolvedValue({ ...pending, pendingReveal: false, token: "pcgw_live_REVEALEDVALUE" });
+    await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [pending] })} />);
+
+    expect(container.textContent).toContain("Waiting for you to reveal");
+    expect(container.textContent).toContain("Replacement client");
+    expect(container.textContent).not.toContain("pcgw_live_REVEALEDVALUE");
+
+    await clickButton("Reveal token");
+    await flushReact();
+    expect(revealGatewayTokenMock).toHaveBeenCalledWith("company-1", "agent-token");
+    expect(container.textContent).toContain("New token — copy now");
+    expect(container.textContent).toContain("pcgw_live_REVEALEDVALUE");
   });
 
   it("gates revoke behind a typed confirmation matching the token name", async () => {

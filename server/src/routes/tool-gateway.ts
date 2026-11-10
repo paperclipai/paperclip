@@ -1,4 +1,4 @@
-import { filterConnectionManagementRows, connectionManagementGuard, connectionRequestContext, connectionRequestUserId } from "./connection-management-authz.js";
+import { filterConnectionManagementRows, connectionManagementGuard, connectionRequestContext, connectionRequestUserId, requiredConnectionUserAction } from "./connection-management-authz.js";
 import { Router, type Request, type Response } from "express";
 import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -362,6 +362,13 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     throw forbidden(`Missing permission: ${permissionKey}`);
   }
 
+  /** The person-facing Tokens page of a gateway, where token values are revealed. */
+  async function gatewayTokensPath(companyId: string, gatewayId: string) {
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId)).limit(1);
+    if (!company) throw new ToolGatewayHttpError(404, "Company not found", "company_not_found");
+    return `/${company.issuePrefix}/apps/gateways/${gatewayId}/tokens`;
+  }
+
   function assertBoardMutationAccess(req: import("express").Request, companyId: string) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
@@ -437,32 +444,59 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       await assertBoardPermission(req, companyId, "tools:admin");
-      if (req.actor.type === "agent") {
-        // The plaintext is shown exactly once. An agent caller would receive it
-        // in its tool result and could repeat it in chat, so only a person
-        // creates client tokens, from the gateway's Tokens page.
-        const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId)).limit(1);
-        const tokensPath = company ? `/${company.issuePrefix}/apps/gateways/${req.params.gatewayId as string}/tokens` : null;
-        throw new ToolGatewayHttpError(403,
-          "Final: agents cannot create gateway client tokens, because the token is shown only once to whoever creates it. "
-            + `A person with gateway access must create the replacement on the gateway's Tokens page${tokensPath ? ` (${tokensPath})` : ""}, give it to the client, and revoke the old token after the client works. `
-            + "Do not ask for or repeat token values in chat.",
-          "gateway_token_requires_person",
-          tokensPath ? { tokensPath } : {});
-      }
       const parsed = createToolMcpGatewayTokenSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         res.status(422).json({ error: "Invalid gateway token payload", issues: parsed.error.issues });
         return;
       }
       const actor = getActorInfo(req);
-      res.status(201).json(await toolGateway.createNamedGatewayToken({
+      const input = {
         companyId,
         gatewayId: (req.params.gatewayId as string),
         body: parsed.data,
         actor: { agentId: actor.agentId, userId: req.actor.type === "board" ? req.actor.userId : null },
         managementContext: connectionRequestContext(req),
-      }));
+      };
+      if (req.actor.type !== "agent") {
+        res.status(201).json(await toolGateway.createNamedGatewayToken(input));
+        return;
+      }
+      // A token value is shown once, to whoever receives the create response.
+      // An agent could repeat it in chat, so an agent-created client token has
+      // no value until its responsible person reveals one on the Tokens page.
+      // The validator admits only gateway_client subjects on this route.
+      const tokensPath = await gatewayTokensPath(companyId, input.gatewayId);
+      const created = await toolGateway.createPendingRevealGatewayToken(input);
+      res.status(201).json({
+        ...created,
+        tokensPath,
+        ...requiredConnectionUserAction(req, { type: "gateway_token", id: created.id, companyId }, tokensPath,
+          `Reveal and copy the value of "${created.name}" on the gateway's Tokens page, then give it to the client.`, "reveal_credential"),
+        nextStep: `Created "${created.name}" without a value. Its value is generated only when the person reveals it on the gateway's Tokens page (${tokensPath}); `
+          + "link that page as a Markdown link. Never ask for, accept, or repeat token values in chat. "
+          + "Revoke an old token only after the person confirms the client works with the new one.",
+      });
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
+  });
+
+  router.post("/tool-gateway/gateway-tokens/:tokenId/reveal", async (req, res) => {
+    try {
+      assertBoardOrAgent(req);
+      const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
+      if (!companyId) {
+        res.status(400).json({ error: "companyId is required" });
+        return;
+      }
+      if (req.actor.type !== "board" || !req.actor.userId) {
+        assertCompanyAccess(req, companyId);
+        throw new ToolGatewayHttpError(403,
+          "Final: only a person can reveal a gateway client token value, on the gateway's Tokens page. Do not ask for or repeat token values in chat.",
+          "gateway_token_requires_person");
+      }
+      await assertBoardPermission(req, companyId, "tools:admin");
+      res.json(await toolGateway.revealNamedGatewayToken({ companyId, tokenId: req.params.tokenId as string, userId: req.actor.userId }));
     } catch (err) {
       sendGatewayError(res, err);
     }
