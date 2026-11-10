@@ -17,7 +17,7 @@ import { BoardUi } from "./board-ui.js";
 import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
 import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
-import { StorageTrigger } from "./storage-trigger.js";
+import { StorageTrigger, storageTriggerShortfall } from "./storage-trigger.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
@@ -365,10 +365,15 @@ async function main(): Promise<number> {
         canFire: () => !interrupted && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady,
         isOpen: taskId => observers.some(observer => observer.plan.taskId === taskId && !observer.done && observer.record.restAt === null),
         record: (kind, data) => timeline.add(kind, data),
-        fire: async armed => {
-          const exposed = active.filter(candidate => !candidate.done);
-          await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
-          fireFault(armed.kind, armed.holdMs, armed.taskId, exposed);
+        fire: armed => {
+          faultsQueued += 1;
+          const work = (async () => {
+            const exposed = active.filter(candidate => !candidate.done);
+            await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
+            fireFault(armed.kind, armed.holdMs, armed.taskId, exposed);
+          })().finally(() => { faultsQueued -= 1; });
+          faultWork.push(work);
+          return work;
         },
       });
       storageProxy.observe(storageTrigger.listener);
@@ -426,7 +431,7 @@ async function main(): Promise<number> {
         errors: check.errors.map(error => redactKnownSecrets(error, knownSecretValues())) });
     };
 
-    while (!interrupted && (pending.length || active.length)) {
+    while (!interrupted && (pending.length || active.length || storageTrigger?.busy)) {
       const now = Date.now();
       if (storm?.endIfDue(now)) {
         // Unlaunched pool tasks are not part of the wave; the in-flight ones drain without new faults.
@@ -444,7 +449,7 @@ async function main(): Promise<number> {
         }
       }
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
-      while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress
+      while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress && !storageTrigger?.busy
         && (!storm || storm.mayLaunch(Date.now()))) {
         const next = pending.shift()!;
         launched.push(next);
@@ -497,6 +502,11 @@ async function main(): Promise<number> {
       await delay(1_000);
     }
     await Promise.all(faultWork);
+    if (storageTrigger) {
+      const shortfall = storageTriggerShortfall(storageTrigger.finish(faults));
+      timeline.add("storage_trigger_settled", { shortfall, receipts: storageTrigger.receipts.length });
+      if (shortfall) harnessError ??= new Error(shortfall);
+    }
     await stopPressure();
     checkWorktree("wave_end");
     if (worktreeChanged) harnessError ??= new Error("The worktree changed during the wave (build, install or branch switch); later restarts may have run different code");

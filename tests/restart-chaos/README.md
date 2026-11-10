@@ -264,7 +264,7 @@ server, so the restart provably interrupts the transfer.
 
 | Target | Matching request |
 | --- | --- |
-| `snapshot-upload` | `PUT`/`POST` under `workspace-snapshots/` (single PUT, multipart create, part, complete) |
+| `snapshot-upload` | `PUT` with a body under `workspace-snapshots/` (single PUT or multipart part; not create or complete) |
 | `snapshot-part` | multipart `UploadPart` (`PUT …?partNumber=`) under `workspace-snapshots/` |
 | `snapshot-download` | `GET` under `workspace-snapshots/` (restore) |
 | `run-log` | `PUT`/`POST` under `run-logs/` (run-log journal segments) |
@@ -272,7 +272,10 @@ server, so the restart provably interrupts the transfer.
 `storage-trigger.json` records, per armed fault, the request that fired it (method, path with upload
 ids hidden, declared bytes, outcome `aborted`/`completed`), every other request in flight at that
 moment, and the fault id it produced. A fault whose task rested first, or that saw no matching request
-before the wave ended, is recorded with `missedReason`. It needs `--storage s3` and `--triggers time`.
+before the wave ended, is recorded with `missedReason` (`task_rested` or `no_matching_request`). The wave
+fails when no restart fired, or when a fired restart has no fault id or its held request was not
+`aborted` (the hold expired first). It needs `--storage s3` and `--triggers time`, and does not take
+G1, H1 or Q1: their board actions would run while the fault waits for a request.
 
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails

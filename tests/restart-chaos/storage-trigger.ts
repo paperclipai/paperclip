@@ -1,25 +1,29 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { FaultKind, FaultReceipt, WaveOptions } from "./types.js";
+import type { FaultKind, FaultReceipt, WaveOptions, WorkloadId } from "./types.js";
 import type { StorageRequestListener } from "./storage-proxy.js";
 
 export const STORAGE_TRIGGER_TARGETS = ["snapshot-upload", "snapshot-part", "snapshot-download", "run-log"] as const;
 export type StorageTriggerTarget = typeof STORAGE_TRIGGER_TARGETS[number];
 export const STORAGE_TRIGGER_HOLD_MS = 60_000;
 
-export function storageTriggerMatches(target: StorageTriggerTarget, method: string, url: string): boolean {
+export const STORAGE_TRIGGER_BOARD_WORKLOADS: readonly WorkloadId[] = ["G1", "H1", "Q1"];
+
+export function storageTriggerMatches(target: StorageTriggerTarget, method: string, url: string, declaredBytes: number | null = null): boolean {
   const [route = "", query = ""] = url.split("?", 2);
   switch (target) {
-    case "snapshot-upload": return (method === "PUT" || method === "POST") && route.includes("/workspace-snapshots/");
+    case "snapshot-upload": return method === "PUT" && route.includes("/workspace-snapshots/") && (declaredBytes ?? 0) > 0;
     case "snapshot-part": return method === "PUT" && route.includes("/workspace-snapshots/") && /(^|&)partNumber=/.test(query);
     case "snapshot-download": return method === "GET" && route.includes("/workspace-snapshots/");
     case "run-log": return (method === "PUT" || method === "POST") && route.includes("/run-logs/");
   }
 }
 
-export function parseStorageTrigger(value: string, options: Pick<WaveOptions, "storage" | "stormMinutes" | "crashPoint" | "triggers">): StorageTriggerTarget {
+export function parseStorageTrigger(value: string, options: Pick<WaveOptions, "storage" | "stormMinutes" | "crashPoint" | "triggers" | "workloads">): StorageTriggerTarget {
   if (options.storage !== "s3") throw new Error("--storage-trigger needs --storage s3");
   if (options.stormMinutes || options.crashPoint) throw new Error("--storage-trigger arms each task's planned fault; a storm or crash-point wave has none");
   if ((options.triggers ?? []).some(trigger => trigger !== "time")) throw new Error("--storage-trigger replaces the fault's trigger; use it with --triggers time");
+  const board = options.workloads.filter(workload => STORAGE_TRIGGER_BOARD_WORKLOADS.includes(workload));
+  if (board.length) throw new Error(`--storage-trigger keeps a fault armed after its planned time; board-acting workloads (${board.join(", ")}) would act before the restart`);
   if (!(STORAGE_TRIGGER_TARGETS as readonly string[]).includes(value)) {
     throw new Error(`--storage-trigger takes one of ${STORAGE_TRIGGER_TARGETS.join(", ")}`);
   }
@@ -91,7 +95,7 @@ export class StorageTrigger {
       request.status = outgoing.headersSent ? outgoing.statusCode : null;
       request.settledAt = Date.now();
     });
-    if (!storageTriggerMatches(this.target, method, url)) return;
+    if (!storageTriggerMatches(this.target, method, url, request.declaredBytes)) return;
     const next = this.take(request.startedAt);
     if (!next) return;
     request.held = true;
@@ -124,7 +128,7 @@ export class StorageTrigger {
   }
 
   finish(faults: readonly FaultReceipt[], now = Date.now()): StorageTriggerReceipt[] {
-    for (const { receipt } of this.armed.splice(0)) this.miss(receipt, now, "no_matching_request");
+    for (const { receipt } of this.armed.splice(0)) this.miss(receipt, now, this.hooks.isOpen(receipt.taskId) ? "no_matching_request" : "task_rested");
     for (const receipt of this.receipts) {
       if (receipt.firedAt === null) continue;
       const fault = faults.filter(candidate => candidate.requestedBy === receipt.taskId && candidate.requestedAt >= receipt.firedAt!)
@@ -133,4 +137,13 @@ export class StorageTrigger {
     }
     return this.receipts;
   }
+}
+
+export function storageTriggerShortfall(receipts: readonly StorageTriggerReceipt[]): string | null {
+  const fired = receipts.filter(receipt => receipt.firedAt !== null);
+  if (!fired.length) return `--storage-trigger: no restart interrupted a matching transfer (${receipts.length} armed, none fired)`;
+  const unproven = fired.filter(receipt => !receipt.faultId || receipt.request?.outcome !== "aborted");
+  if (!unproven.length) return null;
+  return `--storage-trigger: ${unproven.length} fired restart(s) did not provably interrupt the held request: ${unproven
+    .map(receipt => `${receipt.taskId} fault=${receipt.faultId ?? "none"} outcome=${receipt.request?.outcome ?? "none"}`).join(", ")}`;
 }

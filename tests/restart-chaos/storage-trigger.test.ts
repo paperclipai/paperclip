@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
-import { redactStorageUrl, storageTriggerMatches, StorageTrigger, type ArmedStorageFault, type StorageTriggerHooks } from "./storage-trigger.js";
+import { redactStorageUrl, storageTriggerMatches, storageTriggerShortfall, StorageTrigger, type StorageTriggerReceipt, type ArmedStorageFault, type StorageTriggerHooks } from "./storage-trigger.js";
 import type { FaultReceipt } from "./types.js";
 
 const closers: Array<() => Promise<unknown>> = [];
@@ -45,8 +45,11 @@ const snapshotPut = "/bucket/chaos/w/c1/workspace-snapshots/ws1/s1/u1.pcws";
 
 describe("storage trigger targets", () => {
   it("matches snapshot uploads, parts, downloads and run-log writes only", () => {
-    expect(storageTriggerMatches("snapshot-upload", "PUT", snapshotPut)).toBe(true);
-    expect(storageTriggerMatches("snapshot-upload", "POST", `${snapshotPut}?uploads`)).toBe(true);
+    expect(storageTriggerMatches("snapshot-upload", "PUT", snapshotPut, 4096)).toBe(true);
+    expect(storageTriggerMatches("snapshot-upload", "PUT", `${snapshotPut}?partNumber=1&uploadId=u`, 4096)).toBe(true);
+    expect(storageTriggerMatches("snapshot-upload", "PUT", snapshotPut, 0)).toBe(false);
+    expect(storageTriggerMatches("snapshot-upload", "POST", `${snapshotPut}?uploads`, 0)).toBe(false);
+    expect(storageTriggerMatches("snapshot-upload", "POST", `${snapshotPut}?uploadId=u`, 120)).toBe(false);
     expect(storageTriggerMatches("snapshot-upload", "GET", snapshotPut)).toBe(false);
     expect(storageTriggerMatches("snapshot-part", "PUT", `${snapshotPut}?partNumber=2&uploadId=abc`)).toBe(true);
     expect(storageTriggerMatches("snapshot-part", "PUT", snapshotPut)).toBe(false);
@@ -70,6 +73,7 @@ describe("storage trigger targets", () => {
     expect(() => parseCommand([...base, "--storage-trigger", "run-log"])).toThrow(/needs --storage s3/);
     expect(() => parseCommand([...base, "--storage", "s3", "--storage-trigger", "everything"])).toThrow(/takes one of/);
     expect(() => parseCommand([...base, "--workloads", "C1", "--triggers", "comment", "--storage", "s3", "--storage-trigger", "run-log"])).toThrow(/--triggers time/);
+    expect(() => parseCommand([...base, "--workloads", "A1,G1", "--storage", "s3", "--storage-trigger", "run-log"])).toThrow(/board-acting workloads \(G1\)/);
   });
 });
 
@@ -126,9 +130,10 @@ describe("storage-triggered restart", () => {
     expect(fired.map(entry => entry.armed.taskId)).toEqual(["t03"]);
     held.outgoing.destroy();
 
+    trigger.arm({ taskId: "t02", kind: "K1", holdMs: 0, armedAt: 4 });
     const receipts = trigger.finish([]);
     expect(receipts.map(receipt => [receipt.taskId, receipt.missedReason ?? null, receipt.firedAt !== null])).toEqual([
-      ["t02", "task_rested", false], ["t03", null, true], ["t04", "no_matching_request", false]]);
+      ["t02", "task_rested", false], ["t03", null, true], ["t04", "no_matching_request", false], ["t02", "task_rested", false]]);
   });
 
   it("forwards a held request after the hold when the restart never came", async () => {
@@ -142,5 +147,28 @@ describe("storage-triggered restart", () => {
     expect(await send(proxy.endpoint, "PUT", "/bucket/chaos/w/run-logs/r1/1.ndjson").response).toBe(200);
     await until(() => trigger.receipts[0]?.request?.outcome === "completed");
     expect(trigger.receipts[0]!.request).toMatchObject({ held: true, outcome: "completed", status: 200 });
+  });
+});
+
+describe("storage trigger receipts", () => {
+  const receipt = (taskId: string, firedAt: number | null, outcome: "aborted" | "completed" = "aborted", faultId?: string): StorageTriggerReceipt => ({
+    target: "snapshot-upload", taskId, kind: "K1", armedAt: 0, firedAt, missedAt: firedAt === null ? 1 : null, inFlight: [],
+    request: firedAt === null ? null : { id: 1, method: "PUT", path: snapshotPut, startedAt: firedAt, declaredBytes: 1, held: true, outcome, status: null, settledAt: firedAt + 1 },
+    ...(faultId ? { faultId } : {}) });
+
+  it("links each fired receipt to the first fault its task requested at or after the fire", () => {
+    const trigger = new StorageTrigger("snapshot-upload", hooks().value);
+    trigger.receipts.push(receipt("t01", 100), receipt("t01", 500), receipt("t02", 300));
+    const faults = [{ faultId: "f03", requestedBy: "t01", requestedAt: 520 }, { faultId: "f01", requestedBy: "t01", requestedAt: 110 },
+      { faultId: "f00", requestedBy: "t01", requestedAt: 50 }, { faultId: "f02", requestedBy: "t02", requestedAt: 305 }] as FaultReceipt[];
+    expect(trigger.finish(faults).map(entry => entry.faultId)).toEqual(["f01", "f03", "f02"]);
+  });
+
+  it("fails a wave whose restarts did not provably interrupt a held transfer", () => {
+    expect(storageTriggerShortfall([receipt("t01", 10, "aborted", "f01"), receipt("t02", null)])).toBeNull();
+    expect(storageTriggerShortfall([receipt("t01", null), receipt("t02", null)])).toMatch(/no restart interrupted a matching transfer \(2 armed, none fired\)/);
+    expect(storageTriggerShortfall([])).toMatch(/0 armed/);
+    expect(storageTriggerShortfall([receipt("t01", 10, "completed", "f01")])).toMatch(/t01 fault=f01 outcome=completed/);
+    expect(storageTriggerShortfall([receipt("t01", 10, "aborted")])).toMatch(/t01 fault=none outcome=aborted/);
   });
 });
