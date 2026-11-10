@@ -30,7 +30,6 @@ describe("storage unavailability", () => {
     ["403 ExpiredToken", s3Error("ExpiredToken", 403)],
     ["403 InvalidAccessKeyId", s3Error("InvalidAccessKeyId", 403)],
     ["403 SignatureDoesNotMatch", s3Error("SignatureDoesNotMatch", 403)],
-    ["a credential source that could not load a key", s3Error("CredentialsProviderError")],
   ])("treats %s from the store as unavailable", async (_label, error) => {
     expect(isStorageUnavailableError(await recorded(error))).toBe(true);
   });
@@ -38,6 +37,8 @@ describe("storage unavailability", () => {
   it.each([
     ["404 NoSuchKey", s3Error("NoSuchKey", 404)],
     ["403 AccessDenied", s3Error("AccessDenied", 403)],
+    ["a credential source that could not load a key", s3Error("CredentialsProviderError")],
+    ["a credential code without a store status", s3Error("ExpiredToken")],
     ["412 PreconditionFailed", s3Error("PreconditionFailed", 412)],
     ["an ordinary error", new Error("adapter crashed")],
   ])("does not treat %s as an outage", async (_label, error) => {

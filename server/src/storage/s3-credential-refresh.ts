@@ -12,18 +12,27 @@ function rejectsCredentials(error: unknown): boolean {
 
 export function refreshS3CredentialsOnRejection(client: S3Client): void {
   let refreshing: Promise<unknown> | null = null;
-  const refresh = () => {
-    const provider = client.config.credentials as unknown as CredentialProvider | undefined;
-    if (typeof provider !== "function") return Promise.resolve();
-    refreshing ??= provider({ forceRefresh: true }).catch(() => undefined).finally(() => { refreshing = null; });
-    return refreshing;
+  const provider = () => {
+    const credentials = client.config.credentials as unknown as CredentialProvider | undefined;
+    return typeof credentials === "function" ? credentials : null;
+  };
+  const current = () => provider()?.().catch(() => undefined) ?? Promise.resolve(undefined);
+  const refresh = async (used: unknown) => {
+    const credentials = provider();
+    if (!credentials) return;
+    if (!refreshing) {
+      if (used !== undefined && await current() !== used) return;
+      refreshing ??= credentials({ forceRefresh: true }).catch(() => undefined).finally(() => { refreshing = null; });
+    }
+    await refreshing;
   };
   client.middlewareStack.add(
     (next) => async (args) => {
+      const used = await current();
       try {
         return await next(args);
       } catch (error) {
-        if (rejectsCredentials(error)) await refresh();
+        if (rejectsCredentials(error)) await refresh(used);
         throw error;
       }
     },

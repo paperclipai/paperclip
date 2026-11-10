@@ -9,7 +9,7 @@ export const STORAGE_UNAVAILABLE_WAIT_RETRY_REASON = "storage_unavailable_wait";
 
 export const STORAGE_UNAVAILABLE_MESSAGE = "File storage was unavailable, so this attempt stopped before it could save its work. Paperclip will retry automatically when storage is back.";
 
-export const STORAGE_CREDENTIALS_REJECTED_MESSAGE = "File storage rejected Paperclip's storage credentials (they expired or were rotated), so this attempt stopped before it could save its work. Paperclip will retry automatically when valid credentials are available.";
+export const STORAGE_CREDENTIALS_REJECTED_MESSAGE = "File storage rejected Paperclip's storage credentials (they may have expired or been rotated), so this attempt stopped before it could save its work. Paperclip will retry automatically when valid credentials are available.";
 
 export const STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE = "File storage stayed unavailable or kept rejecting Paperclip's storage credentials through every automatic retry, so Paperclip stopped retrying this task. Check the storage service and its credentials, then Retry.";
 
@@ -23,12 +23,12 @@ const UNAVAILABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED",
   "ERR_STREAM_PREMATURE_CLOSE", "UND_ERR_SOCKET"]);
 
 const CREDENTIAL_REJECTION_CODES = new Set(["ExpiredToken", "ExpiredTokenException", "TokenRefreshRequired", "InvalidToken",
-  "InvalidAccessKeyId", "InvalidClientTokenId", "SignatureDoesNotMatch", "CredentialsProviderError"]);
+  "InvalidAccessKeyId", "InvalidClientTokenId", "SignatureDoesNotMatch"]);
 const CREDENTIAL_REJECTION_STATUS = new Set([400, 403]);
 
 export function isCredentialRejectionCode(code: unknown, status: number | null | undefined): boolean {
   return typeof code === "string" && CREDENTIAL_REJECTION_CODES.has(code)
-    && (status === null || status === undefined || CREDENTIAL_REJECTION_STATUS.has(status));
+    && typeof status === "number" && CREDENTIAL_REJECTION_STATUS.has(status);
 }
 
 function ownValue(value: unknown, key: string): unknown {
