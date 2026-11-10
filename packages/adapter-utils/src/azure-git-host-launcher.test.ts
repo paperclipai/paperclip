@@ -271,6 +271,15 @@ it("accepts an explicit non-Azure URL without contacting the Azure broker", asyn
   expect(f.requests).toEqual([]);
 });
 
+it("resolves a named remote after a shallow fetch option", async () => {
+  const f = await fixture({ hostGitHub: true });
+  f.setResponse(403, { error: "denied" });
+  const result = await exec(process.execPath, [f.launcher, "fetch", "--depth", "1", "origin"], { cwd: f.root,
+    env: f.env({ PAPERCLIP_TEST_REMOTE_MAP: JSON.stringify({ origin: azureUrl }) }) }).catch(error => error as Error & { code?: number });
+  expect(result).toMatchObject({ code: 1 });
+  expect(f.requests[0]?.body).toEqual({ repositoryUrl: azureUrl });
+});
+
 it("does not enable host GitHub mode from an environment variable alone", async () => {
   const f = await fixture();
   const managedGithubCredential = "broker-managed-github-token";

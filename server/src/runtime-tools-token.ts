@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { resolvePaperclipInstanceId } from "./home-paths.js";
 
 export interface RuntimeToolsTokenClaims {
@@ -17,6 +18,9 @@ export interface RuntimeToolsTokenClaims {
 }
 
 const TOKEN_TTL_SECONDS = 60 * 60;
+const MAX_REPOSITORY_BINDINGS = 1000;
+const MAX_TOKEN_LENGTH = 12_000;
+const MAX_CLAIMS_BYTES = 1_000_000;
 
 function secret() {
   return process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()
@@ -55,6 +59,8 @@ export function createRuntimeToolsToken(input: {
   allowGitHub?: boolean;
 }) {
   if (!secret()) return null;
+  if ([input.githubProjectRepositories, input.githubProjectBindings, input.azureProjectRepositories]
+    .some(items => items && items.length > MAX_REPOSITORY_BINDINGS)) throw new Error("Too many repository bindings for a managed Git runtime");
   const now = Math.floor(Date.now() / 1000);
   const instanceId = resolvePaperclipInstanceId();
   const claims: RuntimeToolsTokenClaims = {
@@ -72,7 +78,12 @@ export function createRuntimeToolsToken(input: {
     ...(input.azureProjectRepositories ? { azure_project_repositories: input.azureProjectRepositories } : {}),
     ...(input.allowGitHub ? { allow_github: true } : {}),
   };
-  const signingInput = `${encode({ alg: "HS256", typ: "JWT" })}.${encode(claims)}`;
+  const raw = Buffer.from(JSON.stringify(claims), "utf8");
+  if (raw.length > MAX_CLAIMS_BYTES) throw new Error("Managed Git runtime repository bindings are too large");
+  const compressed = raw.length > 6000;
+  const payload = compressed ? deflateRawSync(raw).toString("base64url") : raw.toString("base64url");
+  const signingInput = `${encode({ alg: "HS256", typ: "JWT", ...(compressed ? { zip: "DEF" } : {}) })}.${payload}`;
+  if (signingInput.length + 44 > MAX_TOKEN_LENGTH) throw new Error("Managed Git runtime repository bindings are too large");
   const signature = sign(signingInput, input.companyId, instanceId);
   return signature
     ? { token: `${signingInput}.${signature}`, expiresAt: new Date(claims.exp * 1000).toISOString() }
@@ -81,12 +92,14 @@ export function createRuntimeToolsToken(input: {
 
 export function verifyRuntimeToolsToken(token: string, scope: RuntimeToolsTokenClaims["scope"] = "connection_intents"): RuntimeToolsTokenClaims | null {
   const parts = token.split(".");
-  if (parts.length !== 3) return null;
+  if (parts.length !== 3 || token.length > MAX_TOKEN_LENGTH) return null;
   let header: Record<string, unknown>;
   let claims: Record<string, unknown>;
   try {
     header = JSON.parse(Buffer.from(parts[0]!, "base64url").toString("utf8"));
-    claims = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+    if (header.zip !== undefined && header.zip !== "DEF") return null;
+    const payload = Buffer.from(parts[1]!, "base64url");
+    claims = JSON.parse((header.zip === "DEF" ? inflateRawSync(payload, { maxOutputLength: MAX_CLAIMS_BYTES }) : payload).toString("utf8"));
   } catch {
     return null;
   }
@@ -102,9 +115,9 @@ export function verifyRuntimeToolsToken(token: string, scope: RuntimeToolsTokenC
     || typeof claims.responsible_user_id !== "string"
     || claims.scope !== scope
     || (claims.allow_github !== undefined && typeof claims.allow_github !== "boolean")
-    || (claims.github_project_repositories !== undefined && (!Array.isArray(claims.github_project_repositories) || claims.github_project_repositories.length > 100 || claims.github_project_repositories.some((item) => typeof item !== "string" || item.length > 2048)))
-    || (claims.github_project_bindings !== undefined && (!Array.isArray(claims.github_project_bindings) || claims.github_project_bindings.length > 100 || claims.github_project_bindings.some((item) => !item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).some(key => key !== "projectId" && key !== "repositoryUrl") || typeof item.projectId !== "string" || item.projectId.length > 2048 || typeof item.repositoryUrl !== "string" || item.repositoryUrl.length > 2048)))
-    || (claims.azure_project_repositories !== undefined && (!Array.isArray(claims.azure_project_repositories) || claims.azure_project_repositories.length > 100 || claims.azure_project_repositories.some((item) => !item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).some(key => key !== "projectId" && key !== "repositoryUrl") || typeof item.projectId !== "string" || item.projectId.length > 2048 || typeof item.repositoryUrl !== "string" || item.repositoryUrl.length > 2048)))
+    || (claims.github_project_repositories !== undefined && (!Array.isArray(claims.github_project_repositories) || claims.github_project_repositories.length > MAX_REPOSITORY_BINDINGS || claims.github_project_repositories.some((item) => typeof item !== "string" || item.length > 2048)))
+    || (claims.github_project_bindings !== undefined && (!Array.isArray(claims.github_project_bindings) || claims.github_project_bindings.length > MAX_REPOSITORY_BINDINGS || claims.github_project_bindings.some((item) => !item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).some(key => key !== "projectId" && key !== "repositoryUrl") || typeof item.projectId !== "string" || item.projectId.length > 2048 || typeof item.repositoryUrl !== "string" || item.repositoryUrl.length > 2048)))
+    || (claims.azure_project_repositories !== undefined && (!Array.isArray(claims.azure_project_repositories) || claims.azure_project_repositories.length > MAX_REPOSITORY_BINDINGS || claims.azure_project_repositories.some((item) => !item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).some(key => key !== "projectId" && key !== "repositoryUrl") || typeof item.projectId !== "string" || item.projectId.length > 2048 || typeof item.repositoryUrl !== "string" || item.repositoryUrl.length > 2048)))
     || typeof claims.iat !== "number"
     || typeof claims.exp !== "number"
     || claims.exp <= Math.floor(Date.now() / 1000)
