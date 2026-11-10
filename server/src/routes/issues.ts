@@ -4140,6 +4140,39 @@ export function issueRoutes(
     return resolution?.kind === "low_trust_review";
   }
 
+  async function assertExecutionPolicyAgentsExist(
+    companyId: string,
+    policy: NormalizedExecutionPolicy | null,
+    existingPolicy: NormalizedExecutionPolicy | null = null,
+  ) {
+    if (!policy) return;
+    const existingAgentIds = new Set<string>();
+    for (const stage of existingPolicy?.stages ?? []) {
+      for (const participant of stage.participants) {
+        if (participant.type === "agent" && participant.agentId) existingAgentIds.add(participant.agentId);
+      }
+    }
+    const requestedAgentIds = new Set<string>();
+    for (const stage of policy.stages) {
+      for (const participant of stage.participants) {
+        if (participant.type !== "agent" || !participant.agentId) continue;
+        if (existingAgentIds.has(participant.agentId)) continue;
+        requestedAgentIds.add(participant.agentId);
+      }
+    }
+    if (requestedAgentIds.size === 0) return;
+    const unknownAgentIds: string[] = [];
+    for (const agentId of requestedAgentIds) {
+      const agent = await agentsSvc.getById(agentId);
+      if (!agent || agent.companyId !== companyId) unknownAgentIds.push(agentId);
+    }
+    if (unknownAgentIds.length > 0) {
+      throw unprocessable("Execution policy references agents that do not exist in this company", {
+        agentIds: unknownAgentIds,
+      });
+    }
+  }
+
   async function resolveCreatedIssueExecutionPolicy(
     req: Request,
     companyId: string,
@@ -4147,6 +4180,7 @@ export function issueRoutes(
     requestedPolicy: unknown,
   ) {
     const policy = normalizeIssueExecutionPolicy(requestedPolicy);
+    await assertExecutionPolicyAgentsExist(companyId, policy);
     if (req.actor.type !== "agent") return policy;
     const trust = await resolveAgentTrustForIssue(
       { agentId: req.actor.agentId, runId: req.actor.runId },
@@ -13978,6 +14012,7 @@ export function issueRoutes(
           normalizeIssueExecutionPolicy(child.executionPolicy),
           actor.actorType,
         );
+        await assertExecutionPolicyAgentsExist(sourceIssue.companyId, executionPolicy);
         await assertCanManageIssueMonitor(
           access,
           req,
@@ -15219,6 +15254,13 @@ export function issueRoutes(
       const previousExecutionPolicy = normalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
+      if (req.body.executionPolicy !== undefined) {
+        await assertExecutionPolicyAgentsExist(
+          existing.companyId,
+          updateFields.executionPolicy as NormalizedExecutionPolicy | null,
+          previousExecutionPolicy,
+        );
+      }
       const nextExecutionPolicy =
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)

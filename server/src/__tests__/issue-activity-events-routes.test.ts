@@ -18,6 +18,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockAgentGetById = vi.hoisted(() => vi.fn(async (_agentId: string): Promise<unknown> => null));
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(async ({ action }: { action: string }) => ({
     action, allowed: action === "issue:read", reason: "allow_default", explanation: "Fixture task is readable",
@@ -95,7 +96,7 @@ function registerModuleMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => ({
-      getById: vi.fn(async () => null),
+      getById: mockAgentGetById,
     }),
     companySkillService: () => ({
       completeTestRunForIssue: vi.fn(async () => null),
@@ -226,6 +227,7 @@ describe("issue activity event routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockAgentGetById.mockImplementation(async () => null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -674,6 +676,11 @@ describe("issue activity event routes", () => {
         },
       ],
     })!;
+    mockAgentGetById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      permissions: null,
+    }));
     const issue = {
       ...makeIssue(),
       executionPolicy: existingPolicy,
