@@ -1297,6 +1297,47 @@ describe("TaskChatComposer", () => {
     expect(editable().textContent).toBe("Next message");
   });
 
+  it.each([
+    ["receipt", false], ["receipt", true],
+    ["resend", false], ["resend", true],
+  ] as const)("settles the sent mode through %s without clearing a newer choice (%s)", async (method, newerChoice) => {
+    const key = `mode-settlement-${method}-${newerChoice}`;
+    const onAdd = vi.fn().mockRejectedValueOnce(new CommentSubmissionUnknownError()).mockResolvedValue(undefined);
+    const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const show = (workMode: IssueWorkMode, confirmedSubmissionIds = new Set<string>()) => render(
+      <QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode={workMode}
+        onWorkModeChange={onWorkModeChange} draftKey={key} confirmedSubmissionIds={confirmedSubmissionIds} /></QueryClientProvider>,
+    );
+    show("standard");
+    await flushAsync();
+    pressKey("Tab", { shiftKey: true });
+    typeText("First message");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    const intent = loadDraftSubmission(key)!;
+    expect(intent).not.toBeNull();
+    show("planning");
+    if (newerChoice) pressKey("Tab", { shiftKey: true });
+
+    if (method === "receipt") show("planning", new Set([intent.attemptId]));
+    else {
+      const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+      flushSync(() => resend.click());
+    }
+    await flushAsync();
+    expect(loadDraftSubmission(key)).toBeNull();
+    show("standard");
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode") ?? "standard")
+      .toBe(newerChoice ? "ask" : "standard");
+    expect(onAdd).toHaveBeenCalledTimes(method === "receipt" ? 1 : 2);
+    if (method === "resend") expect(onAdd.mock.calls[1]?.[4]).toBe(intent.attemptId);
+    client.clear();
+  });
+
   it("cycles the pending mode with Shift+Tab and applies it on submit", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
