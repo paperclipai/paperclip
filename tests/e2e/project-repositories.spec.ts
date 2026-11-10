@@ -40,7 +40,7 @@ test("project creation and repository configuration persist on a short mobile vi
   await expect(section.getByText("org/repo-40", { exact: true })).toBeVisible();
   await section.getByRole("button", { name: "Remove org/repo-40", exact: true }).click();
   await section.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(section.getByRole("status")).toHaveText("Changes saved");
+  await expect(section.getByRole("status").filter({ hasText: "Changes saved" })).toHaveText("Changes saved");
   await expect(section.getByText("org/repo-40", { exact: true })).toHaveCount(0);
   await page.reload();
   await expect(section.getByText("org/repo-40", { exact: true })).toHaveCount(0);
