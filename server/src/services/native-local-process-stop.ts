@@ -238,17 +238,33 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-/** A native run that an admission fence refused before it requested any
- * runner launch (a quarantined prior-session cleanup is checked before the
- * provider starts) never had a process: there is nothing to stop. Any launch
- * request or identity record keeps the normal stop proofs. */
+/** A settled native run that never had a runner has nothing to stop:
+ * - an admission fence (a quarantined prior-session cleanup) refused it before
+ *   it requested a launch; or
+ * - it failed before native selection (for example a refused budget
+ *   reservation or a failed preparation query). Selection records the run's
+ *   native session, runner instance and coordinator, and a runner launch needs
+ *   them, so without any of them no runner or provider for this run can exist,
+ *   in any build.
+ * Any launch request, identity record or runner event keeps the normal stop
+ * proofs. */
 export async function nativeRunRefusedBeforeLaunch(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "companyId" | "runtimeMode" | "status" | "errorCode" | "processPid" | "processGroupId">): Promise<boolean> {
-  if (run.runtimeMode !== "native" || run.status !== "failed" || run.processPid || run.processGroupId ||
-      run.errorCode !== "native_session_cleanup_quarantined") return false;
+  "id" | "companyId" | "runtimeMode" | "status" | "errorCode" | "processPid" | "processGroupId" |
+  "nativeSessionId" | "runnerInstanceId">): Promise<boolean> {
+  if (run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || run.processPid || run.processGroupId) return false;
+  const quarantinedBeforeLaunch = run.status === "failed" && run.errorCode === "native_session_cleanup_quarantined";
+  if (!quarantinedBeforeLaunch) {
+    if (run.nativeSessionId || run.runnerInstanceId) return false;
+    // Native selection writes the session, runner instance and coordinator
+    // together. A coordinator alone still names a run that was selected.
+    const [coordinator] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+      .where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id))).limit(1);
+    if (coordinator) return false;
+  }
   const [launch] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED]),
+    or(isNotNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED])),
   )).limit(1);
   return !launch;
 }
