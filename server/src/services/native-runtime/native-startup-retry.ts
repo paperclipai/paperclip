@@ -111,7 +111,8 @@ async function routedAccountCooldown(input: {
       eq(aiConnectionTaskPins.agentId, heartbeatRuns.agentId),
       sql`${aiConnectionTaskPins.poolId}::text = ${heartbeatRuns.contextSnapshot}->'aiRouterSelection'->>'poolId'`,
       sql`${aiConnectionTaskPins.taskKey} = ${heartbeatRuns.contextSnapshot}->>'aiRouterTaskKey'`,
-      sql`${aiConnectionTaskPins.selection} = ${heartbeatRuns.contextSnapshot}->'aiRouterSelection'`,
+      sql`(${aiConnectionTaskPins.selection} - 'runtimeConfig' - 'notes' - 'adapterType' - 'runnerScope') =
+        ((${heartbeatRuns.contextSnapshot}->'aiRouterSelection') - 'runtimeConfig' - 'notes' - 'adapterType' - 'runnerScope')`,
       sql`${aiConnectionTaskPins.member}->'binding' = ${aiConnectionTaskPins.selection}->'binding'`,
       sql`${aiConnectionTaskPins.member}->>'id' = ${aiConnectionTaskPins.selection}->>'memberId'`))
     .where(and(eq(heartbeatRuns.id, input.binding.runId), eq(heartbeatRuns.companyId, input.binding.companyId),

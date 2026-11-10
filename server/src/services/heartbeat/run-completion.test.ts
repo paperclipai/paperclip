@@ -264,10 +264,35 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       startedAt: now, finishedAt: now, errorCode: "provider_quota", resultJson: { retryNotBefore: oldLimit.toISOString() } });
     const startup = { db, binding: { runId: f.run.id, companyId: f.run.companyId, agentId: f.run.agentId },
       attempt: 1, retryable: true, failure: null, now };
-    expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: `${grantId}:shared:no-auth` })).providerCooldownAt).toEqual(distant);
+    const currentSelection = { ...selection, adapterType: "paperclip_runner", runtimeConfig: {
+      provider: "codex", model: "gpt-5.6-sol", effort: "high" }, notes: ["Current task settings"],
+      runnerScope: { environmentId: randomUUID() } };
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id,
+      aiRouterSelection: currentSelection } }).where(eq(heartbeatRuns.id, f.run.id));
+    const startupIdentity = `${grantId}:shared:no-auth`;
+    expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: startupIdentity })).providerCooldownAt,
+      "changed runtime settings retain the pinned account deadline").toEqual(distant);
+    for (const invalidSelection of [
+      { ...currentSelection, poolId: randomUUID() },
+      { ...currentSelection, memberId: randomUUID() },
+      { ...currentSelection, binding: { ...member.binding, grantId: randomUUID() } },
+      { ...currentSelection, binding: { ...member.binding, connectionId: randomUUID() } },
+    ]) {
+      await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id,
+        aiRouterSelection: invalidSelection } }).where(eq(heartbeatRuns.id, f.run.id));
+      expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: startupIdentity })).providerCooldownAt).toEqual(oldLimit);
+    }
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id,
+      aiRouterSelection: currentSelection } }).where(eq(heartbeatRuns.id, f.run.id));
+    for (const binding of [{ ...startup.binding, companyId: randomUUID() }, { ...startup.binding, agentId: randomUUID() }]) {
+      expect((await planNativeStartupRetry({ ...startup, binding, managedAiAccountIdentity: startupIdentity })).providerCooldownAt).toBeNull();
+    }
     await db.delete(aiConnectionQuotaCooldowns);
-    expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: `${grantId}:shared:no-auth` })).providerCooldownAt).toBeNull();
+    expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: startupIdentity })).providerCooldownAt,
+      "a healthy pinned account ignores another account's quota history").toBeNull();
     expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: `${randomUUID()}:shared:no-auth` })).providerCooldownAt).toEqual(oldLimit);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id,
+      aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, f.run.id));
     await db.update(aiConnectionTaskPins).set({ taskKey: "other" }).where(eq(aiConnectionTaskPins.id, (await db.select().from(aiConnectionTaskPins))[0]!.id));
     expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
     expect(await db.select().from(aiConnectionQuotaCooldowns)).toEqual([]);
