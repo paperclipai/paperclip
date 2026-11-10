@@ -184,7 +184,10 @@ startup, sandbox) are exported; HTTP, Express and other library spans are
 missing, and the custom spans arrive as separate root traces.
 
 - **`paperclipai run`** starts the SDK before it imports the server whenever
-  `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Nothing else to configure.
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set, including when the instance `.env`
+  supplies it. If an explicit preload ran before that environment file was
+  loaded, the CLI calls initialization again before importing the server.
+  Repeated or concurrent calls share one SDK startup.
 - **Any other launcher** (`node dist/index.js`, a service unit, a container)
   should preload the SDK entry point that `@paperclipai/server` exports:
 
@@ -193,6 +196,10 @@ missing, and the custom spans arrive as separate root traces.
   # or, for a launcher you cannot edit:
   export NODE_OPTIONS="--import @paperclipai/server/otel-register"
   ```
+
+  For these launchers, export the OTel settings in the shell or service
+  environment before the process starts. A `.env` file that the app reads
+  after the preload runs cannot configure that earlier preload.
 
   In a source checkout under `tsx`, preload both:
   `node --import tsx --import ./server/src/otel-register.ts server/src/index.ts`.

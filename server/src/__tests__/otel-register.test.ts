@@ -19,7 +19,7 @@ describe("otel-register preload", () => {
       release = resolve;
     });
     vi.resetModules();
-    vi.doMock("../instrumentation.js", () => ({ instrumentationReady: ready }));
+    vi.doMock("../instrumentation.js", () => ({ initializeInstrumentation: () => ready }));
 
     let settled = false;
     const loading = import("../otel-register.js").then(() => {

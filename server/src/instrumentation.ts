@@ -27,10 +27,6 @@
 // (http, express, ...) have already been linked and the HTTP / Express spans
 // are never produced. To get full coverage, load this module BEFORE the app:
 //   node --import @paperclipai/server/otel-register ...
-// (`otel-register.ts` imports this module and awaits `instrumentationReady`;
-// the CLI `run` command does the same before it imports the server). Node
-// evaluates a module once, so `index.ts`'s own import then reuses the
-// already-started SDK.
 //
 // Without the preload this module still works as a fail-open fallback:
 // `instrumentationReady` guarantees the SDK has started (or failed and logged)
@@ -47,8 +43,6 @@ import { pathToFileURL } from "node:url";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 
 export { checkExactPeerVersions } from "./peer-version-check.js";
-
-const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
 
 // Set once an SDK has started in this process. A second copy of this module
 // (a bundled runtime that inlines it next to a separately loaded preload) reuses
@@ -319,14 +313,17 @@ const OTEL_COMMON_PACKAGES = [
   "@opentelemetry/semantic-conventions",
 ] as const;
 
-/**
- * Resolves once the OTel SDK has started (or once bootstrap has failed and
- * logged, or immediately when the feature is off). Await before constructing
- * the HTTP server so trace coverage doesn't depend on incidental timing.
- */
-export const instrumentationReady: Promise<void> = endpoint
-  ? bootstrapOtel(endpoint)
-  : Promise.resolve();
+let initializationPromise: Promise<void> | null = null;
+
+export function initializeInstrumentation(): Promise<void> {
+  if (initializationPromise) return initializationPromise;
+  const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+  if (!endpoint) return Promise.resolve();
+  initializationPromise = bootstrapOtel(endpoint);
+  return initializationPromise;
+}
+
+export const instrumentationReady: Promise<void> = initializeInstrumentation();
 
 /**
  * Flush buffered spans and stop the SDK. Idempotent — concurrent callers
@@ -334,7 +331,7 @@ export const instrumentationReady: Promise<void> = endpoint
  */
 export function shutdownInstrumentation(): Promise<void> {
   shutdownPromise ??= (async () => {
-    await instrumentationReady;
+    await (initializationPromise ?? instrumentationReady);
     if (!sdkShutdown) return;
     try {
       // Awaiting matters: the SDK flushes buffered spans to the collector

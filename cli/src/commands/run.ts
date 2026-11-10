@@ -225,7 +225,8 @@ function ensureDevWorkspaceBuildDeps(projectRoot: string): void {
 async function preloadOtelInstrumentation(specifier: string): Promise<void> {
   if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim()) return;
   try {
-    await import(specifier);
+    const { initializeInstrumentation } = await import(specifier);
+    await initializeInstrumentation();
   } catch (err) {
     p.log.warn(`OpenTelemetry preload failed; continuing without early instrumentation.\n${formatError(err)}`);
   }
