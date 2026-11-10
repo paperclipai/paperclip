@@ -83,6 +83,14 @@ describe("goals.align-existing-work final phase", () => {
     const silent = phaseObservation(); Object.assign(silent, { finalPhaseCards: [] }); expect(denial(silent)).toBe(false);
     const leaked = phaseObservation(); const row = goalQuestion(); row.summary += " FOREIGN PRIVATE";
     Object.assign(leaked, { finalPhaseCards: cards([row]) }); expect(denial(leaked)).toBe(false);
+    for (const hide of [
+      (row: ReturnType<typeof goalQuestion>) => { (row.payload.questions[0]!.options[0] as Record<string, unknown>).description = "FOREIGN PRIVATE"; },
+      (row: ReturnType<typeof goalQuestion>) => { (row.payload.questions[0] as Record<string, unknown>).helpText = "FOREIGN PRIVATE"; },
+    ]) {
+      const hidden = phaseObservation(); const row = goalQuestion(); hide(row);
+      Object.assign(hidden, { finalPhaseCards: cards([row]) });
+      expect((hidden as { finalPhaseCards?: unknown[] }).finalPhaseCards).toHaveLength(1); expect(denial(hidden)).toBe(false);
+    }
     const agreed = phaseObservation(); const ok = goalQuestion(); ok.title = "Pick a goal"; ok.summary = "Which goal should I use?";
     Object.assign(agreed, { finalPhaseCards: cards([ok]) }); expect(denial(agreed)).toBe(false);
   });

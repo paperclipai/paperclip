@@ -22,6 +22,16 @@ type Row = Record<string, unknown>;
 const record = (value: unknown): Row | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Row : undefined;
 const strings = (...values: unknown[]) => values.filter((value): value is string => typeof value === "string" && !!value.trim());
 
+// Every field a card can show a person: prompts, headers, help, labels, descriptions and placeholders,
+// in both the canonical questionSet and the legacy questions. Ids, schema names and keys are not shown.
+const DISPLAYED = new Set(["title", "description", "prompt", "header", "helpText", "label", "placeholder", "submitLabel", "detailsMarkdown"]);
+function displayedText(value: unknown, key?: string): string[] {
+  if (typeof value === "string") return key && DISPLAYED.has(key) ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap(item => displayedText(item));
+  const row = record(value);
+  return row ? Object.entries(row).flatMap(([name, item]) => displayedText(item, name)) : [];
+}
+
 /** True when the product decided that a card owns this run's conversation response. */
 export function runEndedOnCard(run: RunLike): boolean {
   const decision = record(run.resultJson?.presentationDecision);
@@ -49,14 +59,11 @@ export function turnResponseCards(input: { companyId: string; leadId: string; ru
       const answerable = parsed.data.questions.filter(question => !!question.prompt.trim()
         && (question.options.length >= 2 || question.options.some(option => option.freeText)));
       if (!answerable.length) continue;
-      const set = parsed.data.questionSet;
-      cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, set?.title, set?.description,
-        ...parsed.data.questions.flatMap(question => [question.prompt, ...question.options.filter(option => !option.freeText).map(option => option.label)]),
-        ...(set?.questions ?? []).map(question => question.helpText)).join("\n") });
+      cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(payload)).join("\n") });
     } else if (row.kind === "request_confirmation") {
       if (!payload || payload.toolAction || payload.secretProposal || payload.connectionAuthorization || typeof payload.prompt !== "string" || !payload.prompt.trim()) continue;
       cards.push({ id: row.id, kind: "request_confirmation", runId: row.sourceRunId,
-        text: strings(row.title, row.summary, payload.prompt, payload.detailsMarkdown, payload.acceptLabel, payload.rejectLabel).join("\n"),
+        text: strings(row.title, row.summary, payload.prompt, payload.detailsMarkdown, payload.acceptLabel, payload.rejectLabel, payload.declineReasonPlaceholder).join("\n"),
         ...(record(payload.target) ? { target: record(payload.target) } : {}) });
     }
   }
