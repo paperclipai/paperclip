@@ -3520,14 +3520,19 @@ const SESSION_OPEN_EVENT_TYPES = ["session.started", "session.resumed", "session
  * Remote process IDs belong to another host, so remote runs never qualify. */
 export async function provenStoppedOwnNativeSession(
   db: Db,
-  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "runtimeMode" | "runnerInstanceId" | "runnerProfileJson">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "runtimeMode" | "runnerInstanceId" | "runnerProfileJson"
+    | "processPid" | "processGroupId" | "processStartedAt">,
 ): Promise<{ processPid: number; processGroupId: number; providerPids: number[] } | null> {
   if (run.runtimeMode !== "native" || !run.runnerInstanceId || process.platform === "win32") return null;
   if (activeNativeSessions.has(run.id)) return null;
   const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
   if (leases.some(lease => lease.provider !== "local")) return null;
-  const stopped = await readNativeLocalProcessStop(db, run.companyId, run.id);
+  // A finished run whose process fields were never cleared proves its stop
+  // from the recorded launch identity instead (the same prover as above).
+  const stopped = await readNativeLocalProcessStop(db, run.companyId, run.id)
+    ?? (run.processPid && run.processPid > 1 && run.processGroupId === run.processPid
+      && await recordedLocalExecutionStopped(db, run) ? { processPid: run.processPid, processGroupId: run.processPid } : null);
   if (!stopped) return null;
   const events = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
     .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
@@ -3560,44 +3565,59 @@ export async function provenStoppedOwnNativeSession(
   return { processPid: stopped.processPid, processGroupId: stopped.processGroupId, providerPids: providerPids as number[] };
 }
 
+type CleanupGateOwner = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode"
+  | "nativeIssueId" | "runnerInstanceId" | "runnerProfileJson" | "processPid" | "processGroupId" | "processStartedAt">;
+const CLEANUP_GATE_OWNER_SCAN_LIMIT = 10;
+
 /**
- * A local run's own session close can fail without proof that its runner
- * suspended (for example while the server was paused), which leaves an
- * operator-required cleanup gate in this process. The gate guards process
- * ownership only. Once the host has durably recorded that this run's exact
- * runner process and group stopped, and every provider process the run
- * recorded is gone, nothing can still own that session, so the gate is
- * retired before the run's own authorized recovery is admitted.
+ * A local session close can fail without proof that its runner suspended (for
+ * example while the server was paused), which leaves an operator-required
+ * cleanup gate in this process. It refuses every later session of the task:
+ * the run's own same-run recovery, and a follow-up run for a new message.
+ * The gate guards process ownership only. When the host proves that the
+ * owner's exact runner process and group stopped, and every provider process
+ * the owner recorded is gone, nothing can still own that session, so the gate
+ * is retired before the next session is admitted.
  *
- * This never authorizes provider work: the caller's recovery decision, made
- * from durable records, still decides whether and how the run continues.
+ * This never authorizes provider work: the caller's own recovery or admission
+ * decision, made from durable records, still decides how the task continues.
+ * Returns true when no operator-required gate blocks the task afterwards.
  */
-export async function retireStoppedOwnSessionCleanupGate(
+export async function retireStoppedSessionCleanupGates(
   db: Db,
-  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode" | "nativeIssueId"
-    | "runnerInstanceId" | "runnerProfileJson">,
+  input: { companyId: string; issueId: string; run?: CleanupGateOwner },
 ): Promise<boolean> {
-  if (run.runtimeMode !== "native" || !run.nativeIssueId || !run.runnerInstanceId) return false;
-  if (nativeSessionCleanupBlock({ companyId: run.companyId, issueId: run.nativeIssueId }) !== "operator_required") return false;
-  const stopped = await provenStoppedOwnNativeSession(db, run);
-  if (!stopped) return false;
-  let retired = false;
-  try {
-    retired = completeTerminatedLocalNativeSessionCleanup({
-      companyId: run.companyId, runId: run.id, runnerInstanceId: run.runnerInstanceId,
-    });
-  } catch {
-    return false;
+  const blocked = () => nativeSessionCleanupBlock({ companyId: input.companyId, issueId: input.issueId }) === "operator_required";
+  if (!blocked()) return true;
+  const finished = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.nativeIssueId, input.issueId),
+    eq(heartbeatRuns.runtimeMode, "native"), isNotNull(heartbeatRuns.finishedAt), isNotNull(heartbeatRuns.runnerInstanceId),
+    inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]),
+  )).orderBy(desc(heartbeatRuns.createdAt)).limit(CLEANUP_GATE_OWNER_SCAN_LIMIT);
+  const owners: CleanupGateOwner[] = [...(input.run ? [input.run] : []), ...finished.filter(row => row.id !== input.run?.id)];
+  for (const owner of owners) {
+    if (!blocked()) break;
+    if (!owner.runnerInstanceId || owner.companyId !== input.companyId) continue;
+    const stopped = await provenStoppedOwnNativeSession(db, owner);
+    if (!stopped) continue;
+    let retired = false;
+    try {
+      retired = completeTerminatedLocalNativeSessionCleanup({
+        companyId: owner.companyId, runId: owner.id, runnerInstanceId: owner.runnerInstanceId,
+      });
+    } catch {
+      continue;
+    }
+    // True also when this owner held no entry; record only a real release.
+    if (!retired || blocked()) continue;
+    await appendHeartbeatRunEvent(db, {
+      companyId: owner.companyId, runId: owner.id, agentId: owner.agentId,
+      eventType: "native.session_cleanup_gate_retired", stream: "system", level: "info",
+      message: "The run's runner and provider processes are verified stopped, so its session cleanup gate was retired.",
+      payload: { processPid: stopped.processPid, processGroupId: stopped.processGroupId, providerPids: stopped.providerPids },
+    }).catch(() => undefined);
   }
-  if (!retired) return false;
-  await appendHeartbeatRunEvent(db, {
-    companyId: run.companyId, runId: run.id, agentId: run.agentId,
-    eventType: "native.session_cleanup_gate_retired", stream: "system", level: "info",
-    message: "The run's previous runner and provider processes are verified stopped, so its session cleanup gate was retired.",
-    payload: { processPid: stopped.processPid, processGroupId: stopped.processGroupId,
-      providerPids: stopped.providerPids },
-  }).catch(() => undefined);
-  return true;
+  return !blocked();
 }
 
 /** Exact local cleanup only: the accepted result and original quarantine are

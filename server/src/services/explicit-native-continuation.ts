@@ -16,7 +16,7 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
-import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeRunNeverLaunched, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
+import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeGatedRunNeverLaunched, nativeRunNeverLaunched, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
 import { completeTerminatedLocalNativeSessionCleanup, completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
@@ -535,7 +535,7 @@ export async function admitExplicitNativeContinuation(input: {
       // Never permission to resume the interrupted turn: new input and a
       // native Retry both start a fresh provider conversation, and only after
       // the old runner, provider and tools are proven stopped.
-      const { verifyStoppedNativeSessionForContinuation, provenStoppedOwnNativeSession } =
+      const { verifyStoppedNativeSessionForContinuation, provenStoppedOwnNativeSession, retireStoppedSessionCleanupGates } =
         await import("./native-runtime/native-session-executor.js");
       let stopped = await verifyStoppedNativeSessionForContinuation(db, run);
       // The run's own session (s9107 t04): its saved state may be past the
@@ -548,6 +548,15 @@ export async function admitExplicitNativeContinuation(input: {
           runnerInstanceId, ...ownStop },
           retire: () => { try { return completeTerminatedLocalNativeSessionCleanup({ companyId, runId: run.id, runnerInstanceId }); }
             catch { return false; } } };
+      }
+      // A source the gate refused before it launched (s9107 rerun t05: a
+      // follow-up run after its predecessor's failed close) owns no process.
+      // Once the task's gate is retired from its stopped owner, nothing holds
+      // the old session any more.
+      if (!stopped && retainedCleanup === "operator_required" && await nativeGatedRunNeverLaunched(db, run)
+          && await retireStoppedSessionCleanupGates(db, { companyId, issueId })) {
+        stopped = { evidence: { schema: "paperclip.unlaunched_gated_source.v1", runId: run.id },
+          retire: () => nativeSessionCleanupBlock({ companyId, issueId }) !== "operator_required" };
       }
       if (!stopped) return retry
         ? blocked("cleanup_quarantined", "Send a new message after the previous provider has stopped.")

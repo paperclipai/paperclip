@@ -287,6 +287,21 @@ export async function nativeRunNeverLaunched(db: Db, run: Pick<typeof heartbeatR
   return !launch;
 }
 
+/** A native run the cleanup gate refused before it asked for a runner. Its
+ * process fields may name its predecessor's process, copied at admission for
+ * the same session; that process is checked separately. This run launched
+ * nothing of its own. */
+export async function nativeGatedRunNeverLaunched(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runtimeMode" | "status" | "errorCode">): Promise<boolean> {
+  if (run.runtimeMode !== "native" || run.status !== "failed" || run.errorCode !== "native_session_cleanup_quarantined") return false;
+  const [launch] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    or(isNotNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED])),
+  )).limit(1);
+  return !launch;
+}
+
 /** Pre-receipt native runs can retain an exact suspended session after their
  * mutable process fields were cleared. This is admission evidence for a new
  * user turn only, never permission to replay the old run or infer its outcomes.

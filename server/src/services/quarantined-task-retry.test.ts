@@ -19,7 +19,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { currentProcessStartedAtMs } from "./controller-process-identity.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
-import { retireStoppedOwnSessionCleanupGate, scopedRunnerdStateRoot, verifyStoppedNativeSessionForAutomaticReplacement, verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
+import { retireStoppedSessionCleanupGates, scopedRunnerdStateRoot, verifyStoppedNativeSessionForAutomaticReplacement, verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
 import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
@@ -469,7 +469,7 @@ describe("task Retry after inherited native cleanup quarantine", () => {
         mode === "acpx_sidecar" ? { processGroupId: null } : mode === "acpx_sidecar_own_group" ? { processGroupId: 99_999_995 } : undefined);
       const retires = mode === "stopped" || mode === "acpx_sidecar";
       const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceId));
-      expect(await retireStoppedOwnSessionCleanupGate(db, source)).toBe(retires);
+      expect(await retireStoppedSessionCleanupGates(db, { companyId: f.companyId, issueId: f.issueId, run: source })).toBe(retires);
       expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId }))
         .toBe(retires ? null : "operator_required");
     } finally {
@@ -504,6 +504,38 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       }
       expect(queued, JSON.stringify(state.payload)).toHaveLength(1);
       expect(queued[0].contextSnapshot).toMatchObject({ previousRunId: f.sourceId, forceFreshSession: true });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["stopped", "runner_alive"] as const)(
+    "retires a finished predecessor's failed-close gate before a follow-up session (%s)", async mode => {
+    // s9107 rerun t05: the run succeeded, its close kept an operator-required
+    // gate, and the follow-up run for a new message was refused at admission.
+    const base = await mkdtemp(join(tmpdir(), "predecessor-close-gate-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
+    try {
+      const f = await seed(base);
+      await quarantineOwnClose(f, base);
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceId));
+      // No stop record: the predecessor's recorded launch identity proves its stop.
+      const pid = mode === "runner_alive" ? process.pid : source.processPid!;
+      const startedAt = mode === "runner_alive" ? new Date((await currentProcessStartedAtMs())!) : source.processStartedAt!;
+      await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null, processPid: pid, processGroupId: pid, processStartedAt: startedAt })
+        .where(eq(heartbeatRuns.id, f.sourceId));
+      await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceId, agentId: f.agentId, eventType: PROCESS_IDENTITY_RECORDED,
+        payload: { processPid: pid, processGroupId: pid, processStartedAt: startedAt.toISOString(),
+          targetKind: "local", hostname: hostname() } });
+      await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceId, agentId: f.agentId, eventType: "harness.diagnostic",
+        payload: { prpEvent: { payload: { code: "acpx_process", details: { pid: 99_999_994, role: "sidecar", processGroupId: null } } } } });
+      await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceId, agentId: f.agentId, eventType: "session.started",
+        payload: { prpEvent: { payload: { providerSessionId: "own-provider" } } } });
+      expect(await retireStoppedSessionCleanupGates(db, { companyId: f.companyId, issueId: f.issueId })).toBe(mode === "stopped");
+      expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId }))
+        .toBe(mode === "stopped" ? null : "operator_required");
     } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
       await rm(base, { recursive: true, force: true });
