@@ -32,7 +32,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { prepareRunnerE2EServerConfig } from "./server-config.js";
+import { prepareSupervisorServerConfig } from "./server-config.js";
 import { installedReleaseEnvironment, installedReleaseLaunch } from "./installed-release.js";
 import {
   assertIsolatedServerEnvironment,
@@ -477,10 +477,11 @@ async function supervise() {
   if (executionIds.some(id => id.includes(".legacy-claude.local.") || /\.assistant-claude-(?:haiku|sonnet)\.local\./.test(id))) {
     definedServerEnvironment.PATH = await qualifyLegacyClaudeCli(temporaryRoot, definedServerEnvironment);
   }
-  const databaseReservation = await prepareRunnerE2EServerConfig({
+  const databaseReservation = await prepareSupervisorServerConfig({
     temporaryRoot,
     configPath,
     serverPort: Number(port),
+    database: dockerEnvironment,
   });
   // Postgres needs the socket itself; release immediately before child spawn.
   await databaseReservation?.close();

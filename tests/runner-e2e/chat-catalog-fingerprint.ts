@@ -12,7 +12,9 @@ import { buildSync } from "esbuild";
 import type { MatrixExecution } from "./types.js";
 import type { ChatCatalogDescriptor } from "./chat-catalog-registry.js";
 
-export const chatCatalogSpawnedSourceEntries = ["tests/runner-e2e/server.ts", "tests/runner-e2e/server-entry.ts"] as const;
+// Spawned by path rather than imported, so name them explicitly; the Python
+// sandbox wraps every agent process and decides its filesystem isolation.
+export const chatCatalogSpawnedSourceEntries = ["tests/runner-e2e/server.ts", "tests/runner-e2e/server-entry.ts", "tests/runner-e2e/agent-filesystem-sandbox.py"] as const;
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 function resolveSource(specifier: string, parent: string): string {
@@ -133,7 +135,7 @@ export function chatCatalogCaseFingerprint(descriptor: ChatCatalogDescriptor, se
 
 export function normalizedChatCatalogExecution(execution: MatrixExecution) {
   return { executionId: execution.id, suiteId: execution.suite.id, flow: execution.task.flow, journeyKind: "agent-chat",
-    profile: { id: execution.profile.id, provider: execution.profile.provider, model: execution.profile.model, credential: execution.profile.credential },
+    profile: { id: execution.profile.id, provider: execution.profile.provider, model: execution.profile.model, adapterType: execution.profile.adapterType, credential: execution.profile.credential },
     environment: execution.environment.id, databaseLane: databaseFingerprintIdentity(), requiredCredentialNames: execution.requiredCredentials, task: { expectedRunCount: execution.task.expectedRunCount,
       minimumExpectedRunCount: execution.task.minimumExpectedRunCount, turnTimeoutMs: execution.task.turnTimeoutMs,
       ...(execution.task.optionalCompanySecretBindingApproval===true?{expectedHumanMessageCount:execution.task.expectedHumanMessageCount,optionalCompanySecretBindingApproval:true}:{}),

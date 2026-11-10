@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
-import { assertChatCatalogFingerprintLane, chatCatalogCaseFingerprint, chatCatalogSpawnedSourceEntries, fingerprintChatDependencyClosure } from "./chat-catalog-fingerprint.js";
+import { assertChatCatalogFingerprintLane, chatCatalogCaseFingerprint, chatCatalogSpawnedSourceEntries, fingerprintChatDependencyClosure, normalizedChatCatalogExecution } from "./chat-catalog-fingerprint.js";
 import { findChatCatalogCase, loadChatCatalogImplementation, type ChatCatalogDescriptor } from "./chat-catalog-registry.js";
 const directories: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -24,8 +24,8 @@ it("invalidates shared, selected and transitive dependencies while ignoring an u
     f.write(target, "export const changed = true;"); expect(f.fingerprint()).not.toBe(before);
   }
 });
-it("binds actual spawned supervisor and entry bytes even when launch refers to them only by path", () => {
-  expect(chatCatalogSpawnedSourceEntries).toEqual(["tests/runner-e2e/server.ts", "tests/runner-e2e/server-entry.ts"]);
+it("binds actual spawned supervisor, entry and sandbox bytes even when launch refers to them only by path", () => {
+  expect(chatCatalogSpawnedSourceEntries).toEqual(["tests/runner-e2e/server.ts", "tests/runner-e2e/server-entry.ts", "tests/runner-e2e/agent-filesystem-sandbox.py"]);
   for (const changed of chatCatalogSpawnedSourceEntries) {
     const f = fixture(); mkdirSync(path.join(f.root, "tests/runner-e2e"), { recursive: true });
     for (const file of chatCatalogSpawnedSourceEntries) f.write(file, "export const behavior = 'original';");
@@ -120,6 +120,14 @@ it("rejects a missing extensionless component instead of binding an unrelated TS
   expect(f.fingerprint).toThrow("Unresolved fingerprint dependency: ./MissingComponent");
 });
 
+it("keeps the reviewed adapter in the normalized execution an installed OpenCode case is admitted from", async () => {
+  const { runnerMatrix } = await import("./catalog.js");
+  const execution = runnerMatrix.find(row => row.id === "chat-features.runner-opencode.local.instance-operations.update-instance");
+  expect(execution).toBeDefined();
+  const normalized = normalizedChatCatalogExecution(execution!);
+  expect(normalized.profile.adapterType).toBe("paperclip_runner");
+  expect(assertChatCatalogFingerprintLane({ ...normalized, scenarioId: "instance-operations.update-instance", installedSource: "published-global-npm" }, {}, []).installedLane).toBe(true);
+});
 it("admits installed OpenCode only for its exact reviewed model, case and source-local lane", () => {
   const lane = { suiteId: "chat-features", flow: "agent_chat", environment: "local", scenarioId: "instance-operations.update-instance", installedSource: "published-global-npm",
     profile: { id: "runner-opencode", provider: "opencode", model: CHAT_OPENCODE_MODEL, adapterType: "paperclip_runner", credential: "OPENROUTER_API_KEY" } };

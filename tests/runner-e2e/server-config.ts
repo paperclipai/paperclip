@@ -1,4 +1,5 @@
 import { readDockerDatabaseReceipt, type DockerRun } from "./docker-postgres.js";
+import { isOwnedExternalControllerDatabase } from "./instance-isolation.js";
 import { mkdir, mkdtemp, realpath, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -26,7 +27,11 @@ export async function prepareRunnerE2EServerConfig(input: {
   const docker = input.dockerReceiptPath ? await readDockerDatabaseReceipt(input.dockerReceiptPath, input.temporaryRoot, input.dockerRun) : undefined;
   try {
     const existing = JSON.parse(await readFile(input.configPath, "utf8"));
-    if (docker ? existing.database?.mode !== "postgres" || existing.database.connectionString !== docker.connectionString : existing.database?.mode !== "embedded-postgres" || existing.database.connectionString) throw new Error("Existing runner database config differs from its explicit owned lane");
+    const matchesLane = docker ? existing.database?.mode === "postgres" && existing.database.connectionString === docker.connectionString
+      : existing.database?.mode === "embedded-postgres" ? !existing.database.connectionString
+      // The launcher may already own a disposable external database for this config.
+      : existing.database?.mode === "postgres" && await isOwnedExternalControllerDatabase(input.configPath, input.temporaryRoot, existing.database);
+    if (!matchesLane) throw new Error("Existing runner database config differs from its explicit owned lane");
     return null;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -81,4 +86,13 @@ export async function prepareRunnerE2EServerConfig(input: {
     await databaseReservation?.close();
     throw error;
   }
+}
+
+/** Supervisor startup: the database lane selected by the launcher decides the config. */
+export async function prepareSupervisorServerConfig(input: {
+  temporaryRoot: string; configPath: string; serverPort: number;
+  database: { filename?: string }; dockerRun?: DockerRun;
+}) {
+  return await prepareRunnerE2EServerConfig({ temporaryRoot: input.temporaryRoot, configPath: input.configPath,
+    serverPort: input.serverPort, dockerReceiptPath: input.database.filename, dockerRun: input.dockerRun });
 }

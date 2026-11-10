@@ -5,7 +5,7 @@ import os from "node:os";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { assertOwnedContainer, currentDockerEngine, DockerCommandError, databaseFingerprintIdentity, databaseIdentityMatches, dockerDatabaseLaunchState, dockerDatabaseSupervisorEnvironment, DOCKER_DATABASE_ENV, DATABASE_LANE_ENV, POSTGRES_IMAGE, POSTGRES_IMAGE_ID, POSTGRES_VERSION, selectedDatabaseLane, startOwnedDockerDatabase, type DockerRun } from "./docker-postgres.js";
-import { prepareRunnerE2EServerConfig } from "./server-config.js";
+import { prepareRunnerE2EServerConfig, prepareSupervisorServerConfig } from "./server-config.js";
 import { assertRunnerDatabaseIsolation, assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import { campaignDatabaseEvidenceEligible, type CampaignAttempt } from "./chat-campaign.js";
 import { assertChatCatalogFingerprintLane, fingerprintChatDependencyClosure } from "./chat-catalog-fingerprint.js";
@@ -75,7 +75,8 @@ it("binds exact image/engine/resources, strips admission data and removes only o
   const supervisor = await dockerDatabaseSupervisorEnvironment({ temporaryRoot: temp, env: { [DATABASE_LANE_ENV]: "owned-docker-postgres", [DOCKER_DATABASE_ENV]: owned.filename }, run });
   expect(supervisor.source[DOCKER_DATABASE_ENV]).toBeUndefined(); expect(supervisor.source[DATABASE_LANE_ENV]).toBeUndefined();
   const configPath = path.join(temp, "paperclip-home", "instances", "fixture", "config.json");
-  expect(await prepareRunnerE2EServerConfig({ temporaryRoot: temp, configPath, serverPort: 3100, dockerReceiptPath: owned.filename, dockerRun: run })).toBeNull();
+  // The supervisor hands its selected receipt to config preparation.
+  expect(await prepareSupervisorServerConfig({ temporaryRoot: temp, configPath, serverPort: 3100, database: supervisor, dockerRun: run })).toBeNull();
   const config = JSON.parse(await readFile(configPath, "utf8")); expect(config.database.mode).toBe("postgres"); expect(config.database.connectionString).toBe(owned.receipt.connectionString);
   const key = config.secrets.localEncrypted.keyFilePath; await mkdir(path.dirname(key), { recursive: true }); await writeFile(key, "offline-key", { mode: 0o600 });
   await expect(assertRunnerDatabaseIsolation(configPath, temp, owned.filename, run)).resolves.toBeUndefined();

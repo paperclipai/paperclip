@@ -21,6 +21,18 @@ export async function recordControllerDatabaseOwnership(input: {
   }), { mode: 0o600 });
 }
 
+/** True only for a launcher-created external database recorded for this exact config. */
+export async function isOwnedExternalControllerDatabase(configPath: string, temporaryRoot: string, database: { connectionString?: unknown; embeddedPostgresDataDir?: unknown }) {
+  if (typeof database.connectionString !== "string" || typeof database.embeddedPostgresDataDir !== "string") return false;
+  try {
+    const owner = JSON.parse(await readFile(path.join(database.embeddedPostgresDataDir, CONTROLLER_DATABASE_OWNER_FILE), "utf8"));
+    return owner.version === 2 && /^runner_e2e_[a-f0-9]{32}$/.test(owner.externalDatabaseName)
+      && new URL(database.connectionString).pathname === `/${owner.externalDatabaseName}`
+      && owner.connectionString === database.connectionString
+      && owner.configPath === await realpath(configPath) && owner.temporaryRoot === await realpath(temporaryRoot);
+  } catch { return false; }
+}
+
 export async function assertRunnerDatabaseIsolation(
   configPath: string,
   temporaryRoot: string,

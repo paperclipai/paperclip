@@ -56,6 +56,7 @@ const failures = new Map([
   ["Private diagnostic registry requires an owned temporary root", "private-diagnostic-registry-requires-an-owned"],
   ["Private diagnostic registry execution mismatch", "private-diagnostic-registry-execution-mismatch"],
   ["Private diagnostic secret registration must be a string", "private-diagnostic-secret-registration-must-be"],
+  ["Product-delivered secret must be a non-empty string", "product-delivered-secret-must-be-nonempty"],
   ["Diagnostic expansion has no raw-root provenance", "diagnostic-expansion-has-no-rawroot-provenance"],
   ["SDK public source proof unavailable", "sdk-public-source-proof-unavailable"],
   ["SDK public source parse unavailable", "sdk-public-source-parse-unavailable"],
