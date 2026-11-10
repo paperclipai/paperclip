@@ -21,11 +21,13 @@ setting and the run's registered secret values.
 
 An event never uses a read that began before the event was queued. An event that
 arrives while a read is in flight starts a new set. A set is also replaced after
-one second, so slow per-event work cannot extend it. A failed read is not shared;
+250 ms or 100 events, so a large queue or slow per-event work cannot extend it. A failed read is not shared;
 the next event reads again. The set is discarded when the queue empties, so
 decrypted secret values are not retained by an idle connection. An isolated event
 therefore costs the same reads as before, and a revocation applies to the first
-event published after it.
+event published after it. Events that were already queued when access was revoked
+can still be delivered until their set is replaced: at most 100 events or 250 ms
+of output produced before the revocation.
 
 ## Additive negotiation
 
